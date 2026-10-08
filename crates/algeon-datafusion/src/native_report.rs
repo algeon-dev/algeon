@@ -18,19 +18,12 @@
 
 use std::sync::Arc;
 
-use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     common::ScalarValue,
-    datasource::{memory::MemorySourceConfig, source::DataSourceExec},
-    logical_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits},
-    physical_expr::window::{PlainAggregateWindowExpr, SlidingAggregateWindowExpr, StandardWindowExpr, WindowExpr},
+    logical_expr::{WindowFrame, WindowFrameBound},
     physical_plan::{
         ExecutionPlan,
-        aggregates::AggregateExec,
-        empty::EmptyExec,
         joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec},
-        placeholder_row::PlaceholderRowExec,
-        windows::{BoundedWindowAggExec, WindowAggExec, WindowUDFExpr},
     },
 };
 use query_planning::source::SourceDiagnostics as NativeSourceDiagnostics;
@@ -201,7 +194,6 @@ fn report_rows_for_plan(
     let physical_root = plan.name().to_string();
     let physical_shape = physical_plan_shape(plan.as_ref());
     let join_diagnostics = physical_join_diagnostics(plan.as_ref());
-    let source_diagnostics_plan = Arc::clone(&plan);
     let result = lower_physical_plan_to_native(plan, &execution_config.source_read_strategy())?;
     let source_diagnostics = result.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
 
@@ -231,12 +223,7 @@ fn report_rows_for_plan(
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
                 outcome: Some(CandidateOutcomeKind::NotSupported),
                 reason_code: candidate_reason_code(outcome),
-                unsupported_category: unsupported_category(
-                    source_diagnostics_plan.as_ref(),
-                    candidate,
-                    *capability_reason,
-                    detail.expression.as_ref(),
-                ),
+                unsupported_category: Some(unsupported_category(*capability_reason, detail)),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 rejected_before_execution: false,
@@ -358,12 +345,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
                 outcome: Some(outcome.kind()),
                 reason_code: candidate_reason_code(outcome),
-                unsupported_category: unsupported_category(
-                    planned_plan.as_ref(),
-                    candidate,
-                    *capability_reason,
-                    detail.expression.as_ref(),
-                ),
+                unsupported_category: Some(unsupported_category(*capability_reason, detail)),
                 capability_decision_rows: capability_decision_rows_for_candidate(
                     &native_diagnostics.capability_contract,
                     candidate,
@@ -472,12 +454,7 @@ fn datafusion_execution_rows_for_item(
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
                 planning_outcome: Some(outcome.kind()),
                 reason_code: candidate_reason_code(outcome),
-                unsupported_category: unsupported_category(
-                    planned_plan.as_ref(),
-                    candidate,
-                    *capability_reason,
-                    detail.expression.as_ref(),
-                ),
+                unsupported_category: Some(unsupported_category(*capability_reason, detail)),
                 capability_decision_rows: capability_decision_rows_for_candidate(
                     &native_diagnostics.capability_contract,
                     candidate,

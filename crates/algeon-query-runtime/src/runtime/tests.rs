@@ -404,7 +404,7 @@ fn execution_context_rejects_invalid_source_chunk_planning_options() {
     })
     .unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
 }
 
@@ -431,7 +431,7 @@ fn lakehouse_cache_fill_config_rejects_zero_controls() {
         ),
     ] {
         let error = config.validate().unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.fact_value("field"), Some(field));
     }
 }

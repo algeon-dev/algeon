@@ -2,7 +2,10 @@ use arrow::{array::Int32Array, record_batch::RecordBatch};
 use datafusion::datasource::memory::MemorySourceConfig;
 
 use super::*;
-use crate::native::ParquetReadStrategyConfig;
+use crate::{
+    native::{ParquetReadStrategyConfig, first_operator_without_native_counterpart},
+    report::{CandidateShape, PlanBlocker},
+};
 
 #[test]
 fn benchmark_shape_lowers_to_one_native_query_plan() {
@@ -1363,6 +1366,29 @@ fn projection_sort_projection_aggregate_nested_shape_preserves_both_projections(
     };
     assert_eq!(agg_kind.spec.group_exprs.len(), 1);
     assert_eq!(agg_kind.spec.aggr_exprs.len(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn operator_without_native_counterpart_skips_the_supported_topk_wrapper() {
+    let dir = unique_temp_dir("algeon-datafusion-native-topk-blocker");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT a.key FROM bench AS a CROSS JOIN bench AS b ORDER BY a.key LIMIT 1",
+    )
+    .await;
+    assert_eq!(plan.name(), "SortExec(TopK)");
+    let shape =
+        CandidateShape::from("SortExec(fetch)(ProjectionExec(CrossJoinExec(LocalParquetScan,LocalParquetScan)))");
+
+    assert_eq!(
+        first_operator_without_native_counterpart(plan.as_ref(), &shape),
+        Some(PlanBlocker::Operator("CrossJoinExec".to_string()))
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -1,9 +1,9 @@
 use std::{error::Error as StdError, fmt, net::SocketAddr, sync::Arc};
 
 use datafusion::common::DataFusionError;
-use query_planning::error::QueryError;
 #[cfg(test)]
 use query_planning::error::QueryErrorCode;
+use query_planning::error::{QueryError, bytes_with_gib};
 use tonic::{
     Status,
     metadata::{MetadataMap, MetadataValue},
@@ -26,6 +26,8 @@ pub const ERROR_OPERATION_METADATA_KEY: &str = "x-algeon-error-operation";
 pub const UNSUPPORTED_COLUMN_METADATA_KEY: &str = "x-algeon-unsupported-column";
 pub const UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str = "x-algeon-unsupported-column-type";
 pub const UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str = "x-algeon-unsupported-column-role";
+pub const BLOCKING_KIND_METADATA_KEY: &str = "x-algeon-blocking-kind";
+pub const BLOCKING_SUBJECT_METADATA_KEY: &str = "x-algeon-blocking-subject";
 pub const PREDICATE_ROLE_METADATA_KEY: &str = "x-algeon-predicate-role";
 pub const REASON_METADATA_KEY: &str = "x-algeon-reason";
 pub const REQUIRED_OPTION_METADATA_KEY: &str = "x-algeon-required-option";
@@ -34,6 +36,12 @@ pub const ALGORITHM_METADATA_KEY: &str = "x-algeon-algorithm";
 pub const ITERATIONS_METADATA_KEY: &str = "x-algeon-iterations";
 pub const MAX_ITERATIONS_METADATA_KEY: &str = "x-algeon-max-iterations";
 pub const EPSILON_METADATA_KEY: &str = "x-algeon-epsilon";
+pub const NATIVE_OPERATION_METADATA_KEY: &str = "x-algeon-native-operation";
+pub const BUDGET_OPERATION_METADATA_KEY: &str = "x-algeon-budget-operation";
+pub const REQUESTED_ALLOCATION_BYTES_METADATA_KEY: &str = "x-algeon-requested-allocation-bytes";
+pub const BUDGET_BYTES_METADATA_KEY: &str = "x-algeon-budget-bytes";
+pub const BUDGET_CURRENT_BYTES_METADATA_KEY: &str = "x-algeon-budget-current-bytes";
+pub const BUDGET_PEAK_BYTES_METADATA_KEY: &str = "x-algeon-budget-peak-bytes";
 /// Lists client-detail fact keys withheld from Flight metadata because their
 /// values are not transmittable ASCII (comma-joined fact keys).
 pub const OMITTED_FACTS_METADATA_KEY: &str = "x-algeon-omitted-facts";
@@ -43,6 +51,10 @@ pub const OMITTED_FACTS_METADATA_KEY: &str = "x-algeon-omitted-facts";
 /// the status message and query stats. The fact-metadata key set is fixed, so
 /// this per-value bound is also a fixed total bound by construction.
 const MAX_CLIENT_FACT_METADATA_VALUE_BYTES: usize = 256;
+
+/// Status message of the failure kinds whose raw text stays server-side. The
+/// query id travels in the `x-algeon-query-id` metadata of the same status.
+pub(super) const MASKED_INTERNAL_ERROR_MESSAGE: &str = "internal server error while processing the request; the full diagnostic is available through the GetQueryStats action for the query id in the x-algeon-query-id metadata";
 
 /// Maximum bytes for a client status message derived from foreign
 /// DataFusion text. Bounds what one extreme upstream `Display` can emit onto
@@ -64,7 +76,7 @@ pub struct ServerError {
 impl ServerError {
     pub fn invalid_config(field: &'static str, reason: impl Into<String>) -> Self {
         Self::new(
-            ErrorCode::InvalidRequest,
+            ErrorCode::InvalidConfiguration,
             "algeon_datafusion.server.config",
             format!("invalid server configuration: {field} {}", reason.into()),
         )
@@ -81,7 +93,7 @@ impl ServerError {
 
     pub fn configuration(message: impl Into<String>) -> Self {
         Self::new(
-            ErrorCode::InvalidRequest,
+            ErrorCode::InvalidConfiguration,
             "algeon_datafusion.server.config",
             format!("invalid server configuration: {}", message.into()),
         )
@@ -92,7 +104,7 @@ impl ServerError {
         source: impl StdError + Send + Sync + 'static,
     ) -> Self {
         Self::new(
-            ErrorCode::InvalidRequest,
+            ErrorCode::InvalidConfiguration,
             "algeon_datafusion.server.config",
             format!("invalid server configuration: {}", message.into()),
         )
@@ -128,7 +140,8 @@ impl ServerError {
     }
 
     pub(crate) fn builder_validation(reason: &'static str, message: impl Into<String>) -> Self {
-        Self::new(ErrorCode::InvalidRequest, "algeon_datafusion.server.builder", message).with_fact("reason", reason)
+        Self::new(ErrorCode::InvalidConfiguration, "algeon_datafusion.server.builder", message)
+            .with_fact("reason", reason)
     }
 
     pub(crate) fn builder_conflict(
@@ -511,8 +524,8 @@ fn client_status_message(error: &Error) -> String {
         // report instead of synthesizing retry permission from the
         // `Temporary` status or the gRPC `RESOURCE_EXHAUSTED` code.
         ErrorCode::QueryMemoryLimitExceeded => format!(
-            "query memory cap exceeded: {}. Raise the query memory cap or reduce query resource usage; retrying the same request unchanged cannot succeed",
-            error.message()
+            "query memory cap exceeded{}. Reduce what the failing operation holds (filter or project earlier, split the query) or raise the query memory cap; resubmitting the request unchanged fails again",
+            memory_failure_detail(error).unwrap_or_else(|| format!(": {}", error.message()))
         ),
         ErrorCode::QueryBudgetUnavailable => format!(
             "query budget cannot fit on any eligible device: {}. Request a smaller query cap or wait for device capacity to free; do not retry the same request unchanged",
@@ -538,12 +551,15 @@ fn client_status_message(error: &Error) -> String {
             "host memory pool exhausted while processing the request: {}. Reduce query resource usage; retrying the same request unchanged may fail again",
             error.message()
         ),
-        ErrorCode::DeviceOutOfMemory | ErrorCode::DeviceAllocationFailed | ErrorCode::MemoryReservationFailed => {
-            format!(
-                "device memory exhausted while processing the request: {}. Reduce query resource usage and consult the sealed attempt report for retry guidance; retrying the same request unchanged may fail again",
-                error.message()
-            )
-        },
+        ErrorCode::DeviceOutOfMemory | ErrorCode::DeviceAllocationFailed => format!(
+            "device memory exhausted{}. Reduce what the failing operation holds (filter or project earlier, split the query) and consult the sealed attempt report for retry guidance; resubmitting the request unchanged may fail again",
+            memory_failure_detail(error)
+                .unwrap_or_else(|| format!(" while processing the request: {}", error.message()))
+        ),
+        ErrorCode::MemoryReservationFailed => format!(
+            "device memory exhausted while processing the request: {}. Reduce query resource usage and consult the sealed attempt report for retry guidance; retrying the same request unchanged may fail again",
+            error.message()
+        ),
         _ if error.kind() == ErrorKind::ResourceExhausted => format!(
             "resource exhausted while processing the request: {}. Change the request to use fewer resources; do not retry the same request unchanged",
             error.message()
@@ -553,10 +569,39 @@ fn client_status_message(error: &Error) -> String {
             ErrorKind::Execution | ErrorKind::DependencyFailure | ErrorKind::InvariantViolation | ErrorKind::Internal
         ) =>
         {
-            "internal server error while processing the request".to_string()
+            MASKED_INTERNAL_ERROR_MESSAGE.to_string()
         },
         _ => error.message().to_string(),
     }
+}
+
+/// Names the native operation and the allocator facts of a memory failure:
+/// the requested bytes, the bytes already in use, and the query grant. The
+/// native layers copy these numbers and operation identifiers onto the error;
+/// no foreign text enters the message. Returns `None` when the error carries
+/// none of them.
+fn memory_failure_detail(error: &Error) -> Option<String> {
+    let bytes = |key: &str| error.fact_value(key).and_then(|value| value.parse::<u64>().ok());
+    let operation = error.fact_value("native_operation").or_else(|| error.fact_value("budget_operation"));
+    let clauses = [
+        bytes("requested_allocation_bytes").map(|value| format!("it requested {}", bytes_with_gib(value))),
+        bytes("budget_current_bytes").map(|value| format!("{} were already in use", bytes_with_gib(value))),
+        bytes("budget_bytes").map(|value| format!("the query grant is {}", bytes_with_gib(value))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let location = operation.map(|operation| format!(" in {operation}"));
+    if clauses.is_empty() && location.is_none() {
+        return None;
+    }
+    let figures = match clauses.as_slice() {
+        [] => String::new(),
+        [only] => format!(": {only}"),
+        [first, second] => format!(": {first} and {second}"),
+        [init @ .., last] => format!(": {}, and {last}", init.join(", ")),
+    };
+    Some(format!("{}{figures}", location.unwrap_or_default()))
 }
 
 /// Wire status text for rejections that name the caller's own schema
@@ -582,6 +627,9 @@ fn client_schema_detail_message(error: &Error, client_message: &str) -> Option<S
         ClientDetail::Field { name } => format!("{client_message} (field '{name}')"),
         ClientDetail::Column { name } => format!("{client_message} (column '{name}')"),
         ClientDetail::OrderingKey { name } => format!("{client_message} (ORDER BY key '{name}')"),
+        ClientDetail::BlockingSubject { text } => {
+            format!("GPU execution does not support {text}; EXPLAIN GPU lists every blocking candidate")
+        },
     })
 }
 
@@ -633,12 +681,14 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
         (UNSUPPORTED_COLUMN_METADATA_KEY, "unsupported_column"),
         (UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, "unsupported_column_type"),
         (UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, "unsupported_column_role"),
+        (BLOCKING_SUBJECT_METADATA_KEY, "blocking_subject"),
     ] {
         let value = error.client_detail().and_then(|detail| detail.value(detail_key));
         insert_metadata_value(status.metadata_mut(), metadata_key, detail_key, value, &mut omitted);
     }
     insert_fact_metadata(status.metadata_mut(), PREDICATE_ROLE_METADATA_KEY, error, "predicate_role", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), REASON_METADATA_KEY, error, "reason", &mut omitted);
+    insert_fact_metadata(status.metadata_mut(), BLOCKING_KIND_METADATA_KEY, error, "blocking_kind", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), REQUIRED_OPTION_METADATA_KEY, error, "required_option", &mut omitted);
     if client_actionable_kind(error) {
         insert_fact_metadata(status.metadata_mut(), NATIVE_MESSAGE_METADATA_KEY, error, "native_message", &mut omitted);
@@ -647,6 +697,25 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
     insert_fact_metadata(status.metadata_mut(), ITERATIONS_METADATA_KEY, error, "iterations", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), MAX_ITERATIONS_METADATA_KEY, error, "max_iterations", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), EPSILON_METADATA_KEY, error, "epsilon", &mut omitted);
+    if error.kind() == ErrorKind::ResourceExhausted {
+        for (metadata_key, fact_key) in
+            [(NATIVE_OPERATION_METADATA_KEY, "native_operation"), (BUDGET_OPERATION_METADATA_KEY, "budget_operation")]
+        {
+            insert_fact_metadata(status.metadata_mut(), metadata_key, error, fact_key, &mut omitted);
+        }
+        // Numeric facts are re-rendered from their parsed value so no other
+        // text can ride in a byte-count key.
+        for (metadata_key, fact_key) in [
+            (REQUESTED_ALLOCATION_BYTES_METADATA_KEY, "requested_allocation_bytes"),
+            (BUDGET_BYTES_METADATA_KEY, "budget_bytes"),
+            (BUDGET_CURRENT_BYTES_METADATA_KEY, "budget_current_bytes"),
+            (BUDGET_PEAK_BYTES_METADATA_KEY, "budget_peak_bytes"),
+        ] {
+            let value =
+                error.fact_value(fact_key).and_then(|value| value.parse::<u64>().ok()).map(|value| value.to_string());
+            insert_metadata_value(status.metadata_mut(), metadata_key, fact_key, value.as_deref(), &mut omitted);
+        }
+    }
     if !omitted.is_empty()
         && let Ok(marker) = MetadataValue::try_from(omitted.join(","))
     {
@@ -788,22 +857,33 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use arrow::{datatypes::Schema, error::ArrowError};
+    use arrow::{
+        datatypes::{DataType, Field, Schema},
+        error::ArrowError,
+        record_batch::RecordBatch,
+    };
     use cudf::testing::error::new_with_for_test;
     use datafusion::{
         common::{Column, Diagnostic, SchemaError, TableReference},
+        datasource::{memory::MemorySourceConfig, source::DataSourceExec},
         object_store::Error as ObjectStoreError,
-        physical_plan::{ExecutionPlan, empty::EmptyExec},
+        physical_expr::{
+            PhysicalExpr,
+            expressions::{CastExpr, col},
+        },
+        physical_plan::{ExecutionPlan, empty::EmptyExec, projection::ProjectionExec},
         prelude::SessionContext,
         sql::sqlparser::parser::ParserError,
     };
-    use tonic::Code;
+    use query_planning::error::{MemoryFailure, MemoryUsage};
+    use tonic::{Code, metadata::KeyAndValueRef};
     use tracing::subscriber::with_default;
 
     use super::*;
     use crate::{
         capability::CapabilityReason,
         gpu_functions::dense_relation_errors::DenseRelationErrorContext,
+        native::{ParquetReadStrategyConfig, lower_physical_plan_to_native},
         planner::{FinalPlanDisposition, native},
         report::{GpuCandidate, NotSupportedDetail, PlanningReport, UnsupportedColumnDetail},
     };
@@ -1262,7 +1342,7 @@ mod tests {
 
             assert_eq!(status.code(), Code::Internal, "{message}");
             assert_error_metadata(&status, "internal", "internal", "permanent");
-            assert_eq!(status.message(), "internal server error while processing the request");
+            assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
             assert!(!status.message().contains("/var/lib/algeon"));
         }
     }
@@ -1280,7 +1360,7 @@ mod tests {
         );
 
         assert_eq!(status.code(), Code::Internal);
-        assert_eq!(status.message(), "internal server error while processing the request");
+        assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
         assert!(!status.message().contains("/var/lib/algeon"));
         assert!(!status.message().contains("customers.parquet"));
         assert_no_diagnostic_fields(status.message());
@@ -1401,6 +1481,193 @@ mod tests {
         }
     }
 
+    const GIB: u64 = 1 << 30;
+
+    /// A native memory failure as the engine reports it: the typed budget
+    /// scope plus the allocator's requested size, wrapped at the adapter
+    /// boundary the way `native_query_runtime_error` does.
+    fn native_memory_failure(code: QueryErrorCode) -> Error {
+        let native = QueryError::new(
+            code,
+            "query_engine.exec.sort",
+            "secret native text naming s3://bucket/private/customers.parquet",
+        )
+        .with_fact("requested_allocation_bytes", 4 * GIB)
+        .with_fact("literal", "customer-secret")
+        .with_memory_failure(MemoryFailure {
+            boundary: "sort_stage".into(),
+            operation: "dataframe::sort".into(),
+            usage: Some(MemoryUsage {
+                limit_bytes: 4 * GIB,
+                peak_bytes: 3 * GIB,
+                peak_aligned_bytes: 3 * GIB,
+                current_bytes: 2 * GIB,
+                current_aligned_bytes: 2 * GIB,
+                failed_allocation_count: 1,
+                largest_failed_allocation_bytes: 4 * GIB,
+            }),
+        });
+        Error::from_native("algeon_datafusion.native_exec.execute", "Algeon native query execution failed", native)
+    }
+
+    #[test]
+    fn query_memory_cap_message_names_the_operation_request_grant_and_usage() {
+        let status = adapter_error_to_status(&native_memory_failure(QueryErrorCode::QueryMemoryLimitExceeded));
+
+        assert_eq!(status.code(), Code::ResourceExhausted);
+        assert_eq!(
+            status.message(),
+            "query memory cap exceeded in query_engine.exec.sort: it requested 4294967296 bytes (4.00 GiB), 2147483648 bytes (2.00 GiB) were already in use, and the query grant is 4294967296 bytes (4.00 GiB). Reduce what the failing operation holds (filter or project earlier, split the query) or raise the query memory cap; resubmitting the request unchanged fails again"
+        );
+        assert_error_metadata(&status, "query_memory_limit_exceeded", "resource_exhausted", "permanent");
+        assert_metadata_value(&status, NATIVE_OPERATION_METADATA_KEY, "query_engine.exec.sort");
+        assert_metadata_value(&status, BUDGET_OPERATION_METADATA_KEY, "dataframe::sort");
+        assert_metadata_value(&status, REQUESTED_ALLOCATION_BYTES_METADATA_KEY, "4294967296");
+        assert_metadata_value(&status, BUDGET_BYTES_METADATA_KEY, "4294967296");
+        assert_metadata_value(&status, BUDGET_CURRENT_BYTES_METADATA_KEY, "2147483648");
+        assert_metadata_value(&status, BUDGET_PEAK_BYTES_METADATA_KEY, "3221225472");
+        // Everything else the native error carries stays masked.
+        for hidden in ["secret native text", "customer-secret", "s3://", "sort_stage"] {
+            assert!(!status.message().contains(hidden), "{}", status.message());
+        }
+        assert!(status.metadata().get(NATIVE_MESSAGE_METADATA_KEY).is_none());
+        for (key, value) in status.metadata().iter().filter_map(|entry| match entry {
+            KeyAndValueRef::Ascii(key, value) => Some((key, value)),
+            KeyAndValueRef::Binary(..) => None,
+        }) {
+            let value = value.to_str().expect("ASCII metadata");
+            for hidden in ["customer-secret", "secret native text", "sort_stage"] {
+                assert!(!value.contains(hidden), "{key}={value}");
+            }
+        }
+    }
+
+    #[test]
+    fn device_allocation_failures_name_the_same_facts_and_keep_the_sealed_report_pointer() {
+        for code in [QueryErrorCode::DeviceOutOfMemory, QueryErrorCode::DeviceAllocationFailed] {
+            let status = adapter_error_to_status(&native_memory_failure(code));
+
+            assert_eq!(status.code(), Code::ResourceExhausted);
+            assert_eq!(
+                status.message(),
+                "device memory exhausted in query_engine.exec.sort: it requested 4294967296 bytes (4.00 GiB), 2147483648 bytes (2.00 GiB) were already in use, and the query grant is 4294967296 bytes (4.00 GiB). Reduce what the failing operation holds (filter or project earlier, split the query) and consult the sealed attempt report for retry guidance; resubmitting the request unchanged may fail again",
+                "{code:?}"
+            );
+            assert_metadata_value(&status, REQUESTED_ALLOCATION_BYTES_METADATA_KEY, "4294967296");
+        }
+    }
+
+    #[test]
+    fn memory_failure_message_omits_figures_it_does_not_have() {
+        let operation_only = Error::new(ErrorCode::QueryMemoryLimitExceeded, TEST_OPERATION, "synthetic")
+            .with_fact("native_operation", "query_engine.exec.join");
+        assert!(
+            adapter_error_to_status(&operation_only)
+                .message()
+                .starts_with("query memory cap exceeded in query_engine.exec.join. Reduce what"),
+            "{}",
+            adapter_error_to_status(&operation_only).message()
+        );
+
+        let request_only = Error::new(ErrorCode::QueryMemoryLimitExceeded, TEST_OPERATION, "synthetic")
+            .with_fact("requested_allocation_bytes", 1_u64 << 20);
+        assert!(
+            adapter_error_to_status(&request_only)
+                .message()
+                .starts_with("query memory cap exceeded: it requested 1048576 bytes (0.00 GiB). Reduce what"),
+            "{}",
+            adapter_error_to_status(&request_only).message()
+        );
+
+        let bare = Error::new(ErrorCode::QueryMemoryLimitExceeded, TEST_OPERATION, "synthetic resource failure");
+        assert!(
+            adapter_error_to_status(&bare)
+                .message()
+                .starts_with("query memory cap exceeded: synthetic resource failure."),
+            "{}",
+            adapter_error_to_status(&bare).message()
+        );
+    }
+
+    #[test]
+    fn memory_metadata_projects_only_resource_failures_and_only_numbers() {
+        let resource = Error::new(ErrorCode::QueryMemoryLimitExceeded, TEST_OPERATION, "synthetic")
+            .with_fact("requested_allocation_bytes", "12 secret-text")
+            .with_fact("budget_bytes", "4096");
+        let status = adapter_error_to_status(&resource);
+        assert!(status.metadata().get(REQUESTED_ALLOCATION_BYTES_METADATA_KEY).is_none());
+        assert_metadata_value(&status, BUDGET_BYTES_METADATA_KEY, "4096");
+        assert!(!status.message().contains("secret-text"), "{}", status.message());
+
+        let internal = Error::new(ErrorCode::Internal, TEST_OPERATION, "synthetic")
+            .with_fact("requested_allocation_bytes", "4096")
+            .with_fact("native_operation", "query_engine.exec.sort");
+        let status = adapter_error_to_status(&internal);
+        for key in [REQUESTED_ALLOCATION_BYTES_METADATA_KEY, NATIVE_OPERATION_METADATA_KEY] {
+            assert!(
+                status.metadata().get(key).is_none(),
+                "{key} must not cross the Flight boundary for internal errors"
+            );
+        }
+    }
+
+    #[test]
+    fn masked_failure_kinds_point_at_get_query_stats_without_raw_facts() {
+        assert!(MASKED_INTERNAL_ERROR_MESSAGE.contains("GetQueryStats"), "{MASKED_INTERNAL_ERROR_MESSAGE}");
+        assert!(MASKED_INTERNAL_ERROR_MESSAGE.contains("x-algeon-query-id"), "{MASKED_INTERNAL_ERROR_MESSAGE}");
+        for code in [
+            ErrorCode::Internal,
+            ErrorCode::InvalidChildCount,
+            ErrorCode::SourceDependencyFailure,
+            ErrorCode::CudfDependencyFailure,
+            ErrorCode::CudfPersistentFailure,
+            ErrorCode::CudfTemporaryFailure,
+            ErrorCode::CudfInvariantViolation,
+            ErrorCode::InternalInvariantViolation,
+            ErrorCode::DeviceFault,
+            ErrorCode::CleanupFailed,
+            ErrorCode::ServerTransportFailure,
+        ] {
+            assert!(
+                matches!(
+                    code.kind(),
+                    ErrorKind::Execution
+                        | ErrorKind::DependencyFailure
+                        | ErrorKind::InvariantViolation
+                        | ErrorKind::Internal
+                ),
+                "{code}"
+            );
+            let status = adapter_error_to_status(
+                &Error::new(code, TEST_OPERATION, "raw text")
+                    .with_fact("literal", "customer-secret")
+                    .with_fact("native_message", "raw native text"),
+            );
+            assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE, "{code}");
+        }
+    }
+
+    #[test]
+    fn configuration_errors_use_the_configuration_code_at_every_server_layer() {
+        let field =
+            ServerError::invalid_config("admission.device_profiles.memory_limit_bytes", "must be greater than zero");
+        let configuration = ServerError::configuration("auth user `username` must be non-empty");
+        let builder = ServerError::builder_validation("server_config_required", "server config is required");
+        for error in [&field, &configuration, &builder] {
+            assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
+            assert_eq!(error.kind(), ErrorKind::InvalidInput);
+            assert_eq!(error.status(), ErrorStatus::Permanent);
+        }
+
+        let status = adapter_error_to_status(field.as_adapter_error());
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_error_metadata(&status, "invalid_configuration", "invalid_input", "permanent");
+        assert_eq!(
+            status.message(),
+            "invalid server configuration: admission.device_profiles.memory_limit_bytes must be greater than zero"
+        );
+    }
+
     #[test]
     fn queue_overload_remains_the_only_resource_message_that_suggests_a_retry() {
         let status = datafusion_error_to_status_for_operation(
@@ -1433,7 +1700,7 @@ mod tests {
 
         assert_eq!(status.code(), Code::Internal);
         assert_error_metadata(&status, "server_transport_failure", "dependency_failure", "permanent");
-        assert_eq!(status.message(), "internal server error while processing the request");
+        assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
         assert_no_diagnostic_fields(status.message());
     }
 
@@ -1786,8 +2053,7 @@ mod tests {
             CapabilityReason::UnsupportedType,
             NotSupportedDetail {
                 column: Some(UnsupportedColumnDetail::new(COLUMN, COLUMN_TYPE, "projected")),
-                expression: None,
-                admission: None,
+                ..NotSupportedDetail::default()
             },
         );
         let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
@@ -1807,6 +2073,68 @@ mod tests {
             status.message(),
             format!("GPU execution does not support projected column `{COLUMN}` with Arrow type `{COLUMN_TYPE}`")
         );
+    }
+
+    /// The final-plan requirement error of a query that casts a Float64 column
+    /// to text, which has no native conversion, lowered through the production
+    /// path.
+    fn unsupported_cast_requirement_error(column: &str) -> Error {
+        let schema = Arc::new(Schema::new(vec![Field::new(column, DataType::Float64, false)]));
+        let batch = RecordBatch::new_empty(Arc::clone(&schema));
+        let source = MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None).unwrap();
+        let scan: Arc<dyn ExecutionPlan> = DataSourceExec::from_data_source(source);
+        let cast: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(col(column, &schema).unwrap(), DataType::Utf8, None));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(ProjectionExec::try_new(vec![(cast, "label".to_string())], scan).unwrap());
+        let lowering = lower_physical_plan_to_native(Arc::clone(&plan), &ParquetReadStrategyConfig::default()).unwrap();
+        native::final_plan_requirement_error(plan.as_ref(), FinalPlanDisposition::DataFusion, Some(&lowering.report))
+    }
+
+    #[test]
+    fn blocking_subject_projections_distinguish_message_metadata_logs_and_stats() {
+        let ascii = unsupported_cast_requirement_error("buys");
+        let subject = "cast from Float64 to Utf8 in `CAST(buys AS Utf8)`";
+        assert!(!ascii.message().contains("buys"), "{}", ascii.message());
+        assert_eq!(ascii.fact_value("blocking_kind"), Some("cast"));
+        let logs = ascii.facts().log_safe_projection().rendered().unwrap_or_default();
+        assert!(logs.contains("blocking_kind=cast"), "{logs}");
+        assert!(logs.contains("reason=unsupported_type"), "{logs}");
+        assert!(!logs.contains("buys"), "{logs}");
+
+        let (status, status_logs) = with_captured_logs(|| adapter_error_to_status(&ascii));
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(
+            status.message(),
+            format!("GPU execution does not support {subject}; EXPLAIN GPU lists every blocking candidate")
+        );
+        assert_metadata_value(&status, BLOCKING_KIND_METADATA_KEY, "cast");
+        assert_metadata_value(&status, BLOCKING_SUBJECT_METADATA_KEY, subject);
+        assert_metadata_value(&status, REASON_METADATA_KEY, "unsupported_type");
+        assert!(status.metadata().get(UNSUPPORTED_COLUMN_METADATA_KEY).is_none());
+        assert!(!status_logs.contains("buys"), "{status_logs}");
+        let captured = CapturedError::from_adapter_error(&ascii);
+        assert!(captured.facts.contains(&("blocking_kind".to_string(), "cast".to_string())));
+        assert!(captured.facts.contains(&("blocking_subject".to_string(), subject.to_string())));
+
+        // A non-ASCII identifier stays in the status message and query stats.
+        // The ASCII-only metadata omits the subject, keeps the kind, and says so.
+        let unicode = unsupported_cast_requirement_error("訂單金額");
+        let status = adapter_error_to_status(&unicode);
+        assert!(status.message().contains("CAST(訂單金額 AS Utf8)"), "{}", status.message());
+        assert_metadata_value(&status, BLOCKING_KIND_METADATA_KEY, "cast");
+        assert!(status.metadata().get(BLOCKING_SUBJECT_METADATA_KEY).is_none());
+        assert_metadata_value(&status, OMITTED_FACTS_METADATA_KEY, "blocking_subject");
+        let captured = CapturedError::from_adapter_error(&unicode);
+        assert!(
+            captured
+                .facts
+                .iter()
+                .any(|(key, value)| key == "blocking_subject" && value.contains("CAST(訂單金額 AS Utf8)")),
+            "{:?}",
+            captured.facts
+        );
+        let logs = unicode.facts().log_safe_projection().rendered().unwrap_or_default();
+        assert!(!logs.contains("訂單金額"), "{logs}");
     }
 
     #[test]
@@ -1897,7 +2225,7 @@ mod tests {
         );
 
         assert_eq!(status.code(), Code::Internal);
-        assert_eq!(status.message(), "internal server error while processing the request");
+        assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
         assert!(!status.message().contains("internal cuGraph scheduler state"));
         assert!(!status.message().contains("reason="));
         assert!(status.metadata().get(NATIVE_MESSAGE_METADATA_KEY).is_none());
@@ -1913,7 +2241,7 @@ mod tests {
             FailedStatement::Other,
         );
 
-        assert_eq!(internal.message(), "internal server error while processing the request");
+        assert_eq!(internal.message(), MASKED_INTERNAL_ERROR_MESSAGE);
         assert!(internal.metadata().get(NATIVE_MESSAGE_METADATA_KEY).is_none());
 
         let actionable = datafusion_error_to_status_for_operation(
@@ -1942,7 +2270,7 @@ mod tests {
         );
 
         assert_eq!(status.code(), Code::Internal);
-        assert_eq!(status.message(), "internal server error while processing the request");
+        assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
         assert!(!status.message().contains("reason="));
     }
 

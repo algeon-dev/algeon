@@ -48,7 +48,7 @@ impl JoinBuildSideSelectionOptions {
 fn validate_nonzero_join_build_side_option(field: &'static str, value: u64) -> Result<()> {
     if value == 0 {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.join_build_side_selection_options.validate",
             "join build-side selection option must be greater than zero",
         )

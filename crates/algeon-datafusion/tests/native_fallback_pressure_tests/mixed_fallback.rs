@@ -256,6 +256,16 @@ async fn fragment_that_breaks_a_co_partitioned_join_is_abandoned_for_fragments_b
         "{:?}",
         diagnostics.report.outcomes()
     );
+    for abandoned in [1, 3] {
+        let CandidateOutcome::NotSupported { detail, .. } = &diagnostics.report.outcomes()[abandoned] else {
+            unreachable!("outcome {abandoned} is not supported");
+        };
+        let blocking = detail.blocking().expect("an abandoned fragment names the operator that refused it");
+        assert_eq!(
+            (blocking.kind(), blocking.text()),
+            ("parent_operator", "a native fragment below operator HashJoinExec")
+        );
+    }
     let mut join = below_native_admission(&plan);
     while join.name() != "HashJoinExec" {
         join = join.children()[0];

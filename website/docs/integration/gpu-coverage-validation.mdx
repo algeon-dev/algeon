@@ -30,6 +30,7 @@ SELECT row_kind,
        remedy_code,
        remedy_kind,
        remedy,
+       blocking,
        coverage_json
 FROM algeon_explain_coverage('SELECT l_returnflag, sum(l_quantity)
                              FROM lineitem GROUP BY l_returnflag');
@@ -63,13 +64,44 @@ the same Arrow schema. When planning produces no executable plan, the summary
 | `physical_root`, `post_native_plan_root` | Summary-row physical-plan roots. `physical_root` is the authoritative pre-native root captured by the retained optimizer diagnostics (null when no native optimizer diagnostic exists); `post_native_plan_root` is the completed executable plan's root. |
 | `candidate_shape`, `candidate_family`, `outcome` | Candidate-row shape, stable shape family, and selection (`selected`, `not_supported`, or `not_selected_by_cost`). The summary outcome is `accepted_replaced`, `retained_datafusion`, or `rejected_before_execution`. |
 | `reason_code`, `unsupported_category` | Stable candidate or terminal-rejection reason and its triage category. |
-| `remedy_code`, `remedy_kind`, `remedy` | Stable actionable advice for a non-selected candidate. Kinds include `user_action`, `config_action`, `engine_gap`, `cudf_rs_gap`, and `cpu_preferred`. |
-| `detail_json` | Summary metadata or candidate detail and cost evidence. |
+| `remedy_code`, `remedy_kind`, `remedy` | Stable actionable advice for a non-selected candidate. The kinds are `user_action`, `config_action`, `engine_gap`, and `cpu_preferred`. |
+| `blocking` | One line naming what blocked a `not_supported` candidate, such as ``cast from Int64 to Int32 in `CAST(buys AS INT)` ``; null when the producing site could not name it. |
+| `detail_json` | Summary metadata or candidate detail, its structured `blocking` subject, and cost evidence. |
 | `coverage_json` | The complete structured result on the summary row; null on candidate rows. |
 
 Validation accepts exactly one query statement. Empty input, multiple
 statements, non-query statements, and direct or view-indirect recursive calls
 to `algeon_explain_coverage` return a structured terminal result.
+
+## What blocked a candidate
+
+`reason_code` says which contract a candidate missed. The `blocking` column and
+the `blocking` object in `detail_json` and in each `coverage_json` candidate
+outcome say which part of the query missed it. The object has a stable `kind`,
+the one-line `text`, and structured fields for that kind:
+
+| `kind` | Names | Fields |
+| --- | --- | --- |
+| `operator` | A physical operator with no native counterpart, such as `ScalarSubqueryExec`. | `operator` |
+| `parent_operator` | A DataFusion operator that keeps a contract the native fragment below it would change. | `operator` |
+| `aggregate_function` | An aggregate function and what is unsupported about its use: the function itself, `DISTINCT`, `ORDER BY`, a `FILTER` that differs between stages, an argument count, a partial stage, grouping sets, or a partitioned input. | `function`, `defect` |
+| `distributed_aggregate` | Partial and final aggregate stages that differ in group keys, state fields, or output type. | `difference` |
+| `window_function` | A window function and what is unsupported about its use: the function, a missing `ORDER BY`, a frame, or a non-constant offset or default. | `function`, `defect`, `frame` |
+| `scalar_function` | A scalar function with no native kernel. | `function`, `expression` |
+| `cast` | A `CAST` or `TRY_CAST` between types with no native conversion. | `source_type`, `target_type`, `expression` |
+| `binary_operator` | A binary operator over operand types it does not support natively, such as `%` on decimals. | `operator`, `left_type`, `right_type`, `expression` |
+| `unary_operator` | A unary operator over an operand type it does not support. | `operator`, `operand_type`, `expression` |
+| `literal` | A literal of a type with no native form. | `data_type`, `expression` |
+| `expression` | An expression the contract rejected, with the type it produced where that is the cause, or an expression the contract could not narrow further. | `expression`, `data_type` |
+| `column_type` | A column whose Arrow type is not native. | `column`, `data_type`, `role` |
+| `ordering` | An ordering the native plan cannot reproduce: the declared output ordering, or the input ordering a window needs. | `required_by`, `ordering` |
+| `compiled_contract` | A rule of the compiled pipeline or plan validation contract, when no operator or expression is the cause. | `reason`, `boundary` |
+
+`expression` holds the rejected expression in SQL form without column indexes,
+cut at 160 characters. The text and the type names can quote the query's own
+SQL and identifiers, so [error boundaries](./handling-errors.mdx#strict-unsupported-rejection)
+keep them out of operational logs. `EXPLAIN GPU` returns them to the session
+that ran the statement.
 
 ## Final disposition and GPU path
 
@@ -116,6 +148,26 @@ covers the executable path. Conversely, a `not_supported` or
 `not_selected_by_cost` outcome keeps that candidate's operators on DataFusion in
 an executable plan, not a rejected result. Candidate outcomes explain selection; final-plan domains
 describe the completed executable plan.
+
+## Remedies for plan shapes
+
+Three plan-shape reasons exist only because DataFusion planned the query for
+several partitions: `native_sort_preserving_merge_unsupported`,
+`native_distributed_aggregate_unsupported`, and
+`native_local_limit_partition_unsupported`. Their remedy is the `config_action`
+`set_target_partitions_one`. After `SET datafusion.execution.target_partitions = 1`
+DataFusion plans one sort, a single-stage aggregate, and a limit over one
+partition, all of which lower natively. The Flight SQL server already sets one
+partition under the `native_required` execution mode.
+`native_exact_statistical_input_partitioned` carries the `config_action`
+`use_tolerant_statistical_mode`, which names the
+[`statistical_aggregate_execution_mode`](./configuration.mdx#native-settings)
+setting. `native_partition_preserving_sort_unsupported`,
+`native_fragment_parent_contract_unsupported`, and
+`native_ordered_output_unsupported` carry an `engine_gap` remedy that names the
+DataFusion operator shape native lowering cannot reproduce. The two
+compiled-contract reasons carry an `engine_gap` remedy that points at the
+blocking subject and the capability decision rows.
 
 ## Validation uses the caller's real planning contract
 
@@ -166,6 +218,9 @@ match &coverage.planning_outcome {
                 );
                 if let Some(remedy) = outcome.remedy {
                     eprintln!("{} {}: {}", remedy.code, remedy.kind.as_str(), remedy.guidance);
+                }
+                if let Some(blocking) = &outcome.blocking {
+                    eprintln!("blocked by {}: {}", blocking.kind(), blocking.text());
                 }
             }
         }

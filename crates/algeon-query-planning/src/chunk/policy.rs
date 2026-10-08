@@ -88,7 +88,7 @@ fn validate_source_chunk_planning_nonzero_u64(field: &'static str, value: u64) -
 
 fn source_chunk_planning_zero_error(field: &'static str, value: impl std::fmt::Display) -> QueryError {
     QueryError::new(
-        QueryErrorCode::InvalidPlan,
+        QueryErrorCode::InvalidConfiguration,
         "query_engine.source_chunk_planning_options.validate",
         "source chunk planning option must be greater than zero",
     )

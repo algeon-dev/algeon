@@ -255,7 +255,7 @@ fn source_scheduler_policy_defaults_to_prefetch_and_rejects_zero_in_flight() {
     assert!(!serialized.enables_prefetch());
 
     let error = SourceSchedulerPolicy::new(0).validate().unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.operation(), "query_engine.source_scheduler_policy.validate");
     assert_eq!(error.fact_value("field"), Some("max_source_reads_in_flight"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
@@ -317,7 +317,7 @@ fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initializati
     ] {
         let error = policy.validate().unwrap_err();
 
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan, "{field}");
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration, "{field}");
         assert_eq!(error.operation(), "query_engine.memory_policy.validate", "{field}");
         assert_eq!(error.fact_value("policy"), Some("bounded"), "{field}");
         assert_eq!(error.fact_value("field"), Some(field), "{field}");

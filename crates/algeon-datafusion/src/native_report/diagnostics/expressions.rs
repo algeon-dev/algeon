@@ -1,6 +1,7 @@
 use arrow::datatypes::DataType;
+use cudf::interop::arrow_host::is_supported_arrow_type;
 
-use super::{is_supported_arrow_type, stable_identifier};
+use super::stable_identifier;
 use crate::native::{ExpressionCapability, ExpressionRejection, ExpressionRejectionKind, ExpressionRejectionSubject};
 
 /// Projects the stable unsupported category for a rejection raised by the

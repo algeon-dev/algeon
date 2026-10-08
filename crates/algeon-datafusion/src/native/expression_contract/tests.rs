@@ -357,8 +357,10 @@ fn a_long_chain_of_fallible_when_conditions_stays_on_datafusion_instead_of_growi
 
     let long_chain = case_of_dividing_conditions(16);
     validate_physical_expr_contract(&long_chain, &schema).expect("the contract admits the shape");
-    let reason = lower_physical_expr_for_test(&long_chain, &schema).unwrap_err().reason();
+    let (reason, detail) = lower_physical_expr_for_test(&long_chain, &schema).unwrap_err().into_detail(None);
     assert_eq!(reason, CapabilityReason::UnsupportedExpression);
+    let blocking = detail.blocking().expect("the rejection names the division");
+    assert_eq!(blocking.kind(), "binary_operator");
 }
 
 fn right_operand(expr: &NativeExpr) -> &NativeExpr {
@@ -504,8 +506,10 @@ fn a_long_chain_of_fallible_and_conditions_stays_on_datafusion_instead_of_growin
 
     let long_chain = conjunction_of_guarded_quotients(16);
     validate_physical_expr_contract(&long_chain, &schema).expect("the contract admits the shape");
-    let reason = lower_physical_expr_for_test(&long_chain, &schema).unwrap_err().reason();
+    let (reason, detail) = lower_physical_expr_for_test(&long_chain, &schema).unwrap_err().into_detail(None);
     assert_eq!(reason, CapabilityReason::UnsupportedExpression);
+    let blocking = detail.blocking().expect("the rejection names the division");
+    assert_eq!(blocking.kind(), "binary_operator");
 }
 
 #[test]

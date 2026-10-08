@@ -7,8 +7,7 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
-    let native_info =
-        client.execute("EXPLAIN GPU SELECT x FROM (VALUES (1)) AS t(x)".to_string(), None).await.unwrap();
+    let native_info = client.execute("EXPLAIN GPU SELECT x FROM (VALUES (1)) AS t(x)".to_string(), None).await.unwrap();
     let (native_schema, native_batches) = execute_flight_info_with_stream_schema(&mut client, native_info).await;
     let native_batch = &native_batches[0];
     let native_query_id = native_batch
@@ -69,6 +68,7 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
         "remedy_code",
         "remedy_kind",
         "remedy",
+        "blocking",
         "detail_json",
         "coverage_json",
     ];
@@ -93,11 +93,17 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
         .expect("random() must produce an unsupported-expression candidate row");
     assert_eq!(remedy_code.value(candidate), "rewrite_expression");
     assert_eq!(remedy_kind.value(candidate), "user_action");
+    let blocking =
+        batch.column(batch.schema().index_of("blocking").unwrap()).as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!(blocking.value(candidate), "scalar function random in `random()`");
+    assert!(blocking.is_null(0), "the summary row names no blocking subject");
 
     // The two SQL surfaces intentionally share validation evidence and the
     // row projection. Their only per-surface value is Flight's query id.
-    let udtf_info =
-        client.execute("SELECT * FROM algeon_explain_coverage('SELECT random() AS r')".to_string(), None).await.unwrap();
+    let udtf_info = client
+        .execute("SELECT * FROM algeon_explain_coverage('SELECT random() AS r')".to_string(), None)
+        .await
+        .unwrap();
     let (udtf_schema, udtf_batches) = execute_flight_info_with_stream_schema(&mut client, udtf_info).await;
     assert_eq!(udtf_schema, advertised_schema);
     assert_eq!(udtf_batches.len(), 1);

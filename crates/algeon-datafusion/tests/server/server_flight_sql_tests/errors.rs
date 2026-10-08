@@ -222,3 +222,31 @@ async fn missing_column_errors_are_invalid_input_with_structured_code() {
     assert!(status.message().contains("one"), "valid field absent from message: {}", status.message());
     assert_no_diagnostic_fields(status.message());
 }
+
+#[test]
+fn server_startup_rejects_a_device_memory_limit_above_owned_memory_with_the_figures() {
+    let mut config = test_server_config();
+    declare_test_gpu_ownership(&mut config);
+    let limit_bytes: u64 = 1 << 50;
+    config.gpu_device_profiles[0] = config.gpu_device_profiles[0]
+        .clone()
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes })
+        .with_backend_reserve_bytes(0);
+    let probe = AlgeonGpuBackend::probe_device_capacity(0, GpuMemoryOwnership::WholeDeviceExclusive, 0)
+        .expect("GPU lane provides device 0 for capacity probing");
+
+    let error = backend_from_server_config(&config).expect_err("an unowned capacity must fail startup");
+
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
+    assert_eq!(error.fact_value("reason"), Some("explicit_capacity_exceeds_owned_capacity"));
+    let message = error.message();
+    assert!(message.starts_with("invalid server configuration: "), "{message}");
+    assert!(message.contains(&format!("memory_limit_bytes is {}", bytes_with_gib(limit_bytes))), "{message}");
+    assert!(
+        message.contains(&format!(
+            "the largest accepted memory_limit_bytes is {}",
+            bytes_with_gib(probe.max_declarable_limit_bytes)
+        )),
+        "{message}"
+    );
+}

@@ -13,7 +13,7 @@ use datafusion::{
     physical_expr::{
         PhysicalExpr,
         expressions::{Column, Literal},
-        window::{PlainAggregateWindowExpr, StandardWindowExpr, WindowExpr},
+        window::{PlainAggregateWindowExpr, SlidingAggregateWindowExpr, StandardWindowExpr, WindowExpr},
     },
     physical_plan::windows::WindowUDFExpr,
 };
@@ -40,13 +40,20 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringFailure, ParquetReadStrategyConfig,
+        ExpressionRejection, LoweringFailure, LoweringRejection, ParquetReadStrategyConfig,
         expression_contract::validate_physical_expr_contract,
         literal::{NativeLiteralContext, native_literal_value},
         normalize::{NormalizedNativeInput, NormalizedNativeSort, NormalizedNativeWindow},
-        validate::{validate_schema, validate_sort_ordering},
+        validate::{aggregate_blocked, validate_schema, validate_sort_ordering},
     },
+    report::{AggregateDefect, PlanBlocker, WindowDefect},
 };
+
+/// A rejection of `reason` that names the window function `function` and what
+/// is unsupported about its use.
+fn window_blocked(reason: CapabilityReason, function: &str, defect: WindowDefect) -> LoweringFailure {
+    LoweringRejection::blocked_by(reason, PlanBlocker::Window { function: function.to_string(), defect }).into()
+}
 
 pub(super) fn lower_sort_input(
     sort: &NormalizedNativeSort<'_>,
@@ -153,32 +160,35 @@ fn validate_window_exprs(
     }
     for window_expr in window_exprs {
         for expr in window_expr.partition_by() {
-            validate_window_key_expr(expr, input_schema)?;
+            validate_window_value_expr(expr, input_schema)?;
         }
         for sort_expr in window_expr.order_by() {
-            validate_window_key_expr(&sort_expr.expr, input_schema)?;
+            validate_window_value_expr(&sort_expr.expr, input_schema)?;
         }
         if let Some(plain) = window_expr.as_any().downcast_ref::<PlainAggregateWindowExpr>() {
             validate_plain_aggregate_window(plain, input_schema)?;
         } else if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
             validate_standard_window(standard, input_schema)?;
         } else {
-            return Err(CapabilityReason::UnsupportedOperator.into());
+            return Err(unsupported_window_expr(window_expr));
         }
     }
     Ok(())
 }
 
-fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), LoweringFailure> {
-    validate_physical_expr_contract(expr, input_schema)?;
-    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
-    if is_supported_arrow_type(&data_type)
-        && !is_timestamp_with_timezone(&data_type)
-        && !is_supported_list_carry_type(&data_type)
-    {
-        Ok(())
-    } else {
-        Err(CapabilityReason::UnsupportedType.into())
+/// The rejection for a window expression that is neither a plain aggregate nor
+/// a standard function. A sliding aggregate window is the one DataFusion plans
+/// for a bounded frame.
+fn unsupported_window_expr(window_expr: &Arc<dyn WindowExpr>) -> LoweringFailure {
+    match window_expr.as_any().downcast_ref::<SlidingAggregateWindowExpr>() {
+        Some(sliding) => window_blocked(
+            CapabilityReason::UnsupportedOperator,
+            sliding.get_aggregate_expr().fun().name(),
+            WindowDefect::UnsupportedFrame(Box::new(WindowFrame::clone(sliding.get_window_frame()))),
+        ),
+        None => {
+            window_blocked(CapabilityReason::UnsupportedOperator, window_expr.name(), WindowDefect::UnsupportedFunction)
+        },
     }
 }
 
@@ -186,27 +196,52 @@ fn validate_plain_aggregate_window(
     plain: &PlainAggregateWindowExpr,
     input_schema: &SchemaRef,
 ) -> Result<(), LoweringFailure> {
-    let whole_partition = is_whole_partition_frame(plain.get_window_frame());
-    let cumulative = is_rows_unbounded_preceding_to_current_frame(plain.get_window_frame());
+    let aggregate = plain.get_aggregate_expr();
+    let function = aggregate.fun().name();
+    let frame = plain.get_window_frame();
+    let whole_partition = is_whole_partition_frame(frame);
+    let cumulative = is_rows_unbounded_preceding_to_current_frame(frame);
+    let unsupported_frame = || {
+        window_blocked(
+            CapabilityReason::UnsupportedOperator,
+            function,
+            WindowDefect::UnsupportedFrame(Box::new(WindowFrame::clone(frame))),
+        )
+    };
     if !whole_partition && !cumulative {
-        return Err(CapabilityReason::UnsupportedOperator.into());
+        return Err(unsupported_frame());
     }
     if !plain.order_by().is_empty() && !cumulative {
-        return Err(CapabilityReason::UnsupportedOperator.into());
+        return Err(unsupported_frame());
     }
     if plain.order_by().is_empty() && !whole_partition {
-        return Err(CapabilityReason::UnsupportedOperator.into());
+        return Err(unsupported_frame());
     }
-    let aggregate = plain.get_aggregate_expr();
-    if aggregate.is_distinct() || !aggregate.order_bys().is_empty() {
-        return Err(CapabilityReason::UnsupportedOperator.into());
+    if aggregate.is_distinct() {
+        return Err(
+            aggregate_blocked(CapabilityReason::UnsupportedOperator, function, AggregateDefect::Distinct).into()
+        );
+    }
+    if !aggregate.order_bys().is_empty() {
+        return Err(aggregate_blocked(CapabilityReason::UnsupportedOperator, function, AggregateDefect::OrderBy).into());
     }
     lower_native_aggregate_function(aggregate.fun())?;
     let expressions = aggregate.expressions();
     let [arg] = expressions.as_slice() else {
-        return Err(CapabilityReason::UnsupportedExpression.into());
+        return Err(aggregate_blocked(
+            CapabilityReason::UnsupportedExpression,
+            function,
+            AggregateDefect::ArgumentCount(expressions.len()),
+        )
+        .into());
     };
     validate_window_value_expr(arg, input_schema)
+}
+
+/// The SQL function name of a standard window function, such as `rank`.
+fn standard_function_name(standard: &StandardWindowExpr) -> &str {
+    let function = standard.get_standard_func_expr();
+    function.as_any().downcast_ref::<WindowUDFExpr>().map_or_else(|| function.name(), |expr| expr.fun().name())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,12 +253,20 @@ enum StandardWindowKind {
 }
 
 fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<(), LoweringFailure> {
-    match standard_window_kind(standard)? {
-        StandardWindowKind::Rank if standard.order_by().is_empty() => Err(CapabilityReason::UnsupportedOperator.into()),
+    let kind = standard_window_kind(standard)?;
+    let missing_order_by = || {
+        window_blocked(
+            CapabilityReason::UnsupportedOperator,
+            standard_function_name(standard),
+            WindowDefect::MissingOrderBy,
+        )
+    };
+    match kind {
+        StandardWindowKind::Rank if standard.order_by().is_empty() => Err(missing_order_by()),
         StandardWindowKind::Rank | StandardWindowKind::RowNumber => Ok(()),
         StandardWindowKind::Lag | StandardWindowKind::Lead => {
             if standard.order_by().is_empty() {
-                return Err(CapabilityReason::UnsupportedOperator.into());
+                return Err(missing_order_by());
             }
             // Parsing the offset / default literals here keeps validation
             // and lowering in sync. We do not commit a fallback reason for
@@ -236,11 +279,13 @@ fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &Schema
 }
 
 fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowKind, LoweringFailure> {
+    let unsupported_function =
+        |name: &str| window_blocked(CapabilityReason::UnsupportedOperator, name, WindowDefect::UnsupportedFunction);
     let udf = standard
         .get_standard_func_expr()
         .as_any()
         .downcast_ref::<WindowUDFExpr>()
-        .ok_or(CapabilityReason::UnsupportedOperator)?;
+        .ok_or_else(|| unsupported_function(standard_function_name(standard)))?;
     let implementation = udf.fun().inner().as_ref() as &dyn Any;
     // `dense_rank()` and `percent_rank()` are the same `Rank` type with a
     // private rank kind; only `rank()` has a native kernel.
@@ -254,7 +299,7 @@ fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowK
             WindowShiftKind::Lead => Ok(StandardWindowKind::Lead),
         }
     } else {
-        Err(CapabilityReason::UnsupportedOperator.into())
+        Err(unsupported_function(udf.fun().name()))
     }
 }
 
@@ -279,14 +324,23 @@ fn parse_lag_lead_args(
     standard: &StandardWindowExpr,
     input_schema: &SchemaRef,
 ) -> Result<LagLeadArgs, LoweringFailure> {
-    let udf = standard
-        .get_standard_func_expr()
-        .as_any()
-        .downcast_ref::<WindowUDFExpr>()
-        .ok_or(CapabilityReason::UnsupportedOperator)?;
+    let udf = standard.get_standard_func_expr().as_any().downcast_ref::<WindowUDFExpr>().ok_or_else(|| {
+        window_blocked(
+            CapabilityReason::UnsupportedOperator,
+            standard_function_name(standard),
+            WindowDefect::UnsupportedFunction,
+        )
+    })?;
+    let function = udf.fun().name();
+    let non_constant_arguments = |failure: LoweringFailure| {
+        failure.blocked_by_if_unnamed(|| PlanBlocker::Window {
+            function: function.to_string(),
+            defect: WindowDefect::Arguments,
+        })
+    };
     let args = udf.args();
     if args.is_empty() || args.len() > 3 {
-        return Err(CapabilityReason::UnsupportedExpression.into());
+        return Err(window_blocked(CapabilityReason::UnsupportedExpression, function, WindowDefect::Arguments));
     }
     let value_expr = Arc::clone(&args[0]);
     validate_physical_expr_contract(&value_expr, input_schema)?;
@@ -296,15 +350,15 @@ fn parse_lag_lead_args(
         || is_timestamp_with_timezone(&value_type)
         || is_supported_list_carry_type(&value_type)
     {
-        return Err(CapabilityReason::UnsupportedType.into());
+        return Err(ExpressionRejection::unsupported_value_type(&value_expr, value_type).into());
     }
     let offset = match args.get(1) {
         None => 1u32,
-        Some(expr) => parse_lag_lead_offset(expr)?,
+        Some(expr) => parse_lag_lead_offset(expr).map_err(non_constant_arguments)?,
     };
     let default = match args.get(2) {
         None => None,
-        Some(expr) => parse_lag_lead_default(expr, &value_type)?,
+        Some(expr) => parse_lag_lead_default(expr, &value_type).map_err(non_constant_arguments)?,
     };
     Ok(LagLeadArgs { value_expr, offset, default })
 }
@@ -318,7 +372,7 @@ fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schem
     {
         Ok(())
     } else {
-        Err(CapabilityReason::UnsupportedType.into())
+        Err(ExpressionRejection::unsupported_value_type(expr, data_type).into())
     }
 }
 
@@ -673,7 +727,7 @@ fn lower_window_spec(
                 },
             }
         } else {
-            return Err(CapabilityReason::UnsupportedOperator.into());
+            return Err(unsupported_window_expr(window_expr));
         }
     }
 

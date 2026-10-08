@@ -68,10 +68,7 @@ async fn get_query_stats_returns_structured_error_after_planning_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_stats() {
     let (listener, addr) = free_local_addr();
-    let env = std::collections::BTreeMap::from([(
-        ALGEON_SERVER_EXECUTION_MODE_ENV,
-        "native_required".to_string(),
-    )]);
+    let env = std::collections::BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "native_required".to_string())]);
     let mut config = test_server_config_with_env(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
@@ -126,12 +123,46 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strict_flight_names_the_blocking_aggregate_function_in_status_metadata_and_stats() {
+    let (listener, addr) = free_local_addr();
+    let env = std::collections::BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "native_required".to_string())]);
+    let mut config = test_server_config_with_env(env);
+    declare_test_gpu_ownership(&mut config);
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let flight_info = client
+        .execute("SELECT APPROX_PERCENTILE_CONT(x, 0.5) AS p FROM (VALUES (1.0), (2.0)) AS t(x)".to_string(), None)
+        .await
+        .unwrap();
+    let query_id = query_id_from_statement_flight_info(&flight_info);
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let status = unwrap_flight_status(client.do_get(ticket).await.unwrap_err());
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_eq!(
+        status.message(),
+        "GPU execution does not support aggregate function approx_percentile_cont; EXPLAIN GPU lists every blocking candidate"
+    );
+    let metadata = |key| status.metadata().get(key).and_then(|value| value.to_str().ok());
+    assert_eq!(metadata(BLOCKING_KIND_METADATA_KEY), Some("aggregate_function"));
+    assert_eq!(metadata(BLOCKING_SUBJECT_METADATA_KEY), Some("aggregate function approx_percentile_cont"));
+    assert_eq!(metadata(REASON_METADATA_KEY), Some("unsupported_operator"));
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+
+    server.abort();
+
+    assert!(payload.contains("code=final_plan_requirement_unsatisfied\n"), "{payload}");
+    assert!(payload.contains("fact.reason=unsupported_operator\n"), "{payload}");
+    assert!(payload.contains("fact.blocking_kind=aggregate_function\n"), "{payload}");
+    assert!(payload.contains("fact.blocking_subject=aggregate function approx_percentile_cont\n"), "{payload}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn strict_flight_executes_basic_list_limit_natively() {
     let (listener, addr) = free_local_addr();
-    let env = std::collections::BTreeMap::from([(
-        ALGEON_SERVER_EXECUTION_MODE_ENV,
-        "native_required".to_string(),
-    )]);
+    let env = std::collections::BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "native_required".to_string())]);
     let mut config = test_server_config_with_env(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
@@ -252,7 +283,11 @@ async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
     let (planning_header, planning_row) = query_stats_tsv_single_row(&payload, "planning");
     assert_eq!(tsv_value(&planning_header, &planning_row, "outcome"), "not_supported", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "reason_code"), "unsupported_expression", "{payload}");
-    assert_eq!(tsv_value(&planning_header, &planning_row, "unsupported_category"), "expression", "{payload}");
+    assert_eq!(
+        tsv_value(&planning_header, &planning_row, "unsupported_category"),
+        "expression_scalar_function_sin",
+        "{payload}"
+    );
     assert_eq!(tsv_value(&planning_header, &planning_row, "post_native_execution_path"), "datafusion", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "native_plan_fragment_count"), "0", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "host_datafusion_boundary_count"), "0", "{payload}");
@@ -299,10 +334,7 @@ async fn get_query_stats_returns_transaction_structured_error() {
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
-    let error = client
-        .execute("select 1 as one".to_string(), Some(Bytes::from_static(b"txn")))
-        .await
-        .unwrap_err();
+    let error = client.execute("select 1 as one".to_string(), Some(Bytes::from_static(b"txn"))).await.unwrap_err();
     let status = unwrap_flight_status(error);
     assert_eq!(status.code(), Code::Unimplemented);
     let query_id = query_id_from_status(&status);

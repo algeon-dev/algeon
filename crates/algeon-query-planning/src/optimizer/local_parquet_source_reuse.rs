@@ -53,7 +53,7 @@ impl LocalParquetSourceReuseOptions {
     pub fn validate(&self) -> Result<()> {
         if self.max_variant_selected_bytes == 0 {
             return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
+                QueryErrorCode::InvalidConfiguration,
                 "query_engine.local_parquet_source_reuse_options.validate",
                 "local Parquet source-reuse option must be greater than zero",
             )

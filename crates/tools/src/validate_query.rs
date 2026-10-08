@@ -148,11 +148,12 @@ fn print_human(coverage: &QueryGpuCoverage) {
 
 fn candidate_outcome_human_line(outcome: &QueryGpuCandidateOutcome) -> String {
     format!(
-        "candidate_outcome: outcome={} reason_code={} reason_kind={} category={} detail={}",
+        "candidate_outcome: outcome={} reason_code={} reason_kind={} category={} blocking={} detail={}",
         outcome.selection.as_str(),
         outcome.reason_code.as_deref().unwrap_or("absent"),
         outcome.reason_kind.map_or("absent", |kind| kind.as_str()),
         outcome.category.as_deref().unwrap_or("absent"),
+        outcome.blocking.as_ref().map_or("absent", |blocking| blocking.text()),
         outcome.detail
     )
 }
@@ -179,12 +180,13 @@ mod tests {
             detail: "ProjectionExec".to_string(),
             category: None,
             remedy: None,
+            blocking: None,
             cost_evidence: None,
         };
 
         assert_eq!(
             candidate_outcome_human_line(&outcome),
-            "candidate_outcome: outcome=selected reason_code=absent reason_kind=absent category=absent detail=ProjectionExec"
+            "candidate_outcome: outcome=selected reason_code=absent reason_kind=absent category=absent blocking=absent detail=ProjectionExec"
         );
 
         let unsupported = QueryGpuCandidateOutcome {
@@ -195,11 +197,12 @@ mod tests {
             detail: "ProjectionExec".to_string(),
             category: Some("expression".to_string()),
             remedy: None,
+            blocking: None,
             cost_evidence: None,
         };
         assert_eq!(
             candidate_outcome_human_line(&unsupported),
-            "candidate_outcome: outcome=not_supported reason_code=unsupported_expression reason_kind=expression category=expression detail=ProjectionExec"
+            "candidate_outcome: outcome=not_supported reason_code=unsupported_expression reason_kind=expression category=expression blocking=absent detail=ProjectionExec"
         );
     }
 

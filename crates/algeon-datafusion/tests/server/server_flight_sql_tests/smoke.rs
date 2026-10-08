@@ -144,7 +144,7 @@ async fn removed_unbounded_server_setting_is_rejected_during_config_load() {
         (name == "ALGEON_SERVER_NATIVE_MEMORY_POLICY").then(|| "unbounded".to_string())
     })
     .unwrap_err();
-    assert_eq!(error.code(), ErrorCode::InvalidRequest);
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
     assert_eq!(error.operation(), "algeon_datafusion.server.config");
     assert_eq!(error.fact_value("config_field"), Some("ALGEON_SERVER_NATIVE_MEMORY_POLICY"));
 }

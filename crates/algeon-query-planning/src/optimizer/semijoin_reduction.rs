@@ -42,7 +42,7 @@ impl SemijoinReductionOptions {
     pub fn validate(&self) -> Result<()> {
         if self.cost_threshold_multiplier == 0 {
             return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
+                QueryErrorCode::InvalidConfiguration,
                 "query_engine.semijoin_reduction_options.validate",
                 "semijoin-reduction option must be greater than zero",
             )

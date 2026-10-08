@@ -393,7 +393,7 @@ impl<T> Drop for AbortOnDropJoinHandle<T> {
 pub(super) fn validate_worker_count(device_ordinal: usize, worker_count: usize) -> Result<()> {
     if worker_count <= RESERVED_LIFECYCLE_WORKERS {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             BUILD_OPERATION,
             "GPU execution pool worker count must exceed its reserved lifecycle workers",
         )

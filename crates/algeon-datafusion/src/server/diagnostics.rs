@@ -4,7 +4,8 @@
 //! [`crate::server::report::PlanningReport`] for "why was this not native?". This module
 //! logs that evidence without adding a public reporting API:
 //!
-//!   selection counts plus the first unsupported-capability class.
+//!   selection counts plus the first unsupported-capability class and the kind
+//!   of what blocked it.
 //! - [`log_native_planning_report_for_tables`] also emits a warn line for
 //!   data-layout-fixable capability misses, with the referenced table list and reason.
 //! - [`FlightSqlNativeNotSupportedClass`], read from [`CapabilityReason::facts`], buckets
@@ -34,6 +35,7 @@ pub fn log_native_planning_report_for_tables(query_id: &str, report: Option<&Pla
         not_selected_count = report.not_selected_count(),
         native_rule_first_not_supported_context = first_not_supported.map(CapabilityReason::code).unwrap_or(""),
         not_supported_class = not_supported_class.map(FlightSqlNativeNotSupportedClass::as_str).unwrap_or(""),
+        native_rule_first_not_supported_blocking_kind = first_not_supported_blocking_kind(report).unwrap_or(""),
         "algeon-datafusion native planning report"
     );
 
@@ -80,6 +82,19 @@ fn first_not_supported_reason(report: &PlanningReport) -> Option<CapabilityReaso
         CandidateOutcome::NotSupported { capability_reason, .. } => Some(*capability_reason),
         CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
     })
+}
+
+/// The kind of what blocked the first unsupported candidate. Only the kind is
+/// logged, because the blocking text can quote the caller's SQL.
+fn first_not_supported_blocking_kind(report: &PlanningReport) -> Option<&'static str> {
+    report
+        .outcomes()
+        .iter()
+        .find_map(|outcome| match outcome {
+            CandidateOutcome::NotSupported { detail, .. } => Some(detail.blocking().map(|blocking| blocking.kind())),
+            CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
+        })
+        .flatten()
 }
 
 #[cfg(test)]

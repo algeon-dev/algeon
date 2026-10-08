@@ -104,6 +104,8 @@ mod full_gpu_gap_analysis;
 mod join_plan_builders;
 #[path = "lowering_tests/join_shapes.rs"]
 mod join_shapes;
+#[path = "lowering_tests/plan_shape_remedies.rs"]
+mod plan_shape_remedies;
 #[path = "lowering_tests/semijoin_reduction.rs"]
 mod semijoin_reduction;
 #[path = "lowering_tests/source_contracts.rs"]

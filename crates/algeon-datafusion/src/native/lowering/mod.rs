@@ -129,7 +129,8 @@ fn lower_native_input(
             join::lower_nested_loop_join_input(join, builder, fields, source_reads)
         },
         NormalizedNativeInput::Union(union) => union::lower_union_input(union, builder, fields, source_reads),
-    }?;
+    }
+    .map_err(|failure| failure.within_operator(|| input.shape().operator().to_string()))?;
     advisory::attach_input(builder, input, &output)?;
     Ok(output)
 }

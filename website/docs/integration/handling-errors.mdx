@@ -130,6 +130,16 @@ Create the error where the failed contract is known:
   cuGraph, or cuVS boundaries. Their mappings use enums and status, not message
   text.
 
+Configuration validation failures use `invalid_configuration` at both layers,
+never a plan code. The input is a service, backend, device, or server setting,
+so the code has kind `invalid_input` and status `permanent`. The runtime
+reports the setting name from the device profile (the same name as the TOML key
+under `[[admission.device_profiles]]`), the configured value, the limit it was
+checked against, and the largest accepted value where one exists. Byte values
+print as exact bytes followed by GiB truncated to two decimals, for example
+`102005473280 bytes (95.00 GiB)`. `invalid_plan` and `invalid_execution_plan`
+remain for malformed query plans and engine-internal consistency checks.
+
 Operations should be stable dotted identifiers. Messages explain the failure
 to a human. Facts carry machine-readable context needed for policy or
 diagnosis, and the source preserves the original cause. Do not create a second
@@ -220,10 +230,30 @@ errors receive a server-private classification for gRPC presentation, but that
 does not give them a public Algeon identity for embedded callers.
 
 The server maps cancellation, auth, not-found, invalid/planning, unsupported,
-and resource kinds to their matching gRPC codes. Execution, dependency,
-invariant, and internal failures use `INTERNAL`. Client messages are narrowed
-for source, dependency, invariant, and internal failures; logs and retained
-diagnostics keep the separate structured fields and bounded safe projection.
+and resource kinds to their matching gRPC codes. Configuration errors
+(`invalid_configuration`) have kind `invalid_input` and map to
+`INVALID_ARGUMENT`. Execution, dependency, invariant, and internal failures use
+`INTERNAL`. Client messages are narrowed for source, dependency, invariant, and
+internal failures; logs and retained diagnostics keep the separate structured
+fields and bounded safe projection.
+
+A narrowed `INTERNAL` message is static text. It states that the full
+diagnostic is available through the `GetQueryStats` action for the query id in
+the `x-algeon-query-id` metadata of the same status. The statement boundary
+adds that metadata to every failure of a registered statement: planning
+(`GetFlightInfo`), `DoGet`, `DoPut` updates, and the prepared statement
+actions. Metadata RPCs such as `GetCatalogs` register no query and carry no
+query id.
+
+A native memory failure names the operation and the memory facts the native
+layers recorded. For `query_memory_limit_exceeded`, `device_out_of_memory`, and
+`device_allocation_failed`, the message states the native operation, the
+requested bytes, the bytes already in use, and the query grant, each in bytes
+and GiB. The remedy follows: reduce what the failing operation holds by
+filtering or projecting earlier or by splitting the query, or raise the query
+memory cap. An unchanged resubmission fails again. A device allocation failure
+also points at the sealed attempt report for retry guidance. A figure the
+error does not carry is left out of the message.
 
 One code-specific exception: a non-converged native algorithm
 (`algorithm_did_not_converge`) returns `FAILED_PRECONDITION` with an
@@ -240,9 +270,16 @@ Every status created from an adapter `Error` includes these metadata fields:
 - `x-algeon-error-operation`
 
 The server also projects only `unsupported_column`, `unsupported_column_type`,
-`unsupported_column_role`, `predicate_role`, `reason`, `required_option`,
+`unsupported_column_role`, `blocking_kind`, `blocking_subject`,
+`predicate_role`, `reason`, `required_option`,
 `algorithm`, `iterations`, `max_iterations`, `epsilon`, and `native_message`
-when present. `native_message` is projected only for client-actionable
+when present. For the resource-exhausted kind it additionally projects
+`native_operation`, `budget_operation`, `requested_allocation_bytes`,
+`budget_bytes`, `budget_current_bytes`, and `budget_peak_bytes`. Each key is
+the fact name with `x-algeon-` prepended and underscores written as hyphens,
+for example `x-algeon-requested-allocation-bytes`. The operation values are
+code identifiers. The byte values are re-rendered from a parsed integer, so a
+fact that is not a number is omitted. `native_message` is projected only for client-actionable
 validation kinds (cancellation, not-found, permission, auth, planning,
 invalid-input, unsupported): internal, dependency, invariant, and execution
 failures never carry raw native text in metadata, however their status
@@ -259,7 +296,7 @@ non-ASCII schema details) are omitted and listed under
 `x-algeon-omitted-facts`; the full diagnosis stays available in the
 status message and query stats.
 
-### Strict unsupported-type rejection
+### Strict unsupported rejection
 
 With the `NoDataFusionCpu` final-plan requirement, an unsupported native column
 cannot remain on the executable DataFusion plan. The outer adapter error code
@@ -296,6 +333,28 @@ name is omitted from metadata and listed under
 without the wire encoding limits. The column name never enters operational
 logs or `Debug` output. Compare projections per surface (message, metadata,
 logs, query stats) rather than asserting four equal strings.
+
+When the first blocking candidate is not a column type, the status message
+names the plan element that blocked it, with the instruction to list every
+blocking candidate with `EXPLAIN GPU`:
+
+~~~text
+GPU execution does not support cast from Int64 to Int32 in `CAST(buys AS INT)`; EXPLAIN GPU lists every blocking candidate
+~~~
+
+The element is one of the kinds in
+[GPU coverage validation](./gpu-coverage-validation.mdx#what-blocked-a-candidate),
+and a site that cannot name one leaves the generic message. The status carries
+`x-algeon-blocking-kind` (a fixed vocabulary such as `cast`, `aggregate_function`,
+or `operator`, which is also a log-safe fact next to `reason`) and
+`x-algeon-blocking-subject` (the text above without the trailing instruction).
+Query stats retain them as `fact.blocking_kind` and `fact.blocking_subject`.
+The text quotes the caller's SQL and type names, so it follows the unsupported
+column disclosure model: it reaches the status message, the metadata, and query
+stats, never `Error::message()` or operational logs, and a non-ASCII text is
+omitted from metadata and listed under `x-algeon-omitted-facts`. A column type
+keeps its three `unsupported_column` fields, and `blocking_kind` is
+`column_type` for it.
 
 Protocol policy outside the built-in server belongs to the application. The
 embedded REST example intentionally maps typed errors before applying its

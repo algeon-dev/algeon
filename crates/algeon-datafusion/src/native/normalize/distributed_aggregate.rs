@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use arrow::datatypes::{DataType, FieldRef, SchemaRef};
 use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
-    physical_expr::expressions::Column,
+    physical_expr::{PhysicalExpr, expressions::Column},
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode},
@@ -11,7 +13,9 @@ use query_planning::expr::AggregateFunction as NativeAggregateFunction;
 
 use super::{NativePlanRejection, peel_repartition};
 use crate::{
-    capability::CapabilityReason, native::expression_contract::native_aggregate_function_kind, report::GpuCandidate,
+    capability::CapabilityReason,
+    native::expression_contract::native_aggregate_function_kind,
+    report::{AggregateDefect, GpuCandidate, PlanBlocker},
 };
 
 #[derive(Debug, Clone)]
@@ -39,13 +43,16 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
         });
     }
 
-    let partial =
-        peel_repartition(aggregate.input().as_ref()).downcast_ref::<AggregateExec>().ok_or(NativePlanRejection {
-            candidate: candidate.clone(),
-            reason: CapabilityReason::NativeDistributedAggregateUnsupported,
-        })?;
-    if !distributed_aggregate_pair_is_safe(aggregate, partial) {
-        return Err(NativePlanRejection { candidate, reason: CapabilityReason::NativeDistributedAggregateUnsupported });
+    let rejection = |candidate, blocker| NativePlanRejection {
+        candidate,
+        reason: CapabilityReason::NativeDistributedAggregateUnsupported,
+        blocker: Box::new(blocker),
+    };
+    let partial = peel_repartition(aggregate.input().as_ref()).downcast_ref::<AggregateExec>().ok_or_else(|| {
+        rejection(candidate.clone(), PlanBlocker::DistributedAggregate("the final stage has no partial stage below it"))
+    })?;
+    if let Some(blocker) = distributed_aggregate_pair_defect(aggregate, partial) {
+        return Err(rejection(candidate, blocker));
     }
 
     Ok(DistributedAggregatePeel {
@@ -56,30 +63,73 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
     })
 }
 
-fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
-    // Safety is structural: group columns must be the partial output columns,
-    // aggregate functions, distinctness, and state fields must match, and no
-    // order-by semantics may be hidden in the pair. Per-aggregate filters are
-    // carried by the partial aggregate, where input rows are still available.
-    matches!(partial_aggregate.mode(), AggregateMode::Partial)
-        && distributed_group_expr_layout_is_native_safe(final_aggregate, partial_aggregate)
-        && final_aggregate.group_expr().expr().len() == partial_group_output_count(partial_aggregate)
-        && final_aggregate.aggr_expr().len() == partial_aggregate.aggr_expr().len()
-        && distributed_aggregate_filters_are_native_safe(final_aggregate, partial_aggregate)
-        && distributed_group_exprs_are_native_safe(final_aggregate, partial_aggregate)
-        && final_aggregate.aggr_expr().iter().zip(partial_aggregate.aggr_expr()).all(|(final_expr, partial_expr)| {
-            let kind = native_aggregate_function_kind(final_expr.fun());
-            matches!(
-                (kind, native_aggregate_function_kind(partial_expr.fun())),
-                (Some(final_kind), Some(partial_kind)) if final_kind == partial_kind
-            ) && distributed_aggregate_function_is_native_safe(kind)
-                && distributed_final_output_is_native_safe(final_aggregate, final_expr.name(), kind)
-                && final_expr.is_distinct() == partial_expr.is_distinct()
-                && (!final_expr.is_distinct() || matches!(kind, Some(NativeAggregateFunction::Count)))
-                && final_expr.order_bys().is_empty()
-                && partial_expr.order_bys().is_empty()
-        })
-        && distributed_aggregate_state_exprs_are_native_safe(final_aggregate, partial_aggregate)
+/// What keeps a final aggregate and the partial aggregate below it from
+/// lowering as one native aggregate, or `None` when the pair is safe.
+///
+/// Safety is structural: group columns must be the partial output columns,
+/// aggregate functions, distinctness, and state fields must match, and no
+/// order-by semantics may be hidden in the pair. Per-aggregate filters are
+/// carried by the partial aggregate, where input rows are still available.
+fn distributed_aggregate_pair_defect(
+    final_aggregate: &AggregateExec,
+    partial_aggregate: &AggregateExec,
+) -> Option<PlanBlocker> {
+    let stages = |detail| Some(PlanBlocker::DistributedAggregate(detail));
+    if !matches!(partial_aggregate.mode(), AggregateMode::Partial) {
+        return stages("the lower stage is not a partial aggregate");
+    }
+    if !distributed_group_expr_layout_is_native_safe(final_aggregate, partial_aggregate)
+        || final_aggregate.group_expr().expr().len() != partial_group_output_count(partial_aggregate)
+    {
+        return stages("the stages differ in group key layout");
+    }
+    if final_aggregate.aggr_expr().len() != partial_aggregate.aggr_expr().len() {
+        return stages("the stages differ in the number of aggregates");
+    }
+    if !distributed_aggregate_filters_are_native_safe(final_aggregate, partial_aggregate) {
+        let filtered = final_aggregate
+            .aggr_expr()
+            .iter()
+            .zip(final_aggregate.filter_expr().iter().zip(partial_aggregate.filter_expr()))
+            .find_map(|(expr, (final_filter, partial_filter))| {
+                distributed_filters_conflict(final_filter, partial_filter).then_some(expr)
+            });
+        return Some(match filtered.or_else(|| final_aggregate.aggr_expr().first()) {
+            Some(expr) => {
+                PlanBlocker::Aggregate { function: expr.fun().name().to_string(), defect: AggregateDefect::Filter }
+            },
+            None => PlanBlocker::DistributedAggregate("the stages differ in aggregate filters"),
+        });
+    }
+    if !distributed_group_exprs_are_native_safe(final_aggregate, partial_aggregate) {
+        return stages("the stages differ in group key layout");
+    }
+    for (final_expr, partial_expr) in final_aggregate.aggr_expr().iter().zip(partial_aggregate.aggr_expr()) {
+        let kind = native_aggregate_function_kind(final_expr.fun());
+        let aggregate = |defect| PlanBlocker::Aggregate { function: final_expr.fun().name().to_string(), defect };
+        let kinds_match = matches!(
+            (kind, native_aggregate_function_kind(partial_expr.fun())),
+            (Some(final_kind), Some(partial_kind)) if final_kind == partial_kind
+        );
+        if !kinds_match || !distributed_aggregate_function_is_native_safe(kind) {
+            return Some(aggregate(AggregateDefect::UnsupportedFunction));
+        }
+        if !distributed_final_output_is_native_safe(final_aggregate, final_expr.name(), kind) {
+            return stages("the final output type has no native form");
+        }
+        if final_expr.is_distinct() != partial_expr.is_distinct()
+            || (final_expr.is_distinct() && !matches!(kind, Some(NativeAggregateFunction::Count)))
+        {
+            return Some(aggregate(AggregateDefect::Distinct));
+        }
+        if !final_expr.order_bys().is_empty() || !partial_expr.order_bys().is_empty() {
+            return Some(aggregate(AggregateDefect::OrderBy));
+        }
+    }
+    if !distributed_aggregate_state_exprs_are_native_safe(final_aggregate, partial_aggregate) {
+        return stages("the stages differ in aggregate state fields");
+    }
+    None
 }
 
 fn distributed_aggregate_filters_are_native_safe(
@@ -94,14 +144,22 @@ fn distributed_aggregate_filters_are_native_safe(
     // rejected because they would no longer prove the same SQL aggregate.
     final_aggregate.filter_expr().len() == final_aggregate.aggr_expr().len()
         && partial_aggregate.filter_expr().len() == partial_aggregate.aggr_expr().len()
-        && final_aggregate.filter_expr().iter().zip(partial_aggregate.filter_expr()).all(
-            |(final_filter, partial_filter)| match (final_filter, partial_filter) {
-                (Some(final_filter), Some(partial_filter)) => final_filter.eq(partial_filter),
-                (None, Some(_partial_filter)) => true,
-                (None, None) => true,
-                _ => false,
-            },
-        )
+        && final_aggregate
+            .filter_expr()
+            .iter()
+            .zip(partial_aggregate.filter_expr())
+            .all(|(final_filter, partial_filter)| !distributed_filters_conflict(final_filter, partial_filter))
+}
+
+fn distributed_filters_conflict(
+    final_filter: &Option<Arc<dyn PhysicalExpr>>,
+    partial_filter: &Option<Arc<dyn PhysicalExpr>>,
+) -> bool {
+    match (final_filter, partial_filter) {
+        (Some(final_filter), Some(partial_filter)) => !final_filter.eq(partial_filter),
+        (None, _) => false,
+        (Some(_), None) => true,
+    }
 }
 
 fn partial_group_output_count(partial_aggregate: &AggregateExec) -> usize {

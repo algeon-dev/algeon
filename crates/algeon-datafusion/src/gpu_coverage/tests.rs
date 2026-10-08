@@ -461,12 +461,22 @@ async fn validate_query_concurrent_calls_report_their_own_planning_diagnostics()
                 && outcome["remedy_code"].is_null()
                 && outcome["remedy_kind"].is_null()
                 && outcome["remedy"].is_null()
+                && outcome["blocking"].is_null()
                 && outcome["cost_evidence"].is_null()
         })
     }));
     assert_eq!(cpu.gpu_path(), "cpu");
     assert!(cpu.candidate_outcomes.iter().any(|outcome| {
         outcome.reason_code.as_deref() == Some("unsupported_expression") && !outcome.candidate_family.is_empty()
+    }));
+    let blocking = cpu
+        .candidate_outcomes
+        .iter()
+        .find_map(|outcome| outcome.blocking.as_ref())
+        .expect("the unsupported random() candidate names what blocked it");
+    assert_eq!((blocking.kind(), blocking.text()), ("scalar_function", "scalar function random in `random()`"));
+    assert!(cpu.to_json()["candidate_outcomes"].as_array().is_some_and(|outcomes| {
+        outcomes.iter().any(|outcome| outcome["blocking"]["function"].as_str() == Some("random"))
     }));
 }
 

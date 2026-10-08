@@ -87,7 +87,7 @@ fn server_config_rejects_removed_legacy_cache_profile_env() {
     {
         let env = BTreeMap::from([(name, "256".to_string())]);
         let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
-        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
         assert_eq!(error.operation(), "algeon_datafusion.server.config");
         assert_eq!(error.fact_value("config_field"), Some(name));
         assert!(error.message().contains("removed by the resource-only admission contract"), "{error}");
@@ -199,7 +199,7 @@ fn server_config_rejects_removed_final_plan_requirement_env() {
     let name = "ALGEON_SERVER_FINAL_PLAN_REQUIREMENT";
     let env = BTreeMap::from([(name, "no_datafusion_cpu".to_string())]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
-    assert_eq!(error.code(), ErrorCode::InvalidRequest);
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("config_field"), Some(name));
     assert!(error.message().contains("ALGEON_SERVER_EXECUTION_MODE=native_required"), "{error}");
 }

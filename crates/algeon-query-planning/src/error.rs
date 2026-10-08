@@ -57,6 +57,12 @@ pub enum QueryErrorCode {
     InvalidPlan,
     /// Caller-supplied execution-attempt correlation is invalid or oversized.
     InvalidAttemptCorrelation,
+    /// A service, backend, or device configuration value is invalid or
+    /// inconsistent with the discovered hardware.
+    ///
+    /// Unlike [`Self::InvalidPlan`], the input is deployment configuration, not
+    /// a query plan. The same configuration fails again until it changes.
+    InvalidConfiguration,
     /// Runtime graph inputs violate an engine-owned graph-operation contract.
     ///
     /// Unlike [`Self::InvalidPlan`], this describes materialized edge or
@@ -136,6 +142,7 @@ impl QueryErrorCode {
         Self::UnsupportedType,
         Self::InvalidPlan,
         Self::InvalidAttemptCorrelation,
+        Self::InvalidConfiguration,
         Self::GraphInputInvalid,
         Self::CudfInvalidInput,
         Self::CudfUnsupported,
@@ -172,6 +179,7 @@ impl QueryErrorCode {
             Self::UnsupportedType => "unsupported_type",
             Self::InvalidPlan => "invalid_plan",
             Self::InvalidAttemptCorrelation => "invalid_attempt_correlation",
+            Self::InvalidConfiguration => "invalid_configuration",
             Self::GraphInputInvalid => "graph_input_invalid",
             Self::CudfInvalidInput => "cudf_invalid_input",
             Self::CudfUnsupported => "cudf_unsupported",
@@ -311,6 +319,7 @@ pub(crate) const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         | QueryErrorCode::UnsupportedType => QueryErrorKind::Unsupported,
         QueryErrorCode::InvalidPlan => QueryErrorKind::Planning,
         QueryErrorCode::InvalidAttemptCorrelation => QueryErrorKind::InvalidInput,
+        QueryErrorCode::InvalidConfiguration => QueryErrorKind::InvalidInput,
         QueryErrorCode::GraphInputInvalid => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfInvalidInput => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfUnsupported => QueryErrorKind::Unsupported,
@@ -363,6 +372,7 @@ pub(crate) const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::UnsupportedType
         | QueryErrorCode::InvalidPlan
         | QueryErrorCode::InvalidAttemptCorrelation
+        | QueryErrorCode::InvalidConfiguration
         | QueryErrorCode::GraphInputInvalid
         | QueryErrorCode::CudfInvalidInput
         | QueryErrorCode::CudfUnsupported
@@ -390,6 +400,7 @@ pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageC
         QueryErrorCode::UnsupportedType => TriageCode::UnsupportedType,
         QueryErrorCode::InvalidPlan => TriageCode::InvalidPlan,
         QueryErrorCode::InvalidAttemptCorrelation
+        | QueryErrorCode::InvalidConfiguration
         | QueryErrorCode::GraphInputInvalid
         | QueryErrorCode::CudfInvalidInput => TriageCode::InvalidInput,
         QueryErrorCode::CudfUnsupported => TriageCode::UnsupportedOperator,
@@ -848,6 +859,18 @@ pub fn redact_uri_tokens(message: &str) -> String {
         .join(" ")
 }
 
+/// Renders a byte count as exact bytes followed by GiB truncated to two
+/// decimals, such as `101973819392 bytes (94.97 GiB)`.
+///
+/// Capacity and cap messages share this form so the exact value that must be
+/// compared with a limit and the figure an operator recognizes appear
+/// together. Truncation keeps a limit from reading larger than it is.
+pub fn bytes_with_gib(bytes: u64) -> String {
+    const GIB: u128 = 1 << 30;
+    let hundredths = u128::from(bytes) * 100 / GIB;
+    format!("{bytes} bytes ({}.{:02} GiB)", hundredths / 100, hundredths % 100)
+}
+
 impl fmt::Display for QueryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -912,6 +935,16 @@ fn quote(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::plan::NodeId;
+
+    #[test]
+    fn bytes_with_gib_prints_exact_bytes_and_truncated_gib() {
+        assert_eq!(bytes_with_gib(0), "0 bytes (0.00 GiB)");
+        assert_eq!(bytes_with_gib(700), "700 bytes (0.00 GiB)");
+        assert_eq!(bytes_with_gib(95 * (1 << 30)), "102005473280 bytes (95.00 GiB)");
+        assert_eq!(bytes_with_gib(101_973_819_392), "101973819392 bytes (94.97 GiB)");
+        assert_eq!(bytes_with_gib(95 * (1 << 30) - 1), "102005473279 bytes (94.99 GiB)");
+        assert_eq!(bytes_with_gib(u64::MAX), "18446744073709551615 bytes (17179869183.99 GiB)");
+    }
 
     #[test]
     fn redact_uri_tokens_replaces_uri_like_tokens_only() {
@@ -986,7 +1019,7 @@ mod tests {
             .map(|code| AttemptFailureCode::Query(*code))
             .chain(AttemptFailureCode::LIFECYCLE)
             .collect::<Vec<_>>();
-        assert_eq!(codes.len(), 37);
+        assert_eq!(codes.len(), 38);
         for code in codes {
             let json = serde_json::to_string(&code).unwrap();
             assert_eq!(json, format!("\"{}\"", code.as_str()));
@@ -994,6 +1027,17 @@ mod tests {
         }
         assert_eq!(AttemptFailureCode::Query(QueryErrorCode::Internal).as_str(), "internal");
         assert!(serde_json::from_str::<AttemptFailureCode>("\"unsupported_plan_shape\"").is_err());
+    }
+
+    #[test]
+    fn invalid_configuration_is_a_permanent_invalid_input_code_distinct_from_invalid_plan() {
+        let code = QueryErrorCode::InvalidConfiguration;
+        assert_eq!(code.as_str(), "invalid_configuration");
+        assert_eq!(code.kind(), QueryErrorKind::InvalidInput);
+        assert_eq!(code.status(), QueryErrorStatus::Permanent);
+        assert_eq!(TriageCode::from(code), TriageCode::InvalidInput);
+        assert_eq!(QueryErrorCode::InvalidPlan.kind(), QueryErrorKind::Planning);
+        assert!(QueryErrorCode::ALL.contains(&code));
     }
 
     #[test]

@@ -27,6 +27,11 @@ use query_planning::{
 };
 use serde_json::{Value, json};
 
+mod blocking;
+
+pub use blocking::Blocking;
+pub(crate) use blocking::{AggregateDefect, PlanBlocker, WindowDefect};
+
 use crate::{capability::CapabilityReason, native::ExpressionRejection};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,12 +50,15 @@ impl UnsupportedColumnDetail {
 /// Evidence a `NotSupported` outcome carries about its cause.
 ///
 /// The public [`CapabilityReason`] stays payload-free; this detail names the
-/// unsupported column, the expression-contract rejection, or the admission
-/// rejection (with the validator's code, operation, and facts) that caused it.
+/// unsupported column, the expression-contract rejection, the plan element
+/// (operator, aggregate or window function, or declared ordering), or the
+/// admission rejection (with the validator's code, operation, and facts) that
+/// caused it. [`Self::blocking`] is the one description of it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotSupportedDetail {
     pub(crate) column: Option<UnsupportedColumnDetail>,
-    pub(crate) expression: Option<ExpressionRejection>,
+    pub(crate) expression: Option<Box<ExpressionRejection>>,
+    pub(crate) blocker: Option<Box<PlanBlocker>>,
     pub(crate) admission: Option<Rejection>,
 }
 

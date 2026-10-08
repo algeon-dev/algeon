@@ -268,7 +268,7 @@ impl GpuExecutionPool {
         {
             if capacity == 0 {
                 return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
+                    QueryErrorCode::InvalidConfiguration,
                     "query_engine.gpu.execution_pool",
                     "GPU execution pool job-class capacity must be greater than zero",
                 )

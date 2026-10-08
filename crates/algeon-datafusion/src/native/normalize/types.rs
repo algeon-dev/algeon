@@ -12,7 +12,10 @@ use super::{
     AggregateExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, ExecutionPlan, FilterExec, GpuCandidate,
     HashJoinExec, LexOrdering, NestedLoopJoinExec, ProjectionExec, SortExec, UnionExec, WindowAggExec,
 };
-use crate::{native::DECLARED_OUTPUT_ORDERING_SORT_OPERATOR, report::CandidateShape};
+use crate::{
+    native::DECLARED_OUTPUT_ORDERING_SORT_OPERATOR,
+    report::{CandidateShape, PlanBlocker},
+};
 
 /// Borrowed, normalized representation of a DataFusion physical subtree that
 /// the native path knows how to lower: one recursive input tree whose root is
@@ -399,12 +402,14 @@ impl NormalizedNativeUnion<'_> {
     }
 }
 
-/// Rejection paired with the candidate shape that was being tested. Reports
-/// rely on both pieces to explain native fallback pressure.
+/// Rejection paired with the candidate shape that was being tested and the
+/// plan element that blocked it. Reports rely on all three pieces to explain
+/// native fallback pressure.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NativePlanRejection {
     pub(in crate::native) candidate: GpuCandidate,
     pub(in crate::native) reason: CapabilityReason,
+    pub(in crate::native) blocker: Box<PlanBlocker>,
 }
 
 fn unary_shape(operator: &str, input: CandidateShape) -> CandidateShape {

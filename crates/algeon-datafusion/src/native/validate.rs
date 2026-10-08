@@ -5,6 +5,7 @@ use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     physical_expr::{
         LexOrdering, PhysicalExpr, ScalarFunctionExpr,
+        aggregate::AggregateFunctionExpr,
         expressions::{
             BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
             LikeExpr, Literal, NegativeExpr, NotExpr, TryCastExpr,
@@ -29,7 +30,21 @@ use super::{
         validate_physical_expr_contract,
     },
 };
-use crate::capability::CapabilityReason;
+use crate::{
+    capability::CapabilityReason,
+    native::ExpressionRejection,
+    report::{AggregateDefect, PlanBlocker},
+};
+
+/// A rejection of `reason` that names the aggregate function `function` and
+/// what is unsupported about its use.
+pub(super) fn aggregate_blocked(
+    reason: CapabilityReason,
+    function: &str,
+    defect: AggregateDefect,
+) -> LoweringRejection {
+    LoweringRejection::blocked_by(reason, PlanBlocker::Aggregate { function: function.to_string(), defect })
+}
 
 pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), CapabilityReason> {
     for field in schema.fields() {
@@ -54,26 +69,43 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
     {
         return Err(CapabilityReason::UnsupportedOperator.into());
     }
-    if aggregate_has_median_and_floating_statistical(aggregate) {
-        return Err(CapabilityReason::UnsupportedOperator.into());
+    if let Some(median) = median_with_floating_statistical(aggregate) {
+        return Err(aggregate_blocked(
+            CapabilityReason::UnsupportedOperator,
+            median.fun().name(),
+            AggregateDefect::MedianWithStatistical,
+        ));
     }
     for aggregate_expr in aggregate.aggr_expr() {
         let kind = native_aggregate_function_kind(aggregate_expr.fun());
+        let function = aggregate_expr.fun().name();
         if aggregate_expr.is_distinct() && !matches!(kind, Some(NativeAggregateFunction::Count)) {
-            return Err(CapabilityReason::UnsupportedOperator.into());
+            return Err(aggregate_blocked(CapabilityReason::UnsupportedOperator, function, AggregateDefect::Distinct));
         }
         if !aggregate_expr.order_bys().is_empty() {
-            return Err(CapabilityReason::UnsupportedExpression.into());
+            return Err(aggregate_blocked(CapabilityReason::UnsupportedExpression, function, AggregateDefect::OrderBy));
         }
         if kind.is_none() {
-            return Err(CapabilityReason::UnsupportedOperator.into());
+            return Err(aggregate_blocked(
+                CapabilityReason::UnsupportedOperator,
+                function,
+                AggregateDefect::UnsupportedFunction,
+            ));
         }
         if matches!(aggregate.mode(), AggregateMode::Partial) && matches!(kind, Some(NativeAggregateFunction::Median)) {
-            return Err(CapabilityReason::UnsupportedOperator.into());
+            return Err(aggregate_blocked(
+                CapabilityReason::UnsupportedOperator,
+                function,
+                AggregateDefect::PartialStage,
+            ));
         }
         let expressions = aggregate_expr.expressions();
         let [arg] = expressions.as_slice() else {
-            return Err(CapabilityReason::UnsupportedExpression.into());
+            return Err(aggregate_blocked(
+                CapabilityReason::UnsupportedExpression,
+                function,
+                AggregateDefect::ArgumentCount(expressions.len()),
+            ));
         };
         validate_physical_expr_contract(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
@@ -88,16 +120,18 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
     Ok(())
 }
 
-fn aggregate_has_median_and_floating_statistical(aggregate: &AggregateExec) -> bool {
-    let has_median = aggregate
+/// The `MEDIAN` aggregate of `aggregate` when it also holds a floating-point
+/// statistical aggregate.
+fn median_with_floating_statistical(aggregate: &AggregateExec) -> Option<&Arc<AggregateFunctionExpr>> {
+    let median = aggregate
         .aggr_expr()
         .iter()
-        .any(|expr| matches!(native_aggregate_function_kind(expr.fun()), Some(NativeAggregateFunction::Median)));
-    has_median && aggregate_has_floating_statistical(aggregate)
+        .find(|expr| matches!(native_aggregate_function_kind(expr.fun()), Some(NativeAggregateFunction::Median)))?;
+    aggregate_has_floating_statistical(aggregate).then_some(median)
 }
 
-fn aggregate_has_floating_statistical(aggregate: &AggregateExec) -> bool {
-    aggregate.aggr_expr().iter().any(|expr| {
+fn first_floating_statistical(aggregate: &AggregateExec) -> Option<&Arc<AggregateFunctionExpr>> {
+    aggregate.aggr_expr().iter().find(|expr| {
         matches!(
             native_aggregate_function_kind(expr.fun()),
             Some(
@@ -110,18 +144,25 @@ fn aggregate_has_floating_statistical(aggregate: &AggregateExec) -> bool {
     })
 }
 
-/// Whether DataFusion reads the input of a floating statistical aggregate in
-/// `plan` through more than one partition. DataFusion's own result then
+fn aggregate_has_floating_statistical(aggregate: &AggregateExec) -> bool {
+    first_floating_statistical(aggregate).is_some()
+}
+
+/// The first floating statistical aggregate in `plan` whose input DataFusion
+/// reads through more than one partition. DataFusion's own result then
 /// depends on the order partitions deliver rows, which no native evaluation
 /// order reproduces.
-pub(crate) fn floating_statistical_aggregate_input_is_partitioned(plan: &dyn ExecutionPlan) -> bool {
+pub(crate) fn floating_statistical_aggregate_input_is_partitioned(plan: &dyn ExecutionPlan) -> Option<PlanBlocker> {
     if let Some(aggregate) = plan.downcast_ref::<AggregateExec>()
-        && aggregate_has_floating_statistical(aggregate)
+        && let Some(statistical) = first_floating_statistical(aggregate)
         && subtree_has_multiple_partitions(aggregate.input().as_ref())
     {
-        return true;
+        return Some(PlanBlocker::Aggregate {
+            function: statistical.fun().name().to_string(),
+            defect: AggregateDefect::PartitionedInput,
+        });
     }
-    plan.children().into_iter().any(|child| floating_statistical_aggregate_input_is_partitioned(child.as_ref()))
+    plan.children().into_iter().find_map(|child| floating_statistical_aggregate_input_is_partitioned(child.as_ref()))
 }
 
 fn subtree_has_multiple_partitions(plan: &dyn ExecutionPlan) -> bool {
@@ -156,19 +197,39 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
         return Err(CapabilityReason::UnsupportedOperator.into());
     }
     for aggregate_expr in aggregate.aggr_expr() {
-        if aggregate_expr.is_distinct() || !aggregate_expr.order_bys().is_empty() {
-            return Err(CapabilityReason::UnsupportedExpression.into());
+        let function = aggregate_expr.fun().name();
+        if aggregate_expr.is_distinct() {
+            return Err(aggregate_blocked(
+                CapabilityReason::UnsupportedExpression,
+                function,
+                AggregateDefect::Distinct,
+            ));
+        }
+        if !aggregate_expr.order_bys().is_empty() {
+            return Err(aggregate_blocked(CapabilityReason::UnsupportedExpression, function, AggregateDefect::OrderBy));
         }
         let kind = native_aggregate_function_kind(aggregate_expr.fun());
         if kind.is_none() {
-            return Err(CapabilityReason::UnsupportedOperator.into());
+            return Err(aggregate_blocked(
+                CapabilityReason::UnsupportedOperator,
+                function,
+                AggregateDefect::UnsupportedFunction,
+            ));
         }
         if matches!(kind, Some(NativeAggregateFunction::Median)) {
-            return Err(CapabilityReason::UnsupportedOperator.into());
+            return Err(aggregate_blocked(
+                CapabilityReason::UnsupportedOperator,
+                function,
+                AggregateDefect::GroupingSets,
+            ));
         }
         let expressions = aggregate_expr.expressions();
         let [arg] = expressions.as_slice() else {
-            return Err(CapabilityReason::UnsupportedExpression.into());
+            return Err(aggregate_blocked(
+                CapabilityReason::UnsupportedExpression,
+                function,
+                AggregateDefect::ArgumentCount(expressions.len()),
+            ));
         };
         validate_physical_expr_contract(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
@@ -190,7 +251,7 @@ fn validate_aggregate_filters(aggregate: &AggregateExec) -> Result<(), LoweringR
             .data_type(aggregate.input().schema().as_ref())
             .map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         if !matches!(data_type, DataType::Boolean) {
-            return Err(CapabilityReason::UnsupportedType.into());
+            return Err(ExpressionRejection::unsupported_value_type(filter, data_type).into());
         }
     }
     Ok(())
@@ -234,15 +295,19 @@ fn validate_operator_value_expr(
 ) -> Result<(), LoweringRejection> {
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_timestamp_with_timezone(&data_type) || is_list_carry_type(&data_type) || is_narrow_decimal_carry(&data_type) {
-        Err(CapabilityReason::UnsupportedType.into())
+        Err(ExpressionRejection::unsupported_value_type(expr, data_type).into())
     } else {
         Ok(())
     }
 }
 
-fn validate_median_input_type(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
+fn validate_median_input_type(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), LoweringRejection> {
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
-    if is_cudf_median_input_type(&data_type) { Ok(()) } else { Err(CapabilityReason::UnsupportedType) }
+    if is_cudf_median_input_type(&data_type) {
+        Ok(())
+    } else {
+        Err(ExpressionRejection::unsupported_value_type(expr, data_type).into())
+    }
 }
 
 pub(super) fn native_zero_column_count_source_is_safe(

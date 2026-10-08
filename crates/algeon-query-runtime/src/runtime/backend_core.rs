@@ -15,7 +15,7 @@ use std::{
 };
 
 use cudf::{DeviceMemoryManager, DeviceMemoryManagerInstallationState, DeviceMemoryManagerOptions};
-use query_planning::error::{QueryError, QueryErrorCode, Result};
+use query_planning::error::{QueryError, QueryErrorCode, Result, bytes_with_gib};
 use tokio::task::spawn_blocking;
 
 #[cfg(feature = "qualification")]
@@ -140,9 +140,14 @@ fn resolve_probe_capacities(
     const OPERATION: &str = "query_engine.gpu_backend_core.probe_capacity";
     if let Some(allocation_limit) = allocation_limit_bytes.filter(|limit| *limit > facts.total_bytes) {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             OPERATION,
-            "static partition cannot exceed discovered CUDA-visible device memory",
+            format!(
+                "device {device_ordinal} static partition allocation_limit_bytes is {}, above the CUDA-visible device memory of {}; the largest accepted allocation_limit_bytes is {}",
+                bytes_with_gib(allocation_limit),
+                bytes_with_gib(facts.total_bytes),
+                bytes_with_gib(facts.total_bytes),
+            ),
         )
         .with_fact("device_ordinal", device_ordinal)
         .with_fact("allocation_limit_bytes", allocation_limit)
@@ -157,9 +162,14 @@ fn resolve_probe_capacities(
     let max_managed_capacity_bytes =
         owned_capacity_bytes.checked_sub(backend_reserve_bytes).filter(|capacity| *capacity > 0).ok_or_else(|| {
             QueryError::new(
-                QueryErrorCode::InvalidPlan,
+                QueryErrorCode::InvalidConfiguration,
                 OPERATION,
-                "backend reserve exhausts the probed owned device capacity",
+                format!(
+                    "device {device_ordinal} backend_reserve_bytes is {} and leaves no managed capacity out of the owned {}; the largest accepted backend_reserve_bytes is {}",
+                    bytes_with_gib(backend_reserve_bytes),
+                    bytes_with_gib(owned_capacity_bytes),
+                    bytes_with_gib(owned_capacity_bytes.saturating_sub(1)),
+                ),
             )
             .with_fact("device_ordinal", device_ordinal)
             .with_fact("owned_capacity_bytes", owned_capacity_bytes)
@@ -702,7 +712,12 @@ fn validate_device_config(
             return Err(invalid_device_config(
                 device.profile.device_ordinal,
                 "backend_reserve_bytes",
-                "must be below the automatic fallback capacity",
+                format!(
+                    "is {}, at or above the automatic fallback capacity of {}; the largest accepted value is {}",
+                    bytes_with_gib(device.profile.backend_reserve_bytes),
+                    bytes_with_gib(fallback_bytes),
+                    bytes_with_gib(fallback_bytes - 1),
+                ),
             )
             .with_fact("reason", "reserve_exhausts_fallback")
             .with_fact("fallback_bytes", fallback_bytes));
@@ -710,7 +725,7 @@ fn validate_device_config(
         GpuDeviceMemoryLimit::Explicit { limit_bytes: 0 } => {
             return Err(invalid_device_config(
                 device.profile.device_ordinal,
-                "memory_limit.limit_bytes",
+                "memory_limit_bytes",
                 "must be greater than zero",
             )
             .with_fact("reason", "zero"));
@@ -719,7 +734,12 @@ fn validate_device_config(
             return Err(invalid_device_config(
                 device.profile.device_ordinal,
                 "backend_reserve_bytes",
-                "must be below the explicit device memory limit",
+                format!(
+                    "is {}, at or above memory_limit_bytes of {}; the largest accepted value is {}",
+                    bytes_with_gib(device.profile.backend_reserve_bytes),
+                    bytes_with_gib(limit_bytes),
+                    bytes_with_gib(limit_bytes - 1),
+                ),
             )
             .with_fact("reason", "reserve_exhausts_explicit_limit")
             .with_fact("limit_bytes", limit_bytes));
@@ -740,7 +760,12 @@ fn validate_device_config(
             return Err(invalid_device_config(
                 device.profile.device_ordinal,
                 "backend_reserve_bytes",
-                "must be below the enforced static partition",
+                format!(
+                    "is {}, at or above the static partition of {}; the largest accepted value is {}",
+                    bytes_with_gib(device.profile.backend_reserve_bytes),
+                    bytes_with_gib(allocation_limit_bytes),
+                    bytes_with_gib(allocation_limit_bytes - 1),
+                ),
             )
             .with_fact("reason", "reserve_exhausts_static_partition")
             .with_fact("allocation_limit_bytes", allocation_limit_bytes));
@@ -750,8 +775,13 @@ fn validate_device_config(
         {
             return Err(invalid_device_config(
                 device.profile.device_ordinal,
-                "memory_limit.limit_bytes",
-                "cannot exceed the enforced static partition",
+                "memory_limit_bytes",
+                format!(
+                    "is {}, above the static partition of {}; the largest accepted value is {}",
+                    bytes_with_gib(limit_bytes),
+                    bytes_with_gib(allocation_limit_bytes),
+                    bytes_with_gib(allocation_limit_bytes),
+                ),
             )
             .with_fact("reason", "limit_exceeds_static_partition")
             .with_fact("allocation_limit_bytes", allocation_limit_bytes));
@@ -785,12 +815,19 @@ fn native_allocation_limit_bytes(device: &GpuBackendDeviceConfig) -> Result<Opti
         .transpose()
 }
 
-fn invalid_device_config(device_ordinal: usize, field: &'static str, message: &'static str) -> QueryError {
-    invalid_config(field, message).with_fact("device_ordinal", device_ordinal)
+fn invalid_device_config(device_ordinal: usize, field: &'static str, message: impl fmt::Display) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidConfiguration,
+        BUILD_OPERATION,
+        format!("device {device_ordinal} {field} {message}"),
+    )
+    .with_fact("field", field)
+    .with_fact("device_ordinal", device_ordinal)
 }
 
-fn invalid_config(field: &'static str, message: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::InvalidPlan, BUILD_OPERATION, message).with_fact("field", field)
+fn invalid_config(field: &'static str, message: impl fmt::Display) -> QueryError {
+    QueryError::new(QueryErrorCode::InvalidConfiguration, BUILD_OPERATION, format!("{field} {message}"))
+        .with_fact("field", field)
 }
 
 /// Construction boundary exposed to deterministic probes and failure injectors.
@@ -1864,6 +1901,8 @@ mod tests {
             GpuMemoryOwnership::WholeDeviceExclusive,
         )]);
         let error = config.validate().unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
+        assert_eq!(error.message(), "device 0 max_active_attempts must be greater than zero");
         assert_eq!(error.fact_value("field"), Some("max_active_attempts"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }
@@ -1916,7 +1955,31 @@ mod tests {
 
         let error = config.validate().unwrap_err();
 
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.fact_value("reason"), Some("reserve_exhausts_fallback"));
+        assert_eq!(
+            error.message(),
+            "device 0 backend_reserve_bytes is 268435456 bytes (0.25 GiB), at or above the automatic fallback capacity of 268435456 bytes (0.25 GiB); the largest accepted value is 268435455 bytes (0.24 GiB)"
+        );
+    }
+
+    #[test]
+    fn pure_config_rejects_an_explicit_limit_above_the_static_partition_with_the_largest_accepted_value() {
+        const GIB: u64 = 1 << 30;
+        let config = backend_config(vec![GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 100 * GIB }),
+            GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 95 * GIB },
+        )]);
+
+        let error = config.validate().unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
+        assert_eq!(error.fact_value("reason"), Some("limit_exceeds_static_partition"));
+        assert_eq!(
+            error.message(),
+            "device 0 memory_limit_bytes is 107374182400 bytes (100.00 GiB), above the static partition of 102005473280 bytes (95.00 GiB); the largest accepted value is 102005473280 bytes (95.00 GiB)"
+        );
     }
 
     #[test]

@@ -16,7 +16,11 @@ use query_planning::{
 use query_runtime::runtime::DeviceCapability;
 
 use super::*;
-use crate::{planner::AlgeonGpuExecutionMode, session::installed_algeon_native_optimizer_config};
+use crate::{
+    error::{ErrorCode, ErrorKind},
+    planner::AlgeonGpuExecutionMode,
+    session::installed_algeon_native_optimizer_config,
+};
 
 fn backend_builder(device_ordinals: &[usize]) -> AlgeonGpuBackendBuilder {
     let devices = device_ordinals.iter().copied().map(|ordinal| {
@@ -197,7 +201,7 @@ fn backend_rejects_invalid_queue_policy_bounds() {
         AlgeonGpuQueuePolicy::default().with_max_queue_wait(std::time::Duration::ZERO),
     ] {
         let error = validated(bounded_backend_builder(&[0]).queue_policy(policy)).unwrap_err();
-        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
     }
 }
 
@@ -433,7 +437,7 @@ fn backend_builder_validate_accepts_consistent_declaration_without_gpu_resources
 #[test]
 fn backend_builder_validate_rejects_empty_devices() {
     let error = AlgeonGpuBackend::builder().devices([]).validate().expect_err("dry-run must reject empty devices");
-    assert_eq!(error.code(), ErrorCode::InvalidRequest);
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("device_ordinals"));
     assert_eq!(error.fact_value("reason"), Some("empty"));
 }
@@ -452,7 +456,7 @@ fn backend_probe_device_capacity_reports_live_cuda_totals() {
 #[test]
 fn backend_core_build_error_surfaces_capacity_cause_in_display() {
     let native = QueryError::new(
-        QueryErrorCode::InvalidPlan,
+        QueryErrorCode::InvalidConfiguration,
         "query_engine.gpu.device_registry.capacity",
         "explicit managed capacity cannot exceed owned device memory",
     )
@@ -461,8 +465,34 @@ fn backend_core_build_error_surfaces_capacity_cause_in_display() {
     .with_fact("owned_capacity_bytes", 101973819392_u64)
     .with_fact("reason", "explicit_capacity_exceeds_owned_capacity");
     let error = super::backend_core_build_error("failed to initialize ownership-enforcing GPU backend core", native);
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
     let display = error.to_string();
     assert!(display.contains("explicit_capacity_exceeds_owned_capacity"), "{display}");
     assert!(display.contains("owned_capacity_bytes=101973819392"), "{display}");
     assert!(display.contains("configured_limit_bytes=118111600640"), "{display}");
+}
+
+#[test]
+fn backend_builder_validate_states_the_setting_value_limit_and_largest_accepted_value() {
+    const GIB: u64 = 1 << 30;
+    let device = AlgeonGpuDeviceConfig::new(
+        AlgeonGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 100 * GIB }),
+        GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 95 * GIB },
+    );
+
+    let error = AlgeonGpuBackend::builder()
+        .with_native_execution_config(bounded_execution_config())
+        .devices([device])
+        .validate()
+        .expect_err("a limit above the static partition is a configuration error");
+
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert!(
+        error.message().contains(
+            "device 0 memory_limit_bytes is 107374182400 bytes (100.00 GiB), above the static partition of 102005473280 bytes (95.00 GiB); the largest accepted value is 102005473280 bytes (95.00 GiB)"
+        ),
+        "{}",
+        error.message()
+    );
 }

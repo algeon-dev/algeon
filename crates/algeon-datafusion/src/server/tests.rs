@@ -431,7 +431,7 @@ async fn builder_rejects_strict_backend_session_with_incompatible_target_partiti
     )
     .await;
 
-    assert_eq!(error.code(), ErrorCode::InvalidRequest);
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
     assert_eq!(error.operation(), "algeon_datafusion.server.builder");
     assert_eq!(error.fact_value("reason"), Some("server_session_optimizer_policy_mismatch"));
     assert_eq!(error.fact_value("config_field"), Some("datafusion.execution.target_partitions"));
@@ -491,4 +491,40 @@ fn distinct_librmm_mappings_counts_deleted_and_ignores_lookalikes() {
 fn single_librmm_runtime_mapping_check_passes_in_this_process() {
     ensure_single_librmm_runtime_mapping()
         .expect("this test process must not map two librmm.so builds; a failure here is a real regression");
+}
+
+#[test]
+fn startup_rejection_of_a_configuration_prints_the_setting_value_and_accepted_range() {
+    const GIB: u64 = 1 << 30;
+    let device = AlgeonGpuDeviceConfig::new(
+        AlgeonGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 100 * GIB }),
+        GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 95 * GIB },
+    );
+    let backend_error = AlgeonGpuBackend::builder()
+        .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(
+                TEST_MAX_SOURCE_CHUNK_BYTES,
+                TEST_MAX_ROW_GROUPS_PER_CHUNK,
+                TEST_MAX_RETRY_ATTEMPTS,
+                TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+            )
+            .expect("valid source chunking"),
+        ))
+        .devices([device])
+        .validate()
+        .expect_err("a limit above the static partition is a configuration error");
+
+    let error = backend_build_error(backend_error);
+
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
+    // The standalone binary logs `ServerError::message()` without a length
+    // bound, unlike the cause chain.
+    assert!(
+        error.message().starts_with("invalid server configuration: invalid ownership-enforcing GPU backend core configuration: device 0 memory_limit_bytes is 107374182400 bytes (100.00 GiB), above the static partition of 102005473280 bytes (95.00 GiB); the largest accepted value is 102005473280 bytes (95.00 GiB)"),
+        "{}",
+        error.message()
+    );
+
+    let other = backend_build_error(adapter_error::Error::new(ErrorCode::Internal, "algeon_datafusion.test", "boom"));
+    assert_eq!(other.message(), "failed to initialize query service admission");
 }

@@ -58,7 +58,7 @@ fn query_service_rejects_inconsistent_dynamic_filter_execution_policy() {
 
     let error = config.validate().unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("large_local_parquet_range_producer_rows"));
     assert_eq!(error.fact_value("bound_field"), Some("max_build_rows"));
     assert_eq!(error.fact_value("reason"), Some("range_producer_rows_exceeds_runtime_build_cap"));
@@ -75,7 +75,7 @@ fn query_service_rejects_inconsistent_keyed_hash_join_strategy_policy() {
 
     let error = config.validate().unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("large_field"), Some("large_keyed_hash_build_row_threshold"));
     assert_eq!(error.fact_value("small_field"), Some("small_reusable_hash_build_row_threshold"));
     assert_eq!(error.fact_value("reason"), Some("large_threshold_below_small_threshold"));
@@ -90,7 +90,7 @@ fn query_service_rejects_invalid_aggregate_strategy_execution_policy() {
 
     let error = config.validate().unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("prepared_sort_groupby_low_cardinality_threshold_ppm"));
     assert_eq!(error.fact_value("reason"), Some("ratio_ppm_above_one_hundred_percent"));
 }
@@ -104,7 +104,7 @@ fn query_service_rejects_invalid_source_chunk_planning_policy() {
 
     let error = config.validate().unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }

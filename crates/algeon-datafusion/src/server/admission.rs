@@ -344,7 +344,7 @@ mod tests {
         let error = server_config_with_test_device_profile(env, None)
             .expect_err("removed cache profile configuration must fail before backend construction");
 
-        assert_eq!(error.code(), ServerErrorCode::InvalidRequest);
+        assert_eq!(error.code(), ServerErrorCode::InvalidConfiguration);
         assert_eq!(error.operation(), "algeon_datafusion.server.config");
         assert_eq!(error.fact_value("config_field"), Some("ALGEON_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES"));
         assert!(error.message().contains("removed by the resource-only admission contract"));

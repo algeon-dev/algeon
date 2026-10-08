@@ -159,26 +159,52 @@ impl CapabilityReason {
             },
             Self::NativeSortPreservingMergeUnsupported => ReasonFacts {
                 flight_class: FlightSqlNativeNotSupportedClass::NativeSortPreservingMerge,
-                ..plan_shape("native_sort_preserving_merge_unsupported", "operator_sort")
+                ..plan_shape("native_sort_preserving_merge_unsupported", "operator_sort", SINGLE_PARTITION_REMEDY)
             },
             Self::NativeDistributedAggregateUnsupported => {
-                plan_shape("native_distributed_aggregate_unsupported", "aggregate_distributed")
+                plan_shape("native_distributed_aggregate_unsupported", "aggregate_distributed", SINGLE_PARTITION_REMEDY)
             },
-            Self::NativePartitionPreservingSortUnsupported => {
-                plan_shape("native_partition_preserving_sort_unsupported", "operator_sort")
-            },
+            Self::NativePartitionPreservingSortUnsupported => plan_shape(
+                "native_partition_preserving_sort_unsupported",
+                "operator_sort",
+                QueryGpuRemedy::new(
+                    "partition_sort_gap",
+                    QueryGpuRemedyKind::EngineGap,
+                    "DataFusion sorts each input partition separately (a SortExec that preserves partitioning) without a SortPreservingMergeExec above it; one native sort cannot reproduce the per-partition order.",
+                ),
+            ),
             Self::NativeLocalLimitPartitionUnsupported => {
-                plan_shape("native_local_limit_partition_unsupported", "operator_limit")
+                plan_shape("native_local_limit_partition_unsupported", "operator_limit", SINGLE_PARTITION_REMEDY)
             },
-            Self::NativeFragmentParentContractUnsupported => {
-                plan_shape("native_fragment_parent_contract_unsupported", "operator_fragment_boundary")
-            },
-            Self::NativeExactStatisticalInputPartitioned => {
-                plan_shape("native_exact_statistical_input_partitioned", "aggregate_partitioned_input")
-            },
+            Self::NativeFragmentParentContractUnsupported => plan_shape(
+                "native_fragment_parent_contract_unsupported",
+                "operator_fragment_boundary",
+                QueryGpuRemedy::new(
+                    "fragment_parent_contract_gap",
+                    QueryGpuRemedyKind::EngineGap,
+                    "The DataFusion operator above the fragment relies on the schema, boundedness, ordering, or distribution of its input, and the native fragment would change one of them; native lowering cannot replace that input.",
+                ),
+            ),
+            Self::NativeExactStatisticalInputPartitioned => plan_shape(
+                "native_exact_statistical_input_partitioned",
+                "aggregate_partitioned_input",
+                QueryGpuRemedy::new(
+                    "use_tolerant_statistical_mode",
+                    QueryGpuRemedyKind::ConfigAction,
+                    "Set `statistical_aggregate_execution_mode` to `gpu_native_tolerant`. The `datafusion_exact_host_welford` mode needs DataFusion to read the aggregate input in one partition, because merged partitions interleave rows in arrival order.",
+                ),
+            ),
             Self::NativeOrderedOutputUnsupported => ReasonFacts {
                 layout_property: Some(DECLARED_OUTPUT_ORDERING),
-                ..plan_shape("native_ordered_output_unsupported", "operator_ordering")
+                ..plan_shape(
+                    "native_ordered_output_unsupported",
+                    "operator_ordering",
+                    QueryGpuRemedy::new(
+                        "ordered_output_gap",
+                        QueryGpuRemedyKind::EngineGap,
+                        "The subtree declares an output ordering that native execution cannot restore after a limit, window, union, or graph step, or a window input ordering that an aggregate, join, or union breaks.",
+                    ),
+                )
             },
             // Both reasons project one admission rejection: no compiled
             // pipeline contract covers the plan. A join only changes which
@@ -272,16 +298,20 @@ impl FlightSqlNativeNotSupportedClass {
 
 const DECLARED_OUTPUT_ORDERING: &str = "declared_output_ordering";
 
-const fn plan_shape(code: &'static str, tsv_category: &'static str) -> ReasonFacts {
+/// The remedy for a plan DataFusion shaped for several partitions. The
+/// blocking subject of the candidate names the operator.
+const SINGLE_PARTITION_REMEDY: QueryGpuRemedy = QueryGpuRemedy::new(
+    "set_target_partitions_one",
+    QueryGpuRemedyKind::ConfigAction,
+    "DataFusion planned the query for several partitions in a shape native lowering cannot reproduce: a merge of sorted partitions, a limit that works per partition, or partial and final aggregate stages. Run the session with `SET datafusion.execution.target_partitions = 1` so DataFusion plans one partition.",
+);
+
+const fn plan_shape(code: &'static str, tsv_category: &'static str, remedy: QueryGpuRemedy) -> ReasonFacts {
     ReasonFacts {
         code,
         triage: TriageCode::UnsupportedPlanShape,
         kind: QueryGpuCandidateReasonKind::PlanShape,
-        remedy: QueryGpuRemedy::new(
-            "use_native_friendly_session_profile",
-            QueryGpuRemedyKind::ConfigAction,
-            "Use a native-friendly session profile or rewrite distributed ordering and aggregate stages into a shape native lowering supports.",
-        ),
+        remedy,
         tsv_category,
         layout_property: None,
         flight_class: FlightSqlNativeNotSupportedClass::Other,
@@ -296,7 +326,7 @@ const fn compiled_contract_gap(code: &'static str, tsv_category: &'static str) -
         remedy: QueryGpuRemedy::new(
             "compiled_contract_gap",
             QueryGpuRemedyKind::EngineGap,
-            "No compiled pipeline contract covers this plan yet; the capability decision row names the missing contract.",
+            "No compiled pipeline contract covers this plan yet; the blocking subject and the capability decision rows name the missing contract.",
         ),
         tsv_category,
         layout_property: None,

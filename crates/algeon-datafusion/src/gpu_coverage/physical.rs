@@ -56,9 +56,10 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 detail: candidate.shape.to_string(),
                 category: None,
                 remedy: None,
+                blocking: None,
                 cost_evidence: None,
             },
-            CandidateOutcome::NotSupported { candidate, capability_reason, .. } => QueryGpuCandidateOutcome {
+            CandidateOutcome::NotSupported { candidate, capability_reason, detail } => QueryGpuCandidateOutcome {
                 selection: outcome.kind(),
                 candidate_family: candidate_shape_family(candidate),
                 reason_code: Some(capability_reason.code().to_string()),
@@ -66,6 +67,7 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 detail: candidate.shape.to_string(),
                 category: Some(capability_reason.facts().triage.as_str().to_string()),
                 remedy: Some(capability_reason.facts().remedy),
+                blocking: detail.blocking(),
                 cost_evidence: None,
             },
             CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence } => QueryGpuCandidateOutcome {
@@ -76,6 +78,7 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 detail: candidate.shape.to_string(),
                 category: Some("cost".to_string()),
                 remedy: Some(cost_remedy(*cost_reason)),
+                blocking: None,
                 cost_evidence: Some(evidence.clone()),
             },
         })

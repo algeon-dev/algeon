@@ -82,6 +82,24 @@ requires an explicit `backend_reserve_bytes`: automatic capacity already bakes
 in driver headroom, but an explicit limit does not, so the reserve must be
 declared (`0` is a valid, deliberate choice).
 
+An explicit `memory_limit_bytes` cannot exceed the device memory Algeon owns.
+The shipped server owns the whole device, so the ceiling is the CUDA-visible
+total, which is smaller than the nominal card size. `backend_reserve_bytes`
+must leave managed capacity. A value over its ceiling stops startup with the
+`invalid_configuration` error code, and the startup log line prints the whole
+rejection: the setting, the configured value, the ceiling, and the largest
+accepted value, each in exact bytes and GiB.
+
+```text
+invalid server configuration: failed to initialize ownership-enforcing GPU backend core: device 0 memory_limit_bytes is 102005473280 bytes (95.00 GiB) but Algeon owns 101973819392 bytes (94.97 GiB) of device memory; the largest accepted memory_limit_bytes is 101973819392 bytes (94.97 GiB) [device_ordinal=0, configured_limit_bytes=102005473280, owned_capacity_bytes=101973819392, reason=explicit_capacity_exceeds_owned_capacity]
+```
+
+Lower `memory_limit_bytes` in the `[[admission.device_profiles]]` entry for that
+device to at most the largest accepted value. The other profile keys report a
+rejected value with the same code. `backend_reserve_bytes`,
+`default_query_limit_bytes`, and `cache_cap_bytes` also state the largest value
+their capacity accepts.
+
 Selected ordinals and profile ordinals must match exactly. A profile outside
 `ALGEON_SERVER_GPU_DEVICES`, a missing profile, or a duplicate ordinal is an
 error. `cache_cap_bytes = 0` (the default) installs no resident GPU cache.

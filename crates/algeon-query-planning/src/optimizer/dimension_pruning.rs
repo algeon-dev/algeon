@@ -72,7 +72,7 @@ impl DimensionDerivedRowGroupPruningOptions {
     pub fn validate(&self) -> Result<()> {
         if self.max_dimension_rows == 0 {
             return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
+                QueryErrorCode::InvalidConfiguration,
                 "query_engine.dimension_derived_row_group_pruning_options.validate",
                 "dimension-derived row-group pruning option must be greater than zero",
             )

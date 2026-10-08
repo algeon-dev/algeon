@@ -13,6 +13,7 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::Cancelled, ErrorStatus::Permanent),
     (ErrorCode::SqlParse, ErrorStatus::Permanent),
     (ErrorCode::InvalidRequest, ErrorStatus::Permanent),
+    (ErrorCode::InvalidConfiguration, ErrorStatus::Permanent),
     (ErrorCode::DataFusionPlanning, ErrorStatus::Permanent),
     (ErrorCode::PlanningTimeout, ErrorStatus::Permanent),
     (ErrorCode::ObjectNotFound, ErrorStatus::Permanent),
@@ -63,6 +64,7 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
     (QueryErrorCode::UnsupportedType, ErrorCode::UnsupportedType, QueryErrorStatus::Permanent),
     (QueryErrorCode::InvalidPlan, ErrorCode::InvalidExecutionPlan, QueryErrorStatus::Permanent),
     (QueryErrorCode::InvalidAttemptCorrelation, ErrorCode::InvalidRequest, QueryErrorStatus::Permanent),
+    (QueryErrorCode::InvalidConfiguration, ErrorCode::InvalidConfiguration, QueryErrorStatus::Permanent),
     (QueryErrorCode::GraphInputInvalid, ErrorCode::GraphInputInvalid, QueryErrorStatus::Permanent),
     (QueryErrorCode::CudfInvalidInput, ErrorCode::CudfInvalidInput, QueryErrorStatus::Permanent),
     (QueryErrorCode::CudfUnsupported, ErrorCode::CudfUnsupported, QueryErrorStatus::Permanent),
@@ -183,6 +185,10 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::UnsupportedExpression.as_str(), "unsupported_expression");
     assert_eq!(ErrorCode::UnsupportedExpression.kind(), ErrorKind::Unsupported);
     assert_eq!(ErrorCode::UnsupportedExpression.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::InvalidConfiguration.as_str(), "invalid_configuration");
+    assert_eq!(ErrorCode::InvalidConfiguration.kind(), ErrorKind::InvalidInput);
+    assert_eq!(ErrorCode::InvalidConfiguration.status(), ErrorStatus::Permanent);
 
     assert_eq!(ErrorCode::SizeOverflow.as_str(), "size_overflow");
     assert_eq!(ErrorCode::SizeOverflow.kind(), ErrorKind::ResourceExhausted);
@@ -360,6 +366,7 @@ fn native_query_error_json_uses_fact_only_correlation_ids() {
 #[test]
 fn native_query_error_triage_codes_preserve_invalid_input_and_unsupported_capability() {
     assert_eq!(TriageCode::from(QueryErrorCode::CudfInvalidInput), TriageCode::InvalidInput);
+    assert_eq!(TriageCode::from(QueryErrorCode::InvalidConfiguration), TriageCode::InvalidInput);
     assert_eq!(TriageCode::from(QueryErrorCode::CudfUnsupported), TriageCode::UnsupportedOperator);
 }
 

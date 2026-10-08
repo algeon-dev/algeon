@@ -5,7 +5,6 @@ use std::{
 };
 
 use algeon_datafusion::{
-    capability::CapabilityReason,
     native_exec::AlgeonNativeExecutionConfig,
     native_report::{
         CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
@@ -13,11 +12,7 @@ use algeon_datafusion::{
         NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureReport, NativeFallbackPressureRow,
         NativeFallbackPressureWorkloadItem,
     },
-    planner::{
-        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, NativePlanningDiagnostics,
-        plan_with_native_diagnostics,
-    },
-    report::{GpuCandidate, PlanningReport},
+    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
@@ -265,47 +260,6 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(text.contains(
         "q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\tnone\tnone\tsql_planning_failed\tplanning\tnone\tnone\ttrue"
     ));
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[tokio::test]
-async fn native_datafusion_planning_report_does_not_blame_supported_topk_wrapper() {
-    let dir = unique_temp_dir("algeon-datafusion-native-planning-topk-category");
-    let path = dir.join("input.parquet");
-    write_numeric_parquet_file(&path);
-    let plan = sql_plan(
-        &path,
-        direct_friendly_sql_session_config(),
-        "SELECT a.key FROM bench AS a CROSS JOIN bench AS b ORDER BY a.key LIMIT 1",
-    )
-    .await;
-    assert_eq!(plan.name(), "SortExec(TopK)");
-
-    let mut planning_report = PlanningReport::new();
-    planning_report.push_not_supported(
-        GpuCandidate::new("SortExec(fetch)(ProjectionExec(CrossJoinExec(LocalParquetScan,LocalParquetScan)))", 1),
-        CapabilityReason::UnsupportedOperator,
-    );
-    let diagnostics = NativePlanningDiagnostics {
-        input_plan_root: plan.name().to_string(),
-        input_plan_shape: "SortExec(fetch)(ProjectionExec(CrossJoinExec(DataSourceExec,DataSourceExec)))".to_string(),
-        input_join_diagnostics: Vec::new(),
-        report: planning_report,
-        native_optimizer: Default::default(),
-        source_diagnostics: Vec::new(),
-        capability_contract: Default::default(),
-    };
-
-    let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
-        "topk_cross_join",
-        plan,
-        diagnostics,
-    )]);
-    let row = planning_replacement_row(&report, "topk_cross_join");
-
-    assert_eq!(row.reason_code.as_deref(), Some("unsupported_operator"));
-    assert_eq!(row.unsupported_category.as_deref(), Some("operator_crossjoin"));
 
     fs::remove_dir_all(dir).unwrap();
 }

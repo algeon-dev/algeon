@@ -349,7 +349,7 @@ async fn panicking_reentrant_job_records_exactly_one_panic_terminal() {
 #[test]
 fn a_pool_without_a_worker_outside_the_lifecycle_reserve_is_structured() {
     let error = GpuExecutionPool::new(7, RESERVED_LIFECYCLE_WORKERS).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("device_ordinal"), Some("7"));
     assert_eq!(error.fact_value("worker_count"), Some("1"));
     assert_eq!(error.fact_value("reserved_lifecycle_workers"), Some("1"));

@@ -750,7 +750,7 @@ impl BackendMetricsStore {
         for &device_ordinal in device_ordinals {
             let Some(slot) = devices.get_mut(device_ordinal) else {
                 return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
+                    QueryErrorCode::InvalidConfiguration,
                     OPERATION,
                     "backend device ordinal exceeds fixed metrics capacity",
                 )
@@ -760,7 +760,7 @@ impl BackendMetricsStore {
             };
             if slot.configured {
                 return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
+                    QueryErrorCode::InvalidConfiguration,
                     OPERATION,
                     "backend metrics device ordinal is duplicated",
                 )

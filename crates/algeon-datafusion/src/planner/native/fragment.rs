@@ -56,7 +56,7 @@ use crate::{
     native::{lower_physical_plan_to_native, scan_predicate_exactly_matches_filter},
     native_exec::AlgeonNativeExecutionConfig,
     physical_plan::DataFusionCpuBoundaryExec,
-    report::{CandidateOutcome, NotSupportedDetail, PlanningReport},
+    report::{CandidateOutcome, NotSupportedDetail, PlanBlocker, PlanningReport},
 };
 
 /// Places native fragments below a query root that did not lower as a whole.
@@ -94,16 +94,19 @@ impl FragmentEvidence {
         self.capability_contract.merge(other.capability_contract);
     }
 
-    /// Records the selected candidates of a replacement the parent could not
+    /// Records the selected candidates of a replacement `parent` could not
     /// keep as not supported for that reason. Their diagnostics describe
     /// native plans that do not run, so they are dropped.
-    fn append_abandoned(&mut self, abandoned: Self) {
+    fn append_abandoned(&mut self, abandoned: Self, parent: &str) {
         self.report.append(PlanningReport::from_outcomes(abandoned.report.outcomes().iter().map(
             |outcome| match outcome {
                 CandidateOutcome::Selected { candidate } => CandidateOutcome::NotSupported {
                     candidate: candidate.clone(),
                     capability_reason: CapabilityReason::NativeFragmentParentContractUnsupported,
-                    detail: NotSupportedDetail::default(),
+                    detail: NotSupportedDetail {
+                        blocker: Some(Box::new(PlanBlocker::ParentOperator(parent.to_string()))),
+                        ..NotSupportedDetail::default()
+                    },
                 },
                 CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => outcome.clone(),
             },
@@ -169,7 +172,7 @@ impl FragmentSearch<'_> {
                     evidence.append(replacement.evidence);
                     break;
                 }
-                evidence.append_abandoned(replacement.evidence);
+                evidence.append_abandoned(replacement.evidence, current.name());
                 if replacement.whole {
                     next = self.rebuilt_over_fragments(child, filter_above_children, evidence)?;
                 }

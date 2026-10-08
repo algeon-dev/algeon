@@ -191,7 +191,7 @@ fn source_chunk_planning_options_reject_zero_thresholds() {
         .validate()
         .unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 
@@ -200,7 +200,7 @@ fn source_chunk_planning_options_reject_zero_thresholds() {
         .validate()
         .unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_min_device_budget_bytes"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }

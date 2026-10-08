@@ -301,7 +301,7 @@ impl AggregateStrategyExecutionOptions {
 fn validate_aggregate_strategy_execution_ppm(field: &'static str, value: u64) -> QueryResult<()> {
     if value > AggregateStrategyExecutionOptions::MAX_RATIO_PPM {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.aggregate_strategy_execution_options.validate",
             "aggregate strategy execution ratio threshold exceeds one hundred percent",
         )
@@ -322,7 +322,7 @@ fn validate_aggregate_strategy_execution_min_lte_max(
 ) -> QueryResult<()> {
     if min_value != 0 && max_value != 0 && min_value > max_value {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.aggregate_strategy_execution_options.validate",
             "aggregate strategy execution threshold ordering is inconsistent",
         )
@@ -748,7 +748,7 @@ mod tests {
             .validate()
             .unwrap_err();
 
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.fact_value("field"), Some("prepared_sort_groupby_low_cardinality_threshold_ppm"));
         assert_eq!(error.fact_value("max_value"), Some("1000000"));
         assert_eq!(error.fact_value("reason"), Some("ratio_ppm_above_one_hundred_percent"));
@@ -762,7 +762,7 @@ mod tests {
             .validate()
             .unwrap_err();
 
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.fact_value("field"), Some("exact_grouped_key_cardinality_probe_min_input_rows"));
         assert_eq!(error.fact_value("bound_field"), Some("exact_three_key_cardinality_probe_max_input_rows"));
         assert_eq!(

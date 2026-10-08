@@ -14,7 +14,7 @@ use cudf::{
     DeviceMemoryManagerInstallationStatus, InstallSpec,
     runtime::{DeviceHealthStatus, device_health_snapshot},
 };
-use query_planning::error::{QueryError, QueryErrorCode, Result};
+use query_planning::error::{QueryError, QueryErrorCode, Result, bytes_with_gib};
 
 use super::{
     DeviceCapabilities, DeviceContext, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker,
@@ -191,7 +191,7 @@ impl DeviceRegistry {
             }
             let profile = config.profile(*ordinal).ok_or_else(|| {
                 QueryError::new(
-                    QueryErrorCode::InvalidPlan,
+                    QueryErrorCode::InvalidConfiguration,
                     "query_engine.gpu.device_registry.config",
                     "device registry requires an explicit installation profile for every configured ordinal",
                 )
@@ -266,7 +266,7 @@ impl DeviceRegistry {
             let release_threshold_bytes =
                 usize::try_from(discovered.resource_profile.managed_capacity_bytes).map_err(|_| {
                     QueryError::new(
-                        QueryErrorCode::InvalidPlan,
+                        QueryErrorCode::InvalidConfiguration,
                         "query_engine.gpu.device_registry.memory_manager",
                         "managed device capacity does not fit the native allocator size type",
                     )
@@ -512,9 +512,13 @@ fn resolve_resource_profile(
 ) -> Result<DeviceResourceProfile> {
     let configured_limit_bytes = capacity_bytes.checked_add(profile.backend_reserve_bytes).ok_or_else(|| {
         QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.gpu.device_registry.capacity",
-            "configured capacity overflowed",
+            format!(
+                "device {device_ordinal} managed capacity of {} plus backend_reserve_bytes of {} overflows the 64-bit byte range; lower backend_reserve_bytes",
+                bytes_with_gib(capacity_bytes),
+                bytes_with_gib(profile.backend_reserve_bytes),
+            ),
         )
         .with_fact("device_ordinal", device_ordinal)
         .with_fact("field", "backend_reserve_bytes")
@@ -559,9 +563,14 @@ fn managed_capacity_bytes(
         profile.memory_partition.allocation_limit_bytes().and_then(|limit| u64::try_from(limit).ok());
     if let Some(allocation_limit) = allocation_limit.filter(|limit| *limit > facts.total_bytes) {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.gpu.device_registry.capacity",
-            "static partition cannot exceed discovered physical device memory",
+            format!(
+                "device {device_ordinal} static partition allocation_limit_bytes is {}, above the CUDA-visible device memory of {}; the largest accepted allocation_limit_bytes is {}",
+                bytes_with_gib(allocation_limit),
+                bytes_with_gib(facts.total_bytes),
+                bytes_with_gib(facts.total_bytes),
+            ),
         )
         .with_fact("device_ordinal", device_ordinal)
         .with_fact("allocation_limit_bytes", allocation_limit)
@@ -585,9 +594,14 @@ fn managed_capacity_bytes(
         DeviceRegistryCapacityPolicy::Explicit { limit_bytes } => {
             if limit_bytes > owned_capacity_bytes {
                 return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
+                    QueryErrorCode::InvalidConfiguration,
                     "query_engine.gpu.device_registry.capacity",
-                    "explicit managed capacity cannot exceed owned device memory",
+                    format!(
+                        "device {device_ordinal} memory_limit_bytes is {} but Algeon owns {} of device memory; the largest accepted memory_limit_bytes is {}",
+                        bytes_with_gib(limit_bytes),
+                        bytes_with_gib(owned_capacity_bytes),
+                        bytes_with_gib(owned_capacity_bytes),
+                    ),
                 )
                 .with_fact("device_ordinal", device_ordinal)
                 .with_fact("configured_limit_bytes", limit_bytes)
@@ -601,9 +615,14 @@ fn managed_capacity_bytes(
     let managed_capacity = usable_capacity.checked_sub(profile.backend_reserve_bytes).filter(|capacity| *capacity > 0);
     managed_capacity.ok_or_else(|| {
         QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.gpu.device_registry.capacity",
-            "backend reserve exhausts the device's usable managed capacity",
+            format!(
+                "device {device_ordinal} backend_reserve_bytes is {} and leaves no managed capacity out of the usable {}; the largest accepted backend_reserve_bytes is {}",
+                bytes_with_gib(profile.backend_reserve_bytes),
+                bytes_with_gib(usable_capacity),
+                bytes_with_gib(usable_capacity.saturating_sub(1)),
+            ),
         )
         .with_fact("device_ordinal", device_ordinal)
         .with_fact("configured_limit_bytes", configured_limit)
@@ -1119,5 +1138,67 @@ mod tests {
         };
         let error = managed_capacity_bytes(0, &facts, &partition).unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("static_partition_exceeds_physical_capacity"));
+    }
+
+    #[test]
+    fn capacity_rejections_are_configuration_errors_that_state_value_limit_and_largest_accepted_value() {
+        const GIB: u64 = 1 << 30;
+        // A 96 GB card reports 101973819392 CUDA-visible bytes, below 95 GiB.
+        let facts = DeviceFacts {
+            device: 0,
+            model_name: None,
+            uuid: None,
+            physical_total_bytes: None,
+            total_bytes: 101_973_819_392,
+            free_bytes: 101_000_000_000,
+            sm_count: Some(1),
+            utilization_pct: None,
+        };
+        let profile = DeviceRegistryInstallProfile {
+            stream_pool_size: 1,
+            device_capabilities: DeviceCapabilities::default(),
+            max_active_attempts: 1,
+            capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes: 95 * GIB },
+            backend_reserve_bytes: 0,
+            cache_cap_bytes: 0,
+            default_query_limit_bytes: None,
+            source_work_per_attempt: 1,
+            worker_job_capacity: 1,
+            lane_count: 1,
+            install_telemetry: true,
+            memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
+        };
+
+        let error = managed_capacity_bytes(0, &facts, &profile).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
+        assert_eq!(
+            error.message(),
+            "device 0 memory_limit_bytes is 102005473280 bytes (95.00 GiB) but Algeon owns 101973819392 bytes (94.97 GiB) of device memory; the largest accepted memory_limit_bytes is 101973819392 bytes (94.97 GiB)"
+        );
+
+        let reserve = DeviceRegistryInstallProfile {
+            capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes: 90 * GIB },
+            backend_reserve_bytes: 90 * GIB,
+            ..profile.clone()
+        };
+        let error = managed_capacity_bytes(0, &facts, &reserve).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
+        assert_eq!(
+            error.message(),
+            "device 0 backend_reserve_bytes is 96636764160 bytes (90.00 GiB) and leaves no managed capacity out of the usable 96636764160 bytes (90.00 GiB); the largest accepted backend_reserve_bytes is 96636764159 bytes (89.99 GiB)"
+        );
+
+        let partition = DeviceRegistryInstallProfile {
+            memory_partition: DeviceRegistryMemoryPartition::StaticPartition {
+                allocation_limit_bytes: usize::try_from(96 * GIB).unwrap(),
+            },
+            ..profile
+        };
+        let error = managed_capacity_bytes(0, &facts, &partition).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
+        assert_eq!(
+            error.message(),
+            "device 0 static partition allocation_limit_bytes is 103079215104 bytes (96.00 GiB), above the CUDA-visible device memory of 101973819392 bytes (94.97 GiB); the largest accepted allocation_limit_bytes is 101973819392 bytes (94.97 GiB)"
+        );
     }
 }

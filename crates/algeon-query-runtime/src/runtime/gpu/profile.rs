@@ -1,8 +1,10 @@
 //! Immutable per-device resource-controller profile.
 
+use std::fmt;
+
 use query_planning::{
     admission::ExecutionCapability,
-    error::{QueryError, QueryErrorCode, Result},
+    error::{QueryError, QueryErrorCode, Result, bytes_with_gib},
 };
 
 const OPERATION: &str = "query_engine.gpu.resource_profile";
@@ -191,10 +193,19 @@ impl DeviceResourceProfile {
         }
         let query_share_bytes =
             managed_capacity_bytes.checked_sub(cache_cap_bytes).filter(|share| *share > 0).ok_or_else(|| {
-                invalid(device_ordinal, "cache_cap_bytes", "cache cap must leave a non-zero query share")
-                    .with_fact("reason", "cache_cap_exceeds_managed_capacity")
-                    .with_fact("cache_cap_bytes", cache_cap_bytes)
-                    .with_fact("managed_capacity_bytes", managed_capacity_bytes)
+                invalid(
+                    device_ordinal,
+                    "cache_cap_bytes",
+                    format!(
+                        "is {}, at or above the managed capacity of {}; the largest accepted value is {}",
+                        bytes_with_gib(cache_cap_bytes),
+                        bytes_with_gib(managed_capacity_bytes),
+                        bytes_with_gib(managed_capacity_bytes.saturating_sub(1)),
+                    ),
+                )
+                .with_fact("reason", "cache_cap_exceeds_managed_capacity")
+                .with_fact("cache_cap_bytes", cache_cap_bytes)
+                .with_fact("managed_capacity_bytes", managed_capacity_bytes)
             })?;
         let divisor = u64::try_from(max_active_attempts).map_err(|_| {
             invalid(device_ordinal, "max_active_attempts", "parallelism target exceeds the capacity integer range")
@@ -226,22 +237,43 @@ impl DeviceResourceProfile {
             cache_cap_bytes,
         } = envelope;
         let usable_capacity_bytes = configured_limit_bytes.checked_sub(headroom_bytes).ok_or_else(|| {
-            invalid(device_ordinal, "headroom_bytes", "configured limit is below reserved headroom")
-                .with_fact("reason", "configured_limit_below_headroom")
-                .with_fact("configured_limit_bytes", configured_limit_bytes)
-                .with_fact("headroom_bytes", headroom_bytes)
+            invalid(
+                device_ordinal,
+                "headroom_bytes",
+                format!(
+                    "is {}, above the configured limit of {}",
+                    bytes_with_gib(headroom_bytes),
+                    bytes_with_gib(configured_limit_bytes),
+                ),
+            )
+            .with_fact("reason", "configured_limit_below_headroom")
+            .with_fact("configured_limit_bytes", configured_limit_bytes)
+            .with_fact("headroom_bytes", headroom_bytes)
         })?;
         let managed_capacity_bytes = usable_capacity_bytes.checked_sub(backend_reserve_bytes).ok_or_else(|| {
-            invalid(device_ordinal, "backend_reserve_bytes", "backend reserve exceeds usable capacity")
-                .with_fact("reason", "backend_reserve_exceeds_usable_capacity")
-                .with_fact("usable_capacity_bytes", usable_capacity_bytes)
-                .with_fact("backend_reserve_bytes", backend_reserve_bytes)
+            invalid(
+                device_ordinal,
+                "backend_reserve_bytes",
+                format!(
+                    "is {}, above the usable capacity of {}; the largest accepted value is {}",
+                    bytes_with_gib(backend_reserve_bytes),
+                    bytes_with_gib(usable_capacity_bytes),
+                    bytes_with_gib(usable_capacity_bytes.saturating_sub(1)),
+                ),
+            )
+            .with_fact("reason", "backend_reserve_exceeds_usable_capacity")
+            .with_fact("usable_capacity_bytes", usable_capacity_bytes)
+            .with_fact("backend_reserve_bytes", backend_reserve_bytes)
         })?;
         if managed_capacity_bytes == 0 {
             return Err(invalid(
                 device_ordinal,
                 "managed_capacity_bytes",
-                "managed capacity must be greater than zero",
+                format!(
+                    "is zero; backend_reserve_bytes of {} takes the whole usable capacity of {}",
+                    bytes_with_gib(backend_reserve_bytes),
+                    bytes_with_gib(usable_capacity_bytes),
+                ),
             )
             .with_fact("reason", "zero_managed_capacity"));
         }
@@ -249,7 +281,12 @@ impl DeviceResourceProfile {
             return Err(invalid(
                 device_ordinal,
                 "cache_cap_bytes",
-                "cache cap must leave a non-zero query share of managed capacity",
+                format!(
+                    "is {}, at or above the managed capacity of {}; the largest accepted value is {}",
+                    bytes_with_gib(cache_cap_bytes),
+                    bytes_with_gib(managed_capacity_bytes),
+                    bytes_with_gib(managed_capacity_bytes - 1),
+                ),
             )
             .with_fact("reason", "cache_cap_exceeds_managed_capacity")
             .with_fact("cache_cap_bytes", cache_cap_bytes)
@@ -272,7 +309,14 @@ impl DeviceResourceProfile {
             return Err(invalid(
                 device_ordinal,
                 "default_query_limit_bytes",
-                "default query limit exceeds the query share of managed capacity",
+                format!(
+                    "is {}, above the query share of {} (managed capacity {} minus cache_cap_bytes {}); the largest accepted value is {}",
+                    bytes_with_gib(default_query_limit_bytes),
+                    bytes_with_gib(query_share_bytes),
+                    bytes_with_gib(managed_capacity_bytes),
+                    bytes_with_gib(cache_cap_bytes),
+                    bytes_with_gib(query_share_bytes),
+                ),
             )
             .with_fact("reason", "default_query_limit_exceeds_managed_capacity")
             .with_fact("default_query_limit_bytes", default_query_limit_bytes)
@@ -317,10 +361,14 @@ impl DeviceResourceProfile {
     }
 }
 
-fn invalid(device_ordinal: usize, field: &'static str, message: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::InvalidPlan, OPERATION, message)
-        .with_fact("device_ordinal", device_ordinal)
-        .with_fact("field", field)
+fn invalid(device_ordinal: usize, field: &'static str, message: impl fmt::Display) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidConfiguration,
+        OPERATION,
+        format!("device {device_ordinal} {field} {message}"),
+    )
+    .with_fact("device_ordinal", device_ordinal)
+    .with_fact("field", field)
 }
 
 #[cfg(test)]

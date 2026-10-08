@@ -117,6 +117,13 @@ pub(in crate::native) fn validate_physical_expr_contract(
 }
 
 fn validate_physical_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
+    validate_physical_expr_shape(expr, input_schema).map_err(|rejection| rejection.at_expression(expr))
+}
+
+fn validate_physical_expr_shape(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> Result<(), ExpressionRejection> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         return validate_column_type(column, input_schema);
     }
@@ -130,10 +137,10 @@ fn validate_physical_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef
         return validate_physical_expr(not.arg(), input_schema);
     }
     if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
-        return validate_null_predicate_arg(is_null.arg(), input_schema);
+        return validate_null_predicate_arg(is_null.arg(), input_schema, "IS NULL");
     }
     if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
-        return validate_null_predicate_arg(is_not_null.arg(), input_schema);
+        return validate_null_predicate_arg(is_not_null.arg(), input_schema, "IS NOT NULL");
     }
     if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         let source_type = physical_expr_data_type(cast.expr(), input_schema)?;
@@ -173,7 +180,8 @@ fn validate_physical_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef
                 | DataType::Float32
                 | DataType::Float64
         ) {
-            return Err(ExpressionRejection::unsupported_type(ExpressionCapability::NegativeExpression));
+            return Err(ExpressionRejection::unsupported_type(ExpressionCapability::NegativeExpression)
+                .with_subject(negation_subject(data_type)));
         }
         // DataFusion checks integer scalars but wraps arrays. Only literal
         // scalars have a checked result available during validation.
@@ -181,15 +189,21 @@ fn validate_physical_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef
             && collect_columns(negative.arg()).is_empty()
         {
             let Some(literal) = negative.arg().downcast_ref::<Literal>() else {
-                return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::NegativeExpression));
+                return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::NegativeExpression)
+                    .with_subject(negation_subject(data_type)));
             };
             if literal.value().arithmetic_negate().is_err() {
-                return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::NegativeExpression));
+                return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::NegativeExpression)
+                    .with_subject(negation_subject(data_type)));
             }
         }
         return validate_physical_expr(negative.arg(), input_schema);
     }
     Err(unsupported_expression())
+}
+
+fn negation_subject(operand: DataType) -> ExpressionRejectionSubject {
+    ExpressionRejectionSubject::UnaryOperator { operator: "-", operand }
 }
 
 fn validate_try_cast_expr(try_cast: &TryCastExpr, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
@@ -208,11 +222,12 @@ fn validate_try_cast_expr(try_cast: &TryCastExpr, input_schema: &SchemaRef) -> R
 fn validate_null_predicate_arg(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
+    operator: &'static str,
 ) -> Result<(), ExpressionRejection> {
     validate_physical_expr(expr, input_schema)?;
     let data_type = physical_expr_data_type(expr, input_schema)?;
     if is_timestamp_with_timezone(&data_type) || is_list_carry_type(&data_type) || is_narrow_decimal_carry(&data_type) {
-        Err(unsupported_type())
+        Err(unsupported_type().with_subject(ExpressionRejectionSubject::UnaryOperator { operator, operand: data_type }))
     } else {
         Ok(())
     }
@@ -696,11 +711,17 @@ fn validate_binary_expr(binary: &BinaryExpr, input_schema: &SchemaRef) -> Result
     let left_interval = is_interval_literal_expr(binary.left());
     let right_interval = is_interval_literal_expr(binary.right());
     if left_interval || right_interval {
-        return validate_interval_binary_expr(binary, input_schema, left_interval, right_interval);
+        return validate_interval_binary_expr(binary, input_schema, left_interval, right_interval)
+            .map_err(|rejection| rejection.named_by_operator(binary_operator_subject(binary, input_schema)));
     }
 
     validate_physical_expr(binary.left(), input_schema)?;
     validate_physical_expr(binary.right(), input_schema)?;
+    validate_binary_operator_contract(binary, input_schema)
+        .map_err(|rejection| rejection.named_by_operator(binary_operator_subject(binary, input_schema)))
+}
+
+fn validate_binary_operator_contract(binary: &BinaryExpr, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
     let operator = SupportedBinaryOperator::from_datafusion(binary.op())?;
     let left_type = physical_expr_data_type(binary.left(), input_schema)?;
     let right_type = physical_expr_data_type(binary.right(), input_schema)?;
