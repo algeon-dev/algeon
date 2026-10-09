@@ -116,6 +116,8 @@ mod source_fixtures;
 mod sql;
 #[path = "lowering_tests/tpch_shapes.rs"]
 mod tpch_shapes;
+#[path = "lowering_tests/window_input_ordering.rs"]
+mod window_input_ordering;
 
 #[path = "lowering_tests/aggregate_plan_builders.rs"]
 mod aggregate_plan_builders;

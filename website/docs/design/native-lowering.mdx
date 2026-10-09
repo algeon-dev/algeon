@@ -128,6 +128,14 @@ The required result still constrains the replacement. For example, partial
 would change the answer. A global `ORDER BY ... LIMIT` requires a final merge
 of chunk candidates. Independently sorted chunks cannot satisfy global order.
 
+A window with `ORDER BY` keys, or one that numbers rows by position inside
+partitions, reads its input ordered by its partition keys, then its `ORDER BY`
+keys. DataFusion supplies that order with a sort, and it can push the sort
+below a hash join and rely on the join to keep probe order. Native joins do
+not keep it, so lowering sorts the window's input when the input is a join,
+aggregate, union or GPU-resident relation, and it drops a sort without a
+`fetch` below an operator that does not read row order, such as a join input.
+
 The native host-output wrapper exposes one bounded output partition. When
 native fragments sit under CPU operators, the adapter verifies the parent's
 schema, ordering and distribution requirements, including co-partitioned join

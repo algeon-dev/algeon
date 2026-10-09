@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use datafusion::{
     common::{
@@ -19,8 +19,6 @@ use query_planning::{
 };
 
 use super::{AlgeonNativeOptimizerConfig, FinalPlanDisposition, classify_final_plan};
-#[cfg(feature = "cugraph")]
-use crate::native_exec::composed_admission_capability_evidence;
 use crate::{
     attempt::InvocationAttempt,
     capability::CapabilityReason,
@@ -38,6 +36,8 @@ use crate::{
     report::{CandidateOutcome, GpuCandidate, NotSupportedDetail, PlanningReport},
     session::{ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
 };
+#[cfg(feature = "cugraph")]
+use crate::{cugraph_sql::CugraphAlgoExec, native_exec::composed_admission_capability_evidence};
 
 mod attempt;
 mod capability_envelope;
@@ -212,6 +212,29 @@ pub struct AlgeonNativePhysicalOptimizerRule {
     // GPU-resident form here, and the outer run binds admission and checks
     // the CPU policy.
     root_sink: NativeReplacementSink,
+    // Where a cuGraph input subplan reports its planning outcomes. The input's
+    // graph carries them to the report of the query root.
+    input_planning_sink: Option<InputPlanningSink>,
+}
+
+/// Receives the latest planning outcomes of one cuGraph input subplan.
+///
+/// The subplan is planned in its own session state, so its rule has no
+/// planning record of the query root to write to. The planner that owns the
+/// graph reads the outcomes after planning the input.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct InputPlanningSink(Arc<Mutex<PlanningReport>>);
+
+impl InputPlanningSink {
+    fn record(&self, report: PlanningReport) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = report;
+    }
+
+    /// The outcomes of the latest optimizer stage that produced any.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn take(&self) -> PlanningReport {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
+    }
 }
 
 // Distinct rule identities let the count-only probe run before the final rewrite pass.
@@ -226,17 +249,27 @@ enum NativeOptimizerStage {
 impl AlgeonNativePhysicalOptimizerRule {
     /// Create the final native rewrite rule.
     pub fn new(config: AlgeonNativeOptimizerConfig) -> Self {
-        Self { config, stage: NativeOptimizerStage::Final, root_sink: NativeReplacementSink::HostArrow }
+        Self {
+            config,
+            stage: NativeOptimizerStage::Final,
+            root_sink: NativeReplacementSink::HostArrow,
+            input_planning_sink: None,
+        }
     }
 
     /// The rule for one cuGraph input subplan, whose native root binds into
-    /// the graph under `input_name`.
+    /// the graph under `input_name` and whose outcomes go to `sink`.
     #[cfg(feature = "cugraph")]
-    pub(crate) fn new_cugraph_subplan(config: AlgeonNativeOptimizerConfig, input_name: String) -> Self {
+    pub(crate) fn new_cugraph_subplan(
+        config: AlgeonNativeOptimizerConfig,
+        input_name: String,
+        sink: InputPlanningSink,
+    ) -> Self {
         Self {
             config,
             stage: NativeOptimizerStage::Final,
             root_sink: NativeReplacementSink::GpuResidentProducer { input_name },
+            input_planning_sink: Some(sink),
         }
     }
 
@@ -250,6 +283,7 @@ impl AlgeonNativePhysicalOptimizerRule {
             config: self.config.clone(),
             stage: NativeOptimizerStage::CountOnlyProbe,
             root_sink: self.root_sink.clone(),
+            input_planning_sink: self.input_planning_sink.clone(),
         }
     }
 
@@ -407,6 +441,15 @@ impl AlgeonNativePhysicalOptimizerRule {
         if retains_prior_selection_report {
             return Ok((optimized.plan, None));
         }
+        if let Some(sink) = &self.input_planning_sink {
+            if !optimized.report.outcomes().is_empty() {
+                sink.record(optimized.report.clone());
+            }
+            return Ok((optimized.plan, Some(optimized.report)));
+        }
+        if self.ends_planning_pass() {
+            append_cugraph_input_planning_reports(plan.as_ref(), &mut optimized.report);
+        }
         if let (Some(invocation), Some((input_plan_root, input_plan_shape, input_join_diagnostics))) =
             (invocation, input)
         {
@@ -423,6 +466,21 @@ impl AlgeonNativePhysicalOptimizerRule {
         Ok((optimized.plan, Some(optimized.report)))
     }
 }
+
+/// Appends the planning outcomes of the cuGraph input relations below `plan`
+/// to `report`, after the outcomes of the plan's own candidates.
+#[cfg(feature = "cugraph")]
+fn append_cugraph_input_planning_reports(plan: &dyn ExecutionPlan, report: &mut PlanningReport) {
+    if let Some(cugraph) = plan.downcast_ref::<CugraphAlgoExec>() {
+        report.append(cugraph.input_planning_report().clone());
+    }
+    for child in plan.children() {
+        append_cugraph_input_planning_reports(child.as_ref(), report);
+    }
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn append_cugraph_input_planning_reports(_plan: &dyn ExecutionPlan, _report: &mut PlanningReport) {}
 
 /// Roots a directly constructed native plan in the admission node the
 /// optimizer rule would place. Unit tests that build native execs without the

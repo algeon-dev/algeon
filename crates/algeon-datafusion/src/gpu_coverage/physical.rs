@@ -10,7 +10,7 @@ use super::{
     remedy::cost_remedy,
 };
 #[cfg(feature = "cugraph")]
-use crate::cugraph_sql::CugraphAlgoExec;
+use crate::{cugraph_sql::CugraphAlgoExec, final_plan_observation::cugraph_input_runs_natively};
 use crate::{
     native_report::candidate_shape_family,
     planner::FinalPlanCoverage,
@@ -26,13 +26,22 @@ pub(super) fn cugraph_calls(plan: &dyn ExecutionPlan) -> Vec<QueryGpuCugraphCall
 #[cfg(feature = "cugraph")]
 fn collect_cugraph_calls(plan: &dyn ExecutionPlan, calls: &mut Vec<QueryGpuCugraphCall>) {
     if let Some(cugraph) = plan.downcast_ref::<CugraphAlgoExec>() {
+        let inputs_native = cugraph.children().iter().all(|input| cugraph_input_runs_natively(input.as_ref()));
+        let mut notes = vec![
+            "physical cuGraph plan constructed".to_string(),
+            "runtime seed, personalization, and device-side validation are not decided at plan time".to_string(),
+        ];
+        if !inputs_native {
+            notes.push(format!(
+                "an input relation runs on DataFusion and is staged through host Arrow; the candidate rows labelled {}.<relation> give the reason",
+                cugraph.coverage_algorithm_name()
+            ));
+        }
         calls.push(QueryGpuCugraphCall {
             algorithm: cugraph.coverage_algorithm_name().to_string(),
             statically_valid: true,
-            notes: vec![
-                "physical cuGraph plan constructed".to_string(),
-                "runtime seed, personalization, and device-side validation are not decided at plan time".to_string(),
-            ],
+            inputs_native,
+            notes,
         });
     }
     for child in plan.children() {

@@ -20,7 +20,11 @@ use super::{
 };
 use super::{CugraphLogicalNode, GpuIslandHostBoundaryConfig};
 #[cfg(feature = "cugraph")]
-use crate::session::{planning_native_execution_config, session_state_with_native_execution_config};
+use crate::{
+    planner::native::InputPlanningSink,
+    report::PlanningReport,
+    session::{planning_native_execution_config, session_state_with_native_execution_config},
+};
 
 #[derive(Debug)]
 pub struct CugraphExtensionPlanner {
@@ -62,25 +66,37 @@ impl ExtensionPlanner for CugraphExtensionPlanner {
             })?;
             let native_execution_config = planning_native_execution_config(session);
             // Each input is planned on its own state because a native input
-            // root becomes a GPU-resident producer named for its role.
+            // root becomes a GPU-resident producer named for its role. The
+            // outcomes of that planning are labelled with the function and the
+            // relation, such as `cugraph_pagerank.edges`, and travel with the
+            // graph to the report of the query root.
+            let function = node.spec().algorithm.function_name();
             let planning_state = |role: &str| {
-                session_state_with_native_execution_config(
+                let sink = InputPlanningSink::default();
+                let state = session_state_with_native_execution_config(
                     session_state,
                     native_execution_config.clone(),
                     format!("{}.{role}", node.gpu_result_input_name()),
+                    sink.clone(),
                 )
-                .unwrap_or_else(|| session_state.clone())
+                .unwrap_or_else(|| session_state.clone());
+                (state, sink)
             };
             let mut children = Vec::with_capacity(logical_inputs.len());
-            for (index, input) in logical_inputs.iter().enumerate() {
+            let mut input_planning = PlanningReport::new();
+            for (index, (input, relation)) in logical_inputs.iter().zip(node.roles()).enumerate() {
                 let role = if index == 0 { "edge".to_string() } else { format!("predicate_{index}") };
-                children.push(planner.create_physical_plan(input, &planning_state(&role)).await?);
+                let (state, sink) = planning_state(&role);
+                children.push(planner.create_physical_plan(input, &state).await?);
+                let mut report = sink.take();
+                report.label_relation_input(&format!("{function}.{}", relation.as_str()));
+                input_planning.append(report);
             }
             let edge_source = children.remove(0);
             let vertex_domain = validate_edge_source_schema(node.spec(), &edge_source.schema())?;
             let mut predicate_sources = Vec::with_capacity(children.len() + 1);
             if let Some(source) =
-                literal_bfs_source_plan(&planning_state("bfs_source"), node.spec(), &vertex_domain).await?
+                literal_bfs_source_plan(&planning_state("bfs_source").0, node.spec(), &vertex_domain).await?
             {
                 predicate_sources.push(source);
             }
@@ -94,7 +110,8 @@ impl ExtensionPlanner for CugraphExtensionPlanner {
                 native_execution_config,
                 self.host_boundary_config,
                 node.gpu_result_input_name().to_string(),
-            )?;
+            )?
+            .with_input_planning_report(input_planning);
             Ok(Some(Arc::new(exec) as Arc<dyn ExecutionPlan>))
         }
     }

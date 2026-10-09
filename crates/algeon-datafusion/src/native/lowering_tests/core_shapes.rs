@@ -555,7 +555,7 @@ fn assert_ordered_root_rejected_over_sorted_aggregate_fragment(report: &Planning
 }
 
 #[test]
-fn ordered_window_over_order_breaking_aggregate_is_rejected_before_root_sort_repair() {
+fn ordered_window_over_order_breaking_aggregate_reads_a_native_sort_of_its_keys() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-window-over-aggregate-order");
     let path = dir.join("input.parquet");
     write_sorted_numeric_parquet_file(&path);
@@ -581,8 +581,15 @@ fn ordered_window_over_order_breaking_aggregate_is_rejected_before_root_sort_rep
 
     let (report, native_plan) = optimize_with_native_rule(plan);
 
-    assert!(native_plan.is_none());
-    assert_ordered_root_rejected_over_sorted_aggregate_fragment(&report);
+    assert!(matches!(report.outcomes(), [CandidateOutcome::Selected { .. }]), "outcomes={:?}", report.outcomes());
+    let native_plan = native_plan.expect("the rule keeps the native plan");
+    let PlanNode::Window(window) = &native_plan.root_node().kind else {
+        panic!("the window is the plan root:\n{native_plan}");
+    };
+    let Some(PlanNode::Sort(sort)) = native_plan.node(window.input).map(|node| &node.kind) else {
+        panic!("the window reads a sort of its keys:\n{native_plan}");
+    };
+    assert!(matches!(native_plan.node(sort.input).map(|node| &node.kind), Some(PlanNode::Aggregate(_))));
 
     fs::remove_dir_all(dir).unwrap();
 }

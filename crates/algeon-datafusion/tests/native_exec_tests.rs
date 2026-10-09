@@ -21,8 +21,8 @@ use algeon_datafusion::{
 };
 use arrow::{
     array::{
-        Array, Decimal128Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, ListArray, StringArray,
-        StringViewArray,
+        Array, ArrayRef, Date32Array, Decimal128Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+        ListArray, StringArray, StringViewArray,
     },
     buffer::{OffsetBuffer, ScalarBuffer},
     compute::SortOptions as ArrowSortOptions,
@@ -1649,4 +1649,199 @@ fn native_required_rejection_names_the_admission_refusal() {
     assert!(error.fact_value("capability_rejection_reason").is_some(), "{facts:?}");
     assert!(error.fact_value("capability_rejection_boundary").is_some(), "{facts:?}");
     fs::remove_dir_all(dir).unwrap();
+}
+
+/// A fact table `t` and a smaller dimension `u`, written so that DataFusion
+/// builds the join's hash table on `u` and pushes a sort on `t`'s columns to
+/// the probe input. `t.id` makes every window ordering total.
+fn window_join_contexts(prefix: &str) -> (std::path::PathBuf, SessionContext, SessionContext) {
+    const FACT_ROWS: i64 = 20_000;
+    const DIMENSION_ROWS: i64 = 997;
+    let dir = unique_temp_dir(prefix);
+    let write = |name: &str, columns: Vec<(&str, Vec<i64>)>| {
+        let schema = Arc::new(Schema::new(
+            columns.iter().map(|(column, _)| Field::new(*column, DataType::Int64, false)).collect::<Vec<_>>(),
+        ));
+        let arrays = columns.into_iter().map(|(_, values)| Arc::new(Int64Array::from(values)) as ArrayRef).collect();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(dir.join(name)).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    };
+    write(
+        "t.parquet",
+        vec![
+            ("id", (0..FACT_ROWS).collect()),
+            ("k", (0..FACT_ROWS).map(|row| (row * 31) % DIMENSION_ROWS).collect()),
+            ("a", (0..FACT_ROWS).map(|row| (row * 7919) % 53).collect()),
+            ("b", (0..FACT_ROWS).map(|row| (row * 131) % 211).collect()),
+            ("v", (0..FACT_ROWS).map(|row| row % 1000).collect()),
+        ],
+    );
+    write(
+        "u.parquet",
+        vec![("k", (0..DIMENSION_ROWS).collect()), ("w", (0..DIMENSION_ROWS).map(|row| row * 3).collect())],
+    );
+    let config = || SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+    let required = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config())
+            .with_algeon_native(native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired))
+            .build(),
+    );
+    let cpu = SessionContext::new_with_config(config());
+    for ctx in [&required, &cpu] {
+        for table in ["t", "u"] {
+            let path = dir.join(format!("{table}.parquet"));
+            block_on(ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+        }
+    }
+    (dir, required, cpu)
+}
+
+/// DataFusion pushes the window's sort below the hash join and relies on the
+/// join to keep the probe order. The native plan sorts the join output itself,
+/// so a window over a join plans natively under `NativeRequired` and returns
+/// the rows DataFusion returns.
+#[test]
+fn windows_over_a_hash_join_match_datafusion() {
+    let (dir, required, cpu) = window_join_contexts("algeon-datafusion-native-exec-window-over-join");
+    for query in [
+        "SELECT t.id, LEAD(t.v) OVER (PARTITION BY t.a ORDER BY t.b, t.id) AS next \
+         FROM t JOIN u ON t.k = u.k ORDER BY t.id",
+        "SELECT t.id, LAG(u.w, 2, -1) OVER (PARTITION BY t.a ORDER BY t.b, t.id) AS previous \
+         FROM t JOIN u ON t.k = u.k ORDER BY t.id",
+        "SELECT t.id, ROW_NUMBER() OVER (PARTITION BY t.a ORDER BY t.b, t.id) AS rn \
+         FROM t JOIN u ON t.k = u.k ORDER BY t.id",
+        "SELECT t.id, RANK() OVER (PARTITION BY t.a ORDER BY t.b) AS r FROM t JOIN u ON t.k = u.k ORDER BY t.id",
+        "SELECT t.id, SUM(u.w) OVER (PARTITION BY t.a) AS partition_total FROM t JOIN u ON t.k = u.k ORDER BY t.id",
+        // No final ORDER BY: the window's own output order is the result order.
+        "SELECT t.a, t.b, t.id, LEAD(t.v) OVER (PARTITION BY t.a ORDER BY t.b, t.id) AS next \
+         FROM t JOIN u ON t.k = u.k",
+    ] {
+        let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+        assert_eq!(actual, expected, "{query}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// The native window kernel reads columns, so the `1` of `COUNT(*)` and the
+/// `x + 1` of a window aggregate or LAG are computed below the window.
+#[test]
+fn window_functions_over_computed_arguments_match_datafusion() {
+    let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-computed-argument");
+    for query in [
+        "SELECT p, COUNT(*) OVER (PARTITION BY p) AS n FROM input ORDER BY p, n",
+        "SELECT p, x, SUM(x + 1) OVER (PARTITION BY p) AS s FROM input ORDER BY p, x, s",
+        "SELECT p, o, x, LAG(x + 1) OVER (PARTITION BY p ORDER BY o, x) AS previous FROM input \
+         ORDER BY p, o, x, previous",
+    ] {
+        let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+        assert_eq!(actual, expected, "{query}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Writes `input(p, x, f, d)` in eight row groups, a NativeRequired context
+/// and a DataFusion context. Both keep DataFusion's defaults apart from single-partition
+/// planning and `collect_statistics`, so DataFusion plans each uncorrelated
+/// scalar subquery as a `ScalarSubqueryExec` and the Algeon session plans the
+/// join its builder selects.
+fn scalar_subquery_contexts(
+    prefix: &str,
+    collect_statistics: bool,
+) -> (std::path::PathBuf, SessionContext, SessionContext) {
+    const ROWS: i32 = 2_000;
+    let dir = unique_temp_dir(prefix);
+    let path = dir.join("input.parquet");
+    {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("p", DataType::Int32, false),
+            Field::new("x", DataType::Int64, false),
+            Field::new("f", DataType::Float64, false),
+            Field::new("d", DataType::Date32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from_iter_values((0..ROWS).map(|row| (row * 7919) % 211))),
+                Arc::new(Int64Array::from_iter_values((0..ROWS).map(|row| i64::from(row % 1000)))),
+                Arc::new(Float64Array::from_iter_values((0..ROWS).map(|row| f64::from(row % 97) / 4.0))),
+                Arc::new(Date32Array::from_iter_values((0..ROWS).map(|row| 19_000 + row % 365))),
+            ],
+        )
+        .unwrap();
+        // Eight row groups make a scan that two consumers share arrive in
+        // several source chunks.
+        let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+        for offset in (0..batch.num_rows()).step_by(250) {
+            writer.write(&batch.slice(offset, 250)).unwrap();
+            writer.flush().unwrap();
+        }
+        writer.close().unwrap();
+    }
+    let config = || {
+        let mut config = SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+        config.options_mut().execution.collect_statistics = collect_statistics;
+        config
+    };
+    let required = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config())
+            .with_algeon_native(native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired))
+            .build(),
+    );
+    let cpu = SessionContext::new_with_config(config());
+    for ctx in [&required, &cpu] {
+        block_on(ctx.register_parquet("input", path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    }
+    (dir, required, cpu)
+}
+
+/// An Algeon session plans an uncorrelated scalar subquery as a join with its
+/// one-row aggregate, so a scalar aggregate in a projection, an arithmetic
+/// expression, a HAVING or a filter plans under `NativeRequired` and returns
+/// DataFusion's values and types. The subquery can aggregate the scan the
+/// outer query reads with a computed argument (`AVG(x)` reads
+/// `CAST(x AS DOUBLE)`, `COUNT(*)` reads a literal). With DataFusion's default
+/// statistics collection, an unfiltered `MIN`, `MAX` or `COUNT` arrives as
+/// literals over a placeholder row.
+#[test]
+fn uncorrelated_scalar_subqueries_plan_natively_as_joins_and_match_datafusion() {
+    for collect_statistics in [false, true] {
+        let (dir, required, cpu) =
+            scalar_subquery_contexts("algeon-datafusion-native-exec-scalar-subquery", collect_statistics);
+        for query in [
+            "WITH cte AS (SELECT p, x FROM input WHERE p < 50) \
+             SELECT x, x / (SELECT COUNT(*) FROM cte) AS r FROM cte ORDER BY x, r",
+            "SELECT p, x, (SELECT MAX(x) FROM input) AS mx, (SELECT COUNT(*) FROM input WHERE p = 3) AS c \
+             FROM input ORDER BY p, x",
+            "SELECT p, SUM(x) AS s FROM input GROUP BY p HAVING SUM(x) > (SELECT SUM(x) / 300 FROM input) ORDER BY p",
+            "SELECT p, x FROM input WHERE x * 2 > (SELECT MAX(x) FROM input) ORDER BY p, x",
+            "SELECT p, x FROM input WHERE x < (SELECT MIN(x) FROM input) + 5 ORDER BY p, x",
+            "SELECT p, x FROM input WHERE x > (SELECT AVG(x) FROM input) ORDER BY p, x",
+            "SELECT p, x FROM input WHERE x > (SELECT SUM(x) / COUNT(*) FROM input) ORDER BY p, x",
+            "SELECT p, x, x - (SELECT AVG(x) FROM input) AS centered FROM input ORDER BY p, x",
+            "SELECT p, x, CAST(x AS DOUBLE) / (SELECT COUNT(*) FROM input) AS share FROM input ORDER BY p, x",
+            "SELECT p, x - (SELECT MIN(x) FROM input) AS d FROM input ORDER BY p, d",
+            "SELECT p, d, (SELECT MAX(p) FROM input) AS mp, (SELECT MAX(f) FROM input) AS mf, \
+             (SELECT MIN(d) FROM input) AS md FROM input ORDER BY p, d",
+        ] {
+            let plan = block_on(block_on(required.sql(query)).unwrap().create_physical_plan())
+                .unwrap_or_else(|error| panic!("{query} collect_statistics={collect_statistics}: {error}"));
+            let actual = block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap();
+            let expected = block_on(block_on(cpu.sql(query)).unwrap().collect()).unwrap();
+            let types = |batches: &[RecordBatch]| {
+                batches[0].schema().fields().iter().map(|field| field.data_type().clone()).collect::<Vec<_>>()
+            };
+            assert_eq!(types(&actual), types(&expected), "{query} collect_statistics={collect_statistics}");
+            let rows = |batches: &[RecordBatch]| pretty_format_batches(batches).unwrap().to_string();
+            let (actual, expected) = (rows(&actual), rows(&expected));
+            assert!(expected.lines().count() > 4, "{query} returns rows");
+            assert_eq!(actual, expected, "{query} collect_statistics={collect_statistics}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

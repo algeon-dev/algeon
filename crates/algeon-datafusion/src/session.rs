@@ -31,6 +31,8 @@ use datafusion::{
     physical_planner::ExtensionPlanner,
 };
 
+#[cfg(feature = "cugraph")]
+use crate::planner::native::InputPlanningSink;
 use crate::{
     cugraph_sql::{CugraphExtensionPlanner, CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_relation_planner},
     cuml_sql::{
@@ -228,11 +230,12 @@ pub(crate) fn session_state_with_native_execution_config(
     state: &SessionState,
     native_execution_config: AlgeonNativeExecutionConfig,
     input_name: String,
+    sink: InputPlanningSink,
 ) -> Option<SessionState> {
     let optimizer_config =
         installed_algeon_native_optimizer_config(state)?.with_native_execution_config(native_execution_config);
     let relational_rewrite_enabled = optimizer_config.execution_mode().rewrites_relational_plans();
-    let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new_cugraph_subplan(optimizer_config, input_name));
+    let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new_cugraph_subplan(optimizer_config, input_name, sink));
     let mut rules = state.physical_optimizers().to_vec();
     // The outer optimizer run revisits this subtree through `CugraphAlgoExec`'s
     // children. DataFusion forbids `JoinSelection` from swapping a hash join
@@ -418,6 +421,7 @@ mod tests {
             &state,
             optimizer_config.native_execution_config().clone(),
             "cugraph_test_input".to_string(),
+            InputPlanningSink::default(),
         )
         .expect("nested cuGraph planning requires installed native selection");
         let final_rewrite = |state: &SessionState| {
@@ -500,6 +504,7 @@ mod tests {
             &state,
             optimizer_config.native_execution_config().clone(),
             "cugraph_test_input".to_string(),
+            InputPlanningSink::default(),
         )
         .expect("nested cuGraph planning requires installed native selection");
         let is_post_pushdown = |rule: &Arc<dyn PhysicalOptimizerRule + Send + Sync>| {
@@ -519,6 +524,7 @@ mod tests {
             &state,
             optimizer_config.native_execution_config().clone(),
             "cugraph_test_input".to_string(),
+            InputPlanningSink::default(),
         )
         .expect("nested cuGraph planning requires installed native selection");
         assert_eq!(nested.config().target_partitions(), 1);
@@ -538,6 +544,7 @@ mod tests {
             &state,
             optimizer_config.native_execution_config().clone(),
             "cugraph_test_input".to_string(),
+            InputPlanningSink::default(),
         )
         .expect("nested cuGraph planning requires installed native selection");
 
@@ -559,6 +566,7 @@ mod tests {
             &ctx.state(),
             optimizer_config.native_execution_config().clone(),
             "cugraph_test_input".to_string(),
+            InputPlanningSink::default(),
         )
         .expect("nested cuGraph planning requires installed native selection");
 

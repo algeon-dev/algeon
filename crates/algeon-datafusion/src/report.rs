@@ -85,17 +85,33 @@ pub(crate) const UNSUPPORTED_NATIVE_PLAN_OPERATOR: &str = "UnsupportedNativePhys
 pub struct CandidateShape {
     operator: String,
     inputs: Vec<CandidateShape>,
+    relation_input: bool,
 }
 
 impl CandidateShape {
     /// One operator without covered inputs.
     pub fn leaf(operator: impl Into<String>) -> Self {
-        Self { operator: operator.into(), inputs: Vec::new() }
+        Self { operator: operator.into(), inputs: Vec::new(), relation_input: false }
     }
 
     /// One operator over the shapes of its covered inputs.
     pub fn new(operator: impl Into<String>, inputs: Vec<CandidateShape>) -> Self {
-        Self { operator: operator.into(), inputs }
+        Self { operator: operator.into(), inputs, relation_input: false }
+    }
+
+    /// `shape` labelled as the input relation `label` of a GPU relation
+    /// function, such as `cugraph_pagerank.edges`. The label is not an
+    /// operator, so [`Self::without_relation_input_label`] sees through it.
+    pub(crate) fn relation_input(label: &str, shape: CandidateShape) -> Self {
+        Self { operator: label.to_string(), inputs: vec![shape], relation_input: true }
+    }
+
+    /// The shape under a relation-input label, or this shape without one.
+    pub(crate) fn without_relation_input_label(&self) -> &CandidateShape {
+        match self.inputs.as_slice() {
+            [input] if self.relation_input => input,
+            _ => self,
+        }
     }
 
     /// The operator token at the root of the shape.
@@ -110,7 +126,7 @@ impl CandidateShape {
 
     /// Number of operators the shape covers.
     pub fn operator_count(&self) -> usize {
-        1 + self.inputs.iter().map(Self::operator_count).sum::<usize>()
+        usize::from(!self.relation_input) + self.inputs.iter().map(Self::operator_count).sum::<usize>()
     }
 
     /// Whether any covered operator has this token.
@@ -173,6 +189,14 @@ impl GpuCandidate {
     #[must_use]
     pub fn with_plan_node_id(mut self, plan_node_id: impl Into<PlanNodeId>) -> Self {
         self.plan_node_id = Some(plan_node_id.into());
+        self
+    }
+
+    /// This candidate labelled as an input relation of a GPU relation
+    /// function. The candidate keeps its native plan node.
+    #[must_use]
+    pub(crate) fn with_relation_input_label(mut self, label: &str) -> Self {
+        self.shape = CandidateShape::relation_input(label, self.shape);
         self
     }
 
@@ -413,6 +437,16 @@ impl PlanningReport {
                 },
                 CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => {},
             }
+        }
+    }
+
+    /// Labels every candidate as an input relation of a GPU relation function.
+    pub(crate) fn label_relation_input(&mut self, label: &str) {
+        for outcome in &mut self.outcomes {
+            let (CandidateOutcome::Selected { candidate }
+            | CandidateOutcome::NotSupported { candidate, .. }
+            | CandidateOutcome::NotSelectedByCost { candidate, .. }) = outcome;
+            *candidate = candidate.clone().with_relation_input_label(label);
         }
     }
 

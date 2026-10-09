@@ -1,5 +1,9 @@
 use std::{fs, sync::Arc};
 
+use algeon_datafusion::{
+    error::ClientDetail, gpu_coverage::validate_query, planner::AlgeonGpuExecutionMode, report::CandidateOutcomeKind,
+};
+
 use super::{support::*, *};
 
 fn register_exact_columns(ctx: &SessionContext, table_name: &str, columns: &[(&str, DataType)]) {
@@ -1137,4 +1141,145 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     );
 
     fs::remove_dir_all(dir).ok();
+}
+
+/// A whole-partition `COUNT(*)` over a cuGraph result plans natively: the
+/// community assignment stays on the device, is sorted by its partition key,
+/// and is counted by the native window.
+#[tokio::test]
+async fn cugraph_leiden_result_feeds_a_native_partition_count_window() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_algeon_native(AlgeonNativeOptimizerConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    let coverage = validate_query(
+        &ctx,
+        "SELECT vertex, community, COUNT(*) OVER (PARTITION BY community) AS community_size \
+         FROM cugraph_leiden(edges => (SELECT src, dst FROM graph_edges))",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(coverage.gpu_path(), "native", "{:?}", coverage.candidate_outcomes);
+    assert!(
+        coverage.candidate_outcomes.iter().all(|outcome| outcome.selection == CandidateOutcomeKind::Selected),
+        "{:?}",
+        coverage.candidate_outcomes
+    );
+}
+
+/// An edge relation whose filter has no native counterpart.
+const UNSUPPORTED_EDGES_SQL: &str = "SELECT * FROM cugraph_pagerank(edges => (\
+     SELECT user_id AS src, item_id AS dst FROM events WHERE random() < 2.0))";
+
+fn register_events(ctx: &SessionContext) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("item_id", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2, 3])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10_i64, 10, 20])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("events", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+}
+
+/// A rejection inside the relation a cuGraph function reads reaches the report
+/// of the query root, labelled with the function and the relation, instead of
+/// leaving the outer candidate selected with no reason.
+#[tokio::test]
+async fn cugraph_edge_input_that_cannot_lower_is_reported_with_its_function_and_relation() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_algeon_native(AlgeonNativeOptimizerConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_events(&ctx);
+
+    let coverage = validate_query(&ctx, UNSUPPORTED_EDGES_SQL).await.unwrap();
+
+    let input = coverage
+        .candidate_outcomes
+        .iter()
+        .find(|outcome| outcome.detail.starts_with("cugraph_pagerank.edges("))
+        .unwrap_or_else(|| panic!("the edge input has a labelled candidate: {:?}", coverage.candidate_outcomes));
+    assert_eq!(input.selection, CandidateOutcomeKind::NotSupported);
+    assert_eq!(input.reason_code.as_deref(), Some("unsupported_expression"));
+    let blocking = input.blocking.as_ref().expect("the rejection names its subject");
+    assert_eq!((blocking.kind(), blocking.text()), ("scalar_function", "scalar function random in `random()`"));
+    let [call] = coverage.cugraph_calls.as_slice() else {
+        panic!("one cuGraph call: {:?}", coverage.cugraph_calls);
+    };
+    assert!(!call.inputs_native, "{call:?}");
+    assert_eq!(coverage.to_json()["cugraph_calls"][0]["inputs_native"], false);
+
+    let rows = ctx
+        .sql(&format!(
+            "SELECT candidate_shape, outcome, blocking FROM algeon_explain_coverage('{UNSUPPORTED_EDGES_SQL}') \
+             WHERE row_kind = 'candidate' AND candidate_shape LIKE 'cugraph_pagerank.edges(%'"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let [batch] = rows.as_slice() else {
+        panic!("EXPLAIN GPU rows: {rows:?}");
+    };
+    let blocking_column = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(blocking_column.value(0), "scalar function random in `random()`");
+
+    let native = validate_query(
+        &ctx,
+        "SELECT * FROM cugraph_pagerank(edges => (SELECT user_id AS src, item_id AS dst FROM events))",
+    )
+    .await
+    .unwrap();
+    assert!(native.cugraph_calls[0].inputs_native, "{:?}", native.cugraph_calls);
+}
+
+/// Under `NativeRequired`, the final-plan error names the blocking subject of
+/// the cuGraph input that keeps DataFusion work in the plan.
+#[tokio::test]
+async fn native_required_names_the_blocking_subject_of_a_cugraph_edge_input() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_algeon_native(
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
+        )
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_events(&ctx);
+
+    let error = ctx
+        .sql(UNSUPPORTED_EDGES_SQL)
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .expect_err("NativeRequired rejects an edge input that stays on DataFusion");
+
+    let error = typed_algeon_error(&error);
+    assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+    assert_eq!(error.fact_value("capability_reason"), Some("unsupported_expression"));
+    assert_eq!(error.fact_value("blocking_kind"), Some("scalar_function"));
+    assert!(
+        matches!(
+            error.client_detail(),
+            Some(ClientDetail::BlockingSubject { text }) if text == "scalar function random in `random()`"
+        ),
+        "{:?}",
+        error.client_detail()
+    );
 }

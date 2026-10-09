@@ -914,6 +914,7 @@ pub fn algeon_datafusion::gpu_coverage::QueryGpuCoverage::rejection(&self) -> co
 pub fn algeon_datafusion::gpu_coverage::QueryGpuCoverage::to_json(&self) -> serde_json::value::Value
 pub struct algeon_datafusion::gpu_coverage::QueryGpuCugraphCall
 pub algeon_datafusion::gpu_coverage::QueryGpuCugraphCall::algorithm: alloc::string::String
+pub algeon_datafusion::gpu_coverage::QueryGpuCugraphCall::inputs_native: bool
 pub algeon_datafusion::gpu_coverage::QueryGpuCugraphCall::notes: alloc::vec::Vec<alloc::string::String>
 pub algeon_datafusion::gpu_coverage::QueryGpuCugraphCall::statically_valid: bool
 pub struct algeon_datafusion::gpu_coverage::QueryGpuPlanningRejection

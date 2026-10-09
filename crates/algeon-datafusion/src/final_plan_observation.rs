@@ -151,8 +151,7 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
             FinalPlanCoverage::new(FinalPlanDisposition::Native, 0, 1, 0, usize::from(materializes_host));
         for child_plan in plan.children() {
             let native_input = native_graph_input_execution_plan(child_plan.as_ref());
-            let child_uses_native_gpu_input =
-                native_input.is_some() || gpu_resident_producer(child_plan.as_ref()).is_some();
+            let child_uses_native_gpu_input = cugraph_input_runs_natively(child_plan.as_ref());
             let child = if let Some(native_input) = native_input {
                 observe_with_output_boundary(native_input, false)
             } else if child_uses_native_gpu_input {
@@ -184,6 +183,13 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
         observation.disposition = FinalPlanDisposition::Mixed;
     }
     observation
+}
+
+/// Whether a cuGraph input relation reaches the graph as a native GPU-resident
+/// producer, instead of DataFusion batches staged through host Arrow.
+#[cfg(feature = "cugraph")]
+pub(crate) fn cugraph_input_runs_natively(input: &dyn ExecutionPlan) -> bool {
+    native_graph_input_execution_plan(input).is_some() || gpu_resident_producer(input).is_some()
 }
 
 fn observe_as_gpu_producer(plan: &dyn ExecutionPlan) -> FinalPlanCoverage {
