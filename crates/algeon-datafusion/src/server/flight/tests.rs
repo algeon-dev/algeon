@@ -21,12 +21,12 @@ use datafusion::{
 };
 use tracing::subscriber::{set_default, with_default};
 
-use super::*;
+use super::{execution::cancel_invalid_argument_status, *};
 use crate::{
     error::client::MASKED_INTERNAL_ERROR_MESSAGE,
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
     server::{
-        coordinator::QueryTerminalOutcome,
+        coordinator::{CoordinatorArtifact, QueryTerminalOutcome, RetainedUnavailableReason},
         error::{
             ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
             REASON_METADATA_KEY,

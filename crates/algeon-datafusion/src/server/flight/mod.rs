@@ -1,6 +1,6 @@
 use arrow::{
     array::{Array, Int32Array, StringArray, UInt8Array},
-    datatypes::{DataType, Field, Schema},
+    datatypes::Schema,
     ipc::writer::IpcWriteOptions,
 };
 use arrow_flight::{
@@ -38,12 +38,6 @@ use tokio_util::sync::CancellationToken;
 use tonic::{Code, Request, Response, Status, Streaming, metadata::MetadataValue};
 use tracing::Instrument;
 
-#[cfg(test)]
-use super::auth::{AuthMode, TokenStore};
-#[cfg(test)]
-use super::coordinator::CoordinatorArtifact;
-#[cfg(test)]
-use super::coordinator::RetainedUnavailableReason;
 use super::{
     adapter_error::FailedStatement,
     admission::QueryAdmission,
@@ -86,8 +80,6 @@ mod tickets;
 use correlation::tracing_correlation_id;
 pub(super) use correlation::{attach_query_response_metadata, request_correlation_id};
 use ddl::{referenced_table_names, reject_drop_object_type_mismatch};
-#[cfg(test)]
-use execution::cancel_invalid_argument_status;
 use frame_limiter::encode_flight_data_stream;
 use metadata::*;
 use ownership::{Owner, QueryOwnership};

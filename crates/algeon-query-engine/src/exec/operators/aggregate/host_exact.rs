@@ -47,7 +47,8 @@ use super::{
     *,
 };
 use crate::prepared::{
-    DataFusionExactHostAccumulator, datafusion_exact_host_accumulator, datafusion_exact_host_group_key_supported,
+    DataFusionExactHostAccumulator, DataFusionExactHostAccumulator as Accumulator, datafusion_exact_host_accumulator,
+    datafusion_exact_host_group_key_supported,
 };
 
 /// One group key value reduced to 64 bits.
@@ -173,7 +174,6 @@ enum HostAggregateState {
 
 impl HostAggregateState {
     fn new(accumulator: DataFusionExactHostAccumulator, function: AggregateFunction, grouped: bool) -> Self {
-        use DataFusionExactHostAccumulator as Accumulator;
         match accumulator {
             Accumulator::Count => Self::Count { count: 0 },
             Accumulator::SignedSum | Accumulator::SignedMin | Accumulator::SignedMax => {
@@ -197,7 +197,6 @@ impl HostAggregateState {
     }
 
     fn update(&mut self, accumulator: DataFusionExactHostAccumulator, grouped: bool, input: HostValue) {
-        use DataFusionExactHostAccumulator as Accumulator;
         match (self, accumulator) {
             (Self::Count { count }, Accumulator::Count) => *count += 1,
             (Self::Signed { value, seen }, Accumulator::SignedSum) => {

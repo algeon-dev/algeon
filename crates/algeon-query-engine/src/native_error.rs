@@ -9,8 +9,12 @@ use std::collections::BTreeMap;
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
 use std::error::Error as StdError;
 
+#[cfg(feature = "cuml")]
+use cudf::CudfAllocationAttribution;
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
 use cudf::core::error::FactKeyName;
+#[cfg(feature = "cuml")]
+use cuml::{ErrorCode, ErrorKind, ErrorStatus};
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
 use query_planning::error::redact_uri_tokens;
 use query_planning::error::{MemoryFailure, MemoryUsage, QueryError, QueryErrorCode};
@@ -159,9 +163,6 @@ fn classify_cuml_error(
     status: cuml::ErrorStatus,
     attribution: cudf::CudfAllocationAttribution,
 ) -> QueryErrorCode {
-    use cudf::CudfAllocationAttribution;
-    use cuml::{ErrorCode, ErrorKind, ErrorStatus};
-
     if code == ErrorCode::HostOutOfMemory {
         return QueryErrorCode::CudfTemporaryFailure;
     }

@@ -21,6 +21,7 @@ use parquet::{
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
+pub use crate::error::{WorkloadError, WorkloadResult};
 use crate::metadata::WorkloadDatasetMetadata;
 
 const DBLP_GENERATOR: &str = "fixture/demo/citation_network/scripts/prepare.py";
@@ -49,8 +50,6 @@ pub const DBLP_MULTI_GRAPH_SLICE_PARTITION: &str = "source_hash_splitmix64";
 /// Required Parquet tables in deterministic artifact/report order.
 pub const DBLP_TABLES: &[&str] =
     &["edges_by_src", "edges_by_dst", "profiles_by_paper_id", "paper_authors", "paper_fos"];
-
-pub use crate::error::{WorkloadError, WorkloadResult};
 
 /// Fully resolved DBLP fixture layout.
 #[derive(Debug, Clone, PartialEq, Eq)]

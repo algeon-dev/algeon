@@ -1,3 +1,5 @@
+use query_planning::error::QueryErrorCode;
+
 use super::*;
 // Transactional admission: fault-injection rollback and envelope
 // identity evidence.

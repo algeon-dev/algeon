@@ -557,7 +557,6 @@ fn source_read_columns_are_fixed_width(source: &LocalParquetSource) -> bool {
 }
 
 fn optimized_cache_fixed_width_type(data_type: &DataType) -> bool {
-    use arrow::datatypes::DataType;
     is_arrow_fixed_width(data_type) || matches!(data_type, DataType::Float16)
 }
 

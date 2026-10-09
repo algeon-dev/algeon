@@ -1,6 +1,11 @@
 //! Parquet reader evidence and remote profile unit tests.
 
-use super::*;
+use super::{
+    evidence::validate_required_remote_evidence,
+    remote::{RemoteProfileFfi, remote_known_size_bytes_raw, remote_parquet_capability_with_status},
+    *,
+};
+use crate::core::error::ErrorCode;
 
 fn direct_evidence() -> ParquetReadEvidence {
     ParquetReadEvidence {

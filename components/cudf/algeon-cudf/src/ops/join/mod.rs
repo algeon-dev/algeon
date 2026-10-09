@@ -64,6 +64,7 @@ pub(crate) use dataframe::{
 };
 mod options;
 
+use domain::*;
 pub(crate) use options::{FilteredJoinOptions, HashJoinOptions};
 pub use options::{JoinType, MergeOptions, NullEquality, NullableJoin};
 
@@ -213,7 +214,6 @@ mod hash;
 mod mixed;
 
 pub(crate) use conditional::*;
-use domain::*;
 pub(crate) use filter::*;
 pub(crate) use hash::*;
 pub(crate) use mixed::*;

@@ -1,3 +1,5 @@
+use query_planning::error::QueryErrorCode;
+
 use super::*;
 
 #[test]

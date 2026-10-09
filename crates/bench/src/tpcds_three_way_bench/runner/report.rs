@@ -6,8 +6,6 @@ use algeon_datafusion::native_report::{
     format_native_task_runtime_metric_rows,
 };
 
-#[cfg(test)]
-use super::config::bench_queries_from_csv;
 use super::*;
 
 pub(super) const TSV_HEADER: &str = concat!(
@@ -572,6 +570,7 @@ fn optional_f64_text(value: Option<f64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tpcds_three_way_bench::runner::config::bench_queries_from_csv;
 
     #[test]
     fn tsv_header_matches_row_field_count_for_cpu_rows() {

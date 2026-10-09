@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, fmt::Write as _, time::Duration};
 
 use algeon_datafusion::native_report::{
     format_native_aggregate_strategy_metric_rows, format_native_dynamic_filter_runtime_metric_rows,
@@ -215,6 +215,5 @@ pub(super) fn stable_tsv_field(value: &str) -> String {
 }
 
 pub(super) fn push_line(output: &mut String, args: std::fmt::Arguments<'_>) {
-    use std::fmt::Write;
     let _ = writeln!(output, "{args}");
 }

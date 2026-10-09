@@ -17,6 +17,8 @@
 
 use std::{ptr, sync::Arc};
 
+use cudf_sys::*;
+
 pub use crate::core::types::NullPolicy;
 use crate::{
     core::{
@@ -117,8 +119,6 @@ pub(crate) fn checked_ddof_to_i32(ddof: u32, operation: &'static str) -> Result<
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_reduce_aggregation_destroy`.
 unsafe fn create_reduce_agg_handle(agg: &ReduceAgg) -> Result<cudf_sys::cudf_reduce_aggregation_handle> {
-    use cudf_sys::*;
-
     let mut handle = ptr::null_mut();
     match agg {
         ReduceAgg::Sum => {
@@ -209,8 +209,6 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAgg) -> Result<cudf_sys::cudf_red
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_scan_aggregation_destroy`.
 unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<cudf_sys::cudf_scan_aggregation_handle> {
-    use cudf_sys::*;
-
     let mut handle = ptr::null_mut();
     let kind = match agg {
         ScanAgg::Sum => CUDF_REDUCE_AGG_SUM,

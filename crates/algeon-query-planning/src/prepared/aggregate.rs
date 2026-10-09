@@ -1,3 +1,4 @@
+use self::DataFusionExactHostAccumulator as Accumulator;
 use super::{AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType};
 
 pub fn aggregate_spec_has_avg(spec: &AggregateSpec) -> bool {
@@ -75,8 +76,6 @@ pub fn datafusion_exact_host_accumulator(
     input_type: Option<&ArrowDataType>,
     output_type: &ArrowDataType,
 ) -> Option<DataFusionExactHostAccumulator> {
-    use DataFusionExactHostAccumulator as Accumulator;
-
     if expr.distinct || aggregate_expr_is_exact_nunique(expr) {
         return None;
     }

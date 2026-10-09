@@ -4,6 +4,15 @@ use query_planning::plan::{NodeId, QueryPlan};
 
 use super::*;
 
+#[path = "../../../support/remaining_topologies.rs"]
+mod remaining_topologies;
+mod resident_subplan;
+
+pub(crate) use remaining_topologies::*;
+pub(crate) use resident_subplan::{
+    KeyedHashJoinResidentSubplanPipelineVariant, keyed_hash_join_resident_subplan_pipeline_plan,
+};
+
 /// Mutates the non-root side of a keyless conditional root join. The admitted
 /// shape is deliberately narrow: a projection-wrapped left-anti subplan on one
 /// side and a scalar aggregate on the other.
@@ -28,14 +37,6 @@ pub(crate) enum KeylessInputSubplanVariant {
     /// recursively multi-join instead of a bounded anti-join leaf.
     NestedJoinInput,
 }
-
-#[path = "../../../support/remaining_topologies.rs"]
-mod remaining_topologies;
-mod resident_subplan;
-pub(crate) use remaining_topologies::*;
-pub(crate) use resident_subplan::{
-    KeyedHashJoinResidentSubplanPipelineVariant, keyed_hash_join_resident_subplan_pipeline_plan,
-};
 
 pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputSubplanVariant) -> QueryPlan {
     let lineitem_schema = Arc::new(Schema::new(vec![

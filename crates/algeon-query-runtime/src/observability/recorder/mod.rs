@@ -35,8 +35,6 @@ use digest::{
 pub(crate) use owner::RuntimeObservationDeliveryGate;
 use owner::RuntimeObservationDeliveryGuard;
 pub use owner::RuntimeObservationOwner;
-#[cfg(test)]
-use owner::RuntimeObservationOwnerLifecycleState;
 pub(crate) use owner::in_runtime_observation_delivery;
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use session::AttemptReportProvider;

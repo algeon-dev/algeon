@@ -6,8 +6,26 @@ use std::{fmt, time::Instant};
 
 #[cfg(test)]
 use query_planning::error::QueryErrorCode;
-use query_planning::error::{QueryError, Result};
+use query_planning::{
+    admission::AttemptCapabilityEvidence,
+    error::{QueryError, Result},
+};
 use serde::Serialize;
+
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::attempt::AttemptOwner;
+#[cfg(test)]
+use crate::runtime::query_service::config::QueueBounds;
+use crate::{
+    attempt::{AttemptAdmission, AttemptAdmissionBinding, AttemptLifecycleError},
+    observability::{AttemptId, RuntimeObservationHandle},
+    runtime::{
+        ExecutionCancellation,
+        cache::{CacheSourceEventSnapshot, DeviceCacheReport},
+        gpu::{DeviceLedgerReport, DeviceMemoryFailureReport},
+        gpu_execution_pool::{GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot},
+    },
+};
 
 /// Result of a controlled device-quarantine injection.
 ///
@@ -44,22 +62,6 @@ impl DeviceQuarantineInjection {
         self.newly_quarantined
     }
 }
-use query_planning::admission::AttemptCapabilityEvidence;
-
-#[cfg(any(test, feature = "test-hooks"))]
-use crate::attempt::AttemptOwner;
-#[cfg(test)]
-use crate::runtime::query_service::config::QueueBounds;
-use crate::{
-    attempt::{AttemptAdmission, AttemptAdmissionBinding, AttemptLifecycleError},
-    observability::{AttemptId, RuntimeObservationHandle},
-    runtime::{
-        ExecutionCancellation,
-        cache::{CacheSourceEventSnapshot, DeviceCacheReport},
-        gpu::{DeviceLedgerReport, DeviceMemoryFailureReport},
-        gpu_execution_pool::{GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot},
-    },
-};
 
 /// Point-in-time service admission state for bounded-queue and overload reports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

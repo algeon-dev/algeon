@@ -47,16 +47,42 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
+#[cfg(not(test))]
+use std::{
+    io::Write,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 
 use arrow_flight::error::FlightError;
+#[cfg(not(test))]
+use arrow_flight::{Action, CancelFlightInfoRequest, FlightInfo, Ticket, sql::client::FlightSqlServiceClient};
+#[cfg(not(test))]
+use futures::TryStreamExt;
+#[cfg(not(test))]
+use prost::Message;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
+#[cfg(not(test))]
+use tokio::{
+    sync::{Mutex, Semaphore, mpsc},
+    task::JoinSet,
+    time::{MissedTickBehavior, interval, sleep},
+};
+#[cfg(not(test))]
+use tonic::transport::Channel;
 
 use crate::SINGLE_NODE_RUN_ARTIFACT_SCHEMA;
+#[cfg(not(test))]
+use crate::connection_retry::{ConnectionRetryConfig, connect_with_retry};
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -628,7 +654,6 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut encoded = String::with_capacity(digest.len() * 2);
     for byte in digest {
-        use std::fmt::Write as _;
         let _ = write!(encoded, "{byte:02x}");
     }
     encoded
@@ -938,34 +963,6 @@ fn latency_delta(server: Option<u64>, in_process: u64) -> serde_json::Value {
         }),
     }
 }
-
-#[cfg(not(test))]
-use std::{
-    io::Write,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Instant,
-};
-
-#[cfg(not(test))]
-use arrow_flight::{Action, CancelFlightInfoRequest, FlightInfo, Ticket, sql::client::FlightSqlServiceClient};
-#[cfg(not(test))]
-use futures::TryStreamExt;
-#[cfg(not(test))]
-use prost::Message;
-#[cfg(not(test))]
-use tokio::{
-    sync::{Mutex, Semaphore, mpsc},
-    task::JoinSet,
-    time::{MissedTickBehavior, interval, sleep},
-};
-#[cfg(not(test))]
-use tonic::transport::Channel;
-
-#[cfg(not(test))]
-use crate::connection_retry::{ConnectionRetryConfig, connect_with_retry};
 
 #[cfg(not(test))]
 type FlightClient = FlightSqlServiceClient<Channel>;

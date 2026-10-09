@@ -23,22 +23,11 @@
 //! `website/docs/design/data-path.mdx`.
 
 use super::{DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, SourceChunk, cudf_query_error};
-#[cfg(test)]
-use crate::parquet_metadata::parquet_footer_sidecar_path;
 
 mod cache;
 mod maintenance;
 mod policy;
 mod s3;
-
-#[cfg(test)]
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::atomic::Ordering,
-    thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
 
 pub use cache::sanitize_cache_component;
 pub(super) use cache::{
@@ -48,21 +37,16 @@ pub(super) use cache::{
     ensure_local_cache_parquet_chunk, ensure_local_cache_parquet_file, local_cache_optimized_batch_entry,
     publish_lakehouse_optimized_batch_frame,
 };
-#[cfg(test)]
-use cache::{
-    LAKEHOUSE_CACHE_READ_PIN_COUNTER, LakehouseCacheReadPin, collect_lakehouse_cache_entries,
-    complete_cache_file_matches_expected_size, evict_lakehouse_cache, lakehouse_cache_entry_has_read_pin,
-    lakehouse_cache_io_error, lakehouse_cache_lock_path, lakehouse_cache_read_pin_path,
-    local_cache_optimized_batch_signature, optimized_batch_uses_identity_source_frame, stable_log_hash,
-};
-#[cfg(test)]
-use policy::LakehouseCachePolicy;
-#[cfg(test)]
-use s3::object_store_bucket_fact;
 pub(in crate::exec::source) use s3::parse_s3_source_uri;
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::{Arc, atomic::Ordering},
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
     use cudf::testing::run_named_cases;
@@ -77,8 +61,18 @@ mod tests {
     };
     use query_runtime::runtime::{LakehouseCacheFillConfig, StandaloneConfig};
 
-    use super::*;
-    use crate::chunk::SourceChunkBatch;
+    use super::{
+        cache::{
+            LAKEHOUSE_CACHE_READ_PIN_COUNTER, LakehouseCacheReadPin, collect_lakehouse_cache_entries,
+            complete_cache_file_matches_expected_size, evict_lakehouse_cache, lakehouse_cache_entry_has_read_pin,
+            lakehouse_cache_io_error, lakehouse_cache_lock_path, lakehouse_cache_read_pin_path,
+            local_cache_optimized_batch_signature, optimized_batch_uses_identity_source_frame, stable_log_hash,
+        },
+        policy::LakehouseCachePolicy,
+        s3::object_store_bucket_fact,
+        *,
+    };
+    use crate::{chunk::SourceChunkBatch, parquet_metadata::parquet_footer_sidecar_path};
 
     #[test]
     fn complete_cache_file_hit_requires_expected_size() {

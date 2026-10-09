@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use dashmap::DashMap;
 use rand::{TryRng, rngs::SysRng};
 use tonic::Status;
@@ -154,7 +155,6 @@ pub(super) fn expiry_after(ttl: Duration) -> Option<Instant> {
 }
 
 fn base64_url_no_pad(bytes: &[u8]) -> String {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     URL_SAFE_NO_PAD.encode(bytes)
 }
 

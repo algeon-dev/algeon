@@ -1,5 +1,11 @@
 use std::sync::atomic::AtomicU64;
 
+use admission::{
+    cugraph_execution_config_after_staging, edge_source_graph_vertex_estimate, edge_source_output_rows,
+    graph_input_native_producer, lowered_native_edge_plan, plan_contains_algeon_native,
+    resident_side_input_output_rows, task_context_with_cugraph_execution_ticket,
+    validate_cugraph_graph_owner_preflight, validate_standalone_bounded_cugraph_sources,
+};
 use arrow::{
     compute::SortOptions,
     datatypes::{DataType, Schema, SchemaRef},
@@ -31,7 +37,19 @@ use datafusion::{
         union::UnionExec,
     },
 };
+use edge_analysis::{CugraphEdgeCanonicalFacts, cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted};
 use futures::{Stream, TryStreamExt, future::BoxFuture};
+use input::{
+    CugraphGpuFrame, CugraphInputRowBounds, EagerCugraphHostOutput, StagedCugraphInputs, UploadedCugraphInputs,
+    check_host_staging_cancellation, collect_cugraph_inputs, materialize_gpu_output_eagerly,
+    prepare_cugraph_source_metadata, record_batches_to_gpu,
+};
+use logical_mapping::{add_logical_mapping_plan, decode_logical_graph_result, graph_uses_logical_mapping};
+use lowering::{
+    CugraphPlanDefinition, cugraph_execution_capability_evidence, cugraph_schema_query_plan,
+    execute_cugraph_query_to_gpu_with_options, native_algorithm, native_graph_spec_for_placement_hint,
+    preflight_cugraph_query_plan,
+};
 use query_engine::exec::{
     QueryExecutionRequest, execute_query_plan,
     output::{PlanMetrics, QueryExecutionOutcome, QueryOutput},
@@ -67,6 +85,7 @@ use query_runtime::{
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
 };
+use residency::{attach_graph_residency, cugraph_graph_residency_descriptor};
 
 use self::singleflight::{
     GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader, GraphBfsPublishedResult, GraphBfsSingleflightJoin,
@@ -126,26 +145,7 @@ pub(crate) mod singleflight;
 pub(crate) mod tests;
 
 pub(crate) use admission::native_graph_input_execution_plan;
-use admission::{
-    cugraph_execution_config_after_staging, edge_source_graph_vertex_estimate, edge_source_output_rows,
-    graph_input_native_producer, lowered_native_edge_plan, plan_contains_algeon_native,
-    resident_side_input_output_rows, task_context_with_cugraph_execution_ticket,
-    validate_cugraph_graph_owner_preflight, validate_standalone_bounded_cugraph_sources,
-};
-use edge_analysis::{CugraphEdgeCanonicalFacts, cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted};
-use input::{
-    CugraphGpuFrame, CugraphInputRowBounds, EagerCugraphHostOutput, StagedCugraphInputs, UploadedCugraphInputs,
-    check_host_staging_cancellation, collect_cugraph_inputs, materialize_gpu_output_eagerly,
-    prepare_cugraph_source_metadata, record_batches_to_gpu,
-};
-use logical_mapping::{add_logical_mapping_plan, decode_logical_graph_result, graph_uses_logical_mapping};
-use lowering::{
-    CugraphPlanDefinition, cugraph_execution_capability_evidence, cugraph_schema_query_plan,
-    execute_cugraph_query_to_gpu_with_options, native_algorithm, native_graph_spec_for_placement_hint,
-    preflight_cugraph_query_plan,
-};
 pub use node::CugraphAlgoExec;
-use residency::{attach_graph_residency, cugraph_graph_residency_descriptor};
 
 /// The metrics of one cuGraph wrapper execution: the plans its stages ran,
 /// plus a plan execution of its own for the host boundary work and BFS

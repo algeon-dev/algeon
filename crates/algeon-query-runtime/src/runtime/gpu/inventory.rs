@@ -1,5 +1,7 @@
 //! Per-device GPU facts and live diagnostics telemetry.
 
+#[cfg(feature = "nvml")]
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use query_planning::error::Result;
@@ -213,8 +215,6 @@ fn utilization_pct(_device: cudf::DeviceId) -> Option<u8> {
 
 #[cfg(feature = "nvml")]
 fn shared_nvml() -> Option<&'static nvml_wrapper::Nvml> {
-    use std::sync::OnceLock;
-
     static NVML: OnceLock<Option<nvml_wrapper::Nvml>> = OnceLock::new();
     NVML.get_or_init(|| nvml_wrapper::Nvml::init().ok()).as_ref()
 }

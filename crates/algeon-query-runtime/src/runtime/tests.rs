@@ -14,9 +14,11 @@ use serde_json::Value;
 
 use super::{
     cache_fill::default_lakehouse_cache_fill_budget_bytes_from_physical_memory,
+    gpu::inventory::{GpuInventory, device_budget_bytes_from_facts},
     object_store::default_object_store_control_runtime,
     service_stream::{
-        default_service_stream_pool_size_from_device_facts, default_service_stream_pool_size_from_sm_count,
+        DEFAULT_SERVICE_STREAM_POOL_SIZE, default_service_stream_pool_size_from_device_facts,
+        default_service_stream_pool_size_from_sm_count,
     },
     *,
 };

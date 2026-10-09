@@ -22,7 +22,8 @@ use crate::{
         scalar::Scalar,
     },
     frame::dataframe::{DataFrame, InfoDetail, group_keys::require_non_empty_group_keys},
-    internal::resolve::missing_column_error,
+    hash::{FastHashMap, fast_hash_map_with_capacity},
+    internal::resolve::{build_borrowed_table_view_from_columns, missing_column_error, resolve_column_names},
     runtime::{
         BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::Exec, execution_domain::ExecutionDomain,
         execution_resolver::ResolvedExecution,
@@ -251,11 +252,6 @@ impl PreparedDataFrameGroupBy {
     where
         F: FnOnce(Error) -> Error,
     {
-        use crate::{
-            hash::{FastHashMap, fast_hash_map_with_capacity},
-            internal::resolve::resolve_column_names,
-        };
-
         require_non_empty_group_keys(self.keys.len(), operation)?;
 
         if specs.is_empty() {
@@ -436,8 +432,6 @@ impl<'a> GroupBy<'a> {
         self.agg_in_context(specs, ctx)
     }
     fn prepare_groups_impl(&self, ctx: Exec<'_>, operation: &'static str) -> Result<PreparedGroupByFacts> {
-        use crate::internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names};
-
         require_non_empty_group_keys(self.keys.len(), operation)?;
 
         let columns = self.df.columns_map();
@@ -455,8 +449,6 @@ impl<'a> GroupBy<'a> {
     }
 
     fn prepare_sort_groupby_impl(&self, ctx: Exec<'_>, operation: &'static str) -> Result<PreparedDataFrameGroupBy> {
-        use crate::internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names};
-
         require_non_empty_group_keys(self.keys.len(), operation)?;
 
         let retained_df = self.df.clone();
@@ -534,11 +526,6 @@ impl<'a> GroupBy<'a> {
     where
         F: FnOnce(Error) -> Error,
     {
-        use crate::{
-            hash::{FastHashMap, fast_hash_map_with_capacity},
-            internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
-        };
-
         let execution =
             ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [self.df.execution_domain()], operation)?;
         let output_domain = Arc::clone(execution.output_domain());
@@ -664,8 +651,6 @@ impl<'a> GroupBy<'a> {
         keys_are_sorted: bool,
         operation: &'static str,
     ) -> Result<DataFrame> {
-        use crate::internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names};
-
         // Fill scalars may come from a different runtime / stream than the
         // dataframe, so include each `spec.fill_value.execution_domain()` in
         // the resolver inputs. Without this, libcudf would receive the

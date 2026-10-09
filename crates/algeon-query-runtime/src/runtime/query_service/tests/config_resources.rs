@@ -1,4 +1,7 @@
+use query_planning::{error::QueryErrorCode, policy::PlanningPolicy};
+
 use super::*;
+use crate::runtime::LakehouseCacheFillConfig;
 
 #[test]
 fn query_service_admission_test_config_can_record_non_default_device_without_runtime_resources() {

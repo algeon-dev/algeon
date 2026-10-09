@@ -64,6 +64,8 @@ mod analytical_olap_planning;
 mod tpch_report;
 
 use analytical_olap_planning::analytical_olap_datafusion_planning_workload_items;
+use sql::*;
+use support::*;
 use tpch_report::{
     TestReportDatasetMetadataExt, tpch_datafusion_planning_workload_items, tpch_scalar_fallback_pressure_workload_items,
 };
@@ -86,9 +88,6 @@ mod analytical_olap;
 mod sql;
 mod support;
 mod tpch_reports;
-
-use sql::*;
-use support::*;
 
 #[tokio::test]
 async fn native_fallback_pressure_report_summarizes_workload_outcomes() {

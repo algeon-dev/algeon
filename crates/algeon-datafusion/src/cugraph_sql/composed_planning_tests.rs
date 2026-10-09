@@ -4,9 +4,7 @@ use arrow::{
     array::{ArrayRef, BooleanArray, Float32Array, Float64Array, Int64Array, RecordBatch, StringArray},
     datatypes::{DataType, Field, Schema, SchemaRef},
 };
-use cudf::frame::dataframe::HostBatchCursorConfig;
-#[cfg(test)]
-use cudf::testing;
+use cudf::{frame::dataframe::HostBatchCursorConfig, testing};
 use datafusion::{
     catalog::MemTable,
     execution::SessionStateBuilder,
@@ -19,7 +17,6 @@ use query_planning::{
     plan::{JoinType, PlanNode, QueryPlan, QueryPlanBuilder, ResultSink},
     source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
-#[cfg(test)]
 use tokio::runtime::Builder as TestRuntimeBuilder;
 
 use super::{CugraphAlgoExec, CugraphSqlConfig};

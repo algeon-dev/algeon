@@ -1,5 +1,8 @@
 //! Native typed runtime observations and bounded query-local capture.
 
+#[cfg(any(test, feature = "test-hooks"))]
+use std::collections::BTreeSet;
+
 mod attempt_report;
 mod cache_fill_event;
 mod clock;
@@ -89,8 +92,6 @@ pub(crate) use task_identity::{RuntimeAttemptId, TaskAttemptId};
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub fn assert_live_topology_references_resolve(snapshot: &LiveRuntimeObservationSnapshot) {
-    use std::collections::BTreeSet;
-
     let mut plan_nodes = BTreeSet::new();
     let mut tasks = BTreeSet::new();
     let mut edges = BTreeSet::new();

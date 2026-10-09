@@ -12,20 +12,13 @@
 //! skips `Admitted`. `Terminal` fixes the outcome and every later phase
 //! carries that same value. `Ready` is absorbing. The design contract lives in
 //! `website/docs/design/admission.mdx`.
-use std::{error::Error, fmt};
 
-#[cfg(test)]
-use query_planning::error::AttemptFailureCode;
+use std::{error::Error, fmt};
 
 use crate::observability::{
     AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptDisposition,
     AttemptFailureOperation, AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps,
     COMPOSED_SCHEDULE_PROJECTION_SCHEMA, RuntimeTerminalOutcome,
-};
-#[cfg(test)]
-use crate::{
-    observability::AttemptCapacityDisposition, observability::AttemptFailureStatus,
-    observability::AttemptFinalDomainUsage, observability::AttemptHealthTransition,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -784,9 +777,12 @@ impl AttemptLifecycle {
 
 #[cfg(test)]
 mod tests {
-    use query_planning::error::QueryErrorCode;
+    use query_planning::error::{AttemptFailureCode, QueryErrorCode};
 
     use super::*;
+    use crate::observability::{
+        AttemptCapacityDisposition, AttemptFailureStatus, AttemptFinalDomainUsage, AttemptHealthTransition,
+    };
 
     fn fact() -> AttemptAdmissionFact {
         AttemptAdmissionFact { admission_sequence: 7, admission_wait_ns: 3, device_ordinal: 2, grant_bytes: 4096 }

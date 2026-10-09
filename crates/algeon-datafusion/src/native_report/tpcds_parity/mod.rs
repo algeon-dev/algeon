@@ -31,6 +31,27 @@ use super::{
 };
 use crate::planner::NativePlanningDiagnostics;
 
+mod canonical;
+mod compare;
+mod fingerprint;
+mod report;
+
+// Private sibling-visibility imports. Submodules pick up these names via
+// `use super::*;` because child modules can see their parent's private uses.
+use canonical::{CanonicalField, collect_canonical_rows, compare_canonical_rows};
+use compare::{ParityCompareOptions, compare_record_batches_with_options};
+pub use compare::{
+    ParityComparisonResult, compare_record_batches, sql_has_top_level_order_by,
+    sql_top_level_order_by_covers_output_columns,
+};
+use fingerprint::{fingerprint_batches, fingerprint_rows, fingerprint_schema_only};
+pub use report::{
+    NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus,
+    NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativePlanningOutcome,
+    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport, NativeTpcdsParityRow,
+    NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus,
+};
+
 /// TPC-DS parity TSV column names in wire/report order.
 pub(crate) const NATIVE_TPCDS_PARITY_TSV_COLUMNS: &[&str] = &[
     "query_id",
@@ -64,24 +85,3 @@ pub(crate) const NATIVE_TPCDS_PARITY_TSV_COLUMNS: &[&str] = &[
 ];
 /// TPC-DS parity TSV header.
 pub const NATIVE_TPCDS_PARITY_TSV_HEADER: &str = "query_id\tcpu_planning_status\tcpu_runtime_status\tnative_planning_outcome\tnative_reason_code\tnative_unsupported_category\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\tnative_runtime_started\tnative_runtime_outcome\tparity_status\tparity_detail\tcpu_output_rows\tnative_output_rows\tcpu_output_batches\tnative_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tduckdb_output_status\tduckdb_cpu_parity_status\tduckdb_cpu_parity_detail\tduckdb_output_rows\tduckdb_output_batches\tduckdb_output_fingerprint\tnative_retry_count\tnative_runtime_failure";
-
-mod canonical;
-mod compare;
-mod fingerprint;
-mod report;
-
-// Private sibling-visibility imports. Submodules pick up these names via
-// `use super::*;` because child modules can see their parent's private uses.
-use canonical::{CanonicalField, collect_canonical_rows, compare_canonical_rows};
-use compare::{ParityCompareOptions, compare_record_batches_with_options};
-pub use compare::{
-    ParityComparisonResult, compare_record_batches, sql_has_top_level_order_by,
-    sql_top_level_order_by_covers_output_columns,
-};
-use fingerprint::{fingerprint_batches, fingerprint_rows, fingerprint_schema_only};
-pub use report::{
-    NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus,
-    NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativePlanningOutcome,
-    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport, NativeTpcdsParityRow,
-    NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus,
-};

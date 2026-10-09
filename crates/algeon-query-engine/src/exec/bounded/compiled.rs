@@ -31,8 +31,6 @@ use query_planning::{
     plan::{QueryPlan, ResultSink},
     policy::PlanningPolicy,
 };
-#[cfg(test)]
-use query_runtime::observability::assert_live_topology_references_resolve;
 use query_runtime::{
     observability::{
         BarrierDefinitionRow, CompiledEdgeRow, RuntimeBarrierId, RuntimeExecutionObservationScope,
@@ -233,7 +231,7 @@ mod topology_tests {
     };
     use query_runtime::observability::{
         PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryLifecycle,
-        RuntimeTopologyRecord,
+        RuntimeTopologyRecord, assert_live_topology_references_resolve,
     };
 
     use super::*;

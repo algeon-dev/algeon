@@ -2,6 +2,7 @@
 
 use std::{marker::PhantomData, ptr, ptr::NonNull, sync::Arc};
 
+use cudf_sys::*;
 use smallvec::SmallVec;
 
 pub use crate::core::types::NullPolicy;
@@ -591,8 +592,6 @@ pub(crate) fn groupby_scan_impl(
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_aggregation_destroy`.
 unsafe fn create_agg_handle(agg: &GroupByAgg) -> Result<cudf_sys::cudf_aggregation_handle> {
-    use cudf_sys::*;
-
     let mut handle = ptr::null_mut();
     match agg {
         GroupByAgg::Sum => {
@@ -679,8 +678,6 @@ unsafe fn create_agg_handle(agg: &GroupByAgg) -> Result<cudf_sys::cudf_aggregati
 /// Caller must destroy the returned handle via
 /// `cudf_groupby_scan_aggregation_destroy`.
 unsafe fn create_groupby_scan_agg_handle(agg: ScanAgg) -> Result<cudf_sys::cudf_groupby_scan_aggregation_handle> {
-    use cudf_sys::*;
-
     let mut handle = ptr::null_mut();
     let kind = match agg {
         ScanAgg::Sum => CUDF_REDUCE_AGG_SUM,

@@ -36,6 +36,12 @@ use datafusion::{
 };
 use futures::executor::block_on;
 
+pub(super) use super::support_core::{
+    adapter_error, ilike_filter_plan, ilike_filter_plan_with_pattern, int32_array, int64_array,
+    join_aggregate_sort_limit_sql_plan, parquet_file_schema, parquet_scan, parquet_scan_with_target_partitions,
+    unique_temp_dir, write_batch, write_ilike_parquet_file, write_ilike_parquet_file_with_labels, write_parquet_file,
+};
+
 pub(super) fn bounded_config() -> AlgeonNativeExecutionConfig {
     AlgeonNativeExecutionConfig::new(SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"))
 }
@@ -390,12 +396,6 @@ pub(super) fn write_sorted_parquet_file(path: &Path) {
     .unwrap();
     write_batch(path, schema, batch);
 }
-
-pub(super) use super::support_core::{
-    adapter_error, ilike_filter_plan, ilike_filter_plan_with_pattern, int32_array, int64_array,
-    join_aggregate_sort_limit_sql_plan, parquet_file_schema, parquet_scan, parquet_scan_with_target_partitions,
-    unique_temp_dir, write_batch, write_ilike_parquet_file, write_ilike_parquet_file_with_labels, write_parquet_file,
-};
 
 pub(super) fn null_aware_anti_join_left_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true), Field::new("payload", DataType::Int32, false)]))

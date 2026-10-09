@@ -20,7 +20,11 @@ use cudf::{
         cuda_stream_handle,
     },
     runtime::{DeviceEntryGuard, DeviceFaultNativeStatus, DeviceHealthStatus},
-    testing::{interop::column_export_with_lease_backend_for_test, run_named_cases},
+    testing::{
+        device_safety::{DeviceEntryTestCall as TestCudaCall, DeviceSafetyTestScope as TestCudaHooks},
+        interop::column_export_with_lease_backend_for_test,
+        run_named_cases,
+    },
 };
 use cugraph_sys::{
     cugraph_edgelist_get_destinations, cugraph_edgelist_get_edge_weights, cugraph_edgelist_get_sources,
@@ -30,7 +34,7 @@ use cugraph_sys::{
 use super::*;
 use crate::{
     array::{DeviceArray, RawDeviceArrayView},
-    cuda::{TestCudaCall, TestCudaHooks, fail_next_fatal_device_resource_destroy},
+    cuda::fail_next_fatal_device_resource_destroy,
     error::ErrorKind,
     handle::ResourceHandle,
 };

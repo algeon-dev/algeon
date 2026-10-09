@@ -62,10 +62,10 @@ use crate::{
         RuntimeTimelineEvent, SealedRuntimeObservationSnapshot, StreamLeaseLifecycleState,
     },
     runtime::{
-        BackendLifecycle, DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile,
-        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, StandaloneConfig,
+        BackendLifecycle, DeviceCapabilities, DeviceResourceProfile, GpuBackendDeviceInstallationBounds,
+        GpuBackendDeviceProfile, StandaloneConfig,
         context::AdmittedPlanIdentities,
-        gpu::{DeviceAdmissionHealth, DeviceLedger, GrantIdentity},
+        gpu::{DeviceAdmissionHealth, DeviceLedger, DeviceResourceEnvelope, GrantIdentity},
         gpu_execution_pool::RESERVED_LIFECYCLE_WORKERS,
         query_service::service::{
             disposition::{
@@ -74,7 +74,8 @@ use crate::{
             transaction::{AdmissionStep, AdmissionTransactionProbe},
         },
         resident::{GpuDataFrame, GpuResultHandle},
-        service_stream::{StreamCleanupOutcome, block_stream_cleanup_thread_for_test},
+        service_stream::StreamCleanupOutcome,
+        stream_cleanup::block_stream_cleanup_thread_for_test,
     },
 };
 

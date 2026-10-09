@@ -11,8 +11,18 @@ use parquet::file::{
     reader::{FileReader, SerializedFileReader},
 };
 use query_planning::{
+    chunk::{
+        decimal::{
+            object_store_decimal_reader_predicate_requires_footer_contract, parquet_reader_decimal_types,
+            reader_decimal_type_metadata_unavailable_error, validate_object_store_reader_decimal_types,
+            validate_supplied_reader_decimal_types_match_footer,
+        },
+        row_group::{RowGroupMetadata, row_group_metadata_from_footer, source_row_group_metadata},
+    },
     error::{QueryError, QueryErrorCode, Result},
-    source::{LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetSourceLocation},
+    source::{
+        LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetReaderDecimalType, ParquetSourceLocation,
+    },
 };
 use query_runtime::runtime::{ExecutionContext, S3ObjectStoreKey};
 use tokio::task::JoinHandle;
@@ -548,18 +558,6 @@ pub(super) struct FooterMetadataLoad {
     pub(super) load_time: Duration,
     pub(super) load_count: u64,
 }
-
-use query_planning::{
-    chunk::{
-        decimal::{
-            object_store_decimal_reader_predicate_requires_footer_contract, parquet_reader_decimal_types,
-            reader_decimal_type_metadata_unavailable_error, validate_object_store_reader_decimal_types,
-            validate_supplied_reader_decimal_types_match_footer,
-        },
-        row_group::{RowGroupMetadata, row_group_metadata_from_footer, source_row_group_metadata},
-    },
-    source::ParquetReaderDecimalType,
-};
 
 pub(super) struct SourceMetadataLoad {
     pub(super) metadata: Option<RowGroupMetadata>,

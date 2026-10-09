@@ -10,6 +10,8 @@
 //!
 //! std-only by contract: it runs before any dependency is built.
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
     ffi::{OsStr, OsString},
     fmt,
@@ -1217,7 +1219,6 @@ fn observe_library_identity(left: &Path, right: &Path) -> LibraryIdentityEvidenc
 
     #[cfg(unix)]
     let same_inode = {
-        use std::os::unix::fs::MetadataExt;
         matches!(
             (std::fs::metadata(left), std::fs::metadata(right)),
             (Ok(left_meta), Ok(right_meta))

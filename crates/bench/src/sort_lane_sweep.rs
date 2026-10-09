@@ -27,6 +27,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "cugraph")]
+use algeon_datafusion::cugraph_sql::CugraphSqlConfig;
 use algeon_datafusion::{
     attempt::{AttemptOptions, QueryAttemptReport},
     backend::{
@@ -34,10 +36,12 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
+    session::AlgeonSessionStateBuilderExt as _,
 };
 use arrow::{
-    array::{Int64Array, RecordBatch},
+    array::{Float32Array, Int64Array, RecordBatch},
     datatypes::{DataType, Field, Schema, SchemaRef},
+    util::display::array_value_to_string,
 };
 use datafusion::{
     execution::SessionStateBuilder,
@@ -129,7 +133,6 @@ fn write_branch(path: &Path, rows: usize, seed: u64) -> Result<String, Box<dyn E
 /// shortcuts, so PageRank has one weakly connected component with stable
 /// aggregates.
 fn write_edges(path: &Path, vertices: usize) -> Result<String, Box<dyn Error>> {
-    use arrow::array::Float32Array;
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
         Field::new("dst", DataType::Int64, false),
@@ -160,7 +163,6 @@ fn write_edges(path: &Path, vertices: usize) -> Result<String, Box<dyn Error>> {
 /// Writes deterministic 2-D vectors on a grid plus queries near grid
 /// points, so brute-force KNN neighbor sets are stable.
 fn write_vectors(path: &Path, items: usize, queries: usize, is_queries: bool) -> Result<String, Box<dyn Error>> {
-    use arrow::array::Float32Array;
     let id_name = if is_queries { "query_id" } else { "item_id" };
     let count = if is_queries { queries } else { items };
     let schema = Arc::new(Schema::new(vec![
@@ -212,7 +214,6 @@ fn gpu_exec_ms(report: &QueryAttemptReport) -> Option<f64> {
 /// Order-sensitive fingerprint: the sweep asserts a global order, so row
 /// sequence is content, not incidental batching.
 fn fingerprint_ordered(batches: &[RecordBatch]) -> Result<String, Box<dyn Error>> {
-    use arrow::util::display::array_value_to_string;
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("algeon-bench-sort-sweep-ordered-v1");
     let mut rows = 0_usize;
@@ -252,7 +253,6 @@ fn build_backend(
 }
 
 fn new_session(backend: &AlgeonGpuBackend) -> Result<SessionContext, Box<dyn Error>> {
-    use algeon_datafusion::session::AlgeonSessionStateBuilderExt as _;
     let session_config = SessionConfig::new()
         .with_target_partitions(1)
         .with_repartition_file_scans(false)
@@ -262,10 +262,7 @@ fn new_session(backend: &AlgeonGpuBackend) -> Result<SessionContext, Box<dyn Err
     let builder = backend.install_on(builder)?;
     let builder = builder.try_with_cuvs_sql()?;
     #[cfg(feature = "cugraph")]
-    let builder = {
-        use algeon_datafusion::cugraph_sql::CugraphSqlConfig;
-        builder.try_with_cugraph_sql(CugraphSqlConfig::default())?
-    };
+    let builder = builder.try_with_cugraph_sql(CugraphSqlConfig::default())?;
     Ok(SessionContext::new_with_state(builder.build()))
 }
 

@@ -4,6 +4,7 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -130,7 +131,5 @@ fn canonicalize_existing(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
     fs::metadata(path).map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }

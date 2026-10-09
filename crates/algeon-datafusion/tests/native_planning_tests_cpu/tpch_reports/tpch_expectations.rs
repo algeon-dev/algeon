@@ -1,3 +1,5 @@
+use algeon_datafusion::native_report::NativeJoinDiagnosticSummary;
+
 pub(super) fn expected_tpch_physical_root(query_id: &str) -> &'static str {
     match query_id {
         "q02" => "SortExec(TopK)",
@@ -139,4 +141,3 @@ pub(super) fn assert_tpch_join_diagnostics(query_id: &str, diagnostics: &[Native
         other => panic!("missing TPC-H join diagnostics expectation for {other}"),
     }
 }
-use algeon_datafusion::native_report::NativeJoinDiagnosticSummary;

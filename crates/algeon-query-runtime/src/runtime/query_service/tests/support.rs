@@ -1,4 +1,8 @@
 use super::*;
+use crate::runtime::{
+    DeviceLedgerReport, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+    query_service::admission::AdmissionState,
+};
 
 /// Admits now, or reports that the request would queue, through the queue
 /// waiter; a request that cannot admit leaves the queue with its waiter.

@@ -7,7 +7,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use query_planning::correlation::TraceId;
+#[cfg(test)]
+use query_planning::policy::PlanningPolicy;
+use query_planning::{correlation::TraceId, error::QueryErrorCode};
 
 use super::{
     super::context::{AttemptAuxiliaryPermit, QueryServiceResourceEpoch},
@@ -30,6 +32,9 @@ mod lifetime;
 mod release;
 mod report_commit;
 
+pub(super) use lifetime::QueryHandleLifetime;
+use lifetime::{ContextSetupClaim, RootContextSetupClaimGuard};
+
 /// An auxiliary context's attempt permit and stream slot, reserved before
 /// its context-setup job runs.
 #[derive(Debug)]
@@ -37,9 +42,6 @@ struct AuxiliaryReservation {
     permit: AttemptAuxiliaryPermit,
     stream: StreamSlot,
 }
-
-pub(super) use lifetime::QueryHandleLifetime;
-use lifetime::{ContextSetupClaim, RootContextSetupClaimGuard};
 
 /// RAII admission handle for one native query.
 #[derive(Debug)]
