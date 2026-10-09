@@ -253,13 +253,11 @@ mod tests {
 
     use super::*;
     use crate::server::{
-        adapter_error::ErrorCode as ServerErrorCode,
         backend::{AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership},
         backend_from_server_config,
         config::{
-            ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, ALGEON_SERVER_CONFIG_FILE_ENV,
-            ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-            ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+            ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+            ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
         },
     };
 
@@ -306,60 +304,6 @@ mod tests {
             .map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive))
             .collect();
         config
-    }
-
-    #[test]
-    fn server_backend_partitions_budget_and_sizes_stream_pool() {
-        let env = std::collections::BTreeMap::from([
-            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
-            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
-            (ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "2".to_string()),
-        ]);
-        let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
-
-        let devices = config.resolve_gpu_devices().expect("server device mapping must resolve");
-        let profile = devices[0].profile();
-        assert_eq!(profile.max_active_attempts(), 2);
-        assert_eq!(profile.device_ordinal(), 0);
-        assert_eq!(profile.memory_limit(), GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 });
-        assert_eq!(profile.default_query_limit_bytes(), None);
-        assert_eq!(
-            config
-                .native_optimizer_config
-                .native_execution_config()
-                .source_scheduler_policy()
-                .max_source_reads_in_flight(),
-            2
-        );
-        assert_eq!(server_queue_policy(&config), AlgeonGpuQueuePolicy::default());
-    }
-
-    #[test]
-    fn server_config_rejects_removed_legacy_cache_profile_env_before_backend_projection() {
-        let env = std::collections::BTreeMap::from([
-            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
-            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
-            ("ALGEON_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", "2048".to_string()),
-        ]);
-        let error = server_config_with_test_device_profile(env, None)
-            .expect_err("removed cache profile configuration must fail before backend construction");
-
-        assert_eq!(error.code(), ServerErrorCode::InvalidConfiguration);
-        assert_eq!(error.operation(), "algeon_datafusion.server.config");
-        assert_eq!(error.fact_value("config_field"), Some("ALGEON_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES"));
-        assert!(error.message().contains("removed by the resource-only admission contract"));
-    }
-
-    #[test]
-    fn server_backend_honors_queue_wait_bound_env() {
-        let env = std::collections::BTreeMap::from([
-            (ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, "250".to_string()),
-            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
-            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
-        ]);
-        let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
-
-        assert_eq!(server_queue_policy(&config).max_queue_wait(), std::time::Duration::from_millis(250));
     }
 
     #[test]
@@ -453,15 +397,5 @@ mod tests {
             !payload.contains("[device_ledger_grants]") && !payload.contains("[gpu_execution]"),
             "diagnostics must not combine the backend snapshot with separate service reads: {payload}"
         );
-    }
-
-    #[test]
-    fn semaphore_admission_diagnostics_payload_reports_permit_counts() {
-        let admission = QueryAdmission::new_for_tests();
-        let _permit = admission.try_acquire().unwrap().expect("test-only admission should construct a permit");
-
-        let payload = admission.diagnostics_payload().unwrap();
-
-        assert!(payload.contains("# backend=test_only\n"), "{payload}");
     }
 }

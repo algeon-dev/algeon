@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{Decimal32Type, Decimal64Type, UnionFields, UnionMode, validate_decimal_precision_and_scale};
+use cudf::testing::run_named_cases;
 use query_engine::{exec::preflight_query_plan, rapids_backend::rapids_backend};
 use query_planning::{backend::BackendCapabilities, datatypes::is_narrow_decimal_carry_type};
 
 use super::*;
 
-#[test]
 fn decimal128_type_support_policy_accepts_valid_arrow_decimals() {
     let decimal_with_fractional_scale = DataType::Decimal128(38, 2);
     let decimal_with_negative_scale = DataType::Decimal128(20, -1);
@@ -24,6 +24,35 @@ fn decimal128_type_support_policy_accepts_valid_arrow_decimals() {
 }
 
 #[test]
+fn t_type_policy_cases() {
+    run_named_cases(&[
+        (
+            "type_support::decimal128_type_support_policy_accepts_valid_arrow_decimals",
+            decimal128_type_support_policy_accepts_valid_arrow_decimals,
+        ),
+        (
+            "type_support::decimal128_type_support_policy_rejects_invalid_arrow_decimals",
+            decimal128_type_support_policy_rejects_invalid_arrow_decimals,
+        ),
+        (
+            "type_support::decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals",
+            decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals,
+        ),
+        (
+            "type_support::decimal32_and_decimal64_type_support_policy_rejects_invalid_arrow_decimals",
+            decimal32_and_decimal64_type_support_policy_rejects_invalid_arrow_decimals,
+        ),
+        (
+            "type_support::timestamp_with_timezone_type_support_policy_is_carry_only",
+            timestamp_with_timezone_type_support_policy_is_carry_only,
+        ),
+        (
+            "type_support::temporal_type_support_policy_accepts_date64_and_time_types",
+            temporal_type_support_policy_accepts_date64_and_time_types,
+        ),
+    ]);
+}
+
 fn decimal128_type_support_policy_rejects_invalid_arrow_decimals() {
     let invalid_precision = DataType::Decimal128(39, 2);
     let invalid_scale = DataType::Decimal128(10, 11);
@@ -34,7 +63,6 @@ fn decimal128_type_support_policy_rejects_invalid_arrow_decimals() {
     assert!(cudf_dtype_from_arrow_type(&invalid_scale).is_err());
 }
 
-#[test]
 fn decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals() {
     let cases = [
         (DataType::Decimal32(9, 2), TypeId::Decimal32, -2),
@@ -55,7 +83,6 @@ fn decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals() {
     }
 }
 
-#[test]
 fn decimal32_and_decimal64_type_support_policy_rejects_invalid_arrow_decimals() {
     assert!(validate_decimal_precision_and_scale::<Decimal32Type>(10, 2).is_err());
     let invalid_decimal32_precision = DataType::Decimal32(10, 2);
@@ -82,7 +109,6 @@ fn decimal32_and_decimal64_type_support_policy_rejects_invalid_arrow_decimals() 
     assert!(cudf_dtype_from_arrow_type(&invalid_decimal64_scale).is_err());
 }
 
-#[test]
 fn timestamp_with_timezone_type_support_policy_is_carry_only() {
     let timestamp_tz = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
 
@@ -101,7 +127,6 @@ fn timestamp_with_timezone_type_support_policy_is_carry_only() {
     ));
 }
 
-#[test]
 fn temporal_type_support_policy_accepts_date64_and_time_types() {
     let cases = [
         (DataType::Date64, TypeId::TimestampMilliseconds),

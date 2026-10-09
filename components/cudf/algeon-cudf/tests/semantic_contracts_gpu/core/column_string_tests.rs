@@ -8,7 +8,7 @@ use cudf_sys::test_support;
 
 use crate::common::{
     column_from_slice, column_from_strs, column_from_strs_nullable, error_context_value, last_exec_mr_value,
-    last_exec_stream_value, nullable_series, reset_exec_observation, run_named_cases,
+    last_exec_stream_value, nullable_series, reset_exec_observation,
 };
 
 fn test_from_strs_basic() {
@@ -295,49 +295,52 @@ fn test_from_strs_nullable_no_nulls() {
     assert_eq!(result, vec!["x", "y", "z"]);
 }
 
-#[test]
-fn column_string_tests_cases() {
-    run_named_cases(&[
-        ("test_from_strs_basic", test_from_strs_basic),
-        ("test_from_strs_roundtrip", test_from_strs_roundtrip),
-        ("test_from_strs_empty_strings", test_from_strs_empty_strings),
-        ("test_from_strs_single", test_from_strs_single),
-        ("test_from_strs_empty_column", test_from_strs_empty_column),
-        ("test_from_strs_nullable_basic", test_from_strs_nullable_basic),
-        ("test_from_strs_nullable_roundtrip", test_from_strs_nullable_roundtrip),
-        (
-            "test_to_host_validity_for_sliced_nullable_string_column_is_normalized_to_slice",
-            test_to_host_validity_for_sliced_nullable_string_column_is_normalized_to_slice,
-        ),
-        (
-            "test_sliced_nullable_string_materialization_preserves_active_range",
-            test_sliced_nullable_string_materialization_preserves_active_range,
-        ),
-        ("test_from_strs_nullable_mismatched_lengths", test_from_strs_nullable_mismatched_lengths),
-        ("test_from_strs_utf8", test_from_strs_utf8),
-        ("test_from_strs_column_has_children", test_from_strs_column_has_children),
-        ("test_to_strings_rejects_non_string_column", test_to_strings_rejects_non_string_column),
-        ("test_to_strings_lossy_maps_nulls_to_empty_strings", test_to_strings_lossy_maps_nulls_to_empty_strings),
-        (
-            "test_to_optional_strings_distinguishes_null_from_empty",
-            test_to_optional_strings_distinguishes_null_from_empty,
-        ),
-        (
-            "test_series_to_optional_strings_distinguishes_null_from_empty",
-            test_series_to_optional_strings_distinguishes_null_from_empty,
-        ),
-        ("test_to_optional_strings_rejects_non_string_column", test_to_optional_strings_rejects_non_string_column),
-        (
-            "test_to_strings_rejects_malformed_string_view_with_stable_foreign_contract",
-            test_to_strings_rejects_malformed_string_view_with_stable_foreign_contract,
-        ),
-        (
-            "test_to_optional_strings_rejects_malformed_string_view_with_same_contract",
-            test_to_optional_strings_rejects_malformed_string_view_with_same_contract,
-        ),
-        ("test_from_strs_deep_copy_roundtrip", test_from_strs_deep_copy_roundtrip),
-        ("test_from_strs_all_empty", test_from_strs_all_empty),
-        ("test_from_strs_nullable_all_null", test_from_strs_nullable_all_null),
-        ("test_from_strs_nullable_no_nulls", test_from_strs_nullable_no_nulls),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("column_string_tests::test_from_strs_basic", test_from_strs_basic),
+    ("column_string_tests::test_from_strs_roundtrip", test_from_strs_roundtrip),
+    ("column_string_tests::test_from_strs_empty_strings", test_from_strs_empty_strings),
+    ("column_string_tests::test_from_strs_single", test_from_strs_single),
+    ("column_string_tests::test_from_strs_empty_column", test_from_strs_empty_column),
+    ("column_string_tests::test_from_strs_nullable_basic", test_from_strs_nullable_basic),
+    ("column_string_tests::test_from_strs_nullable_roundtrip", test_from_strs_nullable_roundtrip),
+    (
+        "column_string_tests::test_to_host_validity_for_sliced_nullable_string_column_is_normalized_to_slice",
+        test_to_host_validity_for_sliced_nullable_string_column_is_normalized_to_slice,
+    ),
+    (
+        "column_string_tests::test_sliced_nullable_string_materialization_preserves_active_range",
+        test_sliced_nullable_string_materialization_preserves_active_range,
+    ),
+    ("column_string_tests::test_from_strs_nullable_mismatched_lengths", test_from_strs_nullable_mismatched_lengths),
+    ("column_string_tests::test_from_strs_utf8", test_from_strs_utf8),
+    ("column_string_tests::test_from_strs_column_has_children", test_from_strs_column_has_children),
+    ("column_string_tests::test_to_strings_rejects_non_string_column", test_to_strings_rejects_non_string_column),
+    (
+        "column_string_tests::test_to_strings_lossy_maps_nulls_to_empty_strings",
+        test_to_strings_lossy_maps_nulls_to_empty_strings,
+    ),
+    (
+        "column_string_tests::test_to_optional_strings_distinguishes_null_from_empty",
+        test_to_optional_strings_distinguishes_null_from_empty,
+    ),
+    (
+        "column_string_tests::test_series_to_optional_strings_distinguishes_null_from_empty",
+        test_series_to_optional_strings_distinguishes_null_from_empty,
+    ),
+    (
+        "column_string_tests::test_to_optional_strings_rejects_non_string_column",
+        test_to_optional_strings_rejects_non_string_column,
+    ),
+    (
+        "column_string_tests::test_to_strings_rejects_malformed_string_view_with_stable_foreign_contract",
+        test_to_strings_rejects_malformed_string_view_with_stable_foreign_contract,
+    ),
+    (
+        "column_string_tests::test_to_optional_strings_rejects_malformed_string_view_with_same_contract",
+        test_to_optional_strings_rejects_malformed_string_view_with_same_contract,
+    ),
+    ("column_string_tests::test_from_strs_deep_copy_roundtrip", test_from_strs_deep_copy_roundtrip),
+    ("column_string_tests::test_from_strs_all_empty", test_from_strs_all_empty),
+    ("column_string_tests::test_from_strs_nullable_all_null", test_from_strs_nullable_all_null),
+    ("column_string_tests::test_from_strs_nullable_no_nulls", test_from_strs_nullable_no_nulls),
+];

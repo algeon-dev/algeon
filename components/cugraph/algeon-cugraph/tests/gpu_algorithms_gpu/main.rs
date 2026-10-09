@@ -1,3 +1,16 @@
+mod array_owner;
+mod betweenness_owner;
+mod bfs_owner;
+mod degrees_owner;
+mod dtype_contracts_gpu;
+mod layout_owner;
+mod null_guards_and_distances_gpu;
+mod pagerank_owner;
+mod result_decoding_gpu;
+mod typed_vec_gpu;
+
+use cudf::testing::run_named_cases;
+
 #[path = "../support/common/mod.rs"]
 mod common;
 
@@ -75,6 +88,180 @@ fn similarity_fixture_graph(handle: &cugraph::EnteredContext<'_>) -> Graph<Forwa
 }
 
 #[test]
+fn gpu_cases_1() {
+    run_named_cases(&[
+        ("bfs_accepts_i64_sources_for_i64_graphs", bfs_accepts_i64_sources_for_i64_graphs),
+        ("betweenness_accepts_i64_seed_vertices", betweenness_accepts_i64_seed_vertices),
+        (
+            "betweenness_rejects_out_of_range_seed_vertex_with_default_params",
+            betweenness_rejects_out_of_range_seed_vertex_with_default_params,
+        ),
+        ("degrees_accept_i64_vertex_subsets", degrees_accept_i64_vertex_subsets),
+        ("in_degrees_checked_accepts_all_vertices", in_degrees_checked_accepts_all_vertices),
+        ("out_degrees_checked_accepts_all_vertices", out_degrees_checked_accepts_all_vertices),
+        (
+            "pairwise_similarity_coefficients_match_reference_values",
+            pairwise_similarity_coefficients_match_reference_values,
+        ),
+        (
+            "pairwise_similarity_preserves_explicit_pair_multisets_and_rejects_invalid_endpoints",
+            pairwise_similarity_preserves_explicit_pair_multisets_and_rejects_invalid_endpoints,
+        ),
+        (
+            "pairwise_jaccard_consumes_weights_and_rejects_weighted_calls_without_a_weight_binding",
+            pairwise_jaccard_consumes_weights_and_rejects_weighted_calls_without_a_weight_binding,
+        ),
+        (
+            "weighted_cosine_returns_zero_for_disjoint_nonempty_neighborhoods",
+            weighted_cosine_returns_zero_for_disjoint_nonempty_neighborhoods,
+        ),
+        ("all_pairs_jaccard_returns_generated_vertex_pairs", all_pairs_jaccard_returns_generated_vertex_pairs),
+        (
+            "all_pairs_similarity_methods_return_consistent_columns",
+            all_pairs_similarity_methods_return_consistent_columns,
+        ),
+        ("vertex_pairs_rejects_mismatched_pair_lengths", vertex_pairs_rejects_mismatched_pair_lengths),
+        (
+            "random_walk_algorithms_return_dense_paths_and_weights",
+            random_walk_algorithms_return_dense_paths_and_weights,
+        ),
+        ("unweighted_random_walks_omit_weights", unweighted_random_walks_omit_weights),
+        ("select_random_vertices_returns_owned_device_array", select_random_vertices_returns_owned_device_array),
+        (
+            "homogeneous_neighbor_sampling_returns_expected_columns",
+            homogeneous_neighbor_sampling_returns_expected_columns,
+        ),
+        (
+            "temporal_neighbor_sampling_is_callable_with_start_times",
+            temporal_neighbor_sampling_is_callable_with_start_times,
+        ),
+        (
+            "temporal_neighbor_sampling_rejects_start_time_length_mismatch",
+            temporal_neighbor_sampling_rejects_start_time_length_mismatch,
+        ),
+        ("bfs_rejects_vertex_selection_all", bfs_rejects_vertex_selection_all),
+    ]);
+}
+
+#[test]
+fn gpu_cases_2() {
+    run_named_cases(&[
+        (
+            "sssp_weighted_graph_returns_float_distances_and_predecessors",
+            sssp_weighted_graph_returns_float_distances_and_predecessors,
+        ),
+        ("sssp_unweighted_graph_uses_unit_edge_costs", sssp_unweighted_graph_uses_unit_edge_costs),
+        ("sssp_without_predecessors_omits_predecessor_column", sssp_without_predecessors_omits_predecessor_column),
+        ("extract_paths_from_bfs_and_sssp_results", extract_paths_from_bfs_and_sssp_results),
+        ("extract_paths_rejects_results_without_predecessors", extract_paths_rejects_results_without_predecessors),
+        ("sssp_rejects_source_dtype_mismatch", sssp_rejects_source_dtype_mismatch),
+        ("force_atlas2_accepts_i64_vertices_and_f32_helpers", force_atlas2_accepts_i64_vertices_and_f32_helpers),
+        ("force_atlas2_rejects_sparse_mass_helpers", force_atlas2_rejects_sparse_mass_helpers),
+        (
+            "louvain_returns_vertex_partitions_and_finite_modularity",
+            louvain_returns_vertex_partitions_and_finite_modularity,
+        ),
+        (
+            "leiden_returns_vertex_partitions_and_finite_modularity",
+            leiden_returns_vertex_partitions_and_finite_modularity,
+        ),
+        (
+            "leiden_communities_induce_connected_subgraphs_and_report_their_modularity",
+            leiden_communities_induce_connected_subgraphs_and_report_their_modularity,
+        ),
+        ("ecg_returns_vertex_partitions_and_finite_modularity", ecg_returns_vertex_partitions_and_finite_modularity),
+        (
+            "weakly_connected_components_labels_two_symmetric_components",
+            weakly_connected_components_labels_two_symmetric_components,
+        ),
+        (
+            "strongly_connected_components_labels_directed_components",
+            strongly_connected_components_labels_directed_components,
+        ),
+        (
+            "core_number_on_triangle_tail_returns_stable_core_values",
+            core_number_on_triangle_tail_returns_stable_core_values,
+        ),
+        (
+            "triangle_count_all_and_start_vertices_return_expected_counts",
+            triangle_count_all_and_start_vertices_return_expected_counts,
+        ),
+        (
+            "k_core_with_and_without_precomputed_core_numbers_returns_triangle_edges",
+            k_core_with_and_without_precomputed_core_numbers_returns_triangle_edges,
+        ),
+        (
+            "k_core_degree_type_selects_the_degree_that_defines_cores",
+            k_core_degree_type_selects_the_degree_that_defines_cores,
+        ),
+        (
+            "native_precondition_failure_is_invalid_input_with_the_bare_reason",
+            native_precondition_failure_is_invalid_input_with_the_bare_reason,
+        ),
+        ("minimum_spanning_tree_returns_weighted_edge_result", minimum_spanning_tree_returns_weighted_edge_result),
+    ]);
+}
+
+#[test]
+fn gpu_cases_3() {
+    run_named_cases(&[
+        ("k_truss_subgraph_returns_expected_offsets_and_edges", k_truss_subgraph_returns_expected_offsets_and_edges),
+        ("extract_ego_returns_per_seed_offsets", extract_ego_returns_per_seed_offsets),
+        ("pagerank_on_single_vertex_graph_returns_score_one", pagerank_on_single_vertex_graph_returns_score_one),
+        (
+            "pagerank_on_disconnected_graph_returns_normalized_positive_scores",
+            pagerank_on_disconnected_graph_returns_normalized_positive_scores,
+        ),
+        ("pagerank_reports_nonconvergence_without_failing", pagerank_reports_nonconvergence_without_failing),
+        ("personalized_pagerank_accepts_personalization_vector", personalized_pagerank_accepts_personalization_vector),
+        (
+            "personalized_pagerank_rejects_mismatched_personalization_lengths",
+            personalized_pagerank_rejects_mismatched_personalization_lengths,
+        ),
+        (
+            "personalized_pagerank_rejects_out_of_range_personalization_vertex_with_default_params",
+            personalized_pagerank_rejects_out_of_range_personalization_vertex_with_default_params,
+        ),
+        (
+            "pagerank_rejects_out_of_range_precomputed_weight_vertex_with_default_params",
+            pagerank_rejects_out_of_range_precomputed_weight_vertex_with_default_params,
+        ),
+        (
+            "pagerank_rejects_out_of_range_initial_guess_vertex_with_default_params",
+            pagerank_rejects_out_of_range_initial_guess_vertex_with_default_params,
+        ),
+        (
+            "vertex_centrality_expansion_algorithms_return_vertex_scores",
+            vertex_centrality_expansion_algorithms_return_vertex_scores,
+        ),
+        ("eigenvector_nonconvergence_is_typed_and_permanent", eigenvector_nonconvergence_is_typed_and_permanent),
+        ("katz_nonconvergence_is_typed_and_names_alpha", katz_nonconvergence_is_typed_and_names_alpha),
+        ("hits_nonconvergence_is_typed_and_names_its_remedy", hits_nonconvergence_is_typed_and_names_its_remedy),
+        ("hits_returns_hub_authority_scores_and_metadata", hits_returns_hub_authority_scores_and_metadata),
+        (
+            "hits_rejects_out_of_range_initial_hub_vertex_with_default_params",
+            hits_rejects_out_of_range_initial_hub_vertex_with_default_params,
+        ),
+        (
+            "edge_betweenness_exposes_edge_shaped_scores_and_optional_edge_ids",
+            edge_betweenness_exposes_edge_shaped_scores_and_optional_edge_ids,
+        ),
+        (
+            "edge_betweenness_rejects_out_of_range_seed_vertex_with_default_params",
+            edge_betweenness_rejects_out_of_range_seed_vertex_with_default_params,
+        ),
+        (
+            "spectral_clustering_returns_partitions_and_analysis_scores",
+            spectral_clustering_returns_partitions_and_analysis_scores,
+        ),
+        (
+            "clustering_analysis_accepts_explicit_partition_columns",
+            clustering_analysis_accepts_explicit_partition_columns,
+        ),
+        ("degrees_all_on_empty_graph_returns_empty_results", degrees_all_on_empty_graph_returns_empty_results),
+    ]);
+}
+
 fn bfs_accepts_i64_sources_for_i64_graphs() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -105,7 +292,6 @@ fn bfs_accepts_i64_sources_for_i64_graphs() {
     assert_eq!(distance_map[&3], 3);
 }
 
-#[test]
 fn betweenness_accepts_i64_seed_vertices() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -133,7 +319,6 @@ fn betweenness_accepts_i64_seed_vertices() {
     assert!(values.iter().all(|v| v.is_finite() && *v >= 0.0));
 }
 
-#[test]
 fn betweenness_rejects_out_of_range_seed_vertex_with_default_params() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -154,7 +339,6 @@ fn betweenness_rejects_out_of_range_seed_vertex_with_default_params() {
     assert_eq!(err.operation(), "betweenness_centrality");
 }
 
-#[test]
 fn degrees_accept_i64_vertex_subsets() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -182,7 +366,6 @@ fn degrees_accept_i64_vertex_subsets() {
     assert_eq!(degree_map[&2], (1, 2));
 }
 
-#[test]
 fn in_degrees_checked_accepts_all_vertices() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -206,7 +389,6 @@ fn in_degrees_checked_accepts_all_vertices() {
     }
 }
 
-#[test]
 fn out_degrees_checked_accepts_all_vertices() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -230,7 +412,6 @@ fn out_degrees_checked_accepts_all_vertices() {
     }
 }
 
-#[test]
 fn pairwise_similarity_coefficients_match_reference_values() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -263,7 +444,6 @@ fn pairwise_similarity_coefficients_match_reference_values() {
     assert_pairwise!(cosine_similarity_coefficients, SIMILARITY_COSINE_F32);
 }
 
-#[test]
 fn pairwise_similarity_preserves_explicit_pair_multisets_and_rejects_invalid_endpoints() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -292,7 +472,6 @@ fn pairwise_similarity_preserves_explicit_pair_multisets_and_rejects_invalid_end
     assert_eq!(error.operation(), "jaccard_coefficients");
 }
 
-#[test]
 fn pairwise_jaccard_consumes_weights_and_rejects_weighted_calls_without_a_weight_binding() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -371,7 +550,6 @@ fn pairwise_jaccard_consumes_weights_and_rejects_weighted_calls_without_a_weight
     assert_eq!(error.operation(), "jaccard_coefficients");
 }
 
-#[test]
 fn weighted_cosine_returns_zero_for_disjoint_nonempty_neighborhoods() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -410,7 +588,6 @@ fn weighted_cosine_returns_zero_for_disjoint_nonempty_neighborhoods() {
     assert!((scores[1] - 0.581_238_2).abs() < 1.0e-5, "weighted cosine expected 0.5812382, got {}", scores[1]);
 }
 
-#[test]
 fn all_pairs_jaccard_returns_generated_vertex_pairs() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -440,7 +617,6 @@ fn all_pairs_jaccard_returns_generated_vertex_pairs() {
     }
 }
 
-#[test]
 fn all_pairs_similarity_methods_return_consistent_columns() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -467,7 +643,6 @@ fn all_pairs_similarity_methods_return_consistent_columns() {
     assert_all_pairs_shape!(all_pairs_cosine_similarity_coefficients);
 }
 
-#[test]
 fn vertex_pairs_rejects_mismatched_pair_lengths() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -607,7 +782,6 @@ fn assert_neighbor_sample_columns(
     }
 }
 
-#[test]
 fn random_walk_algorithms_return_dense_paths_and_weights() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -640,7 +814,6 @@ fn random_walk_algorithms_return_dense_paths_and_weights() {
     assert_random_walk_shape(&entered, &result, &starts_data, node2vec_params.max_length.get());
 }
 
-#[test]
 fn unweighted_random_walks_omit_weights() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -662,7 +835,6 @@ fn unweighted_random_walks_omit_weights() {
     assert_eq!(result.paths().expect("paths").len(), 3);
 }
 
-#[test]
 fn select_random_vertices_returns_owned_device_array() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -683,7 +855,6 @@ fn select_random_vertices_returns_owned_device_array() {
     }
 }
 
-#[test]
 fn homogeneous_neighbor_sampling_returns_expected_columns() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -707,7 +878,6 @@ fn homogeneous_neighbor_sampling_returns_expected_columns() {
     assert_neighbor_sample_columns(&entered, &result, false);
 }
 
-#[test]
 fn temporal_neighbor_sampling_is_callable_with_start_times() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -749,7 +919,6 @@ fn temporal_neighbor_sampling_is_callable_with_start_times() {
     assert_neighbor_sample_columns(&entered, &result, true);
 }
 
-#[test]
 fn temporal_neighbor_sampling_rejects_start_time_length_mismatch() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -777,7 +946,6 @@ fn temporal_neighbor_sampling_rejects_start_time_length_mismatch() {
     assert_eq!(err.operation(), "homogeneous_uniform_temporal_neighbor_sample");
 }
 
-#[test]
 fn bfs_rejects_vertex_selection_all() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -795,7 +963,6 @@ fn bfs_rejects_vertex_selection_all() {
     assert_eq!(err.operation(), "Graph::bfs");
 }
 
-#[test]
 fn sssp_weighted_graph_returns_float_distances_and_predecessors() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -843,7 +1010,6 @@ fn sssp_weighted_graph_returns_float_distances_and_predecessors() {
     assert_eq!(predecessor_map[&5], 4);
 }
 
-#[test]
 fn sssp_unweighted_graph_uses_unit_edge_costs() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -867,7 +1033,6 @@ fn sssp_unweighted_graph_uses_unit_edge_costs() {
     assert_eq!(distance_map[&3], 3.0);
 }
 
-#[test]
 fn sssp_without_predecessors_omits_predecessor_column() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -891,7 +1056,6 @@ fn sssp_without_predecessors_omits_predecessor_column() {
     assert!(result.predecessors().expect("predecessors").is_none());
 }
 
-#[test]
 fn extract_paths_from_bfs_and_sssp_results() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -925,7 +1089,6 @@ fn extract_paths_from_bfs_and_sssp_results() {
     assert_eq!(sssp_path_values, vec![0, 1, 4, 5]);
 }
 
-#[test]
 fn extract_paths_rejects_results_without_predecessors() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -950,7 +1113,6 @@ fn extract_paths_rejects_results_without_predecessors() {
     assert_eq!(err.operation(), "BfsResult::extract_paths");
 }
 
-#[test]
 fn sssp_rejects_source_dtype_mismatch() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -971,7 +1133,6 @@ fn sssp_rejects_source_dtype_mismatch() {
     assert_eq!(err.operation(), "Graph::sssp");
 }
 
-#[test]
 fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1027,7 +1188,6 @@ fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
     assert!(y_values.iter().all(|v| v.is_finite()));
 }
 
-#[test]
 fn force_atlas2_rejects_sparse_mass_helpers() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1078,7 +1238,6 @@ fn force_atlas2_rejects_sparse_mass_helpers() {
     );
 }
 
-#[test]
 fn louvain_returns_vertex_partitions_and_finite_modularity() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1108,7 +1267,6 @@ fn louvain_returns_vertex_partitions_and_finite_modularity() {
     assert!(result.modularity().is_finite());
 }
 
-#[test]
 fn leiden_returns_vertex_partitions_and_finite_modularity() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1228,7 +1386,6 @@ fn disconnected_community_count(edges: &[(i32, i32, f32)], vertices: &[i32], clu
     components_per_cluster.values().filter(|components| components.len() > 1).count()
 }
 
-#[test]
 fn leiden_communities_induce_connected_subgraphs_and_report_their_modularity() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1275,7 +1432,6 @@ fn leiden_communities_induce_connected_subgraphs_and_report_their_modularity() {
     }
 }
 
-#[test]
 fn ecg_returns_vertex_partitions_and_finite_modularity() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1306,7 +1462,6 @@ fn ecg_returns_vertex_partitions_and_finite_modularity() {
     assert!(result.modularity().is_finite());
 }
 
-#[test]
 fn weakly_connected_components_labels_two_symmetric_components() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1338,7 +1493,6 @@ fn weakly_connected_components_labels_two_symmetric_components() {
     assert_ne!(label_map[&0], label_map[&2]);
 }
 
-#[test]
 fn strongly_connected_components_labels_directed_components() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1361,7 +1515,6 @@ fn strongly_connected_components_labels_directed_components() {
     assert_ne!(label_map[&0], label_map[&2]);
 }
 
-#[test]
 fn core_number_on_triangle_tail_returns_stable_core_values() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1390,7 +1543,6 @@ fn core_number_on_triangle_tail_returns_stable_core_values() {
     assert_eq!(core_map[&3], 1);
 }
 
-#[test]
 fn triangle_count_all_and_start_vertices_return_expected_counts() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1429,7 +1581,6 @@ fn triangle_count_all_and_start_vertices_return_expected_counts() {
     assert_eq!(subset_map[&2], 1);
 }
 
-#[test]
 fn k_core_with_and_without_precomputed_core_numbers_returns_triangle_edges() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1469,7 +1620,6 @@ fn k_core_with_and_without_precomputed_core_numbers_returns_triangle_edges() {
     assert_eq!(precomputed.sources().expect("sources").len(), result.sources().expect("sources").len());
 }
 
-#[test]
 fn k_core_degree_type_selects_the_degree_that_defines_cores() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1502,7 +1652,6 @@ fn k_core_degree_type_selects_the_degree_that_defines_cores() {
     assert_eq!(core_vertices(KCoreDegreeType::InOut), vec![0, 1, 2, 3]);
 }
 
-#[test]
 fn native_precondition_failure_is_invalid_input_with_the_bare_reason() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1524,7 +1673,6 @@ fn native_precondition_failure_is_invalid_input_with_the_bare_reason() {
     assert_eq!(error.message(), "Invalid input argument: core_number currently supports only undirected graphs.");
 }
 
-#[test]
 fn minimum_spanning_tree_returns_weighted_edge_result() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1559,7 +1707,6 @@ fn minimum_spanning_tree_returns_weighted_edge_result() {
     assert!(result.edge_type_ids().expect("edge type ids").is_none());
 }
 
-#[test]
 fn k_truss_subgraph_returns_expected_offsets_and_edges() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1591,7 +1738,6 @@ fn k_truss_subgraph_returns_expected_offsets_and_edges() {
     assert!(result.weights().expect("weights").is_some());
 }
 
-#[test]
 fn extract_ego_returns_per_seed_offsets() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1624,7 +1770,6 @@ fn extract_ego_returns_per_seed_offsets() {
     assert_eq!(sources.len(), *offsets.last().expect("last offset"));
 }
 
-#[test]
 fn pagerank_on_single_vertex_graph_returns_score_one() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1650,7 +1795,6 @@ fn pagerank_on_single_vertex_graph_returns_score_one() {
     assert!(result.converged().expect("converged"));
 }
 
-#[test]
 fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1676,7 +1820,6 @@ fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
     assert!((score_map[&2] - score_map[&3]).abs() < 1e-6);
 }
 
-#[test]
 fn pagerank_reports_nonconvergence_without_failing() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1696,7 +1839,6 @@ fn pagerank_reports_nonconvergence_without_failing() {
     assert!(!result.converged().expect("converged flag"));
 }
 
-#[test]
 fn personalized_pagerank_accepts_personalization_vector() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1724,7 +1866,6 @@ fn personalized_pagerank_accepts_personalization_vector() {
     assert!((scores.iter().sum::<f32>() - 1.0).abs() < 1e-5);
 }
 
-#[test]
 fn personalized_pagerank_rejects_mismatched_personalization_lengths() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1746,7 +1887,6 @@ fn personalized_pagerank_rejects_mismatched_personalization_lengths() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
 fn personalized_pagerank_rejects_out_of_range_personalization_vertex_with_default_params() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1772,7 +1912,6 @@ fn personalized_pagerank_rejects_out_of_range_personalization_vertex_with_defaul
     assert_eq!(err.operation(), "personalized_pagerank");
 }
 
-#[test]
 fn pagerank_rejects_out_of_range_precomputed_weight_vertex_with_default_params() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1797,7 +1936,6 @@ fn pagerank_rejects_out_of_range_precomputed_weight_vertex_with_default_params()
     assert_eq!(err.operation(), "pagerank");
 }
 
-#[test]
 fn pagerank_rejects_out_of_range_initial_guess_vertex_with_default_params() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1822,7 +1960,6 @@ fn pagerank_rejects_out_of_range_initial_guess_vertex_with_default_params() {
     assert_eq!(err.operation(), "pagerank");
 }
 
-#[test]
 fn vertex_centrality_expansion_algorithms_return_vertex_scores() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1852,7 +1989,6 @@ fn vertex_centrality_expansion_algorithms_return_vertex_scores() {
     assert_eq!(katz.scores().expect("katz scores").len(), 3);
 }
 
-#[test]
 fn eigenvector_nonconvergence_is_typed_and_permanent() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1880,7 +2016,6 @@ fn eigenvector_nonconvergence_is_typed_and_permanent() {
     assert_eq!(error.context_value("epsilon"), Some("0.00000000000000000001"));
 }
 
-#[test]
 fn katz_nonconvergence_is_typed_and_names_alpha() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1914,7 +2049,6 @@ fn katz_nonconvergence_is_typed_and_names_alpha() {
     assert!(remedy.contains("max_iterations"), "{remedy}");
 }
 
-#[test]
 fn hits_nonconvergence_is_typed_and_names_its_remedy() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1942,7 +2076,6 @@ fn hits_nonconvergence_is_typed_and_names_its_remedy() {
     assert_eq!(error.context_value("remedy"), Some("raise max_iterations or epsilon"));
 }
 
-#[test]
 fn hits_returns_hub_authority_scores_and_metadata() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1965,7 +2098,6 @@ fn hits_returns_hub_authority_scores_and_metadata() {
     assert!(result.number_of_iterations() > 0);
 }
 
-#[test]
 fn hits_rejects_out_of_range_initial_hub_vertex_with_default_params() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1989,7 +2121,6 @@ fn hits_rejects_out_of_range_initial_hub_vertex_with_default_params() {
     assert_eq!(err.operation(), "hits");
 }
 
-#[test]
 fn edge_betweenness_exposes_edge_shaped_scores_and_optional_edge_ids() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -2025,7 +2156,6 @@ fn edge_betweenness_exposes_edge_shaped_scores_and_optional_edge_ids() {
     assert!(result_without_ids.edge_ids().expect("edge ids").is_none());
 }
 
-#[test]
 fn edge_betweenness_rejects_out_of_range_seed_vertex_with_default_params() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -2047,7 +2177,6 @@ fn edge_betweenness_rejects_out_of_range_seed_vertex_with_default_params() {
     assert_eq!(err.operation(), "edge_betweenness_centrality");
 }
 
-#[test]
 fn spectral_clustering_returns_partitions_and_analysis_scores() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -2166,7 +2295,6 @@ fn spectral_clustering_splits_bridged_cliques_exactly() {
     assert!(failures.is_empty(), "expected one cluster per clique:\n{}", failures.join("\n"));
 }
 
-#[test]
 fn clustering_analysis_accepts_explicit_partition_columns() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -2198,7 +2326,6 @@ fn clustering_analysis_accepts_explicit_partition_columns() {
     assert!(ratio_cut.abs() < 1e-6, "disconnected partition ratio cut should be zero, got {ratio_cut}");
 }
 
-#[test]
 fn degrees_all_on_empty_graph_returns_empty_results() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -2222,4 +2349,63 @@ fn degrees_all_on_empty_graph_returns_empty_results() {
     assert!(returned_vertices.is_empty());
     assert!(in_degrees.is_empty());
     assert!(out_degrees.is_empty());
+}
+
+#[test]
+fn centrality_owner_cases_1() {
+    run_named_cases(&[
+        (
+            "centrality::betweenness::tests::test_betweenness_centrality_line_graph",
+            betweenness_owner::test_betweenness_centrality_line_graph,
+        ),
+        (
+            "centrality::betweenness::tests::test_betweenness_centrality_star_graph",
+            betweenness_owner::test_betweenness_centrality_star_graph,
+        ),
+        (
+            "centrality::betweenness::tests::test_betweenness_centrality_with_endpoints",
+            betweenness_owner::test_betweenness_centrality_with_endpoints,
+        ),
+        (
+            "centrality::betweenness::tests::test_betweenness_centrality_with_seed_vertices",
+            betweenness_owner::test_betweenness_centrality_with_seed_vertices,
+        ),
+        (
+            "centrality::pagerank::tests::test_pagerank_rejects_mismatched_initial_guess",
+            pagerank_owner::test_pagerank_rejects_mismatched_initial_guess,
+        ),
+        (
+            "centrality::pagerank::tests::test_pagerank_rejects_mismatched_precomputed_weights",
+            pagerank_owner::test_pagerank_rejects_mismatched_precomputed_weights,
+        ),
+        ("centrality::pagerank::tests::test_pagerank_star_graph", pagerank_owner::test_pagerank_star_graph),
+        (
+            "centrality::betweenness::tests::test_betweenness_centrality_result_vertex_count_matches",
+            betweenness_owner::test_betweenness_centrality_result_vertex_count_matches,
+        ),
+    ]);
+}
+
+#[test]
+fn typed_runtime_result_cases_1() {
+    run_named_cases(&[
+        (
+            "bfs_distances_i32_supports_runtime_decoding_and_widening",
+            null_guards_and_distances_gpu::bfs_distances_i32_supports_runtime_decoding_and_widening,
+        ),
+        ("typed_results_refuse_lossy_narrowing", dtype_contracts_gpu::typed_results_refuse_lossy_narrowing),
+        (
+            "graph_reports_i64_vertex_and_f64_weight_dtypes",
+            dtype_contracts_gpu::graph_reports_i64_vertex_and_f64_weight_dtypes,
+        ),
+        (
+            "bfs_predecessors_are_none_when_not_requested",
+            result_decoding_gpu::bfs_predecessors_are_none_when_not_requested,
+        ),
+        ("to_vec_i64_roundtrip", typed_vec_gpu::to_vec_i64_roundtrip),
+        ("to_vec_empty_array_returns_empty_vec", typed_vec_gpu::to_vec_empty_array_returns_empty_vec),
+        ("array::tests::test_device_array_roundtrip", array_owner::test_device_array_roundtrip),
+        ("array::tests::test_device_array_f32_roundtrip", array_owner::test_device_array_f32_roundtrip),
+        ("array::tests::test_to_vec_roundtrip_f64", array_owner::test_to_vec_roundtrip_f64),
+    ]);
 }

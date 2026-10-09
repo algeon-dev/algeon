@@ -79,8 +79,8 @@ pub(crate) fn validate_no_duplicate_names(names: &[String], operation: &'static 
 /// # Errors
 ///
 /// Returns an error if any name is not found.
-pub(crate) fn resolve_column_names(
-    columns: &FastIndexMap<String, Arc<Column>>,
+pub(crate) fn resolve_column_names<V>(
+    columns: &FastIndexMap<String, V>,
     names: &[&str],
     operation: &'static str,
 ) -> Result<Vec<usize>> {
@@ -131,7 +131,7 @@ pub(crate) fn build_borrowed_table_view_from_columns<'a>(
 
 /// Compute payload column indices: all positions NOT in `key_indices`,
 /// preserving insertion order.
-pub(crate) fn payload_indices(columns: &FastIndexMap<String, Arc<Column>>, key_indices: &[usize]) -> Vec<usize> {
+pub(crate) fn payload_indices<V>(columns: &FastIndexMap<String, V>, key_indices: &[usize]) -> Vec<usize> {
     let key_set: FastHashSet<usize> = key_indices.iter().copied().collect();
     (0..columns.len()).filter(|idx| !key_set.contains(idx)).collect()
 }
@@ -140,17 +140,9 @@ pub(crate) fn payload_indices(columns: &FastIndexMap<String, Arc<Column>>, key_i
 mod tests {
     use super::*;
     use crate::{
-        core::{
-            error::{ErrorKind, FactKeyName, FactValue},
-            types::TypeId,
-        },
+        core::error::{ErrorKind, FactKeyName, FactValue},
         hash::fast_index_map,
-        runtime::Runtime,
     };
-
-    fn empty_column(type_id: TypeId) -> Arc<Column> {
-        Arc::new(Runtime::new().unwrap().empty_column(type_id).unwrap())
-    }
 
     #[test]
     fn validate_no_duplicate_names_ok() {
@@ -169,9 +161,9 @@ mod tests {
     #[test]
     fn resolve_column_names_ok() {
         let mut map = fast_index_map();
-        map.insert("x".into(), empty_column(TypeId::Int32));
-        map.insert("y".into(), empty_column(TypeId::Int64));
-        map.insert("z".into(), empty_column(TypeId::Float64));
+        map.insert("x".into(), ());
+        map.insert("y".into(), ());
+        map.insert("z".into(), ());
 
         let indices = resolve_column_names(&map, &["z", "x"], "test").unwrap();
         assert_eq!(indices, vec![2, 0]);
@@ -180,7 +172,7 @@ mod tests {
     #[test]
     fn resolve_column_names_missing() {
         let mut map = fast_index_map();
-        map.insert("a".into(), empty_column(TypeId::Int32));
+        map.insert("a".into(), ());
 
         let err = resolve_column_names(&map, &["missing"], "test").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::NotFound);
@@ -190,10 +182,10 @@ mod tests {
     #[test]
     fn payload_indices_excludes_keys() {
         let mut map = fast_index_map();
-        map.insert("a".into(), empty_column(TypeId::Int32));
-        map.insert("b".into(), empty_column(TypeId::Int32));
-        map.insert("c".into(), empty_column(TypeId::Int32));
-        map.insert("d".into(), empty_column(TypeId::Int32));
+        map.insert("a".into(), ());
+        map.insert("b".into(), ());
+        map.insert("c".into(), ());
+        map.insert("d".into(), ());
 
         let result = payload_indices(&map, &[1, 3]);
         assert_eq!(result, vec![0, 2]);

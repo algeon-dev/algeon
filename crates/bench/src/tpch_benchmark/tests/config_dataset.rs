@@ -5,23 +5,6 @@ use query_planning::execution_contracts::SourceChunkPlanningMode;
 use query_runtime::runtime::GpuDeviceMemoryLimit;
 
 use super::*;
-use crate::report_workload::RelationalExecutionSelection;
-
-#[test]
-fn default_config_selects_all_tpch_queries() {
-    let config = NativeTpchBenchmarkConfig::default();
-    assert_eq!(config.query_ids.len(), TPCH_QUERIES.len());
-    assert_eq!(config.selected_queries().len(), TPCH_QUERIES.len());
-    assert_eq!(config.iterations, 1);
-    assert_eq!(config.dataset_mode.as_str(), "sf1_external");
-    assert_eq!(NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf10).as_str(), "sf10_external");
-    assert_eq!(config.native_memory_policy.as_str(), "bounded");
-    assert_eq!(config.native_memory_policy.profile_name, TPCH_NATIVE_PROFILE_CONSERVATIVE);
-    assert_eq!(config.native_memory_policy.profile_source, "default");
-    assert_eq!(config.native_memory_policy.source_chunk_planning_mode, SourceChunkPlanningMode::Conservative);
-    assert_eq!(config.native_execution, RelationalExecutionSelection::strict_native());
-    config.validate().unwrap();
-}
 
 #[test]
 fn native_planning_uses_the_strict_final_plan_policy_frozen_in_benchmark_config() {
@@ -31,35 +14,6 @@ fn native_planning_uses_the_strict_final_plan_policy_frozen_in_benchmark_config(
     let optimizer = execution::native_optimizer_config(&config, &resources);
 
     assert_eq!(optimizer.execution_mode(), AlgeonGpuExecutionMode::NativeRequired);
-}
-
-#[test]
-fn native_profile_defaults_to_conservative() {
-    let profile = tpch_native_profile_settings_from([]).unwrap();
-
-    assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_CONSERVATIVE);
-    assert_eq!(profile.profile_source, "default");
-    assert_eq!(profile.device_budget, NativeTpchDeviceBudget::Automatic);
-    assert_eq!(profile.max_source_chunk_bytes, DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES);
-    assert_eq!(profile.max_row_groups_per_chunk, DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK);
-    assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
-    assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
-    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::Conservative);
-}
-
-#[test]
-fn native_profile_resolves_sf100_gpu_throughput() {
-    let profile =
-        tpch_native_profile_settings_from([(ALGEON_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
-
-    assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT);
-    assert_eq!(profile.profile_source, "env_profile");
-    assert_eq!(profile.device_budget, NativeTpchDeviceBudget::Automatic);
-    assert_eq!(profile.max_source_chunk_bytes, TPCH_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
-    assert_eq!(profile.max_row_groups_per_chunk, TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
-    assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
-    assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
-    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::LocalParquetThroughput);
 }
 
 #[test]

@@ -32,14 +32,14 @@ use cudf::{
     frame::dataframe::{GpuRecordBatch, HostBatchCursorConfig},
     ops::expr::col,
     runtime::BindingExtensionInitError,
-    testing::{self, core::adopt_owned_memory_resource_for_test, prelude::*},
+    testing::{self, core::adopt_owned_memory_resource_for_test, prelude::*, run_named_cases},
 };
 use cudf_sys::test_support;
 use rapids_interop::{CompletionAuthority, ReadStartAuthority};
 
 use crate::common::{
     dependency_wait_call_count_for_stream, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    lock_event_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
+    lock_event_observation, reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 fn assert_frame_residency(df: &DataFrame, expected_id: u64, expected_stream: usize, expected_mr: usize) {

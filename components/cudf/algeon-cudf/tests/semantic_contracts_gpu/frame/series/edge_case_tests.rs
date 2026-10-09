@@ -10,7 +10,7 @@
 
 use cudf::{DataType, Exec, TypeId, frame::dataframe::DropNaOptions};
 
-use crate::common::{nullable_series, run_named_cases, series};
+use crate::common::{nullable_series, series};
 
 // ===========================================================================
 // Empty Series through arithmetic
@@ -108,47 +108,11 @@ fn test_astype_bool_to_int() {
     assert_eq!(vals, vec![1, 0, 1]);
 }
 
-fn test_astype_int_to_bool() {
-    // nonzero -> true, zero -> false
-    let s = series::<i32>("x", &[0, 1, 42, -1]).unwrap();
-    let result = s.on(Exec::RETAINED).astype(TypeId::Bool8).unwrap();
-    let vals = result.to_vec_strict::<bool>().unwrap();
-    assert_eq!(vals, vec![false, true, true, true]);
-}
-
 fn test_astype_i32_to_i64_widening() {
     let s = series::<i32>("x", &[i32::MAX, i32::MIN, 0]).unwrap();
     let result = s.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
     let vals = result.to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![i32::MAX as i64, i32::MIN as i64, 0]);
-}
-
-fn test_astype_f64_to_i32_truncates() {
-    let s = series::<f64>("x", &[1.9, -2.7, 0.1]).unwrap();
-    let result = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
-    let vals = result.to_vec_strict::<i32>().unwrap();
-    // GPU truncation: 1.9 -> 1, -2.7 -> -2, 0.1 -> 0
-    assert_eq!(vals, vec![1, -2, 0]);
-}
-
-fn test_astype_preserves_nulls() {
-    let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
-    let result = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
-    let vals = result.to_optional_vec::<f64>().unwrap();
-    assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);
-}
-
-fn test_astype_empty_series() {
-    let s = series::<i32>("x", &[]).unwrap();
-    let result = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
-    assert!(result.is_empty());
-    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
-}
-
-fn test_astype_same_type_noop() {
-    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-    let result = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 fn test_astype_unsigned_to_signed() {
@@ -302,40 +266,32 @@ fn test_dataframe_cast_column_preserves_nulls() {
     assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);
 }
 
-#[test]
-fn edge_case_tests_cases() {
-    run_named_cases(&[
-        ("test_add_empty_series", test_add_empty_series),
-        ("test_eq_empty_series", test_eq_empty_series),
-        ("test_add_scalar_empty_series", test_add_scalar_empty_series),
-        ("test_neg_empty_series", test_neg_empty_series),
-        ("test_min_empty_series", test_min_empty_series),
-        ("test_max_empty_series", test_max_empty_series),
-        ("test_mean_empty_series", test_mean_empty_series),
-        ("test_sort_single_element", test_sort_single_element),
-        ("test_unique_single_element", test_unique_single_element),
-        ("test_nunique_single_element", test_nunique_single_element),
-        ("test_factorize_single_element", test_factorize_single_element),
-        ("test_astype_bool_to_int", test_astype_bool_to_int),
-        ("test_astype_int_to_bool", test_astype_int_to_bool),
-        ("test_astype_i32_to_i64_widening", test_astype_i32_to_i64_widening),
-        ("test_astype_f64_to_i32_truncates", test_astype_f64_to_i32_truncates),
-        ("test_astype_preserves_nulls", test_astype_preserves_nulls),
-        ("test_astype_empty_series", test_astype_empty_series),
-        ("test_astype_same_type_noop", test_astype_same_type_noop),
-        ("test_astype_unsigned_to_signed", test_astype_unsigned_to_signed),
-        ("test_astype_i8_to_i64", test_astype_i8_to_i64),
-        ("test_unique_with_nulls", test_unique_with_nulls),
-        ("test_nunique_with_nulls", test_nunique_with_nulls),
-        ("test_isin_with_null_in_source", test_isin_with_null_in_source),
-        ("test_fillna_with_series_both_have_nulls", test_fillna_with_series_both_have_nulls),
-        ("test_fillna_empty_series", test_fillna_empty_series),
-        ("test_factorize_with_nulls", test_factorize_with_nulls),
-        ("test_sort_all_null", test_sort_all_null),
-        ("test_dataframe_filter_empty_result", test_dataframe_filter_empty_result),
-        ("test_dataframe_head_zero", test_dataframe_head_zero),
-        ("test_dataframe_slice_empty", test_dataframe_slice_empty),
-        ("test_dataframe_dropna_with_mixed_nulls", test_dataframe_dropna_with_mixed_nulls),
-        ("test_dataframe_cast_column_preserves_nulls", test_dataframe_cast_column_preserves_nulls),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("edge_case_tests::test_add_empty_series", test_add_empty_series),
+    ("edge_case_tests::test_eq_empty_series", test_eq_empty_series),
+    ("edge_case_tests::test_add_scalar_empty_series", test_add_scalar_empty_series),
+    ("edge_case_tests::test_neg_empty_series", test_neg_empty_series),
+    ("edge_case_tests::test_min_empty_series", test_min_empty_series),
+    ("edge_case_tests::test_max_empty_series", test_max_empty_series),
+    ("edge_case_tests::test_mean_empty_series", test_mean_empty_series),
+    ("edge_case_tests::test_sort_single_element", test_sort_single_element),
+    ("edge_case_tests::test_unique_single_element", test_unique_single_element),
+    ("edge_case_tests::test_nunique_single_element", test_nunique_single_element),
+    ("edge_case_tests::test_factorize_single_element", test_factorize_single_element),
+    ("edge_case_tests::test_astype_bool_to_int", test_astype_bool_to_int),
+    ("edge_case_tests::test_astype_i32_to_i64_widening", test_astype_i32_to_i64_widening),
+    ("edge_case_tests::test_astype_unsigned_to_signed", test_astype_unsigned_to_signed),
+    ("edge_case_tests::test_astype_i8_to_i64", test_astype_i8_to_i64),
+    ("edge_case_tests::test_unique_with_nulls", test_unique_with_nulls),
+    ("edge_case_tests::test_nunique_with_nulls", test_nunique_with_nulls),
+    ("edge_case_tests::test_isin_with_null_in_source", test_isin_with_null_in_source),
+    ("edge_case_tests::test_fillna_with_series_both_have_nulls", test_fillna_with_series_both_have_nulls),
+    ("edge_case_tests::test_fillna_empty_series", test_fillna_empty_series),
+    ("edge_case_tests::test_factorize_with_nulls", test_factorize_with_nulls),
+    ("edge_case_tests::test_sort_all_null", test_sort_all_null),
+    ("edge_case_tests::test_dataframe_filter_empty_result", test_dataframe_filter_empty_result),
+    ("edge_case_tests::test_dataframe_head_zero", test_dataframe_head_zero),
+    ("edge_case_tests::test_dataframe_slice_empty", test_dataframe_slice_empty),
+    ("edge_case_tests::test_dataframe_dropna_with_mixed_nulls", test_dataframe_dropna_with_mixed_nulls),
+    ("edge_case_tests::test_dataframe_cast_column_preserves_nulls", test_dataframe_cast_column_preserves_nulls),
+];

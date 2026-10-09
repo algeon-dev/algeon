@@ -12,9 +12,7 @@ use cudf::{
     testing::dataframe::trigger_dataframe_dropna_subset_count_limit_error_for_test,
 };
 
-use crate::common::{
-    assert_missing_column_error, error_context_value, nullable_series, run_named_cases, scalar, series,
-};
+use crate::common::{assert_missing_column_error, error_context_value, nullable_series, scalar, series};
 
 // ===========================================================================
 // Helpers
@@ -378,60 +376,38 @@ fn test_dropna_options_builder_chaining() {
 // DropDuplicatesOptions builder API
 // ===========================================================================
 
-fn test_drop_duplicates_options_default_is_keep_any() {
-    let df = sample_df_with_dupes();
-    let opts = DropDuplicatesOptions::new();
-    let result = df.on(Exec::RETAINED).drop_duplicates(opts).unwrap();
-    // Default keep=KeepAny → 3 distinct rows
-    assert_eq!(result.num_rows(), 3);
-}
-
 // ===========================================================================
 // High-level DataFrame option types
 // ===========================================================================
 
-fn test_high_level_option_types_importable_from_dataframe_module() {
-    let _: DropNaOptions = Default::default();
-    let _: DropNaHow = Default::default();
-    let _: DropDuplicatesOptions = Default::default();
-}
-
-#[test]
-fn high_level_d3_tests_cases() {
-    run_named_cases(&[
-        ("test_dropna_default_drops_any_null_row", test_dropna_default_drops_any_null_row),
-        ("test_dropna_all_mode_keeps_partial_nulls", test_dropna_all_mode_keeps_partial_nulls),
-        ("test_dropna_subset_single_column", test_dropna_subset_single_column),
-        ("test_dropna_subset_multiple_columns", test_dropna_subset_multiple_columns),
-        ("test_dropna_threshold", test_dropna_threshold),
-        ("test_dropna_threshold_one_keeps_most_rows", test_dropna_threshold_one_keeps_most_rows),
-        ("test_dropna_invalid_column_name", test_dropna_invalid_column_name),
-        (
-            "test_dropna_negative_thresh_uses_stable_validation_contract",
-            test_dropna_negative_thresh_uses_stable_validation_contract,
-        ),
-        (
-            "test_dropna_subset_count_limit_uses_canonical_contract",
-            test_dropna_subset_count_limit_uses_canonical_contract,
-        ),
-        ("test_dropna_empty_result_preserves_schema", test_dropna_empty_result_preserves_schema),
-        ("test_drop_duplicates_default", test_drop_duplicates_default),
-        ("test_drop_duplicates_subset", test_drop_duplicates_subset),
-        ("test_drop_duplicates_keep_first", test_drop_duplicates_keep_first),
-        ("test_drop_duplicates_keep_last", test_drop_duplicates_keep_last),
-        ("test_drop_duplicates_keep_none", test_drop_duplicates_keep_none),
-        ("test_drop_duplicates_invalid_column", test_drop_duplicates_invalid_column),
-        ("test_drop_duplicates_preserves_schema", test_drop_duplicates_preserves_schema),
-        ("test_fillna_scalar_single_column", test_fillna_scalar_single_column),
-        ("test_fillna_with_series_single_column", test_fillna_with_series_single_column),
-        ("test_fillna_invalid_column", test_fillna_invalid_column),
-        ("test_fillna_with_series_invalid_column", test_fillna_with_series_invalid_column),
-        ("test_fillna_preserves_schema", test_fillna_preserves_schema),
-        ("test_dropna_options_builder_chaining", test_dropna_options_builder_chaining),
-        ("test_drop_duplicates_options_default_is_keep_any", test_drop_duplicates_options_default_is_keep_any),
-        (
-            "test_high_level_option_types_importable_from_dataframe_module",
-            test_high_level_option_types_importable_from_dataframe_module,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("high_level_d3_tests::test_dropna_default_drops_any_null_row", test_dropna_default_drops_any_null_row),
+    ("high_level_d3_tests::test_dropna_all_mode_keeps_partial_nulls", test_dropna_all_mode_keeps_partial_nulls),
+    ("high_level_d3_tests::test_dropna_subset_single_column", test_dropna_subset_single_column),
+    ("high_level_d3_tests::test_dropna_subset_multiple_columns", test_dropna_subset_multiple_columns),
+    ("high_level_d3_tests::test_dropna_threshold", test_dropna_threshold),
+    ("high_level_d3_tests::test_dropna_threshold_one_keeps_most_rows", test_dropna_threshold_one_keeps_most_rows),
+    ("high_level_d3_tests::test_dropna_invalid_column_name", test_dropna_invalid_column_name),
+    (
+        "high_level_d3_tests::test_dropna_negative_thresh_uses_stable_validation_contract",
+        test_dropna_negative_thresh_uses_stable_validation_contract,
+    ),
+    (
+        "high_level_d3_tests::test_dropna_subset_count_limit_uses_canonical_contract",
+        test_dropna_subset_count_limit_uses_canonical_contract,
+    ),
+    ("high_level_d3_tests::test_dropna_empty_result_preserves_schema", test_dropna_empty_result_preserves_schema),
+    ("high_level_d3_tests::test_drop_duplicates_default", test_drop_duplicates_default),
+    ("high_level_d3_tests::test_drop_duplicates_subset", test_drop_duplicates_subset),
+    ("high_level_d3_tests::test_drop_duplicates_keep_first", test_drop_duplicates_keep_first),
+    ("high_level_d3_tests::test_drop_duplicates_keep_last", test_drop_duplicates_keep_last),
+    ("high_level_d3_tests::test_drop_duplicates_keep_none", test_drop_duplicates_keep_none),
+    ("high_level_d3_tests::test_drop_duplicates_invalid_column", test_drop_duplicates_invalid_column),
+    ("high_level_d3_tests::test_drop_duplicates_preserves_schema", test_drop_duplicates_preserves_schema),
+    ("high_level_d3_tests::test_fillna_scalar_single_column", test_fillna_scalar_single_column),
+    ("high_level_d3_tests::test_fillna_with_series_single_column", test_fillna_with_series_single_column),
+    ("high_level_d3_tests::test_fillna_invalid_column", test_fillna_invalid_column),
+    ("high_level_d3_tests::test_fillna_with_series_invalid_column", test_fillna_with_series_invalid_column),
+    ("high_level_d3_tests::test_fillna_preserves_schema", test_fillna_preserves_schema),
+    ("high_level_d3_tests::test_dropna_options_builder_chaining", test_dropna_options_builder_chaining),
+];

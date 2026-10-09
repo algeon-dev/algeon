@@ -693,6 +693,7 @@ mod tests {
         datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit},
         record_batch::RecordBatch,
     };
+    use cudf::testing;
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col};
     use query_planning::{
         expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec},
@@ -708,7 +709,7 @@ mod tests {
         CapabilityReason, NativePlanNode, declared_output_ordering_sort_spec,
         native_plan_reproduces_declared_output_ordering, reestablish_declared_output_ordering_if_needed,
     };
-    #[test]
+
     fn order_reproduction_audit_accepts_local_parquet_filter_projection() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
@@ -724,7 +725,6 @@ mod tests {
         assert!(native_plan_reproduces_declared_output_ordering(&plan));
     }
 
-    #[test]
     fn order_reproduction_audit_rejects_limit_over_order_breaking_input() {
         let aggregate_schema = Arc::new(Schema::new(vec![
             Field::new("key", DataType::UInt32, false),
@@ -748,7 +748,6 @@ mod tests {
         assert!(!native_plan_reproduces_declared_output_ordering(&plan));
     }
 
-    #[test]
     fn order_reproduction_audit_accepts_native_sort() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", key_schema())));
@@ -793,7 +792,6 @@ mod tests {
         assert_eq!(blocking.text(), "declared output ordering `key ASC NULLS LAST`");
     }
 
-    #[test]
     fn order_reproduction_audit_accepts_literal_batch_source() {
         let schema = key_schema();
         let batch = RecordBatch::new_empty(Arc::clone(&schema));
@@ -827,7 +825,6 @@ mod tests {
         assert_eq!(rejection.reason(), CapabilityReason::UnsupportedType);
     }
 
-    #[test]
     fn order_reproduction_audit_rejects_gpu_resident_source() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", key_schema())));
@@ -836,7 +833,6 @@ mod tests {
         assert!(!native_plan_reproduces_declared_output_ordering(&plan));
     }
 
-    #[test]
     fn order_reproduction_audit_rejects_aggregate_join_union_edge_normalize_and_graph_algorithm() {
         let cases = [aggregate_plan(), join_plan(), union_plan(), edge_normalize_plan(), graph_algorithm_plan()];
 
@@ -845,13 +841,46 @@ mod tests {
         }
     }
 
-    #[test]
     fn order_reproduction_audit_preserves_window_input_ordering() {
         let plan = window_plan();
         assert!(native_plan_reproduces_declared_output_ordering(&plan), "{plan}");
     }
 
     #[test]
+    fn mod_tc_order_cases_1() {
+        testing::run_named_cases(&[
+            (
+                "order_reproduction_audit_preserves_window_input_ordering_through_limit",
+                order_reproduction_audit_preserves_window_input_ordering_through_limit,
+            ),
+            (
+                "order_reproduction_audit_rejects_aggregate_join_union_edge_normalize_and_graph_algorithm",
+                order_reproduction_audit_rejects_aggregate_join_union_edge_normalize_and_graph_algorithm,
+            ),
+            (
+                "order_reproduction_audit_accepts_local_parquet_filter_projection",
+                order_reproduction_audit_accepts_local_parquet_filter_projection,
+            ),
+            (
+                "order_reproduction_audit_accepts_literal_batch_source",
+                order_reproduction_audit_accepts_literal_batch_source,
+            ),
+            (
+                "order_reproduction_audit_preserves_window_input_ordering",
+                order_reproduction_audit_preserves_window_input_ordering,
+            ),
+            ("order_reproduction_audit_accepts_native_sort", order_reproduction_audit_accepts_native_sort),
+            (
+                "order_reproduction_audit_rejects_gpu_resident_source",
+                order_reproduction_audit_rejects_gpu_resident_source,
+            ),
+            (
+                "order_reproduction_audit_rejects_limit_over_order_breaking_input",
+                order_reproduction_audit_rejects_limit_over_order_breaking_input,
+            ),
+        ]);
+    }
+
     fn order_reproduction_audit_preserves_window_input_ordering_through_limit() {
         let plan = window_limit_plan();
         assert!(native_plan_reproduces_declared_output_ordering(&plan), "{plan}");

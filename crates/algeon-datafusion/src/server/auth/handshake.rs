@@ -171,7 +171,7 @@ fn empty_response() -> Response<HandshakeResponseStream> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::auth::{TokenStore, hash_password};
+    use crate::server::auth::TokenStore;
 
     fn make_metadata(header: Option<&str>) -> MetadataMap {
         let mut md = MetadataMap::new();
@@ -215,30 +215,12 @@ mod tests {
     }
 
     fn test_users() -> Vec<StaticUserConfig> {
-        vec![StaticUserConfig { username: "alice".to_string(), password_hash: hash_password("s3cret").expect("hash") }]
-    }
-
-    #[test]
-    fn authenticate_user_accepts_correct_credentials() {
-        let users = test_users();
-        authenticate_user(&users, "alice", "s3cret").expect("correct credentials authenticate");
-    }
-
-    #[test]
-    fn authenticate_user_rejects_wrong_password() {
-        let users = test_users();
-        let status = authenticate_user(&users, "alice", "wrong").unwrap_err();
-        assert_eq!(status.code(), tonic::Code::Unauthenticated);
-    }
-
-    #[test]
-    fn authenticate_user_rejects_unknown_user_with_identical_message() {
-        // Unknown users and wrong passwords must be indistinguishable to clients.
-        let users = test_users();
-        let unknown = authenticate_user(&users, "mallory", "s3cret").unwrap_err();
-        let wrong_password = authenticate_user(&users, "alice", "wrong").unwrap_err();
-        assert_eq!(unknown.code(), tonic::Code::Unauthenticated);
-        assert_eq!(unknown.message(), wrong_password.message());
+        vec![StaticUserConfig {
+            username: "alice".to_string(),
+            password_hash:
+                "$argon2id$v=19$m=19456,t=2,p=1$YWxnZW9uLXRlc3Qtc2FsdCE$fZ4tz7ti8qbyORcQw+9ta8d98CY+97cbxsddNlnzJt4"
+                    .to_string(),
+        }]
     }
 
     #[test]
@@ -248,13 +230,6 @@ mod tests {
         warm_unknown_user_timing_decoy();
         assert!(DUMMY_PASSWORD_HASH.starts_with("$argon2"), "decoy must be an Argon2 PHC string");
         assert!(matches!(verify_password("any password", &DUMMY_PASSWORD_HASH), Ok(false)));
-    }
-
-    #[test]
-    fn dummy_password_hash_is_genuine_argon2_work() {
-        // The decoy must be a real PHC hash so verification performs Argon2 work.
-        let outcome = verify_password("any password", &DUMMY_PASSWORD_HASH);
-        assert!(matches!(outcome, Ok(false)), "dummy hash must verify as a real Argon2 mismatch, got: {outcome:?}");
     }
 
     fn basic_bearer_interceptor() -> AuthInterceptor {

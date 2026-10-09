@@ -389,7 +389,7 @@ pub(super) fn test_ledger_for_ordinal(
         device_capabilities,
     )
 }
-fn test_ledger_with_explicit_profile(
+pub(super) fn test_ledger_with_explicit_profile(
     device_ordinal: usize,
     managed_capacity_bytes: u64,
     default_query_limit_bytes: u64,

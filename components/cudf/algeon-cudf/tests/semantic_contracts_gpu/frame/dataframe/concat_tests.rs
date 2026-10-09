@@ -9,7 +9,7 @@ use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_strs,
     dataframe_from_columns, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
     last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
-    reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime, series,
+    reset_exec_observation, reset_sync_observation, sample_runtime, series,
 };
 
 fn test_concat_matching_schemas() {
@@ -584,67 +584,85 @@ fn test_select_all_columns_returns_full_copy() {
     assert_eq!(a_vals, vec![1, 2]);
 }
 
-#[test]
-fn concat_tests_cases() {
-    run_named_cases(&[
-        ("test_concat_matching_schemas", test_concat_matching_schemas),
-        ("test_concat_mismatched_column_names_returns_error", test_concat_mismatched_column_names_returns_error),
-        ("test_concat_mismatched_column_count_returns_error", test_concat_mismatched_column_count_returns_error),
-        ("test_concat_mismatched_column_types_returns_error", test_concat_mismatched_column_types_returns_error),
-        (
-            "test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder",
-            test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder,
-        ),
-        (
-            "test_concat_by_name_null_fill_aligns_one_sided_missing_column",
-            test_concat_by_name_null_fill_aligns_one_sided_missing_column,
-        ),
-        ("test_concat_many_by_name_handles_multi_input_union", test_concat_many_by_name_handles_multi_input_union),
-        ("test_concat_by_name_honors_left_column_order", test_concat_by_name_honors_left_column_order),
-        (
-            "test_concat_by_name_appends_union_only_columns_in_first_appearance_order",
-            test_concat_by_name_appends_union_only_columns_in_first_appearance_order,
-        ),
-        (
-            "test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract",
-            test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract,
-        ),
-        (
-            "test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill",
-            test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill,
-        ),
-        ("test_concat_by_name_exact_rejects_missing_columns", test_concat_by_name_exact_rejects_missing_columns),
-        (
-            "test_concat_by_name_decimal_null_fill_preserves_scale",
-            test_concat_by_name_decimal_null_fill_preserves_scale,
-        ),
-        (
-            "test_concat_succeeds_with_mixed_domains_and_uses_left_provenance",
-            test_concat_succeeds_with_mixed_domains_and_uses_left_provenance,
-        ),
-        ("test_concat_many_three_dataframes", test_concat_many_three_dataframes),
-        ("test_concat_many_empty_slice_returns_self", test_concat_many_empty_slice_returns_self),
-        ("test_concat_many_single_other", test_concat_many_single_other),
-        ("test_concat_many_mismatched_schema_returns_error", test_concat_many_mismatched_schema_returns_error),
-        ("test_concat_many_mismatched_types_returns_error", test_concat_many_mismatched_types_returns_error),
-        (
-            "test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance",
-            test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance,
-        ),
-        ("test_copy_preserves_schema_and_data", test_copy_preserves_schema_and_data),
-        ("test_rename_column", test_rename_column),
-        ("test_rename_nonexistent_column_returns_error", test_rename_nonexistent_column_returns_error),
-        ("test_rename_to_existing_name_returns_error", test_rename_to_existing_name_returns_error),
-        ("test_select_subset_of_columns", test_select_subset_of_columns),
-        ("test_select_nonexistent_column_returns_error", test_select_nonexistent_column_returns_error),
-        ("test_select_duplicate_column_names_returns_error", test_select_duplicate_column_names_returns_error),
-        ("test_select_preserves_data", test_select_preserves_data),
-        ("test_select_accepts_string_vec", test_select_accepts_string_vec),
-        ("test_rename_preserves_column_order", test_rename_preserves_column_order),
-        (
-            "test_rename_same_name_is_schema_only_and_preserves_data",
-            test_rename_same_name_is_schema_only_and_preserves_data,
-        ),
-        ("test_select_all_columns_returns_full_copy", test_select_all_columns_returns_full_copy),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("concat_tests::test_concat_matching_schemas", test_concat_matching_schemas),
+    (
+        "concat_tests::test_concat_mismatched_column_names_returns_error",
+        test_concat_mismatched_column_names_returns_error,
+    ),
+    (
+        "concat_tests::test_concat_mismatched_column_count_returns_error",
+        test_concat_mismatched_column_count_returns_error,
+    ),
+    (
+        "concat_tests::test_concat_mismatched_column_types_returns_error",
+        test_concat_mismatched_column_types_returns_error,
+    ),
+    (
+        "concat_tests::test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder",
+        test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder,
+    ),
+    (
+        "concat_tests::test_concat_by_name_null_fill_aligns_one_sided_missing_column",
+        test_concat_by_name_null_fill_aligns_one_sided_missing_column,
+    ),
+    (
+        "concat_tests::test_concat_many_by_name_handles_multi_input_union",
+        test_concat_many_by_name_handles_multi_input_union,
+    ),
+    ("concat_tests::test_concat_by_name_honors_left_column_order", test_concat_by_name_honors_left_column_order),
+    (
+        "concat_tests::test_concat_by_name_appends_union_only_columns_in_first_appearance_order",
+        test_concat_by_name_appends_union_only_columns_in_first_appearance_order,
+    ),
+    (
+        "concat_tests::test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract",
+        test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract,
+    ),
+    (
+        "concat_tests::test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill",
+        test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill,
+    ),
+    (
+        "concat_tests::test_concat_by_name_exact_rejects_missing_columns",
+        test_concat_by_name_exact_rejects_missing_columns,
+    ),
+    (
+        "concat_tests::test_concat_by_name_decimal_null_fill_preserves_scale",
+        test_concat_by_name_decimal_null_fill_preserves_scale,
+    ),
+    (
+        "concat_tests::test_concat_succeeds_with_mixed_domains_and_uses_left_provenance",
+        test_concat_succeeds_with_mixed_domains_and_uses_left_provenance,
+    ),
+    ("concat_tests::test_concat_many_three_dataframes", test_concat_many_three_dataframes),
+    ("concat_tests::test_concat_many_empty_slice_returns_self", test_concat_many_empty_slice_returns_self),
+    ("concat_tests::test_concat_many_single_other", test_concat_many_single_other),
+    (
+        "concat_tests::test_concat_many_mismatched_schema_returns_error",
+        test_concat_many_mismatched_schema_returns_error,
+    ),
+    ("concat_tests::test_concat_many_mismatched_types_returns_error", test_concat_many_mismatched_types_returns_error),
+    (
+        "concat_tests::test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance",
+        test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance,
+    ),
+    ("concat_tests::test_copy_preserves_schema_and_data", test_copy_preserves_schema_and_data),
+    ("concat_tests::test_rename_column", test_rename_column),
+    ("concat_tests::test_rename_nonexistent_column_returns_error", test_rename_nonexistent_column_returns_error),
+    ("concat_tests::test_rename_to_existing_name_returns_error", test_rename_to_existing_name_returns_error),
+    ("concat_tests::test_select_subset_of_columns", test_select_subset_of_columns),
+    ("concat_tests::test_select_nonexistent_column_returns_error", test_select_nonexistent_column_returns_error),
+    (
+        "concat_tests::test_select_duplicate_column_names_returns_error",
+        test_select_duplicate_column_names_returns_error,
+    ),
+    ("concat_tests::test_select_preserves_data", test_select_preserves_data),
+    ("concat_tests::test_select_accepts_string_vec", test_select_accepts_string_vec),
+    ("concat_tests::test_rename_preserves_column_order", test_rename_preserves_column_order),
+    (
+        "concat_tests::test_rename_same_name_is_schema_only_and_preserves_data",
+        test_rename_same_name_is_schema_only_and_preserves_data,
+    ),
+    ("concat_tests::test_select_all_columns_returns_full_copy", test_select_all_columns_returns_full_copy),
+];

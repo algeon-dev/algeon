@@ -9,13 +9,16 @@
 //! - `Runtime::column_from_device_ptr`: uses `_ex` FFI, retains explicit domain
 use std::{ffi::c_void, ptr};
 
-use cudf::{DataFrame, Exec, Series, TypeId, testing::prelude::*};
+use cudf::{
+    DataFrame, Exec, Series, TypeId,
+    testing::{prelude::*, run_named_cases},
+};
 use cudf_sys::test_support::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
     cudf_test_exec_reset_observation,
 };
 
-use crate::common::{run_named_cases, sample_runtime};
+use crate::common::sample_runtime;
 
 fn obs_reset() {
     unsafe { cudf_test_exec_reset_observation() };

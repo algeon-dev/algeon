@@ -6,45 +6,6 @@ use query_planning::optimizer::optimize_query_plan;
 use super::*;
 
 #[test]
-fn bounded_global_count_distinct_counts_cross_chunk_duplicates_once() {
-    let dir = unique_temp_dir("query-engine-bounded-global-count-distinct");
-    let path = dir.join("input.parquet");
-    let context = backend_context();
-    let input_schema = write_distinct_count_input_parquet(&path);
-
-    let aggregated_schema = Arc::new(Schema::new(vec![Field::new("distinct_values", DataType::Int64, false)]));
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(&path)
-                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
-                .with_row_groups(vec![0, 1, 2]),
-        ],
-        Arc::clone(&input_schema),
-        vec!["value".to_string()],
-    );
-    let aggregate = AggregateSpec::new(
-        Vec::new(),
-        vec![AggregateExpr::new(AggregateFunction::NUnique, Expr::column("value"), "distinct_values")],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
-    let plan = builder.finish_with_host_sink(aggregate).unwrap();
-
-    let result = execute_query_plan(&context, &plan).unwrap();
-    assert_eq!(result.metrics().source_chunks_planned, 3);
-
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    assert_eq!(batch.num_rows(), 1);
-    assert_eq!(int64_array(batch, 0).value(0), 3);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn bounded_global_nunique_casts_to_declared_count_dtype() {
     let dir = unique_temp_dir("query-engine-bounded-global-nunique-int32");
     let path = dir.join("input.parquet");

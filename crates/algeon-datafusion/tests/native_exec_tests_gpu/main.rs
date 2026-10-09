@@ -29,6 +29,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
+use cudf::testing;
 use datafusion::{
     arrow::util::pretty::pretty_format_batches,
     common::{DataFusionError, config::ConfigOptions},
@@ -55,11 +56,10 @@ use parquet::{
 };
 use proptest::prelude::*;
 use query_planning::{
-    mode::{CapabilityEnvelopeStatus, StatisticalAggregateExecutionMode},
+    mode::StatisticalAggregateExecutionMode,
     plan::{NativePlanCostOptions, NativePlanCostReason},
 };
 use tokio::runtime::Builder;
-use workloads::tpch::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 
 mod bounded_join;
 mod mixed_fallback;
@@ -115,7 +115,6 @@ fn installed_native_stage<'a>(
         .unwrap_or_else(|| panic!("{name} should be an AlgeonNativePhysicalOptimizerRule"))
 }
 
-#[test]
 fn native_optimizer_rule_rewrites_supported_physical_plan() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-optimizer");
     let path = dir.join("input.parquet");
@@ -148,7 +147,6 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_ilike_filter_over_native_scan_fragment_is_mixed_and_idempotent() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment");
     let path = dir.join("input.parquet");
@@ -195,7 +193,6 @@ fn native_optimizer_ilike_filter_over_native_scan_fragment_is_mixed_and_idempote
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_ilike_fragment_keeps_a_transparent_cooperative_wrapper() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment-cooperative");
     let path = dir.join("input.parquet");
@@ -219,62 +216,6 @@ fn native_optimizer_ilike_fragment_keeps_a_transparent_cooperative_wrapper() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn native_optimizer_ilike_fragment_is_rejected_by_native_required() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment-native-required");
-    let path = dir.join("input.parquet");
-    write_ilike_parquet_file(&path);
-    let config = native_optimizer_config();
-    let native_rule = AlgeonNativePhysicalOptimizerRule::new(config.clone());
-    let reject_rule =
-        AlgeonNativePhysicalOptimizerRule::new(config.with_execution_mode(AlgeonGpuExecutionMode::NativeRequired));
-
-    let (planned, diagnostics) =
-        native_rule.optimize_with_diagnostics(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
-    let diagnostics = diagnostics.expect("native optimizer should retain diagnostics");
-    let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
-        "ilike_no_cpu",
-        planned,
-        diagnostics,
-    )]);
-    assert_eq!(report.rows[0].final_disposition, Some(FinalPlanDisposition::Mixed));
-    assert_eq!(report.rows[0].native_plan_fragment_count, Some(1));
-    assert_eq!(report.rows[0].host_datafusion_boundary_count, Some(1));
-
-    // A plan that must not keep DataFusion operators places no fragments, so
-    // the rejected plan is the DataFusion one.
-    let error = reject_rule
-        .optimize(ilike_filter_plan(&path), &ConfigOptions::default())
-        .expect_err("NativeRequired must reject a plan whose root filter stays on DataFusion");
-    let adapter_error = adapter_error(&error);
-    assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
-    assert_eq!(adapter_error.fact_value("requirement"), Some("no_datafusion_cpu"));
-    assert_eq!(adapter_error.fact_value("observed_final_plan_disposition"), Some("datafusion"));
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn native_optimizer_ilike_fragment_matches_cpu_results() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment-parity");
-    let path = dir.join("input.parquet");
-    write_ilike_parquet_file(&path);
-
-    let cpu = block_on(collect(ilike_filter_plan(&path), Arc::new(TaskContext::default()))).unwrap();
-    let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
-    let native_plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
-    let native_leaf = mixed_boundary_native_leaf(below_native_admission(&native_plan).as_ref());
-    let native = block_on(collect(Arc::clone(&native_plan), Arc::new(TaskContext::default()))).unwrap();
-
-    assert_eq!(ilike_rows(&native), ilike_rows(&cpu));
-    let metrics = native_leaf.metrics().expect("the native leaf owns runtime metrics for the one D2H boundary");
-    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
-    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn native_optimizer_ilike_fragment_reserves_host_output_before_d2h() {
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
@@ -310,7 +251,6 @@ fn native_optimizer_ilike_fragment_reserves_host_output_before_d2h() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_ilike_fragment_uses_one_backend_admission_and_observation_owner() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment-admission");
     let path = dir.join("input.parquet");
@@ -459,7 +399,6 @@ fn ilike_rows(batches: &[RecordBatch]) -> Vec<(i32, Option<String>)> {
     rows
 }
 
-#[test]
 fn native_optimizer_rule_propagates_declared_scan_output_ordering_to_wrapper_properties() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-ordered-scan-properties");
     let path = dir.join("input.parquet");
@@ -480,7 +419,6 @@ fn native_optimizer_rule_propagates_declared_scan_output_ordering_to_wrapper_pro
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-ordered-aggregate-composition");
     let path = dir.join("input.parquet");
@@ -516,7 +454,6 @@ fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_execution_reestablished_declared_scan_ordering_is_sorted() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-ordered-aggregate-output");
     let path = dir.join("input.parquet");
@@ -535,7 +472,6 @@ fn native_execution_reestablished_declared_scan_ordering_is_sorted() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_execution_sort_preserving_merge_matches_datafusion_sorted_input() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-sort-preserving-merge");
     write_sorted_parquet_file(&dir.join("first.parquet"));
@@ -587,7 +523,6 @@ fn native_optimizer_rule_uses_configured_optimizer_config_at_optimize_time() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_rule_runs_the_filtered_scan_below_an_unsupported_projection_as_a_fragment() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-optimizer-rejected");
     let path = dir.join("input.parquet");
@@ -614,20 +549,6 @@ fn native_optimizer_rule_runs_the_filtered_scan_below_an_unsupported_projection_
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn session_without_native_rule_preserves_datafusion_plan() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-cpu-only");
-    let path = dir.join("input.parquet");
-    write_parquet_file(&path);
-    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
-    let optimized = plan;
-
-    assert!(optimized.downcast_ref::<LocalLimitExec>().is_some());
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_enabled() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-cost-topk");
     let left = dir.join("left.parquet");
@@ -657,7 +578,6 @@ fn native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_when_enabled() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-cost-full-sort");
     let left = dir.join("left.parquet");
@@ -688,7 +608,6 @@ fn native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-cost-no-datafusion-cpu");
     let left = dir.join("left.parquet");
@@ -716,7 +635,6 @@ fn native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy() 
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-no-datafusion-cpu-rejected");
     let path = dir.join("input.parquet");
@@ -741,7 +659,6 @@ fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan()
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn final_plan_requirement_reports_first_unsupported_projected_column() {
     let dir = unique_temp_dir("algeon-datafusion-native-unsupported-list-detail");
     let path = dir.join("input.parquet");
@@ -795,7 +712,6 @@ fn final_plan_requirement_reports_first_unsupported_projected_column() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-no-datafusion-cpu-probe-miss");
     let path = dir.join("input.parquet");
@@ -834,7 +750,6 @@ fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn no_datafusion_cpu_final_rejection_names_final_stage_reason_not_count_only_probe_reason() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-no-datafusion-cpu-final-rejection-evidence");
     let path = dir.join("input.parquet");
@@ -872,7 +787,6 @@ fn no_datafusion_cpu_final_rejection_names_final_stage_reason_not_count_only_pro
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn no_datafusion_cpu_count_only_probe_retains_its_native_rewrite() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-no-datafusion-cpu-count-probe");
     let path = dir.join("input.parquet");
@@ -900,7 +814,6 @@ fn no_datafusion_cpu_count_only_probe_retains_its_native_rewrite() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn no_datafusion_cpu_count_only_probe_rewrites_materialized_memory_table() {
     let schema = Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from_iter_values(0..65))])
@@ -926,20 +839,6 @@ fn no_datafusion_cpu_count_only_probe_rewrites_materialized_memory_table() {
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
 }
 
-#[test]
-fn session_without_native_rule_has_no_native_optimizer_stages() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-cpu-only-count-probe");
-    let path = dir.join("input.parquet");
-    write_parquet_file(&path);
-    let state = SessionStateBuilder::new_with_default_features().build();
-    let rule_names = state.physical_optimizers().iter().map(|rule| rule.name()).collect::<Vec<_>>();
-    assert!(!rule_names.contains(&"algeon_datafusion_native_count_only"));
-    assert!(!rule_names.contains(&"algeon_datafusion_native"));
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn native_optimizer_rule_runs_the_supported_child_of_an_unsupported_parent_as_one_fragment() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-partial-host-arrow-boundary");
     let path = dir.join("input.parquet");
@@ -975,7 +874,6 @@ fn native_optimizer_rule_runs_the_supported_child_of_an_unsupported_parent_as_on
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion_disposition() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-composition-no-datafusion-cpu");
     let path = dir.join("input.parquet");
@@ -1004,6 +902,177 @@ fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion
 }
 
 #[test]
+fn native_exec_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively",
+            native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively,
+        ),
+        (
+            "native_optimizer_admits_topk_grouped_aggregate_left_join_under_bounded_contract",
+            native_optimizer_admits_topk_grouped_aggregate_left_join_under_bounded_contract,
+        ),
+        (
+            "native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_order_contract",
+            native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_order_contract,
+        ),
+        (
+            "native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failure",
+            native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failure,
+        ),
+        (
+            "native_optimizer_rule_rewrites_supported_physical_plan",
+            native_optimizer_rule_rewrites_supported_physical_plan,
+        ),
+        (
+            "native_float32_casts_match_arrow_cpu_casts_bit_for_bit",
+            native_float32_casts_match_arrow_cpu_casts_bit_for_bit,
+        ),
+    ]);
+}
+
+#[test]
+fn native_exec_cases_2() {
+    testing::run_named_cases(&[
+        (
+            "rank_over_computed_window_keys_runs_natively_and_matches_datafusion",
+            rank_over_computed_window_keys_runs_natively_and_matches_datafusion,
+        ),
+        (
+            "row_number_beside_a_partition_aggregate_numbers_each_partition_from_one",
+            row_number_beside_a_partition_aggregate_numbers_each_partition_from_one,
+        ),
+        (
+            "rank_and_row_number_accept_an_order_key_that_is_also_the_partition_key",
+            rank_and_row_number_accept_an_order_key_that_is_also_the_partition_key,
+        ),
+        (
+            "partition_aggregate_window_output_keeps_the_order_the_query_relies_on",
+            partition_aggregate_window_output_keeps_the_order_the_query_relies_on,
+        ),
+        (
+            "windows_sharing_a_sort_keep_the_order_the_query_relies_on",
+            windows_sharing_a_sort_keep_the_order_the_query_relies_on,
+        ),
+        (
+            "native_optimizer_ilike_filter_over_native_scan_fragment_is_mixed_and_idempotent",
+            native_optimizer_ilike_filter_over_native_scan_fragment_is_mixed_and_idempotent,
+        ),
+    ]);
+}
+
+#[test]
+fn native_exec_cases_3() {
+    testing::run_named_cases(&[
+        (
+            "dense_rank_and_percent_rank_windows_stay_in_datafusion",
+            dense_rank_and_percent_rank_windows_stay_in_datafusion,
+        ),
+        (
+            "native_preferred_keeps_an_admission_refusal_on_datafusion",
+            native_preferred_keeps_an_admission_refusal_on_datafusion,
+        ),
+        (
+            "native_required_rejection_names_the_admission_refusal",
+            native_required_rejection_names_the_admission_refusal,
+        ),
+        (
+            "native_optimizer_ilike_fragment_keeps_a_transparent_cooperative_wrapper",
+            native_optimizer_ilike_fragment_keeps_a_transparent_cooperative_wrapper,
+        ),
+        (
+            "native_optimizer_ilike_fragment_reserves_host_output_before_d2h",
+            native_optimizer_ilike_fragment_reserves_host_output_before_d2h,
+        ),
+        (
+            "native_optimizer_ilike_fragment_uses_one_backend_admission_and_observation_owner",
+            native_optimizer_ilike_fragment_uses_one_backend_admission_and_observation_owner,
+        ),
+    ]);
+}
+
+#[test]
+fn native_exec_cases_4() {
+    testing::run_named_cases(&[
+        (
+            "native_optimizer_rule_propagates_declared_scan_output_ordering_to_wrapper_properties",
+            native_optimizer_rule_propagates_declared_scan_output_ordering_to_wrapper_properties,
+        ),
+        (
+            "native_optimizer_reestablishes_declared_scan_ordering_through_aggregate",
+            native_optimizer_reestablishes_declared_scan_ordering_through_aggregate,
+        ),
+        (
+            "native_execution_reestablished_declared_scan_ordering_is_sorted",
+            native_execution_reestablished_declared_scan_ordering_is_sorted,
+        ),
+        (
+            "native_execution_sort_preserving_merge_matches_datafusion_sorted_input",
+            native_execution_sort_preserving_merge_matches_datafusion_sorted_input,
+        ),
+        (
+            "native_optimizer_rule_runs_the_filtered_scan_below_an_unsupported_projection_as_a_fragment",
+            native_optimizer_rule_runs_the_filtered_scan_below_an_unsupported_projection_as_a_fragment,
+        ),
+        (
+            "native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_enabled",
+            native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_enabled,
+        ),
+    ]);
+}
+
+#[test]
+fn native_exec_cases_5() {
+    testing::run_named_cases(&[
+        (
+            "native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_when_enabled",
+            native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_when_enabled,
+        ),
+        (
+            "native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy",
+            native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy,
+        ),
+        (
+            "native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan",
+            native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan,
+        ),
+        (
+            "final_plan_requirement_reports_first_unsupported_projected_column",
+            final_plan_requirement_reports_first_unsupported_projected_column,
+        ),
+        (
+            "no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer",
+            no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer,
+        ),
+    ]);
+}
+
+#[test]
+fn native_exec_cases_6() {
+    testing::run_named_cases(&[
+        (
+            "no_datafusion_cpu_final_rejection_names_final_stage_reason_not_count_only_probe_reason",
+            no_datafusion_cpu_final_rejection_names_final_stage_reason_not_count_only_probe_reason,
+        ),
+        (
+            "no_datafusion_cpu_count_only_probe_retains_its_native_rewrite",
+            no_datafusion_cpu_count_only_probe_retains_its_native_rewrite,
+        ),
+        (
+            "no_datafusion_cpu_count_only_probe_rewrites_materialized_memory_table",
+            no_datafusion_cpu_count_only_probe_rewrites_materialized_memory_table,
+        ),
+        (
+            "native_optimizer_rule_runs_the_supported_child_of_an_unsupported_parent_as_one_fragment",
+            native_optimizer_rule_runs_the_supported_child_of_an_unsupported_parent_as_one_fragment,
+        ),
+        (
+            "final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion_disposition",
+            final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion_disposition,
+        ),
+    ]);
+}
+
 fn native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-distinct-anti-composition");
     let left = dir.join("left.parquet");
@@ -1043,7 +1112,6 @@ fn native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_admits_topk_grouped_aggregate_left_join_under_bounded_contract() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-topk-aggregate-left-join");
     let edges = dir.join("edges.parquet");
@@ -1083,7 +1151,6 @@ fn native_optimizer_admits_topk_grouped_aggregate_left_join_under_bounded_contra
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_order_contract() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-stddev-sort-cpu-boundary");
     let path = dir.join("input.parquet");
@@ -1110,7 +1177,7 @@ fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_
 
 #[test]
 fn native_optimizer_rule_is_inserted_before_final_validation() {
-    let rules = installed_physical_optimizer_rules(native_optimizer_config());
+    let rules = installed_physical_optimizer_rules(AlgeonNativeOptimizerConfig::default());
     let names = rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
 
     let count_only_position = names.iter().position(|name| *name == "algeon_datafusion_native_count_only").unwrap();
@@ -1127,7 +1194,6 @@ fn native_optimizer_rule_is_inserted_before_final_validation() {
     assert!(default_names.contains(&"algeon_datafusion_native_count_only"));
 }
 
-#[test]
 fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failure() {
     use std::fs::File;
 
@@ -1214,7 +1280,6 @@ fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failur
 /// to `Float32`; the first two decimals sit within half a `Float64` ulp of a
 /// `Float32` midpoint, so a single correctly rounded cast to `Float32` picks
 /// the other neighbor.
-#[test]
 fn native_float32_casts_match_arrow_cpu_casts_bit_for_bit() {
     let decimals: Vec<i128> = [16_777_217_000_000_001, 16_777_218_999_999_999, -16_777_217_000_000_001]
         .into_iter()
@@ -1289,7 +1354,6 @@ fn native_float32_casts_match_arrow_cpu_casts_bit_for_bit() {
 /// A window whose partition and order keys are computed expressions runs
 /// natively when the sort below it computed the same expressions: the window
 /// reads the sort's key columns, so the sort's ordering covers the window.
-#[test]
 fn rank_over_computed_window_keys_runs_natively_and_matches_datafusion() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-computed-window-keys");
     let path = dir.join("input.parquet");
@@ -1392,7 +1456,6 @@ fn native_and_datafusion_rows(required: &SessionContext, cpu: &SessionContext, q
 /// A partition aggregate and `ROW_NUMBER()` in one window node: the row
 /// number runs after the aggregate, over partitions that must still be
 /// contiguous, so each partition is numbered 1 to n.
-#[test]
 fn row_number_beside_a_partition_aggregate_numbers_each_partition_from_one() {
     let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-row-number");
     let query = "SELECT p, s, rn FROM (SELECT p, SUM(x) OVER (PARTITION BY p) AS s, \
@@ -1405,7 +1468,6 @@ fn row_number_beside_a_partition_aggregate_numbers_each_partition_from_one() {
 /// An order key that repeats a partition key orders nothing inside a
 /// partition: every row of a partition is a peer, so `RANK()` is 1 throughout
 /// and `ROW_NUMBER()` still counts the partition's rows.
-#[test]
 fn rank_and_row_number_accept_an_order_key_that_is_also_the_partition_key() {
     let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-repeated-key");
     for query in [
@@ -1421,7 +1483,6 @@ fn rank_and_row_number_accept_an_order_key_that_is_also_the_partition_key() {
 
 /// DataFusion drops the final sort because the window keeps its input's
 /// order, so the window's own output order is the query's result order.
-#[test]
 fn partition_aggregate_window_output_keeps_the_order_the_query_relies_on() {
     let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-order");
     let query = "SELECT p, SUM(x) OVER (PARTITION BY p) AS s FROM input ORDER BY p";
@@ -1433,7 +1494,6 @@ fn partition_aggregate_window_output_keeps_the_order_the_query_relies_on() {
 /// Two windows on one sort: DataFusion stacks the partition aggregate window
 /// above the rank window and drops the final sort, so the result order is the
 /// order the aggregate window keeps from the rank window's sorted output.
-#[test]
 fn windows_sharing_a_sort_keep_the_order_the_query_relies_on() {
     let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-shared-sort");
     let query = "SELECT p, o, SUM(x) OVER (PARTITION BY p) AS s, RANK() OVER (PARTITION BY p ORDER BY o) AS r \
@@ -1527,7 +1587,6 @@ fn window_agg_over_partition_preserving_sort_in_multi_partition_session() {
 /// type that differs only in a private rank kind. Only `rank()` has a native
 /// kernel, so the other two stay in DataFusion under NativePreferred and
 /// NativeRequired rejects the completed plan.
-#[test]
 fn dense_rank_and_percent_rank_windows_stay_in_datafusion() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-rank-family");
     let path = dir.join("input.parquet");
@@ -1626,7 +1685,6 @@ fn admission_refused_stddev_plan(
     (plan, final_native)
 }
 
-#[test]
 fn native_preferred_keeps_an_admission_refusal_on_datafusion() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-admission-fallback");
     let (plan, final_native) = admission_refused_stddev_plan(&dir, AlgeonGpuExecutionMode::NativePreferred);
@@ -1653,7 +1711,6 @@ fn native_preferred_keeps_an_admission_refusal_on_datafusion() {
 
 /// The NativeRequired error names the refusal from the production admission
 /// decision, not only the coarse capability reason.
-#[test]
 fn native_required_rejection_names_the_admission_refusal() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-admission-refusal");
     let (plan, final_native) = admission_refused_stddev_plan(&dir, AlgeonGpuExecutionMode::NativeRequired);

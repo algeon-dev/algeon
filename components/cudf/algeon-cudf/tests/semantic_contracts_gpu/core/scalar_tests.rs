@@ -3,7 +3,7 @@ use cudf::{
     testing::core::trigger_negative_string_scalar_length_for_test,
 };
 
-use crate::common::{error_context_value, run_named_cases, scalar, with_test_runtime};
+use crate::common::{error_context_value, scalar, with_test_runtime};
 
 fn test_string_scalar_value_round_trip() {
     let scalar = scalar("hello").unwrap();
@@ -285,83 +285,83 @@ fn test_string_scalar_negative_length_uses_stable_foreign_contract() {
     );
 }
 
-#[test]
-fn scalar_tests_cases() {
-    run_named_cases(&[
-        ("test_string_scalar_value_round_trip", test_string_scalar_value_round_trip),
-        ("test_empty_string_scalar_value_round_trip", test_empty_string_scalar_value_round_trip),
-        ("test_i32_scalar_round_trip", test_i32_scalar_round_trip),
-        ("test_i64_scalar_round_trip", test_i64_scalar_round_trip),
-        ("test_f32_scalar_round_trip", test_f32_scalar_round_trip),
-        ("test_f64_scalar_round_trip", test_f64_scalar_round_trip),
-        ("test_null_numeric_is_not_valid", test_null_numeric_is_not_valid),
-        ("test_null_string_is_not_valid", test_null_string_is_not_valid),
-        ("test_valid_numeric_is_valid", test_valid_numeric_is_valid),
-        ("test_valid_string_is_valid", test_valid_string_is_valid),
-        ("test_numeric_scalar_data_type", test_numeric_scalar_data_type),
-        ("test_string_scalar_data_type", test_string_scalar_data_type),
-        (
-            "test_decimal32_scalar_round_trip_dtype_scale_validity_and_value",
-            test_decimal32_scalar_round_trip_dtype_scale_validity_and_value,
-        ),
-        (
-            "test_decimal64_scalar_round_trip_dtype_scale_validity_and_value",
-            test_decimal64_scalar_round_trip_dtype_scale_validity_and_value,
-        ),
-        (
-            "test_decimal128_scalar_round_trip_dtype_scale_validity_and_value",
-            test_decimal128_scalar_round_trip_dtype_scale_validity_and_value,
-        ),
-        (
-            "test_timestamp_scalar_round_trip_dtype_validity_and_value",
-            test_timestamp_scalar_round_trip_dtype_validity_and_value,
-        ),
-        (
-            "test_timestamp_days_raw_scalar_round_trip_sign_extends_i32_value",
-            test_timestamp_days_raw_scalar_round_trip_sign_extends_i32_value,
-        ),
-        (
-            "test_duration_scalar_round_trip_dtype_validity_and_value",
-            test_duration_scalar_round_trip_dtype_validity_and_value,
-        ),
-        (
-            "test_duration_days_raw_scalar_round_trip_sign_extends_i32_value",
-            test_duration_days_raw_scalar_round_trip_sign_extends_i32_value,
-        ),
-        (
-            "test_null_raw_decimal_timestamp_and_duration_scalars_are_not_valid",
-            test_null_raw_decimal_timestamp_and_duration_scalars_are_not_valid,
-        ),
-        ("test_decimal_scalar_value_rejects_non_decimal_dtype", test_decimal_scalar_value_rejects_non_decimal_dtype),
-        (
-            "test_decimal_scalar_value_rejects_raw_outside_storage_width",
-            test_decimal_scalar_value_rejects_raw_outside_storage_width,
-        ),
-        (
-            "test_temporal_days_raw_constructor_validates_physical_range_before_ffi",
-            test_temporal_days_raw_constructor_validates_physical_range_before_ffi,
-        ),
-        (
-            "test_string_scalar_rejects_interior_null_bytes_with_stable_code",
-            test_string_scalar_rejects_interior_null_bytes_with_stable_code,
-        ),
-        ("test_type_mismatch_value_extraction", test_type_mismatch_value_extraction),
-        ("test_string_scalar_numeric_value_fails", test_string_scalar_numeric_value_fails),
-        (
-            "test_numeric_scalar_string_value_fails_with_type_mismatch_contract",
-            test_numeric_scalar_string_value_fails_with_type_mismatch_contract,
-        ),
-        (
-            "test_decimal_raw_value_wrong_type_uses_type_mismatch_contract",
-            test_decimal_raw_value_wrong_type_uses_type_mismatch_contract,
-        ),
-        (
-            "test_temporal_raw_value_wrong_type_uses_type_mismatch_contract",
-            test_temporal_raw_value_wrong_type_uses_type_mismatch_contract,
-        ),
-        (
-            "test_string_scalar_negative_length_uses_stable_foreign_contract",
-            test_string_scalar_negative_length_uses_stable_foreign_contract,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("scalar_tests::test_string_scalar_value_round_trip", test_string_scalar_value_round_trip),
+    ("scalar_tests::test_empty_string_scalar_value_round_trip", test_empty_string_scalar_value_round_trip),
+    ("scalar_tests::test_i32_scalar_round_trip", test_i32_scalar_round_trip),
+    ("scalar_tests::test_i64_scalar_round_trip", test_i64_scalar_round_trip),
+    ("scalar_tests::test_f32_scalar_round_trip", test_f32_scalar_round_trip),
+    ("scalar_tests::test_f64_scalar_round_trip", test_f64_scalar_round_trip),
+    ("scalar_tests::test_null_numeric_is_not_valid", test_null_numeric_is_not_valid),
+    ("scalar_tests::test_null_string_is_not_valid", test_null_string_is_not_valid),
+    ("scalar_tests::test_valid_numeric_is_valid", test_valid_numeric_is_valid),
+    ("scalar_tests::test_valid_string_is_valid", test_valid_string_is_valid),
+    ("scalar_tests::test_numeric_scalar_data_type", test_numeric_scalar_data_type),
+    ("scalar_tests::test_string_scalar_data_type", test_string_scalar_data_type),
+    (
+        "scalar_tests::test_decimal32_scalar_round_trip_dtype_scale_validity_and_value",
+        test_decimal32_scalar_round_trip_dtype_scale_validity_and_value,
+    ),
+    (
+        "scalar_tests::test_decimal64_scalar_round_trip_dtype_scale_validity_and_value",
+        test_decimal64_scalar_round_trip_dtype_scale_validity_and_value,
+    ),
+    (
+        "scalar_tests::test_decimal128_scalar_round_trip_dtype_scale_validity_and_value",
+        test_decimal128_scalar_round_trip_dtype_scale_validity_and_value,
+    ),
+    (
+        "scalar_tests::test_timestamp_scalar_round_trip_dtype_validity_and_value",
+        test_timestamp_scalar_round_trip_dtype_validity_and_value,
+    ),
+    (
+        "scalar_tests::test_timestamp_days_raw_scalar_round_trip_sign_extends_i32_value",
+        test_timestamp_days_raw_scalar_round_trip_sign_extends_i32_value,
+    ),
+    (
+        "scalar_tests::test_duration_scalar_round_trip_dtype_validity_and_value",
+        test_duration_scalar_round_trip_dtype_validity_and_value,
+    ),
+    (
+        "scalar_tests::test_duration_days_raw_scalar_round_trip_sign_extends_i32_value",
+        test_duration_days_raw_scalar_round_trip_sign_extends_i32_value,
+    ),
+    (
+        "scalar_tests::test_null_raw_decimal_timestamp_and_duration_scalars_are_not_valid",
+        test_null_raw_decimal_timestamp_and_duration_scalars_are_not_valid,
+    ),
+    (
+        "scalar_tests::test_decimal_scalar_value_rejects_non_decimal_dtype",
+        test_decimal_scalar_value_rejects_non_decimal_dtype,
+    ),
+    (
+        "scalar_tests::test_decimal_scalar_value_rejects_raw_outside_storage_width",
+        test_decimal_scalar_value_rejects_raw_outside_storage_width,
+    ),
+    (
+        "scalar_tests::test_temporal_days_raw_constructor_validates_physical_range_before_ffi",
+        test_temporal_days_raw_constructor_validates_physical_range_before_ffi,
+    ),
+    (
+        "scalar_tests::test_string_scalar_rejects_interior_null_bytes_with_stable_code",
+        test_string_scalar_rejects_interior_null_bytes_with_stable_code,
+    ),
+    ("scalar_tests::test_type_mismatch_value_extraction", test_type_mismatch_value_extraction),
+    ("scalar_tests::test_string_scalar_numeric_value_fails", test_string_scalar_numeric_value_fails),
+    (
+        "scalar_tests::test_numeric_scalar_string_value_fails_with_type_mismatch_contract",
+        test_numeric_scalar_string_value_fails_with_type_mismatch_contract,
+    ),
+    (
+        "scalar_tests::test_decimal_raw_value_wrong_type_uses_type_mismatch_contract",
+        test_decimal_raw_value_wrong_type_uses_type_mismatch_contract,
+    ),
+    (
+        "scalar_tests::test_temporal_raw_value_wrong_type_uses_type_mismatch_contract",
+        test_temporal_raw_value_wrong_type_uses_type_mismatch_contract,
+    ),
+    (
+        "scalar_tests::test_string_scalar_negative_length_uses_stable_foreign_contract",
+        test_string_scalar_negative_length_uses_stable_foreign_contract,
+    ),
+];

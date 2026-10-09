@@ -10,6 +10,7 @@
 //! backend, which planning does not implement.
 
 use arrow::array::Int64Array;
+use cudf::testing::run_named_cases;
 use query_engine::rapids_backend::rapids_analysis_context;
 use query_planning::{
     admission::{AdmissionDecision, admit, bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
@@ -453,7 +454,6 @@ fn literal_row_number_plan(order_by: bool) -> QueryPlan {
     builder.finish_with_host_sink(window).unwrap()
 }
 
-#[test]
 fn capability_admission_admits_window_that_depends_on_no_input_order() {
     let plan = literal_row_number_plan(false);
 
@@ -469,6 +469,39 @@ fn capability_admission_admits_window_that_depends_on_no_input_order() {
 }
 
 #[test]
+fn t_window_admission_cases() {
+    run_named_cases(&[
+        (
+            "capability_first_pipeline_admission::capability_admission_admits_window_that_depends_on_no_input_order",
+            capability_admission_admits_window_that_depends_on_no_input_order,
+        ),
+        (
+            "capability_first_pipeline_admission::capability_admission_rejects_row_number_over_unordered_input",
+            capability_admission_rejects_row_number_over_unordered_input,
+        ),
+        (
+            "capability_first_pipeline_admission::capability_admission_rejects_row_number_whose_input_is_not_ordered_by_its_partition_key",
+            capability_admission_rejects_row_number_whose_input_is_not_ordered_by_its_partition_key,
+        ),
+        (
+            "capability_first_pipeline_admission::capability_admission_ignores_window_order_keys_that_repeat_a_partition_key",
+            capability_admission_ignores_window_order_keys_that_repeat_a_partition_key,
+        ),
+        (
+            "capability_first_pipeline_admission::capability_admission_admits_window_over_renamed_partition_key",
+            capability_admission_admits_window_over_renamed_partition_key,
+        ),
+        (
+            "capability_first_pipeline_admission::capability_admission_rejects_partitioned_row_number_without_order_over_unordered_input",
+            capability_admission_rejects_partitioned_row_number_without_order_over_unordered_input,
+        ),
+        (
+            "capability_first_pipeline_admission::capability_admission_rejects_rank_over_a_materialized_partition_key",
+            capability_admission_rejects_rank_over_a_materialized_partition_key,
+        ),
+    ]);
+}
+
 fn capability_admission_rejects_row_number_over_unordered_input() {
     // A literal source records no row ordering, so ranks under ORDER BY would
     // follow arrival order.
@@ -530,7 +563,6 @@ fn admit_default(plan: &QueryPlan) -> QueryEngineResult<AdmissionDecision> {
     )
 }
 
-#[test]
 fn capability_admission_rejects_row_number_whose_input_is_not_ordered_by_its_partition_key() {
     // Sorted by `o` alone, the rows of each `p` partition are interleaved, so
     // positional numbering would give [1, 1, 3, 3, 5, 5].
@@ -547,7 +579,6 @@ fn capability_admission_rejects_row_number_whose_input_is_not_ordered_by_its_par
     assert!(admit_default(&plan).expect("window admission should not error").admission().is_some());
 }
 
-#[test]
 fn capability_admission_ignores_window_order_keys_that_repeat_a_partition_key() {
     // `ORDER BY p` inside `PARTITION BY p` orders nothing, so input sorted by
     // `p` alone is in the window's order, and an order key after it still counts.
@@ -566,7 +597,6 @@ fn capability_admission_ignores_window_order_keys_that_repeat_a_partition_key() 
     assert_eq!(projection.reason, Reason::WindowInputOrderingNotEstablished);
 }
 
-#[test]
 fn capability_admission_admits_window_over_renamed_partition_key() {
     let input_schema =
         Arc::new(Schema::new(vec![Field::new("p", DataType::Int32, false), Field::new("o", DataType::Int32, false)]));
@@ -613,7 +643,6 @@ fn capability_admission_admits_window_over_renamed_partition_key() {
     assert!(admit_default(&plan).expect("window admission should not error").admission().is_some());
 }
 
-#[test]
 fn capability_admission_rejects_partitioned_row_number_without_order_over_unordered_input() {
     // Without ORDER BY any numbering within a partition is valid, but it is
     // still positional: the partition's rows must be adjacent.
@@ -728,7 +757,6 @@ fn capability_admission_reports_a_malformed_node_behind_an_unsupported_one() {
     assert_eq!(error.fact_value("column"), Some("v"));
 }
 
-#[test]
 fn capability_admission_rejects_rank_over_a_materialized_partition_key() {
     // DataFusion sorts a TPC-DS q86 rank input on the partition expression.
     // Lowering materializes it once as a sort key, drops that key after the

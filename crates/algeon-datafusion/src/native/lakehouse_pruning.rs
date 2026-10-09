@@ -906,16 +906,6 @@ mod tests {
     }
 
     #[test]
-    fn static_pruning_literal_accepts_decimal128_at_column_scale() {
-        let literal = LiteralValue::Decimal128 { raw: 5, precision: 15, scale: 2 };
-
-        let pruning_literal = static_pruning_literal(&literal, &DataType::Decimal128(15, 2))
-            .expect("decimal literal should be supported for decimal column pruning");
-
-        assert!(matches!(pruning_literal, StaticPruningLiteral::Decimal128(5)));
-    }
-
-    #[test]
     fn static_pruning_literal_rescales_decimal128_to_column_scale() {
         let literal = LiteralValue::Decimal128 { raw: 5, precision: 15, scale: 2 };
 
@@ -923,6 +913,10 @@ mod tests {
             .expect("decimal literal should be rescaled for finer column scale");
 
         assert!(matches!(pruning_literal, StaticPruningLiteral::Decimal128(50)));
+        assert!(matches!(
+            static_pruning_literal(&literal, &DataType::Decimal128(15, 2)),
+            Some(StaticPruningLiteral::Decimal128(5))
+        ));
         assert!(static_pruning_literal(&literal, &DataType::Decimal128(15, 1)).is_none());
     }
 

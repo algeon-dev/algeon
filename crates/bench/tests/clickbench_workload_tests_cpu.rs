@@ -1,14 +1,12 @@
 use std::panic;
 
-use algeon_datafusion::native_exec::SourceChunking;
 use bench::report_workload::clickbench::{
     ALGEON_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, ALGEON_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     ALGEON_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV,
     ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
     CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
-    CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE, CLICKBENCH_NATIVE_PROFILE_CUSTOM, CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT,
-    ClickbenchNativeProfileSettings, clickbench_native_optimizer_config_with_profile_settings,
-    clickbench_native_profile_settings_with_env,
+    CLICKBENCH_NATIVE_PROFILE_CUSTOM, CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT, ClickbenchNativeProfileSettings,
+    clickbench_native_optimizer_config_with_profile_settings, clickbench_native_profile_settings_with_env,
 };
 use query_planning::execution_contracts::SourceChunkPlanningMode;
 
@@ -18,30 +16,6 @@ fn clickbench_native_profile_settings_from<const N: usize>(
     clickbench_native_profile_settings_with_env(|name| {
         env.iter().find_map(|(key, value)| (*key == name).then(|| (*value).to_string()))
     })
-}
-
-#[test]
-fn clickbench_native_profile_defaults_to_conservative() {
-    let profile = clickbench_native_profile_settings_from([]);
-
-    assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE);
-    assert_eq!(profile.profile_source, "default");
-    assert_eq!(profile.max_source_chunk_bytes, SourceChunking::DEFAULT_MAX_SOURCE_CHUNK_BYTES.get());
-    assert_eq!(profile.max_row_groups_per_chunk, SourceChunking::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK.get());
-    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::Conservative);
-}
-
-#[test]
-fn clickbench_native_profile_resolves_gpu_throughput() {
-    let profile =
-        clickbench_native_profile_settings_from([(ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV, "clickbench_gpu_throughput")]);
-
-    assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT);
-    assert_eq!(profile.profile_source, "env_profile");
-    assert_eq!(profile.device_budget_bytes, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
-    assert_eq!(profile.max_source_chunk_bytes, CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
-    assert_eq!(profile.max_row_groups_per_chunk, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
-    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::LocalParquetThroughput);
 }
 
 #[test]

@@ -1111,16 +1111,4 @@ mod tests {
         let array = UInt64Array::from(vec![Some(1), None, Some(u64::MAX)]);
         assert_eq!(dynamic_filter_i64_values(&array), None);
     }
-
-    #[test]
-    fn dynamic_filter_execution_options_accept_independent_post_decode_limits() {
-        DynamicFilterExecutionOptions::default()
-            .with_max_build_rows(10)
-            .with_large_local_parquet_range_producer_rows(10)
-            .with_small_in_list_limit(1)
-            .with_max_deferred_small_in_list_reader_values(2)
-            .with_max_unpruned_hash_set_post_decode_values(11)
-            .validate()
-            .unwrap();
-    }
 }

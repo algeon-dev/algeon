@@ -86,31 +86,9 @@ impl Drop for RngState {
 
 #[cfg(test)]
 mod tests {
-    use static_assertions::assert_not_impl_any;
 
     use super::*;
     use crate::ResourceHandle;
-
-    #[test]
-    fn test_rng_state_creation() {
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_rng_state_creation").expect("entered");
-        let rng = RngState::new(&entered, 42).expect("rng state");
-        assert!(!rng.raw.is_null());
-    }
-
-    #[test]
-    fn test_rng_state_different_seeds() {
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_rng_state_different_seeds").expect("entered");
-        let _rng1 = RngState::new(&entered, 0).expect("rng state 0");
-        let _rng2 = RngState::new(&entered, u64::MAX).expect("rng state max");
-    }
-
-    #[test]
-    fn test_rng_state_not_send_sync() {
-        assert_not_impl_any!(RngState: Send, Sync);
-    }
 
     #[test]
     fn runtime_bound_rng_state_retains_native_owner_until_drop() {

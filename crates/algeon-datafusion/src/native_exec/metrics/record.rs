@@ -37,7 +37,7 @@ use crate::{
 mod mapping;
 
 #[cfg(test)]
-pub(super) use mapping::{NATIVE_ALGEON_RECORDING_DESCRIPTORS, NativeMetricRecordingKind};
+pub(super) use mapping::NATIVE_ALGEON_RECORDING_DESCRIPTORS;
 
 /// A root-native-wrapper target that can receive one attempt projection after
 /// its owner has sealed the immutable report. It does not retain the report,

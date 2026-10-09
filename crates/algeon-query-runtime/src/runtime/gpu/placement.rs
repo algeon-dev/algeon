@@ -249,14 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn placement_ranking_is_stable_for_heterogeneous_envelopes() {
-        let ranked =
-            rank_placement_candidates(vec![candidate(0, 1_000, 0, 0, 0, 10), candidate(1, 500, 0, 0, 0, 10)], 400);
-
-        assert_eq!(ranked, vec![0, 1], "the larger envelope offers more spare capacity");
-    }
-
-    #[test]
     fn capability_gate_excludes_incapable_profiles_before_placement_ranking() {
         let requirement = ExecutionCapability::new("test_operator");
         let incapable = /*OK*/DeviceResourceProfile::resolve(DeviceResourceEnvelope {

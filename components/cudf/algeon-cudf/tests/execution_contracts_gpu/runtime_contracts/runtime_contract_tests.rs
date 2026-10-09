@@ -22,56 +22,33 @@ use std::{
 };
 
 use cudf::{
-    AggSpec, DataFrame, DeviceId, Exec, GroupByAgg, ParquetReadOptions, Series, SortOptions,
+    AggSpec, DataFrame, DeviceId, Exec, GroupByAgg, ParquetReadOptions, Runtime, Series, SortOptions,
     core::{Column, Scalar, Table, memory::DeviceMemoryResource},
     runtime::{CudaEvent, CudaStream},
     testing::{ColumnView, TableView},
 };
-use static_assertions::assert_not_impl_any;
+use static_assertions::{assert_impl_all, assert_not_impl_any};
 use tokio::{
     task::spawn_blocking,
     time::{sleep, timeout},
 };
 
-use crate::common::{column_from_slice, column_from_strs, dataframe_from_columns, run_named_cases, sample_df, series};
+use crate::common::{column_from_slice, column_from_strs, dataframe_from_columns, sample_df, series};
 
 // ===========================================================================
 // Category 1: Send+Sync static assertions for owned types
 // ===========================================================================
 
-fn assert_send_sync<T: Send + Sync>() {}
-
-fn dataframe_is_send_sync() {
-    assert_send_sync::<DataFrame>();
-}
-
-fn series_is_send_sync() {
-    assert_send_sync::<Series>();
-}
-
-fn column_is_send_sync() {
-    assert_send_sync::<Column>();
-}
-
-fn table_is_send_sync() {
-    assert_send_sync::<Table>();
-}
-
-fn scalar_is_send_sync() {
-    assert_send_sync::<Scalar>();
-}
-
-fn cuda_stream_is_send_sync() {
-    assert_send_sync::<CudaStream>();
-}
-
-fn cuda_event_is_send_sync() {
-    assert_send_sync::<CudaEvent>();
-}
-
-fn device_memory_resource_is_send_sync() {
-    assert_send_sync::<DeviceMemoryResource>();
-}
+assert_impl_all!(DataFrame: Send, Sync);
+assert_impl_all!(Series: Send, Sync);
+assert_impl_all!(Column: Send, Sync);
+assert_impl_all!(Table: Send, Sync);
+assert_impl_all!(Scalar: Send, Sync);
+assert_impl_all!(CudaStream: Send, Sync);
+assert_impl_all!(CudaEvent: Send, Sync);
+assert_impl_all!(DeviceMemoryResource: Send, Sync);
+assert_impl_all!(Runtime: Send, Sync);
+assert_impl_all!(Exec<'static>: Send, Sync);
 
 fn device_inventory_reports_nonzero_memory_and_sm_count() {
     let device = DeviceId::DEFAULT;
@@ -532,18 +509,13 @@ async fn timeout_on_spawn_blocking_is_safe() {
     }
 }
 
-#[test]
-fn runtime_contract_tests_cases() {
-    run_named_cases(&[
-        ("dataframe_is_send_sync", dataframe_is_send_sync),
-        ("series_is_send_sync", series_is_send_sync),
-        ("column_is_send_sync", column_is_send_sync),
-        ("table_is_send_sync", table_is_send_sync),
-        ("scalar_is_send_sync", scalar_is_send_sync),
-        ("cuda_stream_is_send_sync", cuda_stream_is_send_sync),
-        ("cuda_event_is_send_sync", cuda_event_is_send_sync),
-        ("device_memory_resource_is_send_sync", device_memory_resource_is_send_sync),
-        ("device_inventory_reports_nonzero_memory_and_sm_count", device_inventory_reports_nonzero_memory_and_sm_count),
-        ("cuda_event_can_record_wait_and_synchronize", cuda_event_can_record_wait_and_synchronize),
-    ]);
-}
+pub(crate) const CASES: &[(&str, fn())] = &[
+    (
+        "runtime_contracts::runtime_contract_tests::device_inventory_reports_nonzero_memory_and_sm_count",
+        device_inventory_reports_nonzero_memory_and_sm_count,
+    ),
+    (
+        "runtime_contracts::runtime_contract_tests::cuda_event_can_record_wait_and_synchronize",
+        cuda_event_can_record_wait_and_synchronize,
+    ),
+];

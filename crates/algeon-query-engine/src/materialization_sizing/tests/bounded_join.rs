@@ -44,53 +44,35 @@ fn empty_projection_returns_zero() {
 }
 
 #[test]
-fn empty_projection_with_zero_rows_returns_zero() {
-    let bound = join_output_upper_bound_bytes(0, &[]).unwrap().expect("the byte model bounds this output");
-    assert_eq!(bound, 0);
-}
-
-#[test]
-fn fixed_width_int32_column_bound_is_exact() {
-    let rows = 1_000_000;
-    let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Int32)])
-        .unwrap()
-        .expect("the byte model bounds this output");
-    assert_eq!(bound, fixed_column_expected(rows, 4));
-}
-
-#[test]
-fn fixed_width_int64_uint64_float64_match_eight_byte_size() {
-    let rows = 256;
-    let expected = fixed_column_expected(rows, 8);
-    for dtype in [ArrowDataType::Int64, ArrowDataType::UInt64, ArrowDataType::Float64] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
-            .unwrap()
-            .expect("the byte model bounds this output");
-        assert_eq!(bound, expected, "dtype {dtype:?}");
+fn fixed_width_column_bounds_cover_supported_physical_types() {
+    let mut types = vec![
+        (ArrowDataType::Boolean, 1),
+        (ArrowDataType::Int8, 1),
+        (ArrowDataType::UInt8, 1),
+        (ArrowDataType::Int16, 2),
+        (ArrowDataType::UInt16, 2),
+        (ArrowDataType::Int32, 4),
+        (ArrowDataType::Int64, 8),
+        (ArrowDataType::UInt64, 8),
+        (ArrowDataType::Float64, 8),
+        (ArrowDataType::Date64, 8),
+        (ArrowDataType::Time64(TimeUnit::Microsecond), 8),
+        (ArrowDataType::Time64(TimeUnit::Nanosecond), 8),
+        (ArrowDataType::Decimal32(9, 2), 4),
+        (ArrowDataType::Decimal64(18, 6), 8),
+        (ArrowDataType::Decimal128(38, 6), 16),
+    ];
+    for unit in [TimeUnit::Second, TimeUnit::Millisecond, TimeUnit::Microsecond, TimeUnit::Nanosecond] {
+        types.push((ArrowDataType::Timestamp(unit, None), 8));
+        types.push((ArrowDataType::Duration(unit), 8));
     }
-}
-
-#[test]
-fn boolean_int8_uint8_match_one_byte_size() {
-    let rows = 1_024;
-    let expected = fixed_column_expected(rows, 1);
-    for dtype in [ArrowDataType::Boolean, ArrowDataType::Int8, ArrowDataType::UInt8] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
-            .unwrap()
-            .expect("the byte model bounds this output");
-        assert_eq!(bound, expected, "dtype {dtype:?}");
-    }
-}
-
-#[test]
-fn int16_uint16_match_two_byte_size() {
-    let rows = 1_024;
-    let expected = fixed_column_expected(rows, 2);
-    for dtype in [ArrowDataType::Int16, ArrowDataType::UInt16] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
-            .unwrap()
-            .expect("the byte model bounds this output");
-        assert_eq!(bound, expected, "dtype {dtype:?}");
+    for rows in [64, 100, 256, 1_024, 10_000, 1_000_000] {
+        for (dtype, width) in &types {
+            let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
+                .unwrap()
+                .expect("supported fixed-width output has a byte bound");
+            assert_eq!(bound, fixed_column_expected(rows, *width), "dtype {dtype:?}, rows {rows}");
+        }
     }
 }
 
@@ -110,69 +92,9 @@ fn date32_uses_four_bytes_and_time32_uses_the_cudf_duration_width() {
 }
 
 #[test]
-fn date64_and_time64_use_eight_bytes() {
-    let rows = 10_000;
-    let expected = fixed_column_expected(rows, 8);
-    for dtype in [
-        ArrowDataType::Date64,
-        ArrowDataType::Time64(TimeUnit::Microsecond),
-        ArrowDataType::Time64(TimeUnit::Nanosecond),
-    ] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
-            .unwrap()
-            .expect("the byte model bounds this output");
-        assert_eq!(bound, expected, "dtype {dtype:?}");
-    }
-}
-
-#[test]
-fn timestamp_no_timezone_uses_eight_bytes() {
-    let rows = 64;
-    let expected = fixed_column_expected(rows, 8);
-    for unit in [TimeUnit::Second, TimeUnit::Millisecond, TimeUnit::Microsecond, TimeUnit::Nanosecond] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Timestamp(unit, None))])
-            .unwrap()
-            .expect("the byte model bounds this output");
-        assert_eq!(bound, expected, "unit {unit:?}");
-    }
-}
-
-#[test]
 fn timestamp_with_timezone_has_no_bound() {
     let column = fixed_column(ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())));
     assert_eq!(join_output_upper_bound_bytes(64, &[column]).unwrap(), None);
-}
-
-#[test]
-fn duration_uses_eight_bytes() {
-    let rows = 64;
-    let expected = fixed_column_expected(rows, 8);
-    for unit in [TimeUnit::Second, TimeUnit::Millisecond, TimeUnit::Microsecond, TimeUnit::Nanosecond] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Duration(unit))])
-            .unwrap()
-            .expect("the byte model bounds this output");
-        assert_eq!(bound, expected, "unit {unit:?}");
-    }
-}
-
-#[test]
-fn decimal128_uses_sixteen_bytes() {
-    let rows = 100;
-    let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Decimal128(38, 6))])
-        .unwrap()
-        .expect("the byte model bounds this output");
-    assert_eq!(bound, fixed_column_expected(rows, 16));
-}
-
-#[test]
-fn decimal32_and_decimal64_use_four_and_eight_bytes() {
-    let rows = 100;
-    for (data_type, width) in [(ArrowDataType::Decimal32(9, 2), 4), (ArrowDataType::Decimal64(18, 6), 8)] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(data_type.clone())])
-            .unwrap()
-            .expect("the byte model bounds this output");
-        assert_eq!(bound, fixed_column_expected(rows, width), "dtype {data_type:?}");
-    }
 }
 
 #[test]

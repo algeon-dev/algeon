@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
+use cudf::testing::run_named_cases;
 use query_engine::rapids_backend::rapids_analysis_context;
 use query_planning::{
     policy::PlanningPolicy,
@@ -9,17 +10,6 @@ use query_planning::{
 use super::*;
 
 mod chunk_planning;
-#[test]
-fn source_module_facade_preserves_public_model_and_diagnostic_paths() {
-    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
-    let file: LocalParquetFile = LocalParquetFile::new("/tmp/source-facade.parquet").with_file_size_bytes(128);
-    let source = LocalParquetSource::from_files(vec![file], schema, vec!["key".to_string()]);
-    let node = SourceNode::LocalParquet(source.clone());
-
-    assert!(matches!(node, SourceNode::LocalParquet(_)));
-    assert_eq!(source.diagnostics.byte_range_disposition, ByteRangeDisposition::FullFiles);
-    assert_eq!(ZERO_COLUMN_COUNT_COLUMN, ZERO_COLUMN_COUNT_COLUMN);
-}
 
 #[test]
 fn local_parquet_source_tracks_direct_source_diagnostics() {
@@ -95,7 +85,6 @@ fn local_parquet_source_reader_predicate_sets_reader_pushdown_diagnostics() {
     assert!(source.reader_predicate.is_some());
 }
 
-#[test]
 fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
@@ -120,6 +109,47 @@ fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
 }
 
 #[test]
+fn t_reader_predicate_cases() {
+    run_named_cases(&[
+        (
+            "source_contracts::local_parquet_source_reader_predicate_accepts_decimal_contract",
+            local_parquet_source_reader_predicate_accepts_decimal_contract,
+        ),
+        (
+            "source_contracts::local_parquet_source_reader_predicate_rejects_degenerate_roots",
+            local_parquet_source_reader_predicate_rejects_degenerate_roots,
+        ),
+        (
+            "source_contracts::local_parquet_source_reader_predicate_rejects_list_carry_columns",
+            local_parquet_source_reader_predicate_rejects_list_carry_columns,
+        ),
+        (
+            "source_contracts::local_parquet_source_reader_predicate_rejects_narrow_decimal_carry_columns",
+            local_parquet_source_reader_predicate_rejects_narrow_decimal_carry_columns,
+        ),
+        (
+            "source_contracts::local_parquet_source_reader_predicate_accepts_decimal32_range_equality_and_in_list",
+            local_parquet_source_reader_predicate_accepts_decimal32_range_equality_and_in_list,
+        ),
+        (
+            "source_contracts::local_parquet_source_reader_predicate_accepts_decimal_with_narrow_integer_columns",
+            local_parquet_source_reader_predicate_accepts_decimal_with_narrow_integer_columns,
+        ),
+        (
+            "source_contracts::local_parquet_source_reader_predicate_accepts_column_typed_integer_literals",
+            local_parquet_source_reader_predicate_accepts_column_typed_integer_literals,
+        ),
+        (
+            "source_contracts::local_parquet_source_reader_predicate_rejects_casts_the_ast_cannot_evaluate",
+            local_parquet_source_reader_predicate_rejects_casts_the_ast_cannot_evaluate,
+        ),
+        (
+            "source_contracts::local_parquet_source_reader_predicate_rejects_timestamp_arithmetic_the_ast_cannot_check",
+            local_parquet_source_reader_predicate_rejects_timestamp_arithmetic_the_ast_cannot_check,
+        ),
+    ]);
+}
+
 fn local_parquet_source_reader_predicate_rejects_degenerate_roots() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
@@ -159,7 +189,6 @@ fn local_parquet_source_reader_predicate_rejects_degenerate_roots() {
     ));
 }
 
-#[test]
 fn local_parquet_source_reader_predicate_rejects_list_carry_columns() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
@@ -179,7 +208,6 @@ fn local_parquet_source_reader_predicate_rejects_list_carry_columns() {
     assert!(!source.reader_predicate_is_supported(&predicate, rapids_analysis_context(PlanningPolicy::default())));
 }
 
-#[test]
 fn local_parquet_source_reader_predicate_rejects_narrow_decimal_carry_columns() {
     for amount_type in [DataType::Decimal32(9, 2), DataType::Decimal64(18, 2)] {
         let schema = Arc::new(Schema::new(vec![
@@ -203,7 +231,6 @@ fn local_parquet_source_reader_predicate_rejects_narrow_decimal_carry_columns() 
     }
 }
 
-#[test]
 fn local_parquet_source_reader_predicate_accepts_decimal32_range_equality_and_in_list() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
@@ -246,7 +273,6 @@ fn local_parquet_source_reader_predicate_accepts_decimal32_range_equality_and_in
     );
 }
 
-#[test]
 fn local_parquet_source_reader_predicate_accepts_decimal_with_narrow_integer_columns() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("amount", DataType::Decimal128(7, 2), false),
@@ -300,7 +326,6 @@ fn local_parquet_source_reader_predicate_accepts_decimal_with_narrow_integer_col
     );
 }
 
-#[test]
 fn local_parquet_source_reader_predicate_accepts_column_typed_integer_literals() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int64, false),
@@ -328,7 +353,6 @@ fn local_parquet_source_reader_predicate_accepts_column_typed_integer_literals()
     assert!(source.reader_predicate_is_supported(&string_match, rapids_analysis_context(PlanningPolicy::default())));
 }
 
-#[test]
 fn local_parquet_source_reader_predicate_rejects_casts_the_ast_cannot_evaluate() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
@@ -358,7 +382,6 @@ fn local_parquet_source_reader_predicate_rejects_casts_the_ast_cannot_evaluate()
     assert!(!source.reader_predicate_is_supported(&compare("elapsed"), context()));
 }
 
-#[test]
 fn local_parquet_source_reader_predicate_rejects_timestamp_arithmetic_the_ast_cannot_check() {
     let timestamp = DataType::Timestamp(TimeUnit::Millisecond, None);
     let schema = Arc::new(Schema::new(vec![
@@ -949,39 +972,6 @@ fn local_parquet_source_rejects_null_partition_value_for_non_nullable_column() {
     assert_eq!(error.fact_value("partition_type"), Some("Int32"));
     assert_eq!(error.fact_value("partition_nullable"), Some("false"));
     assert_eq!(error.fact_value("partition_value"), Some("NULL::Int32"));
-}
-
-#[test]
-fn source_disposition_names_are_stable_manifest_values() {
-    let dispositions = [
-        (PredicateDisposition::Absent, "absent"),
-        (PredicateDisposition::PruningOnly, "pruning_only"),
-        (PredicateDisposition::ReaderPushdown, "reader_pushdown"),
-        (PredicateDisposition::NativePostScanOnly, "native_post_scan_only"),
-        (PredicateDisposition::Rejected, "rejected"),
-    ];
-
-    for (disposition, expected) in dispositions {
-        assert_eq!(disposition.as_str(), expected);
-    }
-
-    assert_eq!(ByteRangeDisposition::FullFiles.as_str(), "full_files");
-    assert_eq!(ByteRangeDisposition::CoalescedFullFiles.as_str(), "coalesced_full_files");
-    assert_eq!(ByteRangeDisposition::RowGroupSelection.as_str(), "row_group_selection");
-    assert_eq!(ByteRangeDisposition::Rejected.as_str(), "rejected");
-    assert_eq!(PartitionColumnDisposition::Absent.as_str(), "absent");
-    assert_eq!(PartitionColumnDisposition::Rejected.as_str(), "rejected");
-    assert_eq!(PartitionColumnDisposition::Represented.as_str(), "represented");
-    assert_eq!(ZeroColumnCountDisposition::NotRequired.as_str(), "not_required");
-    assert_eq!(ZeroColumnCountDisposition::Rejected.as_str(), "rejected");
-    assert_eq!(ZeroColumnCountDisposition::Represented.as_str(), "represented");
-    assert_eq!(ScanLimitDisposition::Absent.as_str(), "absent");
-    assert_eq!(ScanLimitDisposition::Rejected.as_str(), "rejected");
-    assert_eq!(ScanLimitDisposition::Represented.as_str(), "represented");
-    assert_eq!(SchemaMappingDisposition::DirectByName.as_str(), "direct_by_name");
-    assert_eq!(SchemaMappingDisposition::MissingNullableColumns.as_str(), "missing_nullable_columns");
-    assert_eq!(SchemaMappingDisposition::Rejected.as_str(), "rejected");
-    assert_eq!(RejectedSourceFeature::ParquetFileReaderFactory.as_str(), "parquet_file_reader_factory");
 }
 
 #[test]

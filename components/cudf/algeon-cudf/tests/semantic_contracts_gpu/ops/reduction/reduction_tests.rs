@@ -2,7 +2,7 @@
 
 use cudf::{DataType, Exec, TypeId};
 
-use crate::common::{run_named_cases, series};
+use crate::common::series;
 
 fn test_reduce_decimal_scalar_dtype_preserves_scale() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
@@ -13,10 +13,7 @@ fn test_reduce_decimal_scalar_dtype_preserves_scale() {
     assert_eq!(result.data_type().unwrap(), dt);
 }
 
-#[test]
-fn reduction_tests_cases() {
-    run_named_cases(&[(
-        "test_reduce_decimal_scalar_dtype_preserves_scale",
-        test_reduce_decimal_scalar_dtype_preserves_scale,
-    )]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[(
+    "reduction_tests::test_reduce_decimal_scalar_dtype_preserves_scale",
+    test_reduce_decimal_scalar_dtype_preserves_scale,
+)];

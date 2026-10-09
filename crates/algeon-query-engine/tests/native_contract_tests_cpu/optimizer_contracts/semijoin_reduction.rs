@@ -1,3 +1,5 @@
+use cudf::testing::run_named_cases;
+
 use super::*;
 
 #[test]
@@ -222,7 +224,6 @@ fn semijoin_reduction_rejects_unestimated_non_keyset_shape() {
     assert_eq!(candidate.cost_gate.as_ref().map(|gate| &gate.signal), Some(&SemijoinReductionCostSignal::Unavailable));
 }
 
-#[test]
 fn semijoin_reduction_rejects_outer_crossed_joins() {
     for join_type in [JoinType::Left, JoinType::Full] {
         assert_semijoin_rejection(
@@ -233,6 +234,31 @@ fn semijoin_reduction_rejects_outer_crossed_joins() {
 }
 
 #[test]
+fn t_semijoin_rejects_cases() {
+    run_named_cases(&[
+        (
+            "optimizer_contracts::semijoin_reduction::semijoin_reduction_rejects_outer_crossed_joins",
+            semijoin_reduction_rejects_outer_crossed_joins,
+        ),
+        (
+            "optimizer_contracts::semijoin_reduction::semijoin_reduction_rejects_ambiguous_lineage_candidate",
+            semijoin_reduction_rejects_ambiguous_lineage_candidate,
+        ),
+        (
+            "optimizer_contracts::semijoin_reduction::semijoin_reduction_rejects_expression_derived_key_candidate",
+            semijoin_reduction_rejects_expression_derived_key_candidate,
+        ),
+        (
+            "optimizer_contracts::semijoin_reduction::semijoin_reduction_rejects_dropped_key_lineage_candidate",
+            semijoin_reduction_rejects_dropped_key_lineage_candidate,
+        ),
+        (
+            "optimizer_contracts::semijoin_reduction::semijoin_reduction_rejects_unsupported_null_semantics",
+            semijoin_reduction_rejects_unsupported_null_semantics,
+        ),
+    ]);
+}
+
 fn semijoin_reduction_rejects_ambiguous_lineage_candidate() {
     assert_semijoin_rejection(
         root_semijoin_over_duplicate_output_name_plan(),
@@ -240,7 +266,6 @@ fn semijoin_reduction_rejects_ambiguous_lineage_candidate() {
     );
 }
 
-#[test]
 fn semijoin_reduction_rejects_expression_derived_key_candidate() {
     assert_semijoin_rejection(
         root_semijoin_over_expression_key_projection_plan(),
@@ -248,7 +273,6 @@ fn semijoin_reduction_rejects_expression_derived_key_candidate() {
     );
 }
 
-#[test]
 fn semijoin_reduction_rejects_dropped_key_lineage_candidate() {
     assert_semijoin_rejection(
         root_semijoin_over_dropped_key_projection_plan(),
@@ -256,7 +280,6 @@ fn semijoin_reduction_rejects_dropped_key_lineage_candidate() {
     );
 }
 
-#[test]
 fn semijoin_reduction_rejects_unsupported_null_semantics() {
     assert_semijoin_rejection(
         root_semijoin_over_inner_join_plan_with_null_equality(

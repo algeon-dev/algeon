@@ -1,6 +1,5 @@
 use super::*;
 
-#[test]
 fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-large-keyed-inner-partitioned-hash");
@@ -67,6 +66,59 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
 }
 
 #[test]
+fn partitioned_cases() {
+    run_named_cases(&[
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join",
+            bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_concat",
+            bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_concat,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout",
+            bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout",
+            bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_mixed_join",
+            bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_mixed_join,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_executes_or_residual_with_mixed_join",
+            bounded_native_query_executes_or_residual_with_mixed_join,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate",
+            bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild",
+            bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filter",
+            bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filter,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_null_padding",
+            bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_null_padding,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_null_padding",
+            bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_null_padding,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate",
+            bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate,
+        ),
+    ]);
+}
+
 fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_concat() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-stream-topk");
@@ -123,7 +175,6 @@ fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_conca
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-shared-hash-join-stream");
@@ -238,7 +289,6 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-shared-reusable-hash-join-stream");
@@ -360,7 +410,6 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_mixed_join() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-large-keyed-inner-residual-one-shot");
@@ -427,7 +476,6 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_m
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_or_residual_with_mixed_join() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-or-residual-mixed-join");
@@ -498,7 +546,6 @@ fn bounded_native_query_executes_or_residual_with_mixed_join() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-partitioned-mixed-stream-aggregate");
@@ -586,7 +633,6 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-q72-left-stream-aggregate");
@@ -681,7 +727,6 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filter() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-keyed-inner-case-residual-one-shot");
@@ -752,7 +797,6 @@ fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filt
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_null_padding() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-large-keyed-left-partitioned-hash");
@@ -827,7 +871,6 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_null_padding() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-large-keyed-full-partitioned-hash");
@@ -1042,7 +1085,6 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-one-shot-filtered-aggregate-stream");

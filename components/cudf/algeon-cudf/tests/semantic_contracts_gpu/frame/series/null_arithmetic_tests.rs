@@ -11,7 +11,7 @@
 
 use cudf::{Exec, Series};
 
-use crate::common::{nullable_series, run_named_cases, series};
+use crate::common::{nullable_series, series};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -145,30 +145,6 @@ fn test_rem_scalar_preserves_nulls() {
 // ===========================================================================
 // Operator overloads with nullable series
 // ===========================================================================
-
-fn test_operator_add_with_nulls() {
-    let a = series_with_null_middle();
-    let b = series_non_null();
-    let result = a.on(Exec::RETAINED).add(&b).unwrap();
-    let vals = result.to_optional_vec::<i32>().unwrap();
-    assert_eq!(vals, vec![Some(11), None, Some(33)]);
-}
-
-fn test_operator_sub_with_nulls() {
-    let a = series_with_null_middle();
-    let b = series_non_null();
-    let result = a.on(Exec::RETAINED).sub(&b).unwrap();
-    let vals = result.to_optional_vec::<i32>().unwrap();
-    assert_eq!(vals, vec![Some(9), None, Some(27)]);
-}
-
-fn test_operator_mul_with_nulls() {
-    let a = series_with_null_middle();
-    let b = series_non_null();
-    let result = a.on(Exec::RETAINED).mul(&b).unwrap();
-    let vals = result.to_optional_vec::<i32>().unwrap();
-    assert_eq!(vals, vec![Some(10), None, Some(90)]);
-}
 
 // ===========================================================================
 // Null propagation in Series-vs-Series comparisons
@@ -399,50 +375,47 @@ fn test_is_not_nan_does_not_flag_null_as_not_nan() {
     assert!(vals[2]); // null → true (null is not NaN)
 }
 
-#[test]
-fn null_arithmetic_tests_cases() {
-    run_named_cases(&[
-        ("test_add_null_plus_value_propagates_null", test_add_null_plus_value_propagates_null),
-        ("test_add_value_plus_null_propagates_null", test_add_value_plus_null_propagates_null),
-        ("test_add_both_null_at_same_position", test_add_both_null_at_same_position),
-        ("test_add_nulls_at_different_positions_merge", test_add_nulls_at_different_positions_merge),
-        ("test_sub_with_nulls", test_sub_with_nulls),
-        ("test_mul_with_nulls", test_mul_with_nulls),
-        ("test_div_with_nulls", test_div_with_nulls),
-        ("test_rem_with_nulls", test_rem_with_nulls),
-        ("test_add_scalar_preserves_nulls", test_add_scalar_preserves_nulls),
-        ("test_sub_scalar_preserves_nulls", test_sub_scalar_preserves_nulls),
-        ("test_mul_scalar_preserves_nulls", test_mul_scalar_preserves_nulls),
-        ("test_div_scalar_preserves_nulls", test_div_scalar_preserves_nulls),
-        ("test_rem_scalar_preserves_nulls", test_rem_scalar_preserves_nulls),
-        ("test_operator_add_with_nulls", test_operator_add_with_nulls),
-        ("test_operator_sub_with_nulls", test_operator_sub_with_nulls),
-        ("test_operator_mul_with_nulls", test_operator_mul_with_nulls),
-        ("test_eq_null_propagates", test_eq_null_propagates),
-        ("test_ne_null_propagates", test_ne_null_propagates),
-        ("test_gt_null_propagates", test_gt_null_propagates),
-        ("test_lt_null_propagates", test_lt_null_propagates),
-        ("test_ge_null_propagates", test_ge_null_propagates),
-        ("test_le_null_propagates", test_le_null_propagates),
-        ("test_eq_null_vs_null_is_null_not_true", test_eq_null_vs_null_is_null_not_true),
-        ("test_gt_scalar_preserves_nulls", test_gt_scalar_preserves_nulls),
-        ("test_lt_scalar_preserves_nulls", test_lt_scalar_preserves_nulls),
-        ("test_eq_scalar_preserves_nulls", test_eq_scalar_preserves_nulls),
-        ("test_ne_scalar_preserves_nulls", test_ne_scalar_preserves_nulls),
-        ("test_ge_scalar_preserves_nulls", test_ge_scalar_preserves_nulls),
-        ("test_le_scalar_preserves_nulls", test_le_scalar_preserves_nulls),
-        ("test_eq_scalar_string_preserves_nulls", test_eq_scalar_string_preserves_nulls),
-        ("test_gt_scalar_string_preserves_nulls", test_gt_scalar_string_preserves_nulls),
-        ("test_neg_preserves_nulls", test_neg_preserves_nulls),
-        ("test_logical_not_preserves_nulls", test_logical_not_preserves_nulls),
-        ("test_logical_and_preserves_nulls", test_logical_and_preserves_nulls),
-        ("test_logical_or_preserves_nulls", test_logical_or_preserves_nulls),
-        ("test_abs_preserves_nulls", test_abs_preserves_nulls),
-        ("test_is_null_on_nullable", test_is_null_on_nullable),
-        ("test_is_not_null_on_nullable", test_is_not_null_on_nullable),
-        ("test_add_all_null_series", test_add_all_null_series),
-        ("test_eq_all_null_series", test_eq_all_null_series),
-        ("test_is_nan_does_not_flag_null_as_nan", test_is_nan_does_not_flag_null_as_nan),
-        ("test_is_not_nan_does_not_flag_null_as_not_nan", test_is_not_nan_does_not_flag_null_as_not_nan),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("null_arithmetic_tests::test_add_null_plus_value_propagates_null", test_add_null_plus_value_propagates_null),
+    ("null_arithmetic_tests::test_add_value_plus_null_propagates_null", test_add_value_plus_null_propagates_null),
+    ("null_arithmetic_tests::test_add_both_null_at_same_position", test_add_both_null_at_same_position),
+    ("null_arithmetic_tests::test_add_nulls_at_different_positions_merge", test_add_nulls_at_different_positions_merge),
+    ("null_arithmetic_tests::test_sub_with_nulls", test_sub_with_nulls),
+    ("null_arithmetic_tests::test_mul_with_nulls", test_mul_with_nulls),
+    ("null_arithmetic_tests::test_div_with_nulls", test_div_with_nulls),
+    ("null_arithmetic_tests::test_rem_with_nulls", test_rem_with_nulls),
+    ("null_arithmetic_tests::test_add_scalar_preserves_nulls", test_add_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_sub_scalar_preserves_nulls", test_sub_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_mul_scalar_preserves_nulls", test_mul_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_div_scalar_preserves_nulls", test_div_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_rem_scalar_preserves_nulls", test_rem_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_eq_null_propagates", test_eq_null_propagates),
+    ("null_arithmetic_tests::test_ne_null_propagates", test_ne_null_propagates),
+    ("null_arithmetic_tests::test_gt_null_propagates", test_gt_null_propagates),
+    ("null_arithmetic_tests::test_lt_null_propagates", test_lt_null_propagates),
+    ("null_arithmetic_tests::test_ge_null_propagates", test_ge_null_propagates),
+    ("null_arithmetic_tests::test_le_null_propagates", test_le_null_propagates),
+    ("null_arithmetic_tests::test_eq_null_vs_null_is_null_not_true", test_eq_null_vs_null_is_null_not_true),
+    ("null_arithmetic_tests::test_gt_scalar_preserves_nulls", test_gt_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_lt_scalar_preserves_nulls", test_lt_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_eq_scalar_preserves_nulls", test_eq_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_ne_scalar_preserves_nulls", test_ne_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_ge_scalar_preserves_nulls", test_ge_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_le_scalar_preserves_nulls", test_le_scalar_preserves_nulls),
+    ("null_arithmetic_tests::test_eq_scalar_string_preserves_nulls", test_eq_scalar_string_preserves_nulls),
+    ("null_arithmetic_tests::test_gt_scalar_string_preserves_nulls", test_gt_scalar_string_preserves_nulls),
+    ("null_arithmetic_tests::test_neg_preserves_nulls", test_neg_preserves_nulls),
+    ("null_arithmetic_tests::test_logical_not_preserves_nulls", test_logical_not_preserves_nulls),
+    ("null_arithmetic_tests::test_logical_and_preserves_nulls", test_logical_and_preserves_nulls),
+    ("null_arithmetic_tests::test_logical_or_preserves_nulls", test_logical_or_preserves_nulls),
+    ("null_arithmetic_tests::test_abs_preserves_nulls", test_abs_preserves_nulls),
+    ("null_arithmetic_tests::test_is_null_on_nullable", test_is_null_on_nullable),
+    ("null_arithmetic_tests::test_is_not_null_on_nullable", test_is_not_null_on_nullable),
+    ("null_arithmetic_tests::test_add_all_null_series", test_add_all_null_series),
+    ("null_arithmetic_tests::test_eq_all_null_series", test_eq_all_null_series),
+    ("null_arithmetic_tests::test_is_nan_does_not_flag_null_as_nan", test_is_nan_does_not_flag_null_as_nan),
+    (
+        "null_arithmetic_tests::test_is_not_nan_does_not_flag_null_as_not_nan",
+        test_is_not_nan_does_not_flag_null_as_not_nan,
+    ),
+];

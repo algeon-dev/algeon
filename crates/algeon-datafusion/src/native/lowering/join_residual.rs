@@ -21,7 +21,10 @@ use query_planning::{
 
 use super::{
     LoweredNativeInput,
-    expr::{alias_if_needed, lower_binary_operator, lower_literal, physical_expr_field_from_validated},
+    expr::{
+        alias_if_needed, collect_required_field_indices, lower_binary_operator, lower_literal,
+        lower_validated_join_residual_expr, physical_expr_field_from_validated,
+    },
     join::CanonicalJoin,
     naming::unique_name_with_suffix,
 };
@@ -119,13 +122,35 @@ pub(super) fn lower_join_filter(
         canonical,
         bindings,
     };
-    let predicate = lower_join_filter_expr(
-        filter.expression(),
-        context,
-        &mut left_required,
-        &mut right_required,
-        &mut materializations,
-    )?;
+    let predicate = if contract.contains_decimal_division() {
+        // Evaluate checked arithmetic after matching keys. Pre-join
+        // materialization would also evaluate rows with no matching key.
+        let mut required = BTreeSet::new();
+        collect_required_field_indices(filter.expression(), filter.schema(), &mut required)?;
+        let columns = required
+            .into_iter()
+            .map(|index| {
+                let field = filter.schema().field(index);
+                let expr = lower_join_filter_column(
+                    &Column::new(field.name(), index),
+                    context,
+                    &mut left_required,
+                    &mut right_required,
+                )?;
+                let NativeExpr::Column(column) = expr else { unreachable!("join column lowering returns a column") };
+                Ok((index, column))
+            })
+            .collect::<Result<_, LoweringFailure>>()?;
+        lower_validated_join_residual_expr(contract.expression(), &columns)?
+    } else {
+        lower_join_filter_expr(
+            filter.expression(),
+            context,
+            &mut left_required,
+            &mut right_required,
+            &mut materializations,
+        )?
+    };
     debug_assert!(
         !left_required.is_empty() && !right_required.is_empty(),
         "validated join residual must reference both inputs"

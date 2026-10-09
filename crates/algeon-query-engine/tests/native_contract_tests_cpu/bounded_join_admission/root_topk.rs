@@ -1,6 +1,7 @@
+use cudf::testing::run_named_cases;
+
 use super::*;
 
-#[test]
 fn bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_support_gap() {
     // Capacity is the allocator's: planning proves executability from node, edge,
     // join-capability, and subcontract facts, and the admitted grant's allocator
@@ -35,6 +36,63 @@ fn bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_s
 }
 
 #[test]
+fn t_root_topk_admitted_cases() {
+    run_named_cases(&[
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_support_gap",
+            bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_support_gap,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_reduction_on_unrelated_branch_does_not_gate_admission",
+            bounded_root_topk_join_aggregate_reduction_on_unrelated_branch_does_not_gate_admission,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_allows_shared_source_reuse",
+            bounded_root_topk_join_aggregate_allows_shared_source_reuse,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts",
+            bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyless_conditionals",
+            bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyless_conditionals,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_admits_unreduced_direct_grouped_keyless_branches",
+            bounded_root_topk_join_aggregate_admits_unreduced_direct_grouped_keyless_branches,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontract",
+            bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontract,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_allows_keyed_left_semi_join_carrying_a_residual_predicate",
+            bounded_root_topk_join_aggregate_allows_keyed_left_semi_join_carrying_a_residual_predicate,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk",
+            bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_allows_whole_partition_window_filter_before_final_sort",
+            bounded_root_topk_join_aggregate_allows_whole_partition_window_filter_before_final_sort,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_allows_cumulative_window_full_outer_before_final_sort",
+            bounded_root_topk_join_aggregate_allows_cumulative_window_full_outer_before_final_sort,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_sort_fetch_join_input_subcontract_excludes_keyless_and_cross",
+            bounded_root_topk_join_aggregate_sort_fetch_join_input_subcontract_excludes_keyless_and_cross,
+        ),
+        (
+            "bounded_join_admission::root_topk::bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontracts",
+            bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontracts,
+        ),
+    ]);
+}
+
 fn bounded_root_topk_join_aggregate_reduction_on_unrelated_branch_does_not_gate_admission() {
     // Capacity is the allocator's, enforced as a typed cap failure at runtime.
     // Which branch a dynamic filter happens to reduce (or whether one runs at
@@ -48,7 +106,6 @@ fn bounded_root_topk_join_aggregate_reduction_on_unrelated_branch_does_not_gate_
     );
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_allows_shared_source_reuse() {
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SharedSourceFanout);
 
@@ -96,7 +153,6 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
     }
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts() {
     for variant in [
         RootTopKJoinAggregateVariant::DistinctAggregate,
@@ -119,7 +175,6 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts() {
     }
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyless_conditionals() {
     let plan = root_topk_keyless_conditional_direct_source_aggregates_plan(false);
 
@@ -133,7 +188,6 @@ fn bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyles
     );
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_admits_unreduced_direct_grouped_keyless_branches() {
     // Capacity is the allocator's, enforced as a typed cap failure at runtime; a
     // missing, late, or skipped dynamic filter on any direct grouped branch must
@@ -147,7 +201,6 @@ fn bounded_root_topk_join_aggregate_admits_unreduced_direct_grouped_keyless_bran
     );
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontract() {
     for variant in [
         RootTopKJoinAggregateVariant::SortFetchHashJoinInput,
@@ -162,7 +215,6 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
     }
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_allows_keyed_left_semi_join_carrying_a_residual_predicate() {
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput);
 
@@ -173,7 +225,6 @@ fn bounded_root_topk_join_aggregate_allows_keyed_left_semi_join_carrying_a_resid
     );
 }
 
-#[test]
 fn bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk() {
     let plan = root_topk_grouped_aggregate_input_left_join_plan();
 
@@ -183,7 +234,6 @@ fn bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk() {
     );
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_allows_whole_partition_window_filter_before_final_sort() {
     // Pins change B: a whole-partition aggregate window sitting directly between the
     // grouped-aggregate fragment and the final top-k sort/limit, with no projection
@@ -198,7 +248,6 @@ fn bounded_root_topk_join_aggregate_allows_whole_partition_window_filter_before_
     );
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_allows_cumulative_window_full_outer_before_final_sort() {
     // Pins change B: q51's two cumulative-window branches, combined by a FULL OUTER
     // join and followed by a second cumulative window/filter with no projection
@@ -211,7 +260,6 @@ fn bounded_root_topk_join_aggregate_allows_cumulative_window_full_outer_before_f
     );
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_sort_fetch_join_input_subcontract_excludes_keyless_and_cross() {
     for variant in [
         RootTopKJoinAggregateVariant::SortFetchKeylessJoinInput,
@@ -223,7 +271,6 @@ fn bounded_root_topk_join_aggregate_sort_fetch_join_input_subcontract_excludes_k
     }
 }
 
-#[test]
 fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontracts() {
     for variant in [
         RootTopKJoinAggregateVariant::SortFetchHashJoinAggregate,

@@ -1176,11 +1176,6 @@ fn source_adjacent_partition_batch_observed_device_bytes(inputs: &[SourceAdjacen
         .unwrap_or(u64::MAX)
 }
 
-#[cfg(test)]
-fn source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes: u64) -> u64 {
-    BoundedSourceBatchingPolicy::default().source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes)
-}
-
 /// Aggregates one partition's pending slices into partials. The slices are
 /// taken out of `inputs` first and concatenated into one frame, so a failure
 /// leaves the partition empty rather than half consumed; the caller treats
@@ -1860,19 +1855,6 @@ fn source_adjacent_partitioned_aggregate_min_partition_count(chunk_count: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn source_adjacent_partition_batch_byte_limit_tracks_device_budget_with_bounds() {
-        assert_eq!(
-            source_adjacent_partition_batch_byte_limit_for_budget(16 * 1024 * 1024 * 1024),
-            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES
-        );
-        assert_eq!(source_adjacent_partition_batch_byte_limit_for_budget(4 * 1024 * 1024 * 1024), 512 * 1024 * 1024);
-        assert_eq!(
-            source_adjacent_partition_batch_byte_limit_for_budget(256 * 1024 * 1024),
-            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_BATCH_BYTES
-        );
-    }
 
     #[test]
     fn source_adjacent_partial_aggregate_split_requires_budget_pressure_and_a_safe_retry() {

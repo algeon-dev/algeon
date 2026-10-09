@@ -9,8 +9,8 @@ use crate::{
     helpers::*,
     support::{
         NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device_resource_raw, last_exec_mr_raw,
-        last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource,
-        owned_string_value, required_exec_options, reset_exec_observation, stream_value,
+        last_exec_stream_value, last_exec_sync_stream_value, make_stats_memory_resource, owned_string_value,
+        required_exec_options, reset_exec_observation, run_named_cases, stream_value,
     },
 };
 
@@ -23,9 +23,7 @@ fn strict_exec_owners() -> (OwnedStream, OwnedMemoryResource, cudf_sys::cudf_exe
     (stream, mr, exec)
 }
 
-#[test]
 fn test_is_sorted_requires_explicit_exec_options() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3, 4]);
     let tbl = make_table_from_one_column(col);
     let view = make_table_view(tbl);
@@ -51,9 +49,7 @@ fn test_is_sorted_requires_explicit_exec_options() {
     }
 }
 
-#[test]
 fn test_device_buffer_copy_from_host_requires_explicit_exec_options_and_syncs() {
-    let _shim_state = lock_shim_state();
     let values = [1i32, 2, 3];
     let (stream, _mr, exec) = strict_exec_owners();
     let explicit_stream = stream_value(stream.as_raw());
@@ -88,9 +84,7 @@ fn test_device_buffer_copy_from_host_requires_explicit_exec_options_and_syncs() 
     unsafe { cudf_sys::cudf_device_buffer_destroy(buffer) };
 }
 
-#[test]
 fn test_zero_length_device_buffer_range_copy_requires_explicit_exec_options() {
-    let _shim_state = lock_shim_state();
     let source = [0u8];
     let (stream, _mr, exec) = strict_exec_owners();
     let explicit_stream = stream_value(stream.as_raw());
@@ -126,9 +120,7 @@ fn test_zero_length_device_buffer_range_copy_requires_explicit_exec_options() {
     unsafe { cudf_sys::cudf_device_buffer_destroy(buffer) };
 }
 
-#[test]
 fn test_column_copy_requires_explicit_exec_options() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3, 4]);
 
     reset_exec_observation();
@@ -162,7 +154,6 @@ fn test_column_copy_requires_explicit_exec_options() {
 
 #[test]
 fn test_scalar_create_numeric_remains_unsynchronized_before_return() {
-    let _shim_state = lock_shim_state();
     let value = 42i32;
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
@@ -193,9 +184,7 @@ fn test_scalar_create_numeric_remains_unsynchronized_before_return() {
     unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
 }
 
-#[test]
 fn test_scalar_create_numeric_ex_uses_explicit_stream_and_mr_without_syncing_before_return() {
-    let _shim_state = lock_shim_state();
     let value = 42i32;
     let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
@@ -231,9 +220,7 @@ fn test_scalar_create_numeric_ex_uses_explicit_stream_and_mr_without_syncing_bef
     unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
 }
 
-#[test]
 fn test_scalar_create_string_ex_uses_explicit_stream_and_mr_and_synchronizes_before_return() {
-    let _shim_state = lock_shim_state();
     let hello = std::ffi::CString::new("hello").unwrap();
     let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
@@ -262,9 +249,7 @@ fn test_scalar_create_string_ex_uses_explicit_stream_and_mr_and_synchronizes_bef
     unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
 }
 
-#[test]
 fn test_column_create_numeric_host_source_sync_contract() {
-    let _shim_state = lock_shim_state();
     let data = [31i32, 32, 33];
     let validity = [true, false, true];
     let null_mask = validity_to_bitmask(&validity);
@@ -297,9 +282,7 @@ fn test_column_create_numeric_host_source_sync_contract() {
     }
 }
 
-#[test]
 fn test_column_create_fixed_width_from_host_ex_uses_explicit_stream_and_syncs() {
-    let _shim_state = lock_shim_state();
     let data = [41i32, 42, 43];
     let validity = [true, false, true];
     let null_mask = validity_to_bitmask(&validity);
@@ -335,7 +318,6 @@ fn test_column_create_fixed_width_from_host_ex_uses_explicit_stream_and_syncs() 
 
 #[test]
 fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_data_copy() {
-    let _shim_state = lock_shim_state();
     let data = [51i32, 52, 53];
     let (stream, _mr, exec) = strict_exec_owners();
     let explicit_stream = stream_value(stream.as_raw());
@@ -364,7 +346,6 @@ fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_data_copy() 
 
 #[test]
 fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_null_mask_copy() {
-    let _shim_state = lock_shim_state();
     let data = [61i32, 62, 63];
     let validity = [true, false, true];
     let null_mask = validity_to_bitmask(&validity);
@@ -394,9 +375,7 @@ fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_null_mask_co
     assert_eq!(last_exec_sync_stream_value(), explicit_stream);
 }
 
-#[test]
 fn test_column_create_strings_host_source_sync_contract() {
-    let _shim_state = lock_shim_state();
     let values = ["ab", "", "cde"];
     let c_strings: Vec<_> = values.iter().map(|value| std::ffi::CString::new(*value).unwrap()).collect();
     let mut string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
@@ -434,7 +413,6 @@ fn assert_strings_import_error_syncs_selected_stream(
     values: &[&str],
     validity: Option<&[bool]>,
 ) {
-    let _shim_state = lock_shim_state();
     let c_strings: Vec<_> = values.iter().map(|value| std::ffi::CString::new(*value).unwrap()).collect();
     let mut string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
     let lengths: Vec<_> = values.iter().map(|value| value.len() as i32).collect();
@@ -467,9 +445,7 @@ fn assert_strings_import_error_syncs_selected_stream(
     assert_eq!(last_exec_sync_stream_value(), explicit_stream);
 }
 
-#[test]
 fn test_column_view_slice_ex_uses_explicit_stream_for_null_count() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column_nullable(&[10, 20, 30, 40], &[true, false, true, false]);
     let view = make_column_view(col);
     let (stream, _mr, exec) = strict_exec_owners();
@@ -543,7 +519,6 @@ fn test_column_create_strings_ex_syncs_on_error_after_make_strings_column() {
 
 #[test]
 fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[7, 8, 9]);
     let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
@@ -565,9 +540,7 @@ fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
     }
 }
 
-#[test]
 fn test_column_view_to_host_execution_context_defaults_and_sync_contract() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[11, 12, 13]);
     let view = make_column_view(col);
 
@@ -607,9 +580,7 @@ fn test_column_view_to_host_execution_context_defaults_and_sync_contract() {
     }
 }
 
-#[test]
 fn test_column_view_null_mask_to_host_sync_contract() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column_nullable(&[1, 2, 3, 4, 5], &[true, false, true, false, true]);
     let view = make_column_view(col);
     let (stream, _mr, exec) = strict_exec_owners();
@@ -632,7 +603,6 @@ fn test_column_view_null_mask_to_host_sync_contract() {
 
 #[test]
 fn test_column_view_strings_to_host_sync_contract() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&["ab", "", "cde"]);
     let view = make_column_view(col);
     let (stream, _mr, exec) = strict_exec_owners();
@@ -667,7 +637,6 @@ fn test_column_view_strings_to_host_sync_contract() {
 
 #[test]
 fn test_column_view_strings_to_host_empty_writes_single_zero_offset() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&[]);
     let view = make_column_view(col);
     let mut offsets = vec![-1i32; 1];
@@ -696,9 +665,7 @@ fn test_column_view_strings_to_host_empty_writes_single_zero_offset() {
     }
 }
 
-#[test]
 fn test_column_view_strings_to_host_empty_ex_matches_legacy_contract() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&[]);
     let view = make_column_view(col);
     let (stream, _mr, exec) = strict_exec_owners();
@@ -730,9 +697,7 @@ fn test_column_view_strings_to_host_empty_ex_matches_legacy_contract() {
     }
 }
 
-#[test]
 fn test_column_view_strings_to_host_ex_sync_contract() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&["ab", "", "cde"]);
     let view = make_column_view(col);
     let (stream, _mr, exec) = strict_exec_owners();
@@ -766,9 +731,7 @@ fn test_column_view_strings_to_host_ex_sync_contract() {
     }
 }
 
-#[test]
 fn test_column_view_string_chars_ptr_and_size_empty_reports_zero_bytes_without_shim_sync() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&[]);
     let view = make_column_view(col);
     let (stream, _mr, exec) = strict_exec_owners();
@@ -792,9 +755,7 @@ fn test_column_view_string_chars_ptr_and_size_empty_reports_zero_bytes_without_s
     }
 }
 
-#[test]
 fn test_column_view_string_chars_ptr_and_size_ex_uses_explicit_stream_without_shim_sync() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&["ab", "", "cde"]);
     let view = make_column_view(col);
     let (stream, _mr, exec) = strict_exec_owners();
@@ -818,9 +779,7 @@ fn test_column_view_string_chars_ptr_and_size_ex_uses_explicit_stream_without_sh
     }
 }
 
-#[test]
 fn test_scalar_is_valid_ex_uses_explicit_stream_without_extra_shim_sync() {
-    let _shim_state = lock_shim_state();
     let scalar = make_i32_scalar(42);
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
@@ -841,9 +800,7 @@ fn test_scalar_is_valid_ex_uses_explicit_stream_without_extra_shim_sync() {
     unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
 }
 
-#[test]
 fn test_scalar_value_ex_uses_explicit_stream_without_extra_shim_sync() {
-    let _shim_state = lock_shim_state();
     let scalar = make_i32_scalar(42);
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
@@ -864,9 +821,7 @@ fn test_scalar_value_ex_uses_explicit_stream_without_extra_shim_sync() {
     unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
 }
 
-#[test]
 fn test_scalar_string_value_ex_uses_explicit_stream_without_extra_shim_sync() {
-    let _shim_state = lock_shim_state();
     let scalar = make_string_scalar("hello");
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
@@ -888,9 +843,7 @@ fn test_scalar_string_value_ex_uses_explicit_stream_without_extra_shim_sync() {
     unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
 }
 
-#[test]
 fn test_column_create_from_device_data_sync_and_async_contracts() {
-    let _shim_state = lock_shim_state();
     let source = make_i32_column(&[21, 22, 23]);
     let source_view = make_column_view(source);
 
@@ -934,9 +887,7 @@ fn test_column_create_from_device_data_sync_and_async_contracts() {
     }
 }
 
-#[test]
 fn test_memory_resource_has_no_effect_until_attached_to_execution_context() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[21, 22, 23]);
     let stats_mr = make_stats_memory_resource();
     let default_mr = current_device_resource_raw();
@@ -958,4 +909,76 @@ fn test_memory_resource_has_no_effect_until_attached_to_execution_context() {
         cudf_sys::cudf_column_destroy(explicit_out);
         cudf_sys::cudf_column_destroy(col);
     }
+}
+
+#[test]
+fn execution_context_tests_cases() {
+    run_named_cases(&[
+        (
+            "test_column_create_from_device_data_sync_and_async_contracts",
+            test_column_create_from_device_data_sync_and_async_contracts,
+        ),
+        (
+            "test_scalar_string_value_ex_uses_explicit_stream_without_extra_shim_sync",
+            test_scalar_string_value_ex_uses_explicit_stream_without_extra_shim_sync,
+        ),
+        (
+            "test_scalar_create_string_ex_uses_explicit_stream_and_mr_and_synchronizes_before_return",
+            test_scalar_create_string_ex_uses_explicit_stream_and_mr_and_synchronizes_before_return,
+        ),
+        ("test_column_view_strings_to_host_ex_sync_contract", test_column_view_strings_to_host_ex_sync_contract),
+        ("test_column_create_strings_host_source_sync_contract", test_column_create_strings_host_source_sync_contract),
+        (
+            "test_scalar_value_ex_uses_explicit_stream_without_extra_shim_sync",
+            test_scalar_value_ex_uses_explicit_stream_without_extra_shim_sync,
+        ),
+        (
+            "test_scalar_is_valid_ex_uses_explicit_stream_without_extra_shim_sync",
+            test_scalar_is_valid_ex_uses_explicit_stream_without_extra_shim_sync,
+        ),
+        (
+            "test_column_create_fixed_width_from_host_ex_uses_explicit_stream_and_syncs",
+            test_column_create_fixed_width_from_host_ex_uses_explicit_stream_and_syncs,
+        ),
+        (
+            "test_column_view_slice_ex_uses_explicit_stream_for_null_count",
+            test_column_view_slice_ex_uses_explicit_stream_for_null_count,
+        ),
+        (
+            "test_column_view_strings_to_host_empty_ex_matches_legacy_contract",
+            test_column_view_strings_to_host_empty_ex_matches_legacy_contract,
+        ),
+        (
+            "test_scalar_create_numeric_ex_uses_explicit_stream_and_mr_without_syncing_before_return",
+            test_scalar_create_numeric_ex_uses_explicit_stream_and_mr_without_syncing_before_return,
+        ),
+        ("test_is_sorted_requires_explicit_exec_options", test_is_sorted_requires_explicit_exec_options),
+        (
+            "test_column_view_to_host_execution_context_defaults_and_sync_contract",
+            test_column_view_to_host_execution_context_defaults_and_sync_contract,
+        ),
+        (
+            "test_zero_length_device_buffer_range_copy_requires_explicit_exec_options",
+            test_zero_length_device_buffer_range_copy_requires_explicit_exec_options,
+        ),
+        (
+            "test_column_view_string_chars_ptr_and_size_ex_uses_explicit_stream_without_shim_sync",
+            test_column_view_string_chars_ptr_and_size_ex_uses_explicit_stream_without_shim_sync,
+        ),
+        ("test_column_view_null_mask_to_host_sync_contract", test_column_view_null_mask_to_host_sync_contract),
+        (
+            "test_memory_resource_has_no_effect_until_attached_to_execution_context",
+            test_memory_resource_has_no_effect_until_attached_to_execution_context,
+        ),
+        (
+            "test_column_view_string_chars_ptr_and_size_empty_reports_zero_bytes_without_shim_sync",
+            test_column_view_string_chars_ptr_and_size_empty_reports_zero_bytes_without_shim_sync,
+        ),
+        ("test_column_create_numeric_host_source_sync_contract", test_column_create_numeric_host_source_sync_contract),
+        (
+            "test_device_buffer_copy_from_host_requires_explicit_exec_options_and_syncs",
+            test_device_buffer_copy_from_host_requires_explicit_exec_options_and_syncs,
+        ),
+        ("test_column_copy_requires_explicit_exec_options", test_column_copy_requires_explicit_exec_options),
+    ]);
 }

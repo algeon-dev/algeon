@@ -427,37 +427,6 @@ pub(crate) fn write_grouped_mixed_avg_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
-/// Fractional decimal AVG fixture: a `Decimal128(7, 2)` input grouped by a
-/// string key, with one group (`G1`) whose `SUM = 34.65` and `COUNT = 2` so
-/// that the true average is `17.325` exactly. Aggregated output schema must
-/// declare `Decimal128(11, 6)` so the AVG output keeps scale-6 precision; an
-/// output truncated to input scale 2 would round `17.325` down to `17.32` and
-/// lose `0.005000` at scale 6.
-pub(crate) fn write_grouped_fractional_decimal_avg_parquet(path: &Path) -> Arc<Schema> {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("group_key", DataType::Utf8, false),
-        Field::new("amount", DataType::Decimal128(7, 2), false),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(StringArray::from(vec!["G0", "G1", "G1", "G2", "G2"])),
-            Arc::new(
-                Decimal128Array::from_iter_values([7_503, 1_730, 1_735, 6_930, 6_930])
-                    .with_precision_and_scale(7, 2)
-                    .unwrap(),
-            ),
-        ],
-    )
-    .unwrap();
-    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
-    let file = File::create(path).unwrap();
-    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
-    writer.write(&batch).unwrap();
-    writer.close().unwrap();
-    schema
-}
-
 pub(crate) fn write_fractional_decimal_avg_input_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(15, 2), false)]));
     let batch = RecordBatch::try_new(

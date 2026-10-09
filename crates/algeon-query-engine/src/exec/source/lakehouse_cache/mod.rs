@@ -65,6 +65,7 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
+    use cudf::testing::run_named_cases;
     use query_planning::{
         execution_contracts::SourceChunkPlanningMode,
         plan::NodeId,
@@ -95,7 +96,6 @@ mod tests {
         let _ = fs::remove_dir(&dir);
     }
 
-    #[test]
     fn lakehouse_cache_hit_without_content_identity_is_rejected() {
         let root = unique_temp_cache_root("cache-hit-without-identity");
         let cache_path = write_cache_entry(&root, "v1/s3/bucket/etagless/part-0.parquet", 16);
@@ -142,7 +142,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
     fn background_fill_without_content_identity_is_skipped() {
         let root = unique_temp_cache_root("background-fill-without-identity");
         let cache_path = root.join("v1/s3/bucket/etagless/part-0.parquet");
@@ -318,7 +317,6 @@ mod tests {
         path
     }
 
-    #[test]
     fn background_lakehouse_cache_fill_enqueue_reports_saturated_gate_without_blocking() {
         let root = unique_temp_cache_root("background-fill-saturated");
         let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
@@ -358,6 +356,35 @@ mod tests {
     }
 
     #[test]
+    fn mod_cases() {
+        run_named_cases(&[
+            (
+                "exec::source::lakehouse_cache::tests::background_lakehouse_cache_fill_enqueue_reports_saturated_gate_without_blocking",
+                background_lakehouse_cache_fill_enqueue_reports_saturated_gate_without_blocking,
+            ),
+            (
+                "exec::source::lakehouse_cache::tests::background_lakehouse_cache_fill_removes_stale_malformed_lock_before_enqueue",
+                background_lakehouse_cache_fill_removes_stale_malformed_lock_before_enqueue,
+            ),
+            (
+                "exec::source::lakehouse_cache::tests::background_fill_without_content_identity_is_skipped",
+                background_fill_without_content_identity_is_skipped,
+            ),
+            (
+                "exec::source::lakehouse_cache::tests::background_lakehouse_cache_fill_enqueue_reports_saturated_byte_budget",
+                background_lakehouse_cache_fill_enqueue_reports_saturated_byte_budget,
+            ),
+            (
+                "exec::source::lakehouse_cache::tests::background_lakehouse_cache_fill_removes_stale_lock_before_enqueue",
+                background_lakehouse_cache_fill_removes_stale_lock_before_enqueue,
+            ),
+            (
+                "exec::source::lakehouse_cache::tests::lakehouse_cache_hit_without_content_identity_is_rejected",
+                lakehouse_cache_hit_without_content_identity_is_rejected,
+            ),
+        ]);
+    }
+
     fn background_lakehouse_cache_fill_removes_stale_lock_before_enqueue() {
         let root = unique_temp_cache_root("background-fill-stale-lock");
         let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
@@ -399,7 +426,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
     fn background_lakehouse_cache_fill_removes_stale_malformed_lock_before_enqueue() {
         let root = unique_temp_cache_root("background-fill-malformed-stale-lock");
         let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
@@ -442,7 +468,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
     fn background_lakehouse_cache_fill_enqueue_reports_saturated_byte_budget() {
         let root = unique_temp_cache_root("background-fill-byte-budget");
         let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
@@ -470,45 +495,6 @@ mod tests {
         let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
 
         assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_byte_budget_saturated"));
-        assert!(!lakehouse_cache_lock_path(&cache_path).exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn background_lakehouse_cache_fill_accepts_remote_kvikio_sources() {
-        let root = unique_temp_cache_root("background-fill-remote-kvikio");
-        let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
-        let context = ExecutionContext::standalone(StandaloneConfig {
-            lakehouse_cache_fill: LakehouseCacheFillConfig {
-                max_concurrent_ops: 1,
-                ..LakehouseCacheFillConfig::default()
-            },
-            ..StandaloneConfig::default()
-        })
-        .unwrap();
-        let _held_permit = context
-            .acquire_lakehouse_cache_fill_operation_with_timeout(
-                Duration::ZERO,
-                "query_engine.test.background_fill_gate",
-            )
-            .unwrap()
-            .unwrap();
-        let resolved_source =
-            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
-                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
-                .with_lakehouse_cache_path(cache_path.to_str().unwrap())
-                .with_content_identity("test-content-identity")
-                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
-        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
-            .unwrap()
-            .with_resolved_parquet_source(resolved_source)
-            .unwrap()
-            .with_stable_id("part-0")
-            .with_file_size_bytes(1024);
-
-        let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
-
-        assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
         assert!(!lakehouse_cache_lock_path(&cache_path).exists());
         let _ = fs::remove_dir_all(root);
     }

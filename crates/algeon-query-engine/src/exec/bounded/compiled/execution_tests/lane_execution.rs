@@ -2,6 +2,7 @@ use std::{sync::Condvar, time::Duration};
 
 use ::cudf::testing::device_copy;
 use arrow::array::{BooleanArray, Int64Array, StringArray};
+use cudf::testing::run_named_cases;
 use query_planning::{
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::SortStrategy,
@@ -19,7 +20,6 @@ use crate::{
 };
 
 /// The admitted host pipeline returns every Parquet branch row through the serial scheduler.
-#[test]
 fn serial_compiled_executes_parquet_union_branches_on_production_path() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-parquet-union");
@@ -95,7 +95,6 @@ fn fixture_local_parquet_source(path: &Path, schema: &Arc<Schema>) -> NativeLoca
     )
 }
 
-#[test]
 fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-parquet-aggregate");
@@ -386,6 +385,32 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     assert_eq!(int64_values(&batch, 0), vec![Some(80_000)]);
 }
 
+#[test]
+fn lane_execution_cases_1() {
+    run_named_cases(&[
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials",
+            lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::chained_semi_feeds_partitioned_probe_chunks_in_parallel",
+            chained_semi_feeds_partitioned_probe_chunks_in_parallel,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::compiled_join_probe_batches_scale_without_rebuilding",
+            compiled_join_probe_batches_scale_without_rebuilding,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::chained_semi_feeds_hash_probe_chunks_in_parallel",
+            chained_semi_feeds_hash_probe_chunks_in_parallel,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial",
+            lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial,
+        ),
+    ]);
+}
+
 fn aggregate_lane_value(index: u64) -> i64 {
     let mut value = index.wrapping_add(0x9e3779b97f4a7c15);
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
@@ -393,7 +418,6 @@ fn aggregate_lane_value(index: u64) -> i64 {
     (value ^ (value >> 31)) as i64
 }
 
-#[test]
 fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-sum-overflow");
@@ -472,8 +496,37 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
     assert_eq!(run(4), expected, "four lanes preserve the single-lane overflow outcome");
 }
 
-/// Larger inner and semi probe batches reuse one build and preserve duplicate rows.
 #[test]
+fn lane_execution_cases_2() {
+    run_named_cases(&[
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::lane_aggregate_sum_overflow_matches_the_single_lane_contract",
+            lane_aggregate_sum_overflow_matches_the_single_lane_contract,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::serial_compiled_executes_parquet_union_branches_on_production_path",
+            serial_compiled_executes_parquet_union_branches_on_production_path,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::serial_compiled_join_preserves_dynamic_filter_pruning",
+            serial_compiled_join_preserves_dynamic_filter_pruning,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::resident_sink_join_with_aggregate_routes_through_resident_lanes",
+            resident_sink_join_with_aggregate_routes_through_resident_lanes,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls",
+            lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::lane_execution::host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residuals",
+            host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residuals,
+        ),
+    ]);
+}
+
+/// Larger inner and semi probe batches reuse one build and preserve duplicate rows.
 fn compiled_join_probe_batches_scale_without_rebuilding() {
     let dir = unique_temp_dir("query-engine-join-probe-scaling");
     let build_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
@@ -639,7 +692,6 @@ fn int32_strlen_int64_triples_sorted(batch: &RecordBatch) -> Vec<(Option<i32>, u
 
 /// A chained semi join feeds four hash-probe chunks through the serial DAG coordinator.
 /// The join owner borrows auxiliary lanes and reuses one build for those chunks.
-#[test]
 fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
     let dir = unique_temp_dir("query-engine-chained-hash-parallel-probe");
     // Wide payloads (~700KB per row) force the byte-driven chunk planner to
@@ -782,7 +834,6 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
 
 /// A chained semi join feeds four probe chunks through one partitioned build.
 /// The join owner retains its chunk lane dispatch under the serial DAG coordinator.
-#[test]
 fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
     let dir = unique_temp_dir("query-engine-chained-partitioned-parallel-probe");
     let wide = "x".repeat(700_000);
@@ -950,7 +1001,6 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
 
 /// Host and resident sinks preserve the same null-key, duplicate, and residual join results.
 /// The expected rows also cover mark membership and full-outer complements.
-#[test]
 fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
     let key = || Field::new("k", DataType::Int32, true);
     let left_schema = Arc::new(Schema::new(vec![key(), Field::new("v", DataType::Int64, false)]));
@@ -1162,7 +1212,6 @@ fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residua
 
 /// The compiled control dependency completes the build before the probe source.
 /// The source applies its dynamic filter and reads one matching row group.
-#[test]
 fn serial_compiled_join_preserves_dynamic_filter_pruning() {
     let dir = unique_temp_dir("query-engine-join-lane-dynamic-filter-pruning");
     let probe_schema =
@@ -1260,7 +1309,6 @@ fn serial_compiled_join_preserves_dynamic_filter_pruning() {
 
 /// A resident join with an aggregate retains coordinator-owned join state.
 /// Its chunk lanes stay alive through output adoption onto the root runtime.
-#[test]
 fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-resident-join-lanes");
@@ -1413,7 +1461,6 @@ fn sort_lane_nullable_source(path: &Path, keys: &[Option<i32>], values: &[Option
 }
 
 /// Resident top-k candidate lanes preserve the host serial result, including null ordering.
-#[test]
 fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-sort-topk");
@@ -1534,7 +1581,6 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
 }
 
 /// Resident top-k borrowing preserves the host serial offset and mixed-direction ordering.
-#[test]
 fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-sort-offset");

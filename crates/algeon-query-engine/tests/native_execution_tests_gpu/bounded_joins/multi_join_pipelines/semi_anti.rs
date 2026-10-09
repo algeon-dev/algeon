@@ -391,17 +391,17 @@ fn bounded_native_query_releases_a_shared_leaf_stream_when_cancelled_mid_stream(
     let dir = unique_temp_dir("query-engine-shared-staged-leaf-cancel");
     let detail_path = dir.join("detail.parquet");
     let supplier_path = dir.join("supplier.parquet");
-    let rows = 4 * SHARED_LEAF_ROWS;
+    let rows = SHARED_LEAF_ROWS;
     let detail_schema = write_shared_leaf_detail_parquet(&detail_path, rows);
     let supplier_schema = write_shared_leaf_supplier_parquet(&supplier_path);
     let plan = shared_leaf_inner_probe_anti_build_plan(&detail_path, &detail_schema, &supplier_path, &supplier_schema);
-    // Four times the rows need a proportionally larger cap; this test only
-    // exercises cancellation cleanup, not the memory bound.
-    let grant_bytes = 4 * SHARED_LEAF_GRANT_BYTES;
+    let grant_bytes = SHARED_LEAF_GRANT_BYTES;
     let context = backend_context_with_grant(grant_bytes);
-    // Warm the reader and kernels so the deadline below elapses while leaf
-    // chunks are streaming rather than during first-use initialization.
-    let warm = execute_query_plan(&context, &plan).unwrap();
+    // Warm the reader and kernels before the streaming deadline begins.
+    let warm_path = dir.join("warm-detail.parquet");
+    let warm_schema = write_shared_leaf_detail_parquet(&warm_path, SHARED_LEAF_ROW_GROUP_ROWS as i32);
+    let warm_plan = shared_leaf_inner_probe_anti_build_plan(&warm_path, &warm_schema, &supplier_path, &supplier_schema);
+    let warm = execute_query_plan(&context, &warm_plan).unwrap();
     let QueryOutput::HostArrow(batch) = warm.output() else {
         panic!("grouped count should materialize host output");
     };
@@ -435,7 +435,7 @@ fn bounded_native_query_releases_a_shared_leaf_stream_when_cancelled_mid_stream(
     assert_eq!(error.code(), QueryErrorCode::Cancelled, "{error:?}");
     assert_eq!(error.fact_value("reason"), Some("deadline_expired"));
     let detail_chunks = (rows as usize).div_ceil(SHARED_LEAF_ROW_GROUP_ROWS) as u64;
-    assert!(metrics.source_chunks_committed < 2 * detail_chunks, "cancellation must land mid-stream: {metrics:?}");
+    assert!(metrics.source_chunks_committed < detail_chunks, "cancellation must land mid-stream: {metrics:?}");
     assert_attempt_domain_released(admitted.context());
 
     drop(admitted);

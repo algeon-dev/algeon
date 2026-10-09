@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use arrow::datatypes::{DataType, Field, Schema};
+use cudf::testing;
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
@@ -24,6 +25,7 @@ use query_planning::{
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
 use query_runtime::runtime::{ExecutionContext, QueryAdmissionRequest, resident::GpuResultHandle};
+use tokio::runtime::Builder as TestRuntimeBuilder;
 
 use super::*;
 use crate::{
@@ -349,7 +351,6 @@ fn sorted_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
     consumer_plan(schema).with_appended_sort(SortSpec::new(vec![SortExpr::new(Expr::column("vertex"), false, false)]))
 }
 
-#[test]
 fn complete_composed_admission_evidence_extends_the_invocation_ticket_with_full_cpu_only_evidence() {
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
@@ -384,7 +385,6 @@ fn complete_composed_admission_evidence_extends_the_invocation_ticket_with_full_
         .expect("the completed evidence must cover the consumer plan it was derived from");
 }
 
-#[test]
 fn complete_composed_admission_evidence_aggregates_non_attested_consumer_fallback_scope() {
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
@@ -419,7 +419,6 @@ fn complete_composed_admission_evidence_aggregates_non_attested_consumer_fallbac
         .expect("fallback composed evidence must cover the non-attested consumer plan");
 }
 
-#[test]
 fn complete_composed_admission_evidence_bounds_filter_projection_and_limit_before_grant() {
     for (label, build) in [
         ("filter", filter_consumer_plan as fn(Arc<Schema>) -> QueryPlan),
@@ -476,6 +475,60 @@ fn complete_composed_admission_evidence_bounds_filter_projection_and_limit_befor
 }
 
 #[test]
+fn tests_tg_composed_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "complete_composed_admission_evidence_preserves_bounded_single_graph_consumer_path",
+            complete_composed_admission_evidence_preserves_bounded_single_graph_consumer_path,
+        ),
+        (
+            "complete_composed_admission_evidence_mixed_producers_preserve_engine_selection",
+            complete_composed_admission_evidence_mixed_producers_preserve_engine_selection,
+        ),
+        (
+            "complete_composed_admission_evidence_composes_relational_producers_with_typed_evidence",
+            complete_composed_admission_evidence_composes_relational_producers_with_typed_evidence,
+        ),
+        (
+            "complete_composed_admission_evidence_preserves_the_active_stream_ticket_before_admission",
+            complete_composed_admission_evidence_preserves_the_active_stream_ticket_before_admission,
+        ),
+        (
+            "complete_composed_admission_evidence_extends_the_invocation_ticket_with_full_cpu_only_evidence",
+            complete_composed_admission_evidence_extends_the_invocation_ticket_with_full_cpu_only_evidence,
+        ),
+    ]);
+}
+
+#[test]
+fn tests_tg_composed_cases_2() {
+    testing::run_named_cases(&[
+        (
+            "complete_composed_admission_evidence_bounds_filter_projection_and_limit_before_grant",
+            complete_composed_admission_evidence_bounds_filter_projection_and_limit_before_grant,
+        ),
+        (
+            "complete_composed_admission_evidence_rebinds_outer_ticket_without_producer_ticket",
+            complete_composed_admission_evidence_rebinds_outer_ticket_without_producer_ticket,
+        ),
+        (
+            "complete_composed_admission_evidence_aggregates_non_attested_consumer_fallback_scope",
+            complete_composed_admission_evidence_aggregates_non_attested_consumer_fallback_scope,
+        ),
+        ("prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant())
+        }),
+        (
+            "complete_composed_admission_evidence_rejects_backend_mismatch_before_rebind",
+            complete_composed_admission_evidence_rejects_backend_mismatch_before_rebind,
+        ),
+    ]);
+}
+
 fn complete_composed_admission_evidence_preserves_bounded_single_graph_consumer_path() {
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
@@ -511,7 +564,6 @@ fn complete_composed_admission_evidence_preserves_bounded_single_graph_consumer_
         .expect("the sorted graph consumer's evidence must cover its own plan");
 }
 
-#[test]
 fn complete_composed_admission_evidence_composes_relational_producers_with_typed_evidence() {
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
@@ -549,7 +601,6 @@ fn complete_composed_admission_evidence_composes_relational_producers_with_typed
         .expect("relational composed evidence must cover the consumer plan");
 }
 
-#[test]
 fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selection() {
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
@@ -641,7 +692,6 @@ fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selectio
         .expect("two graph plus one relational producer remains covered");
 }
 
-#[test]
 fn complete_composed_admission_evidence_preserves_the_active_stream_ticket_before_admission() {
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
@@ -675,7 +725,6 @@ fn complete_composed_admission_evidence_preserves_the_active_stream_ticket_befor
     assert!(active_ticket.attempt_capability_evidence().is_some());
 }
 
-#[test]
 fn complete_composed_admission_evidence_rebinds_outer_ticket_without_producer_ticket() {
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
@@ -718,7 +767,6 @@ fn complete_composed_admission_evidence_keeps_no_authority_unchanged() {
     assert!(!completed.execution_config.has_query_admission_authority());
 }
 
-#[test]
 fn complete_composed_admission_evidence_rejects_backend_mismatch_before_rebind() {
     let backend = InstalledTestGpuBackend::new();
     let producer_source = admission_source(&backend);
@@ -749,7 +797,6 @@ fn complete_composed_admission_evidence_rejects_backend_mismatch_before_rebind()
     assert_eq!(error.fact_value("reason"), Some("composed_producer_admission_backend_mismatch"));
 }
 
-#[tokio::test]
 async fn prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant() {
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);

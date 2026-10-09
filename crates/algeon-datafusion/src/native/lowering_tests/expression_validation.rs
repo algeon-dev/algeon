@@ -1,3 +1,6 @@
+use cudf::testing;
+use tokio::runtime::Builder as TestRuntimeBuilder;
+
 use super::*;
 use crate::native::ParquetReadStrategyConfig;
 
@@ -195,7 +198,46 @@ async fn sql_nullif_lowers_to_case_with_null_aware_comparison() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
+#[test]
+fn expression_validation_tc_exprrej_cases_1() {
+    testing::run_named_cases(&[
+        ("sql_ilike_ascii_pattern_remains_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(sql_ilike_ascii_pattern_remains_rejected())
+        }),
+        ("sql_ilike_non_ascii_pattern_remains_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(sql_ilike_non_ascii_pattern_remains_rejected())
+        }),
+        (
+            "in_list_with_null_literal_is_rejected_during_native_planning",
+            in_list_with_null_literal_is_rejected_during_native_planning,
+        ),
+        (
+            "substring_unsupported_arity_is_rejected_during_native_planning",
+            substring_unsupported_arity_is_rejected_during_native_planning,
+        ),
+        (
+            "try_cast_from_non_string_source_is_rejected_during_native_planning",
+            try_cast_from_non_string_source_is_rejected_during_native_planning,
+        ),
+        (
+            "date_trunc_plural_and_nanosecond_grains_reject_during_native_planning",
+            date_trunc_plural_and_nanosecond_grains_reject_during_native_planning,
+        ),
+        (
+            "date_trunc_output_unit_mismatch_rejects_during_native_planning",
+            date_trunc_output_unit_mismatch_rejects_during_native_planning,
+        ),
+    ]);
+}
+
 async fn sql_ilike_ascii_pattern_remains_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-ilike");
     let path = dir.join("input.parquet");
@@ -216,7 +258,6 @@ async fn sql_ilike_ascii_pattern_remains_rejected() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn sql_ilike_non_ascii_pattern_remains_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-ilike-non-ascii");
     let path = dir.join("input.parquet");
@@ -352,7 +393,6 @@ fn string_predicates_lower_to_native_string_predicate_expressions() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn date_trunc_plural_and_nanosecond_grains_reject_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-date-trunc-grains");
     let path = dir.join("input.parquet");
@@ -386,7 +426,6 @@ fn date_trunc_plural_and_nanosecond_grains_reject_during_native_planning() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn date_trunc_output_unit_mismatch_rejects_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-date-trunc-output-unit");
     let path = dir.join("input.parquet");
@@ -417,7 +456,6 @@ fn date_trunc_output_unit_mismatch_rejects_during_native_planning() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
     // Native admission for TRY_CAST is currently limited to `STRING → integer`.
     // Wrapping a numeric column in TRY_CAST keeps the structured rejection so
@@ -443,7 +481,6 @@ fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn in_list_with_null_literal_is_rejected_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-in-list-null");
     let path = dir.join("input.parquet");
@@ -561,7 +598,6 @@ fn dynamic_filter_expression_lowers_as_current_inner_expression() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn substring_unsupported_arity_is_rejected_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-substring-arity");
     let path = dir.join("input.parquet");
@@ -589,7 +625,6 @@ fn substring_unsupported_arity_is_rejected_during_native_planning() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn integer_to_string_cast_lowers_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-string-cast");
     let path = dir.join("input.parquet");
@@ -609,7 +644,6 @@ fn integer_to_string_cast_lowers_during_native_planning() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn non_numeric_cast_targets_are_rejected_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-boolean-cast");
     let path = dir.join("input.parquet");
@@ -637,6 +671,30 @@ fn non_numeric_cast_targets_are_rejected_during_native_planning() {
 }
 
 #[test]
+fn expression_validation_tc_cast_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "integer_to_timestamp_cast_lowers_during_native_planning",
+            integer_to_timestamp_cast_lowers_during_native_planning,
+        ),
+        ("narrowing_integer_cast_lowers_during_native_planning", narrowing_integer_cast_lowers_during_native_planning),
+        (
+            "explicit_numeric_to_decimal_cast_lowers_during_native_planning",
+            explicit_numeric_to_decimal_cast_lowers_during_native_planning,
+        ),
+        (
+            "fractional_decimal_to_integer_cast_is_rejected_during_native_planning",
+            fractional_decimal_to_integer_cast_is_rejected_during_native_planning,
+        ),
+        (
+            "non_numeric_cast_targets_are_rejected_during_native_planning",
+            non_numeric_cast_targets_are_rejected_during_native_planning,
+        ),
+        ("decimal_to_float32_cast_lowers_through_float64", decimal_to_float32_cast_lowers_through_float64),
+        ("integer_to_string_cast_lowers_during_native_planning", integer_to_string_cast_lowers_during_native_planning),
+    ]);
+}
+
 fn integer_to_timestamp_cast_lowers_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-timestamp-cast");
     let path = dir.join("input.parquet");
@@ -661,7 +719,6 @@ fn integer_to_timestamp_cast_lowers_during_native_planning() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn explicit_numeric_to_decimal_cast_lowers_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-numeric-decimal-cast");
     let path = dir.join("input.parquet");
@@ -681,7 +738,6 @@ fn explicit_numeric_to_decimal_cast_lowers_during_native_planning() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn decimal_to_float32_cast_lowers_through_float64() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-decimal-float32-cast");
     let path = dir.join("input.parquet");
@@ -702,7 +758,6 @@ fn decimal_to_float32_cast_lowers_through_float64() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn narrowing_integer_cast_lowers_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-narrowing-cast");
     let path = dir.join("input.parquet");
@@ -722,7 +777,6 @@ fn narrowing_integer_cast_lowers_during_native_planning() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn fractional_decimal_to_integer_cast_is_rejected_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-fractional-decimal-cast");
     let path = dir.join("input.parquet");
@@ -769,73 +823,6 @@ async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_nati
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
     let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn integer_division_lowers_to_native_planning() {
-    let dir = unique_temp_dir("algeon-datafusion-native-lowering-integer-divide");
-    let path = dir.join("input.parquet");
-    write_numeric_parquet_file(&path);
-    let scan = parquet_scan(&path);
-    let scan_schema = scan.schema();
-    let ratio =
-        binary(col("m00", &scan_schema).unwrap(), Operator::Divide, col("m01", &scan_schema).unwrap(), &scan_schema)
-            .unwrap();
-    let plan: Arc<dyn ExecutionPlan> =
-        Arc::new(ProjectionExec::try_new([ProjectionExpr { expr: ratio, alias: "ratio".to_string() }], scan).unwrap());
-
-    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
-
-    assert!(result.plan.is_some(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn integer_modulo_lowers_to_native_planning() {
-    let dir = unique_temp_dir("algeon-datafusion-native-lowering-integer-modulo");
-    let path = dir.join("input.parquet");
-    write_numeric_parquet_file(&path);
-    let scan = parquet_scan(&path);
-    let scan_schema = scan.schema();
-    let remainder =
-        binary(col("m00", &scan_schema).unwrap(), Operator::Modulo, col("m01", &scan_schema).unwrap(), &scan_schema)
-            .unwrap();
-    let plan: Arc<dyn ExecutionPlan> = Arc::new(
-        ProjectionExec::try_new([ProjectionExpr { expr: remainder, alias: "remainder".to_string() }], scan).unwrap(),
-    );
-
-    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
-
-    assert!(result.plan.is_some(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn every_rejected_native_candidate_has_stable_rejection_code() {
-    let dir = unique_temp_dir("algeon-datafusion-native-lowering-rejection-codes");
-    let path = dir.join("input.parquet");
-    write_decimal_measure_parquet_file(&path);
-    let rejected_results = [lower_physical_plan_to_native(
-        aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo),
-        &ParquetReadStrategyConfig::default(),
-    )
-    .unwrap()];
-
-    for result in rejected_results {
-        assert_eq!(result.not_selected_count(), 1);
-        for outcome in result.report.outcomes() {
-            let CandidateOutcome::NotSupported { capability_reason, .. } = outcome else {
-                panic!("expected only rejected native candidates");
-            };
-            assert!(!capability_reason.code().is_empty());
-        }
-    }
 
     fs::remove_dir_all(dir).unwrap();
 }

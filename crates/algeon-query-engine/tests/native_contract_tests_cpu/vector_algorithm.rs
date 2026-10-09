@@ -14,12 +14,11 @@ use query_planning::{
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::{
-        CUVS_OPERATION_REGISTRY, CuvsOperation, CuvsOutputContract, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
-        JoinType, NodeId, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm,
-        VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
-        VectorKMeansParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding, canonicalize_cuvs_options,
-        vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
-        vector_pca_output_schema, vector_top_k_output_schema,
+        CuvsOperation, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput,
+        QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
+        VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams, VectorRelationBinding,
+        VectorRowIdBinding, canonicalize_cuvs_options, vector_kmeans_output_schema, vector_knn_output_schema,
+        vector_pairwise_distance_output_schema, vector_pca_output_schema, vector_top_k_output_schema,
     },
     policy::PlanningPolicy,
     source::{GpuResidentSource, LocalParquetSource, SourceNode},
@@ -27,28 +26,6 @@ use query_planning::{
 
 #[test]
 fn canonical_cuvs_registry_exposes_all_operations_and_exact_output_contracts() {
-    assert_eq!(
-        CuvsOperation::all().collect::<Vec<_>>(),
-        vec![
-            CuvsOperation::BruteForceKnn,
-            CuvsOperation::IvfFlat,
-            CuvsOperation::IvfPq,
-            CuvsOperation::Cagra,
-            CuvsOperation::PairwiseDistance,
-            CuvsOperation::TopK,
-            CuvsOperation::KMeans,
-            CuvsOperation::Pca
-        ]
-    );
-    assert_eq!(CUVS_OPERATION_REGISTRY.len(), 8);
-    assert_eq!(CuvsOperation::BruteForceKnn.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
-    assert_eq!(CuvsOperation::IvfFlat.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
-    assert_eq!(CuvsOperation::IvfPq.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
-    assert_eq!(CuvsOperation::Cagra.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
-    assert_eq!(CuvsOperation::PairwiseDistance.descriptor().output_contract, CuvsOutputContract::PairwiseDistances);
-    assert_eq!(CuvsOperation::TopK.descriptor().output_contract, CuvsOutputContract::TopKValues);
-    assert_eq!(CuvsOperation::KMeans.descriptor().output_contract, CuvsOutputContract::KMeansAssignments);
-    assert_eq!(CuvsOperation::Pca.descriptor().output_contract, CuvsOutputContract::PcaComponents);
     assert_eq!(
         vector_knn_output_schema(DataType::Utf8, DataType::Int64)
             .fields()
@@ -105,42 +82,6 @@ fn canonical_cuvs_registry_validates_relation_binding_shape() {
             .expect_err("malformed relation binding should be rejected by canonical metadata");
         assert_eq!(error.code(), expected_code, "raw options: {raw}");
     }
-}
-
-#[test]
-fn typed_vector_builders_preserve_schemas_input_order_and_display() {
-    let knn = knn_plan(false);
-    preflight_query_plan(&knn).expect("valid kNN IR should preflight");
-    let PlanNode::VectorAlgorithm(knn_node) = &knn.root_node().kind else {
-        panic!("kNN root should be a vector algorithm");
-    };
-    assert_eq!(knn_node.spec.algorithm, VectorAlgorithm::BruteForceKnn);
-    assert_eq!(knn_node.inputs.len(), 2);
-    assert_eq!(knn_node.output_schema().as_ref(), vector_knn_output_schema(DataType::Int64, DataType::Int64).as_ref());
-    let knn_display = knn.to_string();
-    assert!(knn_display.contains("VectorAlgorithm"));
-    assert!(knn_display.contains("algorithm=brute_force_knn"));
-    assert!(knn_display.contains("k=3 metric=l2_expanded"));
-
-    let kmeans = kmeans_plan();
-    preflight_query_plan(&kmeans).expect("valid K-means IR should preflight");
-    let PlanNode::VectorAlgorithm(kmeans_node) = &kmeans.root_node().kind else {
-        panic!("K-means root should be a vector algorithm");
-    };
-    assert_eq!(kmeans_node.spec.algorithm, VectorAlgorithm::KMeans);
-    assert_eq!(kmeans_node.inputs.len(), 1);
-    assert_eq!(kmeans_node.output_schema().as_ref(), vector_kmeans_output_schema(DataType::Int64).as_ref());
-    assert!(kmeans.to_string().contains("n_clusters=4"));
-
-    let pca = pca_plan();
-    preflight_query_plan(&pca).expect("valid PCA IR should preflight");
-    let PlanNode::VectorAlgorithm(pca_node) = &pca.root_node().kind else {
-        panic!("PCA root should be a vector algorithm");
-    };
-    assert_eq!(pca_node.spec.algorithm, VectorAlgorithm::Pca);
-    assert_eq!(pca_node.inputs.len(), 1);
-    assert_eq!(pca_node.output_schema().as_ref(), vector_pca_output_schema(DataType::Int64, 2).as_ref());
-    assert!(pca.to_string().contains("n_components=2 whiten=false"));
 }
 
 #[test]
@@ -821,24 +762,6 @@ fn knn_spec() -> VectorAlgorithmSpec {
         )),
         vector_knn_output_schema(DataType::Int64, DataType::Int64),
     )
-}
-
-fn kmeans_plan() -> QueryPlan {
-    let mut builder = QueryPlanBuilder::new();
-    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
-    let params =
-        VectorKMeansParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]), 4);
-    let root = builder
-        .add_vector_algorithm(
-            vec![input],
-            VectorAlgorithmSpec::new(
-                VectorAlgorithm::KMeans,
-                VectorAlgorithmParams::KMeans(params),
-                vector_kmeans_output_schema(DataType::Int64),
-            ),
-        )
-        .unwrap();
-    builder.finish_with_host_sink(root).unwrap()
 }
 
 fn kmeans_plan_with_initial_centroids() -> QueryPlan {

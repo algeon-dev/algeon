@@ -1,3 +1,4 @@
+use cudf::testing;
 use query_planning::source::CredentialMode;
 use query_runtime::runtime::{S3SourceStorageProfile, SourceStorageProfile};
 
@@ -7,7 +8,6 @@ use crate::{
     native_exec::AlgeonNativeExecutionConfig,
 };
 
-#[test]
 fn pushed_down_parquet_predicate_with_filter_is_reader_pushdown() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-predicate");
     let path = dir.join("input.parquet");
@@ -71,7 +71,6 @@ fn reader_pushdown_covered_filter_keeps_frontend_projection_order_after_reordere
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native_verification() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-predicate-subset");
     let path = dir.join("input.parquet");
@@ -103,7 +102,6 @@ fn pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-predicate-filter-schema");
     let path = dir.join("input.parquet");
@@ -134,7 +132,6 @@ fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn pushed_down_substring_prefix_predicate_is_rewritten_to_reader_pushdown_ranges() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-prefix-predicate");
     let path = dir.join("input.parquet");
@@ -162,7 +159,6 @@ fn pushed_down_substring_prefix_predicate_is_rewritten_to_reader_pushdown_ranges
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn pushed_down_parquet_predicate_without_filter_is_reader_pushdown() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-predicate-without-filter");
     let path = dir.join("input.parquet");
@@ -265,7 +261,6 @@ fn pushed_down_post_scan_predicate_with_source_limit_lowers_filter_then_limit() 
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn empty_local_parquet_scan_lowers_to_empty_literal_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-empty-local-scan");
     let path = dir.join("input.parquet");
@@ -287,7 +282,6 @@ fn empty_local_parquet_scan_lowers_to_empty_literal_source() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn empty_s3_parquet_scan_lowers_to_empty_literal_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-empty-s3-scan");
     let path = dir.join("input.parquet");
@@ -312,6 +306,32 @@ fn empty_s3_parquet_scan_lowers_to_empty_literal_source() {
 }
 
 #[test]
+fn source_contracts_tc_empty_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "empty_local_parquet_scan_with_filter_projection_lowers_to_projected_empty_literal_source",
+            empty_local_parquet_scan_with_filter_projection_lowers_to_projected_empty_literal_source,
+        ),
+        (
+            "empty_local_parquet_scan_lowers_to_empty_literal_source",
+            empty_local_parquet_scan_lowers_to_empty_literal_source,
+        ),
+        (
+            "empty_local_parquet_scan_with_source_limit_lowers_to_empty_literal_source",
+            empty_local_parquet_scan_with_source_limit_lowers_to_empty_literal_source,
+        ),
+        (
+            "empty_local_parquet_aggregate_lowers_through_literal_source",
+            empty_local_parquet_aggregate_lowers_through_literal_source,
+        ),
+        ("empty_s3_parquet_scan_lowers_to_empty_literal_source", empty_s3_parquet_scan_lowers_to_empty_literal_source),
+        (
+            "empty_local_parquet_scan_with_pushed_predicate_and_source_limit_lowers_to_empty_literal_source",
+            empty_local_parquet_scan_with_pushed_predicate_and_source_limit_lowers_to_empty_literal_source,
+        ),
+    ]);
+}
+
 fn empty_local_parquet_scan_with_filter_projection_lowers_to_projected_empty_literal_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-empty-local-filter-projection");
     let path = dir.join("input.parquet");
@@ -340,7 +360,6 @@ fn empty_local_parquet_scan_with_filter_projection_lowers_to_projected_empty_lit
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn empty_local_parquet_scan_with_source_limit_lowers_to_empty_literal_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-empty-local-source-limit");
     let path = dir.join("input.parquet");
@@ -361,7 +380,6 @@ fn empty_local_parquet_scan_with_source_limit_lowers_to_empty_literal_source() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn empty_local_parquet_scan_with_pushed_predicate_and_source_limit_lowers_to_empty_literal_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-empty-local-predicate-source-limit");
     let path = dir.join("input.parquet");
@@ -384,7 +402,6 @@ fn empty_local_parquet_scan_with_pushed_predicate_and_source_limit_lowers_to_emp
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn empty_local_parquet_aggregate_lowers_through_literal_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-empty-local-aggregate");
     let path = dir.join("input.parquet");
@@ -405,7 +422,6 @@ fn empty_local_parquet_aggregate_lowers_through_literal_source() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn pushed_down_scan_only_decimal_predicate_uses_reader_pushdown() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-decimal-post-scan");
     let path = dir.join("input.parquet");
@@ -430,6 +446,55 @@ fn pushed_down_scan_only_decimal_predicate_uses_reader_pushdown() {
 }
 
 #[test]
+fn source_contracts_tc_pred_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "pushed_down_decimal_equality_predicate_uses_reader_pushdown",
+            pushed_down_decimal_equality_predicate_uses_reader_pushdown,
+        ),
+        (
+            "pushed_down_integer_divide_predicate_stays_a_native_post_scan_filter",
+            pushed_down_integer_divide_predicate_stays_a_native_post_scan_filter,
+        ),
+        (
+            "pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter",
+            pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter,
+        ),
+        (
+            "pushed_down_parquet_predicate_with_different_filter_uses_native_post_scan_filter",
+            pushed_down_parquet_predicate_with_different_filter_uses_native_post_scan_filter,
+        ),
+        (
+            "pushed_down_parquet_predicate_with_filter_is_reader_pushdown",
+            pushed_down_parquet_predicate_with_filter_is_reader_pushdown,
+        ),
+        (
+            "pushed_down_decimal_in_list_predicate_uses_reader_pushdown",
+            pushed_down_decimal_in_list_predicate_uses_reader_pushdown,
+        ),
+        (
+            "pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native_verification",
+            pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native_verification,
+        ),
+        (
+            "pushed_down_parquet_predicate_uses_filter_input_schema_for_validation",
+            pushed_down_parquet_predicate_uses_filter_input_schema_for_validation,
+        ),
+        (
+            "pushed_down_scan_only_decimal_predicate_uses_reader_pushdown",
+            pushed_down_scan_only_decimal_predicate_uses_reader_pushdown,
+        ),
+        (
+            "pushed_down_parquet_predicate_without_filter_is_reader_pushdown",
+            pushed_down_parquet_predicate_without_filter_is_reader_pushdown,
+        ),
+        (
+            "pushed_down_substring_prefix_predicate_is_rewritten_to_reader_pushdown_ranges",
+            pushed_down_substring_prefix_predicate_is_rewritten_to_reader_pushdown_ranges,
+        ),
+    ]);
+}
+
 fn pushed_down_decimal_equality_predicate_uses_reader_pushdown() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-decimal-equality-reader");
     let path = dir.join("input.parquet");
@@ -457,7 +522,6 @@ fn pushed_down_decimal_equality_predicate_uses_reader_pushdown() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn pushed_down_decimal_in_list_predicate_uses_reader_pushdown() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-decimal-in-list-reader");
     let path = dir.join("input.parquet");
@@ -481,7 +545,6 @@ fn pushed_down_decimal_in_list_predicate_uses_reader_pushdown() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-case-decimal-divide");
     let path = dir.join("input.parquet");
@@ -504,7 +567,6 @@ fn pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn pushed_down_integer_divide_predicate_stays_a_native_post_scan_filter() {
     // The reader evaluates predicates through the cudf AST, which has no
     // zero-divisor or overflow checks, so integer divide runs in the filter node.
@@ -527,7 +589,6 @@ fn pushed_down_integer_divide_predicate_stays_a_native_post_scan_filter() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn pushed_down_parquet_predicate_with_different_filter_uses_native_post_scan_filter() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-predicate-mismatch");
     let path = dir.join("input.parquet");
@@ -551,7 +612,6 @@ fn pushed_down_parquet_predicate_with_different_filter_uses_native_post_scan_fil
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn full_file_byte_range_coalesces_to_native_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-ranged-file");
     let path = dir.join("input.parquet");
@@ -585,7 +645,6 @@ fn full_file_byte_range_coalesces_to_native_source() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn partial_byte_range_maps_to_row_group_selection() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-partial-ranged-file");
     let path = dir.join("input.parquet");
@@ -617,6 +676,45 @@ fn partial_byte_range_maps_to_row_group_selection() {
 }
 
 #[test]
+fn source_contracts_tc_range_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "partial_byte_range_owns_row_groups_by_start_offset_boundaries",
+            partial_byte_range_owns_row_groups_by_start_offset_boundaries,
+        ),
+        (
+            "partial_byte_range_rejects_access_plan_length_mismatch",
+            partial_byte_range_rejects_access_plan_length_mismatch,
+        ),
+        (
+            "mixed_partial_byte_range_and_full_file_reports_selected_row_group_total",
+            mixed_partial_byte_range_and_full_file_reports_selected_row_group_total,
+        ),
+        (
+            "partial_byte_range_with_access_plan_lowers_to_selected_row_groups",
+            partial_byte_range_with_access_plan_lowers_to_selected_row_groups,
+        ),
+        (
+            "partial_byte_range_ignores_row_level_selection_outside_range",
+            partial_byte_range_ignores_row_level_selection_outside_range,
+        ),
+        ("partial_byte_range_maps_to_row_group_selection", partial_byte_range_maps_to_row_group_selection),
+        (
+            "partial_byte_range_with_access_plan_and_extra_extension_is_rejected",
+            partial_byte_range_with_access_plan_and_extra_extension_is_rejected,
+        ),
+        (
+            "overlapping_byte_ranges_are_rejected_with_source_reason",
+            overlapping_byte_ranges_are_rejected_with_source_reason,
+        ),
+        ("full_file_byte_range_coalesces_to_native_source", full_file_byte_range_coalesces_to_native_source),
+        (
+            "split_full_file_byte_ranges_coalesce_without_duplicate_native_files",
+            split_full_file_byte_ranges_coalesce_without_duplicate_native_files,
+        ),
+    ]);
+}
+
 fn partial_byte_range_owns_row_groups_by_start_offset_boundaries() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-row-group-byte-range");
     let path = dir.join("input.parquet");
@@ -644,7 +742,6 @@ fn partial_byte_range_owns_row_groups_by_start_offset_boundaries() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-ranged-access-plan");
     let path = dir.join("input.parquet");
@@ -684,7 +781,6 @@ fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn partial_byte_range_ignores_row_level_selection_outside_range() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-ranged-selection-outside");
     let path = dir.join("input.parquet");
@@ -718,7 +814,6 @@ fn partial_byte_range_ignores_row_level_selection_outside_range() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn partial_byte_range_rejects_access_plan_length_mismatch() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-ranged-access-plan-len");
     let path = dir.join("input.parquet");
@@ -747,7 +842,6 @@ fn partial_byte_range_rejects_access_plan_length_mismatch() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn mixed_partial_byte_range_and_full_file_reports_selected_row_group_total() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-mixed-ranged-files");
     let first = dir.join("part-000.parquet");
@@ -778,7 +872,6 @@ fn mixed_partial_byte_range_and_full_file_reports_selected_row_group_total() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn partial_byte_range_with_access_plan_and_extra_extension_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-ranged-mixed-extension");
     let path = dir.join("input.parquet");
@@ -807,7 +900,6 @@ fn partial_byte_range_with_access_plan_and_extra_extension_is_rejected() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-split-ranged-file");
     let path = dir.join("input.parquet");
@@ -834,7 +926,6 @@ fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn overlapping_byte_ranges_are_rejected_with_source_reason() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-overlap-ranged-file");
     let path = dir.join("input.parquet");
@@ -947,33 +1038,6 @@ fn s3_parquet_scan_reads_through_the_configured_s3_storage() {
 }
 
 #[test]
-fn s3_parquet_object_store_aggregate_root_preserves_remote_source_diagnostics() {
-    let dir = unique_temp_dir("algeon-datafusion-native-lowering-s3-store-aggregate");
-    let path = dir.join("input.parquet");
-    write_numeric_parquet_file(&path);
-    let scan = parquet_scan_with_object_store_url_and_location(
-        &path,
-        ObjectStoreUrl::parse("s3://bucket").unwrap(),
-        "table/input.parquet",
-    );
-    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
-    let expected_uri = "s3://bucket/table/input.parquet";
-
-    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
-
-    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.source_diagnostics.len(), 1);
-    assert!(result.source_diagnostics[0].rejected_features.is_empty());
-    let source = native_local_parquet_source(result.selected_plan());
-    assert_s3_remote_native_source(source, expected_uri);
-    assert_eq!(result.source_diagnostics[0].source_read_strategy, source.diagnostics.source_read_strategy);
-    assert_eq!(result.source_diagnostics[0].credential_mode, source.diagnostics.credential_mode);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn non_s3_parquet_object_store_is_rejected_with_source_reason() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-remote-store");
     let path = dir.join("input.parquet");
@@ -1068,7 +1132,6 @@ fn reader_factory_named_like_the_datafusion_default_is_rejected_with_source_reas
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn parquet_partition_columns_are_represented_in_native_source_contract() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-partition-columns");
     let path = dir.join("input.parquet");
@@ -1093,7 +1156,6 @@ fn parquet_partition_columns_are_represented_in_native_source_contract() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn parquet_partition_typed_null_values_are_represented_in_native_source_contract() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-partition-typed-null");
     let path = dir.join("input.parquet");
@@ -1116,7 +1178,6 @@ fn parquet_partition_typed_null_values_are_represented_in_native_source_contract
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn parquet_partition_columns_without_literal_values_are_rejected_with_source_reason() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-partition-missing-values");
     let path = dir.join("input.parquet");
@@ -1138,7 +1199,6 @@ fn parquet_partition_columns_without_literal_values_are_rejected_with_source_rea
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn unused_parquet_binary_partition_columns_do_not_block_native_lowering() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-partition-binary");
     let path = dir.join("input.parquet");
@@ -1163,7 +1223,6 @@ fn unused_parquet_binary_partition_columns_do_not_block_native_lowering() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_contract() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-partition-utf8");
     let path = dir.join("input.parquet");
@@ -1190,6 +1249,39 @@ fn unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_co
 }
 
 #[test]
+fn source_contracts_tc_part_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract",
+            unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract,
+        ),
+        (
+            "unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_source_contract",
+            unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_source_contract,
+        ),
+        (
+            "unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_contract",
+            unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_contract,
+        ),
+        (
+            "parquet_partition_columns_are_represented_in_native_source_contract",
+            parquet_partition_columns_are_represented_in_native_source_contract,
+        ),
+        (
+            "parquet_partition_columns_without_literal_values_are_rejected_with_source_reason",
+            parquet_partition_columns_without_literal_values_are_rejected_with_source_reason,
+        ),
+        (
+            "unused_parquet_binary_partition_columns_do_not_block_native_lowering",
+            unused_parquet_binary_partition_columns_do_not_block_native_lowering,
+        ),
+        (
+            "parquet_partition_typed_null_values_are_represented_in_native_source_contract",
+            parquet_partition_typed_null_values_are_represented_in_native_source_contract,
+        ),
+    ]);
+}
+
 fn unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-partition-utf8-view");
     let path = dir.join("input.parquet");
@@ -1215,7 +1307,6 @@ fn unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_source_contract() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-partition-utf8-view-null");
     let path = dir.join("input.parquet");
@@ -1241,7 +1332,6 @@ fn unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_sour
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-source-binary-schema");
     let path = dir.join("input.parquet");
@@ -1259,7 +1349,6 @@ fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn list_utf8_projection_lowers_as_native_carry_column() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-list-carry");
     let path = dir.join("input.parquet");
@@ -1287,7 +1376,6 @@ fn list_utf8_projection_lowers_as_native_carry_column() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn numeric_fixed_size_list_projection_lowers_as_native_carry_column() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-fixed-size-list-carry");
     let path = dir.join("input.parquet");
@@ -1346,7 +1434,6 @@ fn list_utf8_sort_key_is_rejected_locally_during_native_planning() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn unprojected_struct_and_map_schema_fields_do_not_block_native_lowering() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-unprojected-struct-map");
     let path = dir.join("input.parquet");
@@ -1377,6 +1464,32 @@ fn unprojected_struct_and_map_schema_fields_do_not_block_native_lowering() {
 }
 
 #[test]
+fn source_contracts_tc_schema_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "projected_struct_schema_field_is_rejected_with_unsupported_type",
+            projected_struct_schema_field_is_rejected_with_unsupported_type,
+        ),
+        (
+            "unused_unsupported_binary_schema_fields_do_not_block_native_lowering",
+            unused_unsupported_binary_schema_fields_do_not_block_native_lowering,
+        ),
+        ("list_utf8_projection_lowers_as_native_carry_column", list_utf8_projection_lowers_as_native_carry_column),
+        (
+            "numeric_fixed_size_list_projection_lowers_as_native_carry_column",
+            numeric_fixed_size_list_projection_lowers_as_native_carry_column,
+        ),
+        (
+            "projected_map_schema_field_is_rejected_with_unsupported_type",
+            projected_map_schema_field_is_rejected_with_unsupported_type,
+        ),
+        (
+            "unprojected_struct_and_map_schema_fields_do_not_block_native_lowering",
+            unprojected_struct_and_map_schema_fields_do_not_block_native_lowering,
+        ),
+    ]);
+}
+
 fn projected_struct_schema_field_is_rejected_with_unsupported_type() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-projected-struct-reject");
     let path = dir.join("input.parquet");
@@ -1398,7 +1511,6 @@ fn projected_struct_schema_field_is_rejected_with_unsupported_type() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn projected_map_schema_field_is_rejected_with_unsupported_type() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-projected-map-reject");
     let path = dir.join("input.parquet");

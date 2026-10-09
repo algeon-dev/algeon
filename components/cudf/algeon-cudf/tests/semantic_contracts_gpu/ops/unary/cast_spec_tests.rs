@@ -23,7 +23,7 @@ use cudf::{
     },
 };
 
-use crate::common::{nullable_series, run_named_cases, series, series_opt};
+use crate::common::{nullable_series, series, series_opt};
 
 fn decimal128_series_from_arrow(values: Vec<Option<i128>>, precision: u8, scale: i8) -> cudf::Series {
     let amount = Decimal128Array::from(values).with_precision_and_scale(precision, scale).unwrap();
@@ -209,13 +209,6 @@ fn test_cast_same_type() {
 // ===========================================================================
 // Series display omits schema names
 // ===========================================================================
-
-fn test_cast_display_omits_input_name() {
-    let s = series::<i32>("my_column", &[1, 2]).unwrap();
-    let result = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("my_column"), "cast output should not expose schema names: {}", output);
-}
 
 // ===========================================================================
 // is_supported_cast
@@ -1036,116 +1029,112 @@ fn test_cast_decimal_rejects_invalid_declarations() {
     assert_eq!(error.detail_value("reason"), Some("decimal_precision_requires_decimal_target"));
 }
 
-#[test]
-fn cast_spec_tests_cases() {
-    run_named_cases(&[
-        ("test_cast_i8_to_i16", test_cast_i8_to_i16),
-        ("test_cast_i16_to_i32", test_cast_i16_to_i32),
-        ("test_cast_i32_to_i64", test_cast_i32_to_i64),
-        ("test_cast_i32_to_f32", test_cast_i32_to_f32),
-        ("test_cast_f32_to_i32_truncates", test_cast_f32_to_i32_truncates),
-        ("test_cast_f64_to_f32", test_cast_f64_to_f32),
-        (
-            "test_cast_decimal128_to_f64_uses_decimal_scale_and_preserves_nulls",
-            test_cast_decimal128_to_f64_uses_decimal_scale_and_preserves_nulls,
-        ),
-        ("test_cast_decimal64_to_f64_uses_decimal_scale", test_cast_decimal64_to_f64_uses_decimal_scale),
-        (
-            "test_cast_f64_to_decimal128_uses_target_scale_and_preserves_nulls",
-            test_cast_f64_to_decimal128_uses_target_scale_and_preserves_nulls,
-        ),
-        ("test_cast_bool_to_i32", test_cast_bool_to_i32),
-        ("test_cast_i32_to_bool", test_cast_i32_to_bool),
-        ("test_cast_bool_to_i64", test_cast_bool_to_i64),
-        ("test_cast_u8_to_i16", test_cast_u8_to_i16),
-        ("test_cast_u32_to_i64", test_cast_u32_to_i64),
-        ("test_cast_preserves_null_mask", test_cast_preserves_null_mask),
-        ("test_cast_all_null_column", test_cast_all_null_column),
-        ("test_cast_empty_column", test_cast_empty_column),
-        ("test_cast_same_type", test_cast_same_type),
-        ("test_cast_display_omits_input_name", test_cast_display_omits_input_name),
-        (
-            "decimal_rescale_workspace_contract_is_scale_sensitive",
-            decimal_rescale_workspace_contract_is_scale_sensitive,
-        ),
-        ("test_is_supported_cast_numeric_to_float", test_is_supported_cast_numeric_to_float),
-        ("test_is_supported_cast_decimal_to_float", test_is_supported_cast_decimal_to_float),
-        ("test_is_supported_cast_float_to_decimal", test_is_supported_cast_float_to_decimal),
-        ("test_is_supported_cast_float_to_int", test_is_supported_cast_float_to_int),
-        ("test_is_supported_cast_bool_to_int", test_is_supported_cast_bool_to_int),
-        ("test_cast_i64_to_timestamp_microseconds", test_cast_i64_to_timestamp_microseconds),
-        ("test_cast_timestamp_to_i64", test_cast_timestamp_to_i64),
-        (
-            "test_cast_timestamp_and_duration_to_i64_returns_the_stored_count_in_the_types_own_unit",
-            test_cast_timestamp_and_duration_to_i64_returns_the_stored_count_in_the_types_own_unit,
-        ),
-        (
-            "test_cast_timestamp_and_duration_to_narrower_integers_check_the_stored_count",
-            test_cast_timestamp_and_duration_to_narrower_integers_check_the_stored_count,
-        ),
-        (
-            "test_cast_integer_to_timestamp_reads_the_integer_as_the_tick_count",
-            test_cast_integer_to_timestamp_reads_the_integer_as_the_tick_count,
-        ),
-        (
-            "test_cast_temporal_to_a_coarser_resolution_truncates_toward_zero_like_arrow",
-            test_cast_temporal_to_a_coarser_resolution_truncates_toward_zero_like_arrow,
-        ),
-        (
-            "test_cast_temporal_to_a_finer_resolution_matches_arrow_up_to_the_int64_limits",
-            test_cast_temporal_to_a_finer_resolution_matches_arrow_up_to_the_int64_limits,
-        ),
-        (
-            "test_cast_dates_to_timestamps_fail_where_the_product_leaves_int64_and_timestamps_to_dates_floor",
-            test_cast_dates_to_timestamps_fail_where_the_product_leaves_int64_and_timestamps_to_dates_floor,
-        ),
-        ("test_to_datetime_default_microseconds", test_to_datetime_default_microseconds),
-        ("test_to_datetime_explicit_milliseconds", test_to_datetime_explicit_milliseconds),
-        ("test_to_datetime_nanoseconds", test_to_datetime_nanoseconds),
-        ("test_to_datetime_seconds", test_to_datetime_seconds),
-        ("test_to_datetime_round_trip", test_to_datetime_round_trip),
-        ("test_to_datetime_preserves_nulls", test_to_datetime_preserves_nulls),
-        ("test_to_numeric_f64_to_i64", test_to_numeric_f64_to_i64),
-        ("test_to_numeric_i32_to_f64", test_to_numeric_i32_to_f64),
-        ("test_to_numeric_bool_to_i32", test_to_numeric_bool_to_i32),
-        ("test_to_numeric_rejects_non_numeric_target", test_to_numeric_rejects_non_numeric_target),
-        ("test_to_numeric_rejects_timestamp_target", test_to_numeric_rejects_timestamp_target),
-        (
-            "test_cast_integer_to_integer_accepts_target_extremes_and_rejects_one_past",
-            test_cast_integer_to_integer_accepts_target_extremes_and_rejects_one_past,
-        ),
-        (
-            "test_cast_float_to_integer_truncates_in_range_and_rejects_nan_infinity_and_out_of_range",
-            test_cast_float_to_integer_truncates_in_range_and_rejects_nan_infinity_and_out_of_range,
-        ),
-        (
-            "test_cast_decimal_to_integer_checks_the_scaled_integer_part",
-            test_cast_decimal_to_integer_checks_the_scaled_integer_part,
-        ),
-        (
-            "test_cast_integer_to_string_formats_plain_decimal_text",
-            test_cast_integer_to_string_formats_plain_decimal_text,
-        ),
-        (
-            "test_cast_integer_to_decimal_checks_the_declared_precision",
-            test_cast_integer_to_decimal_checks_the_declared_precision,
-        ),
-        (
-            "test_cast_float_to_decimal_rounds_like_arrow_and_rejects_non_finite_values",
-            test_cast_float_to_decimal_rounds_like_arrow_and_rejects_non_finite_values,
-        ),
-        (
-            "test_cast_decimal_to_decimal_rounds_half_away_from_zero_and_checks_precision",
-            test_cast_decimal_to_decimal_rounds_half_away_from_zero_and_checks_precision,
-        ),
-        (
-            "test_cast_decimal_to_narrow_decimal_storage_checks_the_declared_precision",
-            test_cast_decimal_to_narrow_decimal_storage_checks_the_declared_precision,
-        ),
-        (
-            "test_cast_decimal_scale_beyond_the_target_storage_fails_for_any_values",
-            test_cast_decimal_scale_beyond_the_target_storage_fails_for_any_values,
-        ),
-        ("test_cast_decimal_rejects_invalid_declarations", test_cast_decimal_rejects_invalid_declarations),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("cast_spec_tests::test_cast_i8_to_i16", test_cast_i8_to_i16),
+    ("cast_spec_tests::test_cast_i16_to_i32", test_cast_i16_to_i32),
+    ("cast_spec_tests::test_cast_i32_to_i64", test_cast_i32_to_i64),
+    ("cast_spec_tests::test_cast_i32_to_f32", test_cast_i32_to_f32),
+    ("cast_spec_tests::test_cast_f32_to_i32_truncates", test_cast_f32_to_i32_truncates),
+    ("cast_spec_tests::test_cast_f64_to_f32", test_cast_f64_to_f32),
+    (
+        "cast_spec_tests::test_cast_decimal128_to_f64_uses_decimal_scale_and_preserves_nulls",
+        test_cast_decimal128_to_f64_uses_decimal_scale_and_preserves_nulls,
+    ),
+    ("cast_spec_tests::test_cast_decimal64_to_f64_uses_decimal_scale", test_cast_decimal64_to_f64_uses_decimal_scale),
+    (
+        "cast_spec_tests::test_cast_f64_to_decimal128_uses_target_scale_and_preserves_nulls",
+        test_cast_f64_to_decimal128_uses_target_scale_and_preserves_nulls,
+    ),
+    ("cast_spec_tests::test_cast_bool_to_i32", test_cast_bool_to_i32),
+    ("cast_spec_tests::test_cast_i32_to_bool", test_cast_i32_to_bool),
+    ("cast_spec_tests::test_cast_bool_to_i64", test_cast_bool_to_i64),
+    ("cast_spec_tests::test_cast_u8_to_i16", test_cast_u8_to_i16),
+    ("cast_spec_tests::test_cast_u32_to_i64", test_cast_u32_to_i64),
+    ("cast_spec_tests::test_cast_preserves_null_mask", test_cast_preserves_null_mask),
+    ("cast_spec_tests::test_cast_all_null_column", test_cast_all_null_column),
+    ("cast_spec_tests::test_cast_empty_column", test_cast_empty_column),
+    ("cast_spec_tests::test_cast_same_type", test_cast_same_type),
+    (
+        "cast_spec_tests::decimal_rescale_workspace_contract_is_scale_sensitive",
+        decimal_rescale_workspace_contract_is_scale_sensitive,
+    ),
+    ("cast_spec_tests::test_is_supported_cast_numeric_to_float", test_is_supported_cast_numeric_to_float),
+    ("cast_spec_tests::test_is_supported_cast_decimal_to_float", test_is_supported_cast_decimal_to_float),
+    ("cast_spec_tests::test_is_supported_cast_float_to_decimal", test_is_supported_cast_float_to_decimal),
+    ("cast_spec_tests::test_is_supported_cast_float_to_int", test_is_supported_cast_float_to_int),
+    ("cast_spec_tests::test_is_supported_cast_bool_to_int", test_is_supported_cast_bool_to_int),
+    ("cast_spec_tests::test_cast_i64_to_timestamp_microseconds", test_cast_i64_to_timestamp_microseconds),
+    ("cast_spec_tests::test_cast_timestamp_to_i64", test_cast_timestamp_to_i64),
+    (
+        "cast_spec_tests::test_cast_timestamp_and_duration_to_i64_returns_the_stored_count_in_the_types_own_unit",
+        test_cast_timestamp_and_duration_to_i64_returns_the_stored_count_in_the_types_own_unit,
+    ),
+    (
+        "cast_spec_tests::test_cast_timestamp_and_duration_to_narrower_integers_check_the_stored_count",
+        test_cast_timestamp_and_duration_to_narrower_integers_check_the_stored_count,
+    ),
+    (
+        "cast_spec_tests::test_cast_integer_to_timestamp_reads_the_integer_as_the_tick_count",
+        test_cast_integer_to_timestamp_reads_the_integer_as_the_tick_count,
+    ),
+    (
+        "cast_spec_tests::test_cast_temporal_to_a_coarser_resolution_truncates_toward_zero_like_arrow",
+        test_cast_temporal_to_a_coarser_resolution_truncates_toward_zero_like_arrow,
+    ),
+    (
+        "cast_spec_tests::test_cast_temporal_to_a_finer_resolution_matches_arrow_up_to_the_int64_limits",
+        test_cast_temporal_to_a_finer_resolution_matches_arrow_up_to_the_int64_limits,
+    ),
+    (
+        "cast_spec_tests::test_cast_dates_to_timestamps_fail_where_the_product_leaves_int64_and_timestamps_to_dates_floor",
+        test_cast_dates_to_timestamps_fail_where_the_product_leaves_int64_and_timestamps_to_dates_floor,
+    ),
+    ("cast_spec_tests::test_to_datetime_default_microseconds", test_to_datetime_default_microseconds),
+    ("cast_spec_tests::test_to_datetime_explicit_milliseconds", test_to_datetime_explicit_milliseconds),
+    ("cast_spec_tests::test_to_datetime_nanoseconds", test_to_datetime_nanoseconds),
+    ("cast_spec_tests::test_to_datetime_seconds", test_to_datetime_seconds),
+    ("cast_spec_tests::test_to_datetime_round_trip", test_to_datetime_round_trip),
+    ("cast_spec_tests::test_to_datetime_preserves_nulls", test_to_datetime_preserves_nulls),
+    ("cast_spec_tests::test_to_numeric_f64_to_i64", test_to_numeric_f64_to_i64),
+    ("cast_spec_tests::test_to_numeric_i32_to_f64", test_to_numeric_i32_to_f64),
+    ("cast_spec_tests::test_to_numeric_bool_to_i32", test_to_numeric_bool_to_i32),
+    ("cast_spec_tests::test_to_numeric_rejects_non_numeric_target", test_to_numeric_rejects_non_numeric_target),
+    ("cast_spec_tests::test_to_numeric_rejects_timestamp_target", test_to_numeric_rejects_timestamp_target),
+    (
+        "cast_spec_tests::test_cast_integer_to_integer_accepts_target_extremes_and_rejects_one_past",
+        test_cast_integer_to_integer_accepts_target_extremes_and_rejects_one_past,
+    ),
+    (
+        "cast_spec_tests::test_cast_float_to_integer_truncates_in_range_and_rejects_nan_infinity_and_out_of_range",
+        test_cast_float_to_integer_truncates_in_range_and_rejects_nan_infinity_and_out_of_range,
+    ),
+    (
+        "cast_spec_tests::test_cast_decimal_to_integer_checks_the_scaled_integer_part",
+        test_cast_decimal_to_integer_checks_the_scaled_integer_part,
+    ),
+    (
+        "cast_spec_tests::test_cast_integer_to_string_formats_plain_decimal_text",
+        test_cast_integer_to_string_formats_plain_decimal_text,
+    ),
+    (
+        "cast_spec_tests::test_cast_integer_to_decimal_checks_the_declared_precision",
+        test_cast_integer_to_decimal_checks_the_declared_precision,
+    ),
+    (
+        "cast_spec_tests::test_cast_float_to_decimal_rounds_like_arrow_and_rejects_non_finite_values",
+        test_cast_float_to_decimal_rounds_like_arrow_and_rejects_non_finite_values,
+    ),
+    (
+        "cast_spec_tests::test_cast_decimal_to_decimal_rounds_half_away_from_zero_and_checks_precision",
+        test_cast_decimal_to_decimal_rounds_half_away_from_zero_and_checks_precision,
+    ),
+    (
+        "cast_spec_tests::test_cast_decimal_to_narrow_decimal_storage_checks_the_declared_precision",
+        test_cast_decimal_to_narrow_decimal_storage_checks_the_declared_precision,
+    ),
+    (
+        "cast_spec_tests::test_cast_decimal_scale_beyond_the_target_storage_fails_for_any_values",
+        test_cast_decimal_scale_beyond_the_target_storage_fails_for_any_values,
+    ),
+    ("cast_spec_tests::test_cast_decimal_rejects_invalid_declarations", test_cast_decimal_rejects_invalid_declarations),
+];

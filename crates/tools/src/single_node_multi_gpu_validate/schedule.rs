@@ -419,6 +419,14 @@ mod tests {
         assert!(plan.is_duration_paced_concurrency());
         assert!(plan.arrivals.is_empty());
         assert_eq!(plan.steps[0].planned_arrivals, 0);
+
+        {
+            assert_eq!(plan.steps.len(), 1);
+            assert_eq!(plan.steps[0].step_index, 0);
+            assert_eq!(plan.steps[0].concurrency, plan.concurrency);
+            assert_eq!(plan.steps[0].start_ns, plan.warmup_ns);
+            assert_eq!(plan.steps[0].measurement_ns, plan.measurement_ns);
+        }
     }
 
     #[test]
@@ -512,21 +520,6 @@ mod tests {
         assert!(plan.is_duration_paced_concurrency());
         assert!(plan.arrivals.is_empty());
         assert!(!plan.truncated_by_attempt_cap);
-    }
-
-    /// A single-phase profile produces exactly one step spanning the whole
-    /// measurement window, so the driver walks one code path.
-    #[test]
-    fn single_phase_profiles_plan_exactly_one_step() {
-        let plan = ArrivalPlan::plan(&scheduling(ArrivalMode::Concurrency, None, 0), 3, 2).unwrap();
-        assert_eq!(plan.steps.len(), 1);
-        assert_eq!(plan.steps[0].step_index, 0);
-        assert_eq!(plan.steps[0].concurrency, 4);
-        assert_eq!(plan.steps[0].start_ns, plan.warmup_ns);
-        assert_eq!(plan.steps[0].measurement_ns, plan.measurement_ns);
-        assert!(plan.is_duration_paced_concurrency());
-        assert_eq!(plan.steps[0].planned_arrivals, 0);
-        assert!(plan.arrivals.is_empty());
     }
 
     #[test]

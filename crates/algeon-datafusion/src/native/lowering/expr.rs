@@ -1,4 +1,4 @@
-use std::{cell::Cell, sync::Arc};
+use std::{cell::Cell, collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef};
 use cudf::interop::arrow_host::is_supported_arrow_type;
@@ -15,8 +15,8 @@ use datafusion::{
 };
 use query_planning::{
     expr::{
-        BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,
-        LiteralValue as NativeLiteralValue, UnaryMathOp,
+        BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, ColumnRef, DatePart as NativeDatePart,
+        Expr as NativeExpr, LiteralValue as NativeLiteralValue, UnaryMathOp,
     },
     validation::substring_stop_position,
 };
@@ -81,7 +81,23 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
     let activation_nodes = Cell::new(0);
     lower_validated_physical_expr(
         validated,
-        LoweringScope { bindings, activation: None, activation_nodes: &activation_nodes },
+        LoweringScope { bindings, join_columns: None, activation: None, activation_nodes: &activation_nodes },
+    )
+}
+
+pub(super) fn lower_validated_join_residual_expr(
+    validated: &ValidatedPhysicalExpr,
+    columns: &BTreeMap<usize, ColumnRef>,
+) -> Result<NativeExpr, LoweringRejection> {
+    let activation_nodes = Cell::new(0);
+    lower_validated_physical_expr(
+        validated,
+        LoweringScope {
+            bindings: None,
+            join_columns: Some(columns),
+            activation: None,
+            activation_nodes: &activation_nodes,
+        },
     )
 }
 
@@ -89,6 +105,7 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
 #[derive(Clone, Copy)]
 struct LoweringScope<'a> {
     bindings: Option<&'a [FieldBinding]>,
+    join_columns: Option<&'a BTreeMap<usize, ColumnRef>>,
     /// Set inside a `CASE` branch or the right operand of an `AND` or `OR`,
     /// which DataFusion may evaluate on a subset of rows: the rows where this
     /// boolean is TRUE. Native evaluation visits every row, so an operand that
@@ -134,6 +151,11 @@ fn lower_validated_physical_expr(
     let expr = validated.expr();
     let input_schema = validated.input_schema();
     if let Some(column) = expr.downcast_ref::<Column>() {
+        if let Some(columns) = scope.join_columns {
+            let resolved = resolve_column(column, input_schema)?;
+            let column = columns.get(&resolved.index()).expect("validated join column must have a native binding");
+            return Ok(NativeExpr::Column(column.clone()));
+        }
         return Ok(NativeExpr::column(resolved_column_name(column, input_schema, scope.bindings)?));
     }
     if let Some(literal) = expr.downcast_ref::<Literal>() {

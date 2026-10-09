@@ -3,8 +3,8 @@ use std::ptr;
 use crate::{
     helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data_with_exec},
     support::{
-        OwnedMemoryResource, OwnedStream, last_exec_mr_raw, last_exec_stream_value, lock_shim_state,
-        required_exec_options, reset_exec_observation, stream_value,
+        OwnedMemoryResource, OwnedStream, last_exec_mr_raw, last_exec_stream_value, required_exec_options,
+        reset_exec_observation, stream_value,
     },
 };
 
@@ -35,9 +35,7 @@ fn read_all_i32(col: cudf_sys::cudf_column_handle, exec: &cudf_sys::cudf_exec_op
     read_i32_column_data_with_exec(col, column_len(col), exec)
 }
 
-#[test]
 fn filtered_join_probe_state_abi_materializes_retained_semi_and_anti_indices() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
@@ -110,9 +108,7 @@ fn filtered_join_probe_state_abi_materializes_retained_semi_and_anti_indices() {
     }
 }
 
-#[test]
 fn filtered_join_probe_state_empty_build_anti_uses_zero_byte_retained_state() {
-    let _shim_state = lock_shim_state();
     let stream = OwnedStream::new();
     let mr = OwnedMemoryResource::new_cuda();
     let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
@@ -156,5 +152,105 @@ fn filtered_join_probe_state_empty_build_anti_uses_zero_byte_retained_state() {
         cudf_sys::cudf_filtered_join_destroy(join);
         cudf_sys::cudf_table_view_destroy(build_tv);
         cudf_sys::cudf_table_destroy(build_tbl);
+    }
+}
+
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "filtered_join_probe_tests::filtered_join_probe_state_abi_materializes_retained_semi_and_anti_indices",
+        filtered_join_probe_state_abi_materializes_retained_semi_and_anti_indices,
+    ),
+    (
+        "filtered_join_probe_tests::filtered_join_probe_state_empty_build_anti_uses_zero_byte_retained_state",
+        filtered_join_probe_state_empty_build_anti_uses_zero_byte_retained_state,
+    ),
+    (
+        "filtered_join_retains_destroy_provenance_after_owner_drop",
+        filtered_join_retains_destroy_provenance_after_owner_drop,
+    ),
+    (
+        "filtered_probe_retains_its_own_destroy_provenance_after_build_and_owner_drop",
+        filtered_probe_retains_its_own_destroy_provenance_after_build_and_owner_drop,
+    ),
+];
+
+fn filtered_join_retains_destroy_provenance_after_owner_drop() {
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_test_stats();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
+    let build = make_table_from_one_column(make_i32_column(&[2, 4]));
+    let build_view = make_table_view(build);
+    let mut join = ptr::null_mut();
+    unsafe {
+        assert_eq!(
+            cudf_sys::cudf_filtered_join_create_ex(
+                build_view,
+                cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
+                0.5,
+                &mut join,
+                &exec
+            ),
+            cudf_sys::CUDF_SUCCESS
+        );
+    }
+    assert!(!join.is_null());
+    stream.synchronize();
+    assert!(mr.active_allocation_count() > 0);
+    drop(stream);
+    drop(mr);
+    unsafe {
+        assert_eq!(cudf_sys::cudf_filtered_join_destroy(join), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(cudf_sys::cudf_table_view_destroy(build_view), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(cudf_sys::cudf_table_destroy(build), cudf_sys::CUDF_SUCCESS);
+    }
+}
+
+fn filtered_probe_retains_its_own_destroy_provenance_after_build_and_owner_drop() {
+    let build_stream = OwnedStream::new();
+    let build_mr = OwnedMemoryResource::new_test_stats();
+    let build_exec = required_exec_options(&build_stream.borrowed(), &build_mr.borrowed());
+    let build = make_table_from_one_column(make_i32_column(&[2, 4]));
+    let build_view = make_table_view(build);
+    let mut join = ptr::null_mut();
+    unsafe {
+        assert_eq!(
+            cudf_sys::cudf_filtered_join_create_ex(
+                build_view,
+                cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
+                0.5,
+                &mut join,
+                &build_exec
+            ),
+            cudf_sys::CUDF_SUCCESS
+        );
+    }
+    build_stream.synchronize();
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_test_stats();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
+    let probe = make_table_from_one_column(make_i32_column(&[1, 2, 4]));
+    let probe_view = make_table_view(probe);
+    let mut state = ptr::null_mut();
+    unsafe {
+        assert_eq!(
+            cudf_sys::cudf_filtered_join_begin_left_semi_probe_ex(join, probe_view, &mut state, &exec),
+            cudf_sys::CUDF_SUCCESS
+        );
+    }
+    assert!(!state.is_null());
+    stream.synchronize();
+    assert!(mr.active_allocation_count() > 0);
+    // The probe owns its membership result and no longer reads the build hash table.
+    unsafe {
+        assert_eq!(cudf_sys::cudf_filtered_join_destroy(join), cudf_sys::CUDF_SUCCESS);
+    }
+    drop(stream);
+    drop(mr);
+    unsafe {
+        assert_eq!(cudf_sys::cudf_filtered_join_probe_destroy(state), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(cudf_sys::cudf_table_view_destroy(probe_view), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(cudf_sys::cudf_table_destroy(probe), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(cudf_sys::cudf_table_view_destroy(build_view), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(cudf_sys::cudf_table_destroy(build), cudf_sys::CUDF_SUCCESS);
     }
 }

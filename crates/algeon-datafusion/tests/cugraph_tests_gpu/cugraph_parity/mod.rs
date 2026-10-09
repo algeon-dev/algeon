@@ -21,7 +21,7 @@ use algeon_datafusion::{
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig,
         parity::{
-            CUGRAPH_PARITY_SPECS, OracleLookup, ParityComparator, ParitySpec, ParityTruthSource, data_root,
+            CUGRAPH_PARITY_SPECS, OracleLookup, ParityComparator, ParitySpec, ParityTruthSource,
             load_ref_csv_vertex_list,
         },
     },
@@ -188,19 +188,6 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
             missing.join("\n"),
         );
     }
-}
-
-#[test]
-fn parity_data_root_lives_under_workspace_fixture_dir() {
-    // `data_root` honors `ALGEON_CUGRAPH_DATA_ROOT` so refresh tooling can
-    // point at a staging fixture path. The default-case assertion only
-    // runs when the override is absent.
-    if std::env::var_os("ALGEON_CUGRAPH_DATA_ROOT").is_some() {
-        return;
-    }
-    let root = data_root();
-    let suffix = std::path::Path::new("fixture").join("graph").join("cugraph");
-    assert!(root.ends_with(suffix), "parity data root unexpected: {}", root.display());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

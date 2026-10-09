@@ -3,13 +3,13 @@ use cudf::{
     DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions,
     ErrorCode, ErrorKind, Exec, JoinType, Runtime, Series,
     ops::{ast::AstExpression, join::NullEquality},
-    testing::prelude::*,
+    testing::{prelude::*, run_named_cases},
 };
 
 use crate::common::{
     column_from_strs_nullable, dependency_wait_call_count_for_stream, explicit_i32_series, int64_array,
     int64_list_array, last_exec_mr_value, last_exec_stream_value, lock_event_observation, nested_dataframe,
-    reset_dependency_observation, reset_exec_observation, run_named_cases, sample_runtime, struct_array,
+    reset_dependency_observation, reset_exec_observation, sample_runtime, struct_array,
 };
 
 const JOIN_NO_MATCH: i32 = i32::MIN;

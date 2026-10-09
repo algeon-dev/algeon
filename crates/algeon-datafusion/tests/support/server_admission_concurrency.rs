@@ -13,8 +13,8 @@ use algeon_datafusion::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceInstallationBounds, GpuDeviceMemoryLimit, GpuMemoryOwnership},
     native_exec::AlgeonNativeExecutionConfig,
     server::{
-        ALGEON_SERVER_CONFIG_FILE_ENV, FlightSqlServer, Result as ServerResult, ServerConfig, ServerShutdown,
-        backend_from_server_config, init_cuda_device,
+        ALGEON_SERVER_CONFIG_FILE_ENV, FlightSqlServer, Http2Keepalive, Result as ServerResult, ServerConfig,
+        ServerShutdown, backend_from_server_config, init_cuda_device,
     },
 };
 use arrow::{
@@ -119,6 +119,7 @@ impl ConcurrencyServer {
         let addr = listener.local_addr().expect("listener address");
         let mut config = server_config_for_concurrency(managed_capacity_bytes, query_cap_bytes);
         config.bind_addr = addr;
+        config.http2_keepalive = Http2Keepalive { interval: Duration::from_secs(1), timeout: Duration::from_secs(1) };
         let backend = backend_from_server_config(&config).expect("concurrency backend must build");
 
         let dir = tempfile::Builder::new().prefix("algeon-datafusion-concurrency-").tempdir().expect("tempdir");

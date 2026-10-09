@@ -7,7 +7,7 @@
 
 use cudf::{ErrorCode, ErrorKind, TypeId, testing::prelude::*};
 
-use crate::common::{error_context_value, nullable_series, run_named_cases, series};
+use crate::common::{error_context_value, nullable_series, series};
 
 // ===========================================================================
 // to_vec_strict<T>; numeric host materialization (rejects nullable)
@@ -240,52 +240,55 @@ fn test_materialization_preserves_series() {
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
 }
 
-#[test]
-fn host_materialization_tests_cases() {
-    run_named_cases(&[
-        ("test_to_vec_i32", test_to_vec_i32),
-        ("test_to_vec_f64", test_to_vec_f64),
-        ("test_to_vec_bool", test_to_vec_bool),
-        ("test_to_vec_i64", test_to_vec_i64),
-        ("test_to_vec_empty", test_to_vec_empty),
-        ("test_to_vec_rejects_nullable_data", test_to_vec_rejects_nullable_data),
-        (
-            "test_to_vec_accepts_masked_column_when_all_rows_valid",
-            test_to_vec_accepts_masked_column_when_all_rows_valid,
-        ),
-        ("test_to_vec_type_mismatch_returns_error", test_to_vec_type_mismatch_returns_error),
-        ("test_to_vec_on_string_column_returns_error", test_to_vec_on_string_column_returns_error),
-        ("test_to_optional_vec_all_valid", test_to_optional_vec_all_valid),
-        ("test_to_optional_vec_with_nulls", test_to_optional_vec_with_nulls),
-        ("test_to_optional_vec_all_nulls", test_to_optional_vec_all_nulls),
-        ("test_to_optional_vec_f64_with_nulls", test_to_optional_vec_f64_with_nulls),
-        ("test_to_optional_vec_empty", test_to_optional_vec_empty),
-        ("test_to_optional_vec_type_mismatch_returns_error", test_to_optional_vec_type_mismatch_returns_error),
-        ("test_to_optional_vec_bool_with_nulls", test_to_optional_vec_bool_with_nulls),
-        (
-            "test_to_optional_vec_bool_preserves_false_and_skips_nulls",
-            test_to_optional_vec_bool_preserves_false_and_skips_nulls,
-        ),
-        ("test_to_strings_basic", test_to_strings_basic),
-        ("test_to_strings_empty", test_to_strings_empty),
-        ("test_to_strings_rejects_nullable_data", test_to_strings_rejects_nullable_data),
-        (
-            "test_to_strings_accepts_masked_column_when_all_rows_valid",
-            test_to_strings_accepts_masked_column_when_all_rows_valid,
-        ),
-        ("test_to_strings_on_numeric_returns_error", test_to_strings_on_numeric_returns_error),
-        ("test_to_optional_strings_with_nulls", test_to_optional_strings_with_nulls),
-        ("test_to_optional_strings_without_nulls", test_to_optional_strings_without_nulls),
-        (
-            "test_to_optional_strings_on_numeric_returns_type_mismatch_error",
-            test_to_optional_strings_on_numeric_returns_type_mismatch_error,
-        ),
-        ("test_to_strings_lossy_maps_null_to_empty", test_to_strings_lossy_maps_null_to_empty),
-        ("test_to_strings_lossy_non_nullable", test_to_strings_lossy_non_nullable),
-        (
-            "test_series_to_strings_lossy_matches_column_view_lossy_materialization",
-            test_series_to_strings_lossy_matches_column_view_lossy_materialization,
-        ),
-        ("test_materialization_preserves_series", test_materialization_preserves_series),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("host_materialization_tests::test_to_vec_i32", test_to_vec_i32),
+    ("host_materialization_tests::test_to_vec_f64", test_to_vec_f64),
+    ("host_materialization_tests::test_to_vec_bool", test_to_vec_bool),
+    ("host_materialization_tests::test_to_vec_i64", test_to_vec_i64),
+    ("host_materialization_tests::test_to_vec_empty", test_to_vec_empty),
+    ("host_materialization_tests::test_to_vec_rejects_nullable_data", test_to_vec_rejects_nullable_data),
+    (
+        "host_materialization_tests::test_to_vec_accepts_masked_column_when_all_rows_valid",
+        test_to_vec_accepts_masked_column_when_all_rows_valid,
+    ),
+    ("host_materialization_tests::test_to_vec_type_mismatch_returns_error", test_to_vec_type_mismatch_returns_error),
+    (
+        "host_materialization_tests::test_to_vec_on_string_column_returns_error",
+        test_to_vec_on_string_column_returns_error,
+    ),
+    ("host_materialization_tests::test_to_optional_vec_all_valid", test_to_optional_vec_all_valid),
+    ("host_materialization_tests::test_to_optional_vec_with_nulls", test_to_optional_vec_with_nulls),
+    ("host_materialization_tests::test_to_optional_vec_all_nulls", test_to_optional_vec_all_nulls),
+    ("host_materialization_tests::test_to_optional_vec_f64_with_nulls", test_to_optional_vec_f64_with_nulls),
+    ("host_materialization_tests::test_to_optional_vec_empty", test_to_optional_vec_empty),
+    (
+        "host_materialization_tests::test_to_optional_vec_type_mismatch_returns_error",
+        test_to_optional_vec_type_mismatch_returns_error,
+    ),
+    ("host_materialization_tests::test_to_optional_vec_bool_with_nulls", test_to_optional_vec_bool_with_nulls),
+    (
+        "host_materialization_tests::test_to_optional_vec_bool_preserves_false_and_skips_nulls",
+        test_to_optional_vec_bool_preserves_false_and_skips_nulls,
+    ),
+    ("host_materialization_tests::test_to_strings_basic", test_to_strings_basic),
+    ("host_materialization_tests::test_to_strings_empty", test_to_strings_empty),
+    ("host_materialization_tests::test_to_strings_rejects_nullable_data", test_to_strings_rejects_nullable_data),
+    (
+        "host_materialization_tests::test_to_strings_accepts_masked_column_when_all_rows_valid",
+        test_to_strings_accepts_masked_column_when_all_rows_valid,
+    ),
+    ("host_materialization_tests::test_to_strings_on_numeric_returns_error", test_to_strings_on_numeric_returns_error),
+    ("host_materialization_tests::test_to_optional_strings_with_nulls", test_to_optional_strings_with_nulls),
+    ("host_materialization_tests::test_to_optional_strings_without_nulls", test_to_optional_strings_without_nulls),
+    (
+        "host_materialization_tests::test_to_optional_strings_on_numeric_returns_type_mismatch_error",
+        test_to_optional_strings_on_numeric_returns_type_mismatch_error,
+    ),
+    ("host_materialization_tests::test_to_strings_lossy_maps_null_to_empty", test_to_strings_lossy_maps_null_to_empty),
+    ("host_materialization_tests::test_to_strings_lossy_non_nullable", test_to_strings_lossy_non_nullable),
+    (
+        "host_materialization_tests::test_series_to_strings_lossy_matches_column_view_lossy_materialization",
+        test_series_to_strings_lossy_matches_column_view_lossy_materialization,
+    ),
+    ("host_materialization_tests::test_materialization_preserves_series", test_materialization_preserves_series),
+];

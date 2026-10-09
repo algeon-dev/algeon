@@ -2,7 +2,7 @@
 use cudf::{
     DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoinOptions, DataFrameHashJoinOptions,
     DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
-    DataFrameMixedJoinOptions, ErrorCode, ErrorKind, Exec, JoinType, MergeOptions,
+    DataFrameMixedJoinOptions, ErrorCode, ErrorKind, Exec, MergeOptions,
     frame::dataframe::InfoDetail,
     ops::ast::AstExpression,
     testing::{
@@ -18,7 +18,7 @@ use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
     dataframe_from_columns, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
     last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
-    reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
+    reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -871,43 +871,6 @@ fn test_dataframe_left_anti_join_empty_result_preserves_schema() {
 // MergeOptions builder
 // ---------------------------------------------------------------------------
 
-fn test_merge_options_defaults() {
-    let opts = MergeOptions::new();
-    assert_eq!(opts.join_type(), JoinType::Inner);
-    assert_eq!(opts.suffix_left(), "_left");
-    assert_eq!(opts.suffix_right(), "_right");
-}
-
-fn test_merge_options_builder_on() {
-    let opts = MergeOptions::new().on(["id"]);
-    let on = opts.on_keys().unwrap();
-    assert_eq!(on.len(), 1);
-    assert_eq!(on[0], "id");
-}
-
-fn test_merge_options_builder_left_right_on() {
-    let opts = MergeOptions::new().left_on(["left_id"]).right_on(["right_id"]);
-    let lo = opts.left_on_keys().unwrap();
-    let ro = opts.right_on_keys().unwrap();
-    assert_eq!(lo.len(), 1);
-    assert_eq!(lo[0], "left_id");
-    assert_eq!(ro.len(), 1);
-    assert_eq!(ro[0], "right_id");
-}
-
-fn test_merge_options_builder_how() {
-    assert_eq!(MergeOptions::new().how(JoinType::Left).join_type(), JoinType::Left);
-    assert_eq!(MergeOptions::new().how_inner().join_type(), JoinType::Inner);
-    assert_eq!(MergeOptions::new().how_left().join_type(), JoinType::Left);
-    assert_eq!(MergeOptions::new().how_full().join_type(), JoinType::Full);
-}
-
-fn test_merge_options_builder_suffixes() {
-    let opts = MergeOptions::new().suffixes("_x", "_y");
-    assert_eq!(opts.suffix_left(), "_x");
-    assert_eq!(opts.suffix_right(), "_y");
-}
-
 // ---------------------------------------------------------------------------
 // Inner merge; same key name (on)
 // ---------------------------------------------------------------------------
@@ -1466,186 +1429,184 @@ fn test_merge_null_equality_unequal() {
     assert_eq!(ne_rows, vec![(Some(1), 10, 100), (Some(3), 30, 300)]);
 }
 
-#[test]
-fn dataframe_merge_tests_cases() {
-    run_named_cases(&[
-        (
-            "test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_growth",
-            test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_growth,
-        ),
-        (
-            "test_dataframe_left_anti_join_materializes_only_non_matching_left_rows",
-            test_dataframe_left_anti_join_materializes_only_non_matching_left_rows,
-        ),
-        (
-            "test_dataframe_join_indices_materialize_selected_payload_columns",
-            test_dataframe_join_indices_materialize_selected_payload_columns,
-        ),
-        (
-            "test_dataframe_join_indices_materialization_reservation_matches_output_allocation",
-            test_dataframe_join_indices_materialization_reservation_matches_output_allocation,
-        ),
-        (
-            "test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gather_map",
-            test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gather_map,
-        ),
-        (
-            "test_projected_cross_join_plan_reports_size_and_materializes_both_sides",
-            test_projected_cross_join_plan_reports_size_and_materializes_both_sides,
-        ),
-        (
-            "test_projected_cross_join_plan_supports_left_only_projection",
-            test_projected_cross_join_plan_supports_left_only_projection,
-        ),
-        (
-            "test_projected_cross_join_plan_supports_right_only_projection",
-            test_projected_cross_join_plan_supports_right_only_projection,
-        ),
-        (
-            "test_legacy_projected_cross_join_supports_one_sided_projection",
-            test_legacy_projected_cross_join_supports_one_sided_projection,
-        ),
-        (
-            "test_projected_cross_join_plan_reservation_and_materialize_use_execution_override",
-            test_projected_cross_join_plan_reservation_and_materialize_use_execution_override,
-        ),
-        (
-            "test_projected_cross_join_one_sided_projection_does_not_order_unselected_side",
-            test_projected_cross_join_one_sided_projection_does_not_order_unselected_side,
-        ),
-        (
-            "test_projected_cross_join_plan_rejects_duplicate_output_names_at_creation",
-            test_projected_cross_join_plan_rejects_duplicate_output_names_at_creation,
-        ),
-        (
-            "test_projected_cross_join_plan_rejects_zero_output_columns_explicitly",
-            test_projected_cross_join_plan_rejects_zero_output_columns_explicitly,
-        ),
-        (
-            "test_projected_cross_join_plan_rejects_row_count_overflow_before_execution",
-            test_projected_cross_join_plan_rejects_row_count_overflow_before_execution,
-        ),
-        (
-            "test_projected_cross_join_plan_rejects_input_row_count_above_cudf_limit_even_with_zero_output",
-            test_projected_cross_join_plan_rejects_input_row_count_above_cudf_limit_even_with_zero_output,
-        ),
-        (
-            "test_dataframe_join_indices_materialization_reservation_orders_mixed_domains",
-            test_dataframe_join_indices_materialization_reservation_orders_mixed_domains,
-        ),
-        (
-            "test_dataframe_inner_join_indices_materialize_projected_sides_with_duplicates",
-            test_dataframe_inner_join_indices_materialize_projected_sides_with_duplicates,
-        ),
-        (
-            "test_dataframe_left_join_indices_nullify_unmatched_right_projection",
-            test_dataframe_left_join_indices_nullify_unmatched_right_projection,
-        ),
-        (
-            "test_dataframe_full_join_indices_nullify_unmatched_sides",
-            test_dataframe_full_join_indices_nullify_unmatched_sides,
-        ),
-        (
-            "test_dataframe_filtered_join_probe_state_materializes_without_second_size_probe",
-            test_dataframe_filtered_join_probe_state_materializes_without_second_size_probe,
-        ),
-        (
-            "test_filtered_join_fixed_width_preflight_matches_built_owner",
-            test_filtered_join_fixed_width_preflight_matches_built_owner,
-        ),
-        (
-            "test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplicates",
-            test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplicates,
-        ),
-        (
-            "test_dataframe_mixed_join_size_data_materializes_inner_and_left_without_recomputing_size",
-            test_dataframe_mixed_join_size_data_materializes_inner_and_left_without_recomputing_size,
-        ),
-        (
-            "test_dataframe_hash_join_left_and_full_probes_nullify_unmatched_projection",
-            test_dataframe_hash_join_left_and_full_probes_nullify_unmatched_projection,
-        ),
-        ("test_dataframe_left_semi_join_honors_null_equality", test_dataframe_left_semi_join_honors_null_equality),
-        (
-            "test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles",
-            test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles,
-        ),
-        (
-            "test_dataframe_inner_join_indices_with_execution_uses_borrowed_handles",
-            test_dataframe_inner_join_indices_with_execution_uses_borrowed_handles,
-        ),
-        (
-            "test_dataframe_left_semi_join_rejects_missing_join_keys",
-            test_dataframe_left_semi_join_rejects_missing_join_keys,
-        ),
-        (
-            "test_dataframe_left_semi_join_rejects_ambiguous_join_key_configuration",
-            test_dataframe_left_semi_join_rejects_ambiguous_join_key_configuration,
-        ),
-        (
-            "test_dataframe_left_anti_join_rejects_left_on_without_right_on",
-            test_dataframe_left_anti_join_rejects_left_on_without_right_on,
-        ),
-        (
-            "test_dataframe_left_semi_join_indices_rejects_key_count_mismatch",
-            test_dataframe_left_semi_join_indices_rejects_key_count_mismatch,
-        ),
-        (
-            "test_dataframe_materialize_join_indices_reanchors_unknown_column",
-            test_dataframe_materialize_join_indices_reanchors_unknown_column,
-        ),
-        (
-            "test_dataframe_left_semi_join_empty_result_preserves_schema",
-            test_dataframe_left_semi_join_empty_result_preserves_schema,
-        ),
-        (
-            "test_dataframe_left_anti_join_empty_result_preserves_schema",
-            test_dataframe_left_anti_join_empty_result_preserves_schema,
-        ),
-        ("test_merge_options_defaults", test_merge_options_defaults),
-        ("test_merge_options_builder_on", test_merge_options_builder_on),
-        ("test_merge_options_builder_left_right_on", test_merge_options_builder_left_right_on),
-        ("test_merge_options_builder_how", test_merge_options_builder_how),
-        ("test_merge_options_builder_suffixes", test_merge_options_builder_suffixes),
-        ("test_inner_merge_same_key", test_inner_merge_same_key),
-        (
-            "test_merge_succeeds_with_mixed_domains_and_uses_left_provenance",
-            test_merge_succeeds_with_mixed_domains_and_uses_left_provenance,
-        ),
-        ("test_left_merge_asymmetric_keys", test_left_merge_asymmetric_keys),
-        ("test_merge_suffix_overlapping_payload", test_merge_suffix_overlapping_payload),
-        ("test_merge_custom_suffixes", test_merge_custom_suffixes),
-        ("test_merge_no_suffix_when_no_conflict", test_merge_no_suffix_when_no_conflict),
-        ("test_full_merge", test_full_merge),
-        (
-            "test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenance",
-            test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenance,
-        ),
-        (
-            "test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_context_resources",
-            test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_context_resources,
-        ),
-        (
-            "test_full_merge_asymmetric_keys_preserves_separate_key_columns",
-            test_full_merge_asymmetric_keys_preserves_separate_key_columns,
-        ),
-        ("test_merge_missing_on_key_in_left", test_merge_missing_on_key_in_left),
-        ("test_merge_missing_on_key_in_right", test_merge_missing_on_key_in_right),
-        ("test_merge_left_on_without_right_on", test_merge_left_on_without_right_on),
-        ("test_merge_right_on_without_left_on", test_merge_right_on_without_left_on),
-        ("test_merge_left_on_right_on_length_mismatch", test_merge_left_on_right_on_length_mismatch),
-        ("test_merge_no_keys_specified", test_merge_no_keys_specified),
-        ("test_merge_in_context_no_keys_specified", test_merge_in_context_no_keys_specified),
-        (
-            "test_merge_reassembly_key_count_invariant_uses_stable_error_contract",
-            test_merge_reassembly_key_count_invariant_uses_stable_error_contract,
-        ),
-        ("test_merge_rejects_ambiguous_join_key_configuration", test_merge_rejects_ambiguous_join_key_configuration),
-        (
-            "test_merge_rejects_duplicate_output_names_after_reassembly",
-            test_merge_rejects_duplicate_output_names_after_reassembly,
-        ),
-        ("test_merge_multi_key_inner", test_merge_multi_key_inner),
-        ("test_merge_null_equality_unequal", test_merge_null_equality_unequal),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "dataframe_merge_tests::test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_growth",
+        test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_growth,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_anti_join_materializes_only_non_matching_left_rows",
+        test_dataframe_left_anti_join_materializes_only_non_matching_left_rows,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_join_indices_materialize_selected_payload_columns",
+        test_dataframe_join_indices_materialize_selected_payload_columns,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_join_indices_materialization_reservation_matches_output_allocation",
+        test_dataframe_join_indices_materialization_reservation_matches_output_allocation,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gather_map",
+        test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gather_map,
+    ),
+    (
+        "dataframe_merge_tests::test_projected_cross_join_plan_reports_size_and_materializes_both_sides",
+        test_projected_cross_join_plan_reports_size_and_materializes_both_sides,
+    ),
+    (
+        "dataframe_merge_tests::test_projected_cross_join_plan_supports_left_only_projection",
+        test_projected_cross_join_plan_supports_left_only_projection,
+    ),
+    (
+        "dataframe_merge_tests::test_projected_cross_join_plan_supports_right_only_projection",
+        test_projected_cross_join_plan_supports_right_only_projection,
+    ),
+    (
+        "dataframe_merge_tests::test_legacy_projected_cross_join_supports_one_sided_projection",
+        test_legacy_projected_cross_join_supports_one_sided_projection,
+    ),
+    (
+        "dataframe_merge_tests::test_projected_cross_join_plan_reservation_and_materialize_use_execution_override",
+        test_projected_cross_join_plan_reservation_and_materialize_use_execution_override,
+    ),
+    (
+        "dataframe_merge_tests::test_projected_cross_join_one_sided_projection_does_not_order_unselected_side",
+        test_projected_cross_join_one_sided_projection_does_not_order_unselected_side,
+    ),
+    (
+        "dataframe_merge_tests::test_projected_cross_join_plan_rejects_duplicate_output_names_at_creation",
+        test_projected_cross_join_plan_rejects_duplicate_output_names_at_creation,
+    ),
+    (
+        "dataframe_merge_tests::test_projected_cross_join_plan_rejects_zero_output_columns_explicitly",
+        test_projected_cross_join_plan_rejects_zero_output_columns_explicitly,
+    ),
+    (
+        "dataframe_merge_tests::test_projected_cross_join_plan_rejects_row_count_overflow_before_execution",
+        test_projected_cross_join_plan_rejects_row_count_overflow_before_execution,
+    ),
+    (
+        "dataframe_merge_tests::test_projected_cross_join_plan_rejects_input_row_count_above_cudf_limit_even_with_zero_output",
+        test_projected_cross_join_plan_rejects_input_row_count_above_cudf_limit_even_with_zero_output,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_join_indices_materialization_reservation_orders_mixed_domains",
+        test_dataframe_join_indices_materialization_reservation_orders_mixed_domains,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_inner_join_indices_materialize_projected_sides_with_duplicates",
+        test_dataframe_inner_join_indices_materialize_projected_sides_with_duplicates,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_join_indices_nullify_unmatched_right_projection",
+        test_dataframe_left_join_indices_nullify_unmatched_right_projection,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_full_join_indices_nullify_unmatched_sides",
+        test_dataframe_full_join_indices_nullify_unmatched_sides,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_filtered_join_probe_state_materializes_without_second_size_probe",
+        test_dataframe_filtered_join_probe_state_materializes_without_second_size_probe,
+    ),
+    (
+        "dataframe_merge_tests::test_filtered_join_fixed_width_preflight_matches_built_owner",
+        test_filtered_join_fixed_width_preflight_matches_built_owner,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplicates",
+        test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplicates,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_mixed_join_size_data_materializes_inner_and_left_without_recomputing_size",
+        test_dataframe_mixed_join_size_data_materializes_inner_and_left_without_recomputing_size,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_hash_join_left_and_full_probes_nullify_unmatched_projection",
+        test_dataframe_hash_join_left_and_full_probes_nullify_unmatched_projection,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_semi_join_honors_null_equality",
+        test_dataframe_left_semi_join_honors_null_equality,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles",
+        test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_inner_join_indices_with_execution_uses_borrowed_handles",
+        test_dataframe_inner_join_indices_with_execution_uses_borrowed_handles,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_semi_join_rejects_missing_join_keys",
+        test_dataframe_left_semi_join_rejects_missing_join_keys,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_semi_join_rejects_ambiguous_join_key_configuration",
+        test_dataframe_left_semi_join_rejects_ambiguous_join_key_configuration,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_anti_join_rejects_left_on_without_right_on",
+        test_dataframe_left_anti_join_rejects_left_on_without_right_on,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_semi_join_indices_rejects_key_count_mismatch",
+        test_dataframe_left_semi_join_indices_rejects_key_count_mismatch,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_materialize_join_indices_reanchors_unknown_column",
+        test_dataframe_materialize_join_indices_reanchors_unknown_column,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_semi_join_empty_result_preserves_schema",
+        test_dataframe_left_semi_join_empty_result_preserves_schema,
+    ),
+    (
+        "dataframe_merge_tests::test_dataframe_left_anti_join_empty_result_preserves_schema",
+        test_dataframe_left_anti_join_empty_result_preserves_schema,
+    ),
+    ("dataframe_merge_tests::test_inner_merge_same_key", test_inner_merge_same_key),
+    (
+        "dataframe_merge_tests::test_merge_succeeds_with_mixed_domains_and_uses_left_provenance",
+        test_merge_succeeds_with_mixed_domains_and_uses_left_provenance,
+    ),
+    ("dataframe_merge_tests::test_left_merge_asymmetric_keys", test_left_merge_asymmetric_keys),
+    ("dataframe_merge_tests::test_merge_suffix_overlapping_payload", test_merge_suffix_overlapping_payload),
+    ("dataframe_merge_tests::test_merge_custom_suffixes", test_merge_custom_suffixes),
+    ("dataframe_merge_tests::test_merge_no_suffix_when_no_conflict", test_merge_no_suffix_when_no_conflict),
+    ("dataframe_merge_tests::test_full_merge", test_full_merge),
+    (
+        "dataframe_merge_tests::test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenance",
+        test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenance,
+    ),
+    (
+        "dataframe_merge_tests::test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_context_resources",
+        test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_context_resources,
+    ),
+    (
+        "dataframe_merge_tests::test_full_merge_asymmetric_keys_preserves_separate_key_columns",
+        test_full_merge_asymmetric_keys_preserves_separate_key_columns,
+    ),
+    ("dataframe_merge_tests::test_merge_missing_on_key_in_left", test_merge_missing_on_key_in_left),
+    ("dataframe_merge_tests::test_merge_missing_on_key_in_right", test_merge_missing_on_key_in_right),
+    ("dataframe_merge_tests::test_merge_left_on_without_right_on", test_merge_left_on_without_right_on),
+    ("dataframe_merge_tests::test_merge_right_on_without_left_on", test_merge_right_on_without_left_on),
+    ("dataframe_merge_tests::test_merge_left_on_right_on_length_mismatch", test_merge_left_on_right_on_length_mismatch),
+    ("dataframe_merge_tests::test_merge_no_keys_specified", test_merge_no_keys_specified),
+    ("dataframe_merge_tests::test_merge_in_context_no_keys_specified", test_merge_in_context_no_keys_specified),
+    (
+        "dataframe_merge_tests::test_merge_reassembly_key_count_invariant_uses_stable_error_contract",
+        test_merge_reassembly_key_count_invariant_uses_stable_error_contract,
+    ),
+    (
+        "dataframe_merge_tests::test_merge_rejects_ambiguous_join_key_configuration",
+        test_merge_rejects_ambiguous_join_key_configuration,
+    ),
+    (
+        "dataframe_merge_tests::test_merge_rejects_duplicate_output_names_after_reassembly",
+        test_merge_rejects_duplicate_output_names_after_reassembly,
+    ),
+    ("dataframe_merge_tests::test_merge_multi_key_inner", test_merge_multi_key_inner),
+    ("dataframe_merge_tests::test_merge_null_equality_unequal", test_merge_null_equality_unequal),
+];

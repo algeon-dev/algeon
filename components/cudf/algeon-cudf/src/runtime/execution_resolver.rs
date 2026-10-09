@@ -102,6 +102,7 @@ mod tests {
             memory::DeviceMemoryResource,
         },
         runtime::{CudaStream, DeviceId, Exec, Runtime},
+        testing::run_named_cases,
     };
 
     const TEST_POOL_BYTES: usize = 16 * 1024 * 1024;
@@ -134,7 +135,6 @@ mod tests {
             .expect("failed to build test runtime")
     }
 
-    #[test]
     fn unary_uses_primary_domain_and_exec_options_without_overrides() {
         let rt = runtime();
         let ctx = Exec::RETAINED;
@@ -149,7 +149,6 @@ mod tests {
         assert_eq!(execution.exec_options().mr, rt.execution_domain().memory_resource().as_raw());
     }
 
-    #[test]
     fn unary_with_borrowed_overrides_orders_primary_into_output_domain() {
         let _event_observation = lock_event_observation();
         let rt = runtime();
@@ -172,7 +171,6 @@ mod tests {
         assert_eq!(dependency_wait_call_count_for_stream(expected_stream), 1);
     }
 
-    #[test]
     fn binary_orders_secondary_into_primary_output_domain() {
         let _event_observation = lock_event_observation();
         let primary = runtime();
@@ -193,7 +191,6 @@ mod tests {
         assert_eq!(dependency_wait_call_count_for_stream(expected_stream), 1);
     }
 
-    #[test]
     fn many_orders_each_secondary_into_primary_output_domain() {
         let _event_observation = lock_event_observation();
         let primary = runtime();
@@ -215,7 +212,6 @@ mod tests {
         assert_eq!(dependency_wait_call_count_for_stream(expected_stream), 2);
     }
 
-    #[test]
     fn with_output_domain_orders_sources_into_explicit_output_domain() {
         let _event_observation = lock_event_observation();
         let output = runtime();
@@ -235,7 +231,6 @@ mod tests {
         assert_eq!(dependency_wait_call_count_for_stream(expected_stream), 2);
     }
 
-    #[test]
     fn dropping_resolution_fences_cross_stream_inputs_after_consumer() {
         let _event_observation = lock_event_observation();
         let primary = runtime();
@@ -265,7 +260,6 @@ mod tests {
         assert_eq!(dependency_wait_call_count_for_stream(output_stream), 1);
     }
 
-    #[test]
     fn dropping_same_provenance_resolution_inserts_no_waits() {
         let _event_observation = lock_event_observation();
         let rt = runtime();
@@ -284,7 +278,6 @@ mod tests {
         assert_eq!(dependency_wait_call_count_for_stream(stream), 0);
     }
 
-    #[test]
     fn dropping_unary_override_resolution_fences_primary_stream() {
         let _event_observation = lock_event_observation();
         let rt = runtime();
@@ -308,7 +301,6 @@ mod tests {
         assert_eq!(dependency_wait_call_count_for_stream(primary_stream), 1);
     }
 
-    #[test]
     fn dropping_many_resolution_fences_each_distinct_input_stream_once() {
         let _event_observation = lock_event_observation();
         let primary = runtime();
@@ -331,10 +323,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires at least 2 GPUs"]
     fn cross_device_secondary_is_rejected_with_public_classification() {
-        if DeviceId::count().unwrap() < 2 {
-            return;
-        }
+        assert!(DeviceId::count().unwrap() >= 2, "requires at least 2 GPUs");
 
         let device0 = DeviceId::new(0).unwrap();
         let device1 = DeviceId::new(1).unwrap();
@@ -357,5 +348,44 @@ mod tests {
         assert_eq!(err.operation(), "execution_resolver::test::cross_device");
         assert_eq!(err.fact_value(FactKeyName::LeftDevice), Some(&FactValue::DeviceId(1)));
         assert_eq!(err.fact_value(FactKeyName::RightDevice), Some(&FactValue::DeviceId(0)));
+    }
+
+    #[test]
+    fn execution_resolver_cases() {
+        run_named_cases(&[
+            ("binary_orders_secondary_into_primary_output_domain", binary_orders_secondary_into_primary_output_domain),
+            (
+                "dropping_same_provenance_resolution_inserts_no_waits",
+                dropping_same_provenance_resolution_inserts_no_waits,
+            ),
+            (
+                "unary_with_borrowed_overrides_orders_primary_into_output_domain",
+                unary_with_borrowed_overrides_orders_primary_into_output_domain,
+            ),
+            (
+                "dropping_resolution_fences_cross_stream_inputs_after_consumer",
+                dropping_resolution_fences_cross_stream_inputs_after_consumer,
+            ),
+            (
+                "dropping_unary_override_resolution_fences_primary_stream",
+                dropping_unary_override_resolution_fences_primary_stream,
+            ),
+            (
+                "unary_uses_primary_domain_and_exec_options_without_overrides",
+                unary_uses_primary_domain_and_exec_options_without_overrides,
+            ),
+            (
+                "many_orders_each_secondary_into_primary_output_domain",
+                many_orders_each_secondary_into_primary_output_domain,
+            ),
+            (
+                "with_output_domain_orders_sources_into_explicit_output_domain",
+                with_output_domain_orders_sources_into_explicit_output_domain,
+            ),
+            (
+                "dropping_many_resolution_fences_each_distinct_input_stream_once",
+                dropping_many_resolution_fences_each_distinct_input_stream_once,
+            ),
+        ]);
     }
 }

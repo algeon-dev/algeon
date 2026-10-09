@@ -132,7 +132,7 @@ async fn query_stats(client: &mut FlightSqlServiceClient<Channel>, query_id: &st
     String::from_utf8(result.body.to_vec()).expect("query stats UTF-8")
 }
 
-async fn lost_connection_releases_attempt(listen_mode: ListenMode) {
+async fn keepalive_preserves_or_releases_attempt(listen_mode: ListenMode, lose_connection: bool) {
     let server =
         ConcurrencyServer::spawn_with_listener(4_000_000, MANAGED_CAPACITY_BYTES, QUERY_CAP_BYTES, listen_mode).await;
     let mut observer = server.client().await;
@@ -157,16 +157,27 @@ async fn lost_connection_releases_attempt(listen_mode: ListenMode) {
 
     // The result exceeds the HTTP/2 window. Tonic continues acknowledging
     // pings while the application leaves its result stream unread.
-    proxy.wait_for(TransportEvent::Ping, Duration::from_secs(45)).await;
+    while proxy.events.try_recv().is_ok() {}
+    proxy.wait_for(TransportEvent::Ping, Duration::from_secs(5)).await;
     proxy.wait_for(TransportEvent::PingAcknowledged, Duration::from_secs(5)).await;
     let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
     assert_eq!(report.active_attempts, 1, "an acknowledging consumer keeps its backpressured attempt live");
     assert_eq!(report.live_grants_bytes, QUERY_CAP_BYTES);
 
+    if !lose_connection {
+        drop(stream);
+        drop(client);
+        drop(proxy);
+        drop(observer);
+        server.wait_for_admission(0, 0).await;
+        server.shutdown().await;
+        return;
+    }
+
     while proxy.events.try_recv().is_ok() {}
     proxy.cut.cancel();
-    proxy.wait_for(TransportEvent::Ping, Duration::from_secs(45)).await;
-    proxy.wait_for(TransportEvent::ServerClosed, Duration::from_secs(15)).await;
+    proxy.wait_for(TransportEvent::Ping, Duration::from_secs(5)).await;
+    proxy.wait_for(TransportEvent::ServerClosed, Duration::from_secs(5)).await;
 
     // Neither CancelQuery nor shutdown runs here. The transport must drop
     // the root stream while the client still owns its open socket and body.
@@ -200,10 +211,10 @@ async fn lost_connection_releases_attempt(listen_mode: ListenMode) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn addr_keepalive_drops_a_lost_root_stream_and_releases_its_attempt_grant() {
-    lost_connection_releases_attempt(ListenMode::Addr).await;
+    keepalive_preserves_or_releases_attempt(ListenMode::Addr, true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
-async fn prebound_keepalive_drops_a_lost_root_stream_and_releases_its_attempt_grant() {
-    lost_connection_releases_attempt(ListenMode::Prebound).await;
+async fn prebound_keepalive_acknowledgement_preserves_a_backpressured_attempt() {
+    keepalive_preserves_or_releases_attempt(ListenMode::Prebound, false).await;
 }

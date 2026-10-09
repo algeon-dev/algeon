@@ -428,15 +428,64 @@ impl<'a> Distances<'a> {
 
 #[cfg(test)]
 mod tests {
+    use cudf::testing::run_named_cases;
+
     use super::*;
     use crate::{
         ResourceHandle,
         array::{DeviceArray, RawDeviceArrayView},
         error::ErrorKind,
+        structure::DegreeValues,
         types::DataType,
     };
 
     #[test]
+    fn native_owner_cases_1() {
+        run_named_cases(&[
+            (
+                "structure::typed_results::tests::vertex_ids_i64_to_vec_i32_is_invalid_state",
+                vertex_ids_i64_to_vec_i32_is_invalid_state,
+            ),
+            (
+                "structure::typed_results::tests::score_values_f64_to_vec_f32_is_invalid_state",
+                score_values_f64_to_vec_f32_is_invalid_state,
+            ),
+            (
+                "structure::typed_results::tests::distances_float_to_vec_i64_is_invalid_state",
+                distances_float_to_vec_i64_is_invalid_state,
+            ),
+            (
+                "structure::typed_results::tests::distances_i64_to_vec_i32_is_invalid_state",
+                distances_i64_to_vec_i32_is_invalid_state,
+            ),
+            (
+                "structure::typed_results::tests::distances_non_f32_to_vec_f32_is_invalid_state",
+                distances_non_f32_to_vec_f32_is_invalid_state,
+            ),
+            (
+                "structure::typed_results::tests::vertex_ids_from_raw_unexpected_dtype_is_invalid_state",
+                vertex_ids_from_raw_unexpected_dtype_is_invalid_state,
+            ),
+            (
+                "structure::typed_results::tests::score_values_from_raw_unexpected_dtype_is_invalid_state",
+                score_values_from_raw_unexpected_dtype_is_invalid_state,
+            ),
+            (
+                "structure::typed_results::tests::distances_from_raw_unexpected_dtype_is_invalid_state",
+                distances_from_raw_unexpected_dtype_is_invalid_state,
+            ),
+            (
+                "structure::degrees::tests::degree_values_i64_to_vec_i32_is_invalid_state",
+                degree_values_i64_to_vec_i32_is_invalid_state,
+            ),
+            (
+                "structure::degrees::tests::degree_values_from_raw_unexpected_dtype_is_invalid_state",
+                degree_values_from_raw_unexpected_dtype_is_invalid_state,
+            ),
+            ("array::tests::test_from_raw_roundtrip", test_from_raw_roundtrip),
+        ]);
+    }
+
     fn vertex_ids_i64_to_vec_i32_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("vertex_ids_i64_to_vec_i32_is_invalid_state").expect("entered");
@@ -448,7 +497,6 @@ mod tests {
         assert_eq!(err.operation(), "VertexIds::to_vec_i32");
     }
 
-    #[test]
     fn score_values_f64_to_vec_f32_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("score_values_f64_to_vec_f32_is_invalid_state").expect("entered");
@@ -460,7 +508,6 @@ mod tests {
         assert_eq!(err.operation(), "ScoreValues::to_vec_f32");
     }
 
-    #[test]
     fn distances_float_to_vec_i64_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("distances_float_to_vec_i64_is_invalid_state").expect("entered");
@@ -472,7 +519,6 @@ mod tests {
         assert_eq!(err.operation(), "Distances::to_vec_i64");
     }
 
-    #[test]
     fn distances_i64_to_vec_i32_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("distances_i64_to_vec_i32_is_invalid_state").expect("entered");
@@ -484,7 +530,6 @@ mod tests {
         assert_eq!(err.operation(), "Distances::to_vec_i32");
     }
 
-    #[test]
     fn distances_non_f32_to_vec_f32_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("distances_non_f32_to_vec_f32_is_invalid_state").expect("entered");
@@ -496,7 +541,6 @@ mod tests {
         assert_eq!(err.operation(), "Distances::to_vec_f32");
     }
 
-    #[test]
     fn vertex_ids_from_raw_unexpected_dtype_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("vertex_ids_from_raw_unexpected_dtype_is_invalid_state").expect("entered");
@@ -514,7 +558,6 @@ mod tests {
         assert_eq!(err.operation(), "VertexIds::from_raw");
     }
 
-    #[test]
     fn score_values_from_raw_unexpected_dtype_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("score_values_from_raw_unexpected_dtype_is_invalid_state").expect("entered");
@@ -532,7 +575,6 @@ mod tests {
         assert_eq!(err.operation(), "ScoreValues::from_raw");
     }
 
-    #[test]
     fn distances_from_raw_unexpected_dtype_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("distances_from_raw_unexpected_dtype_is_invalid_state").expect("entered");
@@ -548,5 +590,50 @@ mod tests {
         let err = Distances::from_raw(raw).expect_err("unexpected distance dtype should be rejected");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(err.operation(), "Distances::from_raw");
+    }
+
+    fn degree_values_i64_to_vec_i32_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("degree_values_i64_to_vec_i32_is_invalid_state").expect("entered");
+        let degrees = DeviceArray::from_slice(&entered, &[1i64, 2, 3]).expect("degrees");
+        let values = DegreeValues::I64(degrees.view().expect("view"));
+
+        let err = values.to_vec_i32(&entered).expect_err("i64 degree values should reject i32 copy");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "DegreeValues::to_vec_i32");
+    }
+
+    fn degree_values_from_raw_unexpected_dtype_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("degree_values_from_raw_unexpected_dtype_is_invalid_state").expect("entered");
+        let degrees = DeviceArray::from_slice(&entered, &[1.0f32, 2.0, 3.0]).expect("degrees");
+        let view = degrees.view().expect("view");
+        // SAFETY: The pointer/length pair comes from a live `DeviceArrayView`, and the dtype is
+        // intentionally mismatched to exercise Rust-side validation in `DegreeValues::from_raw`.
+        let raw = unsafe {
+            RawDeviceArrayView::try_from_raw(view.device_ptr(), view.len(), DataType::Float32, "test_raw")
+                .expect("raw view")
+        };
+
+        let err = DegreeValues::from_raw(raw).expect_err("unexpected degree dtype should be rejected");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "DegreeValues::from_raw");
+    }
+
+    fn test_from_raw_roundtrip() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_from_raw_roundtrip").expect("entered");
+        let arr = DeviceArray::from_slice(&entered, &[100i32, 200, 300]).expect("create");
+
+        let owned_view = arr.view().expect("owned_view");
+        let raw_ptr = owned_view.device_ptr();
+
+        // SAFETY: `raw_ptr` comes from a live device allocation with exactly 3 i32 values,
+        // and `arr` is kept alive for the duration of `raw_view` usage.
+        let raw_view = unsafe { DeviceArrayView::<i32>::from_raw(raw_ptr, 3) }.expect("raw_view");
+        assert_eq!(raw_view.len(), 3);
+
+        let result: Vec<i32> = raw_view.to_vec(&entered).expect("to_vec");
+        assert_eq!(result, vec![100, 200, 300]);
     }
 }

@@ -1,7 +1,9 @@
+use cudf::testing;
+use tokio::runtime::Builder as TestRuntimeBuilder;
+
 use super::*;
 use crate::native::ParquetReadStrategyConfig;
 
-#[tokio::test]
 async fn default_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-sql-row-group-pruning");
     let path = dir.join("input.parquet");
@@ -51,7 +53,61 @@ async fn one_footer_scope_parses_each_file_once_across_lowerings() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
+#[test]
+fn pruning_tc_prune_cases_1() {
+    testing::run_named_cases(&[
+        ("direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_groups_from_metadata", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_groups_from_metadata())
+        }),
+        ("direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadata", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadata())
+        }),
+        ("direct_friendly_sql_in_list_prunes_native_row_groups_from_metadata", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(direct_friendly_sql_in_list_prunes_native_row_groups_from_metadata())
+        }),
+        ("default_sql_pushed_predicate_prunes_native_row_groups_from_metadata", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(default_sql_pushed_predicate_prunes_native_row_groups_from_metadata())
+        }),
+        ("direct_friendly_sql_nested_prefix_pruning_uses_parquet_leaf_stats", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(direct_friendly_sql_nested_prefix_pruning_uses_parquet_leaf_stats())
+        }),
+        ("direct_friendly_sql_date_conjunction_prunes_native_row_groups_from_metadata", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(direct_friendly_sql_date_conjunction_prunes_native_row_groups_from_metadata())
+        }),
+        ("direct_friendly_sql_is_null_prunes_native_row_groups_from_metadata", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(direct_friendly_sql_is_null_prunes_native_row_groups_from_metadata())
+        }),
+    ]);
+}
+
 async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-filter-row-group-pruning");
     let path = dir.join("input.parquet");
@@ -78,7 +134,6 @@ async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_gro
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn direct_friendly_sql_date_conjunction_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-date-row-group-pruning");
     let path = dir.join("lineitem.parquet");
@@ -102,7 +157,6 @@ async fn direct_friendly_sql_date_conjunction_prunes_native_row_groups_from_meta
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-cast-row-group-pruning");
     let path = dir.join("input.parquet");
@@ -132,7 +186,6 @@ async fn direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadat
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn direct_friendly_sql_in_list_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-in-list-row-group-pruning");
     let path = dir.join("input.parquet");
@@ -162,7 +215,6 @@ async fn direct_friendly_sql_in_list_prunes_native_row_groups_from_metadata() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn direct_friendly_sql_is_null_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-is-null-row-group-pruning");
     let path = dir.join("input.parquet");
@@ -189,7 +241,6 @@ async fn direct_friendly_sql_is_null_prunes_native_row_groups_from_metadata() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn direct_friendly_sql_nested_prefix_pruning_uses_parquet_leaf_stats() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-nested-row-group-pruning");
     let path = dir.join("input.parquet");

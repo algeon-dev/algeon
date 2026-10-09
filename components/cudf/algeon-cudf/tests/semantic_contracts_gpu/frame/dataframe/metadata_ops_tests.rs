@@ -10,7 +10,7 @@ use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series, testing::prelude::*
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, dataframe_device_ptr, error_context_value,
-    last_exec_stream_value, lock_event_observation, reset_exec_observation, run_named_cases, series,
+    last_exec_stream_value, lock_event_observation, reset_exec_observation, series,
 };
 
 /// Helper: build a 3-row, 3-column DataFrame.
@@ -515,103 +515,130 @@ fn test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column()
     assert_eq!(result.series("values").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
 }
 
-#[test]
-fn metadata_ops_tests_cases() {
-    run_named_cases(&[
-        ("test_without_columns_removes_single_column", test_without_columns_removes_single_column),
-        ("test_without_columns_removes_multiple_columns", test_without_columns_removes_multiple_columns),
-        (
-            "test_without_columns_preserves_arc_sharing_for_retained_columns",
-            test_without_columns_preserves_arc_sharing_for_retained_columns,
-        ),
-        (
-            "test_without_columns_nonexistent_column_returns_error",
-            test_without_columns_nonexistent_column_returns_error,
-        ),
-        (
-            "test_without_columns_duplicate_name_returns_canonical_duplicate_error",
-            test_without_columns_duplicate_name_returns_canonical_duplicate_error,
-        ),
-        ("test_without_columns_all_columns_preserves_row_count", test_without_columns_all_columns_preserves_row_count),
-        ("test_without_columns_preserves_column_order", test_without_columns_preserves_column_order),
-        (
-            "test_without_columns_original_dataframe_still_reads_excluded_column",
-            test_without_columns_original_dataframe_still_reads_excluded_column,
-        ),
-        ("test_rename_columns_single_pair", test_rename_columns_single_pair),
-        ("test_rename_columns_multiple_pairs", test_rename_columns_multiple_pairs),
-        ("test_rename_columns_preserves_arc_sharing", test_rename_columns_preserves_arc_sharing),
-        ("test_rename_columns_nonexistent_source_returns_error", test_rename_columns_nonexistent_source_returns_error),
-        ("test_rename_columns_duplicate_target_returns_error", test_rename_columns_duplicate_target_returns_error),
-        (
-            "test_rename_columns_target_conflicts_with_existing_unrenamed_column",
-            test_rename_columns_target_conflicts_with_existing_unrenamed_column,
-        ),
-        (
-            "test_rename_columns_duplicate_source_returns_canonical_duplicate_error",
-            test_rename_columns_duplicate_source_returns_canonical_duplicate_error,
-        ),
-        ("test_rename_columns_swap_is_allowed", test_rename_columns_swap_is_allowed),
-        ("test_rename_columns_empty_iterator", test_rename_columns_empty_iterator),
-        ("test_select_accepts_iterators", test_select_accepts_iterators),
-        ("test_select_empty_preserves_row_count", test_select_empty_preserves_row_count),
-        (
-            "test_select_wide_projection_reorders_columns_without_copying",
-            test_select_wide_projection_reorders_columns_without_copying,
-        ),
-        (
-            "test_select_is_metadata_only_no_execution_or_device_copy",
-            test_select_is_metadata_only_no_execution_or_device_copy,
-        ),
-        ("test_with_column_adds_new_column", test_with_column_adds_new_column),
-        ("test_with_column_replaces_existing_column", test_with_column_replaces_existing_column),
-        ("test_with_column_preserves_arc_sharing_for_unchanged", test_with_column_preserves_arc_sharing_for_unchanged),
-        ("test_with_column_shares_arc_from_input_series", test_with_column_shares_arc_from_input_series),
-        ("test_with_column_row_count_mismatch_returns_error", test_with_column_row_count_mismatch_returns_error),
-        ("test_assign_adds_multiple_new_columns", test_assign_adds_multiple_new_columns),
-        ("test_assign_replaces_existing_column", test_assign_replaces_existing_column),
-        ("test_assign_mix_of_add_and_replace", test_assign_mix_of_add_and_replace),
-        ("test_assign_preserves_arc_sharing_for_unchanged", test_assign_preserves_arc_sharing_for_unchanged),
-        ("test_assign_shares_arc_from_input_series", test_assign_shares_arc_from_input_series),
-        ("test_assign_row_count_mismatch_returns_error", test_assign_row_count_mismatch_returns_error),
-        ("test_assign_empty_iterator_returns_same_schema", test_assign_empty_iterator_returns_same_schema),
-        ("test_assign_duplicate_names_last_wins", test_assign_duplicate_names_last_wins),
-        (
-            "test_assign_on_zero_column_frame_preserves_logical_row_count",
-            test_assign_on_zero_column_frame_preserves_logical_row_count,
-        ),
-        (
-            "test_assign_on_zero_column_frame_rejects_row_count_mismatch",
-            test_assign_on_zero_column_frame_rejects_row_count_mismatch,
-        ),
-        (
-            "test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column",
-            test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column,
-        ),
-        ("test_without_columns_then_assign_preserves_sharing", test_without_columns_then_assign_preserves_sharing),
-        (
-            "test_rename_columns_then_without_columns_preserves_sharing",
-            test_rename_columns_then_without_columns_preserves_sharing,
-        ),
-        (
-            "test_with_series_then_rename_columns_preserves_sharing",
-            test_with_series_then_rename_columns_preserves_sharing,
-        ),
-        (
-            "test_with_column_on_zero_column_frame_preserves_logical_row_count",
-            test_with_column_on_zero_column_frame_preserves_logical_row_count,
-        ),
-        (
-            "test_with_column_on_zero_column_frame_rejects_row_count_mismatch",
-            test_with_column_on_zero_column_frame_rejects_row_count_mismatch,
-        ),
-        (
-            "test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch",
-            test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch,
-        ),
-        (
-            "test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column",
-            test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("metadata_ops_tests::test_without_columns_removes_single_column", test_without_columns_removes_single_column),
+    (
+        "metadata_ops_tests::test_without_columns_removes_multiple_columns",
+        test_without_columns_removes_multiple_columns,
+    ),
+    (
+        "metadata_ops_tests::test_without_columns_preserves_arc_sharing_for_retained_columns",
+        test_without_columns_preserves_arc_sharing_for_retained_columns,
+    ),
+    (
+        "metadata_ops_tests::test_without_columns_nonexistent_column_returns_error",
+        test_without_columns_nonexistent_column_returns_error,
+    ),
+    (
+        "metadata_ops_tests::test_without_columns_duplicate_name_returns_canonical_duplicate_error",
+        test_without_columns_duplicate_name_returns_canonical_duplicate_error,
+    ),
+    (
+        "metadata_ops_tests::test_without_columns_all_columns_preserves_row_count",
+        test_without_columns_all_columns_preserves_row_count,
+    ),
+    ("metadata_ops_tests::test_without_columns_preserves_column_order", test_without_columns_preserves_column_order),
+    (
+        "metadata_ops_tests::test_without_columns_original_dataframe_still_reads_excluded_column",
+        test_without_columns_original_dataframe_still_reads_excluded_column,
+    ),
+    ("metadata_ops_tests::test_rename_columns_single_pair", test_rename_columns_single_pair),
+    ("metadata_ops_tests::test_rename_columns_multiple_pairs", test_rename_columns_multiple_pairs),
+    ("metadata_ops_tests::test_rename_columns_preserves_arc_sharing", test_rename_columns_preserves_arc_sharing),
+    (
+        "metadata_ops_tests::test_rename_columns_nonexistent_source_returns_error",
+        test_rename_columns_nonexistent_source_returns_error,
+    ),
+    (
+        "metadata_ops_tests::test_rename_columns_duplicate_target_returns_error",
+        test_rename_columns_duplicate_target_returns_error,
+    ),
+    (
+        "metadata_ops_tests::test_rename_columns_target_conflicts_with_existing_unrenamed_column",
+        test_rename_columns_target_conflicts_with_existing_unrenamed_column,
+    ),
+    (
+        "metadata_ops_tests::test_rename_columns_duplicate_source_returns_canonical_duplicate_error",
+        test_rename_columns_duplicate_source_returns_canonical_duplicate_error,
+    ),
+    ("metadata_ops_tests::test_rename_columns_swap_is_allowed", test_rename_columns_swap_is_allowed),
+    ("metadata_ops_tests::test_rename_columns_empty_iterator", test_rename_columns_empty_iterator),
+    ("metadata_ops_tests::test_select_accepts_iterators", test_select_accepts_iterators),
+    ("metadata_ops_tests::test_select_empty_preserves_row_count", test_select_empty_preserves_row_count),
+    (
+        "metadata_ops_tests::test_select_wide_projection_reorders_columns_without_copying",
+        test_select_wide_projection_reorders_columns_without_copying,
+    ),
+    (
+        "metadata_ops_tests::test_select_is_metadata_only_no_execution_or_device_copy",
+        test_select_is_metadata_only_no_execution_or_device_copy,
+    ),
+    ("metadata_ops_tests::test_with_column_adds_new_column", test_with_column_adds_new_column),
+    ("metadata_ops_tests::test_with_column_replaces_existing_column", test_with_column_replaces_existing_column),
+    (
+        "metadata_ops_tests::test_with_column_preserves_arc_sharing_for_unchanged",
+        test_with_column_preserves_arc_sharing_for_unchanged,
+    ),
+    (
+        "metadata_ops_tests::test_with_column_shares_arc_from_input_series",
+        test_with_column_shares_arc_from_input_series,
+    ),
+    (
+        "metadata_ops_tests::test_with_column_row_count_mismatch_returns_error",
+        test_with_column_row_count_mismatch_returns_error,
+    ),
+    ("metadata_ops_tests::test_assign_adds_multiple_new_columns", test_assign_adds_multiple_new_columns),
+    ("metadata_ops_tests::test_assign_replaces_existing_column", test_assign_replaces_existing_column),
+    ("metadata_ops_tests::test_assign_mix_of_add_and_replace", test_assign_mix_of_add_and_replace),
+    (
+        "metadata_ops_tests::test_assign_preserves_arc_sharing_for_unchanged",
+        test_assign_preserves_arc_sharing_for_unchanged,
+    ),
+    ("metadata_ops_tests::test_assign_shares_arc_from_input_series", test_assign_shares_arc_from_input_series),
+    ("metadata_ops_tests::test_assign_row_count_mismatch_returns_error", test_assign_row_count_mismatch_returns_error),
+    (
+        "metadata_ops_tests::test_assign_empty_iterator_returns_same_schema",
+        test_assign_empty_iterator_returns_same_schema,
+    ),
+    ("metadata_ops_tests::test_assign_duplicate_names_last_wins", test_assign_duplicate_names_last_wins),
+    (
+        "metadata_ops_tests::test_assign_on_zero_column_frame_preserves_logical_row_count",
+        test_assign_on_zero_column_frame_preserves_logical_row_count,
+    ),
+    (
+        "metadata_ops_tests::test_assign_on_zero_column_frame_rejects_row_count_mismatch",
+        test_assign_on_zero_column_frame_rejects_row_count_mismatch,
+    ),
+    (
+        "metadata_ops_tests::test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column",
+        test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column,
+    ),
+    (
+        "metadata_ops_tests::test_without_columns_then_assign_preserves_sharing",
+        test_without_columns_then_assign_preserves_sharing,
+    ),
+    (
+        "metadata_ops_tests::test_rename_columns_then_without_columns_preserves_sharing",
+        test_rename_columns_then_without_columns_preserves_sharing,
+    ),
+    (
+        "metadata_ops_tests::test_with_series_then_rename_columns_preserves_sharing",
+        test_with_series_then_rename_columns_preserves_sharing,
+    ),
+    (
+        "metadata_ops_tests::test_with_column_on_zero_column_frame_preserves_logical_row_count",
+        test_with_column_on_zero_column_frame_preserves_logical_row_count,
+    ),
+    (
+        "metadata_ops_tests::test_with_column_on_zero_column_frame_rejects_row_count_mismatch",
+        test_with_column_on_zero_column_frame_rejects_row_count_mismatch,
+    ),
+    (
+        "metadata_ops_tests::test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch",
+        test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch,
+    ),
+    (
+        "metadata_ops_tests::test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column",
+        test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column,
+    ),
+];

@@ -22,7 +22,6 @@ use query_runtime::{
     },
 };
 
-#[test]
 fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _expr = Expr::column("c0");
     let _metrics = QueryMetrics::default();
@@ -49,3 +48,5 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
     ) -> Result<AdmissionDecision> = admit;
     let _source_validation: fn(&LocalParquetSource, AnalysisContext<'_>) -> Result<()> = validate_local_parquet_source;
 }
+
+const _: fn() = canonical_engine_paths_expose_intentional_contract_groups;

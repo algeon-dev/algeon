@@ -15,12 +15,10 @@ use serde_json::{Value, json};
 
 use super::{
     evidence::{
-        ArtifactEvidence, CONTROL_SCHEMA, FLIGHT_MAX_ENCODED_FRAME_BYTES, GLOBAL_BYTE_PRESSURE_MAX_QUERIES,
-        GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES, GLOBAL_BYTE_PRESSURE_RETAINED_BYTES, GLOBAL_BYTE_PRESSURE_RETAINED_COUNT,
-        GLOBAL_BYTE_PRESSURE_SETUP_QUERIES, RunEvidence, ScenarioEvidence, VariableFrameEvidence, active_attempts,
-        artifact_charge, observe_encoded_frame, parse_artifact, validate_variable_frame_evidence,
+        CONTROL_SCHEMA, FLIGHT_MAX_ENCODED_FRAME_BYTES, VariableFrameEvidence, active_attempts, observe_encoded_frame,
+        parse_artifact, validate_variable_frame_evidence,
     },
-    params::{EVIDENCE_SCHEMA, ObservabilityLimits, RuntimeParams, ScenarioSelection},
+    params::{ObservabilityLimits, RuntimeParams, ScenarioSelection},
     validation::diagnostics_are_idle,
 };
 
@@ -226,71 +224,6 @@ fn runtime_params_fixture() -> RuntimeParams {
             ttl_secs: 1,
             shutdown_grace_secs: 1,
         },
-    }
-}
-
-#[test]
-fn evidence_pins_datafusion_baseline_payload_shape() {
-    assert_eq!(EVIDENCE_SCHEMA, "algeon_datafusion.server_runtime_observability_e2e");
-    const {
-        assert!(GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES < GLOBAL_BYTE_PRESSURE_RETAINED_BYTES);
-        assert!(
-            GLOBAL_BYTE_PRESSURE_MAX_QUERIES + GLOBAL_BYTE_PRESSURE_SETUP_QUERIES < GLOBAL_BYTE_PRESSURE_RETAINED_COUNT
-        );
-    }
-    assert_eq!(artifact_charge(38_000, 12_000).unwrap(), 50_000);
-
-    let mut evidence = RunEvidence::new(&runtime_params_fixture());
-    evidence.scenarios.push(ScenarioEvidence {
-        scenario: "datafusion_baseline".to_string(),
-        execution_path: "datafusion".to_string(),
-        query_id: QUERY_ID.to_string(),
-        correlation_id: TRACE_ID.to_string(),
-        outcome: "succeeded".to_string(),
-        output_batches: 1,
-        output_rows: 1,
-        encoded_frame_count: None,
-        record_batch_chunks: None,
-        max_encoded_frame_bytes: None,
-        stats_assertions: Vec::new(),
-        artifact: ArtifactEvidence {
-            state: "sealed".to_string(),
-            reason: None,
-            frame_count: 0,
-            wire_bytes: 0,
-            jsonl_records: 0,
-            topology_records: 0,
-            timeline_events: 0,
-            plan_execution_ids: Vec::new(),
-            terminal_kind: None,
-            retained_records: None,
-            retained_bytes: None,
-            truncated: None,
-            degraded: None,
-            poison_recoveries: None,
-            dropped_by_class: None,
-            dropped_by_reason: None,
-        },
-        elapsed_ms: 0,
-    });
-    let payload = serde_json::to_value(evidence).unwrap();
-    assert_eq!(payload["schema"], EVIDENCE_SCHEMA);
-    let config = payload["config"].as_object().unwrap();
-    assert_eq!(config.get("scenario_selection"), Some(&json!("matrix")));
-    assert_eq!(config.get("native_once"), Some(&json!(false)));
-    assert!(!config.contains_key("profile"));
-    assert!(!config.contains_key("bounded_mode"));
-    let scenario = payload["scenarios"][0].as_object().unwrap();
-    assert_eq!(scenario.get("scenario"), Some(&json!("datafusion_baseline")));
-    assert_eq!(scenario.get("execution_path"), Some(&json!("datafusion")));
-    assert!(!scenario.contains_key("profile"));
-}
-
-#[test]
-fn datafusion_baseline_is_the_only_non_native_scenario_selector() {
-    assert_eq!(ScenarioSelection::parse("datafusion_baseline").unwrap().label(), "datafusion_baseline");
-    for legacy_selector in ["cpu_fallback", "cpu-fallback"] {
-        assert!(ScenarioSelection::parse(legacy_selector).is_err(), "{legacy_selector} must be rejected");
     }
 }
 

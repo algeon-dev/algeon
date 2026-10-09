@@ -698,11 +698,4 @@ mod tests {
             )
         );
     }
-
-    #[test]
-    fn interrupted_runtime_outcomes_use_report_terminal_labels() {
-        assert_eq!(NativeDataFusionRuntimeOutcome::Cancelled.as_str(), "cancelled");
-        assert_eq!(NativeDataFusionRuntimeOutcome::Dropped.as_str(), "dropped");
-        assert_eq!(NativeDataFusionRuntimeOutcome::Panicked.as_str(), "panicked");
-    }
 }

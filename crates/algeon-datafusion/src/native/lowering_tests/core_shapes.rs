@@ -1,4 +1,5 @@
 use arrow::{array::Int32Array, record_batch::RecordBatch};
+use cudf::testing;
 use datafusion::datasource::memory::MemorySourceConfig;
 
 use super::*;
@@ -345,6 +346,31 @@ fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
 }
 
 #[test]
+fn core_shapes_tc_declord_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "preserve_order_multi_file_group_without_scan_limit_lowers_when_no_parent_reads_the_order",
+            preserve_order_multi_file_group_without_scan_limit_lowers_when_no_parent_reads_the_order,
+        ),
+        (
+            "declared_output_ordering_single_file_group_multi_file_scan_lowers_to_native_source",
+            declared_output_ordering_single_file_group_multi_file_scan_lowers_to_native_source,
+        ),
+        (
+            "parquet_sorting_columns_inferred_output_ordering_lowers_to_native_source",
+            parquet_sorting_columns_inferred_output_ordering_lowers_to_native_source,
+        ),
+        (
+            "declared_output_ordering_sorted_runs_lower_when_no_parent_reads_the_scan_order",
+            declared_output_ordering_sorted_runs_lower_when_no_parent_reads_the_scan_order,
+        ),
+        (
+            "declared_output_ordering_single_file_group_scan_lowers_to_native_source",
+            declared_output_ordering_single_file_group_scan_lowers_to_native_source,
+        ),
+    ]);
+}
+
 fn preserve_order_multi_file_group_without_scan_limit_lowers_when_no_parent_reads_the_order() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-preserve-order-multi-group");
     write_numeric_parquet_file(&dir.join("part-000.parquet"));
@@ -363,7 +389,6 @@ fn preserve_order_multi_file_group_without_scan_limit_lowers_when_no_parent_read
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn declared_output_ordering_single_file_group_scan_lowers_to_native_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-declared-output-ordering");
     let path = dir.join("input.parquet");
@@ -385,7 +410,6 @@ fn declared_output_ordering_single_file_group_scan_lowers_to_native_source() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn parquet_sorting_columns_inferred_output_ordering_lowers_to_native_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-parquet-sorting-columns");
     let path = dir.join("input.parquet");
@@ -406,7 +430,6 @@ fn parquet_sorting_columns_inferred_output_ordering_lowers_to_native_source() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn declared_output_ordering_single_file_group_multi_file_scan_lowers_to_native_source() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-declared-output-ordering-multi-file");
     write_sorted_numeric_parquet_file_with_keys(&dir.join("part-000.parquet"), &[1, 1, 2]);
@@ -427,7 +450,6 @@ fn declared_output_ordering_single_file_group_multi_file_scan_lowers_to_native_s
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn declared_output_ordering_sorted_runs_lower_when_no_parent_reads_the_scan_order() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-sorted-runs-unordered-parent");
     write_sorted_numeric_parquet_file_with_keys(&dir.join("part-000.parquet"), &[1, 3, 5]);
@@ -1001,7 +1023,6 @@ fn zero_fetch_global_limit_pushes_zero_scan_limit_to_source() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn sort_preserving_merge_without_fetch_lowers_to_native_sort() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-sort-preserving-merge");
     let path = dir.join("input.parquet");
@@ -1029,7 +1050,6 @@ fn sort_preserving_merge_without_fetch_lowers_to_native_sort() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn sort_preserving_merge_fetch_with_matching_child_sort_lowers_to_native_sort_plus_limit() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-sort-preserving-merge-fetch-matching-child-sort");
     let path = dir.join("input.parquet");
@@ -1053,7 +1073,6 @@ fn sort_preserving_merge_fetch_with_matching_child_sort_lowers_to_native_sort_pl
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn sort_preserving_merge_fetch_without_child_ordering_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-sort-preserving-merge-fetch-no-child-ordering");
     let path = dir.join("input.parquet");
@@ -1078,7 +1097,6 @@ fn sort_preserving_merge_fetch_without_child_ordering_is_rejected() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn sort_preserving_merge_fetch_with_mismatched_child_sort_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-sort-preserving-merge-fetch-mismatched-child-sort");
     let path = dir.join("input.parquet");
@@ -1110,7 +1128,6 @@ fn sort_preserving_merge_fetch_with_mismatched_child_sort_is_rejected() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn sort_preserving_merge_with_same_name_different_index_ordering_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-sort-preserving-merge-same-name-different-index");
     let path = dir.join("input.parquet");
@@ -1138,6 +1155,35 @@ fn sort_preserving_merge_with_same_name_different_index_ordering_is_rejected() {
 }
 
 #[test]
+fn core_shapes_tc_spm_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected",
+            sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected,
+        ),
+        (
+            "sort_preserving_merge_with_same_name_different_index_ordering_is_rejected",
+            sort_preserving_merge_with_same_name_different_index_ordering_is_rejected,
+        ),
+        (
+            "sort_preserving_merge_without_fetch_lowers_to_native_sort",
+            sort_preserving_merge_without_fetch_lowers_to_native_sort,
+        ),
+        (
+            "sort_preserving_merge_fetch_with_mismatched_child_sort_is_rejected",
+            sort_preserving_merge_fetch_with_mismatched_child_sort_is_rejected,
+        ),
+        (
+            "sort_preserving_merge_fetch_with_matching_child_sort_lowers_to_native_sort_plus_limit",
+            sort_preserving_merge_fetch_with_matching_child_sort_lowers_to_native_sort_plus_limit,
+        ),
+        (
+            "sort_preserving_merge_fetch_without_child_ordering_is_rejected",
+            sort_preserving_merge_fetch_without_child_ordering_is_rejected,
+        ),
+    ]);
+}
+
 fn sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-sort-preserving-merge-fetch");
     let path = dir.join("input.parquet");

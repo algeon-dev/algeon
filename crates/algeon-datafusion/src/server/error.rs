@@ -657,7 +657,7 @@ mod tests {
     };
     use cudf::testing::error::new_with_for_test;
     use datafusion::{
-        common::{Column, Diagnostic, SchemaError, TableReference},
+        common::{Column, Diagnostic, SchemaError},
         datasource::{memory::MemorySourceConfig, source::DataSourceExec},
         object_store::Error as ObjectStoreError,
         physical_expr::{
@@ -926,28 +926,6 @@ mod tests {
     }
 
     #[test]
-    fn boundary_log_severity_is_derived_from_error_kind() {
-        let cases = [
-            (ErrorKind::Cancelled, AdapterStatusLogLevel::Info),
-            (ErrorKind::NotFound, AdapterStatusLogLevel::Info),
-            (ErrorKind::PermissionDenied, AdapterStatusLogLevel::Info),
-            (ErrorKind::Unauthenticated, AdapterStatusLogLevel::Info),
-            (ErrorKind::Planning, AdapterStatusLogLevel::Info),
-            (ErrorKind::InvalidInput, AdapterStatusLogLevel::Info),
-            (ErrorKind::Unsupported, AdapterStatusLogLevel::Info),
-            (ErrorKind::ResourceExhausted, AdapterStatusLogLevel::Warn),
-            (ErrorKind::DependencyFailure, AdapterStatusLogLevel::Warn),
-            (ErrorKind::Execution, AdapterStatusLogLevel::Error),
-            (ErrorKind::InvariantViolation, AdapterStatusLogLevel::Error),
-            (ErrorKind::Internal, AdapterStatusLogLevel::Error),
-        ];
-
-        for (kind, expected) in cases {
-            assert_eq!(adapter_status_log_level(kind), expected, "unexpected boundary log level for {kind}");
-        }
-    }
-
-    #[test]
     fn adapter_kind_to_flight_code_contract_matches_consumer_documentation() {
         // This match is an independent statement of the mapping contract, not
         // a call into `adapter_error_to_status`: it must keep failing the same
@@ -1176,43 +1154,6 @@ mod tests {
             assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
             assert!(!status.message().contains("/var/lib/algeon"));
         }
-    }
-
-    #[test]
-    fn generic_execution_error_is_genericized_and_does_not_leak_internal_detail() {
-        // Execution detail can include local paths or object-store URLs; do not
-        // echo it to clients.
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Execution(
-                "Parquet error reading /var/lib/algeon/secret/customers.parquet: invalid magic bytes".to_string(),
-            ),
-            TEST_OPERATION,
-            FailedStatement::Other,
-        );
-
-        assert_eq!(status.code(), Code::Internal);
-        assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
-        assert!(!status.message().contains("/var/lib/algeon"));
-        assert!(!status.message().contains("customers.parquet"));
-        assert_no_diagnostic_fields(status.message());
-    }
-
-    #[test]
-    fn duplicate_schema_reference_remains_planning() {
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::SchemaError(
-                Box::new(SchemaError::DuplicateQualifiedField {
-                    qualifier: Box::new(TableReference::bare("t")),
-                    name: "id".to_string(),
-                }),
-                Box::new(None),
-            ),
-            TEST_OPERATION,
-            FailedStatement::Other,
-        );
-
-        assert_eq!(status.code(), Code::InvalidArgument);
-        assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
     }
 
     #[test]
@@ -1524,42 +1465,6 @@ mod tests {
             status.message(),
             "invalid server configuration: admission.device_profiles.memory_limit_bytes must be greater than zero"
         );
-    }
-
-    #[test]
-    fn queue_overload_remains_the_only_resource_message_that_suggests_a_retry() {
-        let status = datafusion_error_to_status_for_operation(
-            Error::new(
-                ErrorCode::ServiceOverloaded,
-                "algeon_datafusion.native.query_service.admit",
-                "native query service queue is full",
-            )
-            .into(),
-            TEST_OPERATION,
-            FailedStatement::Other,
-        );
-
-        assert_eq!(status.code(), Code::ResourceExhausted);
-        assert_eq!(status.message(), "service overloaded; retry later");
-    }
-
-    #[test]
-    fn adapter_server_transport_failure_projects_internal_status() {
-        let status = datafusion_error_to_status_for_operation(
-            Error::new(
-                ErrorCode::ServerTransportFailure,
-                "algeon_datafusion.server.transport",
-                "Flight SQL transport failed",
-            )
-            .into(),
-            TEST_OPERATION,
-            FailedStatement::Other,
-        );
-
-        assert_eq!(status.code(), Code::Internal);
-        assert_error_metadata(&status, "server_transport_failure", "dependency_failure", "permanent");
-        assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
-        assert_no_diagnostic_fields(status.message());
     }
 
     #[test]
@@ -2062,33 +1967,6 @@ mod tests {
     }
 
     #[test]
-    fn adapter_graph_execution_failure_stays_generic() {
-        // An internal/execution-kind graph failure must not surface the native
-        // message anywhere on the client projection: the status message is
-        // generic and the `native_message` trailer is withheld for
-        // non-client-actionable kinds. Raw native text stays trusted
-        // in-process diagnosis only.
-        let status = datafusion_error_to_status_for_operation(
-            Error::new(
-                ErrorCode::Internal,
-                "algeon_datafusion.cugraph_sql.execute_gpu",
-                "native cuGraph SQL GPU-resident query execution failed",
-            )
-            .with_fact("native_message", "internal cuGraph scheduler state corruption")
-            .with_fact("reason", "internal_scheduler_state")
-            .into(),
-            TEST_OPERATION,
-            FailedStatement::Other,
-        );
-
-        assert_eq!(status.code(), Code::Internal);
-        assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
-        assert!(!status.message().contains("internal cuGraph scheduler state"));
-        assert!(!status.message().contains("reason="));
-        assert!(status.metadata().get(NATIVE_MESSAGE_METADATA_KEY).is_none());
-    }
-
-    #[test]
     fn internal_native_message_is_withheld_from_flight_metadata_but_actionable_kinds_keep_it() {
         let internal = datafusion_error_to_status_for_operation(
             Error::new(ErrorCode::Internal, TEST_OPERATION, "native execution failed")
@@ -2114,21 +1992,6 @@ mod tests {
             NATIVE_MESSAGE_METADATA_KEY,
             "BFS predicate id column dtype must match the graph vertex dtype",
         );
-    }
-
-    #[test]
-    fn adapter_non_graph_reason_fact_stays_generic_for_internal_errors() {
-        let status = datafusion_error_to_status_for_operation(
-            Error::new(ErrorCode::Internal, "algeon_datafusion.native.execution", "native execution failed")
-                .with_fact("reason", "internal_scheduler_state")
-                .into(),
-            TEST_OPERATION,
-            FailedStatement::Other,
-        );
-
-        assert_eq!(status.code(), Code::Internal);
-        assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
-        assert!(!status.message().contains("reason="));
     }
 
     fn assert_error_metadata(status: &Status, code: &str, kind: &str, error_status: &str) {

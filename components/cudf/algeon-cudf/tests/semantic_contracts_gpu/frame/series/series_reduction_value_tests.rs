@@ -4,7 +4,7 @@
 
 use cudf::{ErrorKind, Exec};
 
-use crate::common::{nullable_series, run_named_cases, series};
+use crate::common::{nullable_series, series};
 
 fn test_sum_value_i32_returns_i64_host_value() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
@@ -188,34 +188,76 @@ fn test_minmax_values_all_null_returns_nones() {
     assert_eq!(bounds, (None, None));
 }
 
-#[test]
-fn series_reduction_value_tests_cases() {
-    run_named_cases(&[
-        ("test_sum_value_i32_returns_i64_host_value", test_sum_value_i32_returns_i64_host_value),
-        ("test_sum_value_bool_returns_i64_host_value", test_sum_value_bool_returns_i64_host_value),
-        ("test_sum_value_all_null_preserves_identity_semantics", test_sum_value_all_null_preserves_identity_semantics),
-        ("test_sum_value_empty_preserves_identity_semantics", test_sum_value_empty_preserves_identity_semantics),
-        ("test_sum_value_propagates_output_type_contract", test_sum_value_propagates_output_type_contract),
-        ("test_min_value_returns_some_for_valid_input", test_min_value_returns_some_for_valid_input),
-        ("test_min_value_all_null_returns_none", test_min_value_all_null_returns_none),
-        ("test_min_value_empty_returns_none", test_min_value_empty_returns_none),
-        ("test_max_value_returns_some_for_valid_input", test_max_value_returns_some_for_valid_input),
-        ("test_max_value_all_null_returns_none", test_max_value_all_null_returns_none),
-        ("test_mean_value_returns_some_for_valid_input", test_mean_value_returns_some_for_valid_input),
-        ("test_mean_value_all_null_returns_none", test_mean_value_all_null_returns_none),
-        ("test_mean_value_empty_returns_none", test_mean_value_empty_returns_none),
-        ("test_median_value_returns_some_for_valid_input", test_median_value_returns_some_for_valid_input),
-        ("test_median_value_all_null_returns_none", test_median_value_all_null_returns_none),
-        ("test_std_value_returns_some_for_valid_input", test_std_value_returns_some_for_valid_input),
-        ("test_std_value_all_null_returns_none", test_std_value_all_null_returns_none),
-        ("test_var_value_returns_some_for_valid_input", test_var_value_returns_some_for_valid_input),
-        ("test_var_value_all_null_returns_none", test_var_value_all_null_returns_none),
-        ("test_any_value_returns_host_bool", test_any_value_returns_host_bool),
-        ("test_any_value_all_null_preserves_identity_semantics", test_any_value_all_null_preserves_identity_semantics),
-        ("test_all_value_returns_host_bool", test_all_value_returns_host_bool),
-        ("test_product_value_returns_some_for_valid_input", test_product_value_returns_some_for_valid_input),
-        ("test_product_value_partial_nulls_skip_nulls", test_product_value_partial_nulls_skip_nulls),
-        ("test_minmax_values_returns_host_options", test_minmax_values_returns_host_options),
-        ("test_minmax_values_all_null_returns_nones", test_minmax_values_all_null_returns_nones),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "series_reduction_value_tests::test_sum_value_i32_returns_i64_host_value",
+        test_sum_value_i32_returns_i64_host_value,
+    ),
+    (
+        "series_reduction_value_tests::test_sum_value_bool_returns_i64_host_value",
+        test_sum_value_bool_returns_i64_host_value,
+    ),
+    (
+        "series_reduction_value_tests::test_sum_value_all_null_preserves_identity_semantics",
+        test_sum_value_all_null_preserves_identity_semantics,
+    ),
+    (
+        "series_reduction_value_tests::test_sum_value_empty_preserves_identity_semantics",
+        test_sum_value_empty_preserves_identity_semantics,
+    ),
+    (
+        "series_reduction_value_tests::test_sum_value_propagates_output_type_contract",
+        test_sum_value_propagates_output_type_contract,
+    ),
+    (
+        "series_reduction_value_tests::test_min_value_returns_some_for_valid_input",
+        test_min_value_returns_some_for_valid_input,
+    ),
+    ("series_reduction_value_tests::test_min_value_all_null_returns_none", test_min_value_all_null_returns_none),
+    ("series_reduction_value_tests::test_min_value_empty_returns_none", test_min_value_empty_returns_none),
+    (
+        "series_reduction_value_tests::test_max_value_returns_some_for_valid_input",
+        test_max_value_returns_some_for_valid_input,
+    ),
+    ("series_reduction_value_tests::test_max_value_all_null_returns_none", test_max_value_all_null_returns_none),
+    (
+        "series_reduction_value_tests::test_mean_value_returns_some_for_valid_input",
+        test_mean_value_returns_some_for_valid_input,
+    ),
+    ("series_reduction_value_tests::test_mean_value_all_null_returns_none", test_mean_value_all_null_returns_none),
+    ("series_reduction_value_tests::test_mean_value_empty_returns_none", test_mean_value_empty_returns_none),
+    (
+        "series_reduction_value_tests::test_median_value_returns_some_for_valid_input",
+        test_median_value_returns_some_for_valid_input,
+    ),
+    ("series_reduction_value_tests::test_median_value_all_null_returns_none", test_median_value_all_null_returns_none),
+    (
+        "series_reduction_value_tests::test_std_value_returns_some_for_valid_input",
+        test_std_value_returns_some_for_valid_input,
+    ),
+    ("series_reduction_value_tests::test_std_value_all_null_returns_none", test_std_value_all_null_returns_none),
+    (
+        "series_reduction_value_tests::test_var_value_returns_some_for_valid_input",
+        test_var_value_returns_some_for_valid_input,
+    ),
+    ("series_reduction_value_tests::test_var_value_all_null_returns_none", test_var_value_all_null_returns_none),
+    ("series_reduction_value_tests::test_any_value_returns_host_bool", test_any_value_returns_host_bool),
+    (
+        "series_reduction_value_tests::test_any_value_all_null_preserves_identity_semantics",
+        test_any_value_all_null_preserves_identity_semantics,
+    ),
+    ("series_reduction_value_tests::test_all_value_returns_host_bool", test_all_value_returns_host_bool),
+    (
+        "series_reduction_value_tests::test_product_value_returns_some_for_valid_input",
+        test_product_value_returns_some_for_valid_input,
+    ),
+    (
+        "series_reduction_value_tests::test_product_value_partial_nulls_skip_nulls",
+        test_product_value_partial_nulls_skip_nulls,
+    ),
+    ("series_reduction_value_tests::test_minmax_values_returns_host_options", test_minmax_values_returns_host_options),
+    (
+        "series_reduction_value_tests::test_minmax_values_all_null_returns_nones",
+        test_minmax_values_all_null_returns_nones,
+    ),
+];

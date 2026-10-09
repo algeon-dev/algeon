@@ -4,7 +4,6 @@ use cudf::Exec;
 
 use super::*;
 
-#[test]
 fn encoded_key_partial_contract_decodes_grouped_string_keys_before_merge() {
     let context = backend_context();
     let runtime = Arc::new(context.runtime().unwrap());
@@ -60,6 +59,31 @@ fn encoded_key_partial_contract_decodes_grouped_string_keys_before_merge() {
 }
 
 #[test]
+fn grouped_cases_policy_1_1() {
+    run_named_cases(&[
+        (
+            "aggregate_execution::grouped::encoded_key_partial_contract_decodes_grouped_string_keys_before_merge",
+            encoded_key_partial_contract_decodes_grouped_string_keys_before_merge,
+        ),
+        (
+            "aggregate_execution::grouped::bounded_single_grouped_aggregate_uses_libcudf_without_exact_cardinality_probe",
+            bounded_single_grouped_aggregate_uses_libcudf_without_exact_cardinality_probe,
+        ),
+        (
+            "aggregate_execution::grouped::bounded_medium_single_string_avg_uses_libcudf_without_exact_cardinality_probe",
+            bounded_medium_single_string_avg_uses_libcudf_without_exact_cardinality_probe,
+        ),
+        (
+            "aggregate_execution::grouped::bounded_native_query_executes_chunked_grouped_sum_and_final_merge",
+            bounded_native_query_executes_chunked_grouped_sum_and_final_merge,
+        ),
+        (
+            "aggregate_execution::grouped::bounded_native_query_batches_source_adjacent_grouped_aggregate_files",
+            bounded_native_query_batches_source_adjacent_grouped_aggregate_files,
+        ),
+    ]);
+}
+
 fn bounded_single_grouped_aggregate_uses_libcudf_without_exact_cardinality_probe() {
     let context = backend_context();
     let row_count = 600_000usize;
@@ -149,7 +173,6 @@ fn bounded_single_grouped_aggregate_uses_libcudf_without_exact_cardinality_probe
     admitted.finish();
 }
 
-#[test]
 fn bounded_medium_single_string_avg_uses_libcudf_without_exact_cardinality_probe() {
     let context = backend_context();
     let row_count = 204_000usize;
@@ -232,7 +255,6 @@ fn bounded_medium_single_string_avg_uses_libcudf_without_exact_cardinality_probe
     admitted.finish();
 }
 
-#[test]
 fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     let dir = unique_temp_dir("query-engine-bounded-native-execution");
     let path = dir.join("input.parquet");
@@ -394,7 +416,6 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_batches_source_adjacent_grouped_aggregate_files() {
     let dir = unique_temp_dir("query-engine-bounded-source-adjacent-batched-files");
     let paths = [dir.join("input-0.parquet"), dir.join("input-1.parquet"), dir.join("input-2.parquet")];
@@ -550,7 +571,6 @@ fn bounded_native_query_routes_many_string_morsels_away_from_source_adjacent_par
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_streams_source_adjacent_grouped_chunks_when_partition_retention_exceeds_budget() {
     let dir = unique_temp_dir("query-engine-bounded-source-adjacent-retention-budget");
     let path = dir.join("input.parquet");
@@ -602,6 +622,36 @@ fn bounded_native_query_streams_source_adjacent_grouped_chunks_when_partition_re
     assert_eq!(batch.num_rows(), 3);
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn grouped_cases_policy_1_2() {
+    run_named_cases(&[
+        (
+            "aggregate_execution::grouped::bounded_native_query_streams_source_adjacent_grouped_chunks_when_partition_retention_exceeds_budget",
+            bounded_native_query_streams_source_adjacent_grouped_chunks_when_partition_retention_exceeds_budget,
+        ),
+        (
+            "aggregate_execution::grouped::bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_keys",
+            bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_keys,
+        ),
+        (
+            "aggregate_execution::grouped::bounded_native_query_does_not_force_group_key_partitions_from_large_source_estimates",
+            bounded_native_query_does_not_force_group_key_partitions_from_large_source_estimates,
+        ),
+        (
+            "aggregate_execution::grouped::bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk",
+            bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk,
+        ),
+        (
+            "aggregate_execution::grouped::bounded_native_query_keeps_small_nullable_string_partials_on_libcudf_before_final_merge",
+            bounded_native_query_keeps_small_nullable_string_partials_on_libcudf_before_final_merge,
+        ),
+        (
+            "aggregate_execution::grouped::bounded_native_query_executes_min_max_count_and_final_merge",
+            bounded_native_query_executes_min_max_count_and_final_merge,
+        ),
+    ]);
 }
 
 #[test]
@@ -698,7 +748,6 @@ fn bounded_native_query_executes_source_adjacent_grouped_sum_with_empty_partitio
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_keys() {
     let dir = unique_temp_dir("query-engine-bounded-source-adjacent-group-key-partitions");
     let path = dir.join("input.parquet");
@@ -1129,7 +1178,6 @@ fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinal
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_does_not_force_group_key_partitions_from_large_source_estimates() {
     let dir = unique_temp_dir("query-engine-bounded-source-adjacent-large-string-group-key");
     let path = dir.join("input.parquet");
@@ -1200,7 +1248,6 @@ fn bounded_native_query_does_not_force_group_key_partitions_from_large_source_es
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
     let dir = unique_temp_dir("query-engine-bounded-partitioned-final-merge-topk");
     let path = dir.join("input.parquet");
@@ -1282,7 +1329,6 @@ fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_keeps_small_nullable_string_partials_on_libcudf_before_final_merge() {
     let dir = unique_temp_dir("query-engine-bounded-encoded-string-aggregate");
     let path = dir.join("input.parquet");
@@ -1506,7 +1552,6 @@ fn grouped_string_sum_count_min_max_rows(batch: &RecordBatch) -> Vec<GroupedStri
     rows
 }
 
-#[test]
 fn bounded_native_query_executes_min_max_count_and_final_merge() {
     let dir = unique_temp_dir("query-engine-bounded-native-aggregate-parity");
     let path = dir.join("input.parquet");

@@ -94,15 +94,17 @@ fn generic_dblp_discovery_rejects_stale_parquet_metadata_and_missing_source_fing
 }
 
 #[test]
-fn dblp_discovery_accepts_the_pre_rename_generator_and_rejects_other_converters() {
+fn dblp_discovery_requires_the_canonical_generator_identity() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("citation_network").join("v1");
     let manifest = root.join("manifest.json");
     for (generator, accepted) in [
-        ("fixture/graph/dblp_ingest.py", true),
-        ("fixture/demo/citation_network/dblp_ingest.py", true),
-        ("fixture/demo/citation_network/prepare.py", true),
+        ("fixture/graph/dblp_ingest.py", false),
+        ("fixture/demo/citation_network/dblp_ingest.py", false),
+        ("fixture/demo/citation_network/prepare.py", false),
         ("fixture/demo/citation_network/scripts/prepare.py", true),
+        ("prefix/fixture/demo/citation_network/scripts/prepare.py", false),
+        ("fixture/demo/citation_network/scripts/prepare.py.extra", false),
         ("fixture/demo/amazon_reviews_2023/prepare.py", false),
         ("fixture/demo/amazon_reviews_2023/scripts/prepare.py", false),
     ] {
@@ -252,7 +254,7 @@ fn write_dblp_fixture_with_edge_topology(
         })
     };
     let manifest = json!({
-        "generator": "fixture/demo/citation_network/prepare.py",
+        "generator": "fixture/demo/citation_network/scripts/prepare.py",
         "dataset": {"dataset_id": DBLP_DATASET_ID, "source": "test source"},
         "max_papers": 3,
         "counts": {"papers": 3, "edges": 2, "author_rows": 4, "fos_rows": 5},

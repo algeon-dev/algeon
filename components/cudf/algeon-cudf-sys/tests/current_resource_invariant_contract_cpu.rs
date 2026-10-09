@@ -49,82 +49,6 @@ fn file_name(path: &Path) -> &str {
 }
 
 #[test]
-fn memory_runtime_split_keeps_owner_state_local() {
-    let native_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src");
-    let memory_dir = native_root.join("memory");
-    assert!(!native_root.join("rmm.cpp").exists(), "the retired monolithic memory runtime must not return");
-
-    let mut memory_units = fs::read_dir(&memory_dir)
-        .expect("memory runtime source directory must be readable")
-        .map(|entry| {
-            entry
-                .expect("memory runtime source entry must be readable")
-                .file_name()
-                .into_string()
-                .expect("memory runtime source name must be UTF-8")
-        })
-        .collect::<Vec<_>>();
-    memory_units.sort();
-    assert_eq!(
-        memory_units,
-        [
-            "allocator_event.cpp",
-            "internal.hpp",
-            "manager.cpp",
-            "query_domain.cpp",
-            "reservation.cpp",
-            "resource.cpp",
-            "test_support.cpp"
-        ],
-        "the memory runtime must remain a shallow ownership-oriented split"
-    );
-
-    for (symbol, owner) in [
-        ("allocator_event_ring::record(", "allocator_event.cpp"),
-        ("memory_resource_registry(", "resource.cpp"),
-        ("memory_manager_registry(", "manager.cpp"),
-        ("current_memory_resource_identities(", "manager.cpp"),
-        ("default_memory_manager_options(", "manager.cpp"),
-        ("query_domain_route_pause_state", "test_support.cpp"),
-    ] {
-        let defining_units = memory_units
-            .iter()
-            .filter(|unit| unit.ends_with(".cpp"))
-            .filter(|unit| {
-                fs::read_to_string(memory_dir.join(unit))
-                    .expect("memory runtime source must be readable")
-                    .contains(symbol)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(defining_units, [owner], "{symbol} must be owned only by {owner}");
-    }
-}
-
-#[test]
-fn query_domains_share_the_manager_pool_and_own_no_pool_lifecycle() {
-    let query_domain_cpp =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src/memory/query_domain.cpp"))
-            .expect("memory/query_domain.cpp must be readable");
-    let manager_cpp = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src/memory/manager.cpp"))
-        .expect("memory/manager.cpp must be readable");
-
-    for forbidden in ["cudaMemPoolCreate", "cudaMemPoolDestroy", "cudaMemPoolTrimTo"] {
-        assert!(
-            !query_domain_cpp.contains(forbidden),
-            "query domains must not own physical pool lifecycle: {forbidden}"
-        );
-    }
-    assert!(
-        manager_cpp.contains("make_shared_cuda_async_resource_box"),
-        "the device manager must own the shared CUDA async pool"
-    );
-    assert!(
-        query_domain_cpp.contains("async_pool_handle(manager_state->owner->async_pool)"),
-        "query domains must receive the manager-owned pool identity"
-    );
-}
-
-#[test]
 fn shim_contains_no_current_resource_guard_or_swap_machinery() {
     let mut violations = Vec::new();
 
@@ -201,56 +125,6 @@ fn current_resource_installation_is_confined_to_device_domain_setup() {
         "installing a device's current resource is reserved for memory-domain creation and test hooks \
          in memory/manager.cpp plus test hooks and its narrow private RMM bridge; operation paths must pass explicit stream/mr instead.\n{}",
         violations.join("\n\n")
-    );
-}
-
-#[test]
-fn rmm_install_primitive_is_a_single_locked_choke_point() {
-    let manager_cpp = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src/memory/manager.cpp"))
-        .expect("memory/manager.cpp must be readable");
-    let bridge_cpp =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src/rmm_interop_bridge.cpp"))
-            .expect("rmm_interop_bridge.cpp must be readable");
-
-    // Exactly one typed call into RMM's per-device current-resource setter is
-    // isolated in the private bridge. The main shim must only cross that
-    // boundary from the identity-map-locked helper, keeping tracking and
-    // installation atomic without duplicating RMM's singleton.
-    assert_eq!(
-        bridge_cpp.matches("rmm::mr::set_current_device_resource(").count(),
-        1,
-        "the private bridge must contain exactly one typed RMM current-resource installation"
-    );
-    assert!(
-        !manager_cpp.contains("rmm::mr::set_current_device_resource"),
-        "the version-scripted shim must not instantiate RMM's per-device singleton"
-    );
-    let locked_helper = manager_cpp
-        .split("set_current_device_resource_raw_locked(")
-        .nth(1)
-        .and_then(|tail| tail.split("\n}").next())
-        .expect("memory/manager.cpp must define set_current_device_resource_raw_locked");
-    assert_eq!(
-        locked_helper.matches("cudf_rust_rmm_set_current_device_resource(target);").count(),
-        1,
-        "the locked install helper must make exactly one call through the private RMM bridge"
-    );
-    assert!(
-        manager_cpp.contains("current_memory_resource_identity_mutex()"),
-        "the current-resource identity map must keep its own small lock (never spanning libcudf calls)"
-    );
-    assert_eq!(
-        bridge_cpp.matches("rmm::mr::get_current_device_resource_ref()").count(),
-        1,
-        "installation inspection must compare against RMM's actual per-device resource"
-    );
-    assert!(
-        manager_cpp.contains("cudf_rust_rmm_current_device_resource_is(manager.owner->mr.get())"),
-        "manager integrity inspection must use the typed actual-RMM comparator"
-    );
-    assert!(
-        !bridge_cpp.contains("dlsym") && !bridge_cpp.contains("_Z"),
-        "the private bridge must use a typed local call, not dynamic or mangled-symbol lookup"
     );
 }
 

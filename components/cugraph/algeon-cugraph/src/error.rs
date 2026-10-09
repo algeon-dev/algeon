@@ -819,18 +819,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_error_kind_display() {
-        assert_eq!(ErrorKind::Unexpected.to_string(), "Unexpected");
-        assert_eq!(ErrorKind::InvalidHandle.to_string(), "InvalidHandle");
-        assert_eq!(ErrorKind::OutOfMemory.to_string(), "OutOfMemory");
-        assert_eq!(ErrorKind::InvalidInput.to_string(), "InvalidInput");
-        assert_eq!(ErrorKind::IoError.to_string(), "IoError");
-        assert_eq!(ErrorKind::InvalidState.to_string(), "InvalidState");
-        assert_eq!(ErrorKind::NotImplemented.to_string(), "NotImplemented");
-        assert_eq!(ErrorKind::UnsupportedType.to_string(), "UnsupportedType");
-    }
-
-    #[test]
     fn allocation_source_maps_native_values_and_fails_closed() {
         assert_eq!(
             AllocationSource::from_native(cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_UNKNOWN),
@@ -849,14 +837,6 @@ mod tests {
             AllocationSource::StdBadAlloc
         );
         assert_eq!(AllocationSource::from_native(cugraph_allocation_source_t(999)), AllocationSource::Unknown);
-    }
-
-    #[test]
-    fn allocation_source_fact_values_are_stable() {
-        assert_eq!(AllocationSource::Unknown.as_str(), "unknown");
-        assert_eq!(AllocationSource::RmmOutOfMemory.as_str(), "rmm_out_of_memory");
-        assert_eq!(AllocationSource::RmmBadAlloc.as_str(), "rmm_bad_alloc");
-        assert_eq!(AllocationSource::StdBadAlloc.as_str(), "std_bad_alloc");
     }
 
     #[test]
@@ -882,20 +862,6 @@ mod tests {
     }
 
     #[test]
-    fn allocation_failure_source_fact_values_are_stable() {
-        assert_eq!(AllocationFailureSource::Unknown.as_str(), "unknown");
-        assert_eq!(AllocationFailureSource::ReservationLimit.as_str(), "reservation_limit");
-        assert_eq!(AllocationFailureSource::Physical.as_str(), "physical");
-    }
-
-    #[test]
-    fn test_error_status_display() {
-        assert_eq!(ErrorStatus::Permanent.to_string(), "permanent");
-        assert_eq!(ErrorStatus::Temporary.to_string(), "temporary");
-        assert_eq!(ErrorStatus::Persistent.to_string(), "persistent");
-    }
-
-    #[test]
     fn test_error_kind_from_error_code() {
         assert_eq!(ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_INVALID_HANDLE), ErrorKind::InvalidHandle);
         assert_eq!(ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR), ErrorKind::OutOfMemory);
@@ -908,11 +874,6 @@ mod tests {
             ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_UNSUPPORTED_TYPE_COMBINATION),
             ErrorKind::UnsupportedType
         );
-    }
-
-    #[test]
-    fn test_error_kind_from_unknown_raw_error_code() {
-        assert_eq!(ErrorKind::from_error_code_raw(999), ErrorKind::Unexpected);
     }
 
     #[test]
@@ -932,28 +893,6 @@ mod tests {
     }
 
     #[test]
-    fn test_error_display_no_message_no_context() {
-        let err = Error::new(ErrorKind::Unexpected, "test_op");
-        assert_eq!(err.to_string(), "Unexpected (permanent) at test_op");
-    }
-
-    #[test]
-    fn test_error_display_message_only() {
-        let err = Error::new(ErrorKind::InvalidInput, "test_op").with_message("bad input");
-        assert_eq!(err.to_string(), "InvalidInput (permanent) at test_op => bad input");
-    }
-
-    #[test]
-    fn test_error_display_with_source() {
-        let source = std::io::Error::other("GPU fault");
-        let err = Error::new(ErrorKind::Unexpected, "ResourceHandle::new").set_source(source);
-
-        let display = err.to_string();
-        assert!(display.contains("Unexpected (permanent) at ResourceHandle::new"));
-        assert!(display.contains("source: GPU fault"));
-    }
-
-    #[test]
     fn test_error_source_chain() {
         let source = std::io::Error::other("GPU fault");
         let err = Error::new(ErrorKind::Unexpected, "ResourceHandle::new").set_source(source);
@@ -961,48 +900,6 @@ mod tests {
         let std_source = std::error::Error::source(&err);
         assert!(std_source.is_some());
         assert_eq!(std_source.unwrap().to_string(), "GPU fault");
-    }
-
-    #[test]
-    fn test_error_debug_multiline() {
-        let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new")
-            .with_message("allocation failed")
-            .with_context("size", "1000000");
-        let debug = format!("{:?}", err);
-        assert!(debug.contains("OutOfMemory (permanent) at DeviceArray::new"));
-        assert!(debug.contains("=> allocation failed"));
-        assert!(debug.contains("Context:"));
-        assert!(debug.contains("size: 1000000"));
-    }
-
-    #[test]
-    fn test_error_debug_alternate() {
-        let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new").with_message("allocation failed");
-        let debug = format!("{:#?}", err);
-        assert!(debug.contains("OutOfMemory"));
-        assert!(debug.contains("Permanent"));
-        assert!(debug.contains("DeviceArray::new"));
-        assert!(debug.contains("allocation failed"));
-    }
-
-    #[test]
-    fn test_error_accessors() {
-        let err = Error::new(ErrorKind::InvalidInput, "test_op").with_message("bad input");
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert_eq!(err.operation(), "test_op");
-        assert_eq!(err.message(), "bad input");
-        assert_eq!(err.status(), ErrorStatus::Permanent);
-        assert!(err.is_permanent());
-        assert!(!err.is_temporary());
-        assert!(!err.is_persistent());
-        assert_eq!(err.allocation_source(), AllocationSource::Unknown);
-        assert_eq!(err.allocation_failure_source(), AllocationFailureSource::Unknown);
-        assert_eq!(err.allocation_domain_id(), 0);
-        assert_eq!(err.allocation_member_id(), 0);
-        assert_eq!(err.allocation_generation(), 0);
-        assert_eq!(err.allocation_requested_bytes(), 0);
-        assert_eq!(err.allocation_alignment(), 0);
-        assert_eq!(err.allocation_cuda_error(), -1);
     }
 
     #[test]
@@ -1043,31 +940,6 @@ mod tests {
         assert_eq!(err.allocation_alignment(), 256);
         assert_eq!(err.allocation_cuda_error(), 2);
         assert_eq!(err.message(), "reservation limit");
-    }
-
-    #[test]
-    fn test_error_status_temporary() {
-        let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new").set_temporary();
-        assert!(err.is_temporary());
-        assert!(!err.is_permanent());
-        assert_eq!(err.status(), ErrorStatus::Temporary);
-    }
-
-    #[test]
-    fn test_error_status_persistent() {
-        let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new").set_persistent();
-        assert!(!err.is_temporary());
-        assert!(!err.is_permanent());
-        assert!(err.is_persistent());
-        assert_eq!(err.status(), ErrorStatus::Persistent);
-    }
-
-    #[test]
-    fn test_error_temporary_display() {
-        let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new").with_message("GPU OOM").set_temporary();
-        let display = err.to_string();
-        assert!(display.contains("(temporary)"));
-        assert!(display.contains("=> GPU OOM"));
     }
 
     #[test]

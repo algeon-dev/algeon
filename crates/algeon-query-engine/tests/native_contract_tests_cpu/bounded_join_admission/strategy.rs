@@ -1,6 +1,7 @@
+use cudf::testing::run_named_cases;
+
 use super::*;
 
-#[test]
 fn large_keyed_inner_build_selects_partitioned_strategy() {
     let plan = large_keyed_join_strategy_plan(JoinType::Inner);
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -23,6 +24,72 @@ fn large_keyed_inner_build_selects_partitioned_strategy() {
 }
 
 #[test]
+fn t_strategy_cases() {
+    run_named_cases(&[
+        (
+            "bounded_join_admission::strategy::large_keyed_inner_build_selects_partitioned_strategy",
+            large_keyed_inner_build_selects_partitioned_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::large_keyed_left_and_full_builds_select_partitioned_strategy",
+            large_keyed_left_and_full_builds_select_partitioned_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::large_keyed_probe_with_small_build_selects_reusable_strategy",
+            large_keyed_probe_with_small_build_selects_reusable_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::small_single_use_keyed_inner_join_stays_reusable_strategy",
+            small_single_use_keyed_inner_join_stays_reusable_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy",
+            small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::small_keyed_left_join_keeps_reusable_strategy",
+            small_keyed_left_join_keeps_reusable_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy",
+            byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy",
+            row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::unknown_probe_with_small_left_build_selects_reusable_strategy",
+            unknown_probe_with_small_left_build_selects_reusable_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild",
+            small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild,
+        ),
+        (
+            "bounded_join_admission::strategy::large_probe_with_small_flat_string_build_keeps_reusable_strategy",
+            large_probe_with_small_flat_string_build_keeps_reusable_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::large_keyed_probe_with_non_small_build_selects_partitioned_strategy",
+            large_keyed_probe_with_non_small_build_selects_partitioned_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::single_use_non_small_keyed_build_selects_partitioned_strategy",
+            single_use_non_small_keyed_build_selects_partitioned_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::large_keyed_inner_residual_build_selects_partitioned_mixed_strategy",
+            large_keyed_inner_residual_build_selects_partitioned_mixed_strategy,
+        ),
+        (
+            "bounded_join_admission::strategy::keyed_inner_residual_or_selects_mixed_join_strategy",
+            keyed_inner_residual_or_selects_mixed_join_strategy,
+        ),
+    ]);
+}
+
+#[test]
 fn planning_policy_keyed_hash_join_thresholds_drive_admission_facts() {
     let policy = PlanningPolicy {
         keyed_hash_join: KeyedHashJoinStrategyOptions::default()
@@ -40,7 +107,6 @@ fn planning_policy_keyed_hash_join_thresholds_drive_admission_facts() {
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
 }
 
-#[test]
 fn large_keyed_left_and_full_builds_select_partitioned_strategy() {
     for join_type in [JoinType::Left, JoinType::Full] {
         let plan = large_keyed_join_strategy_plan(join_type.clone());
@@ -66,7 +132,6 @@ fn large_keyed_left_and_full_builds_select_partitioned_strategy() {
     }
 }
 
-#[test]
 fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
     let plan = large_keyed_probe_join_strategy_plan(10, 1024);
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -85,7 +150,6 @@ fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
 }
 
-#[test]
 fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
     let plan = small_keyed_join_strategy_plan(JoinType::Inner, None);
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -109,7 +173,6 @@ fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
     compile_pipeline(&plan, &analysis).expect("small reusable join should compile");
 }
 
-#[test]
 fn small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy() {
     let plan = small_keyed_join_strategy_plan(JoinType::Inner, Some("small-reusable-build"));
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -126,7 +189,6 @@ fn small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy() {
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
 }
 
-#[test]
 fn small_keyed_left_join_keeps_reusable_strategy() {
     let plan = small_keyed_join_strategy_plan(JoinType::Left, None);
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -143,7 +205,6 @@ fn small_keyed_left_join_keeps_reusable_strategy() {
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
 }
 
-#[test]
 fn byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let plan = byte_small_row_non_small_keyed_join_strategy_plan();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -163,7 +224,6 @@ fn byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy() {
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1048576"));
 }
 
-#[test]
 fn row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let plan = row_small_byte_non_small_keyed_join_strategy_plan();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -183,7 +243,6 @@ fn row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy() {
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1048576"));
 }
 
-#[test]
 fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
     let plan = unknown_probe_small_left_build_join_strategy_plan();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -202,7 +261,6 @@ fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
     assert_eq!(facts.get("probe_side_bytes"), None);
 }
 
-#[test]
 fn small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild() {
     let plan = string_keyed_join_strategy_plan();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -218,7 +276,6 @@ fn small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
 }
 
-#[test]
 fn large_probe_with_small_flat_string_build_keeps_reusable_strategy() {
     let plan = string_keyed_join_strategy_plan_with_probe(10_000_000, 3 * 1024 * 1024 * 1024, 10, 1024);
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -235,7 +292,6 @@ fn large_probe_with_small_flat_string_build_keeps_reusable_strategy() {
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
 }
 
-#[test]
 fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
     let plan = large_keyed_probe_join_strategy_plan(2_000_000, 128 * 1024 * 1024);
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -253,7 +309,6 @@ fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
 }
 
-#[test]
 fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
     let plan = medium_single_use_keyed_build_join_strategy_plan();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -277,7 +332,6 @@ fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
     compile_pipeline(&plan, &analysis).expect("single-use non-small partitioned join should compile");
 }
 
-#[test]
 fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy() {
     let plan = large_keyed_residual_join_strategy_plan();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
@@ -299,7 +353,6 @@ fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy() {
     compile_pipeline(&plan, &analysis).expect("partitioned residual join should compile");
 }
 
-#[test]
 fn keyed_inner_residual_or_selects_mixed_join_strategy() {
     let plan = large_keyed_residual_or_join_strategy_plan();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));

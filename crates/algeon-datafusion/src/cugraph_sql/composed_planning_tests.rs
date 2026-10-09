@@ -5,6 +5,8 @@ use arrow::{
     datatypes::{DataType, Field, Schema, SchemaRef},
 };
 use cudf::frame::dataframe::HostBatchCursorConfig;
+#[cfg(test)]
+use cudf::testing;
 use datafusion::{
     catalog::MemTable,
     execution::SessionStateBuilder,
@@ -17,10 +19,13 @@ use query_planning::{
     plan::{JoinType, PlanNode, QueryPlan, QueryPlanBuilder, ResultSink},
     source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
+#[cfg(test)]
+use tokio::runtime::Builder as TestRuntimeBuilder;
 
 use super::{CugraphAlgoExec, CugraphSqlConfig};
 use crate::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
+    closing_backend::ClosingBackend,
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, below_native_admission},
     session::AlgeonSessionStateBuilderExt,
 };
@@ -46,9 +51,9 @@ const PAGERANK_FLOAT32_TOP_K_SQL: &str = "SELECT vertex, value \
      ORDER BY value DESC \
      LIMIT 100";
 
-fn backend_context() -> (AlgeonGpuBackend, SessionContext) {
+fn backend_context() -> (ClosingBackend, SessionContext) {
     let device = AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
-    let backend = AlgeonGpuBackend::builder().devices([device]).build().unwrap();
+    let backend = ClosingBackend::new(AlgeonGpuBackend::builder().devices([device]).build().unwrap());
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features())
         .unwrap()
@@ -261,7 +266,75 @@ fn producer_plan(schema: &SchemaRef) -> QueryPlan {
     builder.finish_gpu_resident(source).unwrap()
 }
 
-#[tokio::test]
+#[test]
+fn composed_planning_tests_cases_1() {
+    testing::run_named_cases(&[
+        ("pagerank_forceatlas2_join_lowers_to_one_composed_consumer", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(pagerank_forceatlas2_join_lowers_to_one_composed_consumer())
+        }),
+        ("cpu_input_bfs_orders_by_vertex_through_composed_native_plan", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cpu_input_bfs_orders_by_vertex_through_composed_native_plan())
+        }),
+        ("raw_bfs_top_k_consumer_keeps_sort_limit_structure", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(raw_bfs_top_k_consumer_keeps_sort_limit_structure())
+        }),
+        ("pagerank_top_k_consumer_keeps_source_sort_limit_structure", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(pagerank_top_k_consumer_keeps_source_sort_limit_structure())
+        }),
+        ("bare_limit_plans_keep_source_limit_structure_per_algorithm", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(bare_limit_plans_keep_source_limit_structure_per_algorithm())
+        }),
+        ("string_vertex_pagerank_limits_stay_single_source_consumers", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(string_vertex_pagerank_limits_stay_single_source_consumers())
+        }),
+        ("large_numeric_pagerank_top_k_keeps_source_sort_limit_structure", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(large_numeric_pagerank_top_k_keeps_source_sort_limit_structure())
+        }),
+        ("ranked_metadata_enrichment_shares_one_top_k_occurrence", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(ranked_metadata_enrichment_shares_one_top_k_occurrence())
+        }),
+        ("pagerank_composition_consumer_covers_filter_sort_limit", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(pagerank_composition_consumer_covers_filter_sort_limit())
+        }),
+    ]);
+}
+
 async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
     let (_backend, ctx) = backend_context();
     register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
@@ -397,7 +470,6 @@ fn synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
     assert_eq!(native_consumer.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Union(_))).count(), 1);
 }
 
-#[tokio::test]
 async fn cpu_input_bfs_orders_by_vertex_through_composed_native_plan() {
     let (_backend, ctx) = backend_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -427,7 +499,6 @@ async fn cpu_input_bfs_orders_by_vertex_through_composed_native_plan() {
     assert_eq!(native_plan.root_id(), sort_node.id, "the native sort must be the composed consumer root");
 }
 
-#[tokio::test]
 async fn raw_bfs_top_k_consumer_keeps_sort_limit_structure() {
     let (_backend, ctx) = backend_context();
     register_phase_c_top_k_edges(&ctx, "phase_c_top_k_edges", DataType::Float64);
@@ -446,7 +517,6 @@ async fn raw_bfs_top_k_consumer_keeps_sort_limit_structure() {
     }
 }
 
-#[tokio::test]
 async fn pagerank_top_k_consumer_keeps_source_sort_limit_structure() {
     let (_backend, ctx) = backend_context();
     register_phase_c_top_k_edges(&ctx, "phase_c_top_k_edges", DataType::Float64);
@@ -485,7 +555,6 @@ async fn pagerank_top_k_consumer_keeps_source_sort_limit_structure() {
     }
 }
 
-#[tokio::test]
 async fn bare_limit_plans_keep_source_limit_structure_per_algorithm() {
     let (_backend, ctx) = backend_context();
     register_phase_c_top_k_edges(&ctx, "phase_c_top_k_edges", DataType::Float64);
@@ -521,7 +590,6 @@ async fn bare_limit_plans_keep_source_limit_structure_per_algorithm() {
     }
 }
 
-#[tokio::test]
 async fn string_vertex_pagerank_limits_stay_single_source_consumers() {
     let (_backend, ctx) = backend_context();
     register_string_pagerank_parity_edges(&ctx, "string_edges", "numeric_edges");
@@ -549,7 +617,6 @@ async fn string_vertex_pagerank_limits_stay_single_source_consumers() {
     assert!(matches!(top_k_consumer.native_plan().root_node().kind, PlanNode::Source(_)));
 }
 
-#[tokio::test]
 async fn large_numeric_pagerank_top_k_keeps_source_sort_limit_structure() {
     let large_limit = HostBatchCursorConfig::DEFAULT_MAX_ROWS + 1;
     let (_backend, ctx) = backend_context();
@@ -574,7 +641,6 @@ async fn large_numeric_pagerank_top_k_keeps_source_sort_limit_structure() {
     }
 }
 
-#[tokio::test]
 async fn ranked_metadata_enrichment_shares_one_top_k_occurrence() {
     let dir = unique_temp_dir("algeon-datafusion-cugraph-ranked-structural");
     std::fs::create_dir_all(&dir).unwrap();
@@ -660,7 +726,6 @@ async fn ranked_metadata_enrichment_shares_one_top_k_occurrence() {
     );
 }
 
-#[tokio::test]
 async fn pagerank_composition_consumer_covers_filter_sort_limit() {
     let dir = unique_temp_dir("algeon-datafusion-cugraph-compose-structural");
     std::fs::create_dir_all(&dir).unwrap();

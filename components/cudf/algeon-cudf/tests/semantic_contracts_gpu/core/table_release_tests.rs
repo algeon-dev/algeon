@@ -3,7 +3,7 @@
 use cudf::{ErrorCode, Runtime, TypeId, core::Table, testing::prelude::*};
 use cudf_sys::test_support;
 
-use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, empty_column, run_named_cases};
+use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, empty_column};
 
 fn test_into_columns_single_column() {
     let c1 = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -142,16 +142,13 @@ fn into_columns_copies_typed_failure_before_cleanup_clears_native_error_state() 
     assert!(detail.message.contains("failed to allocate column handle array"));
 }
 
-#[test]
-fn table_release_tests_cases() {
-    run_named_cases(&[
-        ("test_into_columns_single_column", test_into_columns_single_column),
-        ("test_into_columns_multiple_columns", test_into_columns_multiple_columns),
-        ("test_into_columns_empty_table", test_into_columns_empty_table),
-        ("test_into_columns_preserves_column_order", test_into_columns_preserves_column_order),
-        ("test_into_columns_nullable_column", test_into_columns_nullable_column),
-        ("test_into_columns_roundtrip", test_into_columns_roundtrip),
-        ("test_into_columns_with_string_column", test_into_columns_with_string_column),
-        ("test_into_columns_with_empty_rows", test_into_columns_with_empty_rows),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("table_release_tests::test_into_columns_single_column", test_into_columns_single_column),
+    ("table_release_tests::test_into_columns_multiple_columns", test_into_columns_multiple_columns),
+    ("table_release_tests::test_into_columns_empty_table", test_into_columns_empty_table),
+    ("table_release_tests::test_into_columns_preserves_column_order", test_into_columns_preserves_column_order),
+    ("table_release_tests::test_into_columns_nullable_column", test_into_columns_nullable_column),
+    ("table_release_tests::test_into_columns_roundtrip", test_into_columns_roundtrip),
+    ("table_release_tests::test_into_columns_with_string_column", test_into_columns_with_string_column),
+    ("table_release_tests::test_into_columns_with_empty_rows", test_into_columns_with_empty_rows),
+];

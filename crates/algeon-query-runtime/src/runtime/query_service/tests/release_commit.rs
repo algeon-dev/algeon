@@ -151,7 +151,7 @@ fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescen
     let report = completion.try_report().expect("published attempt report");
     assert_eq!(report.cleanup_failure_count, 0, "retained resident output");
 
-    let timeout = service.close_and_wait_for_quiescence(Duration::from_secs(1)).unwrap_err();
+    let timeout = service.close_and_wait_for_quiescence(Duration::from_millis(50)).unwrap_err();
     assert_eq!(timeout.fact_value("reason"), Some("query_service_resource_epoch_timeout"));
 
     drop(result);
@@ -355,8 +355,7 @@ fn dropping_the_handle_keeps_the_grant_until_the_attempt_ends() {
 
 /// The attempt owns its admission: committing its terminal outcome releases
 /// the grant and publishes the report while the handle is still held.
-#[test]
-fn terminal_commit_releases_the_admitted_grant_while_the_handle_is_held() {
+fn terminal_commit_releases_the_admitted_grant_while_the_handle_is_held_case() {
     let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
@@ -396,6 +395,12 @@ fn terminal_commit_releases_the_admitted_grant_while_the_handle_is_held() {
         "the grant is released before the handle drops",
     );
     drop(handle);
+}
+
+#[test]
+fn terminal_commit_releases_the_admitted_grant_while_the_handle_is_held() {
+    terminal_commit_releases_the_admitted_grant_while_the_handle_is_held_case();
+    admitted_finalizer_transfers_once_and_publishes_no_pending_capacity();
 }
 
 /// Only the attempt's terminal commit starts the release, and the report
@@ -531,8 +536,7 @@ fn release_commit_gates_are_scoped_to_their_handles() {
 /// jobs overlap. A failed first attempt may enter cleaning without releasing
 /// the second attempt's grant, and the first grant remains fenced until its
 /// envelope cleanup completes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
+async fn overlapping_different_caps_isolate_failure_and_cleaning_release_case() {
     const FIRST_CAP_BYTES: u64 = 8 * 1024 * 1024;
     const SECOND_CAP_BYTES: u64 = 12 * 1024 * 1024;
 
@@ -671,11 +675,16 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("overlapping cap isolation service drains");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
+    overlapping_different_caps_isolate_failure_and_cleaning_release_case().await;
+    cancelling_one_active_attempt_releases_only_its_own_differently_capped_grant().await;
+}
+
 /// Cancelling one of two overlapping attempts releases only the cancelled
 /// attempt's grant. Its capacity stays committed for the whole cleaning
 /// window, and the concurrently active attempt's differently sized grant is
 /// never consumed or released on its behalf.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_grant() {
     const CANCELLED_CAP_BYTES: u64 = 8 * 1024 * 1024;
     const SURVIVING_CAP_BYTES: u64 = 12 * 1024 * 1024;
@@ -1033,7 +1042,6 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
 /// The admission claim is a one-time transfer from its owner into the admitted
 /// envelope. A second admission binding can carry observation identity but
 /// cannot claim again or manufacture competing cleanup/capacity facts.
-#[test]
 fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),

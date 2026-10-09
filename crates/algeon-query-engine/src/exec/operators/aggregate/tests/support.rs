@@ -47,19 +47,6 @@ pub(super) fn simple_string_avg_spec() -> (Schema, AggregateSpec) {
     (schema, spec)
 }
 
-pub(super) fn simple_string_avg_sum_spec() -> (Schema, AggregateSpec) {
-    let schema =
-        Schema::new(vec![Field::new("category", DataType::Utf8, true), Field::new("price", DataType::Float64, true)]);
-    let spec = AggregateSpec::new(
-        vec![Expr::column("category")],
-        vec![
-            AggregateExpr::new(AggregateFunction::Avg, Expr::column("price"), "avg_price"),
-            AggregateExpr::new(AggregateFunction::Sum, Expr::column("price"), "sum_price"),
-        ],
-    );
-    (schema, spec)
-}
-
 pub(super) fn filtered_global_q09_like_spec(filter_count: usize) -> (Arc<Schema>, AggregateSpec) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("quantity", DataType::Int64, true),
@@ -173,23 +160,6 @@ pub(super) fn partial_strategy_for_multi_key_sum(input_rows: u64) -> AggregateSt
         None,
         &ExecutionMetrics::detached("aggregate-test"),
     )
-}
-
-pub(super) fn partial_strategy_for_simple_string_sum(
-    input_rows: u64,
-) -> (Schema, AggregateSpec, AggregateStrategyCapabilityDecision) {
-    let (schema, spec) = simple_string_sum_spec();
-    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
-    let decision = select_partial_aggregate_strategy_decision(
-        decision,
-        None,
-        &spec,
-        &schema,
-        input_rows,
-        None,
-        &ExecutionMetrics::detached("aggregate-test"),
-    );
-    (schema, spec, decision)
 }
 
 pub(super) fn metrics_with_prior_partial_decision(

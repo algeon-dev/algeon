@@ -27,7 +27,7 @@ use datafusion::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
         filter::FilterExec,
-        joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode},
+        joins::{HashJoinExec, PartitionMode},
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
         sorts::{partial_sort::PartialSortExec, sort::SortExec},
@@ -35,9 +35,6 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use futures::executor::block_on;
-use workloads::tpch::TPCH_TABLES;
-
-use crate::tpch_session::tpch_report_session_config;
 
 pub(super) fn bounded_config() -> AlgeonNativeExecutionConfig {
     AlgeonNativeExecutionConfig::new(SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"))
@@ -99,16 +96,6 @@ FROM bench
 GROUP BY key
 ORDER BY key
 ";
-    let df = block_on(ctx.sql(sql)).unwrap();
-    block_on(df.create_physical_plan()).unwrap()
-}
-
-pub(super) fn tpch_sql_plan(root: &Path, sql: &str) -> Arc<dyn ExecutionPlan> {
-    let ctx = SessionContext::new_with_config(tpch_report_session_config());
-    for table in TPCH_TABLES {
-        let path = root.join(format!("{table}.parquet"));
-        block_on(ctx.register_parquet(*table, path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
-    }
     let df = block_on(ctx.sql(sql)).unwrap();
     block_on(df.create_physical_plan()).unwrap()
 }
@@ -220,12 +207,6 @@ pub(super) fn filter_scan_to_empty_at_runtime(scan: Arc<dyn ExecutionPlan>) -> A
     )
     .unwrap();
     Arc::new(FilterExec::try_new(predicate, scan).unwrap())
-}
-
-pub(super) fn root_nested_loop_join_plan(left: &Path, right: &Path) -> Arc<dyn ExecutionPlan> {
-    let left = parquet_scan(left);
-    let right = parquet_scan(right);
-    Arc::new(NestedLoopJoinExec::try_new(left, right, None, &JoinType::Inner, None).unwrap())
 }
 
 pub(super) fn aggregate_sort_limit_plan(

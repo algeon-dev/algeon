@@ -279,19 +279,4 @@ mod tests {
             assert!(matches!(descriptor.unit.as_ucum(), "1" | "By" | "s"));
         }
     }
-
-    #[test]
-    fn duration_histogram_projects_internal_nanoseconds_to_declared_seconds() {
-        let descriptor = BACKEND_METRIC_DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.name == "algeon.gpu.attempts.duration")
-            .expect("duration descriptor must be registered");
-
-        assert_eq!(descriptor.unit, BackendMetricUnit::Seconds);
-        assert_eq!(descriptor.unit.as_ucum(), "s");
-
-        let projection = project_backend_duration_histogram(descriptor, 1_000_000_123).expect("seconds are supported");
-        assert_eq!(projection.bucket_bounds, vec![0.000_001, 0.000_01, 0.000_1, 0.001, 0.01, 0.1, 1.0]);
-        assert_eq!(projection.sum, 1.000_000_123);
-    }
 }

@@ -16,9 +16,12 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::array_value_to_string,
 };
-use cudf::testing::arrow::{
-    arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
-    reset_arrow_host_interop_observation_for_test,
+use cudf::{
+    testing,
+    testing::arrow::{
+        arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+        reset_arrow_host_interop_observation_for_test,
+    },
 };
 use datafusion::{
     common::ScalarValue,
@@ -52,7 +55,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use query_planning::{optimizer::NativeOptimizerDiagnostics, source::SourceDiagnostics};
-use tokio::sync::Mutex;
+use tokio::{runtime::Builder as TestRuntimeBuilder, sync::Mutex};
 use workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 
 static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::const_new(());
@@ -72,18 +75,6 @@ use sql::*;
 use support::*;
 use tpch_session::tpch_report_session_config;
 
-#[tokio::test]
-async fn native_runtime_default_sql_sum_expression_matches_cpu() {
-    let dir = unique_temp_dir("algeon-datafusion-native-runtime-default-sum");
-    let path = dir.join("input.parquet");
-    write_row_group_pruning_parquet_file(&path);
-
-    assert_default_sql_native_parity(&path, SQL_SUM_EXPRESSION_QUERY, None).await;
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[tokio::test]
 async fn native_runtime_default_sql_min_max_count_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-default-min-max-count");
     let path = dir.join("input.parquet");
@@ -94,7 +85,6 @@ async fn native_runtime_default_sql_min_max_count_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_default_sql_count_star_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-default-count-star");
     let path = dir.join("input.parquet");
@@ -105,7 +95,273 @@ async fn native_runtime_default_sql_count_star_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
+#[test]
+fn native_runtime_pruning_cases_1() {
+    testing::run_named_cases(&[
+        ("native_runtime_default_sql_distributed_avg_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_default_sql_distributed_avg_matches_cpu())
+        }),
+        ("native_runtime_default_sql_distributed_filtered_aggregate_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_default_sql_distributed_filtered_aggregate_matches_cpu())
+        }),
+        ("native_runtime_mixed_filtered_and_unfiltered_aggregates_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_mixed_filtered_and_unfiltered_aggregates_match_cpu())
+        }),
+        ("native_runtime_median_aggregate_matches_cpu_single_stage_bounded_without_partials", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_median_aggregate_matches_cpu_single_stage_bounded_without_partials())
+        }),
+        ("native_runtime_reader_pushdown_reduces_source_rows_and_retained_bytes", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_reader_pushdown_reduces_source_rows_and_retained_bytes())
+        }),
+        ("native_runtime_decimal32_reader_pushdown_matches_post_scan", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_decimal32_reader_pushdown_matches_post_scan())
+        }),
+    ]);
+}
+
+#[test]
+fn native_runtime_pruning_cases_2() {
+    testing::run_named_cases(&[
+        ("native_runtime_decimal32_equality_reader_pushdown_matches_post_scan", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_decimal32_equality_reader_pushdown_matches_post_scan())
+        }),
+        ("native_runtime_pushed_predicate_source_limit_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_pushed_predicate_source_limit_matches_cpu())
+        }),
+        ("native_runtime_empty_local_parquet_aggregates_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_empty_local_parquet_aggregates_match_cpu())
+        }),
+        ("native_runtime_physically_empty_parquet_files_match_cpu_without_replay", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_physically_empty_parquet_files_match_cpu_without_replay())
+        }),
+        ("native_runtime_filtered_empty_rollup_grand_total_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_filtered_empty_rollup_grand_total_matches_cpu())
+        }),
+        ("native_runtime_bare_boolean_filter_stays_post_decode", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_bare_boolean_filter_stays_post_decode())
+        }),
+    ]);
+}
+
+#[test]
+fn native_runtime_pruning_cases_3() {
+    testing::run_named_cases(&[
+        ("native_runtime_nullable_distributed_avg_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_nullable_distributed_avg_matches_cpu())
+        }),
+        ("native_runtime_grouped_single_distinct_split_matches_cpu_with_null_values", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_grouped_single_distinct_split_matches_cpu_with_null_values())
+        }),
+        ("native_runtime_global_single_distinct_split_matches_cpu_with_null_values", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_global_single_distinct_split_matches_cpu_with_null_values())
+        }),
+        ("native_runtime_global_single_distinct_split_over_empty_input_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_global_single_distinct_split_over_empty_input_matches_cpu())
+        }),
+        ("native_runtime_global_count_join_pushdown_over_empty_join_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_global_count_join_pushdown_over_empty_join_matches_cpu())
+        }),
+        ("native_runtime_uneven_row_group_distributed_avg_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_uneven_row_group_distributed_avg_matches_cpu())
+        }),
+    ]);
+}
+
+#[test]
+fn native_runtime_pruning_cases_4() {
+    testing::run_named_cases(&[
+        ("native_runtime_sort_null_ordering_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_sort_null_ordering_matches_cpu())
+        }),
+        ("native_runtime_bounded_topk_null_ordering_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_bounded_topk_null_ordering_matches_cpu())
+        }),
+        ("native_runtime_nullable_avg_output_ordering_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_nullable_avg_output_ordering_matches_cpu())
+        }),
+        ("native_runtime_discounted_revenue_global_decimal_sum_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_discounted_revenue_global_decimal_sum_matches_cpu())
+        }),
+        ("native_runtime_order_sensitive_source_scan_limit_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_order_sensitive_source_scan_limit_matches_cpu())
+        }),
+    ]);
+}
+
+#[test]
+fn native_runtime_pruning_cases_5() {
+    testing::run_named_cases(&[
+        ("native_runtime_parquet_sorting_columns_scan_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_parquet_sorting_columns_scan_matches_cpu())
+        }),
+        ("native_runtime_sorted_file_split_into_byte_ranges_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_sorted_file_split_into_byte_ranges_matches_cpu())
+        }),
+        ("native_runtime_global_decimal_avg_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_global_decimal_avg_matches_cpu())
+        }),
+        ("native_runtime_zero_column_count_matches_cpu_without_parquet_data_columns", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_zero_column_count_matches_cpu_without_parquet_data_columns())
+        }),
+        ("native_runtime_default_sql_not_filter_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_default_sql_not_filter_matches_cpu())
+        }),
+    ]);
+}
+
+#[test]
+fn native_runtime_pruning_cases_6() {
+    testing::run_named_cases(&[
+        ("native_runtime_widening_numeric_cast_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_widening_numeric_cast_matches_cpu())
+        }),
+        ("native_runtime_default_sql_prunes_metadata_row_groups_for_pushed_parquet_predicate", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_default_sql_prunes_metadata_row_groups_for_pushed_parquet_predicate())
+        }),
+        ("native_runtime_partial_byte_range_access_plan_intersection_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_partial_byte_range_access_plan_intersection_matches_cpu())
+        }),
+        ("native_runtime_default_sql_min_max_count_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_default_sql_min_max_count_matches_cpu())
+        }),
+        ("native_runtime_default_sql_count_star_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_default_sql_count_star_matches_cpu())
+        }),
+    ]);
+}
+
 async fn native_runtime_default_sql_distributed_avg_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-default-avg");
     let path = dir.join("input.parquet");
@@ -117,7 +373,6 @@ async fn native_runtime_default_sql_distributed_avg_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_default_sql_distributed_filtered_aggregate_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-default-filtered-aggregate");
     let path = dir.join("input.parquet");
@@ -129,7 +384,6 @@ async fn native_runtime_default_sql_distributed_filtered_aggregate_matches_cpu()
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_mixed_filtered_and_unfiltered_aggregates_match_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-filtered-aggregate");
     let path = dir.join("input.parquet");
@@ -141,7 +395,6 @@ async fn native_runtime_mixed_filtered_and_unfiltered_aggregates_match_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_median_aggregate_matches_cpu_single_stage_bounded_without_partials() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-median-aggregate-bounded");
     let path = dir.join("input.parquet");
@@ -169,7 +422,6 @@ async fn native_runtime_median_aggregate_matches_cpu_single_stage_bounded_withou
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_reader_pushdown_reduces_source_rows_and_retained_bytes() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-reader-pushdown-selective");
     let path = dir.join("input.parquet");
@@ -202,7 +454,6 @@ async fn native_runtime_reader_pushdown_reduces_source_rows_and_retained_bytes()
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_decimal32_reader_pushdown_matches_post_scan() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-decimal32-reader-pushdown");
     let path = dir.join("input.parquet");
@@ -229,7 +480,6 @@ async fn native_runtime_decimal32_reader_pushdown_matches_post_scan() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_decimal32_equality_reader_pushdown_matches_post_scan() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-decimal32-equality-reader-pushdown");
     let path = dir.join("input.parquet");
@@ -257,7 +507,6 @@ async fn native_runtime_decimal32_equality_reader_pushdown_matches_post_scan() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_pushed_predicate_source_limit_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-pushed-predicate-source-limit");
     let path = dir.join("input.parquet");
@@ -283,7 +532,6 @@ async fn native_runtime_pushed_predicate_source_limit_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_empty_local_parquet_aggregates_match_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-empty-local-aggregates");
     let path = dir.join("input.parquet");
@@ -296,7 +544,6 @@ async fn native_runtime_empty_local_parquet_aggregates_match_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_physically_empty_parquet_files_match_cpu_without_replay() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-physical-empty-parquet");
     let zero_row_file = dir.join("zero-rows.parquet");
@@ -323,7 +570,6 @@ async fn native_runtime_physically_empty_parquet_files_match_cpu_without_replay(
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_filtered_empty_rollup_grand_total_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-filtered-empty-rollup");
     let path = dir.join("bench.parquet");
@@ -346,7 +592,6 @@ async fn native_runtime_filtered_empty_rollup_grand_total_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_bare_boolean_filter_stays_post_decode() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-bare-boolean-filter");
     let path = dir.join("input.parquet");
@@ -399,7 +644,6 @@ async fn execute_sql_native_query(path: &std::path::Path, config: SessionConfig,
     }
 }
 
-#[tokio::test]
 async fn native_runtime_nullable_distributed_avg_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-nullable-avg");
     let path = dir.join("input.parquet");
@@ -410,7 +654,6 @@ async fn native_runtime_nullable_distributed_avg_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_grouped_single_distinct_split_matches_cpu_with_null_values() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-grouped-single-distinct");
     let path = dir.join("input.parquet");
@@ -421,7 +664,6 @@ async fn native_runtime_grouped_single_distinct_split_matches_cpu_with_null_valu
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_global_single_distinct_split_matches_cpu_with_null_values() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-global-single-distinct");
     let path = dir.join("input.parquet");
@@ -432,7 +674,6 @@ async fn native_runtime_global_single_distinct_split_matches_cpu_with_null_value
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_global_single_distinct_split_over_empty_input_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-empty-single-distinct");
     let path = dir.join("input.parquet");
@@ -443,7 +684,6 @@ async fn native_runtime_global_single_distinct_split_over_empty_input_matches_cp
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_global_count_join_pushdown_over_empty_join_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-empty-join-global-count");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -453,7 +693,6 @@ async fn native_runtime_global_count_join_pushdown_over_empty_join_matches_cpu()
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_uneven_row_group_distributed_avg_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-uneven-avg");
     let path = dir.join("input.parquet");
@@ -464,7 +703,6 @@ async fn native_runtime_uneven_row_group_distributed_avg_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_sort_null_ordering_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-sort-nulls");
     let path = dir.join("input.parquet");
@@ -482,7 +720,6 @@ async fn native_runtime_sort_null_ordering_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_bounded_topk_null_ordering_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-topk-nulls");
     let path = dir.join("input.parquet");
@@ -493,7 +730,6 @@ async fn native_runtime_bounded_topk_null_ordering_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_nullable_avg_output_ordering_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-nullable-avg-sort");
     let path = dir.join("input.parquet");
@@ -504,7 +740,6 @@ async fn native_runtime_nullable_avg_output_ordering_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-discounted-revenue");
     let path = dir.join("lineitem.parquet");
@@ -537,7 +772,6 @@ async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-order-sensitive-scan-limit");
     let path = dir.join("input.parquet");
@@ -575,7 +809,6 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_parquet_sorting_columns_scan_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-parquet-sorting-columns");
     let path = dir.join("input.parquet");
@@ -601,7 +834,6 @@ async fn native_runtime_parquet_sorting_columns_scan_matches_cpu() {
 /// DataFusion splits one sorted file into byte-range groups under the default
 /// `target_partitions`. The native reader coalesces the ranges back into that
 /// file and reads its row groups in order, so the declared ordering holds.
-#[tokio::test]
 async fn native_runtime_sorted_file_split_into_byte_ranges_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-sorted-byte-ranges");
     let path = dir.join("input.parquet");
@@ -638,7 +870,6 @@ fn collect_file_scans(plan: &Arc<dyn ExecutionPlan>) -> Vec<FileScanConfig> {
     scans
 }
 
-#[tokio::test]
 async fn native_runtime_global_decimal_avg_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-global-decimal-avg");
     let path = dir.join("lineitem.parquet");
@@ -666,7 +897,6 @@ async fn native_runtime_global_decimal_avg_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_columns() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-zero-column-count");
     let path = dir.join("input.parquet");
@@ -698,7 +928,6 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_default_sql_not_filter_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-not-filter");
     let path = dir.join("input.parquet");
@@ -716,7 +945,6 @@ async fn native_runtime_default_sql_not_filter_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_widening_numeric_cast_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-cast");
     let path = dir.join("input.parquet");
@@ -735,7 +963,6 @@ async fn native_runtime_widening_numeric_cast_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_default_sql_prunes_metadata_row_groups_for_pushed_parquet_predicate() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-row-group-pruning");
     let path = dir.join("input.parquet");
@@ -747,7 +974,6 @@ async fn native_runtime_default_sql_prunes_metadata_row_groups_for_pushed_parque
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_partial_byte_range_access_plan_intersection_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-byte-range-access-plan");
     let path = dir.join("input.parquet");

@@ -1,6 +1,6 @@
 //! Tests for high-level local Parquet source execution.
 
-use std::{collections::BTreeMap, fs, process::Command, slice, sync::Arc};
+use std::{collections::BTreeMap, fs, slice, sync::Arc};
 
 use arrow::{
     array::{Array, AsArray, Int32Array, Int64Array, LargeListArray, ListArray, new_null_array},
@@ -28,7 +28,7 @@ use cudf::{
     },
     ops::ast::AstExpression,
     runtime::Runtime,
-    testing::prelude::*,
+    testing::{prelude::*, run_named_cases},
 };
 use cudf_sys::test_support;
 use parquet::{
@@ -39,7 +39,7 @@ use tempfile::TempDir;
 
 use crate::common::{
     column_from_slice, column_from_strs, error_context_value, execution_budget_token, last_exec_mr_value,
-    read_whole_parquet_source, reset_exec_observation, sample_runtime,
+    read_whole_parquet_source, reset_exec_observation, sample_runtime, write_i32_parquet_fixture,
 };
 
 fn dtype(id: TypeId) -> DataType {
@@ -201,26 +201,6 @@ fn decimal_integer_source(path: &std::path::Path) -> LocalParquetSource {
     .unwrap()
 }
 
-fn write_i32_parquet_with_row_groups(path: &std::path::Path, values: &[i32], row_group_size: usize) -> bool {
-    let vals = values.iter().map(i32::to_string).collect::<Vec<_>>().join(",");
-    let script = format!(
-        "import pyarrow as pa, pyarrow.parquet as pq; \
-         t = pa.table({{'id': pa.array([{}], type=pa.int32())}}); \
-         pq.write_table(t, '{}', row_group_size={})",
-        vals,
-        path.display(),
-        row_group_size
-    );
-    match Command::new("python3").args(["-c", &script]).output() {
-        Ok(output) if output.status.success() => true,
-        Ok(output) => {
-            eprintln!("PyArrow row-group fixture write failed: {}", String::from_utf8_lossy(&output.stderr));
-            false
-        },
-        Err(_) => false,
-    }
-}
-
 fn single_i32_source(path: &std::path::Path, stable_id: &str) -> LocalParquetSource {
     LocalParquetSource::data(
         [LocalParquetFile::new(path, stable_id, []).unwrap()],
@@ -244,7 +224,6 @@ fn read_single_chunk_with_evidence(rt: &Runtime, source: &LocalParquetSource) ->
     .unwrap()
 }
 
-#[test]
 fn read_parquet_source_materializes_typed_missing_list_columns() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("typed_missing_lists.parquet");
@@ -298,7 +277,6 @@ fn read_parquet_source_materializes_typed_missing_list_columns() {
     assert_eq!(host.column(3).as_any().downcast_ref::<LargeListArray>().unwrap().values().len(), 0);
 }
 
-#[test]
 fn read_parquet_source_materializes_typed_all_null_and_empty_list_columns() {
     let dir = TempDir::new().unwrap();
     let all_null_path = dir.path().join("typed_all_null_lists.parquet");
@@ -367,7 +345,6 @@ fn read_parquet_source_materializes_typed_all_null_and_empty_list_columns() {
     assert_eq!(empty.column(2).as_any().downcast_ref::<LargeListArray>().unwrap().value_type(), ArrowDataType::Utf8);
 }
 
-#[test]
 fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_group() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("all_null_optional.parquet");
@@ -514,7 +491,6 @@ fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_gro
     assert_eq!(evidence.backend, "parquet_footer_materialized");
 }
 
-#[test]
 fn read_parquet_source_chunks_handles_mixed_all_null_optional_column_row_groups() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("mixed_all_null_optional.parquet");
@@ -587,12 +563,11 @@ fn read_parquet_source_chunks_handles_mixed_all_null_optional_column_row_groups(
     assert_eq!(evidence.backend, "parquet_footer_materialized");
 }
 
-#[test]
 fn parquet_read_evidence_reports_no_predicate_pruning_absent() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("no_predicate_pruning.parquet");
     let rt = sample_runtime();
-    assert!(write_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2));
+    write_i32_parquet_fixture(&path, "id", &[1, 2, 3, 4], 2);
 
     let output = read_single_chunk_with_evidence(&rt, &single_i32_source(&path, "no-predicate-pruning"));
     let pruning = output.read_evidence().and_then(|evidence| evidence.pruning).unwrap();
@@ -603,12 +578,11 @@ fn parquet_read_evidence_reports_no_predicate_pruning_absent() {
     assert_eq!(pruning.row_groups_after_bloom_filter, None);
 }
 
-#[test]
 fn parquet_read_evidence_reports_stats_pruned_row_groups() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("stats_pruning.parquet");
     let rt = sample_runtime();
-    assert!(write_i32_parquet_with_row_groups(&path, &[1, 2, 100, 101, 200, 201], 2));
+    write_i32_parquet_fixture(&path, "id", &[1, 2, 100, 101, 200, 201], 2);
 
     let predicate = AstExpression::greater(
         AstExpression::left_column(0).unwrap(),
@@ -625,7 +599,6 @@ fn parquet_read_evidence_reports_stats_pruned_row_groups() {
     assert!(pruning.row_groups_after_stats_filter.is_some_and(|after| after < pruning.input_row_groups));
 }
 
-#[test]
 fn parquet_reader_predicate_bare_boolean_column_root_does_not_crash() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bare_boolean_column_root.parquet");
@@ -667,7 +640,6 @@ fn parquet_reader_predicate_bare_boolean_column_root_does_not_crash() {
     assert_eq!(pruning.row_groups_after_stats_filter, None);
 }
 
-#[test]
 fn parquet_reader_predicate_bare_boolean_literal_root_does_not_crash() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bare_boolean_literal_root.parquet");
@@ -685,7 +657,6 @@ fn parquet_reader_predicate_bare_boolean_literal_root_does_not_crash() {
     assert_eq!(pruning.row_groups_after_stats_filter, None);
 }
 
-#[test]
 fn parquet_reader_predicate_bare_boolean_false_literal_root_filters_all_rows() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bare_boolean_false_literal_root.parquet");
@@ -703,7 +674,6 @@ fn parquet_reader_predicate_bare_boolean_false_literal_root_filters_all_rows() {
     assert_eq!(pruning.row_groups_after_stats_filter, None);
 }
 
-#[test]
 fn parquet_read_evidence_reports_bloom_pruned_row_groups() {
     let rt = sample_runtime();
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -736,7 +706,6 @@ fn parquet_read_evidence_reports_bloom_pruned_row_groups() {
     assert!(pruning.row_groups_after_bloom_filter.is_some_and(|after| after < pruning.input_row_groups));
 }
 
-#[test]
 fn read_parquet_source_single_file_projects_and_records_boundary() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("source.parquet");
@@ -793,17 +762,14 @@ fn read_parquet_source_single_file_projects_and_records_boundary() {
     assert_eq!(evidence.fallback_reason, "not_applicable");
 }
 
-#[test]
 fn decimal_reader_predicate_matches_decimal32_backed_source_column() {
     assert_decimal_reader_predicate_matches_backed_source_column(TypeId::Decimal32);
 }
 
-#[test]
 fn decimal_reader_predicate_matches_decimal64_backed_source_column() {
     assert_decimal_reader_predicate_matches_backed_source_column(TypeId::Decimal64);
 }
 
-#[test]
 fn decimal_reader_predicate_matches_decimal128_backed_source_column() {
     assert_decimal_reader_predicate_matches_backed_source_column(TypeId::Decimal128);
 }
@@ -862,7 +828,6 @@ fn assert_decimal_reader_predicate_matches_backed_source_column(storage_type: Ty
     assert_decimal_amount_raws(ge_outcome.value(), &[100, 200]);
 }
 
-#[test]
 fn decimal_reader_batch_predicate_reads_decimal32_backed_chunks() {
     let dir = TempDir::new().unwrap();
     let first = dir.path().join("decimal_reader_batch_predicate_first.parquet");
@@ -898,7 +863,6 @@ fn decimal_reader_batch_predicate_reads_decimal32_backed_chunks() {
     assert_decimal_amount_raws(outcome.value(), &[100, 200, 100, 200]);
 }
 
-#[test]
 fn decimal_reader_batch_predicate_rejects_mixed_decimal_storage_types() {
     let dir = TempDir::new().unwrap();
     let first = dir.path().join("decimal_reader_batch_predicate_decimal32.parquet");
@@ -921,7 +885,6 @@ fn decimal_reader_batch_predicate_rejects_mixed_decimal_storage_types() {
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("batch_reader_predicate_dtype_mismatch"));
 }
 
-#[test]
 fn decimal_reader_predicate_supports_integer_and_in_list_literals() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("decimal_reader_predicate_in_list.parquet");
@@ -949,7 +912,6 @@ fn decimal_reader_predicate_supports_integer_and_in_list_literals() {
     assert_decimal_amount_raws(&frame, &[-500, 200]);
 }
 
-#[test]
 fn decimal_reader_predicate_combines_with_narrow_integer_columns() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("decimal_reader_predicate_narrow_integers.parquet");
@@ -995,7 +957,6 @@ fn decimal_reader_predicate_combines_with_narrow_integer_columns() {
     assert_eq!(frame.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3]);
 }
 
-#[test]
 fn reader_predicate_rejects_integer_literal_outside_column_dtype() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("reader_predicate_integer_literal_out_of_range.parquet");
@@ -1022,7 +983,6 @@ fn reader_predicate_rejects_integer_literal_outside_column_dtype() {
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("integer_literal_out_of_range"));
 }
 
-#[test]
 fn decimal_reader_predicate_rejects_inexact_literal_rescale_before_execution() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("decimal_reader_predicate_inexact_rescale.parquet");
@@ -1048,7 +1008,6 @@ fn decimal_reader_predicate_rejects_inexact_literal_rescale_before_execution() {
     assert_eq!(error_context_value(&err, "target_scale").as_deref(), Some("-2"));
 }
 
-#[test]
 fn decimal_reader_predicate_rejects_source_schema_scale_mismatch_before_execution() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("decimal_reader_predicate_scale_mismatch.parquet");
@@ -1084,7 +1043,6 @@ fn decimal_reader_predicate_rejects_source_schema_scale_mismatch_before_executio
     assert_eq!(error_context_value(&err, "reader_scale").as_deref(), Some("-2"));
 }
 
-#[test]
 fn read_parquet_source_chunk_applies_reader_predicate() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("reader_predicate.parquet");
@@ -1136,7 +1094,6 @@ fn read_parquet_source_chunk_applies_reader_predicate() {
     assert_eq!(frame.series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![20, 30]);
 }
 
-#[test]
 fn read_parquet_source_chunk_with_budget_keeps_the_frame_when_the_preflight_cannot_bound_it() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("unbounded_preflight.parquet");
@@ -1184,18 +1141,14 @@ fn read_parquet_source_chunk_with_budget_keeps_the_frame_when_the_preflight_cann
     );
 }
 
-#[test]
 fn read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_input() {
     let dir = TempDir::new().unwrap();
     let first = dir.path().join("batch-fan-in-first.parquet");
     let second = dir.path().join("batch-fan-in-second.parquet");
     let rt = sample_runtime();
 
-    if !write_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4, 5, 6], 2)
-        || !write_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
-    {
-        return;
-    }
+    write_i32_parquet_fixture(&first, "id", &[1, 2, 3, 4, 5, 6], 2);
+    write_i32_parquet_fixture(&second, "id", &[10, 20, 30, 40], 2);
 
     let source = LocalParquetSource::data(
         [
@@ -1242,18 +1195,14 @@ fn read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_inpu
     assert_eq!(outcome.report().output_rows(), Some(10));
 }
 
-#[test]
 fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file_order() {
     let dir = TempDir::new().unwrap();
     let first = dir.path().join("batch-first.parquet");
     let second = dir.path().join("batch-second.parquet");
     let rt = sample_runtime();
 
-    if !write_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4], 2)
-        || !write_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
-    {
-        return;
-    }
+    write_i32_parquet_fixture(&first, "id", &[1, 2, 3, 4], 2);
+    write_i32_parquet_fixture(&second, "id", &[10, 20, 30, 40], 2);
 
     let source = LocalParquetSource::data(
         [
@@ -1303,18 +1252,14 @@ fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file
     assert_eq!(outcome.report().context_facts().get("known_row_count").map(String::as_str), Some("4"));
 }
 
-#[test]
 fn read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch() {
     let dir = TempDir::new().unwrap();
     let first = dir.path().join("batch-predicate-first.parquet");
     let second = dir.path().join("batch-predicate-second.parquet");
     let rt = sample_runtime();
 
-    if !write_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4], 2)
-        || !write_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
-    {
-        return;
-    }
+    write_i32_parquet_fixture(&first, "id", &[1, 2, 3, 4], 2);
+    write_i32_parquet_fixture(&second, "id", &[10, 20, 30, 40], 2);
 
     let predicate = AstExpression::greater(
         AstExpression::left_column(0).unwrap(),
@@ -1366,7 +1311,6 @@ fn read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch() {
     assert_eq!(outcome.report().context_facts().get("chunk_count").map(String::as_str), Some("2"));
 }
 
-#[test]
 fn read_parquet_source_chunks_with_budget_validates_remote_sources_at_multi_reader_boundary() {
     let rt = sample_runtime();
     let remote_profile = RemoteParquetProfile::shared_process_env().with_endpoint("http://local\0host:9000");
@@ -1413,7 +1357,6 @@ fn read_parquet_source_chunks_with_budget_validates_remote_sources_at_multi_read
     assert_eq!(error_context_value(&error, "resource").as_deref(), Some("aws_endpoint_url"));
 }
 
-#[test]
 fn read_parquet_source_materializes_string_partition_columns_across_files() {
     let dir = TempDir::new().unwrap();
     let first = dir.path().join("first.parquet");
@@ -1453,15 +1396,12 @@ fn read_parquet_source_materializes_string_partition_columns_across_files() {
     );
 }
 
-#[test]
 fn read_parquet_source_chunk_honors_selected_row_groups() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("row_groups.parquet");
     let rt = sample_runtime();
 
-    if !write_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
-        return;
-    }
+    write_i32_parquet_fixture(&path, "id", &[1, 2, 3, 4], 2);
 
     let source = LocalParquetSource::data(
         [LocalParquetFile::new(&path, "rg", [])
@@ -1490,15 +1430,12 @@ fn read_parquet_source_chunk_honors_selected_row_groups() {
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4]);
 }
 
-#[test]
 fn read_parquet_source_chunk_from_host_buffer_honors_row_groups_and_reader_predicate() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("host_buffer_row_groups_predicate.parquet");
     let rt = sample_runtime();
 
-    if !write_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
-        return;
-    }
+    write_i32_parquet_fixture(&path, "id", &[1, 2, 3, 4], 2);
     let filebytes = fs::read(&path).unwrap();
 
     let predicate = AstExpression::greater(
@@ -1536,7 +1473,6 @@ fn read_parquet_source_chunk_from_host_buffer_honors_row_groups_and_reader_predi
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![4]);
 }
 
-#[test]
 fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observed_output() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("budgeted_source.parquet");
@@ -1629,7 +1565,6 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     assert!(expected_output_bytes > 0);
 }
 
-#[test]
 fn read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("budgeted_host_buffer_source.parquet");
@@ -1693,18 +1628,14 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator()
     );
 }
 
-#[test]
 fn read_parquet_source_chunk_rejects_cross_source_chunk_with_matching_partition_shape() {
     let dir = TempDir::new().unwrap();
     let source_a_path = dir.path().join("source-a.parquet");
     let source_b_path = dir.path().join("source-b.parquet");
     let rt = sample_runtime();
 
-    if !write_i32_parquet_with_row_groups(&source_a_path, &[1, 2, 3, 4], 2)
-        || !write_i32_parquet_with_row_groups(&source_b_path, &[10, 20, 30, 40], 2)
-    {
-        return;
-    }
+    write_i32_parquet_fixture(&source_a_path, "id", &[1, 2, 3, 4], 2);
+    write_i32_parquet_fixture(&source_b_path, "id", &[10, 20, 30, 40], 2);
 
     let source_a = LocalParquetSource::data(
         [LocalParquetFile::new(&source_a_path, "source-a", [PartitionValue::Int32(9)])
@@ -1778,15 +1709,12 @@ fn read_parquet_source_chunk_rejects_cross_source_chunk_with_matching_partition_
     assert_eq!(error_context_value(&budget_err, "reason").as_deref(), Some("source_chunk_path_mismatch"));
 }
 
-#[test]
 fn read_parquet_source_chunk_rejects_cross_source_subset_row_groups_with_same_file_identity() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("same-file-row-groups.parquet");
     let rt = sample_runtime();
 
-    if !write_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
-        return;
-    }
+    write_i32_parquet_fixture(&path, "id", &[1, 2, 3, 4], 2);
 
     let schema = || {
         SourceSchema::new([
@@ -1903,7 +1831,6 @@ fn parquet_source_chunk_preflight_rejects_stale_remote_contract_with_same_file_i
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_location_mismatch"));
 }
 
-#[test]
 fn read_parquet_source_chunk_rejects_null_partition_chunk_for_non_nullable_source() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("partition_identity.parquet");
@@ -1975,7 +1902,6 @@ fn read_parquet_source_chunk_rejects_null_partition_chunk_for_non_nullable_sourc
     assert_eq!(error_context_value(&budget_err, "partition_column").as_deref(), Some("part"));
 }
 
-#[test]
 fn read_parquet_source_chunk_with_budget_materializes_extended_partition_values() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("extended_partitions.parquet");
@@ -2119,7 +2045,6 @@ fn read_parquet_source_chunk_with_budget_materializes_extended_partition_values(
     }
 }
 
-#[test]
 fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("budget_too_small.parquet");
@@ -2165,7 +2090,6 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     assert_eq!(budget.operation(), "dataframe::read_parquet_source");
 }
 
-#[test]
 fn read_parquet_source_chunk_with_budget_from_host_buffer_reports_exceeded_budget_facts() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("host_buffer_budget_too_small.parquet");
@@ -2207,7 +2131,6 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_reports_exceeded_budge
     assert_eq!(budget.operation(), "dataframe::read_parquet_source");
 }
 
-#[test]
 fn read_parquet_source_chunk_minimum_hard_budget_covers_tiny_data_read() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("minimum_budget.parquet");
@@ -2249,7 +2172,6 @@ fn read_parquet_source_chunk_minimum_hard_budget_covers_tiny_data_read() {
     assert_eq!(outcome.report().request().budget_bytes(), DataFrame::minimum_parquet_source_read_budget_bytes());
 }
 
-#[test]
 fn read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolved() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("string_budgeted_source.parquet");
@@ -2293,15 +2215,12 @@ fn read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolve
     assert!(report.output_bytes().unwrap() > 0);
 }
 
-#[test]
 fn source_contract_reports_exact_preflight_with_known_fixed_width_source_metadata() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("source_contract.parquet");
     let rt = sample_runtime();
 
-    if !write_i32_parquet_with_row_groups(&path, &[10, 20, 30, 40], 2) {
-        return;
-    }
+    write_i32_parquet_fixture(&path, "id", &[10, 20, 30, 40], 2);
 
     let source = LocalParquetSource::data(
         [LocalParquetFile::new(&path, "source-contract", [])
@@ -2364,7 +2283,6 @@ fn source_contract_reports_exact_preflight_with_known_fixed_width_source_metadat
     assert_eq!(outcome.report().context_facts().get("known_row_count").map(String::as_str), Some("2"));
 }
 
-#[test]
 fn read_parquet_source_empty_row_group_selection_returns_typed_empty_output() {
     let rt = sample_runtime();
     let source = LocalParquetSource::data(
@@ -2393,7 +2311,6 @@ fn read_parquet_source_empty_row_group_selection_returns_typed_empty_output() {
     assert_eq!(execution_frame.series("filter_only").unwrap().dtype().unwrap(), dtype(TypeId::Int64));
 }
 
-#[test]
 fn read_parquet_zero_column_count_uses_metadata_without_reading_file() {
     let rt = sample_runtime();
     let source = LocalParquetSource::zero_column_count([
@@ -2415,7 +2332,6 @@ fn read_parquet_zero_column_count_uses_metadata_without_reading_file() {
     assert_eq!(df.series(ZERO_COLUMN_COUNT_COLUMN).unwrap().on(Exec::RETAINED).sum_value::<i64>().unwrap(), 12);
 }
 
-#[test]
 fn read_parquet_zero_column_count_empty_selection_returns_zero_row_count_frame() {
     let rt = sample_runtime();
     let source =
@@ -2431,7 +2347,6 @@ fn read_parquet_zero_column_count_empty_selection_returns_zero_row_count_frame()
     assert_eq!(df.series(ZERO_COLUMN_COUNT_COLUMN).unwrap().dtype().unwrap(), dtype(TypeId::Int64));
 }
 
-#[test]
 fn read_parquet_zero_column_count_requires_metadata_and_checked_i64_counts() {
     let rt = sample_runtime();
     let missing_source =
@@ -2454,7 +2369,6 @@ fn read_parquet_zero_column_count_requires_metadata_and_checked_i64_counts() {
     assert_eq!(error_context_value(&overflow_err, "reason").as_deref(), Some("row_count_exceeds_i64"));
 }
 
-#[test]
 fn read_parquet_source_chunk_rejects_stale_zero_column_count_metadata() {
     let rt = sample_runtime();
     let source_a =
@@ -2502,4 +2416,188 @@ fn read_parquet_source_chunk_rejects_stale_zero_column_count_metadata() {
         error_context_value(&budget_err, "reason").as_deref(),
         Some("source_chunk_row_group_rows_metadata_mismatch")
     );
+}
+
+#[test]
+fn parquet_source_tests_cases() {
+    run_named_cases(&[
+        (
+            "read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_input",
+            read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_input,
+        ),
+        (
+            "read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file_order",
+            read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file_order,
+        ),
+        (
+            "read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch",
+            read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch,
+        ),
+        ("read_parquet_source_chunk_honors_selected_row_groups", read_parquet_source_chunk_honors_selected_row_groups),
+        (
+            "read_parquet_source_chunk_from_host_buffer_honors_row_groups_and_reader_predicate",
+            read_parquet_source_chunk_from_host_buffer_honors_row_groups_and_reader_predicate,
+        ),
+        (
+            "read_parquet_source_chunk_rejects_cross_source_chunk_with_matching_partition_shape",
+            read_parquet_source_chunk_rejects_cross_source_chunk_with_matching_partition_shape,
+        ),
+        (
+            "read_parquet_source_chunk_rejects_cross_source_subset_row_groups_with_same_file_identity",
+            read_parquet_source_chunk_rejects_cross_source_subset_row_groups_with_same_file_identity,
+        ),
+        (
+            "source_contract_reports_exact_preflight_with_known_fixed_width_source_metadata",
+            source_contract_reports_exact_preflight_with_known_fixed_width_source_metadata,
+        ),
+        (
+            "parquet_read_evidence_reports_no_predicate_pruning_absent",
+            parquet_read_evidence_reports_no_predicate_pruning_absent,
+        ),
+        (
+            "parquet_read_evidence_reports_stats_pruned_row_groups",
+            parquet_read_evidence_reports_stats_pruned_row_groups,
+        ),
+        (
+            "decimal_reader_predicate_rejects_inexact_literal_rescale_before_execution",
+            decimal_reader_predicate_rejects_inexact_literal_rescale_before_execution,
+        ),
+        (
+            "decimal_reader_predicate_rejects_source_schema_scale_mismatch_before_execution",
+            decimal_reader_predicate_rejects_source_schema_scale_mismatch_before_execution,
+        ),
+        ("read_parquet_source_chunk_applies_reader_predicate", read_parquet_source_chunk_applies_reader_predicate),
+        (
+            "read_parquet_source_chunk_with_budget_keeps_the_frame_when_the_preflight_cannot_bound_it",
+            read_parquet_source_chunk_with_budget_keeps_the_frame_when_the_preflight_cannot_bound_it,
+        ),
+        (
+            "read_parquet_source_chunks_with_budget_validates_remote_sources_at_multi_reader_boundary",
+            read_parquet_source_chunks_with_budget_validates_remote_sources_at_multi_reader_boundary,
+        ),
+        (
+            "read_parquet_source_materializes_string_partition_columns_across_files",
+            read_parquet_source_materializes_string_partition_columns_across_files,
+        ),
+        (
+            "read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observed_output",
+            read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observed_output,
+        ),
+        (
+            "read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator",
+            read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator,
+        ),
+        (
+            "read_parquet_source_chunk_rejects_null_partition_chunk_for_non_nullable_source",
+            read_parquet_source_chunk_rejects_null_partition_chunk_for_non_nullable_source,
+        ),
+        (
+            "read_parquet_source_chunk_with_budget_materializes_extended_partition_values",
+            read_parquet_source_chunk_with_budget_materializes_extended_partition_values,
+        ),
+        (
+            "read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts",
+            read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts,
+        ),
+        (
+            "read_parquet_source_chunk_with_budget_from_host_buffer_reports_exceeded_budget_facts",
+            read_parquet_source_chunk_with_budget_from_host_buffer_reports_exceeded_budget_facts,
+        ),
+        (
+            "read_parquet_source_chunk_minimum_hard_budget_covers_tiny_data_read",
+            read_parquet_source_chunk_minimum_hard_budget_covers_tiny_data_read,
+        ),
+        (
+            "read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolved",
+            read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolved,
+        ),
+        (
+            "read_parquet_source_empty_row_group_selection_returns_typed_empty_output",
+            read_parquet_source_empty_row_group_selection_returns_typed_empty_output,
+        ),
+        (
+            "read_parquet_zero_column_count_uses_metadata_without_reading_file",
+            read_parquet_zero_column_count_uses_metadata_without_reading_file,
+        ),
+        (
+            "read_parquet_zero_column_count_empty_selection_returns_zero_row_count_frame",
+            read_parquet_zero_column_count_empty_selection_returns_zero_row_count_frame,
+        ),
+        (
+            "read_parquet_zero_column_count_requires_metadata_and_checked_i64_counts",
+            read_parquet_zero_column_count_requires_metadata_and_checked_i64_counts,
+        ),
+        (
+            "read_parquet_source_chunk_rejects_stale_zero_column_count_metadata",
+            read_parquet_source_chunk_rejects_stale_zero_column_count_metadata,
+        ),
+        (
+            "read_parquet_source_materializes_typed_missing_list_columns",
+            read_parquet_source_materializes_typed_missing_list_columns,
+        ),
+        (
+            "read_parquet_source_materializes_typed_all_null_and_empty_list_columns",
+            read_parquet_source_materializes_typed_all_null_and_empty_list_columns,
+        ),
+        (
+            "read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_group",
+            read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_group,
+        ),
+        (
+            "read_parquet_source_chunks_handles_mixed_all_null_optional_column_row_groups",
+            read_parquet_source_chunks_handles_mixed_all_null_optional_column_row_groups,
+        ),
+        (
+            "parquet_reader_predicate_bare_boolean_column_root_does_not_crash",
+            parquet_reader_predicate_bare_boolean_column_root_does_not_crash,
+        ),
+        (
+            "parquet_reader_predicate_bare_boolean_literal_root_does_not_crash",
+            parquet_reader_predicate_bare_boolean_literal_root_does_not_crash,
+        ),
+        (
+            "parquet_reader_predicate_bare_boolean_false_literal_root_filters_all_rows",
+            parquet_reader_predicate_bare_boolean_false_literal_root_filters_all_rows,
+        ),
+        (
+            "parquet_read_evidence_reports_bloom_pruned_row_groups",
+            parquet_read_evidence_reports_bloom_pruned_row_groups,
+        ),
+        (
+            "read_parquet_source_single_file_projects_and_records_boundary",
+            read_parquet_source_single_file_projects_and_records_boundary,
+        ),
+        (
+            "decimal_reader_predicate_matches_decimal32_backed_source_column",
+            decimal_reader_predicate_matches_decimal32_backed_source_column,
+        ),
+        (
+            "decimal_reader_predicate_matches_decimal64_backed_source_column",
+            decimal_reader_predicate_matches_decimal64_backed_source_column,
+        ),
+        (
+            "decimal_reader_predicate_matches_decimal128_backed_source_column",
+            decimal_reader_predicate_matches_decimal128_backed_source_column,
+        ),
+        (
+            "decimal_reader_batch_predicate_reads_decimal32_backed_chunks",
+            decimal_reader_batch_predicate_reads_decimal32_backed_chunks,
+        ),
+        (
+            "decimal_reader_batch_predicate_rejects_mixed_decimal_storage_types",
+            decimal_reader_batch_predicate_rejects_mixed_decimal_storage_types,
+        ),
+        (
+            "decimal_reader_predicate_supports_integer_and_in_list_literals",
+            decimal_reader_predicate_supports_integer_and_in_list_literals,
+        ),
+        (
+            "decimal_reader_predicate_combines_with_narrow_integer_columns",
+            decimal_reader_predicate_combines_with_narrow_integer_columns,
+        ),
+        (
+            "reader_predicate_rejects_integer_literal_outside_column_dtype",
+            reader_predicate_rejects_integer_literal_outside_column_dtype,
+        ),
+    ]);
 }

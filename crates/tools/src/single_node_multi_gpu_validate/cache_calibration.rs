@@ -1312,87 +1312,93 @@ mod tests {
 
     #[test]
     fn dedicated_same_key_probe_rejects_cross_device_cache_reports() {
-        let mut probe = same_key_probe_evidence();
-        let foreign = probe.source.cache_reports_after.as_array().unwrap()[0].clone();
-        probe.source.cache_reports_after.as_array_mut().unwrap().push(foreign);
-
-        assert_eq!(same_key_source_clause(&probe).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn dedicated_same_key_probe_rejects_stale_singleflight_counters() {
-        let mut probe = same_key_probe_evidence();
-        probe.bfs.bfs_singleflight_before["eligible_requests"] = serde_json::json!(1);
-        probe.bfs.bfs_singleflight_after["eligible_requests"] = serde_json::json!(3);
-
-        assert_eq!(same_key_bfs_clause(&probe).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn dedicated_same_key_probe_rejects_failed_bfs_leader() {
-        let mut probe = same_key_probe_evidence();
-        probe.bfs.bfs_singleflight_after["leader_failures"] = serde_json::json!(1);
-
-        assert_eq!(same_key_bfs_clause(&probe).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn dedicated_same_key_probe_rejects_duplicate_graph_charge() {
-        let mut probe = same_key_probe_evidence();
-        probe.bfs.cache_reports_after[0]["graph"]["duplicate_inserts"] = serde_json::json!(1);
-
-        assert_eq!(same_key_bfs_clause(&probe).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn dedicated_same_key_probe_fails_when_required_events_are_missing() {
-        let mut probe = same_key_probe_evidence();
-        probe.source.source_cache_events_after = Value::Null;
-        probe.bfs.bfs_singleflight_after["events"] = Value::Null;
-
-        assert_eq!(same_key_source_clause(&probe).status, ClauseStatus::Failed);
-        assert_eq!(same_key_bfs_clause(&probe).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn dedicated_same_key_probe_rejects_mismatched_event_correlation() {
-        let mut probe = same_key_probe_evidence();
-        probe.source.source_cache_events_after[1]["correlation_fingerprint"] = serde_json::json!("foreign-correlation");
-
-        assert_eq!(same_key_source_clause(&probe).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn dedicated_same_key_probe_rejects_multiple_source_keys() {
-        let mut probe = same_key_probe_evidence();
-        probe.source.source_cache_events_after[2]["cache_key_fingerprint"] = serde_json::json!("source-key-2");
-
-        assert_eq!(same_key_source_clause(&probe).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn dedicated_same_key_probe_rejects_cross_device_bfs_event() {
-        let mut probe = same_key_probe_evidence();
-        probe.bfs.bfs_singleflight_after["events"][1]["device_ordinal"] = serde_json::json!(1);
-
-        assert_eq!(same_key_bfs_clause(&probe).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn dedicated_same_key_probe_rejects_duplicate_source_charge() {
-        let mut probe = same_key_probe_evidence();
-        probe.source.cache_reports_after[0]["ledger_evictable_resident_bytes"] = serde_json::json!(2048);
-
-        assert_eq!(same_key_source_clause(&probe).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn dedicated_same_key_probe_rejects_non_measurement_attempts() {
-        let mut probe = same_key_probe_evidence();
-        probe.bfs.measurement_attempts = 0;
-        probe.bfs.measurement_successes = 0;
-
-        assert_eq!(same_key_bfs_clause(&probe).status, ClauseStatus::Failed);
+        type Mutate = fn(&mut CacheSameKeyProbeEvidence);
+        type Clause = fn(&CacheSameKeyProbeEvidence) -> CacheCalibrationClause;
+        let cases: &[(&str, Mutate, &[Clause])] = &[
+            (
+                "dedicated_same_key_probe_rejects_cross_device_cache_reports",
+                |probe| {
+                    let foreign = probe.source.cache_reports_after.as_array().unwrap()[0].clone();
+                    probe.source.cache_reports_after.as_array_mut().unwrap().push(foreign);
+                },
+                &[same_key_source_clause],
+            ),
+            (
+                "dedicated_same_key_probe_rejects_stale_singleflight_counters",
+                |probe| {
+                    probe.bfs.bfs_singleflight_before["eligible_requests"] = serde_json::json!(1);
+                    probe.bfs.bfs_singleflight_after["eligible_requests"] = serde_json::json!(3);
+                },
+                &[same_key_bfs_clause],
+            ),
+            (
+                "dedicated_same_key_probe_rejects_failed_bfs_leader",
+                |probe| {
+                    probe.bfs.bfs_singleflight_after["leader_failures"] = serde_json::json!(1);
+                },
+                &[same_key_bfs_clause],
+            ),
+            (
+                "dedicated_same_key_probe_rejects_duplicate_graph_charge",
+                |probe| {
+                    probe.bfs.cache_reports_after[0]["graph"]["duplicate_inserts"] = serde_json::json!(1);
+                },
+                &[same_key_bfs_clause],
+            ),
+            (
+                "dedicated_same_key_probe_fails_when_required_events_are_missing",
+                |probe| {
+                    probe.source.source_cache_events_after = Value::Null;
+                    probe.bfs.bfs_singleflight_after["events"] = Value::Null;
+                },
+                &[same_key_source_clause, same_key_bfs_clause],
+            ),
+            (
+                "dedicated_same_key_probe_rejects_mismatched_event_correlation",
+                |probe| {
+                    probe.source.source_cache_events_after[1]["correlation_fingerprint"] =
+                        serde_json::json!("foreign-correlation");
+                },
+                &[same_key_source_clause],
+            ),
+            (
+                "dedicated_same_key_probe_rejects_multiple_source_keys",
+                |probe| {
+                    probe.source.source_cache_events_after[2]["cache_key_fingerprint"] =
+                        serde_json::json!("source-key-2");
+                },
+                &[same_key_source_clause],
+            ),
+            (
+                "dedicated_same_key_probe_rejects_cross_device_bfs_event",
+                |probe| {
+                    probe.bfs.bfs_singleflight_after["events"][1]["device_ordinal"] = serde_json::json!(1);
+                },
+                &[same_key_bfs_clause],
+            ),
+            (
+                "dedicated_same_key_probe_rejects_duplicate_source_charge",
+                |probe| {
+                    probe.source.cache_reports_after[0]["ledger_evictable_resident_bytes"] = serde_json::json!(2048);
+                },
+                &[same_key_source_clause],
+            ),
+            (
+                "dedicated_same_key_probe_rejects_non_measurement_attempts",
+                |probe| {
+                    probe.bfs.measurement_attempts = 0;
+                    probe.bfs.measurement_successes = 0;
+                },
+                &[same_key_bfs_clause],
+            ),
+        ];
+        for (name, mutate, clauses) in cases {
+            let mut probe = same_key_probe_evidence();
+            mutate(&mut probe);
+            for clause in *clauses {
+                assert_eq!(clause(&probe).status, ClauseStatus::Failed, "{name}");
+            }
+        }
     }
 
     fn same_key_probe_evidence() -> CacheSameKeyProbeEvidence {

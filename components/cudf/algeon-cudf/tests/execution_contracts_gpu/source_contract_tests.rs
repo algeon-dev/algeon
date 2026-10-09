@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::common::run_named_cases;
+use cudf::testing::run_named_cases;
 
 const CONCATENATE_RS: &str = include_str!("../../src/ops/concatenate.rs");
 const RESHAPE_RS: &str = include_str!("../../src/ops/reshape.rs");

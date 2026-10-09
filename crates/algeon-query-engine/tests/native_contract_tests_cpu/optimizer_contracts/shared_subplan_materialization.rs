@@ -1,3 +1,5 @@
+use cudf::testing::run_named_cases;
+
 use super::*;
 
 #[test]
@@ -640,7 +642,6 @@ fn native_optimizer_combines_projected_literal_count_star_scalar_branches() {
     assert!(plan_has_output_name_prefix(&result.plan, "__algeon_native_shared_scalar_"));
 }
 
-#[test]
 fn native_optimizer_does_not_combine_scalar_branches_with_different_projection_local_filter_semantics() {
     let plan = repeated_scalar_count_with_different_projected_filter_plan();
     let options = NativeOptimizerOptions {
@@ -665,6 +666,55 @@ fn native_optimizer_does_not_combine_scalar_branches_with_different_projection_l
 }
 
 #[test]
+fn t_shared_subplan_rejects_cases() {
+    run_named_cases(&[
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_does_not_combine_scalar_branches_with_different_projection_local_filter_semantics",
+            native_optimizer_does_not_combine_scalar_branches_with_different_projection_local_filter_semantics,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_does_not_combine_scalar_branches_with_different_local_filters",
+            native_optimizer_does_not_combine_scalar_branches_with_different_local_filters,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_grouped_materialization_when_source_predicate_collides_with_aggregate_alias",
+            native_optimizer_rejects_grouped_materialization_when_source_predicate_collides_with_aggregate_alias,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_grouped_materialization_when_predicate_column_has_different_group_lineage",
+            native_optimizer_rejects_grouped_materialization_when_predicate_column_has_different_group_lineage,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurrences",
+            native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurrences,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_grouped_materialization_with_reused_source_node_occurrences",
+            native_optimizer_rejects_grouped_materialization_with_reused_source_node_occurrences,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_scalar_materialization_with_conflicting_source_refs",
+            native_optimizer_rejects_scalar_materialization_with_conflicting_source_refs,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_does_not_combine_scalar_branches_with_limit_below_aggregate",
+            native_optimizer_does_not_combine_scalar_branches_with_limit_below_aggregate,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_scalar_materialization_with_duplicate_join_input_column_names",
+            native_optimizer_rejects_scalar_materialization_with_duplicate_join_input_column_names,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_does_not_combine_scalar_branches_with_duplicate_rowset_join_inputs",
+            native_optimizer_does_not_combine_scalar_branches_with_duplicate_rowset_join_inputs,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_scalar_materialization_with_reused_source_node_join_inputs",
+            native_optimizer_rejects_scalar_materialization_with_reused_source_node_join_inputs,
+        ),
+    ]);
+}
+
 fn native_optimizer_does_not_combine_scalar_branches_with_different_local_filters() {
     let plan = repeated_scalar_count_with_different_local_filter_plan();
     let options = NativeOptimizerOptions {
@@ -688,7 +738,6 @@ fn native_optimizer_does_not_combine_scalar_branches_with_different_local_filter
     assert_eq!(diagnostics.applied_count, 0);
 }
 
-#[test]
 fn native_optimizer_rejects_grouped_materialization_when_source_predicate_collides_with_aggregate_alias() {
     let plan = repeated_grouped_aggregate_predicate_alias_collision_plan();
     let options = NativeOptimizerOptions {
@@ -716,7 +765,6 @@ fn native_optimizer_rejects_grouped_materialization_when_source_predicate_collid
     );
 }
 
-#[test]
 fn native_optimizer_rejects_grouped_materialization_when_predicate_column_has_different_group_lineage() {
     let plan = repeated_grouped_aggregate_predicate_group_name_lineage_collision_plan();
     let options = NativeOptimizerOptions {
@@ -744,7 +792,6 @@ fn native_optimizer_rejects_grouped_materialization_when_predicate_column_has_di
     );
 }
 
-#[test]
 fn native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurrences() {
     let plan = repeated_grouped_aggregate_self_join_duplicate_source_plan();
     let options = NativeOptimizerOptions {
@@ -772,7 +819,6 @@ fn native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurr
     );
 }
 
-#[test]
 fn native_optimizer_rejects_grouped_materialization_with_reused_source_node_occurrences() {
     let plan = repeated_grouped_aggregate_reused_source_node_self_join_plan();
     let options = NativeOptimizerOptions {
@@ -800,7 +846,6 @@ fn native_optimizer_rejects_grouped_materialization_with_reused_source_node_occu
     );
 }
 
-#[test]
 fn native_optimizer_rejects_scalar_materialization_with_conflicting_source_refs() {
     let plan = repeated_scalar_avg_with_conflicting_source_refs_plan();
     let options = NativeOptimizerOptions {
@@ -829,7 +874,6 @@ fn native_optimizer_rejects_scalar_materialization_with_conflicting_source_refs(
     );
 }
 
-#[test]
 fn native_optimizer_does_not_combine_scalar_branches_with_limit_below_aggregate() {
     let plan = repeated_scalar_count_with_limit_plan();
     let options = NativeOptimizerOptions {
@@ -850,7 +894,6 @@ fn native_optimizer_does_not_combine_scalar_branches_with_limit_below_aggregate(
     assert_eq!(result.diagnostics.shared_subplan_materialization.considered_count, 0);
 }
 
-#[test]
 fn native_optimizer_rejects_scalar_materialization_with_duplicate_join_input_column_names() {
     let plan = repeated_scalar_join_count_with_duplicate_input_names_plan();
     let options = NativeOptimizerOptions {
@@ -878,7 +921,6 @@ fn native_optimizer_rejects_scalar_materialization_with_duplicate_join_input_col
     );
 }
 
-#[test]
 fn native_optimizer_does_not_combine_scalar_branches_with_duplicate_rowset_join_inputs() {
     let plan = repeated_scalar_self_join_count_with_duplicate_rowset_plan();
     let options = NativeOptimizerOptions {
@@ -902,7 +944,6 @@ fn native_optimizer_does_not_combine_scalar_branches_with_duplicate_rowset_join_
     assert_eq!(diagnostics.applied_count, 0);
 }
 
-#[test]
 fn native_optimizer_rejects_scalar_materialization_with_reused_source_node_join_inputs() {
     let plan = repeated_scalar_self_join_count_with_reused_source_node_plan();
     let options = NativeOptimizerOptions {

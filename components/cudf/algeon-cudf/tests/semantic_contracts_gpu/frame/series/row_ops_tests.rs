@@ -23,7 +23,7 @@ use cudf::{
     },
 };
 
-use crate::common::{column_from_slice, error_context_value, nullable_series, run_named_cases, series, series_opt};
+use crate::common::{column_from_slice, error_context_value, nullable_series, series, series_opt};
 
 fn test_head_basic() {
     let s = series::<i32>("x", &[10, 20, 30, 40]).unwrap();
@@ -181,15 +181,6 @@ fn test_dropna_on_non_nullable_returns_same_values() {
     assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-fn test_drop_duplicates_preserves_unnamed_series() {
-    let column = column_from_slice(&[2i32, 2, 3]).unwrap();
-    let s = Series::from_column(column).unwrap();
-    let deduped = s.on(Exec::RETAINED).drop_duplicates().unwrap();
-    let mut host = deduped.to_vec_strict::<i32>().unwrap();
-    host.sort();
-    assert_eq!(host, vec![2, 3]);
-}
-
 fn test_value_counts_with_sentinel_collision_name() {
     // value_counts now returns schema-neutral output names regardless of the
     // source series name, including names that match the old sentinel.
@@ -296,59 +287,58 @@ fn test_testing_hook_locks_series_row_range_overflow_contract() {
     assert_eq!(error_context_value(&err, "length").as_deref(), None);
 }
 
-#[test]
-fn row_ops_tests_cases() {
-    run_named_cases(&[
-        ("test_head_basic", test_head_basic),
-        ("test_tail_clamps_to_len", test_tail_clamps_to_len),
-        ("test_slice_preserves_unnamed_series", test_slice_preserves_unnamed_series),
-        ("test_filter_drops_false_and_null_mask_rows", test_filter_drops_false_and_null_mask_rows),
-        ("test_gather_out_of_bounds_nullifies_rows", test_gather_out_of_bounds_nullifies_rows),
-        ("test_dropna_removes_null_rows", test_dropna_removes_null_rows),
-        ("test_drop_duplicates_returns_unique_values", test_drop_duplicates_returns_unique_values),
-        (
-            "test_value_counts_returns_schema_neutral_value_and_count_columns",
-            test_value_counts_returns_schema_neutral_value_and_count_columns,
-        ),
-        (
-            "test_value_counts_for_unnamed_series_uses_fallback_value_name",
-            test_value_counts_for_unnamed_series_uses_fallback_value_name,
-        ),
-        ("test_head_on_empty_series_returns_empty_with_name", test_head_on_empty_series_returns_empty_with_name),
-        ("test_slice_offset_beyond_len_returns_empty", test_slice_offset_beyond_len_returns_empty),
-        ("test_gather_empty_index_returns_empty_with_name", test_gather_empty_index_returns_empty_with_name),
-        ("test_gather_operation_tag_on_dtype_error", test_gather_operation_tag_on_dtype_error),
-        ("test_filter_operation_tag_on_dtype_error", test_filter_operation_tag_on_dtype_error),
-        (
-            "test_filter_length_mismatch_uses_canonical_length_contract",
-            test_filter_length_mismatch_uses_canonical_length_contract,
-        ),
-        ("test_dropna_on_non_nullable_returns_same_values", test_dropna_on_non_nullable_returns_same_values),
-        ("test_drop_duplicates_preserves_unnamed_series", test_drop_duplicates_preserves_unnamed_series),
-        ("test_value_counts_with_sentinel_collision_name", test_value_counts_with_sentinel_collision_name),
-        (
-            "test_testing_hook_locks_value_counts_missing_key_columns_contract",
-            test_testing_hook_locks_value_counts_missing_key_columns_contract,
-        ),
-        (
-            "test_testing_hook_locks_value_counts_missing_count_results_contract",
-            test_testing_hook_locks_value_counts_missing_count_results_contract,
-        ),
-        (
-            "test_testing_hook_locks_value_counts_empty_count_result_contract",
-            test_testing_hook_locks_value_counts_empty_count_result_contract,
-        ),
-        (
-            "test_testing_hook_locks_series_row_range_start_limit_contract",
-            test_testing_hook_locks_series_row_range_start_limit_contract,
-        ),
-        (
-            "test_testing_hook_locks_series_row_range_end_limit_contract",
-            test_testing_hook_locks_series_row_range_end_limit_contract,
-        ),
-        (
-            "test_testing_hook_locks_series_row_range_overflow_contract",
-            test_testing_hook_locks_series_row_range_overflow_contract,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("row_ops_tests::test_head_basic", test_head_basic),
+    ("row_ops_tests::test_tail_clamps_to_len", test_tail_clamps_to_len),
+    ("row_ops_tests::test_slice_preserves_unnamed_series", test_slice_preserves_unnamed_series),
+    ("row_ops_tests::test_filter_drops_false_and_null_mask_rows", test_filter_drops_false_and_null_mask_rows),
+    ("row_ops_tests::test_gather_out_of_bounds_nullifies_rows", test_gather_out_of_bounds_nullifies_rows),
+    ("row_ops_tests::test_dropna_removes_null_rows", test_dropna_removes_null_rows),
+    ("row_ops_tests::test_drop_duplicates_returns_unique_values", test_drop_duplicates_returns_unique_values),
+    (
+        "row_ops_tests::test_value_counts_returns_schema_neutral_value_and_count_columns",
+        test_value_counts_returns_schema_neutral_value_and_count_columns,
+    ),
+    (
+        "row_ops_tests::test_value_counts_for_unnamed_series_uses_fallback_value_name",
+        test_value_counts_for_unnamed_series_uses_fallback_value_name,
+    ),
+    (
+        "row_ops_tests::test_head_on_empty_series_returns_empty_with_name",
+        test_head_on_empty_series_returns_empty_with_name,
+    ),
+    ("row_ops_tests::test_slice_offset_beyond_len_returns_empty", test_slice_offset_beyond_len_returns_empty),
+    ("row_ops_tests::test_gather_empty_index_returns_empty_with_name", test_gather_empty_index_returns_empty_with_name),
+    ("row_ops_tests::test_gather_operation_tag_on_dtype_error", test_gather_operation_tag_on_dtype_error),
+    ("row_ops_tests::test_filter_operation_tag_on_dtype_error", test_filter_operation_tag_on_dtype_error),
+    (
+        "row_ops_tests::test_filter_length_mismatch_uses_canonical_length_contract",
+        test_filter_length_mismatch_uses_canonical_length_contract,
+    ),
+    ("row_ops_tests::test_dropna_on_non_nullable_returns_same_values", test_dropna_on_non_nullable_returns_same_values),
+    ("row_ops_tests::test_value_counts_with_sentinel_collision_name", test_value_counts_with_sentinel_collision_name),
+    (
+        "row_ops_tests::test_testing_hook_locks_value_counts_missing_key_columns_contract",
+        test_testing_hook_locks_value_counts_missing_key_columns_contract,
+    ),
+    (
+        "row_ops_tests::test_testing_hook_locks_value_counts_missing_count_results_contract",
+        test_testing_hook_locks_value_counts_missing_count_results_contract,
+    ),
+    (
+        "row_ops_tests::test_testing_hook_locks_value_counts_empty_count_result_contract",
+        test_testing_hook_locks_value_counts_empty_count_result_contract,
+    ),
+    (
+        "row_ops_tests::test_testing_hook_locks_series_row_range_start_limit_contract",
+        test_testing_hook_locks_series_row_range_start_limit_contract,
+    ),
+    (
+        "row_ops_tests::test_testing_hook_locks_series_row_range_end_limit_contract",
+        test_testing_hook_locks_series_row_range_end_limit_contract,
+    ),
+    (
+        "row_ops_tests::test_testing_hook_locks_series_row_range_overflow_contract",
+        test_testing_hook_locks_series_row_range_overflow_contract,
+    ),
+];

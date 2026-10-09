@@ -4,7 +4,6 @@ use cudf::core::Table;
 
 use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, scalar};
 
-#[test]
 fn test_column_debug_smoke_report_metadata_without_values() {
     let column = column_from_slice_nullable(&[101i32, 0, 303], &[true, false, true]).unwrap();
 
@@ -35,7 +34,6 @@ fn test_column_debug_smoke_report_metadata_without_values() {
     );
 }
 
-#[test]
 fn test_table_debug_smoke_report_schema_without_values() {
     let table = Table::from_columns(vec![
         column_from_slice(&[11i32, 22, 33]).unwrap(),
@@ -57,7 +55,6 @@ fn test_table_debug_smoke_report_schema_without_values() {
     assert!(!table_output.contains("alpha"), "debug output should not materialize table payloads: {}", table_output);
 }
 
-#[test]
 fn test_scalar_debug_smoke_reports_type_and_validity_without_value() {
     let scalar = scalar("secret-debug-payload").unwrap();
 
@@ -77,3 +74,18 @@ fn test_scalar_debug_smoke_reports_type_and_validity_without_value() {
         output
     );
 }
+
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "core_debug_tests::test_column_debug_smoke_report_metadata_without_values",
+        test_column_debug_smoke_report_metadata_without_values,
+    ),
+    (
+        "core_debug_tests::test_table_debug_smoke_report_schema_without_values",
+        test_table_debug_smoke_report_schema_without_values,
+    ),
+    (
+        "core_debug_tests::test_scalar_debug_smoke_reports_type_and_validity_without_value",
+        test_scalar_debug_smoke_reports_type_and_validity_without_value,
+    ),
+];

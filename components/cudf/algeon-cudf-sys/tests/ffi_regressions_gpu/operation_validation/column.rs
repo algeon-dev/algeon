@@ -3,10 +3,9 @@ use std::{os::raw::c_void, ptr};
 use cudf_sys::test_support;
 
 use super::*;
+use crate::support::run_named_cases;
 
-#[test]
 fn test_interleave_columns_rejects_oversized_output_before_allocation() {
-    let _shim_state = lock_shim_state();
     let rows = i32::MAX / 2 + 1;
     let mut first: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let mut second: cudf_sys::cudf_column_view_handle = ptr::null_mut();
@@ -40,9 +39,7 @@ fn test_interleave_columns_rejects_oversized_output_before_allocation() {
     assert_eq!(allocations_after, allocations_before, "oversized interleave must not launch or allocate output");
 }
 
-#[test]
 fn test_column_create_numeric_negative_size_rejected() {
-    let _shim_state = lock_shim_state();
     let data: [i32; 1] = [42];
     let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -60,9 +57,8 @@ fn test_column_create_numeric_negative_size_rejected() {
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 }
-#[test]
+
 fn test_column_create_numeric_null_count_out_of_range_rejected() {
-    let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
     let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -81,9 +77,7 @@ fn test_column_create_numeric_null_count_out_of_range_rejected() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_column_create_numeric_null_count_requires_mask() {
-    let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
     let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -102,9 +96,7 @@ fn test_column_create_numeric_null_count_requires_mask() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_column_create_fixed_width_from_host_preserves_decimal_scale() {
-    let _shim_state = lock_shim_state();
     let data = [12345i128, -67890, 5];
     let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -137,9 +129,7 @@ fn test_column_create_fixed_width_from_host_preserves_decimal_scale() {
     }
 }
 
-#[test]
 fn test_column_create_fixed_width_from_host_rejects_nonzero_scale_for_non_decimal() {
-    let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
     let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -160,9 +150,7 @@ fn test_column_create_fixed_width_from_host_rejects_nonzero_scale_for_non_decima
     assert!(last_error_message().contains("scale must be 0"));
 }
 
-#[test]
 fn test_column_create_fixed_width_from_host_rejects_non_fixed_width_type() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
@@ -181,9 +169,7 @@ fn test_column_create_fixed_width_from_host_rejects_non_fixed_width_type() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_column_create_fixed_width_from_host_null_count_requires_mask() {
-    let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
     let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -203,9 +189,7 @@ fn test_column_create_fixed_width_from_host_null_count_requires_mask() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_column_view_to_host_string_type_rejected() {
-    let _shim_state = lock_shim_state();
     let strings = [std::ffi::CString::new("ab").unwrap(), std::ffi::CString::new("cd").unwrap()];
     let mut string_ptrs = [strings[0].as_ptr(), strings[1].as_ptr()];
     let lengths = [2i32, 2i32];
@@ -236,4 +220,37 @@ fn test_column_view_to_host_string_type_rejected() {
         cudf_sys::cudf_column_view_destroy(view);
         cudf_sys::cudf_column_destroy(col);
     }
+}
+
+#[test]
+fn column_cases() {
+    run_named_cases(&[
+        ("test_column_create_numeric_null_count_requires_mask", test_column_create_numeric_null_count_requires_mask),
+        (
+            "test_column_create_fixed_width_from_host_rejects_nonzero_scale_for_non_decimal",
+            test_column_create_fixed_width_from_host_rejects_nonzero_scale_for_non_decimal,
+        ),
+        (
+            "test_column_create_fixed_width_from_host_preserves_decimal_scale",
+            test_column_create_fixed_width_from_host_preserves_decimal_scale,
+        ),
+        ("test_column_create_numeric_negative_size_rejected", test_column_create_numeric_negative_size_rejected),
+        (
+            "test_column_create_numeric_null_count_out_of_range_rejected",
+            test_column_create_numeric_null_count_out_of_range_rejected,
+        ),
+        (
+            "test_interleave_columns_rejects_oversized_output_before_allocation",
+            test_interleave_columns_rejects_oversized_output_before_allocation,
+        ),
+        ("test_column_view_to_host_string_type_rejected", test_column_view_to_host_string_type_rejected),
+        (
+            "test_column_create_fixed_width_from_host_null_count_requires_mask",
+            test_column_create_fixed_width_from_host_null_count_requires_mask,
+        ),
+        (
+            "test_column_create_fixed_width_from_host_rejects_non_fixed_width_type",
+            test_column_create_fixed_width_from_host_rejects_non_fixed_width_type,
+        ),
+    ]);
 }

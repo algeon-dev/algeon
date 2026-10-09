@@ -45,14 +45,9 @@ pub(crate) fn build_report_gpu_backend(
 ) -> WorkloadResult<AlgeonGpuBackend> {
     let source_work_per_attempt =
         optimizer_config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight();
-    build_installed_gpu_backend(
-        optimizer_config,
-        device_memory_limit,
-        source_work_per_attempt,
-        1,
-        AlgeonGpuExecutionMode::NativePreferred,
-    )
-    .map_err(|error| DataFusionError::External(Box::new(error)).into())
+    let execution_mode = optimizer_config.execution_mode();
+    build_installed_gpu_backend(optimizer_config, device_memory_limit, source_work_per_attempt, 1, execution_mode)
+        .map_err(|error| DataFusionError::External(Box::new(error)).into())
 }
 
 pub(crate) fn close_report_gpu_backend(backend: AlgeonGpuBackend) -> WorkloadResult<()> {
@@ -61,3 +56,6 @@ pub(crate) fn close_report_gpu_backend(backend: AlgeonGpuBackend) -> WorkloadRes
         .map(|_| ())
         .map_err(|error| DataFusionError::External(Box::new(error)).into())
 }
+
+#[cfg(test)]
+mod tests;

@@ -6,6 +6,7 @@ use std::{
 use cudf_sys::test_support;
 
 use super::*;
+use crate::support::run_named_cases;
 
 fn read_bool8_column_data(col: cudf_sys::cudf_column_handle) -> Vec<u8> {
     let view = make_column_view(col);
@@ -59,9 +60,7 @@ fn prepare_replace_with_backrefs(
     prepared
 }
 
-#[test]
 fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&[]);
     let view = make_column_view(col);
     let (_stream, _mr, exec) = strict_exec_owners();
@@ -88,9 +87,8 @@ fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
         cudf_sys::cudf_column_destroy(col);
     }
 }
-#[test]
+
 fn test_strings_like_validates_pattern_and_escape_arguments() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&["abc"]);
     let view = make_column_view(col);
     let pattern = b"a%";
@@ -160,9 +158,7 @@ fn test_strings_like_validates_pattern_and_escape_arguments() {
     }
 }
 
-#[test]
 fn prepared_replace_execute_invalid_options_clean_up_under_prepare_provenance() {
-    let _lock = lock_shim_state();
     let col = make_string_column(&["abc-123", "def-456"]);
     let view = make_column_view(col);
     let stream = OwnedStream::new();
@@ -192,7 +188,6 @@ fn prepared_replace_execute_invalid_options_clean_up_under_prepare_provenance() 
 
 #[test]
 fn prepared_replace_execute_cleanup_failure_is_quarantined_without_crossing_abi() {
-    let _lock = lock_shim_state();
     let col = make_string_column(&["abc-123", "def-456"]);
     let view = make_column_view(col);
     let stream = OwnedStream::new();
@@ -222,9 +217,7 @@ fn prepared_replace_execute_cleanup_failure_is_quarantined_without_crossing_abi(
     }
 }
 
-#[test]
 fn test_strings_like_matches_and_synchronizes_explicit_stream() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&["abc", "adc", "ab", "axc"]);
     let view = make_column_view(col);
     let stream = OwnedStream::new();
@@ -258,9 +251,7 @@ fn test_strings_like_matches_and_synchronizes_explicit_stream() {
     }
 }
 
-#[test]
 fn test_strings_slice_validates_step_and_initializes_output() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&["abcdef"]);
     let view = make_column_view(col);
     let mut out = std::ptr::NonNull::<cudf_sys::cudf_column_handle_state>::dangling().as_ptr();
@@ -277,9 +268,7 @@ fn test_strings_slice_validates_step_and_initializes_output() {
     }
 }
 
-#[test]
 fn test_strings_slice_uses_validity_flags_and_explicit_stream() {
-    let _shim_state = lock_shim_state();
     let col = make_string_column(&["abcdef", "xy"]);
     let view = make_column_view(col);
     let stream = OwnedStream::new();
@@ -309,9 +298,7 @@ fn test_strings_slice_uses_validity_flags_and_explicit_stream() {
     }
 }
 
-#[test]
 fn test_column_create_strings_negative_length_rejected() {
-    let _shim_state = lock_shim_state();
     let strings = [std::ffi::CString::new("ab").unwrap()];
     let mut string_ptrs = [strings[0].as_ptr()];
     let lengths = [-1i32];
@@ -333,9 +320,7 @@ fn test_column_create_strings_negative_length_rejected() {
     assert!(col.is_null());
 }
 
-#[test]
 fn test_column_create_strings_positive_length_requires_non_null_string_pointer() {
-    let _shim_state = lock_shim_state();
     let mut string_ptrs = [ptr::null()];
     let lengths = [2i32];
 
@@ -356,9 +341,7 @@ fn test_column_create_strings_positive_length_requires_non_null_string_pointer()
     assert!(col.is_null());
 }
 
-#[test]
 fn test_column_create_strings_rejects_count_that_would_overflow_offsets() {
-    let _shim_state = lock_shim_state();
     let strings = [std::ffi::CString::new("").unwrap()];
     let mut string_ptrs = [strings[0].as_ptr()];
     let lengths = [0i32];
@@ -380,4 +363,43 @@ fn test_column_create_strings_rejects_count_that_would_overflow_offsets() {
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(col.is_null());
     assert!(last_error_message().contains("num_strings"));
+}
+
+#[test]
+fn strings_cases() {
+    run_named_cases(&[
+        (
+            "test_strings_slice_uses_validity_flags_and_explicit_stream",
+            test_strings_slice_uses_validity_flags_and_explicit_stream,
+        ),
+        (
+            "test_strings_like_matches_and_synchronizes_explicit_stream",
+            test_strings_like_matches_and_synchronizes_explicit_stream,
+        ),
+        (
+            "prepared_replace_execute_invalid_options_clean_up_under_prepare_provenance",
+            prepared_replace_execute_invalid_options_clean_up_under_prepare_provenance,
+        ),
+        (
+            "test_strings_slice_validates_step_and_initializes_output",
+            test_strings_slice_validates_step_and_initializes_output,
+        ),
+        (
+            "test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer",
+            test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer,
+        ),
+        (
+            "test_column_create_strings_positive_length_requires_non_null_string_pointer",
+            test_column_create_strings_positive_length_requires_non_null_string_pointer,
+        ),
+        (
+            "test_strings_like_validates_pattern_and_escape_arguments",
+            test_strings_like_validates_pattern_and_escape_arguments,
+        ),
+        ("test_column_create_strings_negative_length_rejected", test_column_create_strings_negative_length_rejected),
+        (
+            "test_column_create_strings_rejects_count_that_would_overflow_offsets",
+            test_column_create_strings_rejects_count_that_would_overflow_offsets,
+        ),
+    ]);
 }

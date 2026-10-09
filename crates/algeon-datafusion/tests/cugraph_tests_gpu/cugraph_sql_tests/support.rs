@@ -5,13 +5,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(super) use algeon_datafusion::cugraph_sql::bench_support::{
-    backend_cugraph_sql_context, backend_cugraph_sql_context_with_mode, pagerank_rows, write_tiny_directed_edges,
-};
+pub(super) use algeon_datafusion::cugraph_sql::bench_support::{pagerank_rows, write_tiny_directed_edges};
+use algeon_datafusion::{cugraph_sql::bench_support, planner::AlgeonGpuExecutionMode};
 use datafusion::physical_plan::metrics::MetricsSet;
 use tokio::task::spawn_blocking;
 
-use super::*;
+use super::{closing_backend::ClosingBackend, *};
 
 pub(super) async fn assert_sql_schema(ctx: &SessionContext, sql: &str, algorithm: CugraphAlgorithm) {
     let df = ctx.sql(sql).await.unwrap();
@@ -112,7 +111,7 @@ fn append_plan_metrics(metrics: &mut MetricsSet, plan: &dyn ExecutionPlan) {
     }
 }
 
-pub(super) fn default_backend_cugraph_sql_context() -> (AlgeonGpuBackend, SessionContext) {
+pub(super) fn default_backend_cugraph_sql_context() -> (ClosingBackend, SessionContext) {
     backend_cugraph_sql_context(SessionStateBuilder::new_with_default_features())
 }
 
@@ -833,4 +832,16 @@ pub(super) fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("{prefix}-{stamp}"));
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+pub(super) fn backend_cugraph_sql_context(builder: SessionStateBuilder) -> (ClosingBackend, SessionContext) {
+    backend_cugraph_sql_context_with_mode(builder, AlgeonGpuExecutionMode::NativePreferred)
+}
+
+pub(super) fn backend_cugraph_sql_context_with_mode(
+    builder: SessionStateBuilder,
+    mode: AlgeonGpuExecutionMode,
+) -> (ClosingBackend, SessionContext) {
+    let (backend, ctx) = bench_support::backend_cugraph_sql_context_with_mode(builder, mode);
+    (ClosingBackend::new(backend), ctx)
 }

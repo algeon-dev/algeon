@@ -286,48 +286,54 @@ fn explicit_pre_admission_cancellation_is_not_a_missing_placement() {
         aggregate.scenarios.multiple_devices.iter().find(|clause| clause.clause == "one_ordinal_per_attempt").unwrap();
     assert_eq!(clause.status, ClauseStatus::Evidenced);
     assert!(clause.detail.contains("1 explicit pre-admission cancellations"));
-}
 
-#[test]
-fn not_admitted_attempt_is_not_a_missing_placement() {
-    let devices = vec![device(0, 1 << 30, 2), device(1, 1 << 30, 2)];
-    let mut rejected = attempt(0, 0, None, None, 0, 10, 10, SchedulePhase::Measurement);
-    rejected.outcome = "failed".to_string();
-    rejected.terminal_evidence.capacity_disposition = serde_json::json!("not_admitted");
-    let observations = vec![
-        rejected,
-        attempt(1, 0, Some(2), Some(11), 0, 10, 10, SchedulePhase::Measurement),
-        attempt(2, 1, Some(3), Some(12), 0, 10, 10, SchedulePhase::Measurement),
-    ];
+    {
+        let devices = vec![device(0, 1 << 30, 2), device(1, 1 << 30, 2)];
+        let mut rejected = attempt(0, 0, None, None, 0, 10, 10, SchedulePhase::Measurement);
+        rejected.outcome = "failed".to_string();
+        rejected.terminal_evidence.capacity_disposition = serde_json::json!("not_admitted");
+        let observations = vec![
+            rejected,
+            attempt(1, 0, Some(2), Some(11), 0, 10, 10, SchedulePhase::Measurement),
+            attempt(2, 1, Some(3), Some(12), 0, 10, 10, SchedulePhase::Measurement),
+        ];
 
-    let aggregate = MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000_000_000);
-    let clause =
-        aggregate.scenarios.multiple_devices.iter().find(|clause| clause.clause == "one_ordinal_per_attempt").unwrap();
-    assert_eq!(clause.status, ClauseStatus::Evidenced);
-    assert!(clause.detail.contains("1 not-admitted attempts"));
-}
+        let aggregate = MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000_000_000);
+        let clause = aggregate
+            .scenarios
+            .multiple_devices
+            .iter()
+            .find(|clause| clause.clause == "one_ordinal_per_attempt")
+            .unwrap();
+        assert_eq!(clause.status, ClauseStatus::Evidenced);
+        assert!(clause.detail.contains("1 not-admitted attempts"));
+    }
 
-#[test]
-fn explicit_nonexecuting_capability_probe_is_not_a_missing_placement() {
-    let devices = vec![device(0, 1 << 30, 2), device(1, 1 << 30, 2)];
-    let mut capability_probe = attempt(0, 0, None, None, 0, 10, 10, SchedulePhase::Measurement);
-    capability_probe.graph_workload = true;
-    capability_probe.placement_required = false;
-    capability_probe.outcome = "failed".to_string();
-    capability_probe.succeeded = false;
-    capability_probe.reached_gpu = false;
-    capability_probe.device_ordinal = None;
-    let observations = vec![
-        capability_probe,
-        attempt(1, 0, Some(2), Some(11), 0, 10, 10, SchedulePhase::Measurement),
-        attempt(2, 1, Some(3), Some(12), 0, 10, 10, SchedulePhase::Measurement),
-    ];
+    {
+        let devices = vec![device(0, 1 << 30, 2), device(1, 1 << 30, 2)];
+        let mut capability_probe = attempt(0, 0, None, None, 0, 10, 10, SchedulePhase::Measurement);
+        capability_probe.graph_workload = true;
+        capability_probe.placement_required = false;
+        capability_probe.outcome = "failed".to_string();
+        capability_probe.succeeded = false;
+        capability_probe.reached_gpu = false;
+        capability_probe.device_ordinal = None;
+        let observations = vec![
+            capability_probe,
+            attempt(1, 0, Some(2), Some(11), 0, 10, 10, SchedulePhase::Measurement),
+            attempt(2, 1, Some(3), Some(12), 0, 10, 10, SchedulePhase::Measurement),
+        ];
 
-    let aggregate = MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000_000_000);
-    let clause =
-        aggregate.scenarios.multiple_devices.iter().find(|clause| clause.clause == "one_ordinal_per_attempt").unwrap();
-    assert_eq!(clause.status, ClauseStatus::Evidenced);
-    assert!(clause.detail.contains("1 non-executing capability probes"));
+        let aggregate = MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000_000_000);
+        let clause = aggregate
+            .scenarios
+            .multiple_devices
+            .iter()
+            .find(|clause| clause.clause == "one_ordinal_per_attempt")
+            .unwrap();
+        assert_eq!(clause.status, ClauseStatus::Evidenced);
+        assert!(clause.detail.contains("1 non-executing capability probes"));
+    }
 }
 
 #[test]
@@ -588,38 +594,6 @@ fn gpu_reaching_qps_excludes_cpu_fallback_while_application_qps_counts_it() {
     assert_eq!(aggregate.throughput.successful_completions, 2);
     assert_eq!(aggregate.throughput.gpu_reaching_completions, 1);
     assert!(aggregate.throughput.gpu_reaching_qps < aggregate.throughput.application_qps);
-}
-
-#[test]
-fn report_and_aggregate_totals_are_equal_by_construction() {
-    let observations = (0..7)
-        .map(|index| {
-            attempt(
-                index,
-                index % 2,
-                Some(index as u64),
-                Some(index as u64 + 50),
-                index as u64 * 10,
-                index as u64 * 10 + 100,
-                1_000,
-                if index == 0 { SchedulePhase::Warmup } else { SchedulePhase::Measurement },
-            )
-        })
-        .collect::<Vec<_>>();
-    let aggregate = MeasuredAggregate::reduce(
-        &observations,
-        &[device(0, 1 << 30, 2), device(1, 2 << 30, 2)],
-        &occupancy(2),
-        0,
-        1_000_000_000,
-    );
-    let equality = aggregate.report_aggregate_equality;
-    assert!(equality.equal);
-    assert_eq!(equality.rows_total, 7);
-    assert_eq!(equality.aggregate_total, 7);
-    assert_eq!(equality.rows_measurement_attempts, equality.aggregate_measurement_attempts);
-    assert_eq!(equality.rows_succeeded, equality.aggregate_succeeded);
-    assert_eq!(equality.rows_placed, equality.aggregate_placed);
 }
 
 #[test]

@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use arrow::array::Int64Array;
+use cudf::testing::run_named_cases;
 use query_planning::plan::{
     NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, QueryPlan, native_plan_cost_decision,
 };
 
 use super::*;
 
-#[test]
 fn small_selective_topk_join_is_not_selected_by_cost() {
     let plan = topk_join_plan(4, 10_000, 1024 * 1024);
 
@@ -26,6 +26,42 @@ fn small_selective_topk_join_is_not_selected_by_cost() {
 }
 
 #[test]
+fn t_cost_decision_cases() {
+    run_named_cases(&[
+        (
+            "preference_contracts::small_selective_topk_join_is_not_selected_by_cost",
+            small_selective_topk_join_is_not_selected_by_cost,
+        ),
+        (
+            "preference_contracts::tiny_residual_join_is_not_selected_by_cost",
+            tiny_residual_join_is_not_selected_by_cost,
+        ),
+        (
+            "preference_contracts::residual_join_over_tight_threshold_continues_native",
+            residual_join_over_tight_threshold_continues_native,
+        ),
+        (
+            "preference_contracts::residual_join_can_use_profile_specific_row_group_threshold",
+            residual_join_can_use_profile_specific_row_group_threshold,
+        ),
+        ("preference_contracts::larger_topk_join_continues_native", larger_topk_join_continues_native),
+        ("preference_contracts::few_large_row_groups_continue_native", few_large_row_groups_continue_native),
+        (
+            "preference_contracts::missing_row_group_evidence_continues_native",
+            missing_row_group_evidence_continues_native,
+        ),
+        (
+            "preference_contracts::small_grouped_aggregate_without_topk_or_residual_continues_native",
+            small_grouped_aggregate_without_topk_or_residual_continues_native,
+        ),
+        (
+            "preference_contracts::small_selective_full_sort_join_aggregate_is_not_selected_by_cost",
+            small_selective_full_sort_join_aggregate_is_not_selected_by_cost,
+        ),
+        ("preference_contracts::disabled_cost_options_continue_native", disabled_cost_options_continue_native),
+    ]);
+}
+
 fn tiny_residual_join_is_not_selected_by_cost() {
     let plan = residual_topk_join_plan(4);
 
@@ -39,7 +75,6 @@ fn tiny_residual_join_is_not_selected_by_cost() {
     assert_eq!(facts.residual_join_count, 1);
 }
 
-#[test]
 fn residual_join_over_tight_threshold_continues_native() {
     let plan = residual_topk_join_plan(31);
 
@@ -51,7 +86,6 @@ fn residual_join_over_tight_threshold_continues_native() {
     assert_eq!(decision.facts().min_topk_fetch, Some(100));
 }
 
-#[test]
 fn residual_join_can_use_profile_specific_row_group_threshold() {
     let plan = residual_topk_join_plan(12);
     let options =
@@ -67,7 +101,6 @@ fn residual_join_can_use_profile_specific_row_group_threshold() {
     assert_eq!(facts.estimated_source_bytes, Some(2 * 1024 * 1024));
 }
 
-#[test]
 fn larger_topk_join_continues_native() {
     let plan = topk_join_plan(254, 5_000_000, 512 * 1024 * 1024);
 
@@ -77,7 +110,6 @@ fn larger_topk_join_continues_native() {
     assert_eq!(decision.facts().selected_row_groups, Some(508));
 }
 
-#[test]
 fn few_large_row_groups_continue_native() {
     let plan = topk_join_plan(4, 10_000, 2 << 30);
 
@@ -88,7 +120,6 @@ fn few_large_row_groups_continue_native() {
     assert_eq!(decision.facts().estimated_source_bytes, Some(4 << 30));
 }
 
-#[test]
 fn missing_row_group_evidence_continues_native() {
     let plan = topk_join_without_row_group_metadata();
 
@@ -99,7 +130,6 @@ fn missing_row_group_evidence_continues_native() {
     assert_eq!(decision.facts().selected_row_groups, None);
 }
 
-#[test]
 fn small_grouped_aggregate_without_topk_or_residual_continues_native() {
     let plan = grouped_aggregate_plan(4);
 
@@ -110,7 +140,6 @@ fn small_grouped_aggregate_without_topk_or_residual_continues_native() {
     assert_eq!(decision.facts().min_topk_fetch, None);
 }
 
-#[test]
 fn small_selective_full_sort_join_aggregate_is_not_selected_by_cost() {
     let plan = full_sort_join_aggregate_plan(4, 10_000, 1024 * 1024);
 
@@ -165,7 +194,6 @@ fn host_literal_passthrough_to_the_host_is_not_selected_by_cost_unless_native_is
     assert!(!native_plan_cost_decision(&limited, &NativePlanCostOptions::default(), true).is_not_selected_by_cost());
 }
 
-#[test]
 fn disabled_cost_options_continue_native() {
     let plan = topk_join_plan(4, 10_000, 1024 * 1024);
 

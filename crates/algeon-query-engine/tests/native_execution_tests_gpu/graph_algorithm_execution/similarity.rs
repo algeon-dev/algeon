@@ -191,13 +191,11 @@ fn assert_bounded_similarity_pair_input_is_admitted() {
     drop(admitted);
 }
 
-#[test]
-fn bounded_similarity_accepts_gpu_pair_input_exactly_once() {
+pub(super) fn bounded_similarity_accepts_gpu_pair_input_exactly_once() {
     assert_bounded_similarity_pair_input_is_admitted();
 }
 
-#[test]
-fn pairwise_similarity_executes_all_metrics_with_stable_schema_and_multiset_pairs() {
+pub(super) fn pairwise_similarity_executes_all_metrics_with_stable_schema_and_multiset_pairs() {
     let context = backend_context();
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);
     let pair_schema = similarity_pair_schema(DataType::Int32, false);
@@ -247,8 +245,7 @@ fn pairwise_similarity_executes_all_metrics_with_stable_schema_and_multiset_pair
     }
 }
 
-#[test]
-fn pairwise_similarity_weighted_jaccard_uses_the_graph_weight_binding() {
+pub(super) fn pairwise_similarity_weighted_jaccard_uses_the_graph_weight_binding() {
     let context = backend_context();
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(true);
     let pair_schema = similarity_pair_schema(DataType::Int32, false);
@@ -291,8 +288,7 @@ fn pairwise_similarity_weighted_jaccard_uses_the_graph_weight_binding() {
     drop(admitted);
 }
 
-#[test]
-fn pairwise_similarity_allows_one_pair_column_to_supply_both_self_pair_endpoints() {
+pub(super) fn pairwise_similarity_allows_one_pair_column_to_supply_both_self_pair_endpoints() {
     let context = backend_context();
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);
     let pair_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int32, false)]));
@@ -341,8 +337,7 @@ fn pairwise_similarity_allows_one_pair_column_to_supply_both_self_pair_endpoints
     drop(admitted);
 }
 
-#[test]
-fn pairwise_similarity_accepts_int64_pairs_and_short_circuits_empty_pairs() {
+pub(super) fn pairwise_similarity_accepts_int64_pairs_and_short_circuits_empty_pairs() {
     let context = backend_context();
     let edge_schema = similarity_edge_schema(DataType::Int64, false);
     let edge_batch = RecordBatch::try_new(
@@ -410,8 +405,7 @@ fn pairwise_similarity_accepts_int64_pairs_and_short_circuits_empty_pairs() {
     drop(admitted);
 }
 
-#[test]
-fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_mismatch() {
+pub(super) fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_graph_dtype_mismatch() {
     let context = backend_context();
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);
 

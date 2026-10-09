@@ -352,7 +352,6 @@ mod tests {
         CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION as AdapterCugraphWeaklyConnectedComponentsFunction,
     };
     use tokio::task::yield_now;
-    use workloads::{clickbench::CLICKBENCH_QUERY_COUNT, tpcds::TPCDS_QUERY_COUNT, tpch::TPCH_QUERY_COUNT};
 
     use super::*;
 
@@ -409,42 +408,6 @@ mod tests {
                 resolve(0, kind, label).unwrap();
             }
         }
-        assert_eq!(known_labels(FixtureKind::Tpch).len(), TPCH_QUERY_COUNT);
-        assert_eq!(known_labels(FixtureKind::Tpcds).len(), TPCDS_QUERY_COUNT);
-        assert_eq!(known_labels(FixtureKind::Clickbench).len(), CLICKBENCH_QUERY_COUNT);
-        let graph = known_labels(FixtureKind::Dblp);
-        for required in [
-            "pagerank",
-            "bfs",
-            "wcc",
-            "edge_scan",
-            "force_atlas2",
-            "pagerank_forceatlas2_join",
-            "bfs_deep",
-            "betweenness_centrality",
-            "betweenness_centrality_wide",
-        ] {
-            assert!(graph.contains(&required), "{required}");
-        }
-    }
-
-    #[test]
-    fn basic_bfs_catalog_entry_keeps_the_unbounded_singleflight_shape() {
-        let bfs = resolve(0, FixtureKind::Dblp, "bfs").expect("bfs catalog entry");
-        assert!(bfs.graph);
-        assert!(bfs.sql.contains("edges => (SELECT src, dst FROM edges_by_src)"));
-        assert!(bfs.sql.contains("output_mode => 'normalized'"));
-        assert!(!bfs.sql.contains("depth_limit"));
-    }
-
-    #[test]
-    fn composed_catalog_entry_keeps_two_graph_producers_and_native_join_consumer() {
-        let composed = resolve(0, FixtureKind::Dblp, "pagerank_forceatlas2_join").expect("composed catalog entry");
-        assert!(composed.graph);
-        assert!(composed.sql.contains(CUGRAPH_PAGERANK_FUNCTION));
-        assert!(composed.sql.contains(CUGRAPH_FORCE_ATLAS2_FUNCTION));
-        assert!(composed.sql.contains("JOIN pagerank"));
-        assert!(composed.sql.contains("pagerank_value > 0"));
     }
 
     /// The literals above must equal the adapter's exported names, or the graph

@@ -8,7 +8,7 @@ use cudf::{
     ops::{expr::col, unary::is_supported_cast},
 };
 
-use crate::common::{run_named_cases, series};
+use crate::common::series;
 
 // ===========================================================================
 // Series::astype; accepts DataType directly
@@ -96,16 +96,13 @@ fn typeid_converts_to_datatype_decimal() {
     assert_eq!(dt.scale(), 0);
 }
 
-#[test]
-fn cast_consistency_tests_cases() {
-    run_named_cases(&[
-        ("series_astype_accepts_datatype", series_astype_accepts_datatype),
-        ("series_astype_accepts_typeid", series_astype_accepts_typeid),
-        ("expr_cast_accepts_datatype", expr_cast_accepts_datatype),
-        ("expr_cast_accepts_typeid", expr_cast_accepts_typeid),
-        ("cast_symmetry", cast_symmetry),
-        ("is_supported_cast_uses_datatype", is_supported_cast_uses_datatype),
-        ("typeid_converts_to_datatype", typeid_converts_to_datatype),
-        ("typeid_converts_to_datatype_decimal", typeid_converts_to_datatype_decimal),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("cast_consistency_tests::series_astype_accepts_datatype", series_astype_accepts_datatype),
+    ("cast_consistency_tests::series_astype_accepts_typeid", series_astype_accepts_typeid),
+    ("cast_consistency_tests::expr_cast_accepts_datatype", expr_cast_accepts_datatype),
+    ("cast_consistency_tests::expr_cast_accepts_typeid", expr_cast_accepts_typeid),
+    ("cast_consistency_tests::cast_symmetry", cast_symmetry),
+    ("cast_consistency_tests::is_supported_cast_uses_datatype", is_supported_cast_uses_datatype),
+    ("cast_consistency_tests::typeid_converts_to_datatype", typeid_converts_to_datatype),
+    ("cast_consistency_tests::typeid_converts_to_datatype_decimal", typeid_converts_to_datatype_decimal),
+];

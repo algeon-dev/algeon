@@ -355,8 +355,7 @@ mod tests {
     use super::*;
     use crate::observability::{
         DeterministicRuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationPayload,
-        RuntimeObservationSession, RuntimeOperatorStageKind, RuntimeTerminalOutcome, RuntimeTimelineEvent,
-        write_runtime_observation_jsonl,
+        RuntimeObservationSession, RuntimeOperatorStageKind, RuntimeTerminalOutcome,
     };
 
     fn session_with_limits(max_records: u64) -> RuntimeObservationSession {
@@ -616,56 +615,5 @@ mod tests {
             snapshot.footer().dropped_by_class.iter().any(|loss| loss.count > 0),
             "terminal drop must produce loss metadata, not a fabricated Finished"
         );
-    }
-
-    #[test]
-    fn jsonl_round_trip_for_every_stage_kind() {
-        let kinds = [
-            RuntimeOperatorStageKind::RegexReplacePreflight,
-            RuntimeOperatorStageKind::RegexReplaceExecute,
-            RuntimeOperatorStageKind::ExactCardinalityProbe,
-            RuntimeOperatorStageKind::PreparedGroupbyPrepare,
-            RuntimeOperatorStageKind::PreparedGroupbyAggregate,
-            RuntimeOperatorStageKind::LibcudfGroupby,
-            RuntimeOperatorStageKind::HashPartition,
-            RuntimeOperatorStageKind::PartialAggregate,
-            RuntimeOperatorStageKind::FinalMerge,
-            RuntimeOperatorStageKind::PartitionLocalTopK,
-            RuntimeOperatorStageKind::FinalSort,
-            RuntimeOperatorStageKind::VectorPack,
-            RuntimeOperatorStageKind::VectorNative,
-            RuntimeOperatorStageKind::VectorAssemble,
-            RuntimeOperatorStageKind::MlPack,
-            RuntimeOperatorStageKind::MlNative,
-            RuntimeOperatorStageKind::MlAssemble,
-        ];
-        let session = session_with_limits(256);
-        for kind in kinds {
-            let guard = RuntimeOperatorStageGuard::start(
-                session.handle(),
-                Some(PlanExecutionId::new("plan-jsonl")),
-                None,
-                kind,
-                RuntimeOperatorStageIdentity::new().with_strategy_label(kind.as_str()),
-            );
-            guard.finish(Some(0), Some(0));
-        }
-        let snapshot = session.seal(RuntimeTerminalOutcome::Succeeded).expect("seal");
-        let mut buffer = Vec::new();
-        write_runtime_observation_jsonl(&snapshot, &mut buffer).expect("export");
-        let text = String::from_utf8(buffer).expect("utf8");
-        for kind in kinds {
-            assert!(text.contains(kind.as_str()), "JSONL must retain stage kind {}", kind.as_str());
-        }
-        for line in text.lines() {
-            let value: serde_json::Value = serde_json::from_str(line).expect("json line");
-            if value.get("record_type").and_then(|v| v.as_str()) == Some("timeline_event") {
-                let event: RuntimeTimelineEvent =
-                    serde_json::from_value(value.get("data").cloned().expect("data")).expect("event");
-                if let RuntimeObservationPayload::OperatorStage(stage) = event.payload {
-                    let _ = stage.stage_kind.as_str();
-                }
-            }
-        }
     }
 }

@@ -4,8 +4,7 @@ use cudf::{ErrorCode, ErrorKind, Exec, testing::prelude::*};
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, dependency_wait_call_count_for_stream,
     error_context_value, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    lock_event_observation, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
-    run_named_cases, series,
+    lock_event_observation, reset_dependency_observation, reset_exec_observation, reset_sync_observation, series,
 };
 
 // ---------------------------------------------------------------------------
@@ -167,19 +166,19 @@ fn test_isin_type_mismatch_error_has_operation_context() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("float64"));
 }
 
-#[test]
-fn search_tests_cases() {
-    run_named_cases(&[
-        ("test_series_isin_with_duplicate_values", test_series_isin_with_duplicate_values),
-        ("test_series_isin_float64", test_series_isin_float64),
-        ("test_isin_i32_some_matches", test_isin_i32_some_matches),
-        ("test_isin_succeeds_with_mixed_domains", test_isin_succeeds_with_mixed_domains),
-        ("test_isin_string_column", test_isin_string_column),
-        ("test_isin_no_matches", test_isin_no_matches),
-        ("test_isin_all_matches", test_isin_all_matches),
-        ("test_isin_empty_values", test_isin_empty_values),
-        ("test_isin_column_with_nulls", test_isin_column_with_nulls),
-        ("test_isin_empty_column", test_isin_empty_column),
-        ("test_isin_type_mismatch_error_has_operation_context", test_isin_type_mismatch_error_has_operation_context),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("search_tests::test_series_isin_with_duplicate_values", test_series_isin_with_duplicate_values),
+    ("search_tests::test_series_isin_float64", test_series_isin_float64),
+    ("search_tests::test_isin_i32_some_matches", test_isin_i32_some_matches),
+    ("search_tests::test_isin_succeeds_with_mixed_domains", test_isin_succeeds_with_mixed_domains),
+    ("search_tests::test_isin_string_column", test_isin_string_column),
+    ("search_tests::test_isin_no_matches", test_isin_no_matches),
+    ("search_tests::test_isin_all_matches", test_isin_all_matches),
+    ("search_tests::test_isin_empty_values", test_isin_empty_values),
+    ("search_tests::test_isin_column_with_nulls", test_isin_column_with_nulls),
+    ("search_tests::test_isin_empty_column", test_isin_empty_column),
+    (
+        "search_tests::test_isin_type_mismatch_error_has_operation_context",
+        test_isin_type_mismatch_error_has_operation_context,
+    ),
+];

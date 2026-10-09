@@ -1,6 +1,5 @@
 //! Tests for Parquet I/O.
 use std::{
-    process::Command,
     sync::{Arc, Barrier},
     thread,
 };
@@ -12,13 +11,14 @@ use cudf::{
         error::{FactKeyName, FactValue},
     },
     io::parquet,
-    testing::prelude::*,
+    testing::{prelude::*, run_named_cases},
 };
 use cudf_sys::test_support;
 use tempfile::TempDir;
 
 use crate::common::{
     arm_next_io_metadata_fault, column_from_slice, error_context_value, reset_io_metadata_fault, sample_runtime,
+    write_i32_parquet_fixture,
 };
 
 struct MetadataFaultReset;
@@ -29,32 +29,6 @@ impl Drop for MetadataFaultReset {
     }
 }
 
-/// Write a Parquet file with the specified row group size using PyArrow.
-///
-/// Returns `true` if the file was written successfully, `false` if Python/PyArrow
-/// is not available. Panics on unexpected errors.
-fn write_parquet_with_row_groups(path: &std::path::Path, values: &[i32], row_group_size: usize) -> bool {
-    let vals_str: Vec<String> = values.iter().map(|v| v.to_string()).collect();
-    let script = format!(
-        "import pyarrow as pa, pyarrow.parquet as pq; \
-         t = pa.table({{'val': pa.array([{}], type=pa.int32())}}); \
-         pq.write_table(t, '{}', row_group_size={})",
-        vals_str.join(","),
-        path.display(),
-        row_group_size,
-    );
-    let output = Command::new("python3").args(["-c", &script]).output();
-    match output {
-        Ok(out) if out.status.success() => true,
-        Ok(out) => {
-            eprintln!("PyArrow write failed: {}", String::from_utf8_lossy(&out.stderr));
-            false
-        },
-        Err(_) => false,
-    }
-}
-
-#[test]
 fn test_parquet_roundtrip() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.parquet");
@@ -184,7 +158,6 @@ fn test_parquet_row_limits() {
     assert_eq!(vals, (0..10).collect::<Vec<i32>>());
 }
 
-#[test]
 fn test_parquet_skip_rows_and_row_limits() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_skip_rows.parquet");
@@ -245,7 +218,6 @@ fn test_parquet_read_returns_column_names_in_shared_result() {
     assert_eq!(col2.to_vec::<i64>().unwrap(), vec![100, 200, 300]);
 }
 
-#[test]
 fn test_parquet_read_column_selection_preserves_projected_names() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_meta_select.parquet");
@@ -296,18 +268,13 @@ fn test_parquet_read_single_column_preserves_name() {
     assert_eq!(result.table.testing_view().unwrap().num_columns().unwrap(), 1);
 }
 
-#[test]
 fn test_parquet_row_group_selection() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rg.parquet");
     let rt = sample_runtime();
 
-    // Write 9 rows with 3 rows per row group → 3 groups (via PyArrow)
     let values: Vec<i32> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90];
-    if !write_parquet_with_row_groups(&path, &values, 3) {
-        eprintln!("Skipping: python3/pyarrow not available");
-        return;
-    }
+    write_i32_parquet_fixture(&path, "val", &values, 3);
 
     // Read only row group 1 (rows 40, 50, 60)
     let read_opts =
@@ -327,12 +294,8 @@ fn test_parquet_row_group_multiple_selection() {
     let path = dir.path().join("test_rg_multi.parquet");
     let rt = sample_runtime();
 
-    // Write 9 rows with 3 rows per row group → 3 groups (via PyArrow)
     let values: Vec<i32> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90];
-    if !write_parquet_with_row_groups(&path, &values, 3) {
-        eprintln!("Skipping: python3/pyarrow not available");
-        return;
-    }
+    write_i32_parquet_fixture(&path, "val", &values, 3);
 
     // Read row groups 0 and 2 (rows 10,20,30 and 70,80,90)
     let read_opts =
@@ -346,7 +309,6 @@ fn test_parquet_row_group_multiple_selection() {
     assert_eq!(vals, vec![10, 20, 30, 70, 80, 90]);
 }
 
-#[test]
 fn test_parquet_row_group_empty_selection() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rg_empty.parquet");
@@ -370,7 +332,6 @@ fn test_parquet_row_group_empty_selection() {
     assert_eq!(vals, vec![1, 2, 3]);
 }
 
-#[test]
 fn test_parquet_row_groups_with_skip_rows_errors() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rg_skip_err.parquet");
@@ -407,7 +368,6 @@ fn test_parquet_row_groups_with_skip_rows_errors() {
     );
 }
 
-#[test]
 fn test_parquet_row_groups_with_num_rows_errors() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_rg_num_err.parquet");
@@ -444,7 +404,6 @@ fn test_parquet_row_groups_with_num_rows_errors() {
     );
 }
 
-#[test]
 fn test_parquet_write_rejects_column_name_with_nul_byte_using_stable_contract() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bad_header.parquet");
@@ -462,7 +421,6 @@ fn test_parquet_write_rejects_column_name_with_nul_byte_using_stable_contract() 
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("interior_null_byte"));
 }
 
-#[test]
 fn test_parquet_read_rejects_projected_column_name_with_nul_byte_using_stable_contract() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bad_projection.parquet");
@@ -484,7 +442,6 @@ fn test_parquet_read_rejects_projected_column_name_with_nul_byte_using_stable_co
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("interior_null_byte"));
 }
 
-#[test]
 fn test_parquet_skip_rows_exceeding_i64_max_uses_stable_overflow_contract() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("overflow_skip_rows.parquet");
@@ -511,7 +468,6 @@ fn test_parquet_skip_rows_exceeding_i64_max_uses_stable_overflow_contract() {
     assert_eq!(error_context_value(&err, "skip_rows").as_deref(), Some(expected.as_str()));
 }
 
-#[test]
 fn test_parquet_num_rows_exceeding_i64_max_uses_stable_overflow_contract() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("overflow_num_rows.parquet");
@@ -538,7 +494,6 @@ fn test_parquet_num_rows_exceeding_i64_max_uses_stable_overflow_contract() {
     assert_eq!(error_context_value(&err, "num_rows").as_deref(), Some(expected.as_str()));
 }
 
-#[test]
 fn test_parquet_write_rejects_column_name_count_with_stable_contract() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bad_names.parquet");
@@ -564,7 +519,6 @@ fn test_parquet_write_rejects_column_name_count_with_stable_contract() {
     );
 }
 
-#[test]
 fn test_parquet_write_io_failure_uses_canonical_column_name_count_context() {
     let path =
         std::env::temp_dir().join("cudf_rs_missing_parent_dir_for_parquet_write_12345").join("write_failure.parquet");
@@ -578,7 +532,6 @@ fn test_parquet_write_io_failure_uses_canonical_column_name_count_context() {
     assert_eq!(error_context_value(&err, "output_column_name_count").as_deref(), None);
 }
 
-#[test]
 fn test_parquet_read_metadata_null_name_entry_maps_to_invariant_violation() {
     let _reset = MetadataFaultReset;
     let dir = TempDir::new().unwrap();
@@ -607,7 +560,6 @@ fn test_parquet_read_metadata_null_name_entry_maps_to_invariant_violation() {
     assert_eq!(error_context_value(&err, "name_index").as_deref(), None);
 }
 
-#[test]
 fn test_parquet_read_metadata_null_name_array_uses_canonical_fault_context() {
     let _reset = MetadataFaultReset;
     let dir = TempDir::new().unwrap();
@@ -639,7 +591,6 @@ fn test_parquet_read_metadata_null_name_array_uses_canonical_fault_context() {
     assert_eq!(error_context_value(&err, "names_ptr_null").as_deref(), None);
 }
 
-#[test]
 fn test_parquet_read_metadata_invalid_utf8_name_uses_canonical_fault_context() {
     let _reset = MetadataFaultReset;
     let dir = TempDir::new().unwrap();
@@ -673,7 +624,6 @@ fn test_parquet_read_metadata_invalid_utf8_name_uses_canonical_fault_context() {
     assert_eq!(error_context_value(&err, "name_index").as_deref(), None);
 }
 
-#[test]
 fn test_parquet_read_missing_projected_column_uses_canonical_column_name_count_context() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("missing_projected_column.parquet");
@@ -692,7 +642,6 @@ fn test_parquet_read_missing_projected_column_uses_canonical_column_name_count_c
     assert_eq!(error_context_value(&err, "selected_column_count").as_deref(), None);
 }
 
-#[test]
 fn test_parquet_read_options_can_be_reused_across_calls() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_reuse_opts.parquet");
@@ -717,7 +666,6 @@ fn test_parquet_read_options_can_be_reused_across_calls() {
     assert_eq!(second.table.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![4, 5, 6]);
 }
 
-#[test]
 fn test_parquet_read_nonexistent_file_reports_not_found() {
     let rt = sample_runtime();
     let read_opts = parquet::ParquetTableReadOptions::builder()
@@ -731,4 +679,62 @@ fn test_parquet_read_nonexistent_file_reports_not_found() {
 
     assert_eq!(err.code(), ErrorCode::IoFailure);
     assert_eq!(err.kind(), ErrorKind::DependencyFailure);
+}
+
+#[test]
+fn io_tests_cases() {
+    run_named_cases(&[
+        ("test_parquet_row_group_selection", test_parquet_row_group_selection),
+        ("test_parquet_skip_rows_and_row_limits", test_parquet_skip_rows_and_row_limits),
+        (
+            "test_parquet_read_column_selection_preserves_projected_names",
+            test_parquet_read_column_selection_preserves_projected_names,
+        ),
+        ("test_parquet_row_group_empty_selection", test_parquet_row_group_empty_selection),
+        ("test_parquet_row_groups_with_skip_rows_errors", test_parquet_row_groups_with_skip_rows_errors),
+        ("test_parquet_row_groups_with_num_rows_errors", test_parquet_row_groups_with_num_rows_errors),
+        (
+            "test_parquet_write_rejects_column_name_with_nul_byte_using_stable_contract",
+            test_parquet_write_rejects_column_name_with_nul_byte_using_stable_contract,
+        ),
+        (
+            "test_parquet_read_rejects_projected_column_name_with_nul_byte_using_stable_contract",
+            test_parquet_read_rejects_projected_column_name_with_nul_byte_using_stable_contract,
+        ),
+        (
+            "test_parquet_skip_rows_exceeding_i64_max_uses_stable_overflow_contract",
+            test_parquet_skip_rows_exceeding_i64_max_uses_stable_overflow_contract,
+        ),
+        (
+            "test_parquet_num_rows_exceeding_i64_max_uses_stable_overflow_contract",
+            test_parquet_num_rows_exceeding_i64_max_uses_stable_overflow_contract,
+        ),
+        (
+            "test_parquet_write_rejects_column_name_count_with_stable_contract",
+            test_parquet_write_rejects_column_name_count_with_stable_contract,
+        ),
+        (
+            "test_parquet_write_io_failure_uses_canonical_column_name_count_context",
+            test_parquet_write_io_failure_uses_canonical_column_name_count_context,
+        ),
+        ("test_parquet_roundtrip", test_parquet_roundtrip),
+        (
+            "test_parquet_read_metadata_null_name_entry_maps_to_invariant_violation",
+            test_parquet_read_metadata_null_name_entry_maps_to_invariant_violation,
+        ),
+        (
+            "test_parquet_read_metadata_null_name_array_uses_canonical_fault_context",
+            test_parquet_read_metadata_null_name_array_uses_canonical_fault_context,
+        ),
+        (
+            "test_parquet_read_metadata_invalid_utf8_name_uses_canonical_fault_context",
+            test_parquet_read_metadata_invalid_utf8_name_uses_canonical_fault_context,
+        ),
+        (
+            "test_parquet_read_missing_projected_column_uses_canonical_column_name_count_context",
+            test_parquet_read_missing_projected_column_uses_canonical_column_name_count_context,
+        ),
+        ("test_parquet_read_options_can_be_reused_across_calls", test_parquet_read_options_can_be_reused_across_calls),
+        ("test_parquet_read_nonexistent_file_reports_not_found", test_parquet_read_nonexistent_file_reports_not_found),
+    ]);
 }

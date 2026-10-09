@@ -559,12 +559,10 @@ mod tests {
         }
     }
 
-    fn fail_staged_import(fail_teardown: bool) -> (Runtime, i32) {
-        let runtime = Runtime::new().unwrap();
+    fn fail_staged_import(runtime: Runtime, fail_teardown: bool) -> (Runtime, i32) {
         let batch =
             RecordBatch::try_from_iter(vec![("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef)]).unwrap();
         unsafe {
-            test_support::cudf_test_stream_synchronize_reset();
             test_support::cudf_test_event_fail_synchronize();
             if fail_teardown {
                 test_support::cudf_test_stream_fail_synchronize();
@@ -581,6 +579,7 @@ mod tests {
 
     #[test]
     fn staged_import_fences_pinned_sources_after_event_failure() {
+        let runtime = Runtime::new().unwrap();
         let pool = pinned_staging_pool();
         let leases_before = pool.leased_count();
         unsafe {
@@ -588,7 +587,7 @@ mod tests {
             test_support::cudf_test_stream_block_synchronize();
         }
         let failure = SynchronizationFailure;
-        let upload = thread::spawn(|| fail_staged_import(false));
+        let upload = thread::spawn(move || fail_staged_import(runtime, false));
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let mut count = 0;
@@ -617,7 +616,9 @@ mod tests {
     #[test]
     fn staged_import_quarantines_pinned_sources_when_teardown_fails() {
         let scope = DeviceSafetyTestScope::install([]);
-        let (runtime, count) = fail_staged_import(true);
+        let runtime = Runtime::new().unwrap();
+        unsafe { test_support::cudf_test_stream_synchronize_reset() };
+        let (runtime, count) = fail_staged_import(runtime, true);
         assert_eq!(count, 1);
         assert_eq!(scope.health_snapshot(runtime.device()).quarantined_teardown_count(), 2);
     }

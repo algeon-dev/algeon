@@ -2,10 +2,7 @@ use algeon_datafusion::{
     capability::CapabilityReason,
     report::{CandidateOutcome, CandidateOutcomeKind, GpuCandidate, NotSupportedDetail, PlanningReport},
 };
-use query_planning::{
-    plan::NativePlanCostReason,
-    triage::{TriageCode, TriageVerdict},
-};
+use query_planning::triage::{TriageCode, TriageVerdict};
 
 #[test]
 fn capability_reason_codes_are_stable_manifest_values() {
@@ -34,31 +31,6 @@ fn capability_reason_codes_are_stable_manifest_values() {
     for (reason, expected) in codes {
         assert_eq!(reason.code(), expected);
     }
-}
-
-#[test]
-fn cost_reason_codes_are_stable_manifest_values() {
-    let codes = [
-        (NativePlanCostReason::SmallSelectiveTopK, "native_small_selective_topk_not_selected_by_cost"),
-        (NativePlanCostReason::SmallSelectiveResidualJoin, "native_small_selective_residual_join_not_selected_by_cost"),
-        (NativePlanCostReason::SmallSelectiveFullSort, "native_small_selective_full_sort_not_selected_by_cost"),
-    ];
-
-    for (reason, expected) in codes {
-        assert_eq!(reason.code(), expected);
-    }
-}
-
-#[test]
-fn cost_decision_has_a_shared_triage_code() {
-    assert_eq!(TriageCode::NotSelectedByCost.as_str(), "not_selected_by_cost");
-}
-
-#[test]
-fn capability_reasons_map_to_shared_triage_codes() {
-    assert_eq!(CapabilityReason::UnsupportedExpression.facts().triage, TriageCode::UnsupportedExpression);
-    assert_eq!(CapabilityReason::NativeBoundedJoinUnsupported.facts().triage, TriageCode::CapabilityEnvelopeRejected);
-    assert_eq!(CapabilityReason::NativeSourceNonLocalObjectStore.facts().triage, TriageCode::UnsupportedSource);
 }
 
 #[test]

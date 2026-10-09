@@ -151,7 +151,7 @@ fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
         ])
         .with_metadata(HashMap::from([(
             "__algeon_filtered_grouped_segment_target_bytes".to_string(),
-            "1024".to_string(),
+            "65536".to_string(),
         )])),
     );
     let batch = RecordBatch::try_new(
@@ -277,7 +277,7 @@ fn bounded_native_grouped_filtered_integer_avg_segments_sum_in_float64() {
         ])
         .with_metadata(HashMap::from([(
             "__algeon_filtered_grouped_segment_target_bytes".to_string(),
-            "1024".to_string(),
+            "65536".to_string(),
         )])),
     );
     let payload = |row: usize| match row {
@@ -557,7 +557,7 @@ fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
         ])
         .with_metadata(HashMap::from([(
             "__algeon_filtered_global_segment_target_bytes".to_string(),
-            "1024".to_string(),
+            "65536".to_string(),
         )])),
     );
     let payload = (0..100_000).map(|value| i64::from(value % 100)).collect::<Vec<_>>();
@@ -862,7 +862,7 @@ fn bounded_native_partial_global_filtered_aggregate_segments_large_materializati
         ])
         .with_metadata(HashMap::from([(
             "__algeon_filtered_global_segment_target_bytes".to_string(),
-            "1024".to_string(),
+            "65536".to_string(),
         )])),
     );
     let row_count = 20_000usize;

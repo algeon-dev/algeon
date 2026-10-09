@@ -3,9 +3,7 @@
 
 use cudf::{AggSpec, DataFrame, ErrorCode, ErrorKind, Exec, GroupByAgg};
 
-use crate::common::{
-    assert_missing_column_error, column_from_slice, dataframe_from_columns, error_context_value, run_named_cases,
-};
+use crate::common::{assert_missing_column_error, column_from_slice, dataframe_from_columns, error_context_value};
 
 fn assert_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -651,40 +649,40 @@ fn groupby_new_agg_alias() {
     assert_eq!(result.column_names(), vec!["key", "mid", "spread"]);
 }
 
-#[test]
-fn high_level_groupby_tests_cases() {
-    run_named_cases(&[
-        ("groupby_sum", groupby_sum),
-        ("groupby_mean", groupby_mean),
-        ("groupby_count", groupby_count),
-        ("groupby_alias", groupby_alias),
-        ("groupby_deterministic_naming_without_alias", groupby_deterministic_naming_without_alias),
-        ("groupby_multi_column_agg_ordering", groupby_multi_column_agg_ordering),
-        ("groupby_missing_value_column", groupby_missing_value_column),
-        ("groupby_missing_key_column", groupby_missing_key_column),
-        ("groupby_empty_agg_specs", groupby_empty_agg_specs),
-        ("groupby_sum_shortcut", groupby_sum_shortcut),
-        ("groupby_mean_shortcut", groupby_mean_shortcut),
-        ("groupby_count_shortcut", groupby_count_shortcut),
-        ("groupby_shortcut_handle_is_reusable", groupby_shortcut_handle_is_reusable),
-        ("scoped_groupby_handle_is_reusable", scoped_groupby_handle_is_reusable),
-        ("groupby_sum_shortcut_multi_columns", groupby_sum_shortcut_multi_columns),
-        ("groupby_with_options_include_null_keys", groupby_with_options_include_null_keys),
-        ("groupby_median", groupby_median),
-        ("groupby_median_shortcut", groupby_median_shortcut),
-        ("groupby_nunique", groupby_nunique),
-        ("groupby_nunique_shortcut", groupby_nunique_shortcut),
-        ("groupby_std_ddof1", groupby_std_ddof1),
-        ("groupby_std_ddof0", groupby_std_ddof0),
-        ("groupby_std_shortcut", groupby_std_shortcut),
-        (
-            "groupby_rejects_ddof_above_i32_max_with_stable_contract",
-            groupby_rejects_ddof_above_i32_max_with_stable_contract,
-        ),
-        ("groupby_variance_ddof1", groupby_variance_ddof1),
-        ("groupby_variance_ddof0", groupby_variance_ddof0),
-        ("groupby_var_shortcut", groupby_var_shortcut),
-        ("groupby_all_agg_variants_naming", groupby_all_agg_variants_naming),
-        ("groupby_new_agg_alias", groupby_new_agg_alias),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("high_level_groupby_tests::groupby_sum", groupby_sum),
+    ("high_level_groupby_tests::groupby_mean", groupby_mean),
+    ("high_level_groupby_tests::groupby_count", groupby_count),
+    ("high_level_groupby_tests::groupby_alias", groupby_alias),
+    (
+        "high_level_groupby_tests::groupby_deterministic_naming_without_alias",
+        groupby_deterministic_naming_without_alias,
+    ),
+    ("high_level_groupby_tests::groupby_multi_column_agg_ordering", groupby_multi_column_agg_ordering),
+    ("high_level_groupby_tests::groupby_missing_value_column", groupby_missing_value_column),
+    ("high_level_groupby_tests::groupby_missing_key_column", groupby_missing_key_column),
+    ("high_level_groupby_tests::groupby_empty_agg_specs", groupby_empty_agg_specs),
+    ("high_level_groupby_tests::groupby_sum_shortcut", groupby_sum_shortcut),
+    ("high_level_groupby_tests::groupby_mean_shortcut", groupby_mean_shortcut),
+    ("high_level_groupby_tests::groupby_count_shortcut", groupby_count_shortcut),
+    ("high_level_groupby_tests::groupby_shortcut_handle_is_reusable", groupby_shortcut_handle_is_reusable),
+    ("high_level_groupby_tests::scoped_groupby_handle_is_reusable", scoped_groupby_handle_is_reusable),
+    ("high_level_groupby_tests::groupby_sum_shortcut_multi_columns", groupby_sum_shortcut_multi_columns),
+    ("high_level_groupby_tests::groupby_with_options_include_null_keys", groupby_with_options_include_null_keys),
+    ("high_level_groupby_tests::groupby_median", groupby_median),
+    ("high_level_groupby_tests::groupby_median_shortcut", groupby_median_shortcut),
+    ("high_level_groupby_tests::groupby_nunique", groupby_nunique),
+    ("high_level_groupby_tests::groupby_nunique_shortcut", groupby_nunique_shortcut),
+    ("high_level_groupby_tests::groupby_std_ddof1", groupby_std_ddof1),
+    ("high_level_groupby_tests::groupby_std_ddof0", groupby_std_ddof0),
+    ("high_level_groupby_tests::groupby_std_shortcut", groupby_std_shortcut),
+    (
+        "high_level_groupby_tests::groupby_rejects_ddof_above_i32_max_with_stable_contract",
+        groupby_rejects_ddof_above_i32_max_with_stable_contract,
+    ),
+    ("high_level_groupby_tests::groupby_variance_ddof1", groupby_variance_ddof1),
+    ("high_level_groupby_tests::groupby_variance_ddof0", groupby_variance_ddof0),
+    ("high_level_groupby_tests::groupby_var_shortcut", groupby_var_shortcut),
+    ("high_level_groupby_tests::groupby_all_agg_variants_naming", groupby_all_agg_variants_naming),
+    ("high_level_groupby_tests::groupby_new_agg_alias", groupby_new_agg_alias),
+];

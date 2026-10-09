@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use super::*;
 
-#[test]
 fn bounded_native_query_executes_global_avg_from_sum_count_state() {
     let dir = unique_temp_dir("query-engine-bounded-native-global-avg");
     let path = dir.join("input.parquet");
@@ -51,6 +50,35 @@ fn bounded_native_query_executes_global_avg_from_sum_count_state() {
 }
 
 #[test]
+fn global_avg_cases() {
+    run_named_cases(&[
+        (
+            "aggregate_execution::global_avg::bounded_native_query_executes_global_avg_from_sum_count_state",
+            bounded_native_query_executes_global_avg_from_sum_count_state,
+        ),
+        (
+            "aggregate_execution::global_avg::bounded_native_query_executes_global_avg_with_wide_sum_state_for_narrow_integer_input",
+            bounded_native_query_executes_global_avg_with_wide_sum_state_for_narrow_integer_input,
+        ),
+        (
+            "aggregate_execution::global_avg::bounded_native_query_executes_global_null_on_empty_sum_avg_for_all_null_input",
+            bounded_native_query_executes_global_null_on_empty_sum_avg_for_all_null_input,
+        ),
+        (
+            "aggregate_execution::global_avg::bounded_native_query_executes_global_null_on_empty_sum_avg_for_filtered_empty_input",
+            bounded_native_query_executes_global_null_on_empty_sum_avg_for_filtered_empty_input,
+        ),
+        (
+            "aggregate_execution::global_avg::bounded_native_query_executes_decimal_global_avg_from_sum_count_state",
+            bounded_native_query_executes_decimal_global_avg_from_sum_count_state,
+        ),
+        (
+            "aggregate_execution::global_avg::bounded_native_query_executes_fractional_decimal_global_avg_at_output_scale",
+            bounded_native_query_executes_fractional_decimal_global_avg_at_output_scale,
+        ),
+    ]);
+}
+
 fn bounded_native_query_executes_global_avg_with_wide_sum_state_for_narrow_integer_input() {
     let dir = unique_temp_dir("query-engine-bounded-native-global-avg-int8");
     let path = dir.join("input.parquet");
@@ -93,7 +121,6 @@ fn bounded_native_query_executes_global_avg_with_wide_sum_state_for_narrow_integ
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_all_null_input() {
     let dir = unique_temp_dir("query-engine-bounded-native-global-all-null");
     let path = dir.join("input.parquet");
@@ -134,7 +161,6 @@ fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_all_null_input
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_filtered_empty_input() {
     let dir = unique_temp_dir("query-engine-bounded-native-global-filtered-empty");
     let path = dir.join("input.parquet");
@@ -176,7 +202,6 @@ fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_filtered_empty
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_decimal_global_avg_from_sum_count_state() {
     let dir = unique_temp_dir("query-engine-bounded-native-decimal-global-avg");
     let path = dir.join("input.parquet");
@@ -224,7 +249,6 @@ fn bounded_native_query_executes_decimal_global_avg_from_sum_count_state() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_fractional_decimal_global_avg_at_output_scale() {
     let dir = unique_temp_dir("query-engine-bounded-native-fractional-decimal-global-avg");
     let path = dir.join("input.parquet");

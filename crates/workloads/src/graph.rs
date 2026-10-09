@@ -23,7 +23,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::metadata::WorkloadDatasetMetadata;
 
-/// Dataset identifier written by `fixture/demo/citation_network/prepare.py`.
+const DBLP_GENERATOR: &str = "fixture/demo/citation_network/scripts/prepare.py";
+
+/// Dataset identifier written by `fixture/demo/citation_network/scripts/prepare.py`.
 pub const DBLP_DATASET_ID: &str = "citation-network";
 /// Canonical DBLP / AMiner Citation Network V12 paper count.
 pub const DBLP_EXPECTED_PAPERS: u64 = 4_894_081;
@@ -285,14 +287,8 @@ fn read_json_document(path: &Path, label: &str) -> WorkloadResult<Value> {
 
 fn validate_manifest(manifest: &Value) -> WorkloadResult<String> {
     let generator = required_string(manifest, &["generator"], "manifest generator")?;
-    // Fixtures prepared before the converter was renamed record `dblp_ingest.py`.
-    if !(generator.ends_with("citation_network/prepare.py")
-        || generator.ends_with("citation_network/scripts/prepare.py")
-        || generator.ends_with("dblp_ingest.py"))
-    {
-        return Err(WorkloadError::InvalidDataset(
-            "manifest generator must identify fixture/demo/citation_network/scripts/prepare.py".to_string(),
-        ));
+    if generator != DBLP_GENERATOR {
+        return Err(WorkloadError::InvalidDataset(format!("manifest generator must identify {DBLP_GENERATOR}")));
     }
     validate_dataset_id(manifest, "manifest")?;
     let max_papers = required_value(manifest, &["max_papers"], "manifest max_papers")?;

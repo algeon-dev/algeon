@@ -10,7 +10,7 @@
 
 use cudf::{Exec, TypeId};
 
-use crate::common::{run_named_cases, series};
+use crate::common::series;
 
 // ===========================================================================
 // Primitive path: numeric `CudfType` values still work through the generic API
@@ -149,25 +149,22 @@ fn eq_scalar_in_accepts_primitive() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true, false]);
 }
 
-#[test]
-fn scalar_compare_unified_tests_cases() {
-    run_named_cases(&[
-        ("eq_scalar_accepts_primitive", eq_scalar_accepts_primitive),
-        ("ne_scalar_accepts_primitive", ne_scalar_accepts_primitive),
-        ("gt_scalar_accepts_primitive", gt_scalar_accepts_primitive),
-        ("lt_scalar_accepts_primitive", lt_scalar_accepts_primitive),
-        ("ge_scalar_accepts_primitive", ge_scalar_accepts_primitive),
-        ("le_scalar_accepts_primitive", le_scalar_accepts_primitive),
-        ("eq_scalar_accepts_str_literal", eq_scalar_accepts_str_literal),
-        ("ne_scalar_accepts_str_literal", ne_scalar_accepts_str_literal),
-        ("gt_scalar_accepts_str_literal", gt_scalar_accepts_str_literal),
-        ("lt_scalar_accepts_str_literal", lt_scalar_accepts_str_literal),
-        ("ge_scalar_accepts_str_literal", ge_scalar_accepts_str_literal),
-        ("le_scalar_accepts_str_literal", le_scalar_accepts_str_literal),
-        ("eq_scalar_accepts_owned_string", eq_scalar_accepts_owned_string),
-        ("eq_scalar_in_accepts_str_literal", eq_scalar_in_accepts_str_literal),
-        ("eq_scalar_in_accepts_owned_string", eq_scalar_in_accepts_owned_string),
-        ("gt_scalar_in_accepts_str_literal", gt_scalar_in_accepts_str_literal),
-        ("eq_scalar_in_accepts_primitive", eq_scalar_in_accepts_primitive),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("scalar_compare_unified_tests::eq_scalar_accepts_primitive", eq_scalar_accepts_primitive),
+    ("scalar_compare_unified_tests::ne_scalar_accepts_primitive", ne_scalar_accepts_primitive),
+    ("scalar_compare_unified_tests::gt_scalar_accepts_primitive", gt_scalar_accepts_primitive),
+    ("scalar_compare_unified_tests::lt_scalar_accepts_primitive", lt_scalar_accepts_primitive),
+    ("scalar_compare_unified_tests::ge_scalar_accepts_primitive", ge_scalar_accepts_primitive),
+    ("scalar_compare_unified_tests::le_scalar_accepts_primitive", le_scalar_accepts_primitive),
+    ("scalar_compare_unified_tests::eq_scalar_accepts_str_literal", eq_scalar_accepts_str_literal),
+    ("scalar_compare_unified_tests::ne_scalar_accepts_str_literal", ne_scalar_accepts_str_literal),
+    ("scalar_compare_unified_tests::gt_scalar_accepts_str_literal", gt_scalar_accepts_str_literal),
+    ("scalar_compare_unified_tests::lt_scalar_accepts_str_literal", lt_scalar_accepts_str_literal),
+    ("scalar_compare_unified_tests::ge_scalar_accepts_str_literal", ge_scalar_accepts_str_literal),
+    ("scalar_compare_unified_tests::le_scalar_accepts_str_literal", le_scalar_accepts_str_literal),
+    ("scalar_compare_unified_tests::eq_scalar_accepts_owned_string", eq_scalar_accepts_owned_string),
+    ("scalar_compare_unified_tests::eq_scalar_in_accepts_str_literal", eq_scalar_in_accepts_str_literal),
+    ("scalar_compare_unified_tests::eq_scalar_in_accepts_owned_string", eq_scalar_in_accepts_owned_string),
+    ("scalar_compare_unified_tests::gt_scalar_in_accepts_str_literal", gt_scalar_in_accepts_str_literal),
+    ("scalar_compare_unified_tests::eq_scalar_in_accepts_primitive", eq_scalar_in_accepts_primitive),
+];

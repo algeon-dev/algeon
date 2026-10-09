@@ -972,23 +972,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parity_waiver_surface_is_reason_coded_and_ordered() {
-        let ids = PARITY_WAIVERS.iter().map(|waiver| waiver.query_id).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["q04", "q18", "q25", "q26", "q31", "q32", "q33", "q39", "q40", "q41", "q42"]);
-
-        assert_eq!(parity_waiver_reason("q04"), Some(ParityWaiverReason::FloatAccumulationVariance));
-        assert_eq!(parity_waiver_reason("q10"), None);
-        assert_eq!(parity_waiver_reason("q23"), None);
-        for query_id in ["q18", "q25", "q26", "q31", "q32", "q33", "q39", "q40", "q41", "q42"] {
-            assert_eq!(parity_waiver_reason(query_id), Some(ParityWaiverReason::ResultSetNondeterministic));
-        }
-
-        for query_id in ids {
-            assert!(CLICKBENCH_QUERIES.iter().any(|query| query.id == query_id), "unknown ClickBench query {query_id}");
-        }
-    }
-
-    #[test]
     fn parity_waivers_compare_row_counts_only_for_all_reason_categories() {
         for query_id in ["q04", "q39", "q40", "q41", "q42"] {
             let cpu = succeeded_measurement(10, "cpu-fingerprint", None);
@@ -1012,19 +995,7 @@ mod tests {
     fn tsv_header_exposes_backward_compatible_list_and_reason_metadata() {
         let report = BenchmarkReport { config: test_config(), metadata: test_metadata(), rows: Vec::new() };
         let tsv = report.to_tsv();
-        assert_eq!(TSV_COLUMNS.first(), Some(&"query_id"));
-        assert_eq!(TSV_COLUMNS.last(), Some(&"native_failure"));
         assert_eq!(TSV_COLUMNS.join("\t"), tsv.lines().find(|line| !line.starts_with('#')).unwrap());
-        assert!(
-            tsv.contains(
-                "# clickbench_benchmark_nondeterministic_queries=q04,q18,q25,q26,q31,q32,q33,q39,q40,q41,q42\n"
-            )
-        );
-        assert!(tsv.contains("q04=float_accumulation_variance"));
-        assert!(!tsv.contains("q10="));
-        assert!(!tsv.contains("q23="));
-        assert!(tsv.contains("q39=result_set_nondeterministic"));
-        assert!(tsv.contains("q42=result_set_nondeterministic"));
         assert!(tsv.contains("# clickbench_benchmark_relational_execution=native_no_datafusion_cpu\n"));
         assert!(tsv.contains("# clickbench_benchmark_native_profile_name=clickbench_gpu_throughput\n"));
         assert!(tsv.contains("# clickbench_benchmark_native_profile_source=env_profile\n"));

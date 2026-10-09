@@ -5,7 +5,6 @@ use cudf::{
     runtime::{CudaEvent, CudaStream},
 };
 
-#[test]
 fn test_runtime_resource_debug_smoke_reports_device_and_handle_metadata() {
     let stream_output = format!("{:?}", CudaStream::new().unwrap());
     let event_output = format!("{:?}", CudaEvent::new().unwrap());
@@ -27,3 +26,8 @@ fn test_runtime_resource_debug_smoke_reports_device_and_handle_metadata() {
     assert!(mr_output.contains("device"), "debug output should contain memory-resource device metadata: {}", mr_output);
     assert!(mr_output.contains("handle"), "debug output should contain memory-resource handle metadata: {}", mr_output);
 }
+
+pub(super) const CASES: &[(&str, fn())] = &[(
+    "runtime_debug_tests::test_runtime_resource_debug_smoke_reports_device_and_handle_metadata",
+    test_runtime_resource_debug_smoke_reports_device_and_handle_metadata,
+)];

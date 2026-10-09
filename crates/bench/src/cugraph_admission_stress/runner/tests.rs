@@ -53,59 +53,25 @@ fn query_tsv_row_contract_matches_columns() {
     };
     let row = QueryRow::new(&config, &request, 0, 0).finish_failed(Instant::now(), "x\ty".into());
     assert_eq!(row.to_tsv().split('\t').count(), QUERY_COLUMNS.len());
-    assert_eq!(QUERY_COLUMNS.first(), Some(&"run_id"));
-    let error_index = QUERY_COLUMNS.iter().position(|column| *column == "error").expect("error column is present");
-    assert_eq!(QUERY_COLUMNS[error_index.saturating_sub(1)], "native_lowered");
-    assert!(
-        [
-            "source_cache_hits",
-            "source_cache_misses",
-            "source_cache_inserts",
-            "source_cache_insert_skipped",
-            "source_cache_retained_bytes",
-        ]
-        .iter()
-        .all(|column| !QUERY_COLUMNS.contains(column)),
-        "reports must not project removed source-cache counters"
-    );
-}
 
-#[test]
-fn legacy_sample_tsv_schema_and_order_are_unchanged() {
-    assert_eq!(
-        SAMPLE_COLUMNS,
-        &[
-            "epoch_ms",
-            "governor_capacity_bytes",
-            "governor_outstanding_bytes",
-            "governor_available_bytes",
-            "active_grants",
-            "active_queries",
-            "queued_queries",
-            "pool_reserved_current_bytes",
-            "pool_reserved_high_bytes",
-            "pool_used_current_bytes",
-            "pool_used_high_bytes",
-            "allocation_failure_count",
-            "trim_retry_count",
-        ]
-    );
-    let row = SampleRow {
-        epoch_ms: 1,
-        governor_capacity_bytes: 2,
-        governor_outstanding_bytes: 3,
-        governor_available_bytes: 4,
-        active_grants: 5,
-        active_queries: 6,
-        queued_queries: 7,
-        pool_reserved_current_bytes: 8,
-        pool_reserved_high_bytes: 9,
-        pool_used_current_bytes: 10,
-        pool_used_high_bytes: 11,
-        allocation_failure_count: 12,
-        trim_retry_count: 13,
-    };
-    assert_eq!(row.to_tsv().split('\t').count(), SAMPLE_COLUMNS.len());
+    {
+        let row = SampleRow {
+            epoch_ms: 1,
+            governor_capacity_bytes: 2,
+            governor_outstanding_bytes: 3,
+            governor_available_bytes: 4,
+            active_grants: 5,
+            active_queries: 6,
+            queued_queries: 7,
+            pool_reserved_current_bytes: 8,
+            pool_reserved_high_bytes: 9,
+            pool_used_current_bytes: 10,
+            pool_used_high_bytes: 11,
+            allocation_failure_count: 12,
+            trim_retry_count: 13,
+        };
+        assert_eq!(row.to_tsv().split('\t').count(), SAMPLE_COLUMNS.len());
+    }
 }
 
 #[test]

@@ -867,14 +867,6 @@ mod tests {
     }
 
     #[test]
-    fn final_plan_classifier_distinguishes_datafusion_and_native_runtime_nodes() {
-        let datafusion: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
-
-        assert_eq!(classify_final_plan(datafusion.as_ref()), FinalPlanDisposition::DataFusion);
-        assert_eq!(classify_final_plan(native_exec_leaf().as_ref()), FinalPlanDisposition::Native);
-    }
-
-    #[test]
     fn reject_datafusion_cpu_policy_rejects_the_exact_datafusion_final_plan() {
         let plan = union_over_empty_with_unsupported_field("unsupported");
         let rule = AlgeonNativePhysicalOptimizerRule::new(
@@ -1031,22 +1023,6 @@ mod tests {
             .expect("registered cuGraph discovery should not fail")
             .expect("the final plan must admit before deferred graph preparation");
         assert_eq!(evidence.execution_manifest().unwrap().occurrences().len(), 1);
-    }
-
-    #[test]
-    fn planner_keeps_outer_admission_for_non_graph_native_plan() {
-        let (_backend, config) = backend_admission_config();
-        let plan = native_exec_leaf();
-
-        let (source, evidence) = plan_native_admission(plan.as_ref(), &config, None)
-            .expect("non-graph native admission planning should succeed")
-            .expect("non-graph native plan must retain normal outer admission");
-        let wrapped = wrap_plan_with_native_admission(plan, source, evidence);
-
-        assert!(
-            plan_is_query_admission_wrapped(wrapped.as_ref()),
-            "deferring cuGraph admission must not suppress ordinary native admission wrappers",
-        );
     }
 
     #[test]

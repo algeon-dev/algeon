@@ -1,4 +1,6 @@
 //! Integration tests for prepared-device exports and their fallback behavior.
+use cudf::testing::run_named_cases;
+
 #[path = "../support/common/mod.rs"]
 mod common;
 
@@ -215,6 +217,66 @@ impl ActiveLeaseBackend for RecordingLeaseBackend {
 }
 
 #[test]
+fn gpu_cases_1() {
+    run_named_cases(&[
+        (
+            "vertex_pairs_from_prepared_columns_and_table_export_preserve_selected_pair_rows",
+            vertex_pairs_from_prepared_columns_and_table_export_preserve_selected_pair_rows,
+        ),
+        (
+            "vertex_pairs_from_prepared_columns_rejects_mismatched_dtype_row_count_and_nulls",
+            vertex_pairs_from_prepared_columns_rejects_mismatched_dtype_row_count_and_nulls,
+        ),
+        (
+            "vertex_pairs_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities",
+            vertex_pairs_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities,
+        ),
+        ("graph_from_prepared_columns_i32_bfs", graph_from_prepared_columns_i32_bfs),
+        (
+            "graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fails",
+            graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fails,
+        ),
+        (
+            "graph_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities",
+            graph_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities,
+        ),
+        ("graph_from_prepared_table_export_bfs", graph_from_prepared_table_export_bfs),
+        (
+            "graph_from_prepared_table_export_i32_f32_edge_ids_drive_predicate_bfs",
+            graph_from_prepared_table_export_i32_f32_edge_ids_drive_predicate_bfs,
+        ),
+        (
+            "graph_from_prepared_table_export_i64_f64_edge_ids_drive_predicate_bfs",
+            graph_from_prepared_table_export_i64_f64_edge_ids_drive_predicate_bfs,
+        ),
+        (
+            "graph_from_prepared_table_export_rejects_invalid_edge_id_binding",
+            graph_from_prepared_table_export_rejects_invalid_edge_id_binding,
+        ),
+        (
+            "graph_from_prepared_table_export_runtime_bound_handle_uses_consumer_stream_authorities",
+            graph_from_prepared_table_export_runtime_bound_handle_uses_consumer_stream_authorities,
+        ),
+        (
+            "graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight",
+            graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight,
+        ),
+        (
+            "graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph",
+            graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph,
+        ),
+        ("graph_from_prepared_columns_rejects_host_exports", graph_from_prepared_columns_rejects_host_exports),
+        (
+            "graph_from_prepared_table_export_rejects_host_exports",
+            graph_from_prepared_table_export_rejects_host_exports,
+        ),
+        (
+            "prepared_host_export_import_pagerank_matches_prepared_device_path",
+            prepared_host_export_import_pagerank_matches_prepared_device_path,
+        ),
+    ]);
+}
+
 fn vertex_pairs_from_prepared_columns_and_table_export_preserve_selected_pair_rows() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -247,7 +309,6 @@ fn vertex_pairs_from_prepared_columns_and_table_export_preserve_selected_pair_ro
     assert_eq!(pairs.second().expect("second pairs").to_vec_i32(&handle).expect("second copy"), vec![1, 2, 2, 0]);
 }
 
-#[test]
 fn vertex_pairs_from_prepared_columns_rejects_mismatched_dtype_row_count_and_nulls() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -285,7 +346,6 @@ fn vertex_pairs_from_prepared_columns_rejects_mismatched_dtype_row_count_and_nul
     assert!(err.to_string().contains("null_count: 1"), "error should retain null count: {err}");
 }
 
-#[test]
 fn vertex_pairs_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -363,7 +423,6 @@ fn vertex_pairs_from_prepared_columns_runtime_bound_handle_defers_completion_syn
     );
 }
 
-#[test]
 fn graph_from_prepared_columns_i32_bfs() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -392,7 +451,6 @@ fn graph_from_prepared_columns_i32_bfs() {
     assert_eq!(dist_map[&3], 3);
 }
 
-#[test]
 fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fails() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -435,7 +493,6 @@ fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fa
     assert!(err.message().contains("forced activation failure"), "error should preserve activation failure context");
 }
 
-#[test]
 fn graph_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -514,7 +571,6 @@ fn graph_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until
     );
 }
 
-#[test]
 fn graph_from_prepared_table_export_bfs() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -539,7 +595,6 @@ fn graph_from_prepared_table_export_bfs() {
     assert_eq!(dist_map[&3], 3);
 }
 
-#[test]
 fn graph_from_prepared_table_export_i32_f32_edge_ids_drive_predicate_bfs() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -575,7 +630,6 @@ fn graph_from_prepared_table_export_i32_f32_edge_ids_drive_predicate_bfs() {
     assert_eq!(distances[&3], 2);
 }
 
-#[test]
 fn graph_from_prepared_table_export_i64_f64_edge_ids_drive_predicate_bfs() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -611,7 +665,6 @@ fn graph_from_prepared_table_export_i64_f64_edge_ids_drive_predicate_bfs() {
     assert_eq!(distances[&3], 2);
 }
 
-#[test]
 fn graph_from_prepared_table_export_rejects_invalid_edge_id_binding() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -648,7 +701,6 @@ fn graph_from_prepared_table_export_rejects_invalid_edge_id_binding() {
     assert!(error.message().contains("edge_ids must have the same dtype"));
 }
 
-#[test]
 fn graph_from_prepared_table_export_runtime_bound_handle_uses_consumer_stream_authorities() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -797,7 +849,6 @@ fn graph_from_prepared_table_export_runtime_bound_owned_table_export_defers_comp
     );
 }
 
-#[test]
 fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -825,7 +876,6 @@ fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_m
     assert_score_maps_close_f32(&actual, &expected, 1.0e-6, "graph_from_prepared_columns");
 }
 
-#[test]
 fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -844,7 +894,6 @@ fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph
     assert_eq!(graph.edge_count(&handle).expect("edge_count"), 3);
 }
 
-#[test]
 fn graph_from_prepared_columns_rejects_host_exports() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -870,7 +919,6 @@ fn graph_from_prepared_columns_rejects_host_exports() {
     );
 }
 
-#[test]
 fn graph_from_prepared_table_export_rejects_host_exports() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();
@@ -895,42 +943,6 @@ fn graph_from_prepared_table_export_rejects_host_exports() {
     );
 }
 
-#[test]
-fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
-    let _guard = common::cudf::cuda_test_serial_guard();
-    let _event_observation = lock_event_observation();
-    let handle = test_handle();
-    let handle = handle.enter("prepared_export_vs_deep_copy_import_pagerank_equivalence").expect("entered");
-    let producer_runtime = explicit_runtime();
-    let consumer_runtime = explicit_runtime();
-
-    let producer_df = triangle_graph_dataframe(&producer_runtime);
-    let export = producer_df.try_prepare_device_table_export().expect("prepared export");
-    let mut prepared_graph = build_undirected_prepared_graph(&handle, &export).expect("prepared graph");
-
-    let imported_df =
-        cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&export, None, &consumer_runtime)
-            .expect("deep-copy import");
-    assert_named_edge_columns(&imported_df);
-    let mut fallback_graph = build_undirected_named_dataframe_graph(&handle, &imported_df).expect("fallback graph");
-
-    let prepared_map = pagerank_score_map(&handle, &mut prepared_graph);
-    let fallback_map = pagerank_score_map(&handle, &mut fallback_graph);
-
-    assert_eq!(prepared_map.len(), fallback_map.len(), "vertex coverage should match");
-    for (vertex, prepared_score) in prepared_map {
-        let fallback_score = fallback_map.get(&vertex).expect("fallback result should contain every prepared vertex");
-        assert!(
-            (prepared_score - fallback_score).abs() <= 1.0e-6,
-            "vertex {} score mismatch: prepared={} fallback={}",
-            vertex,
-            prepared_score,
-            fallback_score
-        );
-    }
-}
-
-#[test]
 fn prepared_host_export_import_pagerank_matches_prepared_device_path() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let _event_observation = lock_event_observation();

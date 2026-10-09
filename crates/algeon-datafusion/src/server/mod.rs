@@ -5,17 +5,13 @@
 //! API; configuration, session construction, Flight SQL behavior, and error
 //! projection are owned here.
 //!
-//! Accepted HTTP/2 connections send keepalive pings after 30 seconds without
-//! inbound traffic and close after 10 seconds without an acknowledgement.
+//! Accepted HTTP/2 connections use [`ServerConfig::http2_keepalive`], defaulting
+//! to a ping after 30 seconds without inbound traffic and a 10-second acknowledgement timeout.
 //! Connection loss drops the Flight result stream, cancelling its attempt and
 //! releasing its grant after native cleanup. A client that acknowledges pings can keep
 //! an unread result under backpressure; keepalive imposes no query idle deadline.
 
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
@@ -50,16 +46,12 @@ mod observability;
 mod session;
 mod workspace;
 
-// Bound silent transport-loss detection to 40 seconds while acknowledging
-// clients retain the existing result-stream backpressure contract.
-const HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
-const HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
-
 pub use auth::{AuthConfig, AuthMode, PasswordHashError, StaticUserConfig, hash_password, verify_password};
 pub use config::{
     ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
     ALGEON_SERVER_BIND_ENV, ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
     ALGEON_SERVER_CUGRAPH_ENABLED_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_GPU_DEVICES_ENV,
+    ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV, ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV,
     ALGEON_SERVER_LOG_ENV, ALGEON_SERVER_NATIVE_CONFIG_OPTIONS, ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV,
     ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
@@ -72,8 +64,8 @@ pub use config::{
     ALGEON_SERVER_S3_UNSIGNED_ENV, ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
     ALGEON_SERVER_WORKSPACE_BACKING_ALIASES_ENV, ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
     ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, ALGEON_SERVER_WORKSPACE_CATALOG_ENV,
-    ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, AlgeonServerNativeConfigOption, CugraphServerConfig, ServerConfig,
-    ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
+    ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, AlgeonServerNativeConfigOption, CugraphServerConfig, Http2Keepalive,
+    ServerConfig, ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
 };
 pub use error::{
     BLOCKING_KIND_METADATA_KEY, BLOCKING_SUBJECT_METADATA_KEY, ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY,
@@ -126,6 +118,7 @@ pub struct FlightSqlServerBuilder {
 
 /// Embeddable Flight SQL server assembled from a [`ServerConfig`].
 pub struct FlightSqlServer {
+    http2_keepalive: Http2Keepalive,
     service: flight::DatafusionAlgeonFlightSqlService,
     listen: Listen,
     shutdown: ServerShutdown,
@@ -251,7 +244,15 @@ impl FlightSqlServerBuilder {
         )
         .with_server_config_diagnostics(&effective_config, active_logical_capture_budget_bytes);
         let local_addr = matches!(&listen, Listen::Prebound(_)).then_some(addr);
-        Ok(FlightSqlServer { service, listen, shutdown: self.shutdown, ctx, backend: Some(backend), local_addr })
+        Ok(FlightSqlServer {
+            http2_keepalive: effective_config.http2_keepalive,
+            service,
+            listen,
+            shutdown: self.shutdown,
+            ctx,
+            backend: Some(backend),
+            local_addr,
+        })
     }
 }
 
@@ -316,7 +317,7 @@ impl Listen {
 }
 
 async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
-    let FlightSqlServer { service, listen, shutdown, .. } = server;
+    let FlightSqlServer { service, listen, shutdown, http2_keepalive, .. } = server;
     let addr = listen.addr()?;
     let admission = Arc::clone(service.admission());
     let io_lifecycle = Arc::clone(service.io_lifecycle());
@@ -337,8 +338,8 @@ async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
         shutdown_future(shutdown, shutdown_supervisor.trigger(), cancellations, shutdown_token);
 
     let builder = Server::builder()
-        .http2_keepalive_interval(Some(HTTP2_KEEPALIVE_INTERVAL))
-        .http2_keepalive_timeout(Some(HTTP2_KEEPALIVE_TIMEOUT))
+        .http2_keepalive_interval(Some(http2_keepalive.interval))
+        .http2_keepalive_timeout(Some(http2_keepalive.timeout))
         .add_service(FlightServiceServer::new(service));
     let server_result = match listen {
         Listen::Addr(addr) => builder.serve_with_shutdown(addr, shutdown).await,

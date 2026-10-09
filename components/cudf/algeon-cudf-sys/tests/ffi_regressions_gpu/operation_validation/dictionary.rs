@@ -2,9 +2,7 @@ use std::ptr;
 
 use super::*;
 
-#[test]
 fn test_dictionary_encode_ex_uses_explicit_memory_resource() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let col = make_i32_column(&[3, 1, 3, 2, 4, 2, 1, 5]);
@@ -33,9 +31,8 @@ fn test_dictionary_encode_ex_uses_explicit_memory_resource() {
         cudf_sys::cudf_column_destroy(col);
     }
 }
-#[test]
+
 fn test_dictionary_decode_ex_uses_explicit_memory_resource() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let dict = make_dictionary_i32_column(&[10, 20, 10, 30, 20, 40]);
@@ -65,9 +62,7 @@ fn test_dictionary_decode_ex_uses_explicit_memory_resource() {
     }
 }
 
-#[test]
 fn test_dictionary_set_keys_ex_uses_explicit_memory_resource() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let dict = make_dictionary_i32_column(&[1, 2, 1, 3, 2, 4]);
@@ -101,9 +96,7 @@ fn test_dictionary_set_keys_ex_uses_explicit_memory_resource() {
     }
 }
 
-#[test]
 fn test_dictionary_match_dictionaries_ex_uses_explicit_memory_resource() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left = make_dictionary_i32_column(&[10, 20, 10, 30]);
@@ -151,3 +144,22 @@ fn test_dictionary_match_dictionaries_ex_uses_explicit_memory_resource() {
         cudf_sys::cudf_column_destroy(left);
     }
 }
+
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "dictionary::test_dictionary_match_dictionaries_ex_uses_explicit_memory_resource",
+        test_dictionary_match_dictionaries_ex_uses_explicit_memory_resource,
+    ),
+    (
+        "dictionary::test_dictionary_encode_ex_uses_explicit_memory_resource",
+        test_dictionary_encode_ex_uses_explicit_memory_resource,
+    ),
+    (
+        "dictionary::test_dictionary_decode_ex_uses_explicit_memory_resource",
+        test_dictionary_decode_ex_uses_explicit_memory_resource,
+    ),
+    (
+        "dictionary::test_dictionary_set_keys_ex_uses_explicit_memory_resource",
+        test_dictionary_set_keys_ex_uses_explicit_memory_resource,
+    ),
+];

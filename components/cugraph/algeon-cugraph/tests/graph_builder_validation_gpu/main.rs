@@ -1,6 +1,9 @@
+mod builder_owner;
+
 use std::collections::HashMap;
 
 use common::cudf::explicit_runtime;
+use cudf::testing::run_named_cases;
 use cugraph::{
     DeviceArray, EnteredContext, Forward, GraphBuilder, ResourceHandle, Transposed,
     error::ErrorKind,
@@ -34,6 +37,52 @@ fn degree_map(
 }
 
 #[test]
+fn builder_cases_1() {
+    run_named_cases(&[
+        ("builder_rejects_mismatched_src_dst_lengths", builder_rejects_mismatched_src_dst_lengths),
+        ("builder_rejects_mismatched_weights_length", builder_rejects_mismatched_weights_length),
+        ("builder_rejects_symmetrize_with_edge_ids", builder_rejects_symmetrize_with_edge_ids),
+        ("builder_rejects_mismatched_temporal_dtypes", builder_rejects_mismatched_temporal_dtypes),
+        ("builder_rejects_vertices_dtype_mismatch_with_src_dst", builder_rejects_vertices_dtype_mismatch_with_src_dst),
+        ("builder_accepts_vertices_matching_src_dst_dtype", builder_accepts_vertices_matching_src_dst_dtype),
+        ("builder_chainable_setters_preserve_build_path", builder_chainable_setters_preserve_build_path),
+        ("graph_properties_are_preserved_on_built_graph", graph_properties_are_preserved_on_built_graph),
+        ("drop_self_loops_removes_loop_degree_contribution", drop_self_loops_removes_loop_degree_contribution),
+        ("drop_multi_edges_collapses_duplicate_edges", drop_multi_edges_collapses_duplicate_edges),
+    ]);
+}
+
+#[test]
+fn builder_cases_2() {
+    run_named_cases(&[
+        ("edge_count_matches_directed_input_rows", edge_count_matches_directed_input_rows),
+        ("edge_count_respects_drop_self_loops", edge_count_respects_drop_self_loops),
+        ("edge_count_respects_drop_multi_edges", edge_count_respects_drop_multi_edges),
+        ("edge_count_matches_python_style_undirected_edges", edge_count_matches_python_style_undirected_edges),
+        ("edge_count_counts_undirected_self_loops_once", edge_count_counts_undirected_self_loops_once),
+        (
+            "graph::tests::test_graph_creation_rejects_mismatched_edge_ids_dtype",
+            builder_owner::test_graph_creation_rejects_mismatched_edge_ids_dtype,
+        ),
+        (
+            "graph::tests::test_graph_creation_rejects_mismatched_edge_type_ids_length",
+            builder_owner::test_graph_creation_rejects_mismatched_edge_type_ids_length,
+        ),
+        (
+            "graph::tests::test_graph_creation_rejects_mismatched_edge_ids_length",
+            builder_owner::test_graph_creation_rejects_mismatched_edge_ids_length,
+        ),
+        (
+            "graph::tests::test_rejects_symmetrize_with_edge_type_ids",
+            builder_owner::test_rejects_symmetrize_with_edge_type_ids,
+        ),
+        (
+            "graph::tests::test_rejects_start_time_without_end_time",
+            builder_owner::test_rejects_start_time_without_end_time,
+        ),
+    ]);
+}
+
 fn builder_rejects_mismatched_src_dst_lengths() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -49,7 +98,6 @@ fn builder_rejects_mismatched_src_dst_lengths() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
 fn builder_rejects_mismatched_weights_length() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -70,7 +118,6 @@ fn builder_rejects_mismatched_weights_length() {
     assert!(err.message().contains("weights"));
 }
 
-#[test]
 fn builder_rejects_symmetrize_with_edge_ids() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -90,9 +137,10 @@ fn builder_rejects_symmetrize_with_edge_ids() {
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert!(err.message().contains("symmetrize"));
+    assert!(err.message().contains("edge_ids"));
+    assert!(err.message().contains("symmetrize"));
 }
 
-#[test]
 fn builder_rejects_mismatched_temporal_dtypes() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -116,7 +164,6 @@ fn builder_rejects_mismatched_temporal_dtypes() {
     assert!(err.message().contains("same dtype"));
 }
 
-#[test]
 fn builder_rejects_vertices_dtype_mismatch_with_src_dst() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -139,7 +186,6 @@ fn builder_rejects_vertices_dtype_mismatch_with_src_dst() {
     assert!(err.message().contains("same dtype"));
 }
 
-#[test]
 fn builder_accepts_vertices_matching_src_dst_dtype() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -159,7 +205,6 @@ fn builder_accepts_vertices_matching_src_dst_dtype() {
         .expect("vertices with matching dtype should build");
 }
 
-#[test]
 fn builder_chainable_setters_preserve_build_path() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -184,7 +229,6 @@ fn builder_chainable_setters_preserve_build_path() {
     assert_eq!(graph.vertex_dtype(), DataType::Int32);
 }
 
-#[test]
 fn graph_properties_are_preserved_on_built_graph() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -201,7 +245,6 @@ fn graph_properties_are_preserved_on_built_graph() {
     assert_eq!(graph.properties(), properties);
 }
 
-#[test]
 fn drop_self_loops_removes_loop_degree_contribution() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -224,7 +267,6 @@ fn drop_self_loops_removes_loop_degree_contribution() {
     assert_eq!(degrees[&2], (1, 0));
 }
 
-#[test]
 fn drop_multi_edges_collapses_duplicate_edges() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -247,7 +289,6 @@ fn drop_multi_edges_collapses_duplicate_edges() {
     assert_eq!(degrees[&2], (1, 0));
 }
 
-#[test]
 fn edge_count_matches_directed_input_rows() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -262,7 +303,6 @@ fn edge_count_matches_directed_input_rows() {
     assert_eq!(graph.edge_count(&handle).expect("edge_count"), TRIANGLE_TAIL_SRC_I32.len());
 }
 
-#[test]
 fn edge_count_respects_drop_self_loops() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -281,7 +321,6 @@ fn edge_count_respects_drop_self_loops() {
     assert_eq!(graph.edge_count(&handle).expect("edge_count"), 2);
 }
 
-#[test]
 fn edge_count_respects_drop_multi_edges() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -300,7 +339,6 @@ fn edge_count_respects_drop_multi_edges() {
     assert_eq!(graph.edge_count(&handle).expect("edge_count"), 2);
 }
 
-#[test]
 fn edge_count_matches_python_style_undirected_edges() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -318,7 +356,6 @@ fn edge_count_matches_python_style_undirected_edges() {
     assert_eq!(graph.edge_count(&handle).expect("edge_count"), 3);
 }
 
-#[test]
 fn edge_count_counts_undirected_self_loops_once() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();

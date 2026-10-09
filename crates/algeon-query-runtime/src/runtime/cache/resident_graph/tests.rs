@@ -8,7 +8,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::DataFrame;
+use cudf::{DataFrame, testing::run_named_cases};
 use cugraph::cudf_interop::{
     GraphConstructionPolicy as CugraphConstructionPolicy, TableGraphOptions, graph_from_prepared_table_export,
 };
@@ -124,7 +124,6 @@ fn source_fixture() -> (Arc<ExecutionContext>, GpuResultHandle, GpuLocalParquetS
     (context, handle, GpuLocalParquetSourceCacheKey::from_source(&source))
 }
 
-#[test]
 fn separate_resident_graph_scopes_keep_distinct_current_resource_routes() {
     let (cache, ledger) = cache_test_parts();
     let first_bytes = insert_forward_graph(&cache, resident_key_for_identity("resident-graph-cache-route-first"));
@@ -141,6 +140,35 @@ fn separate_resident_graph_scopes_keep_distinct_current_resource_routes() {
 }
 
 #[test]
+fn tests_cases() {
+    run_named_cases(&[
+        (
+            "runtime::cache::resident_graph::tests::separate_resident_graph_scopes_keep_distinct_current_resource_routes",
+            separate_resident_graph_scopes_keep_distinct_current_resource_routes,
+        ),
+        (
+            "runtime::cache::resident_graph::tests::graph_scope_charge_survives_source_cache_eviction_between_build_and_commit",
+            graph_scope_charge_survives_source_cache_eviction_between_build_and_commit,
+        ),
+        (
+            "runtime::cache::resident_graph::tests::empty_graph_candidate_abort_releases_precharge_only_after_scope_proof",
+            empty_graph_candidate_abort_releases_precharge_only_after_scope_proof,
+        ),
+        (
+            "runtime::cache::resident_graph::tests::live_scope_candidate_drop_retains_precharge_and_closes_admission",
+            live_scope_candidate_drop_retains_precharge_and_closes_admission,
+        ),
+        (
+            "runtime::cache::resident_graph::tests::resident_graph_refuses_final_preparation_pin_after_close_and_drains_charge",
+            resident_graph_refuses_final_preparation_pin_after_close_and_drains_charge,
+        ),
+        (
+            "runtime::cache::resident_graph::tests::resident_graph_closed_before_an_untrusted_return_never_reopens_the_key",
+            resident_graph_closed_before_an_untrusted_return_never_reopens_the_key,
+        ),
+    ]);
+}
+
 fn graph_scope_charge_survives_source_cache_eviction_between_build_and_commit() {
     let device = cudf::DeviceId::current().expect("shared cache test requires a CUDA device");
     let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
@@ -203,7 +231,6 @@ fn graph_scope_charge_survives_source_cache_eviction_between_build_and_commit() 
     assert_eq!(drained.physical_current_bytes, 0);
 }
 
-#[test]
 fn empty_graph_candidate_abort_releases_precharge_only_after_scope_proof() {
     let (cache, ledger) = cache_test_parts();
     let transaction = cache
@@ -221,7 +248,6 @@ fn empty_graph_candidate_abort_releases_precharge_only_after_scope_proof() {
     assert_eq!(snapshot.health, DeviceAdmissionHealth::Open);
 }
 
-#[test]
 fn live_scope_candidate_drop_retains_precharge_and_closes_admission() {
     let (cache, ledger) = cache_test_parts();
     let transaction = cache
@@ -246,7 +272,6 @@ fn live_scope_candidate_drop_retains_precharge_and_closes_admission() {
     runtime.synchronize().expect("retire the test candidate allocation");
 }
 
-#[test]
 fn resident_graph_refuses_final_preparation_pin_after_close_and_drains_charge() {
     let (cache, ledger) = cache_test_parts();
     let key = resident_key();
@@ -271,7 +296,6 @@ fn resident_graph_refuses_final_preparation_pin_after_close_and_drains_charge() 
     assert_eq!(snapshot.cache_pinned_in_use_bytes, 0);
 }
 
-#[test]
 fn resident_graph_closed_before_an_untrusted_return_never_reopens_the_key() {
     let (cache, ledger) = cache_test_parts();
     let key = resident_key();

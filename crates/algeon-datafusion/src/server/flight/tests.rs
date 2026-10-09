@@ -172,7 +172,11 @@ async fn failed_statement_logs_omit_the_status_message_on_get_flight_info_and_do
         .with_writer(move || writer.clone())
         .finish();
     let _logs = set_default(subscriber);
-    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let service = DatafusionAlgeonFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+    );
     let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
     let batch =
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec!["caller_value"]))]).unwrap();
@@ -216,7 +220,11 @@ async fn failed_statement_logs_omit_the_status_message_on_get_flight_info_and_do
 
 #[test]
 fn execution_terminal_log_includes_resolved_sql() {
-    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let service = DatafusionAlgeonFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+    );
     let sql = "SELECT 1\nFROM user_rows";
     let planning = service
         .coordinator
@@ -928,6 +936,15 @@ async fn issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get() {
     let query_ids = service.coordinator.ticket_query_ids();
     assert_eq!(query_ids.len(), 1);
     assert!(!query_ids.contains(&abandoned));
+    let status = service.execute_ticket(abandoned.clone(), None).await.err().expect("expired ticket rejects DoGet");
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_status_metadata(&status, "invalid_request", "invalid_input", "permanent");
+    assert!(status.message().contains("expired"));
+    assert_eq!(
+        status.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some(abandoned.as_str())
+    );
+    assert!(!status.message().contains(&abandoned));
     assert!(matches!(
         service.coordinator.artifact(&abandoned),
         Some(CoordinatorArtifact::Unavailable(RetainedUnavailableReason::TicketExpired))

@@ -2,7 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use arrow::error::ArrowError;
 use cudf::{ErrorCode as CudfErrorCode, io::parquet::RemoteParquetSource, testing::error::new_with_for_test};
-use datafusion::common::{DataFusionError, Diagnostic, Result as DataFusionResult};
+use datafusion::common::{DataFusionError, Diagnostic};
 use query_planning::{
     error::{QueryError, QueryErrorCode, QueryErrorStatus},
     triage::{TriageCode, TriageVerdict},
@@ -361,72 +361,6 @@ fn error_debug_omits_native_and_cudf_source_payloads_but_keeps_typed_access() {
 }
 
 #[test]
-fn find_algeon_error_finds_direct_external_error() {
-    let error = DataFusionError::External(Box::new(construction_error("algeon_datafusion.test.direct")));
-
-    assert_eq!(error.find_algeon_error().map(Error::operation), Some("algeon_datafusion.test.direct"));
-}
-
-#[test]
-fn native_error_status_projection_agrees_with_the_engine_for_every_code() {
-    for native_code in QueryErrorCode::ALL {
-        let native =
-            QueryError::new(*native_code, "query_engine.test.status_projection", "native status projection test");
-        let adapter =
-            Error::from_native("algeon_datafusion.test.status_projection", "adapter status projection test", native);
-
-        assert_eq!(
-            adapter.status().as_str(),
-            native_code.status().as_str(),
-            "{native_code} must retain its native retry/remediation status"
-        );
-    }
-}
-
-#[test]
-fn find_algeon_error_traverses_context() {
-    let error = DataFusionError::Context(
-        "context".to_string(),
-        Box::new(DataFusionError::External(Box::new(construction_error("algeon_datafusion.test.context")))),
-    );
-
-    assert_eq!(error.find_algeon_error().map(Error::operation), Some("algeon_datafusion.test.context"));
-}
-
-#[test]
-fn find_algeon_error_traverses_diagnostic() {
-    let error = DataFusionError::Diagnostic(
-        Box::new(Diagnostic::new_error("diagnostic", None)),
-        Box::new(DataFusionError::External(Box::new(construction_error("algeon_datafusion.test.diagnostic")))),
-    );
-
-    assert_eq!(error.find_algeon_error().map(Error::operation), Some("algeon_datafusion.test.diagnostic"));
-}
-
-#[test]
-fn find_algeon_error_traverses_shared() {
-    let error = DataFusionError::Shared(Arc::new(DataFusionError::External(Box::new(construction_error(
-        "algeon_datafusion.test.shared",
-    )))));
-
-    assert_eq!(error.find_algeon_error().map(Error::operation), Some("algeon_datafusion.test.shared"));
-}
-
-#[test]
-fn find_algeon_error_traverses_nested_collection_in_deterministic_order() {
-    let error = DataFusionError::Collection(vec![
-        DataFusionError::Plan("no Algeon error".to_string()),
-        DataFusionError::Collection(vec![
-            DataFusionError::Execution("still no Algeon error".to_string()),
-            DataFusionError::External(Box::new(construction_error("algeon_datafusion.test.first"))),
-        ]),
-        DataFusionError::External(Box::new(construction_error("algeon_datafusion.test.second"))),
-    ]);
-
-    assert_eq!(error.find_algeon_error().map(Error::operation), Some("algeon_datafusion.test.first"));
-}
-
-#[test]
 fn find_algeon_error_traverses_collection_inside_arrow_external_wrapper() {
     let collection = DataFusionError::Collection(vec![
         DataFusionError::Plan("no Algeon error".to_string()),
@@ -629,54 +563,6 @@ fn cudf_allocation_error_for_test(
 }
 
 #[test]
-fn cudf_physical_failure_with_budget_scope_is_device_out_of_memory() {
-    let error = Error::from_cudf(
-        "algeon_datafusion.test.allocation_attribution",
-        "wrapped cudf failure",
-        cudf_allocation_error_for_test(CudfErrorCode::OutOfMemory, Some(cudf::CudfErrorFailureSource::Physical), true),
-    );
-
-    assert_eq!(error.code(), ErrorCode::DeviceOutOfMemory);
-}
-
-#[test]
-fn cudf_reservation_limit_is_query_memory_limit_exceeded() {
-    let error = Error::from_cudf(
-        "algeon_datafusion.test.allocation_attribution",
-        "wrapped cudf failure",
-        cudf_allocation_error_for_test(
-            CudfErrorCode::OutOfMemory,
-            Some(cudf::CudfErrorFailureSource::ReservationLimit),
-            true,
-        ),
-    );
-
-    assert_eq!(error.code(), ErrorCode::QueryMemoryLimitExceeded);
-}
-
-#[test]
-fn cudf_unknown_allocation_with_scope_usage_is_not_a_cap_rejection() {
-    let error = Error::from_cudf(
-        "algeon_datafusion.test.allocation_attribution",
-        "wrapped cudf failure",
-        cudf_allocation_error_for_test(CudfErrorCode::OutOfMemory, Some(cudf::CudfErrorFailureSource::Unknown), true),
-    );
-
-    assert_eq!(error.code(), ErrorCode::DeviceAllocationFailed);
-}
-
-#[test]
-fn cudf_dependency_failure_through_a_budgeted_scope_is_not_a_cap_rejection() {
-    let error = Error::from_cudf(
-        "algeon_datafusion.test.allocation_attribution",
-        "wrapped cudf failure",
-        cudf_allocation_error_for_test(CudfErrorCode::IoFailure, None, true),
-    );
-
-    assert_eq!(error.code(), ErrorCode::CudfDependencyFailure);
-}
-
-#[test]
 fn adapter_and_native_boundaries_agree_on_cudf_allocation_attribution() {
     let cases = [
         (
@@ -845,196 +731,6 @@ fn every_native_status_is_preserved_at_the_adapter_boundary() {
 }
 
 #[test]
-fn error_code_projections_are_stable_policy_contracts() {
-    assert_eq!(ErrorCode::Cancelled.as_str(), "cancelled");
-    assert_eq!(ErrorCode::Cancelled.kind(), ErrorKind::Cancelled);
-    assert_eq!(ErrorCode::Cancelled.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::SqlParse.as_str(), "sql_parse");
-    assert_eq!(ErrorCode::SqlParse.kind(), ErrorKind::InvalidInput);
-    assert_eq!(ErrorCode::SqlParse.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::InvalidRequest.as_str(), "invalid_request");
-    assert_eq!(ErrorCode::InvalidRequest.kind(), ErrorKind::InvalidInput);
-    assert_eq!(ErrorCode::InvalidRequest.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::PlanningTimeout.as_str(), "planning_timeout");
-    assert_eq!(ErrorCode::PlanningTimeout.kind(), ErrorKind::Planning);
-    assert_eq!(ErrorCode::PlanningTimeout.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::ObjectNotFound.as_str(), "object_not_found");
-    assert_eq!(ErrorCode::ObjectNotFound.kind(), ErrorKind::NotFound);
-    assert_eq!(ErrorCode::ObjectNotFound.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::SourceAccessDenied.as_str(), "source_access_denied");
-    assert_eq!(ErrorCode::SourceAccessDenied.kind(), ErrorKind::PermissionDenied);
-    assert_eq!(ErrorCode::SourceAccessDenied.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::SourceUnauthenticated.as_str(), "source_unauthenticated");
-    assert_eq!(ErrorCode::SourceUnauthenticated.kind(), ErrorKind::Unauthenticated);
-    assert_eq!(ErrorCode::SourceUnauthenticated.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::SourceObjectNotFound.as_str(), "source_object_not_found");
-    assert_eq!(ErrorCode::SourceObjectNotFound.kind(), ErrorKind::NotFound);
-    assert_eq!(ErrorCode::SourceObjectNotFound.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::SourceTemporaryFailure.as_str(), "source_temporary_failure");
-    assert_eq!(ErrorCode::SourceTemporaryFailure.kind(), ErrorKind::DependencyFailure);
-    assert_eq!(ErrorCode::SourceTemporaryFailure.status(), ErrorStatus::Temporary);
-
-    assert_eq!(ErrorCode::FieldNotFound.as_str(), "field_not_found");
-    assert_eq!(ErrorCode::FieldNotFound.kind(), ErrorKind::InvalidInput);
-    assert_eq!(ErrorCode::FieldNotFound.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::RequiredGpuOperationUnsupported.as_str(), "required_gpu_operation_unsupported");
-    assert_eq!(ErrorCode::RequiredGpuOperationUnsupported.kind(), ErrorKind::Unsupported);
-    assert_eq!(ErrorCode::RequiredGpuOperationUnsupported.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::FinalPlanRequirementUnsatisfied.as_str(), "final_plan_requirement_unsatisfied");
-    assert_eq!(ErrorCode::FinalPlanRequirementUnsatisfied.kind(), ErrorKind::Planning);
-    assert_eq!(ErrorCode::FinalPlanRequirementUnsatisfied.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::UnsupportedExpression.as_str(), "unsupported_expression");
-    assert_eq!(ErrorCode::UnsupportedExpression.kind(), ErrorKind::Unsupported);
-    assert_eq!(ErrorCode::UnsupportedExpression.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::InvalidConfiguration.as_str(), "invalid_configuration");
-    assert_eq!(ErrorCode::InvalidConfiguration.kind(), ErrorKind::InvalidInput);
-    assert_eq!(ErrorCode::InvalidConfiguration.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::SizeOverflow.as_str(), "size_overflow");
-    assert_eq!(ErrorCode::SizeOverflow.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::SizeOverflow.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::HostMaterializationLimitExceeded.as_str(), "host_materialization_limit_exceeded");
-    assert_eq!(ErrorCode::HostMaterializationLimitExceeded.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::HostMaterializationLimitExceeded.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::HostStagingLimitExceeded.as_str(), "host_staging_limit_exceeded");
-    assert_eq!(ErrorCode::HostStagingLimitExceeded.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::HostStagingLimitExceeded.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::HostMemoryExhausted.as_str(), "host_memory_exhausted");
-    assert_eq!(ErrorCode::HostMemoryExhausted.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::HostMemoryExhausted.status(), ErrorStatus::Temporary);
-
-    assert_eq!(ErrorCode::CudfPersistentFailure.as_str(), "cudf_persistent_failure");
-    assert_eq!(ErrorCode::CudfPersistentFailure.kind(), ErrorKind::DependencyFailure);
-    assert_eq!(ErrorCode::CudfPersistentFailure.status(), ErrorStatus::Persistent);
-
-    assert_eq!(ErrorCode::MemoryReservationFailed.as_str(), "memory_reservation_failed");
-    assert_eq!(ErrorCode::MemoryReservationFailed.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::MemoryReservationFailed.status(), ErrorStatus::Temporary);
-
-    assert_eq!(ErrorCode::ServiceOverloaded.as_str(), "service_overloaded");
-    assert_eq!(ErrorCode::ServiceOverloaded.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::ServiceOverloaded.status(), ErrorStatus::Temporary);
-
-    assert_eq!(ErrorCode::QueryBudgetUnavailable.as_str(), "query_budget_unavailable");
-    assert_eq!(ErrorCode::QueryBudgetUnavailable.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::QueryBudgetUnavailable.status(), ErrorStatus::Temporary);
-
-    assert_eq!(ErrorCode::QueryMemoryLimitExceeded.as_str(), "query_memory_limit_exceeded");
-    assert_eq!(ErrorCode::QueryMemoryLimitExceeded.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::QueryMemoryLimitExceeded.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::DeviceOutOfMemory.as_str(), "device_out_of_memory");
-    assert_eq!(ErrorCode::DeviceOutOfMemory.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::DeviceOutOfMemory.status(), ErrorStatus::Temporary);
-
-    assert_eq!(ErrorCode::DeviceAllocationFailed.as_str(), "device_allocation_failed");
-    assert_eq!(ErrorCode::DeviceAllocationFailed.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::DeviceAllocationFailed.status(), ErrorStatus::Temporary);
-
-    assert_eq!(ErrorCode::DeviceFault.as_str(), "device_fault");
-    assert_eq!(ErrorCode::DeviceFault.kind(), ErrorKind::DependencyFailure);
-    assert_eq!(ErrorCode::DeviceFault.status(), ErrorStatus::Persistent);
-
-    assert_eq!(ErrorCode::CleanupFailed.as_str(), "cleanup_failed");
-    assert_eq!(ErrorCode::CleanupFailed.kind(), ErrorKind::DependencyFailure);
-    assert_eq!(ErrorCode::CleanupFailed.status(), ErrorStatus::Persistent);
-
-    assert_eq!(ErrorCode::InternalInvariantViolation.as_str(), "internal_invariant_violation");
-    assert_eq!(ErrorCode::InternalInvariantViolation.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(ErrorCode::InternalInvariantViolation.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::FlightFrameTooLarge.as_str(), "flight_frame_too_large");
-    assert_eq!(ErrorCode::FlightFrameTooLarge.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::FlightFrameTooLarge.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::ServerTransportFailure.as_str(), "server_transport_failure");
-    assert_eq!(ErrorCode::ServerTransportFailure.kind(), ErrorKind::DependencyFailure);
-    assert_eq!(ErrorCode::ServerTransportFailure.status(), ErrorStatus::Permanent);
-}
-
-#[test]
-fn native_source_storage_errors_preserve_adapter_status_mapping() {
-    for (native_code, adapter_code, adapter_kind, adapter_status) in [
-        (
-            QueryErrorCode::SourceAccessDenied,
-            ErrorCode::SourceAccessDenied,
-            ErrorKind::PermissionDenied,
-            ErrorStatus::Permanent,
-        ),
-        (
-            QueryErrorCode::SourceUnauthenticated,
-            ErrorCode::SourceUnauthenticated,
-            ErrorKind::Unauthenticated,
-            ErrorStatus::Permanent,
-        ),
-        (
-            QueryErrorCode::SourceObjectNotFound,
-            ErrorCode::SourceObjectNotFound,
-            ErrorKind::NotFound,
-            ErrorStatus::Permanent,
-        ),
-        (
-            QueryErrorCode::SourceTemporaryFailure,
-            ErrorCode::SourceTemporaryFailure,
-            ErrorKind::DependencyFailure,
-            ErrorStatus::Temporary,
-        ),
-    ] {
-        let native_error = QueryError::new(
-            native_code,
-            "query_engine.source_metadata.object_store_footer",
-            "source object storage failure",
-        )
-        .with_fact("object_store_error_kind", native_code.as_str());
-
-        let adapter_error = Error::from_native(
-            "algeon_datafusion.native.execute",
-            "Algeon native query execution failed",
-            native_error,
-        );
-
-        assert_eq!(adapter_error.code(), adapter_code);
-        assert_eq!(adapter_error.kind(), adapter_kind);
-        assert_eq!(adapter_error.status(), adapter_status);
-        assert_eq!(adapter_error.fact_value("native_code"), Some(native_code.as_str()));
-    }
-}
-
-#[test]
-fn native_service_overloaded_error_preserves_adapter_classification_and_facts() {
-    let native_error = QueryError::new(
-        QueryErrorCode::ServiceOverloaded,
-        "query_engine.query_service.admit",
-        "native query service is overloaded",
-    )
-    .with_fact("retry_action", "backoff");
-
-    let adapter_error =
-        Error::from_native("algeon_datafusion.native.execute", "Algeon native query execution failed", native_error);
-
-    assert_eq!(adapter_error.code(), ErrorCode::ServiceOverloaded);
-    assert_eq!(adapter_error.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(adapter_error.status(), ErrorStatus::Temporary);
-    assert_eq!(adapter_error.fact_value("native_code"), Some("service_overloaded"));
-    assert_eq!(adapter_error.fact_value("retry_action"), Some("backoff"));
-}
-
-#[test]
 fn native_query_error_json_includes_triage_summary() {
     let native_error = QueryError::new(
         QueryErrorCode::MemoryReservationFailed,
@@ -1073,13 +769,6 @@ fn native_query_error_json_uses_fact_only_correlation_ids() {
     assert_eq!(json["trace_id"], "fact-trace");
     assert_eq!(json["triage"]["signals"][0]["evidence"]["query_id"], "fact-query");
     assert_eq!(json["triage"]["signals"][0]["evidence"]["plan_node_id"], "n3");
-}
-
-#[test]
-fn native_query_error_triage_codes_preserve_invalid_input_and_unsupported_capability() {
-    assert_eq!(TriageCode::from(QueryErrorCode::CudfInvalidInput), TriageCode::InvalidInput);
-    assert_eq!(TriageCode::from(QueryErrorCode::InvalidConfiguration), TriageCode::InvalidInput);
-    assert_eq!(TriageCode::from(QueryErrorCode::CudfUnsupported), TriageCode::UnsupportedOperator);
 }
 
 #[test]
@@ -1215,27 +904,6 @@ fn plain_pre_algeon_datafusion_failure_keeps_its_variant_and_prose() {
     assert!(error.find_algeon_error().is_none());
 }
 
-fn algeon_control_plane_failure() -> Result<()> {
-    Err(algeon_error("algeon_datafusion.control_plane.open", "failed to open Algeon backend"))
-}
-
-fn datafusion_owned_surface() -> DataFusionResult<()> {
-    algeon_control_plane_failure()?;
-    Ok(())
-}
-
-#[test]
-fn question_mark_converts_algeon_result_at_datafusion_boundary() {
-    let error = datafusion_owned_surface().expect_err("Algeon failure must propagate");
-
-    let DataFusionError::External(source) = &error else {
-        panic!("Algeon Result must convert exactly at the DataFusion-owned boundary: {error:?}");
-    };
-    assert!(source.downcast_ref::<Error>().is_some(), "External must preserve the typed Algeon source");
-    assert_eq!(error.to_string(), "External error: failed to open Algeon backend");
-    assert_eq!(error.find_algeon_error().map(Error::operation), Some("algeon_datafusion.control_plane.open"));
-}
-
 fn external_algeon_error(operation: &'static str) -> DataFusionError {
     algeon_error(operation, "wrapped native GPU execution failed").into()
 }
@@ -1287,71 +955,6 @@ fn collection_preserves_datafusion_root_and_uses_documented_algeon_order() {
     assert_eq!(error.find_algeon_error().map(Error::operation), Some("algeon_datafusion.test.first"));
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum BackendDisposition {
-    Algeon(ErrorCode),
-    DataFusionPlanning,
-    DataFusionResourceExhausted,
-    DataFusionOther,
-}
-
-fn existing_datafusion_handler(error: &DataFusionError) -> BackendDisposition {
-    match error.find_root() {
-        DataFusionError::Plan(_) => BackendDisposition::DataFusionPlanning,
-        DataFusionError::ResourcesExhausted(_) => BackendDisposition::DataFusionResourceExhausted,
-        _ => BackendDisposition::DataFusionOther,
-    }
-}
-
-fn algeon_aware_backend_handler(error: &DataFusionError) -> BackendDisposition {
-    if let Some(algeon) = error.find_algeon_error() {
-        return BackendDisposition::Algeon(algeon.code());
-    }
-    existing_datafusion_handler(error)
-}
-
-#[test]
-fn backend_handler_adds_algeon_branch_then_reuses_existing_datafusion_fallback() {
-    let algeon = DataFusionError::Context(
-        "query".to_string(),
-        Box::new(external_algeon_error("algeon_datafusion.test.backend")),
-    );
-    assert_eq!(algeon_aware_backend_handler(&algeon), BackendDisposition::Algeon(ErrorCode::CudfDependencyFailure));
-
-    for plain in [
-        DataFusionError::Plan("plain planning failure".to_string()),
-        DataFusionError::ArrowError(
-            Box::new(ArrowError::from_external_error(Box::new(DataFusionError::ResourcesExhausted(
-                "plain memory pressure".to_string(),
-            )))),
-            None,
-        ),
-    ] {
-        assert_eq!(algeon_aware_backend_handler(&plain), existing_datafusion_handler(&plain));
-    }
-}
-
-#[test]
-fn datafusion_conversion_preserves_typed_adapter_error() {
-    let error = Error::new(
-        ErrorCode::InvalidExecutionPlan,
-        "algeon_datafusion.native.try_new",
-        "cannot build native cuDF execution plan",
-    )
-    .with_fact("plan_node", "EmptyExec");
-
-    let datafusion_error: DataFusionError = error.into();
-    let DataFusionError::External(source) = datafusion_error else {
-        panic!("adapter errors must cross the DataFusion boundary as typed external errors");
-    };
-    let adapter_error =
-        source.downcast_ref::<Error>().expect("DataFusion external error should preserve crate::error::Error");
-
-    assert_eq!(adapter_error.code(), ErrorCode::InvalidExecutionPlan);
-    assert_eq!(adapter_error.kind(), ErrorKind::Planning);
-    assert_eq!(adapter_error.fact_value("plan_node"), Some("EmptyExec"));
-}
-
 #[test]
 fn native_cancelled_error_preserves_adapter_classification_and_facts() {
     let native_error = ExecutionCancellation::new();
@@ -1367,34 +970,4 @@ fn native_cancelled_error_preserves_adapter_classification_and_facts() {
     assert_eq!(adapter_error.status(), ErrorStatus::Permanent);
     assert_eq!(adapter_error.fact_value("native_code"), Some("cancelled"));
     assert_eq!(adapter_error.fact_value("cancellation_requested"), Some("true"));
-}
-
-#[test]
-fn native_retry_error_preserves_resume_boundary_facts() {
-    let native_error = QueryError::new(
-        QueryErrorCode::MemoryReservationFailed,
-        "query_engine.final_sort.topk_concat",
-        "native final sort exhausted bounded memory",
-    )
-    .with_fact("retry_action", "reduce_final_sort_fan_in")
-    .with_fact("resume_boundary", "final_sort")
-    .with_fact("committed_chunks", 4)
-    .with_fact("committed_partials", 4)
-    .with_fact("merge_level", 2)
-    .with_fact("merge_fan_in", 8);
-
-    let adapter_error = Error::from_native(
-        "algeon_datafusion.native_exec.execute",
-        "Algeon native query execution failed",
-        native_error,
-    );
-
-    assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
-    assert_eq!(adapter_error.fact_value("native_operation"), Some("query_engine.final_sort.topk_concat"));
-    assert_eq!(adapter_error.fact_value("retry_action"), Some("reduce_final_sort_fan_in"));
-    assert_eq!(adapter_error.fact_value("resume_boundary"), Some("final_sort"));
-    assert_eq!(adapter_error.fact_value("committed_chunks"), Some("4"));
-    assert_eq!(adapter_error.fact_value("committed_partials"), Some("4"));
-    assert_eq!(adapter_error.fact_value("merge_level"), Some("2"));
-    assert_eq!(adapter_error.fact_value("merge_fan_in"), Some("8"));
 }

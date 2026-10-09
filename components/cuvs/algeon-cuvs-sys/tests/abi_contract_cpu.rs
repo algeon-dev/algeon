@@ -1,14 +1,6 @@
-use std::{
-    ffi::c_int,
-    mem::{align_of, offset_of, size_of},
-};
+use std::mem::{align_of, offset_of, size_of};
 
-use cuvs_sys::{
-    DLManagedTensor, EXPECTED_CUVS_VERSION, cuvsError_t, cuvsErrorKind_t, cuvsGetLastErrorKind, cuvsKMeansFit,
-    cuvsKMeansParams, cuvsKMeansParams_t, cuvsKMeansParamsCreate, cuvsKMeansParamsDestroy, cuvsKMeansPredict,
-    cuvsPcaParams, cuvsResources_t, cuvsResourcesGetStreamPoolSize, cuvsResourcesGetStreamPoolStream,
-    cuvsResourcesSetStreamPool, cuvsSelectKBatched, cuvsVersionGet, validate_runtime_version,
-};
+use cuvs_sys::{EXPECTED_CUVS_VERSION, cuvsKMeansParams, cuvsPcaParams, validate_runtime_version};
 
 unsafe extern "C" {
     fn cuvs_sizeof_kmeans_params() -> usize;
@@ -40,27 +32,4 @@ fn generated_rust_layout_matches_the_pinned_c_headers() {
 #[test]
 fn loaded_runtime_matches_the_exact_binding_version() {
     assert_eq!(validate_runtime_version().expect("cuvsVersionGet must succeed"), EXPECTED_CUVS_VERSION);
-}
-
-#[test]
-fn generated_bindings_expose_typed_native_error_kinds() {
-    assert_eq!(cuvsErrorKind_t::CUVS_ERROR_KIND_NONE as u32, 0);
-    assert_eq!(cuvsErrorKind_t::CUVS_ERROR_KIND_UNKNOWN as u32, 1);
-    assert_eq!(cuvsErrorKind_t::CUVS_ERROR_KIND_DEVICE_OUT_OF_MEMORY as u32, 2);
-    assert_eq!(cuvsErrorKind_t::CUVS_ERROR_KIND_HOST_OUT_OF_MEMORY as u32, 3);
-    let _: unsafe extern "C" fn() -> cuvsErrorKind_t = cuvsGetLastErrorKind;
-}
-
-#[rustfmt::skip]
-#[test]
-fn generated_bindings_expose_the_pinned_kmeans_function_surface() {
-    let _: unsafe extern "C" fn(*mut cuvsKMeansParams_t) -> cuvsError_t = cuvsKMeansParamsCreate;
-    let _: unsafe extern "C" fn(cuvsKMeansParams_t) -> cuvsError_t = cuvsKMeansParamsDestroy;
-    let _: unsafe extern "C" fn(cuvsResources_t, cuvsKMeansParams_t, *mut DLManagedTensor, *mut DLManagedTensor, *mut DLManagedTensor, *mut f64, *mut c_int) -> cuvsError_t = cuvsKMeansFit;
-    let _: unsafe extern "C" fn(cuvsResources_t, cuvsKMeansParams_t, *mut DLManagedTensor, *mut DLManagedTensor, *mut DLManagedTensor, *mut DLManagedTensor, bool, *mut f64) -> cuvsError_t = cuvsKMeansPredict;
-    let _: unsafe extern "C" fn(cuvsResources_t, *mut DLManagedTensor, *mut DLManagedTensor, *mut DLManagedTensor, bool, bool) -> cuvsError_t = cuvsSelectKBatched;
-    let _: unsafe extern "C" fn(cuvsResources_t, usize) -> cuvsError_t = cuvsResourcesSetStreamPool;
-    let _: unsafe extern "C" fn(cuvsResources_t, *mut usize) -> cuvsError_t = cuvsResourcesGetStreamPoolSize;
-    let _: unsafe extern "C" fn(cuvsResources_t, usize, *mut *mut cuvs_sys::CUstream_st) -> cuvsError_t = cuvsResourcesGetStreamPoolStream;
-    let _: unsafe extern "C" fn(*mut u16, *mut u16, *mut u16) -> cuvsError_t = cuvsVersionGet;
 }

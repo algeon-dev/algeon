@@ -2,7 +2,7 @@
 
 use cudf::{ErrorCode, ErrorKind, Exec, TypeId};
 
-use crate::common::{error_context_value, nullable_series, run_named_cases, series};
+use crate::common::{error_context_value, nullable_series, series};
 
 fn timestamp_days_series(values: &[i32]) -> cudf::Result<cudf::Series> {
     series("ts", values)?
@@ -74,21 +74,18 @@ fn test_datetime_extract_rejects_non_timestamp_with_stable_error() {
     assert_eq!(error_context_value(&err, "component").as_deref(), Some("year"));
 }
 
-#[test]
-fn datetime_tests_cases() {
-    run_named_cases(&[
-        (
-            "test_datetime_extract_year_month_day_from_timestamp_days",
-            test_datetime_extract_year_month_day_from_timestamp_days,
-        ),
-        (
-            "test_datetime_extract_year_month_day_from_timestamp_microseconds",
-            test_datetime_extract_year_month_day_from_timestamp_microseconds,
-        ),
-        ("test_datetime_extract_preserves_nulls", test_datetime_extract_preserves_nulls),
-        (
-            "test_datetime_extract_rejects_non_timestamp_with_stable_error",
-            test_datetime_extract_rejects_non_timestamp_with_stable_error,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "datetime_tests::test_datetime_extract_year_month_day_from_timestamp_days",
+        test_datetime_extract_year_month_day_from_timestamp_days,
+    ),
+    (
+        "datetime_tests::test_datetime_extract_year_month_day_from_timestamp_microseconds",
+        test_datetime_extract_year_month_day_from_timestamp_microseconds,
+    ),
+    ("datetime_tests::test_datetime_extract_preserves_nulls", test_datetime_extract_preserves_nulls),
+    (
+        "datetime_tests::test_datetime_extract_rejects_non_timestamp_with_stable_error",
+        test_datetime_extract_rejects_non_timestamp_with_stable_error,
+    ),
+];

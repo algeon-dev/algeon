@@ -14,7 +14,7 @@ use cudf::{DataFrame, ErrorCode, Exec, TypeId, core::Column};
 
 use crate::common::{
     column_from_slice, dataframe_device_ptr, dataframe_from_columns, error_context_value,
-    fail_next_column_view_metadata_read, run_named_cases, series,
+    fail_next_column_view_metadata_read, series,
 };
 
 // ===========================================================================
@@ -411,35 +411,44 @@ fn series_ops_gpu_allocate() {
     assert_ne!(original_ptr, add_ptr, "add_scalar must allocate new column");
 }
 
-#[test]
-fn high_level_semantic_baseline_tests_cases() {
-    run_named_cases(&[
-        ("df_series_returns_owned_series", df_series_returns_owned_series),
-        ("df_series_shares_device_pointer", df_series_shares_device_pointer),
-        ("df_series_outlives_dataframe", df_series_outlives_dataframe),
-        ("df_series_two_calls_share_arc", df_series_two_calls_share_arc),
-        ("df_get_probe_access", df_get_probe_access),
-        ("df_contains_check", df_contains_check),
-        (
-            "df_iter_series_preserves_schema_order_and_shares_gpu_data",
-            df_iter_series_preserves_schema_order_and_shares_gpu_data,
-        ),
-        ("df_to_table_deep_copies", df_to_table_deep_copies),
-        ("df_to_table_source_still_usable", df_to_table_source_still_usable),
-        ("df_into_table_unique_owner_no_extra_copy", df_into_table_unique_owner_no_extra_copy),
-        ("df_into_table_shared_columns_deep_copies", df_into_table_shared_columns_deep_copies),
-        ("df_into_table_values_preserved", df_into_table_values_preserved),
-        ("filter_allocates_new_gpu_data", filter_allocates_new_gpu_data),
-        ("sort_values_consistent_results", sort_values_consistent_results),
-        ("select_shares_arc", select_shares_arc),
-        ("rename_column_shares_arc", rename_column_shares_arc),
-        ("series_as_column_same_device_ptr_on_repeated_access", series_as_column_same_device_ptr_on_repeated_access),
-        ("series_column_returns_ref", series_column_returns_ref),
-        ("series_into_inner_shares_arc", series_into_inner_shares_arc),
-        ("series_arc_accessor_shares_arc_without_consuming", series_arc_accessor_shares_arc_without_consuming),
-        ("series_clone_shares_gpu_data", series_clone_shares_gpu_data),
-        ("df_filter_gpu_allocates", df_filter_gpu_allocates),
-        ("df_slicing_ops_gpu_allocate", df_slicing_ops_gpu_allocate),
-        ("series_ops_gpu_allocate", series_ops_gpu_allocate),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("high_level_semantic_baseline_tests::df_series_returns_owned_series", df_series_returns_owned_series),
+    ("high_level_semantic_baseline_tests::df_series_shares_device_pointer", df_series_shares_device_pointer),
+    ("high_level_semantic_baseline_tests::df_series_outlives_dataframe", df_series_outlives_dataframe),
+    ("high_level_semantic_baseline_tests::df_series_two_calls_share_arc", df_series_two_calls_share_arc),
+    ("high_level_semantic_baseline_tests::df_get_probe_access", df_get_probe_access),
+    ("high_level_semantic_baseline_tests::df_contains_check", df_contains_check),
+    (
+        "high_level_semantic_baseline_tests::df_iter_series_preserves_schema_order_and_shares_gpu_data",
+        df_iter_series_preserves_schema_order_and_shares_gpu_data,
+    ),
+    ("high_level_semantic_baseline_tests::df_to_table_deep_copies", df_to_table_deep_copies),
+    ("high_level_semantic_baseline_tests::df_to_table_source_still_usable", df_to_table_source_still_usable),
+    (
+        "high_level_semantic_baseline_tests::df_into_table_unique_owner_no_extra_copy",
+        df_into_table_unique_owner_no_extra_copy,
+    ),
+    (
+        "high_level_semantic_baseline_tests::df_into_table_shared_columns_deep_copies",
+        df_into_table_shared_columns_deep_copies,
+    ),
+    ("high_level_semantic_baseline_tests::df_into_table_values_preserved", df_into_table_values_preserved),
+    ("high_level_semantic_baseline_tests::filter_allocates_new_gpu_data", filter_allocates_new_gpu_data),
+    ("high_level_semantic_baseline_tests::sort_values_consistent_results", sort_values_consistent_results),
+    ("high_level_semantic_baseline_tests::select_shares_arc", select_shares_arc),
+    ("high_level_semantic_baseline_tests::rename_column_shares_arc", rename_column_shares_arc),
+    (
+        "high_level_semantic_baseline_tests::series_as_column_same_device_ptr_on_repeated_access",
+        series_as_column_same_device_ptr_on_repeated_access,
+    ),
+    ("high_level_semantic_baseline_tests::series_column_returns_ref", series_column_returns_ref),
+    ("high_level_semantic_baseline_tests::series_into_inner_shares_arc", series_into_inner_shares_arc),
+    (
+        "high_level_semantic_baseline_tests::series_arc_accessor_shares_arc_without_consuming",
+        series_arc_accessor_shares_arc_without_consuming,
+    ),
+    ("high_level_semantic_baseline_tests::series_clone_shares_gpu_data", series_clone_shares_gpu_data),
+    ("high_level_semantic_baseline_tests::df_filter_gpu_allocates", df_filter_gpu_allocates),
+    ("high_level_semantic_baseline_tests::df_slicing_ops_gpu_allocate", df_slicing_ops_gpu_allocate),
+    ("high_level_semantic_baseline_tests::series_ops_gpu_allocate", series_ops_gpu_allocate),
+];

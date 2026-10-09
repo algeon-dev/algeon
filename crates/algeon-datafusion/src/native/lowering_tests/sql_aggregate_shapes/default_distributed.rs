@@ -1,3 +1,6 @@
+use cudf::testing;
+use tokio::runtime::Builder as TestRuntimeBuilder;
+
 use super::*;
 use crate::native::ParquetReadStrategyConfig;
 
@@ -231,7 +234,6 @@ async fn default_sql_mixed_distinct_and_count_over_union_lowers_to_one_native_ag
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn distributed_final_partial_aggregate_function_mismatch_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-function-mismatch");
     let path = dir.join("input.parquet");
@@ -249,7 +251,54 @@ async fn distributed_final_partial_aggregate_function_mismatch_is_rejected() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
+#[test]
+fn default_distributed_tc_distagg_cases_1() {
+    testing::run_named_cases(&[
+        ("distributed_final_aggregate_state_schema_mismatch_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(distributed_final_aggregate_state_schema_mismatch_is_rejected())
+        }),
+        ("distributed_final_aggregate_filter_expr_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(distributed_final_aggregate_filter_expr_is_rejected())
+        }),
+        ("distributed_final_partial_aggregate_function_mismatch_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(distributed_final_partial_aggregate_function_mismatch_is_rejected())
+        }),
+        ("distributed_aggregate_distinct_expr_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(distributed_aggregate_distinct_expr_is_rejected())
+        }),
+        ("distributed_aggregate_order_by_expr_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(distributed_aggregate_order_by_expr_is_rejected())
+        }),
+        ("distributed_aggregate_without_partial_source_shape_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(distributed_aggregate_without_partial_source_shape_is_rejected())
+        }),
+    ]);
+}
+
 async fn distributed_final_aggregate_state_schema_mismatch_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-state-schema-mismatch");
     let path = dir.join("input.parquet");
@@ -319,7 +368,6 @@ async fn distributed_partial_aggregate_filter_lowers_to_native_filter() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn distributed_final_aggregate_filter_expr_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-final-filter-mutation");
     let path = dir.join("input.parquet");
@@ -354,7 +402,6 @@ async fn distributed_final_aggregate_filter_expr_is_rejected() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn distributed_aggregate_distinct_expr_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-distinct-mutation");
     let path = dir.join("input.parquet");
@@ -373,7 +420,6 @@ async fn distributed_aggregate_distinct_expr_is_rejected() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn distributed_aggregate_order_by_expr_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-order-by-mutation");
     let path = dir.join("input.parquet");
@@ -405,7 +451,6 @@ async fn distributed_aggregate_order_by_expr_is_rejected() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn distributed_aggregate_without_partial_source_shape_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-unexpected-source");
     let path = dir.join("input.parquet");

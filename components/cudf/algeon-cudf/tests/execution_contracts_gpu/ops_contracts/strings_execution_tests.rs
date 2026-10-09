@@ -1,8 +1,7 @@
 use cudf::{StringSliceOptions, testing::RawHandleTestingExt};
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, run_named_cases,
-    sample_runtime,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, sample_runtime,
 };
 
 fn test_str_like_and_slice_in_use_explicit_execution_context() {
@@ -27,10 +26,7 @@ fn test_str_like_and_slice_in_use_explicit_execution_context() {
     assert_eq!(sliced.to_strings_strict().unwrap(), vec!["bc".to_string(), "xc".to_string(), "bb".to_string()]);
 }
 
-#[test]
-fn strings_execution_tests_cases() {
-    run_named_cases(&[(
-        "test_str_like_and_slice_in_use_explicit_execution_context",
-        test_str_like_and_slice_in_use_explicit_execution_context,
-    )]);
-}
+pub(crate) const CASES: &[(&str, fn())] = &[(
+    "ops_contracts::strings_execution_tests::test_str_like_and_slice_in_use_explicit_execution_context",
+    test_str_like_and_slice_in_use_explicit_execution_context,
+)];

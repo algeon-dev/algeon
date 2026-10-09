@@ -46,10 +46,6 @@ name = "build_link_contract_cpu"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "column_contract_cpu"
-required-features = ["test-hooks"]
-
-[[test]]
 name = "current_resource_invariant_contract_cpu"
 required-features = ["test-hooks"]
 
@@ -63,34 +59,6 @@ required-features = ["test-hooks"]
 
 [[test]]
 name = "ffi_regressions_gpu"
-required-features = ["test-hooks"]
-
-[[test]]
-name = "fingerprint_matrix_contract_cpu"
-required-features = ["test-hooks"]
-
-[[test]]
-name = "handle_destroy_provenance_contract_cpu"
-required-features = ["test-hooks"]
-
-[[test]]
-name = "hash_join_destroy_provenance_gpu"
-required-features = ["test-hooks"]
-
-[[test]]
-name = "memory_resource_hooks_gpu"
-required-features = ["test-hooks"]
-
-[[test]]
-name = "metadata_size_hooks_gpu"
-required-features = ["test-hooks"]
-
-[[test]]
-name = "prepared_import_contract_cpu"
-required-features = ["test-hooks"]
-
-[[test]]
-name = "profiler_api_contract_cpu"
 required-features = ["test-hooks"]
 
 [[test]]

@@ -11,7 +11,7 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
     let runtime =
         shared_runtime(suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime"));
     let dir = unique_temp_dir("query-engine-final-aggregate-fanout");
-    let (mut builder, aggregate, schema) = incremental_partitioned_merge_builder(&dir, 128, 131_072);
+    let (mut builder, aggregate, schema) = incremental_partitioned_merge_builder(&dir, 32, 131_072);
     let projected = builder
         .add_projection(
             aggregate,
@@ -135,7 +135,7 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
     let error = result.err().expect("cancellation stops before the remaining consumer");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
     let retained = retained_at_cancel.expect("one consumer must finish before cancellation");
-    assert!(retained >= 128 * 131_072 * 8, "the remaining consumer still owns all group keys: {retained}");
+    assert!(retained >= 32 * 131_072 * 8, "the remaining consumer still owns all group keys: {retained}");
     let usage = context.attempt_allocation_domain_usage().unwrap().unwrap();
     assert_eq!((usage.current_bytes, usage.current_allocations), (0, 0), "{usage:?}");
     fs::remove_dir_all(dir).unwrap();

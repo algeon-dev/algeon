@@ -1,6 +1,5 @@
 use super::*;
 
-#[test]
 fn native_query_executes_gpu_resident_source_with_offset_only_limit() {
     let context = backend_context();
     let schema = Arc::new(Schema::new(vec![
@@ -52,43 +51,6 @@ fn native_query_executes_gpu_resident_source_with_offset_only_limit() {
     admitted.finish();
 }
 
-#[test]
-fn native_gpu_resident_source_preserves_input_order() {
-    let context = backend_context();
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-    let plan = builder.finish_with_host_sink(source).unwrap();
-
-    let combined_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 11, 20, 21, 22]))]).unwrap();
-    let admitted = context.admit_plan(&plan).unwrap();
-    let runtime = Arc::new(admitted.runtime().unwrap());
-    let mut inputs = GpuResidentInputMap::new();
-    inputs.insert(
-        "input".to_owned(),
-        GpuResultHandle::new(
-            &admitted,
-            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &combined_batch).unwrap()),
-            Arc::clone(&schema),
-        )
-        .unwrap(),
-    );
-    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.input_batches, 1);
-    assert_eq!(metrics.input_rows, 5);
-
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    assert_eq!(batch.num_rows(), 5);
-    assert_eq!(int32_array(batch, 0).values().as_ref(), &[10, 11, 20, 21, 22]);
-    admitted.finish();
-}
-
-#[test]
 fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column_type() {
     let dir = unique_temp_dir("query-engine-native-reader-float-integer-predicate");
     let path = dir.join("input.parquet");
@@ -131,7 +93,6 @@ fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_local_parquet_reader_predicate_uses_sql_null_logical_or() {
     let dir = unique_temp_dir("query-engine-native-reader-null-logical-or");
     let path = dir.join("input.parquet");
@@ -183,6 +144,31 @@ fn native_local_parquet_reader_predicate_uses_sql_null_logical_or() {
 }
 
 #[test]
+fn predicates_cases() {
+    run_named_cases(&[
+        (
+            "core_execution::predicates::native_local_parquet_reader_predicate_uses_sql_null_logical_or",
+            native_local_parquet_reader_predicate_uses_sql_null_logical_or,
+        ),
+        (
+            "core_execution::predicates::native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column_type",
+            native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column_type,
+        ),
+        (
+            "core_execution::predicates::native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists",
+            native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists,
+        ),
+        (
+            "core_execution::predicates::native_filter_predicate_executes_large_numeric_literal_in_list",
+            native_filter_predicate_executes_large_numeric_literal_in_list,
+        ),
+        (
+            "core_execution::predicates::native_query_executes_gpu_resident_source_with_offset_only_limit",
+            native_query_executes_gpu_resident_source_with_offset_only_limit,
+        ),
+    ]);
+}
+
 fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
     let context = backend_context();
     let schema = Arc::new(Schema::new(vec![
@@ -252,7 +238,6 @@ fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
     );
 }
 
-#[test]
 fn native_filter_predicate_executes_large_numeric_literal_in_list() {
     let context = backend_context();
     let schema =

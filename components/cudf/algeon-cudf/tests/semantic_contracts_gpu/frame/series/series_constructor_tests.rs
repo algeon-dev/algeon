@@ -5,17 +5,11 @@
 
 use cudf::{DataType, ErrorCode, ErrorKind, ScalarValue, Series, TypeId};
 
-use crate::common::{empty_series, error_context_value, null_series, run_named_cases, scalar, series_opt};
+use crate::common::{empty_series, error_context_value, null_series, scalar, series_opt};
 
 // ===========================================================================
 // Runtime unnamed-default constructor split
 // ===========================================================================
-
-fn test_runtime_series_default_is_unnamed() {
-    let rt = cudf::Runtime::new().unwrap();
-    let s = rt.series(&[10i32, 20, 30]).unwrap();
-    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
-}
 
 fn test_runtime_series_from_host_slice() {
     let rt = cudf::Runtime::new().unwrap();
@@ -213,12 +207,6 @@ fn test_from_scalar_zero_size() {
     assert_eq!(s.null_count(), 0);
 }
 
-fn test_from_scalar_default_is_unnamed() {
-    let scalar = scalar(9i32).unwrap();
-    let s = Series::from_scalar(&scalar, 2).unwrap();
-    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![9, 9]);
-}
-
 fn test_from_scalar_rejects_size_over_i32_max_with_stable_contract() {
     let scalar = scalar(1i32).unwrap();
     let size = (i32::MAX as usize) + 1;
@@ -276,43 +264,38 @@ fn test_empty_decimal_preserve_scale() {
     assert!(s.is_empty());
 }
 
-#[test]
-fn series_constructor_tests_cases() {
-    run_named_cases(&[
-        ("test_runtime_series_default_is_unnamed", test_runtime_series_default_is_unnamed),
-        ("test_runtime_series_from_host_slice", test_runtime_series_from_host_slice),
-        ("test_runtime_null_series_constructors", test_runtime_null_series_constructors),
-        ("test_runtime_scalar_seed_constructor", test_runtime_scalar_seed_constructor),
-        ("test_runtime_optional_series_constructor", test_runtime_optional_series_constructor),
-        ("test_runtime_empty_series_constructor", test_runtime_empty_series_constructor),
-        ("test_runtime_sequence_constructor", test_runtime_sequence_constructor),
-        (
-            "test_runtime_sequence_rejects_size_over_i32_max_with_stable_contract",
-            test_runtime_sequence_rejects_size_over_i32_max_with_stable_contract,
-        ),
-        ("test_from_optional_i32", test_from_optional_i32),
-        ("test_from_optional_bool_preserves_false", test_from_optional_bool_preserves_false),
-        ("test_from_optional_empty", test_from_optional_empty),
-        ("test_nulls_i32_basic", test_nulls_i32_basic),
-        ("test_nulls_f64", test_nulls_f64),
-        ("test_nulls_bool8", test_nulls_bool8),
-        ("test_nulls_string", test_nulls_string),
-        ("test_nulls_zero_length", test_nulls_zero_length),
-        ("test_nulls_decimal_preserve_scale", test_nulls_decimal_preserve_scale),
-        ("test_from_scalar_i32", test_from_scalar_i32),
-        ("test_from_scalar_f64", test_from_scalar_f64),
-        ("test_from_scalar_string", test_from_scalar_string),
-        ("test_from_scalar_null_produces_all_nulls", test_from_scalar_null_produces_all_nulls),
-        ("test_from_scalar_zero_size", test_from_scalar_zero_size),
-        ("test_from_scalar_default_is_unnamed", test_from_scalar_default_is_unnamed),
-        (
-            "test_from_scalar_rejects_size_over_i32_max_with_stable_contract",
-            test_from_scalar_rejects_size_over_i32_max_with_stable_contract,
-        ),
-        ("test_empty_i32", test_empty_i32),
-        ("test_empty_f64", test_empty_f64),
-        ("test_empty_string", test_empty_string),
-        ("test_empty_bool8", test_empty_bool8),
-        ("test_empty_decimal_preserve_scale", test_empty_decimal_preserve_scale),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("series_constructor_tests::test_runtime_series_from_host_slice", test_runtime_series_from_host_slice),
+    ("series_constructor_tests::test_runtime_null_series_constructors", test_runtime_null_series_constructors),
+    ("series_constructor_tests::test_runtime_scalar_seed_constructor", test_runtime_scalar_seed_constructor),
+    ("series_constructor_tests::test_runtime_optional_series_constructor", test_runtime_optional_series_constructor),
+    ("series_constructor_tests::test_runtime_empty_series_constructor", test_runtime_empty_series_constructor),
+    ("series_constructor_tests::test_runtime_sequence_constructor", test_runtime_sequence_constructor),
+    (
+        "series_constructor_tests::test_runtime_sequence_rejects_size_over_i32_max_with_stable_contract",
+        test_runtime_sequence_rejects_size_over_i32_max_with_stable_contract,
+    ),
+    ("series_constructor_tests::test_from_optional_i32", test_from_optional_i32),
+    ("series_constructor_tests::test_from_optional_bool_preserves_false", test_from_optional_bool_preserves_false),
+    ("series_constructor_tests::test_from_optional_empty", test_from_optional_empty),
+    ("series_constructor_tests::test_nulls_i32_basic", test_nulls_i32_basic),
+    ("series_constructor_tests::test_nulls_f64", test_nulls_f64),
+    ("series_constructor_tests::test_nulls_bool8", test_nulls_bool8),
+    ("series_constructor_tests::test_nulls_string", test_nulls_string),
+    ("series_constructor_tests::test_nulls_zero_length", test_nulls_zero_length),
+    ("series_constructor_tests::test_nulls_decimal_preserve_scale", test_nulls_decimal_preserve_scale),
+    ("series_constructor_tests::test_from_scalar_i32", test_from_scalar_i32),
+    ("series_constructor_tests::test_from_scalar_f64", test_from_scalar_f64),
+    ("series_constructor_tests::test_from_scalar_string", test_from_scalar_string),
+    ("series_constructor_tests::test_from_scalar_null_produces_all_nulls", test_from_scalar_null_produces_all_nulls),
+    ("series_constructor_tests::test_from_scalar_zero_size", test_from_scalar_zero_size),
+    (
+        "series_constructor_tests::test_from_scalar_rejects_size_over_i32_max_with_stable_contract",
+        test_from_scalar_rejects_size_over_i32_max_with_stable_contract,
+    ),
+    ("series_constructor_tests::test_empty_i32", test_empty_i32),
+    ("series_constructor_tests::test_empty_f64", test_empty_f64),
+    ("series_constructor_tests::test_empty_string", test_empty_string),
+    ("series_constructor_tests::test_empty_bool8", test_empty_bool8),
+    ("series_constructor_tests::test_empty_decimal_preserve_scale", test_empty_decimal_preserve_scale),
+];

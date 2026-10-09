@@ -27,7 +27,7 @@ fn backend_observability_facade_preserves_descriptor_and_projection_contracts() 
     };
 }
 
-#[test]
+#[expect(dead_code, reason = "compile-time public facade check")]
 fn runtime_observability_facade_exposes_timeline_and_jsonl_contracts() {
     let _export: fn(&SealedRuntimeObservationSnapshot, &mut Vec<u8>) -> Result<(), RuntimeObservationExportError> =
         write_runtime_observation_jsonl::<Vec<u8>>;

@@ -4,7 +4,7 @@ use crate::{
     helpers::*,
     support::{
         NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device, last_error_message, last_exec_mr_raw,
-        last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, reset_exec_observation, stream_value,
+        last_exec_stream_value, last_exec_sync_stream_value, reset_exec_observation, stream_value,
     },
 };
 

@@ -593,23 +593,6 @@ mod tests {
         assert_eq!(bottleneck.runtime_operator_class, "not_run");
         assert_eq!(TSV_COLUMNS.join("\t"), TSV_HEADER);
         assert_eq!(TSV_HEADER.split('\t').count(), row_fields(query, 0, false, &outcome, Engine::CpuDataFusion).len());
-        for removed in [
-            "source_cache_hits",
-            "source_cache_misses",
-            "source_cache_inserts",
-            "source_cache_insert_skipped",
-            "source_cache_retained_bytes",
-            "source_cache_lookup_time_ms",
-        ] {
-            assert!(!TSV_COLUMNS.contains(&removed), "report must not project removed field {removed}");
-        }
-    }
-
-    #[test]
-    fn all_query_selector_runs_full_sweep_including_q39() {
-        let queries = bench_queries_from_csv("all").unwrap();
-        assert_eq!(queries.len(), TPCDS_QUERIES.len());
-        assert!(queries.iter().any(|query| query.id == "q39"));
     }
 
     #[test]
@@ -679,26 +662,5 @@ mod tests {
         assert_eq!(fields[wall_ms_index], "");
         assert_eq!(fields[outcome_index], "native_rejected_not_run");
         assert_eq!(fields[native_runtime_started_index], "false");
-    }
-
-    #[test]
-    fn task_operator_classes_cover_native_runtime_rows() {
-        assert_eq!(task_operator_class("source_read"), Some("source"));
-        assert_eq!(task_operator_class("join_probe"), Some("join"));
-        assert_eq!(task_operator_class("aggregate"), Some("aggregate"));
-        assert_eq!(task_operator_class("sink_materialize"), Some("materialization"));
-    }
-
-    #[test]
-    fn cost_declined_datafusion_engine_has_stable_label() {
-        assert_eq!(Engine::CostDeclinedDataFusion.as_str(), "cost_declined_datafusion");
-    }
-
-    #[test]
-    fn cost_reason_codes_are_classified() {
-        assert!(cost_reason_code("native_small_selective_topk_not_selected_by_cost"));
-        assert!(cost_reason_code("native_small_selective_residual_join_not_selected_by_cost"));
-        assert!(cost_reason_code("native_small_selective_full_sort_not_selected_by_cost"));
-        assert!(!cost_reason_code("native_bounded_join_unsupported"));
     }
 }

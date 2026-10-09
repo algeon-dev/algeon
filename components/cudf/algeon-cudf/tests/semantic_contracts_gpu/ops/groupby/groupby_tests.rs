@@ -7,9 +7,7 @@ use cudf::{
     },
 };
 
-use crate::common::{
-    column_from_slice, column_from_slice_nullable, dataframe_from_columns, error_context_value, run_named_cases,
-};
+use crate::common::{column_from_slice, column_from_slice_nullable, dataframe_from_columns, error_context_value};
 
 fn assert_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -111,28 +109,25 @@ fn test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality() {
     assert_eq!(include_facts.max_group_size, 2);
 }
 
-#[test]
-fn groupby_tests_cases() {
-    run_named_cases(&[
-        (
-            "test_testing_hook_locks_groupby_request_count_limit_contract",
-            test_testing_hook_locks_groupby_request_count_limit_contract,
-        ),
-        (
-            "test_testing_hook_locks_groupby_request_agg_count_limit_contract",
-            test_testing_hook_locks_groupby_request_agg_count_limit_contract,
-        ),
-        (
-            "test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract",
-            test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract,
-        ),
-        (
-            "test_groupby_sorted_keys_option_aggregates_contiguous_groups",
-            test_groupby_sorted_keys_option_aggregates_contiguous_groups,
-        ),
-        (
-            "test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality",
-            test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "groupby_tests::test_testing_hook_locks_groupby_request_count_limit_contract",
+        test_testing_hook_locks_groupby_request_count_limit_contract,
+    ),
+    (
+        "groupby_tests::test_testing_hook_locks_groupby_request_agg_count_limit_contract",
+        test_testing_hook_locks_groupby_request_agg_count_limit_contract,
+    ),
+    (
+        "groupby_tests::test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract",
+        test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract,
+    ),
+    (
+        "groupby_tests::test_groupby_sorted_keys_option_aggregates_contiguous_groups",
+        test_groupby_sorted_keys_option_aggregates_contiguous_groups,
+    ),
+    (
+        "groupby_tests::test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality",
+        test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality,
+    ),
+];

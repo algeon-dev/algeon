@@ -22,7 +22,7 @@ use cudf::{
 };
 use tempfile::TempDir;
 
-use crate::common::{read_whole_parquet_source, run_named_cases, sample_runtime};
+use crate::common::{read_whole_parquet_source, sample_runtime};
 
 fn source_column(name: &str, dtype: DataType) -> SourceColumn {
     SourceColumn::new(name, dtype, false).unwrap()
@@ -182,10 +182,7 @@ fn mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and
     );
 }
 
-#[test]
-fn tpch_pipeline_contract_tests_cases() {
-    run_named_cases(&[(
-        "mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export",
-        mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export,
-    )]);
-}
+pub(crate) const CASES: &[(&str, fn())] = &[(
+    "tpch_pipeline_contract_tests::mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export",
+    mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export,
+)];

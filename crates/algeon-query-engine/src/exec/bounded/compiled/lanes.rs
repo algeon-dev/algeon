@@ -37,7 +37,7 @@ use crate::exec::ExecutionMetrics;
 
 mod chunks;
 #[cfg(test)]
-mod gpu_exclusive;
+mod gpu;
 pub(in crate::exec::bounded) use chunks::AggregateLaneDispatch;
 
 const OPERATION: &str = "query_engine.exec.bounded.compiled.lane";

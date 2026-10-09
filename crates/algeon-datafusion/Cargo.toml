@@ -99,6 +99,10 @@ tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 
 [[test]]
+name = "cugraph_tests_cpu"
+required-features = ["cugraph"]
+
+[[test]]
 name = "cugraph_tests_gpu"
 required-features = ["cugraph", "bench-support"]
 
@@ -107,11 +111,15 @@ name = "p6_device_identity_tests_gpu_exclusive"
 required-features = ["nvml"]
 
 [[test]]
-name = "native_tpcds_parity_tests_gpu"
+name = "native_tpcds_parity_tests_cpu"
 required-features = ["bench-support"]
 
 [[test]]
-name = "server_tests_gpu_exclusive"
+name = "server_tests_gpu"
+required-features = ["server"]
+
+[[test]]
+name = "server_admission_concurrency_tests_gpu"
 required-features = ["server"]
 
 [[test]]

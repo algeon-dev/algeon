@@ -1,4 +1,4 @@
-use crate::common::{run_named_cases, series};
+use crate::common::series;
 
 fn same_provenance_runtime_seeded_series_returns_true() {
     let a = series("a", &[1i32, 2, 3]).expect("series a");
@@ -11,10 +11,10 @@ fn same_provenance_self_returns_true() {
     assert!(a.same_provenance(&a), "a series should share provenance with itself");
 }
 
-#[test]
-fn same_provenance_tests_cases() {
-    run_named_cases(&[
-        ("same_provenance_runtime_seeded_series_returns_true", same_provenance_runtime_seeded_series_returns_true),
-        ("same_provenance_self_returns_true", same_provenance_self_returns_true),
-    ]);
-}
+pub(crate) const CASES: &[(&str, fn())] = &[
+    (
+        "frame_contracts::same_provenance_tests::same_provenance_runtime_seeded_series_returns_true",
+        same_provenance_runtime_seeded_series_returns_true,
+    ),
+    ("frame_contracts::same_provenance_tests::same_provenance_self_returns_true", same_provenance_self_returns_true),
+];

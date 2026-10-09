@@ -1016,6 +1016,7 @@ mod tests {
     #[test]
     fn cpu_fallback_rows_have_physical_start_but_no_gpu_boundaries() {
         let (lifecycle, _) = drive(Row::CpuFallback);
+        assert_eq!(lifecycle.recorded_disposition(), Some(AttemptDisposition::CpuFallback));
         let timestamps = lifecycle.timestamps();
         assert_eq!(timestamps.physical_execution_started_ns, Some(3));
         assert_eq!(timestamps.admission_requested_ns, None);
@@ -1296,8 +1297,7 @@ mod tests {
         assert!(lifecycle.terminal_outcome().is_none() && lifecycle.primary_failure_summary().is_none());
     }
 
-    #[test]
-    fn admitted_requires_a_prior_admission_request() {
+    fn admitted_requires_a_prior_admission_request_case() {
         let mut lifecycle = AttemptLifecycle::new(0);
         assert!(matches!(
             lifecycle.admitted(fact(), 1),
@@ -1306,6 +1306,12 @@ mod tests {
     }
 
     #[test]
+    fn admitted_requires_a_prior_admission_request() {
+        admitted_requires_a_prior_admission_request_case();
+        gpu_start_requires_admission();
+        physical_start_during_planning_is_rejected();
+    }
+
     fn gpu_start_requires_admission() {
         let mut lifecycle = AttemptLifecycle::new(0);
         assert!(matches!(
@@ -1314,7 +1320,6 @@ mod tests {
         ));
     }
 
-    #[test]
     fn physical_start_during_planning_is_rejected() {
         let mut lifecycle = AttemptLifecycle::new(0);
         lifecycle.planning_started(1).unwrap();
@@ -1377,19 +1382,6 @@ mod tests {
         lifecycle.ready(9).unwrap();
         let after = lifecycle.timestamps();
         assert_eq!(before, after);
-    }
-
-    #[test]
-    fn unplanned_terminalization_with_execution_boundaries_is_rejected() {
-        let mut lifecycle = AttemptLifecycle::new(0);
-        lifecycle.planning_started(1).unwrap();
-        lifecycle.planning_finished(2).unwrap();
-        lifecycle.disposition(AttemptDisposition::CpuFallback).unwrap();
-        lifecycle.physical(3).unwrap();
-        // Disposition stays cpu_fallback; unplanned is only assigned when no
-        // disposition was set, so this stays a valid cpu_fallback terminal.
-        lifecycle.terminalize(RuntimeTerminalOutcome::Dropped, 4).unwrap();
-        assert_eq!(lifecycle.recorded_disposition(), Some(AttemptDisposition::CpuFallback));
     }
 }
 

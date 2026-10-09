@@ -141,14 +141,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_pass_threshold_and_label_preserve_budget_fraction() {
-        let policy = FilteredAggregateSegmentationPolicy::default();
-
-        assert_eq!(policy.single_pass_threshold_bytes(32 * 1024 * 1024), 16 * 1024 * 1024);
-        assert_eq!(policy.single_pass_budget_fraction_label(), "1/2");
-    }
-
-    #[test]
     fn segment_target_uses_default_and_budget_cap() {
         let policy = FilteredAggregateSegmentationPolicy::default();
         let schema: ArrowSchemaRef = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, true)]));

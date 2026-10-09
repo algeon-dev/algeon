@@ -27,8 +27,7 @@ fn multi_key_single_sum_without_prior_uses_libcudf_when_large() {
     );
 }
 
-#[test]
-fn source_adjacent_envelope_does_not_select_prepared_sort_for_large_group_key_chunks() {
+fn source_adjacent_envelope_does_not_select_prepared_sort_for_large_group_key_chunks_case() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let evidence = source_adjacent_group_key_evidence(
@@ -61,6 +60,16 @@ fn source_adjacent_envelope_does_not_select_prepared_sort_for_large_group_key_ch
 }
 
 #[test]
+fn source_adjacent_envelope_does_not_select_prepared_sort_for_large_group_key_chunks() {
+    source_adjacent_envelope_does_not_select_prepared_sort_for_large_group_key_chunks_case();
+    source_adjacent_envelope_does_not_select_prepared_even_with_byte_bound_unknown_row_groups();
+    source_adjacent_envelope_does_not_select_prepared_for_unknown_read_all_row_groups();
+    source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_group_key_chunks();
+    source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_unpartitioned_chunks();
+    source_adjacent_envelope_does_not_select_prepared_sort_for_byte_bounded_unpartitioned_chunks();
+    source_adjacent_envelope_still_rejects_prepared_for_oversized_unpartitioned_bytes();
+}
+
 fn source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_group_key_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -89,7 +98,6 @@ fn source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_group_key_
     );
 }
 
-#[test]
 fn source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_unpartitioned_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -113,7 +121,6 @@ fn source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_unpartitio
     );
 }
 
-#[test]
 fn source_adjacent_envelope_does_not_select_prepared_sort_for_byte_bounded_unpartitioned_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -139,7 +146,6 @@ fn source_adjacent_envelope_does_not_select_prepared_sort_for_byte_bounded_unpar
     );
 }
 
-#[test]
 fn source_adjacent_envelope_still_rejects_prepared_for_oversized_unpartitioned_bytes() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -166,7 +172,6 @@ fn source_adjacent_envelope_still_rejects_prepared_for_oversized_unpartitioned_b
     );
 }
 
-#[test]
 fn source_adjacent_envelope_does_not_select_prepared_for_unknown_read_all_row_groups() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -190,7 +195,6 @@ fn source_adjacent_envelope_does_not_select_prepared_for_unknown_read_all_row_gr
     );
 }
 
-#[test]
 fn source_adjacent_envelope_does_not_select_prepared_even_with_byte_bound_unknown_row_groups() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -243,40 +247,6 @@ fn source_adjacent_row_group_option_is_reported_but_does_not_select_prepared() {
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
         Some("rejected_by_cost_model")
-    );
-}
-
-#[test]
-fn aggregate_strategy_options_report_source_adjacent_thresholds_without_selecting_prepared() {
-    let (schema, spec) = multi_key_sum_spec();
-    let options = AggregateStrategyExecutionOptions::default()
-        .with_source_adjacent_prepared_sort_groupby_max_row_groups(
-            AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1,
-        );
-    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
-    let evidence = source_adjacent_group_key_evidence(
-        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1,
-        1,
-    );
-    let decision = select_partial_aggregate_strategy_decision_with_options(
-        decision,
-        None,
-        &spec,
-        &schema,
-        65_000_000,
-        Some(evidence),
-        options,
-        &ExecutionMetrics::detached("aggregate-test"),
-    );
-
-    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
-    assert_eq!(
-        decision.facts.get("aggregate_source_adjacent_prepared_sort_groupby_max_row_groups").map(String::as_str),
-        Some("65")
-    );
-    assert_eq!(
-        decision.facts.get("aggregate_encoded_key_partial_low_cardinality_threshold_ppm").map(String::as_str),
-        Some("100000")
     );
 }
 

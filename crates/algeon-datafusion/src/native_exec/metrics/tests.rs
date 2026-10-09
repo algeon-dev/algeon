@@ -11,29 +11,9 @@ use query_runtime::{
 use super::{
     AlgeonNativeMetrics, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES, NativeMetricsCapture,
     contract::{NATIVE_ALGEON_METRIC_DESCRIPTORS, NativeMetricKind},
-    record::{NATIVE_ALGEON_RECORDING_DESCRIPTORS, NativeMetricRecordingKind},
+    record::NATIVE_ALGEON_RECORDING_DESCRIPTORS,
 };
 use crate::{native_exec::admission::QueryAdmissionFacts, native_report::NativeDataFusionExecutionMetrics};
-
-#[test]
-fn native_summary_metrics_set_datafusion_v54_categories() {
-    let metrics_set = ExecutionPlanMetricsSet::new();
-    let _native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
-    let metrics = metrics_set.clone_inner();
-
-    let category_for = |name: &str| {
-        metrics.iter().find(|metric| metric.value().name() == name).and_then(|metric| metric.metric_category())
-    };
-
-    assert_eq!(category_for("query_grant_bytes"), Some(MetricCategory::Bytes));
-    assert_eq!(category_for("resident_dataframe_peak_bytes_observed"), Some(MetricCategory::Rows));
-    assert_eq!(category_for("source_chunks_committed"), Some(MetricCategory::Rows));
-    assert_eq!(category_for("admission_wait_time"), Some(MetricCategory::Timing));
-    assert_eq!(category_for("source_read_time"), Some(MetricCategory::Timing));
-    assert_eq!(category_for("output_rows"), Some(MetricCategory::Rows));
-    assert_eq!(category_for("output_bytes"), Some(MetricCategory::Bytes));
-    assert_eq!(category_for("elapsed_compute"), Some(MetricCategory::Timing));
-}
 
 #[test]
 fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
@@ -53,6 +33,9 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
     let descriptor_names =
         NATIVE_ALGEON_METRIC_DESCRIPTORS.iter().map(|descriptor| descriptor.name).collect::<Vec<_>>();
     assert_eq!(descriptor_names, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES);
+
+    let recording_names = NATIVE_ALGEON_RECORDING_DESCRIPTORS.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+    assert_eq!(recording_names, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES);
 
     let metrics_set = ExecutionPlanMetricsSet::new();
     let _native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
@@ -79,35 +62,6 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
         };
         assert_eq!(matching[0].metric_category(), Some(expected_category), "{} category", descriptor.name);
     }
-}
-
-#[test]
-fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
-    let recording_names = NATIVE_ALGEON_RECORDING_DESCRIPTORS.iter().map(|(name, _kind)| *name).collect::<Vec<_>>();
-    assert_eq!(recording_names, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES);
-    assert_eq!(
-        recording_names.len(),
-        99,
-        "the ordered public metric count must include the sealed-attempt and graph-claim calibration rows"
-    );
-
-    for expected_kind in
-        [NativeMetricRecordingKind::Query, NativeMetricRecordingKind::Admission, NativeMetricRecordingKind::Attempt]
-    {
-        assert!(
-            NATIVE_ALGEON_RECORDING_DESCRIPTORS.iter().any(|(_name, kind)| *kind == expected_kind),
-            "recording contract must exercise {expected_kind:?} mappings"
-        );
-    }
-}
-
-#[test]
-fn labelled_row_recording_targets_do_not_repeat_metric_name_literals() {
-    let source = include_str!("record.rs");
-    assert!(
-        !source.contains(".global_counter(\""),
-        "labelled row targets must use descriptor-generated metric-name accessors"
-    );
 }
 
 #[test]

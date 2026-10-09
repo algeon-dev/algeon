@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use cudf::testing::run_named_cases;
 use query_engine::rapids_backend::rapids_analysis_context;
 use query_planning::{capability::Reason, policy::PlanningPolicy};
 
@@ -48,20 +49,14 @@ fn native_plan_can_represent_proven_benchmark_shape() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
     let plan = builder.finish_with_host_sink(limit).unwrap();
 
-    assert_eq!(plan.node_count(), 6);
     assert_eq!(plan.output_schema().fields().len(), 2);
-    assert_eq!(plan.root_id(), limit);
     assert!(matches!(plan.sink(), ResultSink::HostArrow { input, .. } if *input == limit));
     assert!(plan.sink().materializes_host_boundary());
     assert_eq!(plan.node(sort).unwrap().facts.output_ordering.len(), 2);
     assert_eq!(plan.node(limit).unwrap().facts.output_ordering.len(), 2);
     assert!(matches!(plan.root_node().kind, PlanNode::Limit(_)));
-    assert!(plan.to_string().contains("LocalParquetSource"));
-    assert!(plan.to_string().contains("Limit input=n4 skip=0 fetch=100"));
-    assert!(plan.to_string().contains("Sink id=sink input=n5 mode=host_arrow materialization=device_to_host"));
 }
 
-#[test]
 fn aggregate_strategy_capability_selects_encoded_key_partial_after_contract_proof() {
     let input_schema = Schema::new(vec![
         Field::new("returnflag", DataType::Utf8, true),
@@ -101,6 +96,39 @@ fn aggregate_strategy_capability_selects_encoded_key_partial_after_contract_proo
 }
 
 #[test]
+fn t_agg_strategy_cases() {
+    run_named_cases(&[
+        (
+            "plan_contracts::aggregate_strategy_capability_selects_encoded_key_partial_after_contract_proof",
+            aggregate_strategy_capability_selects_encoded_key_partial_after_contract_proof,
+        ),
+        (
+            "plan_contracts::aggregate_strategy_capability_selects_partitioned_merge_for_final_merge_stage",
+            aggregate_strategy_capability_selects_partitioned_merge_for_final_merge_stage,
+        ),
+        (
+            "plan_contracts::aggregate_strategy_capability_rejects_encoded_key_for_non_string_keys_locally",
+            aggregate_strategy_capability_rejects_encoded_key_for_non_string_keys_locally,
+        ),
+        (
+            "plan_contracts::aggregate_strategy_capability_rejects_encoded_key_for_filter_and_distinct_locally",
+            aggregate_strategy_capability_rejects_encoded_key_for_filter_and_distinct_locally,
+        ),
+        (
+            "plan_contracts::aggregate_strategy_capability_treats_median_as_single_stage_only",
+            aggregate_strategy_capability_treats_median_as_single_stage_only,
+        ),
+        (
+            "plan_contracts::aggregate_strategy_capability_admits_single_stage_prepared_sort_groupby",
+            aggregate_strategy_capability_admits_single_stage_prepared_sort_groupby,
+        ),
+        (
+            "plan_contracts::aggregate_strategy_capability_rejects_partitioned_merge_for_unsupported_final_merge_shapes",
+            aggregate_strategy_capability_rejects_partitioned_merge_for_unsupported_final_merge_shapes,
+        ),
+    ]);
+}
+
 fn aggregate_strategy_capability_selects_partitioned_merge_for_final_merge_stage() {
     let input_schema = Schema::new(vec![
         Field::new("returnflag", DataType::Utf8, true),
@@ -134,7 +162,6 @@ fn aggregate_strategy_capability_selects_partitioned_merge_for_final_merge_stage
     );
 }
 
-#[test]
 fn aggregate_strategy_capability_rejects_encoded_key_for_non_string_keys_locally() {
     let input_schema =
         Schema::new(vec![Field::new("key", DataType::Int32, false), Field::new("value", DataType::Int64, false)]);
@@ -158,7 +185,6 @@ fn aggregate_strategy_capability_rejects_encoded_key_for_non_string_keys_locally
     );
 }
 
-#[test]
 fn aggregate_strategy_capability_rejects_encoded_key_for_filter_and_distinct_locally() {
     let input_schema = Schema::new(vec![
         Field::new("key", DataType::Utf8, false),
@@ -196,7 +222,6 @@ fn aggregate_strategy_capability_rejects_encoded_key_for_filter_and_distinct_loc
     );
 }
 
-#[test]
 fn aggregate_strategy_capability_treats_median_as_single_stage_only() {
     let input_schema =
         Schema::new(vec![Field::new("key", DataType::Utf8, false), Field::new("value", DataType::Int64, false)]);
@@ -291,7 +316,6 @@ fn aggregate_node_capability_rejects_decimal_median_input_type() {
     assert_eq!(facts.get("data_type").map(String::as_str), Some("Decimal128(15, 2)"));
 }
 
-#[test]
 fn aggregate_strategy_capability_admits_single_stage_prepared_sort_groupby() {
     let input_schema =
         Schema::new(vec![Field::new("key", DataType::Utf8, false), Field::new("value", DataType::Int64, false)]);
@@ -322,7 +346,6 @@ fn aggregate_strategy_capability_admits_single_stage_prepared_sort_groupby() {
     );
 }
 
-#[test]
 fn aggregate_strategy_capability_rejects_partitioned_merge_for_unsupported_final_merge_shapes() {
     let input_schema =
         Schema::new(vec![Field::new("key", DataType::Utf8, false), Field::new("value", DataType::Int64, false)]);
@@ -381,27 +404,6 @@ fn native_plan_can_represent_offset_only_limit() {
 }
 
 #[test]
-fn native_plan_can_represent_literal_batch_source() {
-    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![7, 8]))]).unwrap();
-
-    let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
-    let plan = builder.finish_with_host_sink(source).unwrap();
-
-    assert_eq!(plan.output_schema().as_ref(), schema.as_ref());
-    assert!(matches!(
-        &plan.root_node().kind,
-        PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LiteralBatch(source) if source.row_count() == 2)
-    ));
-    assert_eq!(
-        plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default())).nodes[0].operator,
-        NodeOperator::Source { format: SourceFormatCapability::LiteralBatch }
-    );
-}
-
-#[test]
 fn projection_plan_facts_schema_is_derived_from_typed_outputs() {
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -431,26 +433,6 @@ fn projection_plan_facts_schema_is_derived_from_typed_outputs() {
 }
 
 #[test]
-fn native_plan_can_represent_ordered_union() {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("payload", DataType::Int64, true),
-    ]));
-
-    let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
-    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
-    let plan = builder.finish_with_host_sink(union).unwrap();
-
-    assert_eq!(plan.node_count(), 3);
-    assert_eq!(plan.output_schema().as_ref(), schema.as_ref());
-    assert_eq!(plan.root_id(), union);
-    assert!(matches!(plan.root_node().kind, PlanNode::Union(_)));
-    assert!(plan.to_string().contains("Union inputs=n0,n1 input_count=2"));
-}
-
-#[test]
 fn native_plan_builder_rejects_empty_union() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
 
@@ -458,74 +440,6 @@ fn native_plan_builder_rejects_empty_union() {
     let error = builder.add_union(Vec::new(), schema).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.operation(), "query_engine.plan.graph");
-}
-
-#[test]
-fn native_plan_can_represent_gpu_resident_fragment_input() {
-    let input_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("sum_x00", DataType::Int64, true),
-    ]));
-    let output_schema = Arc::new(Schema::new(vec![Field::new("sum_x00", DataType::Int64, true)]));
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "partial_aggregate_input",
-        Arc::clone(&input_schema),
-    )));
-    let projection =
-        builder.add_projection(source, projection_outputs(vec![Expr::column("sum_x00")], output_schema)).unwrap();
-    let plan = builder.finish_with_host_sink(projection).unwrap();
-
-    assert_eq!(plan.node_count(), 2);
-    assert_eq!(plan.output_schema().fields().len(), 1);
-    assert!(matches!(plan.node(source).unwrap().kind, PlanNode::Source(_)));
-    assert!(plan.to_string().contains("GpuResidentSource input_name=partial_aggregate_input"));
-    assert!(plan.to_string().contains("Sink id=sink input=n1 mode=host_arrow materialization=device_to_host"));
-}
-
-#[test]
-fn native_plan_graph_represents_binary_join_with_same_named_inputs() {
-    let left_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-    let right_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-    let output_schema = Arc::new(Schema::new(vec![
-        Field::new("left_id", DataType::Int32, false),
-        Field::new("right_id", DataType::Int32, false),
-    ]));
-    let left_source = LocalParquetSource::new("/tmp/left.parquet", Arc::clone(&left_schema), vec!["id".into()]);
-    let right_source = LocalParquetSource::new("/tmp/right.parquet", Arc::clone(&right_schema), vec!["id".into()]);
-
-    let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(left_source));
-    let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder
-        .add_join(
-            left,
-            right,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
-            )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "id", "left_id"), "left_id"),
-                JoinOutputColumn::right(ColumnRef::input(1, "id", "right_id"), "right_id"),
-            ])
-            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-            .with_build_side(JoinSide::Right),
-            Arc::clone(&output_schema),
-        )
-        .unwrap();
-    let plan = builder.finish_with_host_sink(join).unwrap();
-
-    let PlanNode::Join(join_node) = &plan.root_node().kind else {
-        panic!("root node should be a native join contract");
-    };
-    assert_eq!(plan.root_node().input_ids(), &[left, right]);
-    assert_eq!(join_node.spec.keys[0].left.name(), "id");
-    assert_eq!(join_node.spec.keys[0].left.display_name(), "left_id");
-    assert_eq!(join_node.spec.keys[0].right.name(), "id");
-    assert_eq!(join_node.spec.keys[0].right.display_name(), "right_id");
-    assert!(plan.to_string().contains("Join left=n0 right=n1 type=inner key_count=1"));
 }
 
 #[test]

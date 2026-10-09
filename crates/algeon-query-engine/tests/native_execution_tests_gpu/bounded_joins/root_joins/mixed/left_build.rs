@@ -97,7 +97,7 @@ fn bounded_native_mixed_left_build_preserves_identity_and_finalizes_after_all_pr
         8,
     );
     write_left_match_batch(&empty_path, vec![], vec![], vec![], 1);
-    let rows = 64 * 128;
+    let rows = 32 * 128;
     let mut keys = vec![Some(99); rows];
     let mut quantities = vec![Some(5); rows];
     let mut payloads = vec![Some(payload); rows];

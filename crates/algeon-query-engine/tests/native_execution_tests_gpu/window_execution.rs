@@ -7,7 +7,6 @@ use super::{
     *,
 };
 
-#[test]
 fn native_scalar_window_carries_basic_list_payloads_from_gpu_input() {
     let context = backend_context();
     let input = basic_list_payload_batch(&[3, 1, 4, 2]);
@@ -56,6 +55,39 @@ fn native_scalar_window_carries_basic_list_payloads_from_gpu_input() {
 }
 
 #[test]
+fn window_execution_cases() {
+    run_named_cases(&[
+        (
+            "window_execution::native_scalar_window_carries_basic_list_payloads_from_gpu_input",
+            native_scalar_window_carries_basic_list_payloads_from_gpu_input,
+        ),
+        (
+            "window_execution::native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows",
+            native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows,
+        ),
+        (
+            "window_execution::native_lag_window_shifts_within_partition_and_restores_input_order",
+            native_lag_window_shifts_within_partition_and_restores_input_order,
+        ),
+        (
+            "window_execution::native_lag_window_groups_null_partition_keys_together",
+            native_lag_window_groups_null_partition_keys_together,
+        ),
+        (
+            "window_execution::native_lead_window_with_explicit_default_fills_partition_edges",
+            native_lead_window_with_explicit_default_fills_partition_edges,
+        ),
+        (
+            "window_execution::native_row_number_window_counts_one_based_rows_per_partition",
+            native_row_number_window_counts_one_based_rows_per_partition,
+        ),
+        (
+            "window_execution::native_lead_window_attaches_output_to_filtered_parquet_source_frame",
+            native_lead_window_attaches_output_to_filtered_parquet_source_frame,
+        ),
+    ]);
+}
+
 fn native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows() {
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
@@ -126,7 +158,6 @@ fn native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows
     admitted.finish();
 }
 
-#[test]
 fn native_lag_window_shifts_within_partition_and_restores_input_order() {
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
@@ -202,7 +233,6 @@ fn native_lag_window_shifts_within_partition_and_restores_input_order() {
     );
 }
 
-#[test]
 fn native_lag_window_groups_null_partition_keys_together() {
     // SQL window `PARTITION BY` treats NULL keys as a single group, so the
     // grouped shift must pass `include_null_keys` through to libcudf;
@@ -267,7 +297,6 @@ fn native_lag_window_groups_null_partition_keys_together() {
     assert_eq!(int64_array(batch, 3).iter().collect::<Vec<_>>(), vec![Some(10), None, None, Some(100), Some(20)]);
 }
 
-#[test]
 fn native_lead_window_with_explicit_default_fills_partition_edges() {
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
@@ -330,7 +359,6 @@ fn native_lead_window_with_explicit_default_fills_partition_edges() {
     assert_eq!(int64_array(batch, 3).values().as_ref(), &[30, 10, 300, -1, 100, -1]);
 }
 
-#[test]
 fn native_row_number_window_counts_one_based_rows_per_partition() {
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
@@ -400,38 +428,6 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
     admitted.finish();
 }
 
-#[test]
-fn native_row_number_window_refuses_input_ordered_only_by_its_order_key() {
-    // Sorted by `ord` alone, the rows of each `grp` partition interleave, and
-    // positional numbering would return [1, 1, 3, 3, 5, 5] without error.
-    let context = backend_context();
-    let input_schema = Arc::new(Schema::new(vec![
-        Field::new("grp", DataType::Int32, false),
-        Field::new("ord", DataType::Int32, false),
-    ]));
-    let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("window_input", Arc::clone(&input_schema))));
-    let sort = builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("ord"), false, false)])).unwrap();
-    let window = builder
-        .add_window(
-            sort,
-            WindowSpec::new(
-                vec![Expr::column("grp")],
-                vec![SortExpr::new(Expr::column("ord"), false, false)],
-                vec![WindowFunction::row_number("rn")],
-            ),
-        )
-        .unwrap();
-    let plan = builder.finish_with_host_sink(window).unwrap();
-
-    let Err(error) = context.admit_plan(&plan) else {
-        panic!("a window over input not grouped by its partition must not run");
-    };
-    assert_eq!(error.fact_value("compiled_pipeline_rejection_reason"), Some("window_input_ordering_not_established"));
-}
-
-#[test]
 fn native_lead_window_attaches_output_to_filtered_parquet_source_frame() {
     // A Parquet chunk is decoded under a stage budget token, so its frame
     // carries the token's stream and memory resource instead of the

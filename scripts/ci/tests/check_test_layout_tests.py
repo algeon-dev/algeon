@@ -172,6 +172,13 @@ const TEXT: &str = r###"include!(\"fragment.rs\"); #[path=\"foreign.rs\"]"###;
         subprocess.run(['git', '-C', str(self.root), 'add', 'src/orphan.rs'], check=True)
         self.assertIn('src/orphan.rs: tracked Rust source was not compiled', self.errors(stream))
 
+    def test_deleted_tracked_source_is_not_a_current_compile_input(self):
+        stream, _ = self.compile_fixture()
+        removed = self.write('src/removed.rs', 'pub fn old_case() {}')
+        subprocess.run(['git', '-C', str(self.root), 'add', 'src/removed.rs'], check=True)
+        removed.unlink()
+        self.assertEqual(self.errors(stream), '')
+
     def test_feature_off_stream_covers_its_own_conditional_source(self):
         stream, dep = self.compile_fixture()
         source = self.write('src/lib.rs', 'mod compiled; #[cfg(not(feature="native"))] mod fallback;')

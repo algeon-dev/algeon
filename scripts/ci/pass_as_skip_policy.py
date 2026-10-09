@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CANONICAL_TEST_ROOTS = (ROOT / "crates",)
+CANONICAL_TEST_ROOTS = (ROOT / "crates", ROOT / "components")
 RULES = {
     "optional_gpu_runtime": re.compile(
         r"let\s+Ok\s*\([^)]*runtime[^)]*\)\s*=\s*cudf::Runtime::new\s*\(\s*\)\s*else\s*\{\s*return\s*;\s*\}",
@@ -18,6 +18,12 @@ RULES = {
     ),
     "device_count_skip": re.compile(
         r"(?:if\s+)?(?:cudf::)?DeviceId::count\s*\(\)(?:\s*\.unwrap_or\s*\(\s*0\s*\))?\s*(?:==|!=|<=|>=|<|>)\s*\d+\s*\{\s*return\s*;\s*\}",
+        re.DOTALL,
+    ),
+    "bound_device_count_skip": re.compile(
+        r"let\s+(?P<count>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*(?:cudf::)?DeviceId::count\s*\(\s*\)"
+        r"\s*\.\s*(?:expect\s*\(\s*\"(?:[^\"\\]|\\.)*\"\s*\)|unwrap\s*\(\s*\)|unwrap_or\s*\(\s*\d+\s*\))"
+        r"\s*;\s*if\s+(?P=count)\s*(?:==|!=|<=|>=|<|>)\s*\d+\s*\{\s*return\s*;\s*\}",
         re.DOTALL,
     ),
     "optional_python_oracle": re.compile(

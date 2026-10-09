@@ -2,7 +2,6 @@
 
 use crate::common::{nullable_series, series};
 
-#[test]
 fn test_display_smoke_reports_series_metadata_without_materializing_values() {
     let series = nullable_series("score", &[111i32, 0, 333], &[true, false, true]).unwrap();
 
@@ -22,7 +21,6 @@ fn test_display_smoke_reports_series_metadata_without_materializing_values() {
     assert!(!output.contains("333"), "output should not materialize integer payloads: {}", output);
 }
 
-#[test]
 fn test_debug_smoke_reports_series_metadata_without_materializing_values() {
     let series = series("city", &["tokyo", "paris", "taipei"]).unwrap();
 
@@ -39,3 +37,14 @@ fn test_debug_smoke_reports_series_metadata_without_materializing_values() {
     assert!(!output.contains("tokyo"), "debug output should not materialize string payloads: {}", output);
     assert!(!output.contains("paris"), "debug output should not materialize string payloads: {}", output);
 }
+
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "series_display_tests::test_display_smoke_reports_series_metadata_without_materializing_values",
+        test_display_smoke_reports_series_metadata_without_materializing_values,
+    ),
+    (
+        "series_display_tests::test_debug_smoke_reports_series_metadata_without_materializing_values",
+        test_debug_smoke_reports_series_metadata_without_materializing_values,
+    ),
+];

@@ -970,26 +970,6 @@ mod tests {
             assert_eq!(pool.reserved(), 0);
         }
 
-        #[test]
-        fn published_result_routing_matches_follower_sink() {
-            assert_eq!(
-                GraphBfsFollowerRoute::for_gpu_follower(GraphBfsPublicationKind::Host),
-                GraphBfsFollowerRoute::UploadHost,
-            );
-            assert_eq!(
-                GraphBfsFollowerRoute::for_gpu_follower(GraphBfsPublicationKind::Gpu),
-                GraphBfsFollowerRoute::HandoffGpu,
-            );
-            assert_eq!(
-                GraphBfsFollowerRoute::for_host_follower(GraphBfsPublicationKind::Host),
-                GraphBfsFollowerRoute::ReuseHost,
-            );
-            assert_eq!(
-                GraphBfsFollowerRoute::for_host_follower(GraphBfsPublicationKind::Gpu),
-                GraphBfsFollowerRoute::MaterializeGpu,
-            );
-        }
-
         #[tokio::test]
         async fn gpu_handoff_drain_waits_until_every_follower_settles() {
             let drain = Arc::new(GpuHandoffDrain::new(2));
@@ -1087,22 +1067,27 @@ mod tests {
         }
 
         #[test]
-        fn requests_with_different_output_caps_never_form_a_leader_follower_group() {
-            let coordinator = GraphBfsSingleflight::new(4);
-            let loose_key = key(1);
-            let mut strict_key = loose_key.clone();
-            strict_key.max_output_staging_bytes -= 1;
+        fn requests_with_different_sources_or_output_caps_never_form_a_leader_follower_group() {
+            let mut different_cap = key(1);
+            different_cap.max_output_staging_bytes -= 1;
+            for strict_key in [different_cap, key(2)] {
+                let coordinator = GraphBfsSingleflight::new(4);
+                let loose_key = key(1);
 
-            let GraphBfsSingleflightJoin::Leader(_loose_leader) = coordinator.join(loose_key).unwrap() else {
-                panic!("first output-cap request must lead")
-            };
-            let GraphBfsSingleflightJoin::Leader(_strict_leader) = coordinator.join(strict_key).unwrap() else {
-                panic!("a request with a different output cap must start an independent generation")
-            };
+                let GraphBfsSingleflightJoin::Leader(mut loose_leader) = coordinator.join(loose_key).unwrap() else {
+                    panic!("first output-cap request must lead")
+                };
+                let GraphBfsSingleflightJoin::Leader(mut strict_leader) = coordinator.join(strict_key).unwrap() else {
+                    panic!("a request with a different output cap must start an independent generation")
+                };
 
-            let snapshot = coordinator.snapshot();
-            assert_eq!(snapshot.groups_formed, 2);
-            assert_eq!(snapshot.peak_width, 1);
+                loose_leader.record_traversal_submission();
+                strict_leader.record_traversal_submission();
+                let snapshot = coordinator.snapshot();
+                assert_eq!(snapshot.groups_formed, 2);
+                assert_eq!(snapshot.physical_traversals, 2);
+                assert_eq!(snapshot.peak_width, 1);
+            }
         }
 
         #[test]
@@ -1182,20 +1167,6 @@ mod tests {
             drop(follower);
             assert!(!leader.has_followers().unwrap());
             assert_eq!(coordinator.snapshot().cancelled_waiters, 1);
-        }
-
-        #[test]
-        fn distinct_sources_never_coalesce() {
-            let coordinator = GraphBfsSingleflight::new(4);
-            let GraphBfsSingleflightJoin::Leader(mut first) = coordinator.join(key(1)).unwrap() else {
-                panic!("first source must lead")
-            };
-            let GraphBfsSingleflightJoin::Leader(mut second) = coordinator.join(key(2)).unwrap() else {
-                panic!("second source must lead")
-            };
-            first.record_traversal_submission();
-            second.record_traversal_submission();
-            assert_eq!(coordinator.snapshot().physical_traversals, 2);
         }
 
         /// Races follower drops against a GPU publish from one barrier, so

@@ -1,7 +1,6 @@
 use super::*;
 
-#[test]
-fn bfs_drops_null_edge_rows_before_graph_construction() {
+pub(super) fn bfs_drops_null_edge_rows_before_graph_construction() {
     let context = backend_context();
 
     let edge_schema =
@@ -79,60 +78,7 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     admitted.finish();
 }
 
-#[test]
-fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
-    let context = backend_context();
-
-    let edge_schema =
-        Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
-    let edge_batch = RecordBatch::try_new(
-        Arc::clone(&edge_schema),
-        vec![
-            Arc::new(Int32Array::from(vec![Some(0), Some(1), None, Some(2), Some(2)])),
-            Arc::new(Int32Array::from(vec![Some(1), Some(2), Some(99), None, Some(3)])),
-        ],
-    )
-    .unwrap();
-
-    let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
-        "edges",
-        Arc::clone(&edge_schema),
-        &edge_batch,
-    )));
-    let spec = int32_graph_spec(
-        GraphAlgorithm::Bfs,
-        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions::default(),
-        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
-    );
-    let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
-    let plan =
-        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
-    let admitted = context.admit_plan(&plan).unwrap();
-    let runtime = Arc::new(admitted.runtime().unwrap());
-
-    let mut gpu_inputs = GpuResidentInputMap::new();
-    gpu_inputs.insert(
-        "edges".to_string(),
-        GpuResultHandle::new(
-            &admitted,
-            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
-            Arc::clone(&edge_schema),
-        )
-        .unwrap(),
-    );
-
-    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
-    let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
-    assert_eq!(graph_metrics.len(), 1);
-    assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
-    assert_eq!(graph_metrics[0].graph_peak_bytes, None);
-    admitted.finish();
-}
-
-#[test]
-fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
+pub(super) fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
     let context = backend_context();
 
     let edge_schema = Arc::new(Schema::new(vec![
@@ -221,8 +167,7 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
 // Companion to the above isolates BFS with only a weight binding
 // (no edge_id). A null weight must never drop its edge, so every vertex stays
 // reachable. Before the fix this returned i32::MAX sentinels for 1 and 2.
-#[test]
-fn bfs_null_weight_does_not_drop_reachable_edges() {
+pub(super) fn bfs_null_weight_does_not_drop_reachable_edges() {
     let context = backend_context();
 
     let edge_schema = Arc::new(Schema::new(vec![
@@ -292,8 +237,7 @@ fn bfs_null_weight_does_not_drop_reachable_edges() {
     admitted.finish();
 }
 
-#[test]
-fn bfs_include_edge_ids_filters_edges() {
+pub(super) fn bfs_include_edge_ids_filters_edges() {
     let context = backend_context();
 
     let edge_schema = Arc::new(Schema::new(vec![
@@ -392,8 +336,7 @@ fn bfs_include_edge_ids_filters_edges() {
     admitted.finish();
 }
 
-#[test]
-fn bfs_include_edges_relation_filters_by_source_destination() {
+pub(super) fn bfs_include_edges_relation_filters_by_source_destination() {
     let context = backend_context();
 
     let edge_schema = Arc::new(Schema::new(vec![
@@ -491,8 +434,7 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
     admitted.finish();
 }
 
-#[test]
-fn bfs_source_vertices_side_input_accepts_multiple_rows() {
+pub(super) fn bfs_source_vertices_side_input_accepts_multiple_rows() {
     let context = backend_context();
 
     let edge_schema = Arc::new(Schema::new(vec![
@@ -572,8 +514,7 @@ fn bfs_source_vertices_side_input_accepts_multiple_rows() {
     admitted.finish();
 }
 
-#[test]
-fn bfs_source_vertices_side_input_rejects_empty_source_set() {
+pub(super) fn bfs_source_vertices_side_input_rejects_empty_source_set() {
     let context = backend_context();
 
     let edge_schema = Arc::new(Schema::new(vec![
@@ -642,8 +583,7 @@ fn bfs_source_vertices_side_input_rejects_empty_source_set() {
     admitted.finish();
 }
 
-#[test]
-fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
+pub(super) fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     let context = backend_context();
 
     let edge_schema = Arc::new(Schema::new(vec![
@@ -736,8 +676,7 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     admitted.finish();
 }
 
-#[test]
-fn bfs_target_metadata_columns_are_shaped_when_requested() {
+pub(super) fn bfs_target_metadata_columns_are_shaped_when_requested() {
     let context = backend_context();
 
     let edge_schema = Arc::new(Schema::new(vec![

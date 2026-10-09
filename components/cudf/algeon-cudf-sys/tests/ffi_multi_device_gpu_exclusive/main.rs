@@ -9,8 +9,8 @@ mod support;
 
 use helpers::{make_column_view, make_string_column};
 use support::{
-    CurrentDeviceRestore, OwnedMemoryResource, OwnedStream, current_device, last_error_message, lock_shim_state,
-    required_exec_options, set_current_device, visible_device_count,
+    CurrentDeviceRestore, OwnedMemoryResource, OwnedStream, current_device, last_error_message, required_exec_options,
+    set_current_device, visible_device_count,
 };
 
 fn prepare_replace_with_backrefs(
@@ -37,12 +37,9 @@ fn prepare_replace_with_backrefs(
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn prepared_replace_execute_rejects_device_mismatch_before_libcudf() {
-    let _lock = lock_shim_state();
-    if visible_device_count() < 2 {
-        eprintln!("skipping prepared replace device-mismatch test; fewer than two CUDA devices are visible");
-        return;
-    }
+    assert!(visible_device_count() >= 2, "requires at least 2 GPUs");
     let _restore = CurrentDeviceRestore::new();
     set_current_device(0);
     let col = make_string_column(&["abc-123", "def-456"]);
@@ -76,14 +73,12 @@ fn prepared_replace_execute_rejects_device_mismatch_before_libcudf() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn test_memory_resource_destroy_restores_current_device() {
-    let _shim_state = lock_shim_state();
     let mut device_count = 0;
     let status = unsafe { cudf_sys::cudf_cuda_get_device_count(&mut device_count) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    if device_count < 2 {
-        return;
-    }
+    assert!(device_count >= 2, "requires at least 2 GPUs");
 
     let _restore = CurrentDeviceRestore::new();
     set_current_device(0);
@@ -103,12 +98,9 @@ fn test_memory_resource_destroy_restores_current_device() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn native_query_domain_rejects_cross_device_stream() {
-    let _shim_state = lock_shim_state();
-    if visible_device_count() < 2 {
-        eprintln!("skipping native cross-device query-domain test; fewer than two CUDA devices are visible");
-        return;
-    }
+    assert!(visible_device_count() >= 2, "requires at least 2 GPUs");
     let _restore = CurrentDeviceRestore::new();
 
     set_current_device(0);

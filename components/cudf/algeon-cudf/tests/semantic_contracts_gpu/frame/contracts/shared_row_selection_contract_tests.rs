@@ -16,7 +16,7 @@ use cudf::{
     },
 };
 
-use crate::common::{run_named_cases, sample_df, series};
+use crate::common::{sample_df, series};
 
 fn assert_same_row_range_contract(lhs: &Error, rhs: &Error) {
     assert_eq!(lhs.kind(), rhs.kind());
@@ -81,20 +81,17 @@ fn dataframe_and_series_row_range_testing_hooks_share_same_error_shape() {
     assert_same_row_range_contract(&dataframe_overflow, &series_overflow);
 }
 
-#[test]
-fn shared_row_selection_contract_tests_cases() {
-    run_named_cases(&[
-        (
-            "dataframe_and_series_filter_dtype_validation_use_same_canonical_contract",
-            dataframe_and_series_filter_dtype_validation_use_same_canonical_contract,
-        ),
-        (
-            "dataframe_and_series_filter_length_validation_use_same_canonical_facts",
-            dataframe_and_series_filter_length_validation_use_same_canonical_facts,
-        ),
-        (
-            "dataframe_and_series_row_range_testing_hooks_share_same_error_shape",
-            dataframe_and_series_row_range_testing_hooks_share_same_error_shape,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "shared_row_selection_contract_tests::dataframe_and_series_filter_dtype_validation_use_same_canonical_contract",
+        dataframe_and_series_filter_dtype_validation_use_same_canonical_contract,
+    ),
+    (
+        "shared_row_selection_contract_tests::dataframe_and_series_filter_length_validation_use_same_canonical_facts",
+        dataframe_and_series_filter_length_validation_use_same_canonical_facts,
+    ),
+    (
+        "shared_row_selection_contract_tests::dataframe_and_series_row_range_testing_hooks_share_same_error_shape",
+        dataframe_and_series_row_range_testing_hooks_share_same_error_shape,
+    ),
+];

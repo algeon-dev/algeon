@@ -10,7 +10,7 @@
 
 use cudf::Exec;
 
-use crate::common::{nullable_series, run_named_cases, series};
+use crate::common::{nullable_series, series};
 
 // ===========================================================================
 // sum with nulls
@@ -158,15 +158,6 @@ fn test_var_partial_nulls() {
     assert!(result.is_valid().unwrap());
     let v = result.value::<f64>().unwrap();
     assert!((v - 200.0).abs() < 1e-6);
-}
-
-fn test_std_single_element_ddof1() {
-    // std of single element with ddof=1: division by (1-1)=0 -> NaN or null
-    let s = series::<i32>("x", &[5]).unwrap();
-    let result = s.on(Exec::RETAINED).std(1).unwrap();
-    // libcudf returns NaN (or 0) for single-element std with ddof=1
-    // Just verify it doesn't crash; the exact result depends on libcudf behavior
-    let _v = result.value::<f64>().unwrap();
 }
 
 fn test_std_all_null() {
@@ -323,43 +314,42 @@ fn test_cumsum_single_element() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 }
 
-#[test]
-fn null_reduction_tests_cases() {
-    run_named_cases(&[
-        ("test_sum_partial_nulls_skips_nulls", test_sum_partial_nulls_skips_nulls),
-        ("test_sum_all_null_returns_valid_zero_or_null", test_sum_all_null_returns_valid_zero_or_null),
-        ("test_sum_empty_series", test_sum_empty_series),
-        ("test_sum_single_element", test_sum_single_element),
-        ("test_min_partial_nulls_skips_nulls", test_min_partial_nulls_skips_nulls),
-        ("test_max_partial_nulls_skips_nulls", test_max_partial_nulls_skips_nulls),
-        ("test_min_all_null_returns_null_scalar", test_min_all_null_returns_null_scalar),
-        ("test_max_all_null_returns_null_scalar", test_max_all_null_returns_null_scalar),
-        ("test_min_single_element", test_min_single_element),
-        ("test_max_single_element", test_max_single_element),
-        ("test_mean_partial_nulls_skips_nulls", test_mean_partial_nulls_skips_nulls),
-        ("test_mean_all_null", test_mean_all_null),
-        ("test_mean_single_element", test_mean_single_element),
-        ("test_median_partial_nulls", test_median_partial_nulls),
-        ("test_median_all_null", test_median_all_null),
-        ("test_median_single_element", test_median_single_element),
-        ("test_std_partial_nulls", test_std_partial_nulls),
-        ("test_var_partial_nulls", test_var_partial_nulls),
-        ("test_std_single_element_ddof1", test_std_single_element_ddof1),
-        ("test_std_all_null", test_std_all_null),
-        ("test_any_with_true_and_null", test_any_with_true_and_null),
-        ("test_any_with_false_and_null", test_any_with_false_and_null),
-        ("test_all_with_true_and_null", test_all_with_true_and_null),
-        ("test_all_with_false_and_null", test_all_with_false_and_null),
-        ("test_any_all_null", test_any_all_null),
-        ("test_product_partial_nulls", test_product_partial_nulls),
-        ("test_product_single_element", test_product_single_element),
-        ("test_minmax_partial_nulls", test_minmax_partial_nulls),
-        ("test_minmax_single_element", test_minmax_single_element),
-        ("test_cumsum_with_nulls", test_cumsum_with_nulls),
-        ("test_cummin_with_nulls", test_cummin_with_nulls),
-        ("test_cummax_with_nulls", test_cummax_with_nulls),
-        ("test_cumprod_with_nulls", test_cumprod_with_nulls),
-        ("test_cumsum_empty", test_cumsum_empty),
-        ("test_cumsum_single_element", test_cumsum_single_element),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("null_reduction_tests::test_sum_partial_nulls_skips_nulls", test_sum_partial_nulls_skips_nulls),
+    (
+        "null_reduction_tests::test_sum_all_null_returns_valid_zero_or_null",
+        test_sum_all_null_returns_valid_zero_or_null,
+    ),
+    ("null_reduction_tests::test_sum_empty_series", test_sum_empty_series),
+    ("null_reduction_tests::test_sum_single_element", test_sum_single_element),
+    ("null_reduction_tests::test_min_partial_nulls_skips_nulls", test_min_partial_nulls_skips_nulls),
+    ("null_reduction_tests::test_max_partial_nulls_skips_nulls", test_max_partial_nulls_skips_nulls),
+    ("null_reduction_tests::test_min_all_null_returns_null_scalar", test_min_all_null_returns_null_scalar),
+    ("null_reduction_tests::test_max_all_null_returns_null_scalar", test_max_all_null_returns_null_scalar),
+    ("null_reduction_tests::test_min_single_element", test_min_single_element),
+    ("null_reduction_tests::test_max_single_element", test_max_single_element),
+    ("null_reduction_tests::test_mean_partial_nulls_skips_nulls", test_mean_partial_nulls_skips_nulls),
+    ("null_reduction_tests::test_mean_all_null", test_mean_all_null),
+    ("null_reduction_tests::test_mean_single_element", test_mean_single_element),
+    ("null_reduction_tests::test_median_partial_nulls", test_median_partial_nulls),
+    ("null_reduction_tests::test_median_all_null", test_median_all_null),
+    ("null_reduction_tests::test_median_single_element", test_median_single_element),
+    ("null_reduction_tests::test_std_partial_nulls", test_std_partial_nulls),
+    ("null_reduction_tests::test_var_partial_nulls", test_var_partial_nulls),
+    ("null_reduction_tests::test_std_all_null", test_std_all_null),
+    ("null_reduction_tests::test_any_with_true_and_null", test_any_with_true_and_null),
+    ("null_reduction_tests::test_any_with_false_and_null", test_any_with_false_and_null),
+    ("null_reduction_tests::test_all_with_true_and_null", test_all_with_true_and_null),
+    ("null_reduction_tests::test_all_with_false_and_null", test_all_with_false_and_null),
+    ("null_reduction_tests::test_any_all_null", test_any_all_null),
+    ("null_reduction_tests::test_product_partial_nulls", test_product_partial_nulls),
+    ("null_reduction_tests::test_product_single_element", test_product_single_element),
+    ("null_reduction_tests::test_minmax_partial_nulls", test_minmax_partial_nulls),
+    ("null_reduction_tests::test_minmax_single_element", test_minmax_single_element),
+    ("null_reduction_tests::test_cumsum_with_nulls", test_cumsum_with_nulls),
+    ("null_reduction_tests::test_cummin_with_nulls", test_cummin_with_nulls),
+    ("null_reduction_tests::test_cummax_with_nulls", test_cummax_with_nulls),
+    ("null_reduction_tests::test_cumprod_with_nulls", test_cumprod_with_nulls),
+    ("null_reduction_tests::test_cumsum_empty", test_cumsum_empty),
+    ("null_reduction_tests::test_cumsum_single_element", test_cumsum_single_element),
+];

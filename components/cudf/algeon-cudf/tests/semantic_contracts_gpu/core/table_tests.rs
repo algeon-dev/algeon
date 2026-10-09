@@ -15,7 +15,7 @@ use cudf::{
 use crate::common::{
     arm_next_table_view_negative_num_columns_fault, arm_next_table_view_negative_num_rows_fault, column_from_slice,
     column_from_slice_nullable, error_context_value, last_exec_mr_value, last_exec_stream_value,
-    reset_exec_observation, run_named_cases,
+    reset_exec_observation,
 };
 
 fn test_create_table_from_columns() {
@@ -347,48 +347,48 @@ fn test_table_view_num_rows_rejects_negative_foreign_count_with_stable_contract(
     assert_eq!(error_context_value(&err, "num_rows").as_deref(), None);
 }
 
-#[test]
-fn table_tests_cases() {
-    run_named_cases(&[
-        ("test_create_table_from_columns", test_create_table_from_columns),
-        ("test_table_column_access", test_table_column_access),
-        ("test_table_deep_copy", test_table_deep_copy),
-        (
-            "test_table_from_columns_into_columns_preserves_input_order",
-            test_table_from_columns_into_columns_preserves_input_order,
-        ),
-        ("test_empty_table", test_empty_table),
-        ("test_table_from_columns_empty_requires_runtime", test_table_from_columns_empty_requires_runtime),
-        ("test_table_with_nullable_columns", test_table_with_nullable_columns),
-        ("test_table_from_columns_mismatched_rows_rejected", test_table_from_columns_mismatched_rows_rejected),
-        (
-            "test_testing_hook_locks_table_column_count_limit_contract",
-            test_testing_hook_locks_table_column_count_limit_contract,
-        ),
-        ("test_table_view_column_rejects_out_of_bounds_index", test_table_view_column_rejects_out_of_bounds_index),
-        (
-            "test_table_view_column_rejects_usize_indices_outside_i32_range",
-            test_table_view_column_rejects_usize_indices_outside_i32_range,
-        ),
-        ("test_table_view_from_column_views", test_table_view_from_column_views),
-        ("test_table_view_from_column_views_single_column", test_table_view_from_column_views_single_column),
-        (
-            "test_table_view_from_column_views_retains_backing_after_source_views_drop",
-            test_table_view_from_column_views_retains_backing_after_source_views_drop,
-        ),
-        ("test_table_view_from_column_views_empty", test_table_view_from_column_views_empty),
-        (
-            "test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contract",
-            test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contract,
-        ),
-        (
-            "test_testing_hook_locks_table_view_column_count_limit_contract",
-            test_testing_hook_locks_table_view_column_count_limit_contract,
-        ),
-        ("test_table_view_select_columns", test_table_view_select_columns),
-        (
-            "test_table_view_select_columns_rejects_out_of_bounds_index",
-            test_table_view_select_columns_rejects_out_of_bounds_index,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("table_tests::test_create_table_from_columns", test_create_table_from_columns),
+    ("table_tests::test_table_column_access", test_table_column_access),
+    ("table_tests::test_table_deep_copy", test_table_deep_copy),
+    (
+        "table_tests::test_table_from_columns_into_columns_preserves_input_order",
+        test_table_from_columns_into_columns_preserves_input_order,
+    ),
+    ("table_tests::test_empty_table", test_empty_table),
+    ("table_tests::test_table_from_columns_empty_requires_runtime", test_table_from_columns_empty_requires_runtime),
+    ("table_tests::test_table_with_nullable_columns", test_table_with_nullable_columns),
+    ("table_tests::test_table_from_columns_mismatched_rows_rejected", test_table_from_columns_mismatched_rows_rejected),
+    (
+        "table_tests::test_testing_hook_locks_table_column_count_limit_contract",
+        test_testing_hook_locks_table_column_count_limit_contract,
+    ),
+    (
+        "table_tests::test_table_view_column_rejects_out_of_bounds_index",
+        test_table_view_column_rejects_out_of_bounds_index,
+    ),
+    (
+        "table_tests::test_table_view_column_rejects_usize_indices_outside_i32_range",
+        test_table_view_column_rejects_usize_indices_outside_i32_range,
+    ),
+    ("table_tests::test_table_view_from_column_views", test_table_view_from_column_views),
+    ("table_tests::test_table_view_from_column_views_single_column", test_table_view_from_column_views_single_column),
+    (
+        "table_tests::test_table_view_from_column_views_retains_backing_after_source_views_drop",
+        test_table_view_from_column_views_retains_backing_after_source_views_drop,
+    ),
+    ("table_tests::test_table_view_from_column_views_empty", test_table_view_from_column_views_empty),
+    (
+        "table_tests::test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contract",
+        test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contract,
+    ),
+    (
+        "table_tests::test_testing_hook_locks_table_view_column_count_limit_contract",
+        test_testing_hook_locks_table_view_column_count_limit_contract,
+    ),
+    ("table_tests::test_table_view_select_columns", test_table_view_select_columns),
+    (
+        "table_tests::test_table_view_select_columns_rejects_out_of_bounds_index",
+        test_table_view_select_columns_rejects_out_of_bounds_index,
+    ),
+];

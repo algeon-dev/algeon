@@ -3,7 +3,6 @@ use std::sync::Arc;
 use query_planning::expr::ColumnRef;
 
 use super::*;
-#[test]
 fn bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-mixed-inner-join");
@@ -68,6 +67,35 @@ fn bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations
 }
 
 #[test]
+fn keyed_residual_cases() {
+    run_named_cases(&[
+        (
+            "bounded_joins::root_joins::mixed::keyed_residual::bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations",
+            bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations,
+        ),
+        (
+            "bounded_joins::root_joins::mixed::keyed_residual::bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join",
+            bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join,
+        ),
+        (
+            "bounded_joins::root_joins::mixed::keyed_residual::bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual_join",
+            bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual_join,
+        ),
+        (
+            "bounded_joins::root_joins::mixed::keyed_residual::bounded_native_query_executes_root_mixed_left_join_with_unmatched_left_rows",
+            bounded_native_query_executes_root_mixed_left_join_with_unmatched_left_rows,
+        ),
+        (
+            "bounded_joins::root_joins::mixed::keyed_residual::bounded_native_query_executes_root_mixed_full_join_with_pair_reservations",
+            bounded_native_query_executes_root_mixed_full_join_with_pair_reservations,
+        ),
+        (
+            "bounded_joins::root_joins::mixed::keyed_residual::bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single_gather_map",
+            bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single_gather_map,
+        ),
+    ]);
+}
+
 fn bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join() {
     let dir = unique_temp_dir("query-engine-bounded-root-mixed-inner-streamed-probe");
     let left_path = dir.join("lineitem.parquet");
@@ -137,7 +165,6 @@ fn bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual_join() {
     let dir = unique_temp_dir("query-engine-bounded-root-mixed-inner-streamed-right-probe");
     let left_path = dir.join("lineitem.parquet");
@@ -209,7 +236,6 @@ fn bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_root_mixed_left_join_with_unmatched_left_rows() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-mixed-left-join");
@@ -274,7 +300,6 @@ fn bounded_native_query_executes_root_mixed_left_join_with_unmatched_left_rows()
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_root_mixed_full_join_with_pair_reservations() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-mixed-full-join");
@@ -361,7 +386,6 @@ fn bounded_native_query_executes_root_mixed_full_join_with_pair_reservations() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single_gather_map() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-mixed-semi-anti-join");

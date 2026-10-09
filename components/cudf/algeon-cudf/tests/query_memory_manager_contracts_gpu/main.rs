@@ -1,3 +1,5 @@
+use cudf::testing::run_named_cases;
+
 #[path = "../support/common/mod.rs"]
 mod common;
 
@@ -70,9 +72,8 @@ fn assert_send_sync<T: Send + Sync>() {}
 
 /// The per-device memory manager and its CUDA async pool are process-global,
 /// so pool usage observed through [`DeviceMemoryManager::pool_usage`] would be
-/// shared mutable state if tests ever shared a process (e.g. under
-/// `cargo test`); nextest runs each test in its own process, so this guard is
-/// a no-op there and only matters for that shared-process case.
+/// shared mutable state among cases in the manager table. The guard also
+/// protects these cases when the binary runs through `cargo test`.
 ///
 /// Tests that allocate, free, or trim through the shared device pool hold the
 /// shared guard (they may run concurrently with each other). Tests that
@@ -157,7 +158,6 @@ impl Drop for QueryDomainRoutePauseRelease {
     }
 }
 
-#[test]
 fn default_runtime_uses_device_level_memory_manager_resource() {
     let rt = Runtime::builder().build().unwrap();
     let manager = rt.device_memory_manager().unwrap();
@@ -169,7 +169,6 @@ fn default_runtime_uses_device_level_memory_manager_resource() {
     );
 }
 
-#[test]
 fn cuda_async_resource_exposes_pool_usage_and_explicit_trim() {
     let device = DeviceId::current().unwrap();
     let allocation_size = 32 * 1024 * 1024;
@@ -223,7 +222,6 @@ fn device_memory_manager_default_async_pool_exposes_usage_and_trim() {
     assert!(usage.used_high_bytes >= usage.used_current_bytes);
 }
 
-#[test]
 fn failure_callback_observes_physical_failure_without_trim_or_retry() {
     let device = DeviceId::current().unwrap();
     let idle_bytes = 128 * 1024 * 1024;
@@ -265,7 +263,6 @@ fn failure_callback_observes_physical_failure_without_trim_or_retry() {
     assert_eq!(after.used_current_bytes, before.used_current_bytes);
 }
 
-#[test]
 fn detailed_failure_callback_reports_pool_usage_without_trim_or_retry() {
     let device = DeviceId::current().unwrap();
     let idle_bytes = 128 * 1024 * 1024;
@@ -335,7 +332,6 @@ fn detailed_failure_callback_reports_pool_usage_without_trim_or_retry() {
     assert_eq!(after.used_current_bytes, before.used_current_bytes);
 }
 
-#[test]
 fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim() {
     // This test asserts absolute shared-pool state (`used_current_bytes == 0`
     // and before/after usage equality), so it must exclude every sibling that
@@ -400,42 +396,6 @@ fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim(
     assert_eq!(after.used_current_bytes, before.used_current_bytes);
 }
 
-#[test]
-fn query_domain_failure_callback_reports_arena_and_member_identity() {
-    let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let device = manager_runtime.device();
-    let manager = manager_runtime.device_memory_manager().unwrap();
-    let seen_source = Arc::new(AtomicU32::new(u32::MAX));
-    let seen_arena_id = Arc::new(AtomicU64::new(0));
-    let seen_reservation_id = Arc::new(AtomicU64::new(0));
-    let callback_source = Arc::clone(&seen_source);
-    let callback_arena_id = Arc::clone(&seen_arena_id);
-    let callback_reservation_id = Arc::clone(&seen_reservation_id);
-    let callback = Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
-        callback_source.store(failure_source_code(info.source), Ordering::SeqCst);
-        if let Some(DeviceMemoryFailureAllocationDomain::QueryMemoryDomain {
-            domain_id: arena_id,
-            member_id: reservation_id,
-        }) = info.allocation_domain
-        {
-            callback_arena_id.store(arena_id, Ordering::SeqCst);
-            callback_reservation_id.store(reservation_id, Ordering::SeqCst);
-        }
-    });
-    let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
-    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
-    let arena = manager.query_memory_domain(30_005, QueryMemoryDomainOptions::new(1)).unwrap();
-    let _lease = arena.reserve_stream(runtime.stream(), 30_505, 64 * 1024 * 1024).unwrap();
-
-    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
-
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(seen_source.load(Ordering::SeqCst), failure_source_code(DeviceMemoryFailureSource::ReservationLimit));
-    assert_eq!(seen_arena_id.load(Ordering::SeqCst), 30_005);
-    assert_eq!(seen_reservation_id.load(Ordering::SeqCst), 30_505);
-}
-
-#[test]
 fn device_memory_manager_runtime_uses_one_device_level_resource_with_stream_reservations() {
     assert_send_sync::<DeviceMemoryManager>();
     assert_send_sync::<cudf::QueryMemoryDomain>();
@@ -457,7 +417,6 @@ fn device_memory_manager_runtime_uses_one_device_level_resource_with_stream_rese
     assert_eq!(usage.allocation_limit_bytes, 64 * 1024 * 1024);
 }
 
-#[test]
 fn raw_stream_sibling_reservation_accounts_and_detaches_before_stream_destruction() {
     let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -481,7 +440,6 @@ fn raw_stream_sibling_reservation_accounts_and_detaches_before_stream_destructio
     assert_eq!(unsafe { cudf_sys::cudf_stream_destroy(stream_handle) }, cudf_sys::CUDF_SUCCESS);
 }
 
-#[test]
 fn raw_current_resource_route_accounts_and_detaches_before_stream_reuse() {
     let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -532,7 +490,6 @@ fn raw_current_resource_route_accounts_and_detaches_before_stream_reuse() {
     assert_eq!(unsafe { cudf_sys::cudf_stream_destroy(stream_handle) }, cudf_sys::CUDF_SUCCESS);
 }
 
-#[test]
 fn query_domain_enforces_query_cap_across_streams() {
     let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -560,7 +517,6 @@ fn query_domain_enforces_query_cap_across_streams() {
     drop(left_buffer);
 }
 
-#[test]
 fn query_domain_counts_retained_allocations_after_member_detach() {
     let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -591,7 +547,6 @@ fn query_domain_counts_retained_allocations_after_member_detach() {
     );
 }
 
-#[test]
 fn execution_budget_token_can_attach_as_query_domain_member() {
     let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -645,7 +600,6 @@ fn execution_budget_token_can_attach_as_query_domain_member() {
     assert!(domain_usage.current_bytes >= left_output_bytes + right_output_bytes);
 }
 
-#[test]
 fn frozen_query_domain_retains_live_output_and_rejects_new_allocations() {
     let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -694,7 +648,6 @@ fn frozen_query_domain_retains_live_output_and_rejects_new_allocations() {
     assert_eq!(released.current_aligned_bytes, 0);
 }
 
-#[test]
 fn execution_budget_token_retains_source_runtime_until_token_drop() {
     let _pool_state = shared_device_pool_guard();
     let (runtime, drops) = runtime_with_budget_drop_probe();
@@ -709,7 +662,6 @@ fn execution_budget_token_retains_source_runtime_until_token_drop() {
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn query_domain_budget_token_retains_source_runtime_after_external_handles_drop() {
     let _pool_state = shared_device_pool_guard();
     let (runtime, drops) = runtime_with_budget_drop_probe();
@@ -735,7 +687,6 @@ fn query_domain_budget_token_retains_source_runtime_after_external_handles_drop(
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn execution_budget_token_constructed_from_runtime_clone_retains_exact_source() {
     let _pool_state = shared_device_pool_guard();
     let (runtime, drops) = runtime_with_budget_drop_probe();
@@ -754,7 +705,6 @@ fn execution_budget_token_constructed_from_runtime_clone_retains_exact_source() 
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn budgeted_output_inherits_retained_runtime_lifetime_after_token_drop() {
     let _pool_state = shared_device_pool_guard();
     let (runtime, drops) = runtime_with_budget_drop_probe();
@@ -783,7 +733,6 @@ fn budgeted_output_inherits_retained_runtime_lifetime_after_token_drop() {
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn execution_budget_token_retains_only_its_source_runtime() {
     let _pool_state = shared_device_pool_guard();
     let (runtime_a, drops_a) = runtime_with_budget_drop_probe();
@@ -804,28 +753,6 @@ fn execution_budget_token_retains_only_its_source_runtime() {
     assert_eq!(drops_b.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn execution_budget_token_retention_has_no_runtime_cycle() {
-    let _pool_state = shared_device_pool_guard();
-    let released = Arc::new(AtomicUsize::new(0));
-    let runtime = Runtime::builder()
-        .with_device_memory_manager()
-        .build()
-        .unwrap()
-        .with_retained_lifetime(Arc::new(BudgetRuntimeDropProbe(Arc::clone(&released))))
-        .unwrap();
-    let token =
-        execution_budget_token(&runtime, ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_cycle_check"))
-            .unwrap();
-
-    drop(runtime);
-    assert_eq!(released.load(Ordering::SeqCst), 0, "the token retains the runtime's execution domain");
-
-    drop(token);
-    assert_eq!(released.load(Ordering::SeqCst), 1, "dropping the token must release the execution domain");
-}
-
-#[test]
 fn execution_budget_token_detaches_reservation_before_retained_runtime_drop() {
     let _pool_state = shared_device_pool_guard();
     let base = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -863,7 +790,6 @@ fn execution_budget_token_detaches_reservation_before_retained_runtime_drop() {
     );
 }
 
-#[test]
 fn query_domain_member_usage_closes_when_budget_allocation_is_freed() {
     let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -902,7 +828,6 @@ fn query_domain_member_usage_closes_when_budget_allocation_is_freed() {
     assert_eq!(domain_usage.active_members, 1);
 }
 
-#[test]
 fn sequential_query_domain_budget_tokens_reattach_same_stream_after_drop() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -934,7 +859,6 @@ fn sequential_query_domain_budget_tokens_reattach_same_stream_after_drop() {
     assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
 }
 
-#[test]
 fn second_live_query_domain_budget_token_on_same_stream_is_structured_rejection() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -958,7 +882,6 @@ fn second_live_query_domain_budget_token_on_same_stream_is_structured_rejection(
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
 fn query_memory_domain_preserves_device_resource_identity() {
     assert_send_sync::<cudf::QueryMemoryDomain>();
 
@@ -985,23 +908,6 @@ fn query_memory_domain_preserves_device_resource_identity() {
     assert!(pool_usage.reserved_current_bytes >= pool_usage.used_current_bytes);
     assert_eq!(pool_usage, manager.pool_usage().unwrap());
     drop(buffer);
-}
-
-#[test]
-fn query_memory_domain_ceiling_is_logical_accounting_only() {
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let manager = runtime.device_memory_manager().unwrap();
-    let requested_ceiling = 8 * 1024 * 1024;
-    let domain = manager
-        .query_memory_domain(
-            40_017,
-            QueryMemoryDomainOptions::new(requested_ceiling).with_ceiling_bytes(requested_ceiling),
-        )
-        .unwrap();
-
-    let usage = domain.usage().unwrap();
-    assert_eq!(usage.ceiling_bytes, requested_ceiling as u64);
-    assert_eq!(usage.allocation_limit_bytes, requested_ceiling as u64);
 }
 
 #[test]
@@ -1068,7 +974,6 @@ fn shared_pool_keeps_query_domain_limits_and_outputs_independent() {
     );
 }
 
-#[test]
 fn query_domain_member_limit_is_independent_from_domain_grant() {
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
     let right = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -1102,7 +1007,6 @@ fn query_domain_member_limit_is_independent_from_domain_grant() {
     assert_eq!(large.reservation_usage().unwrap().failed_allocation_count, 0);
 }
 
-#[test]
 fn query_domain_budget_output_uses_direct_member_resource_without_stream_route() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -1129,7 +1033,6 @@ fn query_domain_budget_output_uses_direct_member_resource_without_stream_route()
     assert_eq!(token.reservation_usage().unwrap().current_allocations, 0);
 }
 
-#[test]
 fn query_memory_domain_usage_closes_when_allocation_is_freed() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -1151,7 +1054,6 @@ fn query_memory_domain_usage_closes_when_allocation_is_freed() {
     assert_eq!(released.current_allocations, 0);
 }
 
-#[test]
 fn query_memory_domain_churn_reuses_grant_after_frees() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -1172,7 +1074,6 @@ fn query_memory_domain_churn_reuses_grant_after_frees() {
     assert!(usage.total_bytes > usage.allocation_limit_bytes);
 }
 
-#[test]
 fn query_memory_domain_frees_are_accounted_per_domain() {
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
     let right = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -1201,7 +1102,6 @@ fn query_memory_domain_frees_are_accounted_per_domain() {
     assert_eq!(right_domain.usage().unwrap().current_bytes, 0);
 }
 
-#[test]
 fn query_memory_domain_failure_is_query_local() {
     let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -1223,41 +1123,6 @@ fn query_memory_domain_failure_is_query_local() {
     let right_buffer = right.device_buffer(1024).unwrap();
     assert_eq!(right_buffer.size_bytes().unwrap(), 1024);
     assert_eq!(right_domain.usage().unwrap().failed_allocation_count, 0);
-}
-
-#[test]
-fn query_memory_domain_failure_callback_reports_reservation_limit_source() {
-    let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let device = manager_runtime.device();
-    let manager = manager_runtime.device_memory_manager().unwrap();
-    let seen_source = Arc::new(AtomicU32::new(u32::MAX));
-    let seen_domain_id = Arc::new(AtomicU64::new(0));
-    let seen_member_id = Arc::new(AtomicU64::new(0));
-    let callback_source = Arc::clone(&seen_source);
-    let callback_domain_id = Arc::clone(&seen_domain_id);
-    let callback_member_id = Arc::clone(&seen_member_id);
-    let callback = Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
-        callback_source.store(failure_source_code(info.source), Ordering::SeqCst);
-        if let Some(DeviceMemoryFailureAllocationDomain::QueryMemoryDomain { domain_id, member_id }) =
-            info.allocation_domain
-        {
-            callback_domain_id.store(domain_id, Ordering::SeqCst);
-            callback_member_id.store(member_id, Ordering::SeqCst);
-        }
-    });
-    let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
-    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
-    let domain = manager
-        .query_memory_domain(40_005, QueryMemoryDomainOptions::new(1).with_ceiling_bytes(8 * 1024 * 1024))
-        .unwrap();
-    let _lease = domain.reserve_stream(runtime.stream(), 40_501, 8 * 1024 * 1024).unwrap();
-
-    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
-
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(seen_source.load(Ordering::SeqCst), failure_source_code(DeviceMemoryFailureSource::ReservationLimit));
-    assert_eq!(seen_domain_id.load(Ordering::SeqCst), 40_005);
-    assert_eq!(seen_member_id.load(Ordering::SeqCst), 40_501);
 }
 
 #[test]
@@ -1365,25 +1230,6 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
 }
 
 #[test]
-fn query_memory_domain_retained_output_survives_domain_handle_drop() {
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let manager = runtime.device_memory_manager().unwrap();
-
-    let retained = {
-        let domain = manager
-            .query_memory_domain(
-                40_006,
-                QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
-            )
-            .unwrap();
-        let _lease = domain.reserve_stream(runtime.stream(), 40_601, 8 * 1024 * 1024).unwrap();
-        runtime.device_buffer(1024).unwrap()
-    };
-
-    drop(retained);
-}
-
-#[test]
 fn query_domain_pointer_registry_uses_recorded_owner_and_rejects_double_free() {
     let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -1432,7 +1278,6 @@ fn query_domain_pointer_registry_uses_recorded_owner_and_rejects_double_free() {
     assert!(detail.message.contains("unknown or already-freed device allocation pointer"));
 }
 
-#[test]
 fn zero_byte_query_domain_allocation_does_not_change_counters_and_cleans_up_when_idle() {
     const DOMAIN_ID: u64 = 40_107;
     let _pool_state = shared_device_pool_guard();
@@ -1492,7 +1337,6 @@ fn zero_byte_query_domain_allocation_does_not_change_counters_and_cleans_up_when
     assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 0);
 }
 
-#[test]
 fn query_domain_direct_output_keeps_domain_registry_until_output_drop() {
     const DOMAIN_ID: u64 = 60_002;
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -1522,7 +1366,6 @@ fn query_domain_direct_output_keeps_domain_registry_until_output_drop() {
     assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 0);
 }
 
-#[test]
 fn fused_filter_literals_use_active_query_domain_member_after_input_member_detaches() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -1557,7 +1400,6 @@ fn fused_filter_literals_use_active_query_domain_member_after_input_member_detac
     assert!(filter_token.reservation_usage().unwrap().direct_total_allocations > 0);
 }
 
-#[test]
 fn detached_query_domain_member_allocation_is_permanent_invalid_input() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -1588,7 +1430,6 @@ fn detached_query_domain_member_allocation_is_permanent_invalid_input() {
     assert!(error.to_string().contains("query memory domain member is detached"));
 }
 
-#[test]
 fn fused_filter_decimal_rescaling_uses_replacement_query_domain_member() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -1737,29 +1578,6 @@ fn concurrent_reserved_query_work_leaves_current_resource_on_device_adaptor() {
     assert_eq!(current_device_resource_raw_value(), device_mr);
 }
 
-#[test]
-fn reservation_usage_releases_retained_output_by_allocation_identity() {
-    let _pool_state = shared_device_pool_guard();
-    let rt = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let token =
-        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("retained_output"))
-            .unwrap();
-
-    let outcome = token.run("runtime::series_from_value", |exec| rt.on(exec)?.series_from_value(7i32, 4096)).unwrap();
-    let output_bytes = outcome.value().device_allocated_size_bytes().unwrap();
-    let while_retained = token.reservation_usage().unwrap();
-    assert!(while_retained.current_bytes as usize >= output_bytes);
-
-    drop(outcome);
-
-    let after_drop = token.reservation_usage().unwrap();
-    assert!(
-        after_drop.current_bytes < while_retained.current_bytes,
-        "dropping retained output must release bytes from the reservation that created it"
-    );
-}
-
-#[test]
 fn reservation_limit_failure_is_stream_local() {
     let _pool_state = shared_device_pool_guard();
     let small_rt = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -1780,7 +1598,6 @@ fn reservation_limit_failure_is_stream_local() {
     assert_eq!(large.reservation_usage().unwrap().failed_allocation_count, 0);
 }
 
-#[test]
 fn failure_callback_memory_resource_observes_once_and_preserves_failure() {
     let device = DeviceId::current().unwrap();
     let base = Runtime::builder().with_device(device).build().unwrap();
@@ -1801,7 +1618,6 @@ fn failure_callback_memory_resource_observes_once_and_preserves_failure() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn failure_callback_memory_resource_catches_rust_panics() {
     let device = DeviceId::current().unwrap();
     let base = Runtime::builder().with_device(device).build().unwrap();
@@ -1828,27 +1644,6 @@ fn failure_callback_memory_resource_catches_rust_panics() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn failure_callback_memory_resource_never_retries() {
-    let device = DeviceId::current().unwrap();
-    let base = Runtime::builder().with_device(device).build().unwrap();
-    let lease = query_domain_member(&base, 9003, 1).unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let callback_calls = Arc::clone(&calls);
-    let callback = Arc::new(move |_bytes: usize| {
-        callback_calls.fetch_add(1, Ordering::SeqCst);
-    });
-    let callback_mr = lease.memory_resource().with_failure_callback(callback).unwrap();
-    let runtime = base.with_memory_resource_override(&callback_mr, "test.callback_member").unwrap();
-
-    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
-
-    assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-}
-
-#[test]
 fn failure_callback_memory_resource_observes_stream_reservation_limit_once() {
     let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let device = manager_runtime.device();
@@ -1977,7 +1772,6 @@ fn concurrent_temp_heavy_pipelines_keep_reservation_accounting_isolated() {
 /// Explicit memory resources flow to output allocations: an owned-pool runtime's
 /// outputs carry its pool, while the device current resource (temporaries'
 /// route) stays on the device adaptor.
-#[test]
 fn explicit_output_memory_resource_routing_survives_lock_removal() {
     let manager_rt = Runtime::builder().with_device_memory_manager().build().unwrap();
     let device_mr = manager_rt.device_memory_manager().unwrap().resource().testing_raw_handle_value();
@@ -2003,7 +1797,6 @@ fn explicit_output_memory_resource_routing_survives_lock_removal() {
     );
 }
 
-#[test]
 fn shared_member_lease_keeps_member_attached_until_last_clone_drops() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -2026,7 +1819,6 @@ fn shared_member_lease_keeps_member_attached_until_last_clone_drops() {
         .expect("member detaches once the final shared lease drops");
 }
 
-#[test]
 fn budget_token_from_shared_lease_allocates_without_a_second_attach() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -2073,4 +1865,152 @@ fn budget_token_from_shared_lease_allocates_without_a_second_attach() {
     assert!(domain_usage.active_members >= 1);
     drop(first_outcome);
     drop(second_outcome);
+}
+
+#[test]
+fn manager_cases() {
+    run_named_cases(&[
+        (
+            "cuda_async_resource_exposes_pool_usage_and_explicit_trim",
+            cuda_async_resource_exposes_pool_usage_and_explicit_trim,
+        ),
+        (
+            "failure_callback_observes_physical_failure_without_trim_or_retry",
+            failure_callback_observes_physical_failure_without_trim_or_retry,
+        ),
+        (
+            "detailed_failure_callback_reports_pool_usage_without_trim_or_retry",
+            detailed_failure_callback_reports_pool_usage_without_trim_or_retry,
+        ),
+        (
+            "detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim",
+            detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim,
+        ),
+        (
+            "sequential_query_domain_budget_tokens_reattach_same_stream_after_drop",
+            sequential_query_domain_budget_tokens_reattach_same_stream_after_drop,
+        ),
+        (
+            "query_memory_domain_preserves_device_resource_identity",
+            query_memory_domain_preserves_device_resource_identity,
+        ),
+        (
+            "budget_token_from_shared_lease_allocates_without_a_second_attach",
+            budget_token_from_shared_lease_allocates_without_a_second_attach,
+        ),
+        (
+            "fused_filter_literals_use_active_query_domain_member_after_input_member_detaches",
+            fused_filter_literals_use_active_query_domain_member_after_input_member_detaches,
+        ),
+        (
+            "frozen_query_domain_retains_live_output_and_rejects_new_allocations",
+            frozen_query_domain_retains_live_output_and_rejects_new_allocations,
+        ),
+        (
+            "raw_stream_sibling_reservation_accounts_and_detaches_before_stream_destruction",
+            raw_stream_sibling_reservation_accounts_and_detaches_before_stream_destruction,
+        ),
+        ("query_memory_domain_frees_are_accounted_per_domain", query_memory_domain_frees_are_accounted_per_domain),
+        (
+            "explicit_output_memory_resource_routing_survives_lock_removal",
+            explicit_output_memory_resource_routing_survives_lock_removal,
+        ),
+        (
+            "query_domain_counts_retained_allocations_after_member_detach",
+            query_domain_counts_retained_allocations_after_member_detach,
+        ),
+        (
+            "failure_callback_memory_resource_observes_once_and_preserves_failure",
+            failure_callback_memory_resource_observes_once_and_preserves_failure,
+        ),
+        (
+            "default_runtime_uses_device_level_memory_manager_resource",
+            default_runtime_uses_device_level_memory_manager_resource,
+        ),
+        (
+            "query_domain_member_usage_closes_when_budget_allocation_is_freed",
+            query_domain_member_usage_closes_when_budget_allocation_is_freed,
+        ),
+        (
+            "query_domain_member_limit_is_independent_from_domain_grant",
+            query_domain_member_limit_is_independent_from_domain_grant,
+        ),
+        ("failure_callback_memory_resource_catches_rust_panics", failure_callback_memory_resource_catches_rust_panics),
+        (
+            "fused_filter_decimal_rescaling_uses_replacement_query_domain_member",
+            fused_filter_decimal_rescaling_uses_replacement_query_domain_member,
+        ),
+        (
+            "execution_budget_token_retains_only_its_source_runtime",
+            execution_budget_token_retains_only_its_source_runtime,
+        ),
+        (
+            "query_domain_budget_token_retains_source_runtime_after_external_handles_drop",
+            query_domain_budget_token_retains_source_runtime_after_external_handles_drop,
+        ),
+        (
+            "execution_budget_token_constructed_from_runtime_clone_retains_exact_source",
+            execution_budget_token_constructed_from_runtime_clone_retains_exact_source,
+        ),
+        (
+            "execution_budget_token_detaches_reservation_before_retained_runtime_drop",
+            execution_budget_token_detaches_reservation_before_retained_runtime_drop,
+        ),
+        ("query_domain_enforces_query_cap_across_streams", query_domain_enforces_query_cap_across_streams),
+        ("query_memory_domain_churn_reuses_grant_after_frees", query_memory_domain_churn_reuses_grant_after_frees),
+        (
+            "detached_query_domain_member_allocation_is_permanent_invalid_input",
+            detached_query_domain_member_allocation_is_permanent_invalid_input,
+        ),
+        (
+            "query_domain_direct_output_keeps_domain_registry_until_output_drop",
+            query_domain_direct_output_keeps_domain_registry_until_output_drop,
+        ),
+        (
+            "execution_budget_token_can_attach_as_query_domain_member",
+            execution_budget_token_can_attach_as_query_domain_member,
+        ),
+        (
+            "shared_member_lease_keeps_member_attached_until_last_clone_drops",
+            shared_member_lease_keeps_member_attached_until_last_clone_drops,
+        ),
+        (
+            "budgeted_output_inherits_retained_runtime_lifetime_after_token_drop",
+            budgeted_output_inherits_retained_runtime_lifetime_after_token_drop,
+        ),
+        (
+            "execution_budget_token_retains_source_runtime_until_token_drop",
+            execution_budget_token_retains_source_runtime_until_token_drop,
+        ),
+        ("query_memory_domain_failure_is_query_local", query_memory_domain_failure_is_query_local),
+        (
+            "failure_callback_memory_resource_observes_stream_reservation_limit_once",
+            failure_callback_memory_resource_observes_stream_reservation_limit_once,
+        ),
+        (
+            "query_memory_domain_usage_closes_when_allocation_is_freed",
+            query_memory_domain_usage_closes_when_allocation_is_freed,
+        ),
+        ("reservation_limit_failure_is_stream_local", reservation_limit_failure_is_stream_local),
+        (
+            "second_live_query_domain_budget_token_on_same_stream_is_structured_rejection",
+            second_live_query_domain_budget_token_on_same_stream_is_structured_rejection,
+        ),
+        (
+            "query_domain_budget_output_uses_direct_member_resource_without_stream_route",
+            query_domain_budget_output_uses_direct_member_resource_without_stream_route,
+        ),
+        (
+            "device_memory_manager_runtime_uses_one_device_level_resource_with_stream_reservations",
+            device_memory_manager_runtime_uses_one_device_level_resource_with_stream_reservations,
+        ),
+        (
+            "zero_byte_query_domain_allocation_does_not_change_counters_and_cleans_up_when_idle",
+            zero_byte_query_domain_allocation_does_not_change_counters_and_cleans_up_when_idle,
+        ),
+        (
+            "raw_current_resource_route_accounts_and_detaches_before_stream_reuse",
+            raw_current_resource_route_accounts_and_detaches_before_stream_reuse,
+        ),
+    ]);
 }

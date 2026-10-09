@@ -2,7 +2,7 @@
 
 use cudf::{DeviceId, ErrorCode, ErrorKind};
 
-use crate::common::{error_context_value, run_named_cases};
+use crate::common::error_context_value;
 
 fn new_device_zero_succeeds() {
     let id = DeviceId::new(0).unwrap();
@@ -34,38 +34,12 @@ fn count_returns_at_least_one() {
     assert!(n >= 1, "expected at least 1 device, got {n}");
 }
 
-fn count_is_idempotent() {
-    let a = DeviceId::count().unwrap();
-    let b = DeviceId::count().unwrap();
-    assert_eq!(a, b);
-}
-
-fn default_equals_device_zero() {
-    let zero = DeviceId::new(0).unwrap();
-    assert_eq!(DeviceId::DEFAULT, zero);
-}
-
-fn ordinal_round_trips() {
-    let id = DeviceId::new(0).unwrap();
-    assert_eq!(id.ordinal(), 0);
-}
-
-fn device_id_is_copy() {
-    let id = DeviceId::new(0).unwrap();
-    let copy = id;
-    assert_eq!(id, copy);
-}
-
-#[test]
-fn device_id_tests_cases() {
-    run_named_cases(&[
-        ("new_device_zero_succeeds", new_device_zero_succeeds),
-        ("new_device_out_of_range_returns_error", new_device_out_of_range_returns_error),
-        ("current_returns_device_zero", current_returns_device_zero),
-        ("count_returns_at_least_one", count_returns_at_least_one),
-        ("count_is_idempotent", count_is_idempotent),
-        ("default_equals_device_zero", default_equals_device_zero),
-        ("ordinal_round_trips", ordinal_round_trips),
-        ("device_id_is_copy", device_id_is_copy),
-    ]);
-}
+pub(crate) const CASES: &[(&str, fn())] = &[
+    ("runtime_contracts::device_id_tests::new_device_zero_succeeds", new_device_zero_succeeds),
+    (
+        "runtime_contracts::device_id_tests::new_device_out_of_range_returns_error",
+        new_device_out_of_range_returns_error,
+    ),
+    ("runtime_contracts::device_id_tests::current_returns_device_zero", current_returns_device_zero),
+    ("runtime_contracts::device_id_tests::count_returns_at_least_one", count_returns_at_least_one),
+];

@@ -1,6 +1,5 @@
 use super::*;
 
-#[test]
 fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-dynamic-filter");
@@ -61,9 +60,38 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn dynamic_filter_cases_policy_1_1() {
+    run_named_cases(&[
+        (
+            "bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source",
+            bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source,
+        ),
+        (
+            "bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_dynamic_filter_to_source_under_full_sort_probe",
+            bounded_native_query_applies_dynamic_filter_to_source_under_full_sort_probe,
+        ),
+        (
+            "bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame",
+            bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame,
+        ),
+        (
+            "bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks",
+            bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks,
+        ),
+        (
+            "bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_residual_equality_dynamic_filter_before_downstream_dimension_build",
+            bounded_native_query_applies_residual_equality_dynamic_filter_before_downstream_dimension_build,
+        ),
+        (
+            "bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_reader_filter_remains",
+            bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_reader_filter_remains,
+        ),
+    ]);
+}
+
 // A full sort between a dynamic-filter consumer source and its join probe
 // accepts only a resident frame, so the source cannot stay a deferred leaf.
-#[test]
 fn bounded_native_query_applies_dynamic_filter_to_source_under_full_sort_probe() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-dynamic-filter-sorted-probe");
@@ -133,7 +161,6 @@ fn bounded_native_query_applies_dynamic_filter_to_source_under_full_sort_probe()
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame() {
     let dir = unique_temp_dir("query-engine-bounded-shared-source-post-decode-dynamic-filter");
     let part_path = dir.join("part.parquet");
@@ -320,7 +347,6 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-batched-dynamic-reader-filter");
     let left_paths = [dir.join("lineitem-0.parquet"), dir.join("lineitem-1.parquet"), dir.join("lineitem-2.parquet")];
@@ -432,7 +458,6 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstream_dimension_build() {
     let dir = unique_temp_dir("query-engine-bounded-residual-equality-dynamic-filter");
     let sales_path = dir.join("catalog_sales.parquet");
@@ -733,7 +758,6 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_reader_filter_remains() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-deferred-small-in-list-reader-filter");
     let fact_path = dir.join("lineitem.parquet");
@@ -873,7 +897,6 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parquet_keyset() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-large-source-range-filter");
     let left_path = dir.join("lineitem.parquet");
@@ -982,6 +1005,19 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
 }
 
 #[test]
+fn dynamic_filter_cases_policy_1_2() {
+    run_named_cases(&[
+        ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parquet_keyset", bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parquet_keyset),
+        ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_sources", bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_sources),
+        ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_predicate_after_probe_source_decode", bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_predicate_after_probe_source_decode),
+        ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source", bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source),
+        ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe", bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe),
+        ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe_filter", bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe_filter),
+        ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_filter_dynamic_filter_through_projection_alias", bounded_native_query_applies_filter_dynamic_filter_through_projection_alias),
+    ]);
+}
+
+#[test]
 fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_source() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-large-dimension-filter-skip");
     let left_path = dir.join("lineitem.parquet");
@@ -1067,7 +1103,6 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_sources() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-large-filter-mixed-source-policy");
     let small_path = dir.join("small_probe.parquet");
@@ -1176,127 +1211,6 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_probe_source_decode() {
-    let dir = unique_temp_dir("query-engine-bounded-root-hash-join-source-small-in-list-reader-predicate");
-    let left_path = dir.join("lineitem.parquet");
-    let left_schema = write_dynamic_filter_probe_parquet(&left_path);
-    let right_schema = Arc::new(Schema::new(vec![Field::new("order_id", DataType::Int32, false)]));
-    let right_batch =
-        RecordBatch::try_new(Arc::clone(&right_schema), vec![Arc::new(Int32Array::from(vec![1, 3]))]).unwrap();
-    let output_schema = Arc::new(Schema::new(vec![
-        Field::new("order_id", DataType::Int32, false),
-        Field::new("qty", DataType::Int32, false),
-    ]));
-
-    let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(&left_path)
-                .with_file_size_bytes(fs::metadata(&left_path).unwrap().len())
-                .with_row_group_rows(vec![2, 2, 2]),
-        ],
-        Arc::clone(&left_schema),
-        vec!["order_id".to_string(), "qty".to_string()],
-    )));
-    let right =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_keys", Arc::clone(&right_schema))));
-    let join = builder
-        .add_join(
-            left,
-            right,
-            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-                .with_output_projection(vec![
-                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                ])
-                .with_build_side(JoinSide::Right),
-            Arc::clone(&output_schema),
-        )
-        .unwrap();
-    let plan = builder.finish_with_host_sink(join).unwrap();
-    let optimizer_options = NativeOptimizerOptions {
-        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
-        ..NativeOptimizerOptions::default()
-    };
-    let optimized = optimize_query_plan(
-        plan,
-        &optimizer_options,
-        rapids_analysis_context(PlanningPolicy::default()),
-        local_dimension_pruning_resolver(),
-    )
-    .unwrap();
-    assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    let context = backend_context_with_grant(1024 * 1024);
-
-    let admitted = context.admit_plan(&optimized.plan).unwrap();
-    let runtime = Arc::new(admitted.runtime().unwrap());
-    let mut gpu_inputs = GpuResidentInputMap::new();
-    gpu_inputs.insert(
-        "right_keys".to_string(),
-        GpuResultHandle::new(
-            &admitted,
-            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
-            Arc::clone(&right_schema),
-        )
-        .unwrap(),
-    );
-    {
-        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
-        let output = result.output().as_host_arrow().unwrap();
-        let metrics = result.metrics();
-        assert_eq!(output.num_rows(), 4);
-        assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 1, 3, 3]);
-        assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
-        assert_eq!(metrics.dynamic_filter_produced_count, 1);
-        assert_eq!(metrics.dynamic_filter_applied_count, 1);
-        // The build keyset {1, 3} coalesces to runs [1,1] and [3,3]; the probe's
-        // [2,2] row group sits in the gap and is pruned set-aware (a single [1,3]
-        // range would have kept it). Only the [1,1] and [3,3] row groups reach the
-        // reader predicate, so it evaluates 4 rows that all match and filters none;
-        // the row-group prune subsumes the per-row filtering the range path deferred.
-        assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
-        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 4);
-        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 4);
-        assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
-        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-            row.event == "produced" && row.filter_kind == "small_in_list" && row.payload_value_count == Some(2)
-        }));
-        assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-            row.event == "applied"
-                && row.consumer_kind == "local_parquet_source"
-                && row.filter_kind == "small_in_list"
-                && row.selected_row_groups_before == Some(3)
-                && row.selected_row_groups_after == Some(2)
-        }));
-        assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-            row.event == "applied_post_decode"
-                && row.consumer_kind == "local_parquet_source"
-                && row.filter_kind == "small_in_list"
-        }));
-        let reader_rows = metrics
-            .dynamic_filter_runtime_rows
-            .iter()
-            .filter(|row| {
-                row.event == "reader_predicate_rows"
-                    && row.consumer_kind == "local_parquet_source"
-                    && row.filter_kind == "small_in_list"
-                    && row.payload_value_count == Some(2)
-            })
-            .collect::<Vec<_>>();
-        assert!(!reader_rows.is_empty());
-        assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_before).sum::<u64>(), 4);
-        assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_after).sum::<u64>(), 4);
-        assert_eq!(reader_rows.iter().map(|row| row.reader_predicate_rows_filtered).sum::<u64>(), 0);
-    }
-    drop(gpu_inputs);
-    drop(runtime);
-    admitted.finish();
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_predicate_after_probe_source_decode() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-tpcds-small-in-list-reader-predicate");
     let left_path = dir.join("lineitem.parquet");
@@ -1423,7 +1337,6 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-empty-dynamic-filter");
     let left_path = dir.join("lineitem.parquet");
@@ -1488,7 +1401,6 @@ fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe() {
     let fixture_runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-resident-probe-dynamic-filter");
@@ -1577,7 +1489,6 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe_filter() {
     let fixture_runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-resident-probe-filter-dynamic-filter");
@@ -1671,7 +1582,6 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias() {
     let fixture_runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-projected-filter-dynamic-filter");

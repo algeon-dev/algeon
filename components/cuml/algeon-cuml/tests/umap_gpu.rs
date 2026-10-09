@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use cudf::{DenseMatrixLayout, Runtime, core::types::TypeId};
+use cudf::{DenseMatrixLayout, Runtime, core::types::TypeId, testing::run_named_cases};
 use cuml::{CumlResources, DeviceMatrix, ErrorCode, MatrixLayout, OwnedFloat32Matrix, UmapModel, UmapParams};
 
 unsafe extern "C" {
@@ -27,7 +27,6 @@ fn cuda_memcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: i32) ->
     status
 }
 
-#[test]
 fn fit_and_transform_preserve_the_two_dimensional_embedding_shape() {
     let runtime = Arc::new(Runtime::builder().build().expect("GPU runtime"));
     let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
@@ -115,48 +114,59 @@ fn assert_parameters_rejected(parameters: UmapParams) {
     assert_eq!(error.code(), ErrorCode::ForeignInvalidArgument);
 }
 
-#[test]
 fn rejects_zero_neighbors() {
     assert_parameters_rejected(UmapParams { n_neighbors: 0, ..UmapParams::default() });
 }
 
-#[test]
 fn rejects_neighbor_count_equal_to_training_rows() {
     assert_parameters_rejected(UmapParams { n_neighbors: 8, ..UmapParams::default() });
 }
 
-#[test]
 fn rejects_zero_components() {
     assert_parameters_rejected(UmapParams { n_components: 0, ..UmapParams::default() });
 }
 
-#[test]
 fn rejects_epoch_count_outside_native_range() {
     assert_parameters_rejected(UmapParams { n_epochs: usize::MAX, ..UmapParams::default() });
 }
 
-#[test]
 fn rejects_non_finite_learning_rate() {
     assert_parameters_rejected(UmapParams { learning_rate: f32::NAN, ..UmapParams::default() });
 }
 
-#[test]
 fn rejects_negative_min_dist() {
     assert_parameters_rejected(UmapParams { min_dist: -0.1, ..UmapParams::default() });
 }
 
-#[test]
 fn rejects_zero_spread() {
     assert_parameters_rejected(UmapParams { spread: 0.0, ..UmapParams::default() });
 }
 
-#[test]
 fn rejects_set_op_mix_ratio_above_one() {
     assert_parameters_rejected(UmapParams { set_op_mix_ratio: 1.1, ..UmapParams::default() });
 }
 
-#[test]
 fn rejects_nonpositive_optimizer_parameters() {
     assert_parameters_rejected(UmapParams { negative_sample_rate: 0, ..UmapParams::default() });
     assert_parameters_rejected(UmapParams { transform_queue_size: 0.0, ..UmapParams::default() });
+}
+
+#[test]
+fn umap_cases() {
+    let cases: &[(&str, fn())] = &[
+        (
+            "fit_and_transform_preserve_the_two_dimensional_embedding_shape",
+            fit_and_transform_preserve_the_two_dimensional_embedding_shape,
+        ),
+        ("rejects_zero_neighbors", rejects_zero_neighbors),
+        ("rejects_neighbor_count_equal_to_training_rows", rejects_neighbor_count_equal_to_training_rows),
+        ("rejects_zero_components", rejects_zero_components),
+        ("rejects_epoch_count_outside_native_range", rejects_epoch_count_outside_native_range),
+        ("rejects_non_finite_learning_rate", rejects_non_finite_learning_rate),
+        ("rejects_negative_min_dist", rejects_negative_min_dist),
+        ("rejects_zero_spread", rejects_zero_spread),
+        ("rejects_set_op_mix_ratio_above_one", rejects_set_op_mix_ratio_above_one),
+        ("rejects_nonpositive_optimizer_parameters", rejects_nonpositive_optimizer_parameters),
+    ];
+    run_named_cases(cases);
 }

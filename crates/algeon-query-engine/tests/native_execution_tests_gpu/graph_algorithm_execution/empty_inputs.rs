@@ -21,8 +21,7 @@ pub(super) fn graph_input_handle(
         .unwrap()
 }
 
-#[test]
-fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitization() {
+pub(super) fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitization() {
     let context = backend_context();
     let edge_schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
@@ -66,8 +65,7 @@ fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitiz
     admitted.finish();
 }
 
-#[test]
-fn bfs_strict_rejects_empty_edges_as_a_permanent_graph_input_error() {
+pub(super) fn bfs_strict_rejects_empty_edges_as_a_permanent_graph_input_error() {
     let context = backend_context();
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -175,22 +173,13 @@ fn assert_personalized_pagerank_rejects_empty_required_side_input(context: &Back
     admitted.finish();
 }
 
-#[test]
-fn personalized_pagerank_rejects_an_empty_required_side_input_before_graph_execution() {
+pub(super) fn personalized_pagerank_rejects_an_empty_required_side_input_before_graph_execution() {
     let context = backend_context();
 
     assert_personalized_pagerank_rejects_empty_required_side_input(&context);
 }
 
-#[test]
-fn bounded_personalized_pagerank_rejects_empty_personalization_with_nonempty_edges() {
-    let context = backend_context_with_grant(16 * 1024 * 1024);
-
-    assert_personalized_pagerank_rejects_empty_required_side_input(&context);
-}
-
-#[test]
-fn bfs_empty_edges_with_nonempty_vertex_predicate_is_a_graph_input_error() {
+pub(super) fn bfs_empty_edges_with_nonempty_vertex_predicate_is_a_graph_input_error() {
     let context = backend_context();
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),

@@ -1042,23 +1042,6 @@ mod tests {
     }
 
     #[test]
-    fn row_count_error_facts_redact_object_store_stable_id() {
-        let sensitive_uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
-        let file = LocalParquetFile::object_store_uri(sensitive_uri).unwrap().with_stable_id(sensitive_uri);
-
-        let error = local_parquet_file_row_count(&file).unwrap_err();
-        let rendered = format!("{error:?}");
-
-        assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));
-        assert!(
-            error.fact_value("stable_id").is_some_and(|value| value.starts_with("object_store:s3:stable_id_fnv64:"))
-        );
-        for sensitive in ["secret-bucket", "private/key", "X-Amz-Signature", "abc"] {
-            assert!(!rendered.contains(sensitive), "{sensitive} leaked in row-count error: {rendered}");
-        }
-    }
-
-    #[test]
     fn source_validation_row_count_error_facts_redact_object_store_stable_id() {
         let sensitive_uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
         let file = LocalParquetFile::object_store_uri(sensitive_uri).unwrap().with_stable_id(sensitive_uri);

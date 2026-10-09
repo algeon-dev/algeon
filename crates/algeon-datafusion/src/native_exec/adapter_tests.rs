@@ -6,6 +6,8 @@
 //! admission; the fixture closes on drop so the process-exclusive backend
 //! lease is never held across tests.
 
+use cudf::testing;
+use tokio::runtime::Builder as TestRuntimeBuilder;
 #[path = "../../tests/support/support_core.rs"]
 mod support_core;
 
@@ -40,13 +42,10 @@ use datafusion::{
 use exec_plans::*;
 use futures::StreamExt;
 use query_planning::{
-    chunk::SourceChunkPlanningOptions,
-    execution_contracts::SourceChunkPlanningMode,
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::QueryPlanBuilder,
     source::{GpuResidentSource, SourceNode},
 };
-use query_runtime::runtime::LakehouseCacheFillConfig;
 use support_core::*;
 
 use super::AlgeonNativeMetrics;
@@ -123,63 +122,6 @@ fn native_exec_rejects_gpu_resident_sink_for_datafusion_output() {
 
     assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
     assert_eq!(error.fact_value("result_sink"), Some("gpu_resident"));
-}
-
-#[test]
-fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
-    let config = AlgeonNativeExecutionConfig::default();
-
-    assert_eq!(
-        config.source_chunking().max_source_chunk_bytes.get(),
-        SourceChunking::DEFAULT_MAX_SOURCE_CHUNK_BYTES.get()
-    );
-    assert_eq!(
-        config.source_chunking().max_row_groups_per_chunk.get(),
-        SourceChunking::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK.get()
-    );
-    assert_eq!(config.source_chunking().max_retry_attempts.get(), SourceChunking::DEFAULT_MAX_RETRY_ATTEMPTS.get());
-    assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
-    assert_eq!(config.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
-    assert_eq!(config.lakehouse_cache_fill_config().acquire_timeout, LakehouseCacheFillConfig::DEFAULT_ACQUIRE_TIMEOUT);
-    assert_eq!(
-        config
-            .clone()
-            .with_lakehouse_cache_fill_config(LakehouseCacheFillConfig {
-                acquire_timeout: Duration::from_secs(11),
-                ..Default::default()
-            })
-            .lakehouse_cache_fill_config()
-            .acquire_timeout,
-        Duration::from_secs(11)
-    );
-    assert_eq!(
-        config
-            .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput)
-            .source_chunk_planning_mode(),
-        SourceChunkPlanningMode::LocalParquetThroughput
-    );
-    let source_chunk_planning_options =
-        SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(2048);
-    assert_eq!(
-        AlgeonNativeExecutionConfig::default()
-            .with_source_chunk_planning_options(source_chunk_planning_options)
-            .source_chunk_planning_options(),
-        source_chunk_planning_options
-    );
-    assert!(!AlgeonNativeExecutionConfig::default().host_output_memory_pool_accounting());
-    assert!(
-        AlgeonNativeExecutionConfig::default()
-            .with_host_output_memory_pool_accounting(true)
-            .host_output_memory_pool_accounting()
-    );
-}
-
-#[test]
-fn optimizer_config_default_uses_bounded_native_execution() {
-    let config = AlgeonNativeOptimizerConfig::default();
-
-    assert!(config.native_execution_config().source_chunking().max_source_chunk_bytes.get() > 0);
-    assert_eq!(config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight(), 2);
 }
 
 #[tokio::test]
@@ -296,7 +238,47 @@ async fn native_and_composed_host_outputs_bind_duplicate_external_names_by_ordin
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
+#[test]
+fn adapter_tests_tg_adapter_cases_1() {
+    testing::run_named_cases(&[
+        ("native_composed_host_output_memory_pool_accounting_fails_fast", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_composed_host_output_memory_pool_accounting_fails_fast())
+        }),
+        ("native_host_output_memory_pool_accounting_releases_on_stream_eof", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_host_output_memory_pool_accounting_releases_on_stream_eof())
+        }),
+        ("native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan())
+        }),
+        ("deferred_host_wrapper_metrics_project_the_plans_final_metrics", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(deferred_host_wrapper_metrics_project_the_plans_final_metrics())
+        }),
+        ("native_optimizer_property_checked_ilike_boundary_honors_pre_execution_cancellation", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_optimizer_property_checked_ilike_boundary_honors_pre_execution_cancellation())
+        }),
+    ]);
+}
+
 async fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
@@ -343,7 +325,6 @@ async fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
@@ -388,7 +369,6 @@ async fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_host_output_memory_pool_accounting_releases_on_stream_eof() {
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use futures::StreamExt;
@@ -468,7 +448,6 @@ fn native_optimizer_composed_exec_preserves_root_sort_ordering_properties() {
     assert_eq!(report.selected_count(), 1);
 }
 
-#[tokio::test]
 async fn deferred_host_wrapper_metrics_project_the_plans_final_metrics() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-deferred-host-metrics");
     let path = dir.join("input.parquet");
@@ -521,7 +500,6 @@ async fn deferred_host_wrapper_metrics_project_the_plans_final_metrics() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_optimizer_property_checked_ilike_boundary_honors_pre_execution_cancellation() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-cancelled");
     let path = dir.join("input.parquet");

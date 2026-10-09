@@ -1,6 +1,6 @@
-use cudf::DataFrame as CudfDataFrame;
 #[cfg(feature = "cugraph")]
 use cudf::testing::device_copy::device_to_device_copy_count_for_test;
+use cudf::{DataFrame as CudfDataFrame, testing::run_named_cases};
 #[cfg(feature = "cugraph")]
 use query_planning::plan::{
     GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBetweennessSeeds,
@@ -32,7 +32,6 @@ use crate::{
     rapids_backend::rapids_analysis_context,
 };
 
-#[test]
 fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-root-hash-join");
@@ -70,6 +69,11 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
     };
     let compiled_metrics = compiled_metrics_recorder.snapshot();
     let production_result = execute_query_plan(&context, &legacy_plan).expect("bounded root join should execute");
+    let production_metrics = production_result.metrics();
+    assert_eq!(production_metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(production_metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    assert_eq!(production_metrics.compiled_pipeline_host_arrow_sinks, 1);
+    assert_eq!(production_metrics.hash_join_build_count, 1);
     let production_batch = production_result.output().as_host_arrow().expect("production output should be host Arrow");
 
     assert_eq!(
@@ -93,7 +97,6 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
     assert!(compiled_metrics.hash_join_hash_table_bytes > 0);
 }
 
-#[test]
 fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-shared-source");
@@ -210,7 +213,6 @@ fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission(
     assert_eq!(int32_int64_pairs_sorted(batch, 0, 1), vec![(Some(1), Some(15)), (Some(2), Some(20))]);
 }
 
-#[test]
 fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
     // Join → Sort → Limit → Filter is decided by the Limit/Unary task contracts,
     // not by the retired post-limit projection allowlist: the filter stays above
@@ -283,7 +285,6 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
     assert_eq!(int32_values(&batch, 1), vec![Some(400)]);
 }
 
-#[test]
 fn execute_query_plan_runs_independent_union_branches_through_unified_admission() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
@@ -339,7 +340,6 @@ fn execute_query_plan_runs_independent_union_branches_through_unified_admission(
 /// Identical UNION ALL branches intern to one producer that the union reads
 /// through two inputs. Both reads take the whole frame, so each row appears
 /// twice.
-#[test]
 fn execute_query_plan_runs_a_union_that_reads_one_producer_twice() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
@@ -376,7 +376,6 @@ fn execute_query_plan_runs_a_union_that_reads_one_producer_twice() {
     }
 }
 
-#[test]
 fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
     // ORDER BY right_value DESC LIMIT 1 OFFSET 1 over the join keeps (2, 200):
     // the fused top-k applies skip+fetch, and the limit pass-through drops the
@@ -444,7 +443,6 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
     assert_eq!(int32_values(&batch, 1), vec![Some(200)]);
 }
 
-#[test]
 fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-aggregate-join-input-stream");
@@ -527,7 +525,6 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
     );
 }
 
-#[test]
 fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggregate() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-shared-source-aggregate");
@@ -629,7 +626,6 @@ fn source_row_groups_read(plan: &QueryPlan, metrics: &QueryMetrics, path: &Path)
         .sum()
 }
 
-#[test]
 fn compiled_gpu_executor_reads_a_filtered_source_shared_by_two_joins_once() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-shared-filtered-source");
@@ -662,7 +658,6 @@ fn compiled_gpu_executor_reads_a_filtered_source_shared_by_two_joins_once() {
     );
 }
 
-#[test]
 fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_compiled_pipeline() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let runtime = shared_runtime(runtime);
@@ -712,31 +707,35 @@ fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_co
 }
 
 #[test]
-fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
-    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("query-engine-compiled-root-join");
-    let left_path = dir.join("left.parquet");
-    let right_path = dir.join("right.parquet");
-    write_join_parquets(&left_path, &right_path);
-
-    let plan = root_join_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
-    let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
-    let context = bounded_context(shared_runtime(runtime), &plan);
-
-    let result = execute_query_plan(&context, &plan).expect("root join should execute through compiled scheduler");
-    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
-    let metrics = result.metrics();
-
-    assert_eq!(int32_values(batch, 0), vec![Some(2), Some(4)]);
-    assert_eq!(int32_values(batch, 1), vec![Some(200), Some(400)]);
-    assert_eq!(metrics.compiled_pipeline_attempts, 1);
-    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
-    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
-    assert_eq!(metrics.hash_join_build_count, 1);
+fn gpu_execution_cases_1() {
+    run_named_cases(&[
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_compiled_pipeline",
+            execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_compiled_pipeline,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source",
+            compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_reservations",
+            execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_reservations,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline",
+            execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_runs_join_sort_limit_filter_through_admission",
+            execute_query_plan_runs_join_sort_limit_filter_through_admission,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::compiled_gpu_executor_reads_a_filtered_source_shared_by_two_joins_once",
+            compiled_gpu_executor_reads_a_filtered_source_shared_by_two_joins_once,
+        ),
+    ]);
 }
 
-#[test]
 fn observed_compiled_root_join_records_registered_tasks_without_reservation_events() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-observed-compiled-root");
@@ -836,7 +835,6 @@ fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipelin
     );
 }
 
-#[test]
 fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_pipeline() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-unary-root-join");
@@ -866,6 +864,36 @@ fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_p
 }
 
 #[test]
+fn gpu_execution_cases_2() {
+    run_named_cases(&[
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_pipeline",
+            execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_pipeline,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline",
+            execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::compiled_gpu_executor_runs_root_hash_join_build_probe_materialize",
+            compiled_gpu_executor_runs_root_hash_join_build_probe_materialize,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggregate",
+            compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggregate,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::compiled_gpu_executor_runs_shared_source_hash_join_without_rereading",
+            compiled_gpu_executor_runs_shared_source_hash_join_without_rereading,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source",
+            execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source,
+        ),
+    ]);
+}
+
+#[test]
 fn execute_query_plan_routes_aggregate_sort_limit_through_compiled_pipeline() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-fallback");
@@ -887,7 +915,6 @@ fn execute_query_plan_routes_aggregate_sort_limit_through_compiled_pipeline() {
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
 }
 
-#[test]
 fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-gpu-sink");
@@ -967,7 +994,6 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     assert_eq!(int32_values(owned.as_host_arrow().unwrap(), 1), vec![Some(200), Some(400)]);
 }
 
-#[test]
 fn compiled_gpu_executor_retires_owned_input_after_last_source_read_and_preserves_aliases() {
     struct InputRetirementExecutor<'a> {
         inner: CompiledGpuTaskExecutor<'a>,
@@ -1245,8 +1271,7 @@ fn single_sink_output_pipeline(
     )
 }
 
-#[test]
-fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline() {
+fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline_case() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-single-join-aggregate");
     let customers_path = dir.join("customers.parquet");
@@ -1277,7 +1302,11 @@ fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline(
     assert_compiled_partial_aggregate_uses_work_reservation_transfer(metrics);
 }
 
-#[test]
+fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline() {
+    execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline_case();
+    execute_query_plan_routes_single_join_post_root_graph_through_compiled_pipeline();
+}
+
 fn execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_reservations() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-string-group-aggregate");
@@ -1330,39 +1359,6 @@ fn assert_compiled_final_merge_uses_partitioned_strategy(metrics: &QueryMetrics)
     );
 }
 
-#[test]
-fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pipeline() {
-    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("query-engine-compiled-root-sort-limit");
-    let left_path = dir.join("left.parquet");
-    let right_path = dir.join("right.parquet");
-    write_join_parquets(&left_path, &right_path);
-    let plan = root_join_sort_limit_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
-    let pipeline = compile_pipeline(&plan, &analysis).expect("root join final-sort/limit plan should compile");
-    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 0);
-    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
-    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
-    assert_eq!(
-        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
-        CompiledBoundedPipelineSupport::Supported
-    );
-    let context = bounded_context(shared_runtime(runtime), &plan);
-
-    let result = execute_query_plan(&context, &plan).expect("final-sort/limit graph should execute");
-    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
-    let metrics = result.metrics();
-
-    assert_eq!(batch.num_rows(), 1);
-    assert_eq!(int32_values(batch, 0), vec![Some(4)]);
-    assert_eq!(int32_values(batch, 1), vec![Some(400)]);
-    assert_eq!(metrics.compiled_pipeline_attempts, 1);
-    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
-    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
-    assert_eq!(metrics.hash_join_build_count, 1);
-}
-
-#[test]
 fn execute_query_plan_routes_single_join_post_root_graph_through_compiled_pipeline() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-single-join-post-root");
@@ -1424,7 +1420,6 @@ fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() 
     assert_eq!(metrics.hash_join_build_count, 2);
 }
 
-#[test]
 fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-residual-stream");
@@ -1484,6 +1479,39 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
 }
 
 #[test]
+fn gpu_execution_cases_3() {
+    run_named_cases(&[
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_streams_residual_one_shot_probe_from_prior_join",
+            execute_query_plan_streams_residual_one_shot_probe_from_prior_join,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_applies_limit_offset_once_through_fused_topk",
+            execute_query_plan_applies_limit_offset_once_through_fused_topk,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::observed_compiled_root_join_records_registered_tasks_without_reservation_events",
+            observed_compiled_root_join_records_registered_tasks_without_reservation_events,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_streams_residual_one_shot_right_probe_with_left_build",
+            execute_query_plan_streams_residual_one_shot_right_probe_with_left_build,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_runs_a_union_that_reads_one_producer_twice",
+            execute_query_plan_runs_a_union_that_reads_one_producer_twice,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::execute_query_plan_runs_independent_union_branches_through_unified_admission",
+            execute_query_plan_runs_independent_union_branches_through_unified_admission,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::compiled_gpu_executor_retires_owned_input_after_last_source_read_and_preserves_aliases",
+            compiled_gpu_executor_retires_owned_input_after_last_source_read_and_preserves_aliases,
+        ),
+    ]);
+}
+
 fn execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-residual-leaf-stream");
@@ -1558,7 +1586,6 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source() {
     assert_eq!(metrics.one_shot_join_count, 0);
 }
 
-#[test]
 fn execute_query_plan_streams_residual_one_shot_right_probe_with_left_build() {
     let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-residual-left-build-stream");

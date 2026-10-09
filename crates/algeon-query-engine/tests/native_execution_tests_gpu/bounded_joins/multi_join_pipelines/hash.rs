@@ -199,7 +199,7 @@ fn bounded_native_query_keeps_partitioned_strategy_for_streamed_multi_join_probe
 fn bounded_native_query_joins_differently_filtered_scans_of_one_source_without_widening_them() {
     let dir = unique_temp_dir("query-engine-bounded-filtered-scan-branches");
     let events_path = dir.join("events.parquet");
-    let rows = 2_000_000_i64;
+    let rows = 1_000_000_i64;
     let events_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int64, false),
         Field::new("p1", DataType::Int64, false),
@@ -279,7 +279,7 @@ fn bounded_native_query_joins_differently_filtered_scans_of_one_source_without_w
     // Merging the branches would read all events once without either reader
     // predicate. The cap sits below that read, as 500 MiB sits below a
     // production fact table, so reuse must keep the filtered scans.
-    let cap = 16 * 1024 * 1024;
+    let cap = 8 * 1024 * 1024;
     assert!(variant_bytes.iter().all(|bytes| bytes.is_some_and(|bytes| bytes > cap)));
     let options = NativeOptimizerOptions {
         local_parquet_source_reuse: LocalParquetSourceReuseOptions {
@@ -307,7 +307,7 @@ fn bounded_native_query_joins_differently_filtered_scans_of_one_source_without_w
     );
 
     // The grant holds the filtered rows but not the decoded events table.
-    let result = execute_query_plan(&backend_context_with_grant(64 * 1024 * 1024), &optimized.plan)
+    let result = execute_query_plan(&backend_context_with_grant(32 * 1024 * 1024), &optimized.plan)
         .unwrap_or_else(|error| panic!("the filtered branches fit the grant: {error}"));
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

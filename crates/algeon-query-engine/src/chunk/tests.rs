@@ -142,19 +142,6 @@ fn adaptive_source_targets_follow_immutable_grant_and_explicit_targets() {
 }
 
 #[test]
-fn conservative_source_chunk_planning_preserves_configured_row_group_cap() {
-    let source = local_source();
-    let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
-        &source,
-        bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
-        SourceChunkPlanningMode::Conservative,
-    );
-
-    assert_eq!(policy.max_row_groups_per_chunk, 1);
-    assert_eq!(policy.max_source_chunk_bytes, Some(64 * 1024 * 1024));
-}
-
-#[test]
 fn local_throughput_source_chunk_planning_raises_row_group_cap_for_large_local_kvikio_source() {
     let source = local_source();
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
@@ -366,7 +353,6 @@ fn remote_direct_decimal_reader_predicate_rejects_supplied_footer_type_mismatch(
     assert!(!error.to_string().contains("s3://bucket"));
 }
 
-#[test]
 fn local_throughput_source_chunk_planning_keeps_small_budget_conservative() {
     let source = local_source();
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
@@ -394,7 +380,6 @@ fn local_throughput_source_chunk_planning_requires_represented_source_read_bytes
     assert!(plan.chunks.iter().all(|chunk| chunk.row_group_count() == 1));
 }
 
-#[test]
 fn local_throughput_source_chunk_planning_rejects_object_store_sources() {
     let object_store = source_from_file(
         LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet").expect("valid s3 object URI"),
@@ -510,8 +495,7 @@ fn chunk_planning_prefers_footer_row_counts_over_whole_file_synthetic_count() {
     fs::remove_file(path).unwrap();
 }
 
-#[test]
-fn local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sources() {
+fn local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sources_case() {
     let mut partitioned_file = local_source_file();
     partitioned_file.partition_values = vec![LiteralValue::Int64(1)];
     let partitioned = source_from_file(partitioned_file);
@@ -537,6 +521,13 @@ fn local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sou
         .max_row_groups_per_chunk,
         1
     );
+}
+
+#[test]
+fn local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sources() {
+    local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sources_case();
+    local_throughput_source_chunk_planning_keeps_small_budget_conservative();
+    local_throughput_source_chunk_planning_rejects_object_store_sources();
 }
 
 #[test]

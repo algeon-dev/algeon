@@ -26,6 +26,7 @@ fn emit_runtime_metadata(paths: &[PathBuf]) {
 fn emit_native_include_metadata(paths: &[PathBuf]) {
     let joined = env::join_paths(paths).expect("native include search paths must be valid OS strings");
     println!("cargo:native-include-dirs={}", joined.to_string_lossy());
+    println!("cargo:rustc-env=CUGRAPH_SYS_NATIVE_INCLUDE_DIRS={}", joined.to_string_lossy());
     println!("cargo:metadata=native-include-dirs={}", joined.to_string_lossy());
 }
 

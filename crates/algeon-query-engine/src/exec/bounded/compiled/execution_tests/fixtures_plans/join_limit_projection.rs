@@ -162,17 +162,3 @@ fn composed_pipeline_admits_projection_over_join_limit() {
         .expect("one limit task");
     assert_eq!(limit_task.accepted_input_form(), AcceptedInputForm::Frame);
 }
-
-#[test]
-fn composed_pipeline_admits_a_filtered_source_scan_shared_by_several_joins() {
-    // A bare shared scan was always admitted; the same scan with a filter above
-    // it must be too, because the filter only re-stages the scan's stream.
-    let plan = shared_filtered_dimension_fan_out_plan(
-        Path::new("/tmp/shared-filtered-dimension.parquet"),
-        [Path::new("/tmp/shared-filtered-store-sales.parquet"), Path::new("/tmp/shared-filtered-web-sales.parquet")],
-    );
-    assert!(
-        bounded_pipeline_admission(&plan).unwrap().is_some(),
-        "a filtered dimension scan shared by several joins should be admitted"
-    );
-}

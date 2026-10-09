@@ -12,7 +12,7 @@ use cudf::{
         gds_driver_available,
         parquet::{ParquetTableWriteOptions, write_parquet},
     },
-    testing::prelude::*,
+    testing::{prelude::*, run_named_cases},
 };
 use cudf_sys::test_support::{
     CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME, CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT,
@@ -32,7 +32,6 @@ impl Drop for MetadataFaultReset {
     }
 }
 
-#[test]
 fn test_read_parquet_returns_dataframe_with_schema() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_read.parquet");
@@ -65,7 +64,6 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     assert_eq!(col.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
-#[test]
 fn test_read_parquet_with_options() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_opts.parquet");
@@ -89,7 +87,6 @@ fn test_read_parquet_with_options() {
     assert_eq!(col.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn test_read_parquet_from_host_buffer_uses_borrowed_bytes_without_retaining_them() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_host_buffer.parquet");
@@ -131,7 +128,6 @@ fn test_read_parquet_with_options_accepts_filebytes_source() {
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
 }
 
-#[test]
 fn test_gds_driver_available_probe_returns_structured_result() {
     if let Err(err) = gds_driver_available() {
         assert_eq!(err.operation(), "io::gds_driver_available");
@@ -139,7 +135,6 @@ fn test_gds_driver_available_probe_returns_structured_result() {
     }
 }
 
-#[test]
 fn test_read_parquet_with_options_rejects_empty_projection_as_invalid_input() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_empty_projection.parquet");
@@ -192,7 +187,6 @@ fn test_write_parquet_preserves_schema() {
     assert_eq!(col.to_vec_strict::<f64>().unwrap(), vec![1.5, 2.5]);
 }
 
-#[test]
 fn test_roundtrip_create_write_read() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("roundtrip.parquet");
@@ -238,7 +232,6 @@ fn test_dataframe_read_parquet_nonexistent_file_reports_not_found() {
     assert_eq!(err.kind(), ErrorKind::DependencyFailure);
 }
 
-#[test]
 fn test_dataframe_read_parquet_rejects_missing_schema_metadata_for_nonempty_table() {
     let _reset = MetadataFaultReset;
     let dir = TempDir::new().unwrap();
@@ -271,7 +264,6 @@ fn test_dataframe_read_parquet_rejects_missing_schema_metadata_for_nonempty_tabl
     );
 }
 
-#[test]
 fn test_dataframe_read_parquet_metadata_invalid_utf8_name_uses_canonical_fault_context() {
     let _reset = MetadataFaultReset;
     let dir = TempDir::new().unwrap();
@@ -303,4 +295,33 @@ fn test_dataframe_read_parquet_metadata_invalid_utf8_name_uses_canonical_fault_c
     assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name"));
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_utf8"));
     assert_eq!(error_context_value(&err, "name_index").as_deref(), None);
+}
+
+#[test]
+fn io_tests_cases() {
+    run_named_cases(&[
+        (
+            "test_gds_driver_available_probe_returns_structured_result",
+            test_gds_driver_available_probe_returns_structured_result,
+        ),
+        (
+            "test_read_parquet_with_options_rejects_empty_projection_as_invalid_input",
+            test_read_parquet_with_options_rejects_empty_projection_as_invalid_input,
+        ),
+        ("test_roundtrip_create_write_read", test_roundtrip_create_write_read),
+        (
+            "test_dataframe_read_parquet_rejects_missing_schema_metadata_for_nonempty_table",
+            test_dataframe_read_parquet_rejects_missing_schema_metadata_for_nonempty_table,
+        ),
+        (
+            "test_dataframe_read_parquet_metadata_invalid_utf8_name_uses_canonical_fault_context",
+            test_dataframe_read_parquet_metadata_invalid_utf8_name_uses_canonical_fault_context,
+        ),
+        ("test_read_parquet_returns_dataframe_with_schema", test_read_parquet_returns_dataframe_with_schema),
+        ("test_read_parquet_with_options", test_read_parquet_with_options),
+        (
+            "test_read_parquet_from_host_buffer_uses_borrowed_bytes_without_retaining_them",
+            test_read_parquet_from_host_buffer_uses_borrowed_bytes_without_retaining_them,
+        ),
+    ]);
 }

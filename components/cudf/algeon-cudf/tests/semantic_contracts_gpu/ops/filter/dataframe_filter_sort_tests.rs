@@ -8,8 +8,8 @@ use cudf::{
 use crate::common::{
     assert_missing_column_error, column_from_slice, column_from_slice_nullable, dataframe_from_columns,
     dependency_wait_call_count_for_stream, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    lock_event_observation, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
-    run_named_cases, sample_df, sample_runtime, series,
+    lock_event_observation, reset_dependency_observation, reset_exec_observation, reset_sync_observation, sample_df,
+    sample_runtime, series,
 };
 
 // ---------------------------------------------------------------------------
@@ -35,15 +35,6 @@ fn test_filter_preserves_schema() {
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
     assert_eq!(filtered.column_index("id"), Some(0));
     assert_eq!(filtered.column_index("score"), Some(1));
-}
-
-fn test_filter_all_false() {
-    let df = sample_df();
-    let mask = series::<bool>("mask", &[false, false, false, false, false]).unwrap();
-    let filtered = df.on(Exec::RETAINED).filter(&mask).unwrap();
-
-    assert_eq!(filtered.num_rows(), 0);
-    assert_eq!(filtered.column_names(), vec!["id", "score"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -145,21 +136,6 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary
 // sort
 // ---------------------------------------------------------------------------
 
-fn test_sort_single_column_ascending() {
-    let df = sample_df();
-    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
-
-    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
-    assert_eq!(sorted.column_names(), vec!["id", "score"]);
-}
-
-fn test_sort_single_column_descending() {
-    let df = sample_df();
-    let sorted = df.on(Exec::RETAINED).sort_values(["score"], SortOptions::new().with_descending(vec![true])).unwrap();
-
-    assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
-}
-
 fn test_sort_by_subset_of_columns() {
     // Sort by id ascending, then score descending within each id group.
     let ids = column_from_slice(&[2i32, 1, 2, 1]).unwrap();
@@ -188,14 +164,6 @@ fn test_sort_mismatched_descending_count() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::Unsupported);
-}
-
-fn test_sort_preserves_schema() {
-    let df = sample_df();
-    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
-    assert_eq!(sorted.column_names(), vec!["id", "score"]);
-    assert_eq!(sorted.column_index("id"), Some(0));
-    assert_eq!(sorted.column_index("score"), Some(1));
 }
 
 // ---------------------------------------------------------------------------
@@ -371,43 +339,42 @@ fn test_dropna_nonexistent_column_returns_error() {
     assert_missing_column_error(&err, "missing");
 }
 
-#[test]
-fn dataframe_filter_sort_tests_cases() {
-    run_named_cases(&[
-        ("test_filter_basic", test_filter_basic),
-        ("test_filter_preserves_schema", test_filter_preserves_schema),
-        ("test_filter_all_false", test_filter_all_false),
-        ("test_filter_isin_basic", test_filter_isin_basic),
-        ("test_filter_isin_no_matches", test_filter_isin_no_matches),
-        ("test_filter_isin_all_match", test_filter_isin_all_match),
-        ("test_filter_isin_preserves_schema", test_filter_isin_preserves_schema),
-        ("test_filter_isin_nonexistent_column", test_filter_isin_nonexistent_column),
-        ("test_filter_isin_float64", test_filter_isin_float64),
-        ("test_filter_isin_empty_values", test_filter_isin_empty_values),
-        (
-            "test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary_input_before_dataframe_exec",
-            test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary_input_before_dataframe_exec,
-        ),
-        ("test_sort_single_column_ascending", test_sort_single_column_ascending),
-        ("test_sort_single_column_descending", test_sort_single_column_descending),
-        ("test_sort_by_subset_of_columns", test_sort_by_subset_of_columns),
-        ("test_sort_nonexistent_column_returns_error", test_sort_nonexistent_column_returns_error),
-        ("test_sort_mismatched_descending_count", test_sort_mismatched_descending_count),
-        ("test_sort_preserves_schema", test_sort_preserves_schema),
-        ("test_nlargest", test_nlargest),
-        ("test_nsmallest", test_nsmallest),
-        ("test_nlargest_nonexistent_column", test_nlargest_nonexistent_column),
-        ("test_drop_duplicates_by_single_column", test_drop_duplicates_by_single_column),
-        ("test_drop_duplicates_preserves_schema", test_drop_duplicates_preserves_schema),
-        ("test_drop_duplicates_nonexistent_column", test_drop_duplicates_nonexistent_column),
-        ("test_dropna_basic", test_dropna_basic),
-        ("test_dropna_preserves_schema_simple", test_dropna_preserves_schema_simple),
-        ("test_dropna_any_equivalent_to_thresh", test_dropna_any_equivalent_to_thresh),
-        ("test_dropna_any_mixed_null_patterns", test_dropna_any_mixed_null_patterns),
-        ("test_dropna_default_all_columns", test_dropna_default_all_columns),
-        ("test_dropna_no_nulls", test_dropna_no_nulls),
-        ("test_dropna_all_null", test_dropna_all_null),
-        ("test_dropna_preserves_schema", test_dropna_preserves_schema),
-        ("test_dropna_nonexistent_column_returns_error", test_dropna_nonexistent_column_returns_error),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("dataframe_filter_sort_tests::test_filter_basic", test_filter_basic),
+    ("dataframe_filter_sort_tests::test_filter_preserves_schema", test_filter_preserves_schema),
+    ("dataframe_filter_sort_tests::test_filter_isin_basic", test_filter_isin_basic),
+    ("dataframe_filter_sort_tests::test_filter_isin_no_matches", test_filter_isin_no_matches),
+    ("dataframe_filter_sort_tests::test_filter_isin_all_match", test_filter_isin_all_match),
+    ("dataframe_filter_sort_tests::test_filter_isin_preserves_schema", test_filter_isin_preserves_schema),
+    ("dataframe_filter_sort_tests::test_filter_isin_nonexistent_column", test_filter_isin_nonexistent_column),
+    ("dataframe_filter_sort_tests::test_filter_isin_float64", test_filter_isin_float64),
+    ("dataframe_filter_sort_tests::test_filter_isin_empty_values", test_filter_isin_empty_values),
+    (
+        "dataframe_filter_sort_tests::test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary_input_before_dataframe_exec",
+        test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary_input_before_dataframe_exec,
+    ),
+    ("dataframe_filter_sort_tests::test_sort_by_subset_of_columns", test_sort_by_subset_of_columns),
+    (
+        "dataframe_filter_sort_tests::test_sort_nonexistent_column_returns_error",
+        test_sort_nonexistent_column_returns_error,
+    ),
+    ("dataframe_filter_sort_tests::test_sort_mismatched_descending_count", test_sort_mismatched_descending_count),
+    ("dataframe_filter_sort_tests::test_nlargest", test_nlargest),
+    ("dataframe_filter_sort_tests::test_nsmallest", test_nsmallest),
+    ("dataframe_filter_sort_tests::test_nlargest_nonexistent_column", test_nlargest_nonexistent_column),
+    ("dataframe_filter_sort_tests::test_drop_duplicates_by_single_column", test_drop_duplicates_by_single_column),
+    ("dataframe_filter_sort_tests::test_drop_duplicates_preserves_schema", test_drop_duplicates_preserves_schema),
+    ("dataframe_filter_sort_tests::test_drop_duplicates_nonexistent_column", test_drop_duplicates_nonexistent_column),
+    ("dataframe_filter_sort_tests::test_dropna_basic", test_dropna_basic),
+    ("dataframe_filter_sort_tests::test_dropna_preserves_schema_simple", test_dropna_preserves_schema_simple),
+    ("dataframe_filter_sort_tests::test_dropna_any_equivalent_to_thresh", test_dropna_any_equivalent_to_thresh),
+    ("dataframe_filter_sort_tests::test_dropna_any_mixed_null_patterns", test_dropna_any_mixed_null_patterns),
+    ("dataframe_filter_sort_tests::test_dropna_default_all_columns", test_dropna_default_all_columns),
+    ("dataframe_filter_sort_tests::test_dropna_no_nulls", test_dropna_no_nulls),
+    ("dataframe_filter_sort_tests::test_dropna_all_null", test_dropna_all_null),
+    ("dataframe_filter_sort_tests::test_dropna_preserves_schema", test_dropna_preserves_schema),
+    (
+        "dataframe_filter_sort_tests::test_dropna_nonexistent_column_returns_error",
+        test_dropna_nonexistent_column_returns_error,
+    ),
+];

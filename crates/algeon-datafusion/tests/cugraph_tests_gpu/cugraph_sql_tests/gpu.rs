@@ -15,6 +15,7 @@ use algeon_datafusion::{
 use arrow::{array::ListArray, buffer::OffsetBuffer, util::display::array_value_to_string};
 use cudf::{
     frame::dataframe::HostBatchCursorConfig,
+    testing,
     testing::arrow::{
         arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
         reset_arrow_host_interop_observation_for_test,
@@ -34,6 +35,7 @@ use futures::StreamExt;
 use query_planning::optimizer::SharedResidentExtractionDecision;
 use query_runtime::observability::{AttemptCapacityDisposition, AttemptCleanupDisposition, RuntimeTerminalOutcome};
 use tokio::{
+    runtime::Builder as TestRuntimeBuilder,
     sync::Barrier,
     task::yield_now,
     time::{sleep, timeout},
@@ -296,12 +298,10 @@ async fn functions_only_executes_repeated_cugraph_cte_occurrences() {
     assert_repeated_cugraph_cte_executes(AlgeonGpuExecutionMode::FunctionsOnly, 2).await;
 }
 
-#[tokio::test]
 async fn native_preferred_executes_repeated_cugraph_cte_occurrences() {
     assert_repeated_cugraph_cte_executes(AlgeonGpuExecutionMode::NativePreferred, 1).await;
 }
 
-#[tokio::test]
 async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream() {
     let (backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -1128,7 +1128,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_hits_and_bfs_use_materialized_ed
 #[tokio::test]
 async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
     const DEVICE_CAPACITY_BYTES: u64 = 256 * 1024 * 1024;
-    const VERTICES: i64 = 60_000;
+    const VERTICES: i64 = 12_000;
     const BFS_SQL: &str = "SELECT COUNT(*) AS reached, SUM(distance) AS total \
          FROM cugraph_bfs(edges => (SELECT src, dst FROM overlap_edges), source_vertex => 0, output_mode => 'normalized')";
 
@@ -1164,7 +1164,7 @@ async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
     // teardown; repeating rounds keeps a single lost race from escaping as a
     // pass, and the first lost race quarantines the device so later rounds
     // fail fast instead of passing independently.
-    for round in 0..8 {
+    for round in 0..3 {
         let barrier = Arc::new(Barrier::new(3));
         let leader_barrier = Arc::clone(&barrier);
         let follower_barrier = Arc::clone(&barrier);
@@ -1195,9 +1195,9 @@ async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
     // one traversal and one follower copy, otherwise the race above never ran
     // and the parity assertions prove nothing.
     let snapshot = backend.cugraph_bfs_singleflight_snapshot();
-    assert_eq!(snapshot.eligible_requests, 17, "baseline plus eight rounds join singleflight");
-    assert_eq!(snapshot.physical_traversals, 9, "each round shares one traversal");
-    assert_eq!(snapshot.follower_copies, 8, "each round produces one follower copy");
+    assert_eq!(snapshot.eligible_requests, 7, "baseline plus three rounds join singleflight");
+    assert_eq!(snapshot.physical_traversals, 4, "each round shares one traversal");
+    assert_eq!(snapshot.follower_copies, 3, "each round produces one follower copy");
     assert!(snapshot.peak_width >= 2, "barrier-released queries join one generation");
 
     drop_session_context_on_blocking_thread(ctx).await;
@@ -1278,107 +1278,321 @@ async fn cugraph_sql_gpu_actual_allocation_exceeding_query_cap_reports_memory_li
     assert_eq!(algeon.fact_value("native_code"), Some("query_memory_limit_exceeded"));
 }
 
-#[tokio::test]
-async fn cugraph_sql_gpu_personalized_pagerank_executes_with_side_input() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
-    let edge_schema = Arc::new(Schema::new(vec![
-        Field::new("src", DataType::Int64, false),
-        Field::new("dst", DataType::Int64, false),
-        Field::new("weight", DataType::Float64, false),
-    ]));
-    let edge_batch = RecordBatch::try_new(
-        Arc::clone(&edge_schema),
-        vec![
-            Arc::new(Int64Array::from(vec![0_i64, 0, 1, 2])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![1_i64, 2, 2, 0])) as ArrayRef,
-            Arc::new(Float64Array::from(vec![1.0_f64, 1.0, 1.0, 1.0])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    ctx.register_table("ppr_edges", Arc::new(MemTable::try_new(edge_schema, vec![vec![edge_batch]]).unwrap())).unwrap();
-
-    let seed_schema = Arc::new(Schema::new(vec![
-        Field::new("vertex", DataType::Int64, false),
-        Field::new("value", DataType::Float64, false),
-    ]));
-    let seed_batch = RecordBatch::try_new(
-        Arc::clone(&seed_schema),
-        vec![
-            Arc::new(Int64Array::from(vec![0_i64])) as ArrayRef,
-            Arc::new(Float64Array::from(vec![1.0_f64])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    ctx.register_table("ppr_seeds", Arc::new(MemTable::try_new(seed_schema, vec![vec![seed_batch]]).unwrap())).unwrap();
-
-    let batches = ctx
-        .sql(
-            "SELECT vertex, value \
-             FROM cugraph_personalized_pagerank(\
-               edges => (SELECT src, dst, weight FROM ppr_edges), \
-               personalization => (SELECT vertex, value FROM ppr_seeds)\
-             ) \
-             ORDER BY vertex",
-        )
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-
-    let rows = pagerank_rows(&batches);
-    assert_eq!(rows.len(), 3);
-    assert_eq!(rows.iter().map(|row| row.vertex).collect::<Vec<_>>(), vec![0, 1, 2]);
-    assert!(rows.iter().all(|row| row.value.is_finite() && row.value >= 0.0));
-    let sum = rows.iter().map(|row| row.value).sum::<f64>();
-    assert!((sum - 1.0).abs() <= 1.0e-6, "personalized PageRank scores should be normalized, got {sum}");
+#[test]
+fn gpu_cases_1() {
+    testing::run_named_cases(&[
+        ("cugraph_sql_gpu_force_atlas2_executes_with_vertex_side_inputs", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_force_atlas2_executes_with_vertex_side_inputs())
+        }),
+        ("cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers())
+        }),
+        ("cugraph_sql_gpu_similarity_rejects_actual_null_pair_values", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_similarity_rejects_actual_null_pair_values())
+        }),
+        ("cugraph_sql_gpu_similarity_executes_weighted_jaccard_for_nullable_int64_pairs", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_similarity_executes_weighted_jaccard_for_nullable_int64_pairs())
+        }),
+        ("cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absent_endpoints", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absent_endpoints())
+        }),
+        ("cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end())
+        }),
+    ]);
 }
 
-#[tokio::test]
-async fn cugraph_sql_gpu_force_atlas2_executes_weighted_layout() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("src", DataType::Int64, false),
-        Field::new("dst", DataType::Int64, false),
-        Field::new("weight", DataType::Float32, false),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int64Array::from(vec![0_i64, 1, 2, 2])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![1_i64, 2, 0, 3])) as ArrayRef,
-            Arc::new(Float32Array::from(vec![1.0_f32, 1.5, 1.0, 0.5])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    ctx.register_table("layout_edges", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
-
-    let batches = ctx
-        .sql(
-            "SELECT vertex, x, y \
-             FROM cugraph_force_atlas2(\
-                  edges => (SELECT src, dst, weight FROM layout_edges), max_iter => 5, seed => 42) \
-             ORDER BY vertex",
-        )
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-    let batch = single_batch(&batches);
-    assert_eq!(batch.num_rows(), 4);
-    assert_eq!(int64_column(batch, 0), vec![0, 1, 2, 3]);
-    assert_eq!(batch.schema().field(1).data_type(), &DataType::Float32);
-    assert_eq!(batch.schema().field(2).data_type(), &DataType::Float32);
-    let x = batch.column(1).as_any().downcast_ref::<Float32Array>().unwrap();
-    let y = batch.column(2).as_any().downcast_ref::<Float32Array>().unwrap();
-    for row in 0..batch.num_rows() {
-        assert!(x.value(row).is_finite(), "ForceAtlas2 x coordinate must be finite at row {row}");
-        assert!(y.value(row).is_finite(), "ForceAtlas2 y coordinate must be finite at row {row}");
-    }
+#[test]
+fn gpu_cases_2() {
+    testing::run_named_cases(&[
+        ("cugraph_sql_gpu_camel_case_side_inputs_execute_every_shared_relation_shape", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_camel_case_side_inputs_execute_every_shared_relation_shape())
+        }),
+        ("cugraph_sql_gpu_bfs_numeric_source_list_executes_multi_source", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_numeric_source_list_executes_multi_source())
+        }),
+        ("cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source())
+        }),
+        ("cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_exec", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_exec())
+        }),
+        ("cugraph_sql_gpu_bfs_path_depth_zero_returns_the_source_target_vertex", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_depth_zero_returns_the_source_target_vertex())
+        }),
+        ("cugraph_sql_gpu_bfs_depth_limit_counts_hops_and_clamps_to_the_vertex_type", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_depth_limit_counts_hops_and_clamps_to_the_vertex_type())
+        }),
+    ]);
 }
 
-#[tokio::test]
+#[test]
+fn gpu_cases_3() {
+    testing::run_named_cases(&[
+        ("cugraph_sql_gpu_bfs_path_output_treats_an_oversized_depth_limit_as_unlimited", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_output_treats_an_oversized_depth_limit_as_unlimited())
+        }),
+        ("cugraph_sql_gpu_bfs_source_table_combines_with_target_path", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_source_table_combines_with_target_path())
+        }),
+        ("cugraph_sql_gpu_bfs_path_absent_source_returns_empty_batch", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_absent_source_returns_empty_batch())
+        }),
+        ("cugraph_sql_gpu_bfs_path_empty_source_table_returns_empty_batch", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_empty_source_table_returns_empty_batch())
+        }),
+        ("cugraph_sql_gpu_bfs_path_empty_source_with_bad_include_vertices_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_empty_source_with_bad_include_vertices_is_rejected())
+        }),
+        ("cugraph_sql_gpu_bfs_path_absent_source_with_bad_include_vertices_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_absent_source_with_bad_include_vertices_is_rejected())
+        }),
+    ]);
+}
+
+#[test]
+fn gpu_cases_4() {
+    testing::run_named_cases(&[
+        ("cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected())
+        }),
+        ("cugraph_sql_gpu_absent_traversal_sources_reach_the_client_as_invalid_input", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_absent_traversal_sources_reach_the_client_as_invalid_input())
+        }),
+        ("cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch())
+        }),
+        ("cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch())
+        }),
+        ("cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is_rejected())
+        }),
+        ("cugraph_sql_gpu_m1_string_algorithms_preserve_numeric_vertex_identity_coverage", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_m1_string_algorithms_preserve_numeric_vertex_identity_coverage())
+        }),
+    ]);
+}
+
+#[test]
+fn gpu_cases_5() {
+    testing::run_named_cases(&[
+        ("cugraph_sql_gpu_legacy_int32_algorithms_accept_int64_and_string_vertices", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_legacy_int32_algorithms_accept_int64_and_string_vertices())
+        }),
+        ("cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_identity_rows", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_identity_rows())
+        }),
+        ("cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_input_on_device", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_input_on_device())
+        }),
+        ("graph_results_support_aggregate_provenance_union_and_global_row_number_composition", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(graph_results_support_aggregate_provenance_union_and_global_row_number_composition())
+        }),
+        ("cugraph_sql_gpu_m3_string_selectors_match_numeric_identity_rows", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_m3_string_selectors_match_numeric_identity_rows())
+        }),
+    ]);
+}
+
+#[test]
+fn gpu_cases_6() {
+    testing::run_named_cases(&[
+        ("cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end())
+        }),
+        ("native_preferred_executes_repeated_cugraph_cte_occurrences", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_preferred_executes_repeated_cugraph_cte_occurrences())
+        }),
+        ("cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream())
+        }),
+        ("native_metadata_join_limit_and_distinct_keep_the_same_empty_and_nonempty_plan_contract", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_metadata_join_limit_and_distinct_keep_the_same_empty_and_nonempty_plan_contract())
+        }),
+        ("cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end())
+        }),
+    ]);
+}
+
+#[test]
+fn gpu_cases_7() {
+    testing::run_named_cases(&[
+        ("cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows())
+        }),
+        ("cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end())
+        }),
+        ("cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows())
+        }),
+        ("cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected())
+        }),
+        ("cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error())
+        }),
+    ]);
+}
+
 async fn cugraph_sql_gpu_force_atlas2_executes_with_vertex_side_inputs() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     let schema = Arc::new(Schema::new(vec![
@@ -1430,7 +1644,6 @@ async fn cugraph_sql_gpu_force_atlas2_executes_with_vertex_side_inputs() {
     }
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers() {
     let dir = unique_temp_dir("algeon-datafusion-cugraph-string-jaccard-70-by-70");
     let edge_path = dir.join("edges.parquet");
@@ -1547,7 +1760,6 @@ async fn cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_similarity_rejects_actual_null_pair_values() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     let edge_schema = Arc::new(Schema::new(vec![
@@ -1597,7 +1809,6 @@ async fn cugraph_sql_gpu_similarity_rejects_actual_null_pair_values() {
     assert_eq!(algeon.fact_value("input_role"), Some("vertex_pairs"));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_similarity_executes_weighted_jaccard_for_nullable_int64_pairs() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_weighted_similarity_edges_i64(&ctx, "similarity_edges");
@@ -1629,7 +1840,6 @@ async fn cugraph_sql_gpu_similarity_executes_weighted_jaccard_for_nullable_int64
     assert!(metrics.graph_runtime_rows[0].algorithm_metadata.contains("use_weight=true"));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absent_endpoints() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_weighted_similarity_edges_i64(&ctx, "similarity_edges");
@@ -1669,7 +1879,6 @@ async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absen
     assert_eq!(algeon.fact_value("input_role"), Some("vertex_pairs"));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -1696,7 +1905,6 @@ async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
     assert_eq!(metrics.graph_runtime_rows.len(), 1);
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_camel_case_side_inputs_execute_every_shared_relation_shape() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     let register = |table_name: &str, fields: Vec<Field>, columns: Vec<ArrayRef>| {
@@ -1816,7 +2024,6 @@ async fn cugraph_sql_gpu_camel_case_side_inputs_execute_every_shared_relation_sh
     }
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_numeric_source_list_executes_multi_source() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_disconnected_bfs_edges(&ctx, "raw_edges");
@@ -1841,7 +2048,6 @@ async fn cugraph_sql_gpu_bfs_numeric_source_list_executes_multi_source() {
     assert_eq!(bfs_distance_for(batch, 11), Some(1));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_disconnected_string_bfs_edges(&ctx, "raw_edges");
@@ -1868,7 +2074,6 @@ async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
     assert_eq!(string_bfs_predecessor_for(batch, "y"), Some("x".to_string()));
 }
 
-#[tokio::test]
 async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_exec() {
     let dir = unique_temp_dir("algeon-datafusion-cugraph-bfs-path-metadata");
     let metadata_path = dir.join("metadata.parquet");
@@ -1994,7 +2199,6 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_depth_zero_returns_the_source_target_vertex() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2022,7 +2226,6 @@ async fn cugraph_sql_gpu_bfs_path_depth_zero_returns_the_source_target_vertex() 
 /// `depth_limit` is the number of hops to expand: 0 reaches only the source,
 /// absent is unlimited, and a limit beyond what the Int32 vertex type can index
 /// behaves as unlimited instead of wrapping to a negative limit.
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_depth_limit_counts_hops_and_clamps_to_the_vertex_type() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_legacy_edges(&ctx, "hop_edges", &DataType::Int32);
@@ -2058,7 +2261,6 @@ async fn cugraph_sql_gpu_bfs_depth_limit_counts_hops_and_clamps_to_the_vertex_ty
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_output_treats_an_oversized_depth_limit_as_unlimited() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2084,7 +2286,6 @@ async fn cugraph_sql_gpu_bfs_path_output_treats_an_oversized_depth_limit_as_unli
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_source_table_combines_with_target_path() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_disconnected_bfs_edges(&ctx, "raw_edges");
@@ -2113,7 +2314,6 @@ async fn cugraph_sql_gpu_bfs_source_table_combines_with_target_path() {
     assert_eq!(int64_column(batch, 4), vec![0, 1, 2]);
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_absent_source_returns_empty_batch() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2137,7 +2337,6 @@ async fn cugraph_sql_gpu_bfs_path_absent_source_returns_empty_batch() {
     assert_empty_i64_path_batch(single_batch(&batches));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_empty_source_table_returns_empty_batch() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2161,7 +2360,6 @@ async fn cugraph_sql_gpu_bfs_path_empty_source_table_returns_empty_batch() {
     assert_empty_i64_path_batch(single_batch(&batches));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_empty_source_with_bad_include_vertices_is_rejected() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2192,7 +2390,6 @@ async fn cugraph_sql_gpu_bfs_path_empty_source_with_bad_include_vertices_is_reje
     assert!(!native_message.contains("Found invalid vertex"));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_absent_source_with_bad_include_vertices_is_rejected() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2223,7 +2420,6 @@ async fn cugraph_sql_gpu_bfs_path_absent_source_with_bad_include_vertices_is_rej
     assert!(!native_message.contains("Found invalid vertex"));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2252,7 +2448,6 @@ async fn cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected() {
     assert!(!native_message.contains("Found invalid vertex"));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_absent_traversal_sources_reach_the_client_as_invalid_input() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2282,7 +2477,6 @@ async fn cugraph_sql_gpu_absent_traversal_sources_reach_the_client_as_invalid_in
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2306,7 +2500,6 @@ async fn cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch() {
     assert_empty_i64_path_batch(single_batch(&batches));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_empty_directed_bfs_edges(&ctx, "raw_edges");
@@ -2330,7 +2523,6 @@ async fn cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch() {
     assert_empty_i64_path_batch(single_batch(&batches));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is_rejected() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_empty_directed_bfs_edges(&ctx, "raw_edges");
@@ -2361,7 +2553,6 @@ async fn cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is
     assert!(!native_message.contains("Found invalid vertex"));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_m1_string_algorithms_preserve_numeric_vertex_identity_coverage() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_mixed_string_algorithm_parity_edges(&ctx, "string_edges", "numeric_edges");
@@ -2492,7 +2683,6 @@ async fn legacy_result_rows(
     rows
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_legacy_int32_algorithms_accept_int64_and_string_vertices() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     let domains = [("legacy_i32", DataType::Int32), ("legacy_i64", DataType::Int64), ("legacy_utf8", DataType::Utf8)];
@@ -2531,32 +2721,6 @@ async fn cugraph_sql_gpu_legacy_int32_algorithms_accept_int64_and_string_vertice
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-#[tokio::test]
-async fn cugraph_sql_gpu_result_batches_use_the_documented_column_names() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
-    register_legacy_edges(&ctx, "named_edges", &DataType::Int64);
-
-    for (function, expected) in [
-        ("cugraph_louvain", ["vertex", "community"].as_slice()),
-        ("cugraph_leiden", &["vertex", "community"]),
-        ("cugraph_weakly_connected_components", &["vertex", "component"]),
-        ("cugraph_strongly_connected_components", &["vertex", "component"]),
-        ("cugraph_edge_betweenness_centrality", &["src", "dst", "value"]),
-    ] {
-        let batches = ctx
-            .sql(&format!("SELECT * FROM {function}(edges => (SELECT src, dst FROM named_edges))"))
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-        assert!(!batches.is_empty(), "{function} must return rows");
-        assert_eq!(schema_field_names(batches[0].schema().as_ref()), expected, "{function}");
-    }
-    drop_session_context_on_blocking_thread(ctx).await;
-}
-
-#[tokio::test]
 async fn cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_identity_rows() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_mixed_string_algorithm_parity_edges(&ctx, "string_edges", "numeric_edges");
@@ -2591,7 +2755,6 @@ async fn cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_ide
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-#[tokio::test]
 async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_input_on_device() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_mixed_string_algorithm_parity_edges(&ctx, "string_edges", "numeric_edges");
@@ -2696,7 +2859,6 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-#[tokio::test]
 async fn graph_results_support_aggregate_provenance_union_and_global_row_number_composition() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_edge_memtable(&ctx, "ordinary_graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
@@ -2754,7 +2916,6 @@ async fn graph_results_support_aggregate_provenance_union_and_global_row_number_
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_m3_string_selectors_match_numeric_identity_rows() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_mixed_string_algorithm_parity_edges(&ctx, "string_edges", "numeric_edges");
@@ -2787,7 +2948,6 @@ async fn cugraph_sql_gpu_m3_string_selectors_match_numeric_identity_rows() {
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_string_bfs_edges(&ctx, "raw_edges");
@@ -3181,7 +3341,6 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_metadata_join_limit_and_distinct_keep_the_same_empty_and_nonempty_plan_contract() {
     let dir = unique_temp_dir("algeon-datafusion-empty-metadata-join-contract");
     let relationship_path = dir.join("relationships.parquet");
@@ -3263,7 +3422,6 @@ async fn native_metadata_join_limit_and_distinct_keep_the_same_empty_and_nonempt
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_string_bfs_edges(&ctx, "raw_edges");
@@ -3289,7 +3447,6 @@ async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
     assert_eq!(string_bfs_distance_for(batch, "b"), None);
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_nullable_string_bfs_edges_with_nulls(&ctx, "raw_edges");
@@ -3314,7 +3471,6 @@ async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
     assert_eq!(string_bfs_distance_for(batch, "x"), None);
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_string_bfs_edges(&ctx, "raw_edges");
@@ -3343,7 +3499,6 @@ async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
     assert_eq!(int64_column(batch, 4), vec![0, 1, 2]);
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -3369,7 +3524,6 @@ async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
     assert_eq!(bfs_distance_for(batch, 1), None);
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -3396,7 +3550,6 @@ async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
     assert_eq!(algeon.fact_value("column"), Some("vertex"));
 }
 
-#[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");

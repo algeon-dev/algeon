@@ -7,8 +7,9 @@ use std::{
     collections::BTreeSet,
     fs::{self, File},
     ops::Deref,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -166,7 +167,7 @@ mod suite_backend {
 
     impl Runtime {
         pub(super) fn new() -> std::result::Result<Self, String> {
-            let backend = PIPELINE_BACKEND.lock().map_err(|_| "pipeline backend lock poisoned".to_string())?;
+            let backend = PIPELINE_BACKEND.lock().unwrap_or_else(PoisonError::into_inner);
             Ok(Self { backend: RefCell::new(backend) })
         }
 
@@ -423,4 +424,30 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("{prefix}-{}-{nonce}", std::process::id()));
     fs::create_dir_all(&path).unwrap();
     path
+}
+
+#[test]
+fn compiled_case_panic_releases_its_attempt_without_poisoning_the_next_case() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+    let plan = builder.finish_with_host_sink(source).unwrap();
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        let runtime = shared_runtime(suite_backend::Runtime::new().unwrap());
+        let _context = bounded_context(runtime, &plan);
+        panic!("case panic after acquiring the single attempt slot");
+    }));
+    assert!(panic.is_err());
+
+    let runtime = shared_runtime(suite_backend::Runtime::new().expect("the next case recovers the suite lock"));
+    let context = bounded_context(runtime, &plan);
+    let result = execute_query_plan(&context, &plan).expect("the next case executes on the same healthy backend");
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize the next case output");
+    };
+    assert_eq!(int32_values(batch, 0), vec![Some(1)]);
+    let usage = context.attempt_allocation_domain_usage().unwrap().unwrap();
+    assert_eq!(usage.current_bytes, 0, "the next attempt releases its GPU state");
+    assert_eq!(usage.current_allocations, 0);
 }

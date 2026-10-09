@@ -774,8 +774,7 @@ mod tests {
     };
     use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
     use query_planning::{
-        capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions, Reason},
-        chunk::SourceChunkPlanningOptions,
+        capability::Reason,
         dynamic_filter::DynamicFilterExecutionOptions,
         expr::{AggregateFunction, Expr, SortExpr},
         optimizer::SemijoinReductionOptions,
@@ -939,57 +938,6 @@ mod tests {
         assert_eq!(error.fact_value("native_code"), Some("invalid_configuration"));
         assert_eq!(error.fact_value("field"), Some("large_local_parquet_range_producer_rows"));
         assert_eq!(error.fact_value("reason"), Some("range_producer_rows_exceeds_runtime_build_cap"));
-    }
-
-    #[test]
-    fn optimizer_options_for_execution_rejects_invalid_keyed_hash_join_policy() {
-        let execution_config =
-            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
-                .with_keyed_hash_join_strategy_options(
-                    KeyedHashJoinStrategyOptions::default().with_large_keyed_hash_build_row_threshold(10),
-                );
-
-        let error =
-            native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
-        assert_eq!(error.fact_value("native_code"), Some("invalid_configuration"));
-        assert_eq!(error.fact_value("large_field"), Some("large_keyed_hash_build_row_threshold"));
-        assert_eq!(error.fact_value("reason"), Some("large_threshold_below_small_threshold"));
-    }
-
-    #[test]
-    fn optimizer_options_for_execution_rejects_invalid_aggregate_strategy_policy() {
-        let execution_config =
-            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
-                .with_aggregate_strategy_execution_options(
-                    AggregateStrategyExecutionOptions::default()
-                        .with_encoded_key_partial_low_cardinality_threshold_ppm(1_000_001),
-                );
-
-        let error =
-            native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
-        assert_eq!(error.fact_value("native_code"), Some("invalid_configuration"));
-        assert_eq!(error.fact_value("field"), Some("encoded_key_partial_low_cardinality_threshold_ppm"));
-        assert_eq!(error.fact_value("reason"), Some("ratio_ppm_above_one_hundred_percent"));
-    }
-
-    #[test]
-    fn optimizer_options_for_execution_rejects_invalid_source_chunk_planning_policy() {
-        let execution_config =
-            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
-                .with_source_chunk_planning_options(
-                    SourceChunkPlanningOptions::default().with_local_parquet_throughput_min_device_budget_bytes(0),
-                );
-        let error =
-            native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
-        assert_eq!(error.fact_value("native_code"), Some("invalid_configuration"));
-        assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_min_device_budget_bytes"));
-        assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
     #[test]

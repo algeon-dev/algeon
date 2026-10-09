@@ -2,7 +2,7 @@ use cudf::{Runtime, StreamDependencyOutcome, testing::prelude::*};
 use cudf_sys::test_support;
 use rapids_interop::{CudaStreamHandle, ExecutionBinding, InteropErrorKind};
 
-use crate::common::{lock_event_observation, run_named_cases};
+use crate::common::lock_event_observation;
 
 fn reset_event_observation() {
     unsafe { test_support::cudf_test_event_reset_observation() };
@@ -118,28 +118,25 @@ fn order_after_execution_binding_rejects_cross_device_bindings_before_cuda_order
     assert_eq!(observed_raw_record_call_count_for_stream_raw(runtime.stream().testing_raw_handle_value()), 0);
 }
 
-#[test]
-fn runtime_execution_binding_tests_cases() {
-    run_named_cases(&[
-        (
-            "runtime_execution_binding_matches_retained_runtime_provenance",
-            runtime_execution_binding_matches_retained_runtime_provenance,
-        ),
-        (
-            "order_after_execution_binding_noops_for_exact_runtime_provenance",
-            order_after_execution_binding_noops_for_exact_runtime_provenance,
-        ),
-        (
-            "order_after_execution_binding_noops_for_same_stream_different_memory_resource",
-            order_after_execution_binding_noops_for_same_stream_different_memory_resource,
-        ),
-        (
-            "order_after_execution_binding_records_barrier_for_same_device_different_stream",
-            order_after_execution_binding_records_barrier_for_same_device_different_stream,
-        ),
-        (
-            "order_after_execution_binding_rejects_cross_device_bindings_before_cuda_ordering",
-            order_after_execution_binding_rejects_cross_device_bindings_before_cuda_ordering,
-        ),
-    ]);
-}
+pub(crate) const CASES: &[(&str, fn())] = &[
+    (
+        "runtime_execution_binding_tests::runtime_execution_binding_matches_retained_runtime_provenance",
+        runtime_execution_binding_matches_retained_runtime_provenance,
+    ),
+    (
+        "runtime_execution_binding_tests::order_after_execution_binding_noops_for_exact_runtime_provenance",
+        order_after_execution_binding_noops_for_exact_runtime_provenance,
+    ),
+    (
+        "runtime_execution_binding_tests::order_after_execution_binding_noops_for_same_stream_different_memory_resource",
+        order_after_execution_binding_noops_for_same_stream_different_memory_resource,
+    ),
+    (
+        "runtime_execution_binding_tests::order_after_execution_binding_records_barrier_for_same_device_different_stream",
+        order_after_execution_binding_records_barrier_for_same_device_different_stream,
+    ),
+    (
+        "runtime_execution_binding_tests::order_after_execution_binding_rejects_cross_device_bindings_before_cuda_ordering",
+        order_after_execution_binding_rejects_cross_device_bindings_before_cuda_ordering,
+    ),
+];

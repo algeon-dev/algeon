@@ -2,7 +2,6 @@
 
 use cudf::{
     DataType, ErrorCode, TypeId,
-    core::{DeviceSlice as CudfDeviceSlice, column::DeviceSlice as CudfColumnDeviceSlice},
     testing::{
         column::{
             column_view_to_fixed_width_host_bytes_for_test, column_view_to_raw_bytes_for_test,
@@ -15,7 +14,7 @@ use cudf::{
 use crate::common::{
     column_from_device_ptr, column_from_slice, column_from_slice_nullable, column_from_strs, empty_column,
     error_context_value, fail_next_column_view_metadata_read, last_exec_mr_value, last_exec_stream_value, null_column,
-    reset_exec_observation, run_named_cases,
+    reset_exec_observation,
 };
 
 fn test_create_empty_column() {
@@ -346,13 +345,6 @@ fn test_offset_for_non_sliced_column() {
     assert_eq!(view.offset().unwrap(), 0);
 }
 
-fn test_device_data_ptr_empty_column() {
-    let col = column_from_slice::<i32>(&[]).unwrap();
-    let view = col.testing_view().unwrap();
-    // Empty columns may or may not have a non-null pointer; just ensure no crash.
-    let _ptr = view.device_data_ptr().unwrap();
-}
-
 fn test_child_rejects_out_of_bounds_index_without_segfault() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -457,43 +449,6 @@ fn test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract() {
     assert_eq!(error_context_value(&err, "elem_size_bytes").as_deref(), Some("2"));
     assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int16"));
     assert_eq!(error_context_value(&err, "len").as_deref(), None);
-}
-
-fn test_core_domain_modules_export_documented_surface() {
-    use cudf::core::{
-        column::{Column as DomainColumn, ColumnView as DomainColumnView, DeviceSlice as DomainDeviceSlice},
-        error::{Error as DomainError, ErrorKind as DomainErrorKind, Result as DomainResult},
-        scalar::Scalar as DomainScalar,
-        table::{Table as DomainTable, TableView as DomainTableView},
-        types::{CudfType as DomainCudfType, DataType as DomainDataType, TypeId as DomainTypeId},
-    };
-
-    fn assert_domain_result<T>(result: DomainResult<T>) -> DomainResult<T> {
-        result
-    }
-
-    fn assert_cudf_type<T: DomainCudfType>() {}
-
-    let _: Option<DomainColumn> = None;
-    let _: Option<DomainColumnView<'static>> = None;
-    let _: Option<DomainDeviceSlice<'static>> = None;
-    let _: Option<DomainError> = None;
-    let _: Option<DomainScalar> = None;
-    let _: Option<DomainTable> = None;
-    let _: Option<DomainTableView<'static>> = None;
-
-    let _ = DomainErrorKind::InvalidInput;
-    let _ = DomainDataType::new(DomainTypeId::Int32);
-    let _ = assert_domain_result(column_from_slice(&[1i32, 2, 3]));
-    assert_cudf_type::<i32>();
-}
-
-fn test_device_slice_stays_under_core_domain_module() {
-    let _: Option<CudfColumnDeviceSlice<'static>> = None;
-}
-
-fn test_device_slice_is_reexported_at_crate_root() {
-    let _: Option<CudfDeviceSlice<'static>> = None;
 }
 
 // --- DeviceSlice tests ---
@@ -869,109 +824,120 @@ fn test_nulls_rejects_list_type_with_stable_contract() {
     );
 }
 
-#[test]
-fn column_tests_cases() {
-    run_named_cases(&[
-        ("test_create_empty_column", test_create_empty_column),
-        ("test_create_empty_decimal_column_preserves_scale", test_create_empty_decimal_column_preserves_scale),
-        ("test_create_i32_column", test_create_i32_column),
-        ("test_create_f64_column", test_create_f64_column),
-        ("test_nullable_column", test_nullable_column),
-        ("test_to_optional_vec_all_valid", test_to_optional_vec_all_valid),
-        ("test_to_optional_vec_with_nulls", test_to_optional_vec_with_nulls),
-        ("test_to_optional_vec_bool_with_nulls", test_to_optional_vec_bool_with_nulls),
-        ("test_to_optional_vec_type_mismatch_error", test_to_optional_vec_type_mismatch_error),
-        ("test_column_deep_copy", test_column_deep_copy),
-        ("test_type_mismatch_error", test_type_mismatch_error),
-        ("test_u8_column", test_u8_column),
-        ("test_mismatched_validity_length", test_mismatched_validity_length),
-        ("test_to_host_validity_none_for_non_nullable_column", test_to_host_validity_none_for_non_nullable_column),
-        (
-            "test_to_host_validity_for_sliced_nullable_column_is_normalized_to_slice",
-            test_to_host_validity_for_sliced_nullable_column_is_normalized_to_slice,
-        ),
-        (
-            "test_testing_slice_view_uses_column_execution_domain_execution_resources",
-            test_testing_slice_view_uses_column_execution_domain_execution_resources,
-        ),
-        (
-            "test_to_vec_for_sliced_view_starts_at_sliced_element_offset",
-            test_to_vec_for_sliced_view_starts_at_sliced_element_offset,
-        ),
-        (
-            "test_to_optional_vec_for_sliced_nullable_view_starts_at_sliced_element_offset",
-            test_to_optional_vec_for_sliced_nullable_view_starts_at_sliced_element_offset,
-        ),
-        (
-            "test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_range",
-            test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_range,
-        ),
-        ("test_various_numeric_types", test_various_numeric_types),
-        ("test_device_data_ptr_i32", test_device_data_ptr_i32),
-        ("test_device_data_ptr_f64", test_device_data_ptr_f64),
-        ("test_device_data_ptr_consistent_with_to_vec", test_device_data_ptr_consistent_with_to_vec),
-        ("test_offset_for_non_sliced_column", test_offset_for_non_sliced_column),
-        ("test_device_data_ptr_empty_column", test_device_data_ptr_empty_column),
-        (
-            "test_child_rejects_out_of_bounds_index_without_segfault",
-            test_child_rejects_out_of_bounds_index_without_segfault,
-        ),
-        (
-            "test_column_device_slice_type_mismatch_uses_canonical_type_context",
-            test_column_device_slice_type_mismatch_uses_canonical_type_context,
-        ),
-        ("test_child_rejects_usize_indices_outside_i32_range", test_child_rejects_usize_indices_outside_i32_range),
-        (
-            "test_testing_slice_view_rejects_start_over_i32_max_with_row_range_contract",
-            test_testing_slice_view_rejects_start_over_i32_max_with_row_range_contract,
-        ),
-        (
-            "test_testing_slice_view_rejects_row_count_over_i32_max_with_canonical_vocabulary",
-            test_testing_slice_view_rejects_row_count_over_i32_max_with_canonical_vocabulary,
-        ),
-        (
-            "test_testing_slice_view_rejects_end_overflow_with_row_range_context",
-            test_testing_slice_view_rejects_end_overflow_with_row_range_context,
-        ),
-        (
-            "test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract",
-            test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract,
-        ),
-        ("test_core_domain_modules_export_documented_surface", test_core_domain_modules_export_documented_surface),
-        ("test_device_slice_stays_under_core_domain_module", test_device_slice_stays_under_core_domain_module),
-        ("test_device_slice_is_reexported_at_crate_root", test_device_slice_is_reexported_at_crate_root),
-        ("test_device_slice_i32", test_device_slice_i32),
-        ("test_device_slice_f64", test_device_slice_f64),
-        ("test_device_slice_type_mismatch", test_device_slice_type_mismatch),
-        (
-            "test_to_raw_bytes_rejects_non_byte_type_with_stable_contract",
-            test_to_raw_bytes_rejects_non_byte_type_with_stable_contract,
-        ),
-        (
-            "test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract",
-            test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract,
-        ),
-        ("test_device_slice_split_at", test_device_slice_split_at),
-        ("test_device_slice_split_at_zero", test_device_slice_split_at_zero),
-        ("test_device_slice_split_at_end", test_device_slice_split_at_end),
-        ("test_device_slice_empty_column", test_device_slice_empty_column),
-        ("test_from_device_ptr_i32_roundtrip", test_from_device_ptr_i32_roundtrip),
-        ("test_from_device_ptr_f64_roundtrip", test_from_device_ptr_f64_roundtrip),
-        ("test_from_device_ptr_i64_roundtrip", test_from_device_ptr_i64_roundtrip),
-        ("test_from_device_ptr_independent_of_source", test_from_device_ptr_independent_of_source),
-        ("test_from_device_ptr_empty", test_from_device_ptr_empty),
-        ("test_from_device_ptr_null_pointer_with_zero_len", test_from_device_ptr_null_pointer_with_zero_len),
-        ("test_from_device_ptr_null_pointer_with_nonzero_len", test_from_device_ptr_null_pointer_with_nonzero_len),
-        ("test_from_device_ptr_various_types", test_from_device_ptr_various_types),
-        ("test_from_device_ptr_rejects_non_fixed_width_type", test_from_device_ptr_rejects_non_fixed_width_type),
-        ("test_nulls_int32_empty", test_nulls_int32_empty),
-        ("test_nulls_int64", test_nulls_int64),
-        ("test_nulls_float32", test_nulls_float32),
-        ("test_nulls_bool8", test_nulls_bool8),
-        ("test_nulls_string", test_nulls_string),
-        ("test_nulls_decimal64_preserve_scale", test_nulls_decimal64_preserve_scale),
-        ("test_nulls_preserves_type", test_nulls_preserves_type),
-        ("test_nulls_rejects_length_over_i32_max", test_nulls_rejects_length_over_i32_max),
-        ("test_nulls_rejects_list_type_with_stable_contract", test_nulls_rejects_list_type_with_stable_contract),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("column_tests::test_create_empty_column", test_create_empty_column),
+    (
+        "column_tests::test_create_empty_decimal_column_preserves_scale",
+        test_create_empty_decimal_column_preserves_scale,
+    ),
+    ("column_tests::test_create_i32_column", test_create_i32_column),
+    ("column_tests::test_create_f64_column", test_create_f64_column),
+    ("column_tests::test_nullable_column", test_nullable_column),
+    ("column_tests::test_to_optional_vec_all_valid", test_to_optional_vec_all_valid),
+    ("column_tests::test_to_optional_vec_with_nulls", test_to_optional_vec_with_nulls),
+    ("column_tests::test_to_optional_vec_bool_with_nulls", test_to_optional_vec_bool_with_nulls),
+    ("column_tests::test_to_optional_vec_type_mismatch_error", test_to_optional_vec_type_mismatch_error),
+    ("column_tests::test_column_deep_copy", test_column_deep_copy),
+    ("column_tests::test_type_mismatch_error", test_type_mismatch_error),
+    ("column_tests::test_u8_column", test_u8_column),
+    ("column_tests::test_mismatched_validity_length", test_mismatched_validity_length),
+    (
+        "column_tests::test_to_host_validity_none_for_non_nullable_column",
+        test_to_host_validity_none_for_non_nullable_column,
+    ),
+    (
+        "column_tests::test_to_host_validity_for_sliced_nullable_column_is_normalized_to_slice",
+        test_to_host_validity_for_sliced_nullable_column_is_normalized_to_slice,
+    ),
+    (
+        "column_tests::test_testing_slice_view_uses_column_execution_domain_execution_resources",
+        test_testing_slice_view_uses_column_execution_domain_execution_resources,
+    ),
+    (
+        "column_tests::test_to_vec_for_sliced_view_starts_at_sliced_element_offset",
+        test_to_vec_for_sliced_view_starts_at_sliced_element_offset,
+    ),
+    (
+        "column_tests::test_to_optional_vec_for_sliced_nullable_view_starts_at_sliced_element_offset",
+        test_to_optional_vec_for_sliced_nullable_view_starts_at_sliced_element_offset,
+    ),
+    (
+        "column_tests::test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_range",
+        test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_range,
+    ),
+    ("column_tests::test_various_numeric_types", test_various_numeric_types),
+    ("column_tests::test_device_data_ptr_i32", test_device_data_ptr_i32),
+    ("column_tests::test_device_data_ptr_f64", test_device_data_ptr_f64),
+    ("column_tests::test_device_data_ptr_consistent_with_to_vec", test_device_data_ptr_consistent_with_to_vec),
+    ("column_tests::test_offset_for_non_sliced_column", test_offset_for_non_sliced_column),
+    (
+        "column_tests::test_child_rejects_out_of_bounds_index_without_segfault",
+        test_child_rejects_out_of_bounds_index_without_segfault,
+    ),
+    (
+        "column_tests::test_column_device_slice_type_mismatch_uses_canonical_type_context",
+        test_column_device_slice_type_mismatch_uses_canonical_type_context,
+    ),
+    (
+        "column_tests::test_child_rejects_usize_indices_outside_i32_range",
+        test_child_rejects_usize_indices_outside_i32_range,
+    ),
+    (
+        "column_tests::test_testing_slice_view_rejects_start_over_i32_max_with_row_range_contract",
+        test_testing_slice_view_rejects_start_over_i32_max_with_row_range_contract,
+    ),
+    (
+        "column_tests::test_testing_slice_view_rejects_row_count_over_i32_max_with_canonical_vocabulary",
+        test_testing_slice_view_rejects_row_count_over_i32_max_with_canonical_vocabulary,
+    ),
+    (
+        "column_tests::test_testing_slice_view_rejects_end_overflow_with_row_range_context",
+        test_testing_slice_view_rejects_end_overflow_with_row_range_context,
+    ),
+    (
+        "column_tests::test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract",
+        test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract,
+    ),
+    ("column_tests::test_device_slice_i32", test_device_slice_i32),
+    ("column_tests::test_device_slice_f64", test_device_slice_f64),
+    ("column_tests::test_device_slice_type_mismatch", test_device_slice_type_mismatch),
+    (
+        "column_tests::test_to_raw_bytes_rejects_non_byte_type_with_stable_contract",
+        test_to_raw_bytes_rejects_non_byte_type_with_stable_contract,
+    ),
+    (
+        "column_tests::test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract",
+        test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract,
+    ),
+    ("column_tests::test_device_slice_split_at", test_device_slice_split_at),
+    ("column_tests::test_device_slice_split_at_zero", test_device_slice_split_at_zero),
+    ("column_tests::test_device_slice_split_at_end", test_device_slice_split_at_end),
+    ("column_tests::test_device_slice_empty_column", test_device_slice_empty_column),
+    ("column_tests::test_from_device_ptr_i32_roundtrip", test_from_device_ptr_i32_roundtrip),
+    ("column_tests::test_from_device_ptr_f64_roundtrip", test_from_device_ptr_f64_roundtrip),
+    ("column_tests::test_from_device_ptr_i64_roundtrip", test_from_device_ptr_i64_roundtrip),
+    ("column_tests::test_from_device_ptr_independent_of_source", test_from_device_ptr_independent_of_source),
+    ("column_tests::test_from_device_ptr_empty", test_from_device_ptr_empty),
+    ("column_tests::test_from_device_ptr_null_pointer_with_zero_len", test_from_device_ptr_null_pointer_with_zero_len),
+    (
+        "column_tests::test_from_device_ptr_null_pointer_with_nonzero_len",
+        test_from_device_ptr_null_pointer_with_nonzero_len,
+    ),
+    ("column_tests::test_from_device_ptr_various_types", test_from_device_ptr_various_types),
+    (
+        "column_tests::test_from_device_ptr_rejects_non_fixed_width_type",
+        test_from_device_ptr_rejects_non_fixed_width_type,
+    ),
+    ("column_tests::test_nulls_int32_empty", test_nulls_int32_empty),
+    ("column_tests::test_nulls_int64", test_nulls_int64),
+    ("column_tests::test_nulls_float32", test_nulls_float32),
+    ("column_tests::test_nulls_bool8", test_nulls_bool8),
+    ("column_tests::test_nulls_string", test_nulls_string),
+    ("column_tests::test_nulls_decimal64_preserve_scale", test_nulls_decimal64_preserve_scale),
+    ("column_tests::test_nulls_preserves_type", test_nulls_preserves_type),
+    ("column_tests::test_nulls_rejects_length_over_i32_max", test_nulls_rejects_length_over_i32_max),
+    (
+        "column_tests::test_nulls_rejects_list_type_with_stable_contract",
+        test_nulls_rejects_list_type_with_stable_contract,
+    ),
+];

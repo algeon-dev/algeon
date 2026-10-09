@@ -13,15 +13,18 @@ use arrow::{
     compute::{cast, concat_batches},
     datatypes::{Float32Type, Float64Type, TimeUnit},
 };
-use cudf::testing::arrow::{
-    arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
-    reset_arrow_host_interop_observation_for_test,
+use cudf::{
+    testing,
+    testing::arrow::{
+        arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+        reset_arrow_host_interop_observation_for_test,
+    },
 };
 use datafusion::parquet::arrow::ArrowWriter;
+use tokio::runtime::Builder as TestRuntimeBuilder;
 
 use super::*;
 
-#[tokio::test]
 async fn native_runtime_negation_matches_wrapping_integers_and_ieee_float_bits() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-negation");
     let path = dir.join("input.parquet");
@@ -115,7 +118,6 @@ async fn native_runtime_negation_matches_wrapping_integers_and_ieee_float_bits()
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_columns() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-scalar_expression-scalars");
     let path = dir.join("input.parquet");
@@ -147,7 +149,6 @@ async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_column
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_nullable_scalar_expressions_match_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-scalar_expression-nullable-scalars");
     let path = dir.join("input.parquet");
@@ -255,7 +256,6 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
     }
 }
 
-#[tokio::test]
 async fn native_runtime_ln_exp_match_cpu_ieee_results() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-ln-exp");
     let path = dir.join("input.parquet");
@@ -336,7 +336,6 @@ fn f32_ulp_distance(expected: f64, actual: f64) -> u64 {
     u64::from((expected as f32).to_bits().abs_diff((actual as f32).to_bits()))
 }
 
-#[tokio::test]
 async fn native_runtime_ilike_rejects_before_native_execution() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-ilike-reject");
     let path = dir.join("input.parquet");
@@ -359,7 +358,6 @@ async fn native_runtime_ilike_rejects_before_native_execution() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_invalid_scalar_expressions_reject_before_native_execution() {
     for (name, sql) in [
         ("substring-zero-start", SQL_INVALID_SUBSTRING_ZERO_START_QUERY),
@@ -400,7 +398,6 @@ async fn native_runtime_invalid_scalar_expressions_reject_before_native_executio
     }
 }
 
-#[tokio::test]
 async fn native_runtime_date_trunc_calendrical_grains_reject_before_native_execution() {
     for (name, sql) in [
         ("date-trunc-month", SQL_DATE_TRUNC_MONTH_UNSUPPORTED_QUERY),
@@ -438,7 +435,6 @@ async fn native_runtime_date_trunc_calendrical_grains_reject_before_native_execu
     }
 }
 
-#[tokio::test]
 async fn native_runtime_substring_max_start_length_one_is_in_contract() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-substring-max-start-boundary");
     let path = dir.join("input.parquet");
@@ -539,7 +535,6 @@ async fn assert_native_matches_cpu_of(path: &std::path::Path, name: &str, native
     assert_batches_equal(&cpu_batches, &native_batches);
 }
 
-#[tokio::test]
 async fn native_runtime_checked_casts_division_floor_and_ceil_match_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-checked-arithmetic");
     let path = dir.join("input.parquet");
@@ -585,7 +580,6 @@ async fn native_runtime_checked_casts_division_floor_and_ceil_match_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_checked_failures_fail_the_query_like_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-checked-failures");
     let path = dir.join("input.parquet");
@@ -598,6 +592,18 @@ async fn native_runtime_checked_failures_fail_the_query_like_cpu() {
         ("float-cast-out-of-range", "SELECT row_id, CAST(wide AS BIGINT) AS wide_i64 FROM bench"),
     ] {
         assert_native_fails_like_cpu(&path, name, sql).await;
+    }
+
+    let invalid_path = dir.join("invalid-float.parquet");
+    for (name, value) in
+        [("float-cast-nan", f64::NAN), ("float-cast-infinity", f64::INFINITY), ("float-cast-huge", 1e40)]
+    {
+        let schema = Arc::new(Schema::new(vec![Field::new("wide", DataType::Float64, false)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Float64Array::from(vec![value]))]).unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(&invalid_path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        assert_native_fails_like_cpu(&invalid_path, name, "SELECT CAST(wide AS BIGINT) AS value FROM bench").await;
     }
 
     fs::remove_dir_all(dir).unwrap();
@@ -616,6 +622,9 @@ async fn assert_native_fails_like_cpu(path: &std::path::Path, name: &str, sql: &
         ErrorCode::CudfInvalidInput,
         "{name}: native error {native_error} (cpu: {cpu_error})"
     );
+    if matches!(name, "float-cast-nan" | "float-cast-infinity" | "float-cast-huge") {
+        assert_eq!(algeon_error.fact_value("cudf_code"), Some("ValueOutOfRange"));
+    }
 }
 
 fn write_case_branch_input_parquet(path: &std::path::Path) {
@@ -665,7 +674,6 @@ fn write_case_branch_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_case_branches_that_can_fail_match_cpu() {
     // DataFusion evaluates a THEN or ELSE value, and every WHEN after the first, only on the rows that reach
     // it. Each query below puts a failing row where DataFusion never evaluates the fallible operation.
@@ -730,7 +738,6 @@ async fn native_runtime_case_branches_that_can_fail_match_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_case_branches_fail_the_query_like_cpu_when_an_active_row_fails() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-case-branch-failures");
     let path = dir.join("input.parquet");
@@ -817,7 +824,6 @@ fn write_decimal_cast_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_decimal_casts_match_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-decimal-casts");
     let path = dir.join("input.parquet");
@@ -846,7 +852,6 @@ async fn native_runtime_decimal_casts_match_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_decimal_casts_outside_the_target_precision_fail_the_query_like_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-decimal-cast-failures");
     let path = dir.join("input.parquet");
@@ -868,7 +873,6 @@ async fn native_runtime_decimal_casts_outside_the_target_precision_fail_the_quer
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_case_branch_with_a_fallible_decimal_cast_matches_cpu() {
     // DataFusion casts only the rows that reach the THEN branch, so the first query succeeds on the CPU even
     // though row 6 needs 9 digits. The second query reaches row 6 and fails on both engines.
@@ -945,7 +949,6 @@ fn write_logical_operand_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_logical_operators_skip_the_right_operand_on_rows_the_left_operand_decides() {
     // DataFusion evaluates the right operand of AND on the rows where the left operand is TRUE, and of OR on the
     // rows where it is FALSE, when the other rows are in the majority and the left operand has no NULL. Each query
@@ -1039,7 +1042,198 @@ fn write_logical_null_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-#[tokio::test]
+#[test]
+fn scalar_expressions_cases_1() {
+    testing::run_named_cases(&[
+        ("native_runtime_logical_operators_with_a_null_left_operand_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_logical_operators_with_a_null_left_operand_match_cpu())
+        }),
+        ("native_runtime_logical_operators_fail_the_query_like_cpu_when_an_undecided_row_fails", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_logical_operators_fail_the_query_like_cpu_when_an_undecided_row_fails())
+        }),
+        ("native_runtime_logical_operators_never_fail_on_a_row_the_left_operand_decides", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_logical_operators_never_fail_on_a_row_the_left_operand_decides())
+        }),
+        ("native_runtime_decimal_division_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_decimal_division_matches_cpu())
+        }),
+        ("native_runtime_scalar_expressions_match_cpu_and_collect_required_columns", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_scalar_expressions_match_cpu_and_collect_required_columns())
+        }),
+        ("native_runtime_decimal_division_failures_fail_the_query_like_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_decimal_division_failures_fail_the_query_like_cpu())
+        }),
+    ]);
+}
+
+#[test]
+fn scalar_expressions_cases_2() {
+    testing::run_named_cases(&[
+        ("native_runtime_timestamp_and_duration_counts_cast_to_bigint_like_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_timestamp_and_duration_counts_cast_to_bigint_like_cpu())
+        }),
+        ("native_runtime_timestamp_arithmetic_fails_like_cpu_only_on_rows_cpu_evaluates", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_timestamp_arithmetic_fails_like_cpu_only_on_rows_cpu_evaluates())
+        }),
+        ("native_runtime_nullable_scalar_expressions_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_nullable_scalar_expressions_match_cpu())
+        }),
+        ("native_runtime_temporal_unit_casts_truncate_and_fail_like_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_temporal_unit_casts_truncate_and_fail_like_cpu())
+        }),
+        ("native_runtime_negation_matches_wrapping_integers_and_ieee_float_bits", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_negation_matches_wrapping_integers_and_ieee_float_bits())
+        }),
+        ("native_runtime_ln_exp_match_cpu_ieee_results", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_ln_exp_match_cpu_ieee_results())
+        }),
+    ]);
+}
+
+#[test]
+fn scalar_expressions_cases_3() {
+    testing::run_named_cases(&[
+        ("native_runtime_ilike_rejects_before_native_execution", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_ilike_rejects_before_native_execution())
+        }),
+        ("native_runtime_invalid_scalar_expressions_reject_before_native_execution", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_invalid_scalar_expressions_reject_before_native_execution())
+        }),
+        ("native_runtime_date_trunc_calendrical_grains_reject_before_native_execution", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_date_trunc_calendrical_grains_reject_before_native_execution())
+        }),
+        ("native_runtime_substring_max_start_length_one_is_in_contract", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_substring_max_start_length_one_is_in_contract())
+        }),
+        ("native_runtime_checked_casts_division_floor_and_ceil_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_checked_casts_division_floor_and_ceil_match_cpu())
+        }),
+        ("native_runtime_checked_failures_fail_the_query_like_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_checked_failures_fail_the_query_like_cpu())
+        }),
+    ]);
+}
+
+#[test]
+fn scalar_expressions_cases_4() {
+    testing::run_named_cases(&[
+        ("native_runtime_case_branches_that_can_fail_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_case_branches_that_can_fail_match_cpu())
+        }),
+        ("native_runtime_case_branches_fail_the_query_like_cpu_when_an_active_row_fails", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_case_branches_fail_the_query_like_cpu_when_an_active_row_fails())
+        }),
+        ("native_runtime_decimal_casts_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_decimal_casts_match_cpu())
+        }),
+        ("native_runtime_decimal_casts_outside_the_target_precision_fail_the_query_like_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_decimal_casts_outside_the_target_precision_fail_the_query_like_cpu())
+        }),
+        ("native_runtime_case_branch_with_a_fallible_decimal_cast_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_case_branch_with_a_fallible_decimal_cast_matches_cpu())
+        }),
+        ("native_runtime_logical_operators_skip_the_right_operand_on_rows_the_left_operand_decides", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_logical_operators_skip_the_right_operand_on_rows_the_left_operand_decides())
+        }),
+    ]);
+}
+
 async fn native_runtime_logical_operators_with_a_null_left_operand_match_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-logical-null-operands");
     let path = dir.join("input.parquet");
@@ -1065,7 +1259,6 @@ async fn native_runtime_logical_operators_with_a_null_left_operand_match_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_logical_operators_fail_the_query_like_cpu_when_an_undecided_row_fails() {
     // A NULL left operand leaves the result open, so the right operand runs on that row like on a TRUE row of an
     // AND or a FALSE row of an OR.
@@ -1097,7 +1290,6 @@ async fn native_runtime_logical_operators_fail_the_query_like_cpu_when_an_undeci
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_logical_operators_never_fail_on_a_row_the_left_operand_decides() {
     // `ok` has NULLs, so DataFusion evaluates the right operand on every row of the batch and fails on the zero
     // divisors of the decided rows. Native evaluation leaves those rows to the left operand. The CPU side runs the
@@ -1171,7 +1363,6 @@ fn write_decimal_division_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_decimal_division_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-decimal-division");
     let path = dir.join("input.parquet");
@@ -1211,6 +1402,63 @@ async fn native_runtime_decimal_division_matches_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_decimal_join_residuals_match_cpu_without_host_boundaries() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-decimal-join-residual");
+    let path = dir.join("input.parquet");
+    write_decimal_division_input_parquet(&path);
+
+    for (name, sql) in [
+        (
+            "cross-input-decimal-division",
+            "SELECT l.row_id FROM bench l JOIN bench r ON l.row_id = r.row_id \
+             AND l.amount / r.rate_nonzero > 1 ORDER BY l.row_id",
+        ),
+        (
+            "case-guarded-input-ratios",
+            "SELECT l.row_id FROM bench l JOIN bench r ON l.row_id = r.row_id \
+             AND CASE WHEN l.rate_zero <> 0 THEN l.amount / l.rate_zero END \
+                 > CASE WHEN r.rate_nonzero <> 0 THEN r.amount / r.rate_nonzero END \
+             ORDER BY l.row_id",
+        ),
+        (
+            "cross-input-case-guards-scaling-overflow",
+            "SELECT l.row_id FROM bench l JOIN bench r ON l.row_id = r.row_id \
+             AND CASE WHEN r.row_id <> 4 THEN l.big_over / r.rate_nonzero END > 0 \
+             ORDER BY l.row_id",
+        ),
+        (
+            "unmatched-overflowing-dividend",
+            "SELECT l.row_id FROM bench l JOIN bench r ON l.row_id = r.row_id \
+             AND r.row_id <> 4 AND l.big_over / r.rate_nonzero > 0 ORDER BY l.row_id",
+        ),
+    ] {
+        let cpu = cpu_sql_output(&path, sql).await;
+        assert!(cpu.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "{name} must exercise output rows");
+        let plan = sql_plan(&path, SessionConfig::new(), sql).await;
+        let optimization = optimize_with_pruning_template_requiring_native(plan);
+        assert_algeon_native_exec(&optimization.plan, name);
+        let native = collect(optimization.plan, Arc::new(TaskContext::default())).await.unwrap();
+        assert_batches_equal(&cpu, &native);
+    }
+
+    for (name, sql) in [
+        (
+            "active-zero-divisor",
+            "SELECT l.row_id FROM bench l JOIN bench r ON l.row_id = r.row_id \
+             AND l.amount / r.rate_zero > 0",
+        ),
+        (
+            "active-scaling-overflow",
+            "SELECT l.row_id FROM bench l JOIN bench r ON l.row_id = r.row_id \
+             AND CASE WHEN r.row_id > 0 THEN l.big_over / r.rate_nonzero END > 0",
+        ),
+    ] {
+        assert_native_fails_like_cpu(&path, name, sql).await;
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 async fn native_runtime_decimal_division_failures_fail_the_query_like_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-decimal-division-failures");
     let path = dir.join("input.parquet");
@@ -1290,7 +1538,6 @@ fn write_event_time_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_timestamp_and_duration_counts_cast_to_bigint_like_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-temporal-counts");
     let path = dir.join("input.parquet");
@@ -1361,7 +1608,6 @@ fn write_timestamp_overflow_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_timestamp_arithmetic_fails_like_cpu_only_on_rows_cpu_evaluates() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-timestamp-overflow");
     let path = dir.join("input.parquet");
@@ -1456,7 +1702,6 @@ fn write_temporal_unit_cast_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_temporal_unit_casts_truncate_and_fail_like_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-temporal-unit-casts");
     let path = dir.join("input.parquet");

@@ -12,7 +12,7 @@ use cudf::{
     ops::ast::{AstExpression, AstOperator},
 };
 
-use crate::common::{run_named_cases, scalar};
+use crate::common::scalar;
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
@@ -372,80 +372,77 @@ fn conditional_inner_join_indices_supports_decimal_ast_cast_to_float64() {
     assert_eq!(sorted_dataframe_join_index_pairs(&indices), vec![(1, 0), (1, 1)]);
 }
 
-#[test]
-fn conditional_join_tests_cases() {
-    run_named_cases(&[
-        (
-            "conditional_inner_join_indices_matches_less_than_predicate",
-            conditional_inner_join_indices_matches_less_than_predicate,
-        ),
-        (
-            "conditional_left_join_indices_preserves_unmatched_left_rows",
-            conditional_left_join_indices_preserves_unmatched_left_rows,
-        ),
-        (
-            "conditional_full_join_indices_preserves_unmatched_rows_from_both_sides",
-            conditional_full_join_indices_preserves_unmatched_rows_from_both_sides,
-        ),
-        (
-            "dataframe_conditional_full_join_size_data_matches_materialized_pair_indices_for_unmatched_rows",
-            dataframe_conditional_full_join_size_data_matches_materialized_pair_indices_for_unmatched_rows,
-        ),
-        (
-            "dataframe_conditional_full_join_size_data_materialize_indices_in_uses_execution_override",
-            dataframe_conditional_full_join_size_data_materialize_indices_in_uses_execution_override,
-        ),
-        (
-            "dataframe_conditional_full_join_size_data_materialize_indices_in_rejects_foreign_stream",
-            dataframe_conditional_full_join_size_data_materialize_indices_in_rejects_foreign_stream,
-        ),
-        (
-            "dataframe_conditional_full_join_size_data_no_match_reports_left_and_right_unmatched_rows",
-            dataframe_conditional_full_join_size_data_no_match_reports_left_and_right_unmatched_rows,
-        ),
-        (
-            "dataframe_conditional_full_join_size_data_empty_left_reports_right_unmatched_rows",
-            dataframe_conditional_full_join_size_data_empty_left_reports_right_unmatched_rows,
-        ),
-        (
-            "dataframe_conditional_full_join_size_data_empty_right_reports_left_unmatched_rows",
-            dataframe_conditional_full_join_size_data_empty_right_reports_left_unmatched_rows,
-        ),
-        (
-            "dataframe_conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate",
-            dataframe_conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate,
-        ),
-        (
-            "dataframe_join_gather_map_reservation_rejects_rows_above_cudf_size_type",
-            dataframe_join_gather_map_reservation_rejects_rows_above_cudf_size_type,
-        ),
-        (
-            "conditional_left_semi_and_anti_join_indices_return_left_existence_shapes",
-            conditional_left_semi_and_anti_join_indices_return_left_existence_shapes,
-        ),
-        (
-            "conditional_join_size_and_output_size_hint_match_indices",
-            conditional_join_size_and_output_size_hint_match_indices,
-        ),
-        (
-            "conditional_inner_join_indices_treats_null_predicate_as_not_matching",
-            conditional_inner_join_indices_treats_null_predicate_as_not_matching,
-        ),
-        (
-            "conditional_inner_join_indices_keeps_literal_scalar_alive_inside_ast",
-            conditional_inner_join_indices_keeps_literal_scalar_alive_inside_ast,
-        ),
-        (
-            "conditional_inner_join_indices_supports_ast_in_list_predicate",
-            conditional_inner_join_indices_supports_ast_in_list_predicate,
-        ),
-        (
-            "conditional_inner_join_indices_supports_ast_cast_predicate",
-            conditional_inner_join_indices_supports_ast_cast_predicate,
-        ),
-        (
-            "conditional_inner_join_indices_supports_decimal_ast_cast_to_float64",
-            conditional_inner_join_indices_supports_decimal_ast_cast_to_float64,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "conditional_join_tests::conditional_inner_join_indices_matches_less_than_predicate",
+        conditional_inner_join_indices_matches_less_than_predicate,
+    ),
+    (
+        "conditional_join_tests::conditional_left_join_indices_preserves_unmatched_left_rows",
+        conditional_left_join_indices_preserves_unmatched_left_rows,
+    ),
+    (
+        "conditional_join_tests::conditional_full_join_indices_preserves_unmatched_rows_from_both_sides",
+        conditional_full_join_indices_preserves_unmatched_rows_from_both_sides,
+    ),
+    (
+        "conditional_join_tests::dataframe_conditional_full_join_size_data_matches_materialized_pair_indices_for_unmatched_rows",
+        dataframe_conditional_full_join_size_data_matches_materialized_pair_indices_for_unmatched_rows,
+    ),
+    (
+        "conditional_join_tests::dataframe_conditional_full_join_size_data_materialize_indices_in_uses_execution_override",
+        dataframe_conditional_full_join_size_data_materialize_indices_in_uses_execution_override,
+    ),
+    (
+        "conditional_join_tests::dataframe_conditional_full_join_size_data_materialize_indices_in_rejects_foreign_stream",
+        dataframe_conditional_full_join_size_data_materialize_indices_in_rejects_foreign_stream,
+    ),
+    (
+        "conditional_join_tests::dataframe_conditional_full_join_size_data_no_match_reports_left_and_right_unmatched_rows",
+        dataframe_conditional_full_join_size_data_no_match_reports_left_and_right_unmatched_rows,
+    ),
+    (
+        "conditional_join_tests::dataframe_conditional_full_join_size_data_empty_left_reports_right_unmatched_rows",
+        dataframe_conditional_full_join_size_data_empty_left_reports_right_unmatched_rows,
+    ),
+    (
+        "conditional_join_tests::dataframe_conditional_full_join_size_data_empty_right_reports_left_unmatched_rows",
+        dataframe_conditional_full_join_size_data_empty_right_reports_left_unmatched_rows,
+    ),
+    (
+        "conditional_join_tests::dataframe_conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate",
+        dataframe_conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate,
+    ),
+    (
+        "conditional_join_tests::dataframe_join_gather_map_reservation_rejects_rows_above_cudf_size_type",
+        dataframe_join_gather_map_reservation_rejects_rows_above_cudf_size_type,
+    ),
+    (
+        "conditional_join_tests::conditional_left_semi_and_anti_join_indices_return_left_existence_shapes",
+        conditional_left_semi_and_anti_join_indices_return_left_existence_shapes,
+    ),
+    (
+        "conditional_join_tests::conditional_join_size_and_output_size_hint_match_indices",
+        conditional_join_size_and_output_size_hint_match_indices,
+    ),
+    (
+        "conditional_join_tests::conditional_inner_join_indices_treats_null_predicate_as_not_matching",
+        conditional_inner_join_indices_treats_null_predicate_as_not_matching,
+    ),
+    (
+        "conditional_join_tests::conditional_inner_join_indices_keeps_literal_scalar_alive_inside_ast",
+        conditional_inner_join_indices_keeps_literal_scalar_alive_inside_ast,
+    ),
+    (
+        "conditional_join_tests::conditional_inner_join_indices_supports_ast_in_list_predicate",
+        conditional_inner_join_indices_supports_ast_in_list_predicate,
+    ),
+    (
+        "conditional_join_tests::conditional_inner_join_indices_supports_ast_cast_predicate",
+        conditional_inner_join_indices_supports_ast_cast_predicate,
+    ),
+    (
+        "conditional_join_tests::conditional_inner_join_indices_supports_decimal_ast_cast_to_float64",
+        conditional_inner_join_indices_supports_decimal_ast_cast_to_float64,
+    ),
+];

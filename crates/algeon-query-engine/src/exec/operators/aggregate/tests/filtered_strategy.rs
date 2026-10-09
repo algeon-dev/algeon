@@ -126,8 +126,7 @@ fn filtered_global_strategy_caps_row_chunks_by_budget() {
     assert!(rows_per_chunk < 1_000_000, "row chunk sizing should follow the small budget");
 }
 
-#[test]
-fn filtered_global_strategy_rejects_large_distinct_state() {
+fn filtered_global_strategy_rejects_large_distinct_state_case() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("value", DataType::Int64, true),
         Field::new("flag", DataType::Boolean, true),
@@ -161,6 +160,12 @@ fn filtered_global_strategy_rejects_large_distinct_state() {
 }
 
 #[test]
+fn filtered_global_strategy_rejects_large_distinct_state() {
+    filtered_global_strategy_rejects_large_distinct_state_case();
+    filtered_global_strategy_rejects_large_median_state();
+    filtered_global_strategy_rejects_large_statistical_state();
+}
+
 fn filtered_global_strategy_rejects_large_statistical_state() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("value", DataType::Float64, true),
@@ -188,7 +193,6 @@ fn filtered_global_strategy_rejects_large_statistical_state() {
     assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
 }
 
-#[test]
 fn filtered_global_strategy_rejects_large_median_state() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("value", DataType::Float64, true),
@@ -328,8 +332,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
     assert_eq!(recorded.facts.get("source_chunk_row_group_count").map(String::as_str), Some("4"));
 }
 
-#[test]
-fn filtered_grouped_strategy_rejects_large_nunique_state() {
+fn filtered_grouped_strategy_rejects_large_nunique_state_case() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("value", DataType::Int64, true),
@@ -358,6 +361,11 @@ fn filtered_grouped_strategy_rejects_large_nunique_state() {
 }
 
 #[test]
+fn filtered_grouped_strategy_rejects_large_nunique_state() {
+    filtered_grouped_strategy_rejects_large_nunique_state_case();
+    filtered_grouped_strategy_rejects_large_median_state();
+}
+
 fn filtered_grouped_strategy_rejects_large_median_state() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

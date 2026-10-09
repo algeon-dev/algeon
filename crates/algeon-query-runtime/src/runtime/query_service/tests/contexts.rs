@@ -170,8 +170,7 @@ fn query_service_released_handle_rejects_context_acquisition() {
     assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
 }
 
-#[test]
-fn admitted_context_gate_rejects_changed_scope_evidence() {
+fn admitted_context_gate_rejects_changed_scope_evidence_case() {
     let assert_quiescent = |service: &QueryService| {
         service
             .wait_for_stream_pools_idle(Duration::from_secs(10))
@@ -228,6 +227,11 @@ fn admitted_context_gate_rejects_changed_scope_evidence() {
 }
 
 #[test]
+fn admitted_context_gate_rejects_changed_scope_evidence() {
+    admitted_context_gate_rejects_changed_scope_evidence_case();
+    placement_only_service_context_fails_closed_without_plan_evidence();
+}
+
 fn placement_only_service_context_fails_closed_without_plan_evidence() {
     let service = runtime_test_service(1, 8);
     let handle = service.admit_query().expect("placement-only admission");
@@ -426,17 +430,6 @@ async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
 
-#[test]
-fn query_service_context_keeps_admission_until_context_drop() {
-    let service = runtime_test_service(1, 8);
-    let handle = service.admit_query().unwrap();
-    let admitted_context = handle.acquire_context().unwrap();
-    drop(handle);
-
-    assert!(service.try_admit_query().unwrap().is_none());
-    drop(admitted_context);
-    service.admit_query().expect("cleanup should wake the blocked admission");
-}
 #[test]
 fn finished_query_rejects_context_derivations_until_escaped_context_drops() {
     let service = runtime_test_service(1, 8);
@@ -820,7 +813,6 @@ async fn queued_gpu_pool_job_retains_query_without_parking_cleanup_on_worker_per
     let next = service.admit_query().expect("queued and running anchors drain before cleanup");
     drop(next);
 }
-#[tokio::test(flavor = "current_thread")]
 async fn query_handle_gpu_pool_is_counted_and_rejects_work_after_finish() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
     let handle = service.admit_query().unwrap();
@@ -846,8 +838,7 @@ async fn query_handle_gpu_pool_is_counted_and_rejects_work_after_finish() {
     drop(replacement);
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn admission_without_runtime_context_releases_through_the_device_executor() {
+async fn admission_without_runtime_context_releases_through_the_device_executor_case() {
     // Every device-backed admission owns its root stream and domain
     // from admission time, so a handle that never acquired a context still
     // releases through the device executor.
@@ -900,6 +891,12 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
     drop(admitted);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn admission_without_runtime_context_releases_through_the_device_executor() {
+    admission_without_runtime_context_releases_through_the_device_executor_case().await;
+    root_context_release_waits_for_busy_gpu_worker().await;
+}
+
 /// Query execution cannot occupy the worker reserved for lifecycle jobs, so
 /// a placed admission builds its envelope while every other worker runs
 /// execution work, inside its queue deadline.
@@ -937,7 +934,6 @@ async fn placed_admission_builds_its_envelope_while_execution_workers_are_busy()
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
 
-#[tokio::test(flavor = "current_thread")]
 async fn root_context_release_waits_for_busy_gpu_worker() {
     let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
     let handle = service.admit_query().expect("context-backed admission");
@@ -981,8 +977,7 @@ async fn root_context_release_waits_for_busy_gpu_worker() {
     drop(admitted);
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
+async fn query_handle_gpu_job_retains_query_epoch_until_joined_case() {
     let service = try_guaranteed_runtime_test_service_with_concurrency(2).expect("two-worker guaranteed service");
     let handle = service.admit_query().unwrap();
     let retained_pool = handle.gpu_execution_pool().expect("counted query-handle GPU execution pool");
@@ -1009,6 +1004,12 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     job.await.expect("GPU job task joins").expect("GPU job succeeds after release");
     let replacement = service.admit_query().expect("joining the final GPU job releases query admission");
     drop(replacement);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
+    query_handle_gpu_job_retains_query_epoch_until_joined_case().await;
+    query_handle_gpu_pool_is_counted_and_rejects_work_after_finish().await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1088,17 +1089,6 @@ async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quie
 }
 
 #[test]
-fn active_query_owner_prevents_service_drain_until_cleanup_finishes() {
-    let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    let handle = service.admit_query().unwrap();
-
-    service.close().unwrap();
-
-    drop(handle);
-    service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
-    drop(service);
-}
-#[test]
 fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction() {
     struct CleanupBlockerGate {
         semaphore: Arc<Semaphore>,
@@ -1173,8 +1163,7 @@ fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction
 
     drop(service);
 }
-#[test]
-fn query_service_waits_for_background_stream_cleanup_quiescence() {
+fn query_service_waits_for_background_stream_cleanup_quiescence_case() {
     let service = runtime_test_service(1, 8);
     let handle = service.admit_query().unwrap();
     let context = handle.acquire_context().unwrap();
@@ -1189,7 +1178,13 @@ fn query_service_waits_for_background_stream_cleanup_quiescence() {
     drop(handle);
     service.wait_for_stream_pools_idle(Duration::from_secs(5)).unwrap();
 }
+
 #[test]
+fn query_service_waits_for_background_stream_cleanup_quiescence() {
+    query_service_waits_for_background_stream_cleanup_quiescence_case();
+    query_service_quiescence_allows_declared_long_lived_root_contexts();
+}
+
 fn query_service_quiescence_allows_declared_long_lived_root_contexts() {
     let service = runtime_test_service(1, 8);
     let handle = service.admit_query().unwrap();

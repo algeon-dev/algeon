@@ -13,6 +13,10 @@ pub const ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str = "ALGEON_SERVER_STA
 /// such as `[auth]`, `[admission]`, `[native]`, and `[observability]`; scalar
 /// env vars remain bootstrap overrides.
 pub const ALGEON_SERVER_CONFIG_FILE_ENV: &str = "ALGEON_SERVER_CONFIG_FILE";
+/// Seconds without inbound traffic before an HTTP/2 keepalive ping. Defaults to `30`.
+pub const ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV: &str = "ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS";
+/// Seconds a keepalive ping waits for acknowledgement. Defaults to `10`.
+pub const ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV: &str = "ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS";
 pub(super) const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
 pub(super) const DEFAULT_STATEMENT_TICKET_TTL_SECS: u64 = 300;
 

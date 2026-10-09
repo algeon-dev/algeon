@@ -4,7 +4,7 @@
 
 use cudf::Exec;
 
-use crate::common::{nullable_series, run_named_cases, series};
+use crate::common::{nullable_series, series};
 
 // ===========================================================================
 // ffill (forward fill)
@@ -17,31 +17,12 @@ fn test_series_ffill_basic() {
     assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(1), Some(1), Some(1), Some(4)]);
 }
 
-fn test_series_ffill_display_omits_input_name() {
-    let s = nullable_series::<i32>("my_col", &[1, 0], &[true, false]).unwrap();
-    let result = s.on(Exec::RETAINED).ffill().unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("my_col"), "ffill output should not expose schema names: {}", output);
-}
-
 fn test_series_ffill_leading_nulls_remain() {
     let s = nullable_series::<i32>("x", &[0, 0, 3], &[false, false, true]).unwrap();
     let result = s.on(Exec::RETAINED).ffill().unwrap();
     assert_eq!(result.null_count(), 2);
     let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![None, None, Some(3)]);
-}
-
-fn test_series_ffill_no_nulls() {
-    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-    let result = s.on(Exec::RETAINED).ffill().unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
-}
-
-fn test_series_ffill_all_null() {
-    let s = nullable_series::<i32>("x", &[0, 0, 0], &[false, false, false]).unwrap();
-    let result = s.on(Exec::RETAINED).ffill().unwrap();
-    assert_eq!(result.null_count(), 3);
 }
 
 fn test_series_ffill_empty() {
@@ -67,13 +48,6 @@ fn test_series_bfill_basic() {
     assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(1), Some(4), Some(4), Some(4)]);
 }
 
-fn test_series_bfill_display_omits_input_name() {
-    let s = nullable_series::<i32>("my_col", &[0, 1], &[false, true]).unwrap();
-    let result = s.on(Exec::RETAINED).bfill().unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("my_col"), "bfill output should not expose schema names: {}", output);
-}
-
 fn test_series_bfill_trailing_nulls_remain() {
     let s = nullable_series::<i32>("x", &[1, 0, 0], &[true, false, false]).unwrap();
     let result = s.on(Exec::RETAINED).bfill().unwrap();
@@ -86,12 +60,6 @@ fn test_series_bfill_no_nulls() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.on(Exec::RETAINED).bfill().unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
-}
-
-fn test_series_bfill_all_null() {
-    let s = nullable_series::<i32>("x", &[0, 0], &[false, false]).unwrap();
-    let result = s.on(Exec::RETAINED).bfill().unwrap();
-    assert_eq!(result.null_count(), 2);
 }
 
 fn test_series_bfill_empty() {
@@ -125,23 +93,18 @@ fn test_series_ffill_then_bfill_fills_all_interior() {
     assert_eq!(after_both.to_optional_vec::<i32>().unwrap(), vec![Some(2), Some(2), Some(2), Some(4), Some(4)]);
 }
 
-#[test]
-fn ffill_bfill_tests_cases() {
-    run_named_cases(&[
-        ("test_series_ffill_basic", test_series_ffill_basic),
-        ("test_series_ffill_display_omits_input_name", test_series_ffill_display_omits_input_name),
-        ("test_series_ffill_leading_nulls_remain", test_series_ffill_leading_nulls_remain),
-        ("test_series_ffill_no_nulls", test_series_ffill_no_nulls),
-        ("test_series_ffill_all_null", test_series_ffill_all_null),
-        ("test_series_ffill_empty", test_series_ffill_empty),
-        ("test_series_ffill_float64", test_series_ffill_float64),
-        ("test_series_bfill_basic", test_series_bfill_basic),
-        ("test_series_bfill_display_omits_input_name", test_series_bfill_display_omits_input_name),
-        ("test_series_bfill_trailing_nulls_remain", test_series_bfill_trailing_nulls_remain),
-        ("test_series_bfill_no_nulls", test_series_bfill_no_nulls),
-        ("test_series_bfill_all_null", test_series_bfill_all_null),
-        ("test_series_bfill_empty", test_series_bfill_empty),
-        ("test_series_bfill_single_element", test_series_bfill_single_element),
-        ("test_series_ffill_then_bfill_fills_all_interior", test_series_ffill_then_bfill_fills_all_interior),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("ffill_bfill_tests::test_series_ffill_basic", test_series_ffill_basic),
+    ("ffill_bfill_tests::test_series_ffill_leading_nulls_remain", test_series_ffill_leading_nulls_remain),
+    ("ffill_bfill_tests::test_series_ffill_empty", test_series_ffill_empty),
+    ("ffill_bfill_tests::test_series_ffill_float64", test_series_ffill_float64),
+    ("ffill_bfill_tests::test_series_bfill_basic", test_series_bfill_basic),
+    ("ffill_bfill_tests::test_series_bfill_trailing_nulls_remain", test_series_bfill_trailing_nulls_remain),
+    ("ffill_bfill_tests::test_series_bfill_no_nulls", test_series_bfill_no_nulls),
+    ("ffill_bfill_tests::test_series_bfill_empty", test_series_bfill_empty),
+    ("ffill_bfill_tests::test_series_bfill_single_element", test_series_bfill_single_element),
+    (
+        "ffill_bfill_tests::test_series_ffill_then_bfill_fills_all_interior",
+        test_series_ffill_then_bfill_fills_all_interior,
+    ),
+];

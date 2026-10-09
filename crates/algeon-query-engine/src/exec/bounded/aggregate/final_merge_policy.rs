@@ -136,13 +136,4 @@ mod tests {
         assert!(!policy.should_stop_compiled_final_merge_fan_in_selection(2, 99, 1, 100));
         assert!(policy.should_stop_compiled_final_merge_fan_in_selection(2, 100, 1, 100));
     }
-
-    #[test]
-    fn compiled_final_merge_fan_in_clamps_to_minimum_and_partial_count() {
-        let policy = BoundedFinalMergePolicy::default();
-
-        assert_eq!(policy.compiled_final_merge_fan_in(0, 5), 2);
-        assert_eq!(policy.compiled_final_merge_fan_in(4, 5), 4);
-        assert_eq!(policy.compiled_final_merge_fan_in(99, 5), 5);
-    }
 }

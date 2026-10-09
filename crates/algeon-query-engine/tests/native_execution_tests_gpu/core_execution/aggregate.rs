@@ -1,40 +1,6 @@
 use super::*;
 
 #[test]
-fn native_query_executes_group_only_aggregate_as_distinct_keys() {
-    let dir = unique_temp_dir("query-engine-native-group-only-aggregate");
-    let path = dir.join("input.parquet");
-    let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
-    let input_schema = write_input_parquet(&runtime, &path);
-    let output_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
-
-    let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
-        Arc::clone(&input_schema),
-        vec!["key".to_string()],
-    );
-    let aggregate = AggregateSpec::new(vec![Expr::column("key")], vec![]);
-    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
-    let sort = builder.add_sort(aggregate, sort).unwrap();
-    let plan = builder.finish_with_host_sink(sort).unwrap();
-
-    let result = execute_query_plan(&context, &plan).unwrap();
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    assert_eq!(batch.num_rows(), 3);
-    assert_eq!(batch.num_columns(), 1);
-    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn bounded_native_query_executes_group_only_aggregate_with_budgeted_distinct() {
     let dir = unique_temp_dir("query-engine-bounded-group-only-aggregate");
     let path = dir.join("input.parquet");

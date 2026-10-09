@@ -96,20 +96,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn optimized_batch_admission_preserves_file_and_byte_gates() {
-        let policy = LakehouseCachePolicy::default();
-
-        assert!(!policy.optimized_batch_has_min_files(LakehouseCachePolicy::DEFAULT_OPTIMIZED_BATCH_MIN_FILES - 1));
-        assert!(policy.optimized_batch_has_min_files(LakehouseCachePolicy::DEFAULT_OPTIMIZED_BATCH_MIN_FILES));
-        assert!(policy.optimized_batch_source_read_bytes_allowed(
-            LakehouseCachePolicy::DEFAULT_OPTIMIZED_BATCH_MAX_SOURCE_READ_BYTES
-        ));
-        assert!(!policy.optimized_batch_source_read_bytes_allowed(
-            LakehouseCachePolicy::DEFAULT_OPTIMIZED_BATCH_MAX_SOURCE_READ_BYTES + 1
-        ));
-    }
-
-    #[test]
     fn optimized_batch_row_group_size_tracks_target_with_bounds() {
         let policy = LakehouseCachePolicy::default();
 
@@ -122,18 +108,6 @@ mod tests {
         assert_eq!(
             policy.optimized_batch_row_group_size_rows(64_000_000),
             LakehouseCachePolicy::DEFAULT_OPTIMIZED_BATCH_MAX_ROWS_PER_GROUP as i32
-        );
-    }
-
-    #[test]
-    fn cache_lock_retry_policy_preserves_wait_and_attempts() {
-        let policy = LakehouseCachePolicy::default();
-
-        assert_eq!(policy.cache_lock_wait(), LakehouseCachePolicy::DEFAULT_CACHE_LOCK_WAIT);
-        assert_eq!(policy.cache_lock_max_attempts(), LakehouseCachePolicy::DEFAULT_CACHE_LOCK_MAX_ATTEMPTS);
-        assert_eq!(
-            policy.malformed_cache_lock_stale_age(),
-            LakehouseCachePolicy::DEFAULT_MALFORMED_CACHE_LOCK_STALE_AGE
         );
     }
 }

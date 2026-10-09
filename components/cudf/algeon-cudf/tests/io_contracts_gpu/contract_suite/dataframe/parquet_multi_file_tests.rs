@@ -5,7 +5,7 @@ use cudf::{
     core::{Column, Table},
     frame::dataframe::MultiParquetReadOptions,
     io::parquet::{ParquetTableWriteOptions, write_parquet},
-    testing::prelude::*,
+    testing::{prelude::*, run_named_cases},
 };
 use cudf_sys::test_support;
 use tempfile::TempDir;
@@ -29,7 +29,6 @@ fn write_parquet_df(path: &std::path::Path, column_names: &[&str], columns: Vec<
     write_parquet(&table, &write_opts).unwrap();
 }
 
-#[test]
 fn test_read_parquet_many_preserves_file_order_and_schema() {
     let dir = TempDir::new().unwrap();
     let first_path = dir.path().join("first.parquet");
@@ -59,7 +58,6 @@ fn test_read_parquet_many_preserves_file_order_and_schema() {
     assert_eq!(df.series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30, 40]);
 }
 
-#[test]
 fn test_read_parquet_many_projection_applies_to_all_files() {
     let dir = TempDir::new().unwrap();
     let first_path = dir.path().join("project_first.parquet");
@@ -98,7 +96,6 @@ fn test_read_parquet_many_projection_applies_to_all_files() {
     assert_eq!(df.series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn test_read_parquet_many_rejects_mismatched_schema_with_stable_error() {
     let dir = TempDir::new().unwrap();
     let first_path = dir.path().join("schema_first.parquet");
@@ -135,7 +132,6 @@ fn test_read_parquet_many_rejects_mismatched_schema_with_stable_error() {
     );
 }
 
-#[test]
 fn test_read_parquet_many_rejects_empty_file_list_as_invalid_input() {
     let rt = sample_runtime();
     let paths: Vec<std::path::PathBuf> = Vec::new();
@@ -150,7 +146,6 @@ fn test_read_parquet_many_rejects_empty_file_list_as_invalid_input() {
     assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("provide one or more concrete Parquet file paths"));
 }
 
-#[test]
 fn test_read_parquet_many_rejects_empty_projection_as_invalid_input() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("empty_projection.parquet");
@@ -173,7 +168,6 @@ fn test_read_parquet_many_rejects_empty_projection_as_invalid_input() {
     );
 }
 
-#[test]
 fn test_read_parquet_many_rejects_directory_via_shared_input_validator() {
     let dir = TempDir::new().unwrap();
     let rt = sample_runtime();
@@ -193,7 +187,6 @@ fn test_read_parquet_many_rejects_directory_via_shared_input_validator() {
     );
 }
 
-#[test]
 fn test_read_parquet_many_missing_file_reports_file_index_and_path() {
     let dir = TempDir::new().unwrap();
     let first_path = dir.path().join("existing.parquet");
@@ -220,7 +213,6 @@ fn test_read_parquet_many_missing_file_reports_file_index_and_path() {
     );
 }
 
-#[test]
 fn test_read_parquet_many_metadata_fault_reports_file_index_and_path() {
     let _reset = MetadataFaultReset;
     let dir = TempDir::new().unwrap();
@@ -244,7 +236,6 @@ fn test_read_parquet_many_metadata_fault_reports_file_index_and_path() {
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("missing_reader_schema_names"));
 }
 
-#[test]
 fn test_read_parquet_many_accepts_literal_glob_metacharacters_in_filename() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("part-[literal]?*.parquet");
@@ -263,7 +254,6 @@ fn test_read_parquet_many_accepts_literal_glob_metacharacters_in_filename() {
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8]);
 }
 
-#[test]
 fn test_read_parquet_many_does_not_expand_glob_patterns() {
     let dir = TempDir::new().unwrap();
     let existing_path = dir.path().join("part-0.parquet");
@@ -285,7 +275,6 @@ fn test_read_parquet_many_does_not_expand_glob_patterns() {
     assert_eq!(error_context_value(&err, "path").as_deref(), Some(glob_pattern.to_string_lossy().as_ref()));
 }
 
-#[test]
 fn test_read_parquet_many_retains_runtime_execution_domain_provenance() {
     let dir = TempDir::new().unwrap();
     let first_path = dir.path().join("domain_first.parquet");
@@ -309,4 +298,51 @@ fn test_read_parquet_many_retains_runtime_execution_domain_provenance() {
     assert_eq!(df.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
+}
+
+#[test]
+fn parquet_multi_file_tests_cases() {
+    run_named_cases(&[
+        (
+            "test_read_parquet_many_rejects_mismatched_schema_with_stable_error",
+            test_read_parquet_many_rejects_mismatched_schema_with_stable_error,
+        ),
+        (
+            "test_read_parquet_many_rejects_empty_file_list_as_invalid_input",
+            test_read_parquet_many_rejects_empty_file_list_as_invalid_input,
+        ),
+        (
+            "test_read_parquet_many_rejects_empty_projection_as_invalid_input",
+            test_read_parquet_many_rejects_empty_projection_as_invalid_input,
+        ),
+        (
+            "test_read_parquet_many_rejects_directory_via_shared_input_validator",
+            test_read_parquet_many_rejects_directory_via_shared_input_validator,
+        ),
+        (
+            "test_read_parquet_many_missing_file_reports_file_index_and_path",
+            test_read_parquet_many_missing_file_reports_file_index_and_path,
+        ),
+        (
+            "test_read_parquet_many_metadata_fault_reports_file_index_and_path",
+            test_read_parquet_many_metadata_fault_reports_file_index_and_path,
+        ),
+        (
+            "test_read_parquet_many_accepts_literal_glob_metacharacters_in_filename",
+            test_read_parquet_many_accepts_literal_glob_metacharacters_in_filename,
+        ),
+        ("test_read_parquet_many_does_not_expand_glob_patterns", test_read_parquet_many_does_not_expand_glob_patterns),
+        (
+            "test_read_parquet_many_retains_runtime_execution_domain_provenance",
+            test_read_parquet_many_retains_runtime_execution_domain_provenance,
+        ),
+        (
+            "test_read_parquet_many_preserves_file_order_and_schema",
+            test_read_parquet_many_preserves_file_order_and_schema,
+        ),
+        (
+            "test_read_parquet_many_projection_applies_to_all_files",
+            test_read_parquet_many_projection_applies_to_all_files,
+        ),
+    ]);
 }

@@ -7,7 +7,7 @@ use cudf::{
 use crate::common::{
     column_from_slice, column_from_slice_nullable, dataframe_from_columns, dependency_wait_call_count_for_stream,
     error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation,
-    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
+    reset_dependency_observation, reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 fn left_df() -> DataFrame {
@@ -364,33 +364,45 @@ fn test_merge_split_in_context_left_on_without_right_on() {
     );
 }
 
-#[test]
-fn dataframe_merge_split_tests_cases() {
-    run_named_cases(&[
-        ("test_inner_merge_split_on_shared_key", test_inner_merge_split_on_shared_key),
-        ("test_left_merge_split_preserves_all_left_rows", test_left_merge_split_preserves_all_left_rows),
-        ("test_full_merge_split_preserves_all_rows", test_full_merge_split_preserves_all_rows),
-        (
-            "test_merge_split_asymmetric_keys_preserve_each_side_schema",
-            test_merge_split_asymmetric_keys_preserve_each_side_schema,
-        ),
-        ("test_merge_split_respects_null_equality", test_merge_split_respects_null_equality),
-        (
-            "test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resources",
-            test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resources,
-        ),
-        (
-            "test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance",
-            test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance,
-        ),
-        ("test_merge_split_left_on_without_right_on", test_merge_split_left_on_without_right_on),
-        ("test_merge_split_right_on_without_left_on", test_merge_split_right_on_without_left_on),
-        ("test_merge_split_left_on_right_on_length_mismatch", test_merge_split_left_on_right_on_length_mismatch),
-        ("test_merge_split_no_keys_specified", test_merge_split_no_keys_specified),
-        (
-            "test_merge_split_rejects_ambiguous_join_key_configuration",
-            test_merge_split_rejects_ambiguous_join_key_configuration,
-        ),
-        ("test_merge_split_in_context_left_on_without_right_on", test_merge_split_in_context_left_on_without_right_on),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("dataframe_merge_split_tests::test_inner_merge_split_on_shared_key", test_inner_merge_split_on_shared_key),
+    (
+        "dataframe_merge_split_tests::test_left_merge_split_preserves_all_left_rows",
+        test_left_merge_split_preserves_all_left_rows,
+    ),
+    ("dataframe_merge_split_tests::test_full_merge_split_preserves_all_rows", test_full_merge_split_preserves_all_rows),
+    (
+        "dataframe_merge_split_tests::test_merge_split_asymmetric_keys_preserve_each_side_schema",
+        test_merge_split_asymmetric_keys_preserve_each_side_schema,
+    ),
+    ("dataframe_merge_split_tests::test_merge_split_respects_null_equality", test_merge_split_respects_null_equality),
+    (
+        "dataframe_merge_split_tests::test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resources",
+        test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resources,
+    ),
+    (
+        "dataframe_merge_split_tests::test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance",
+        test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance,
+    ),
+    (
+        "dataframe_merge_split_tests::test_merge_split_left_on_without_right_on",
+        test_merge_split_left_on_without_right_on,
+    ),
+    (
+        "dataframe_merge_split_tests::test_merge_split_right_on_without_left_on",
+        test_merge_split_right_on_without_left_on,
+    ),
+    (
+        "dataframe_merge_split_tests::test_merge_split_left_on_right_on_length_mismatch",
+        test_merge_split_left_on_right_on_length_mismatch,
+    ),
+    ("dataframe_merge_split_tests::test_merge_split_no_keys_specified", test_merge_split_no_keys_specified),
+    (
+        "dataframe_merge_split_tests::test_merge_split_rejects_ambiguous_join_key_configuration",
+        test_merge_split_rejects_ambiguous_join_key_configuration,
+    ),
+    (
+        "dataframe_merge_split_tests::test_merge_split_in_context_left_on_without_right_on",
+        test_merge_split_in_context_left_on_without_right_on,
+    ),
+];
