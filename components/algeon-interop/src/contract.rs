@@ -7,8 +7,8 @@ use crate::{CompletionAuthority, ProducerReadiness, ReadStartAuthority, types::R
 ///
 /// A witness records the device-queue point after which the consumer's reads
 /// of producer storage are complete. Backends are `Send + Sync` and must
-/// support shared calls from any thread, so each call binds the device context
-/// its native handle requires instead of relying on the caller's current
+/// support shared calls from any thread. Each call binds the device context
+/// its native handle requires and does not rely on the caller's current
 /// device. This does not make an active lease or a consumer wrapper that holds
 /// a witness usable across threads.
 pub trait CompletionWitnessBackend: Send + Sync {
@@ -125,8 +125,8 @@ pub trait ActiveLeaseBackend: Send + Sync {
 
     /// Establishes completion for one lease.
     ///
-    /// `Some(witness)` means a completion point was recorded, not that
-    /// consumer device work has finished; the lease holds the export's retained
+    /// `Some(witness)` means a completion point was recorded. Consumer device
+    /// work may still be pending, and the lease holds the export's retained
     /// owner until the witness is synchronized. `None` means completion was
     /// established before returning. `Err` leaves the lease incomplete.
     fn complete(

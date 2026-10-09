@@ -4,10 +4,10 @@
 //!
 //! - Each `FactKeyName` binds to exactly one `FactValue` variant; the pairing
 //!   is enforced at the writer-API type layer via `FactKey<T>`.
-//! - A key keeps its first value. The leaf error that observed a failure
+//! - A key keeps its first value. The leaf error that reports a failure
 //!   writes first, so a wrapper that inserts the same key later cannot
 //!   overwrite the original failure location; wrappers add context through
-//!   the call chain and details instead.
+//!   the call chain and details.
 //! - Public downstream API is read-only. Internal writers use the typed
 //!   `with_fact(FactKey<T>, T)` shape.
 
@@ -21,25 +21,45 @@ use crate::core::types::TypeId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum FactKeyName {
+    /// Caller column identifier associated with the failure.
     ColumnName,
+    /// Zero-based column position associated with the failure.
     ColumnIndex,
+    /// Row count required by the failed input contract.
     ExpectedRows,
+    /// Observed row count that did not satisfy the input contract.
     ActualRows,
+    /// Item count required by the operation, such as partition fields or columns.
     ExpectedCount,
+    /// Observed item count compared with the required count.
     ActualCount,
+    /// cuDF type of the left input in a type compatibility check.
     LeftTypeId,
+    /// cuDF type of the right input in a type compatibility check.
     RightTypeId,
+    /// Process-visible CUDA ordinal of the left input.
     LeftDevice,
+    /// Process-visible CUDA ordinal of the right input.
     RightDevice,
+    /// Number of rows in the table involved in the failure.
     TableRowCount,
+    /// Number of columns in the table involved in the failure.
     TableColumnCount,
+    /// Number of keys supplied to the operation.
     KeysCount,
+    /// Number of distinct keys observed by validation.
     DistinctKeysCount,
+    /// cuDF type associated with the failed operation.
     TypeId,
+    /// Stable reason identifying the failed value validation.
     ValidationReason,
+    /// Execution-binding identity attached to validated input storage.
     ExecutionBindingId,
+    /// Process-visible CUDA ordinal on which input validation ran.
     ValidationDevice,
+    /// Diagnostic stream identifier used for input validation.
     ValidationStream,
+    /// Number of scalar bytes copied to the host to establish validation evidence.
     ControlPlaneScalarBytes,
 }
 
@@ -80,11 +100,17 @@ impl<T> FactKey<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FactValue {
+    /// Text fact retaining either borrowed static text or owned text.
     Str(Cow<'static, str>),
+    /// Nonnegative count represented by the host pointer-sized integer type.
     Usize(usize),
+    /// Signed integer fact.
     I64(i64),
+    /// Typed cuDF data-type identity.
     TypeId(TypeId),
+    /// Process-visible CUDA device ordinal.
     DeviceId(i32),
+    /// Unsigned fixed-width counter or identity.
     U64(u64),
 }
 
@@ -128,9 +154,8 @@ impl FactValueVariant {
 impl FactKeyName {
     /// Returns the canonical snake_case identity for this key.
     ///
-    /// This mirrors `Display` and is used by reverse-lookup helpers (e.g.,
-    /// logging, test helpers) that need to resolve a `FactKeyName` from its
-    /// stable string form.
+    /// This mirrors `Display`. `from_snake_case` parses these strings back into
+    /// the same keys.
     pub const fn as_snake_case(self) -> &'static str {
         match self {
             FactKeyName::ColumnName => "column_name",
@@ -265,7 +290,7 @@ impl IntoFactValue for TypeId {
 }
 
 /// Wrapper around `i32` for device-id facts so that arbitrary `i32` integers
-/// do not accidentally satisfy `FactKey<DeviceId>`.
+/// do not accidentally satisfy `FactKey<DeviceIdFact>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DeviceIdFact(pub(crate) i32);
 
@@ -274,8 +299,6 @@ impl IntoFactValue for DeviceIdFact {
         FactValue::DeviceId(self.0)
     }
 }
-
-// -- Canonical fact keys ----------------------------------------------------
 
 pub(crate) const FACT_COLUMN_NAME: FactKey<Cow<'static, str>> = FactKey::new(FactKeyName::ColumnName);
 pub(crate) const FACT_COLUMN_INDEX: FactKey<usize> = FactKey::new(FactKeyName::ColumnIndex);
@@ -298,8 +321,6 @@ pub(crate) const FACT_VALIDATION_DEVICE: FactKey<DeviceIdFact> = FactKey::new(Fa
 pub(crate) const FACT_VALIDATION_STREAM: FactKey<usize> = FactKey::new(FactKeyName::ValidationStream);
 pub(crate) const FACT_CONTROL_PLANE_SCALAR_BYTES: FactKey<usize> = FactKey::new(FactKeyName::ControlPlaneScalarBytes);
 
-// -- Facts container --------------------------------------------------------
-
 /// Container for canonical facts. Keys are unique; the first value wins.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
@@ -311,22 +332,27 @@ impl Facts {
         Self::default()
     }
 
+    /// Returns whether this error carries no canonical facts.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
 
+    /// Returns the number of distinct canonical fact keys retained by this error.
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    /// Borrows the first value recorded for `key`, or returns `None` when the key is absent.
     pub fn get(&self, key: FactKeyName) -> Option<&FactValue> {
         self.inner.get(&key)
     }
 
+    /// Returns whether a value was recorded under the canonical key.
     pub fn contains(&self, key: FactKeyName) -> bool {
         self.inner.contains_key(&key)
     }
 
+    /// Borrows canonical key/value pairs in their original insertion order.
     pub fn iter(&self) -> impl Iterator<Item = (FactKeyName, &FactValue)> {
         self.inner.iter().map(|(k, v)| (*k, v))
     }
@@ -334,8 +360,8 @@ impl Facts {
     /// Leaf-wins insertion; used by typed `with_fact(FactKey<T>, T)`.
     ///
     /// The first value bound to a key is kept and later duplicates are
-    /// dropped. Wrappers add context through the call chain and details
-    /// instead of overwriting the leaf error's facts.
+    /// dropped. Wrappers add context through the call chain and details; they
+    /// do not overwrite the leaf error's facts.
     pub(crate) fn insert(&mut self, key: FactKeyName, value: FactValue) {
         debug_assert_eq!(
             FactValueVariant::of_value(&value),
@@ -365,8 +391,6 @@ impl fmt::Display for Facts {
 mod tests {
     //! Crate-internal tests that lock the `Facts` writer contract.
     //!
-    //! These were previously in `tests/semantic_contracts_gpu/core/error_truthful_contract_tests.rs`.
-    //! They moved here when the writer surface became `pub(crate)`.
     //! Leaf-wins insertion and wrong-variant behavior are crate-internal
     //! invariants, so the tests must live inside the crate too.
 

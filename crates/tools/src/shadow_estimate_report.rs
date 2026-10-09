@@ -420,10 +420,6 @@ async fn execute_for_real(
     Ok((observation, report))
 }
 
-// ---------------------------------------------------------------------------
-// Comparison record shape
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Serialize)]
 struct CompareRecord {
     schema: &'static str,
@@ -442,7 +438,7 @@ struct CompareRecord {
     oom_requested_bytes: Option<u64>,
     cleanup_disposition: Option<String>,
     /// Set only when this query could not be planned, admitted, or estimated
-    /// at all; the query still appears in the JSONL rather than being dropped.
+    /// at all. The query still appears as a row in the JSONL.
     error: Option<String>,
 }
 
@@ -651,8 +647,8 @@ fn parse_compiled_task_index(compiled_task_id: &str) -> Option<usize> {
 /// Joins compiled-pipeline task envelopes (index space) against observed
 /// `compiled_task_id` rows (string space). The two spaces can legitimately
 /// diverge; for example when a retry grows the runtime task graph beyond
-/// what was compiled for the estimate; so every row that cannot be placed
-/// unambiguously is reported as a `JoinMismatch` instead of guessed.
+/// what was compiled for the estimate. Every row that cannot be placed
+/// unambiguously is reported as a `JoinMismatch`, and no alignment is guessed.
 fn join_task_runtime_rows(
     envelopes: &[ShadowTaskEnvelope],
     observed: &[ObservedTaskRuntimeRow],
@@ -712,10 +708,6 @@ fn frontend_output_coverage(plan: &QueryPlan) -> Coverage {
     Coverage { total: outputs.len(), known }
 }
 
-// ---------------------------------------------------------------------------
-// Manifest
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Serialize)]
 struct Manifest {
     schema: &'static str,
@@ -746,7 +738,7 @@ fn build_manifest(
         "source_chunk_planning_mode": format!("{:?}", execution_config.source_chunk_planning_mode()),
         "statistical_aggregate_execution_mode": format!("{:?}", optimizer_config.statistical_aggregate_execution_mode()),
         // Every attempt in this run uses the backend's configured device
-        // ledger cap rather than an explicit per-query request.
+        // ledger cap. No attempt sets an explicit per-query request.
         "query_cap_bytes": Value::Null,
     });
     Manifest {
@@ -804,7 +796,7 @@ fn git_revision_json() -> Value {
 /// Best-effort GPU/driver identity via `nvidia-smi`. This tool intentionally
 /// does not depend on the `nvml` feature (unlike
 /// `single-node-multi-gpu-validate-run`), so identity here is opportunistic
-/// and degrades to `"unavailable"` rather than failing the run.
+/// and degrades to `"unavailable"`; the run continues.
 fn gpu_driver_identity_json() -> Value {
     match command_output("nvidia-smi", &["--query-gpu=name,driver_version,uuid", "--format=csv,noheader"]) {
         Some(text) if !text.is_empty() => {
@@ -829,10 +821,6 @@ fn command_output(program: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program).args(args).output().ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
-
-// ---------------------------------------------------------------------------
-// CLI parsing
-// ---------------------------------------------------------------------------
 
 fn parse_args(args: Vec<String>) -> ToolResult<ReportConfig> {
     let mut workload = None;

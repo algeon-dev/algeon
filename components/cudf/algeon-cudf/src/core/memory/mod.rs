@@ -55,8 +55,8 @@
 //! assert_eq!(manager.resource().device(), device);
 //! assert_eq!(lease.memory_resource().device(), device);
 //!
-//! // Advanced: create a runtime-owned pool when you specifically need
-//! // allocator isolation instead of stream-bound query reservations.
+//! // Advanced: create a runtime-owned pool when allocator isolation is
+//! // required; query budgets use stream-bound reservations.
 //! let runtime = Runtime::builder()
 //!     .with_device(device)
 //!     .with_pool_memory_resource(256 * 1024 * 1024, None)

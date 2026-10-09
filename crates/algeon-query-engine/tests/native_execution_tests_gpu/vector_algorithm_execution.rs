@@ -694,8 +694,9 @@ fn compiled_cagra_build_allocation_failure_records_task_and_releases_attempt() {
 
 #[test]
 fn bounded_vector_rejection_reports_the_contract_it_misses() {
-    // No compiled contract covers a row number over PCA output; the error
-    // carries that decision's own rejection instead of a generic vector reason.
+    // No compiled contract covers a row number over PCA output. The error
+    // carries that decision's own rejection reason. It does not fall back to a
+    // generic vector reason.
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("x", DataType::Float32, false),

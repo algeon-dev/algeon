@@ -1,6 +1,6 @@
 //! GPU column types.
 //!
-//! **Advanced/Core.** Most users should use [`Series`](crate::Series).
+//! This is advanced core API. Most users should use [`Series`](crate::Series).
 
 use std::{
     any::Any,
@@ -574,24 +574,11 @@ impl Column {
         Self::from_handle_with_domain_and_owner(handle, domain, Some(retained_owner))
     }
 
-    /// Create a column by copying data from an existing device (GPU) pointer.
+    /// Create a column by copying from a borrowed device pointer inside the
+    /// given explicit runtime.
     ///
     /// Performs a device-to-device copy; the new column owns its own memory
     /// independently of the source buffer.
-    ///
-    /// # Safety
-    ///
-    /// `device_ptr` must point to valid GPU memory containing at least `len`
-    /// elements of the type identified by `type_id`. For `len == 0`,
-    /// `device_ptr` may be null.
-    ///
-    /// Any prior GPU writes to `device_ptr` must be visible to the default
-    /// stream used by this API before calling (i.e., establish stream/event
-    /// ordering if writes occurred on a different stream).
-    ///
-    /// Only fixed-width types are supported.
-    /// Create a column by copying from a borrowed device pointer inside the
-    /// given explicit runtime.
     ///
     /// Uses `cudf_column_create_from_device_data_ex` which routes the copy
     /// through the runtime's stream and memory resource. This variant does
@@ -604,7 +591,8 @@ impl Column {
     /// # Safety
     ///
     /// - `device_ptr` must point to a valid device allocation containing at
-    ///   least `len` elements of the type identified by `type_id`.
+    ///   least `len` elements of the type identified by `type_id`. For
+    ///   `len == 0`, `device_ptr` may be null.
     /// - Any prior GPU writes to `device_ptr` must be ordered before the
     ///   runtime's stream used by this API. If the data was produced on a
     ///   different stream, establish stream or event ordering before calling.
@@ -699,7 +687,7 @@ impl Column {
 
         let mut handle = ptr::null_mut();
         // SAFETY: ptrs and lengths are derived from valid &str slices and have
-        // num_strings elements. No null mask (ptr::null(), 0).
+        // num_strings elements. The mask is (ptr::null(), 0) when validity is None.
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_create_strings_ex(
@@ -798,8 +786,8 @@ impl Column {
     /// given explicit runtime.
     ///
     /// If the input scalar belongs to a different retained provenance, it is
-    /// recreated in the target runtime first so placement and execution
-    /// resource selection remain honest.
+    /// recreated in the target runtime first, so the column takes its placement
+    /// and execution resources from that runtime.
     pub(crate) fn from_scalar_with_runtime(runtime: &Runtime, scalar: &Scalar, size: usize) -> Result<Self> {
         if ExecutionDomain::same_provenance(scalar.execution_domain(), runtime.execution_domain()) {
             return Self::from_scalar(scalar, size);
@@ -956,7 +944,7 @@ fn require_runtime_matches_buffer_device(
 impl Column {
     /// Create a column by adopting (moving) an existing [`DeviceBuffer`].
     ///
-    /// **Zero-copy:** no device-to-device memcpy occurs. The buffer's device
+    /// This is zero-copy. No device-to-device memcpy occurs. The buffer's device
     /// memory becomes the column's data buffer directly. The `DeviceBuffer` is
     /// consumed and must not be used after this call.
     ///
@@ -1035,7 +1023,7 @@ impl Column {
     /// Create a nullable column by adopting data and null-mask
     /// [`DeviceBuffer`]s.
     ///
-    /// **Zero-copy:** no device-to-device memcpy occurs. Both buffers'
+    /// This is zero-copy. No device-to-device memcpy occurs. Both buffers'
     /// device memory becomes the column's data and null-mask directly.
     ///
     /// The `null_mask_buffer` must contain at least

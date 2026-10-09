@@ -45,11 +45,12 @@ pub(crate) enum ResidualResidentGroupedAggregateInputVariant {
     GroupedAggregateGpuResidentInput,
     BareGlobalAggregateInput,
     FinalSort,
-    /// Positive fixture: admission is about the resident grouped input and
-    /// residual memory contract, not the final aggregate being exactly SUM.
+    /// This positive fixture shows that admission depends on the resident grouped
+    /// input and the residual memory contract. The final global aggregate is COUNT;
+    /// SUM is not required.
     GlobalAggregateNotSum,
-    /// Positive fixture: the grouped input only has to be a reusable grouped
-    /// aggregate, not specifically the AVG expression used by the baseline.
+    /// This positive fixture shows that the grouped input only has to be a reusable
+    /// grouped aggregate. Here the grouped aggregate is SUM, while the baseline uses AVG.
     GroupedAggregateNotAvg,
     /// Positive fixtures that keep the residual connected to the grouped input
     /// while varying the scaled-average idiom the optimizer usually emits.
@@ -57,8 +58,8 @@ pub(crate) enum ResidualResidentGroupedAggregateInputVariant {
     ResidualWrongMultiplier,
     PreprojectedResidualWrongMultiplier,
     RootOutputIncludesGroupedAggregate,
-    /// Rejection locality case: the shape is otherwise close, but the residual
-    /// contains an expression family the join capability cannot lower.
+    /// The shape is otherwise close, but the residual contains an expression family
+    /// the join capability cannot lower. This case checks rejection locality.
     UnsupportedResidualExpression,
 }
 

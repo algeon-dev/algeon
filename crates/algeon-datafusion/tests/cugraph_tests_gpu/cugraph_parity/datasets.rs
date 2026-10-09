@@ -1,7 +1,7 @@
 //! Dataset loading helpers shared across cuGraph parity rows.
 //!
 //! Both the CPU manifest checks and the registry-driven GPU acceptance test
-//! use these entry points so the Rust and Python sides observe byte-identical
+//! use these entry points so the Rust and Python sides read byte-identical
 //! input.
 
 use std::{

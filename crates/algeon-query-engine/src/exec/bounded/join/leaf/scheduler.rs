@@ -186,7 +186,7 @@ pub(super) fn start_join_leaf_scheduled_source_read(
 
 /// Joins and discards every pending read, newest first. Blocks until each worker has
 /// finished, drops the decoded frames, and records a late decode failure as a cleanup
-/// failure of the attempt instead of raising it.
+/// failure of the attempt and does not raise it.
 pub(super) fn abandon_join_leaf_reads(
     execution: &mut BoundedExecutionAttempt<'_>,
     mut pending: VecDeque<ScheduledLocalParquetRead>,

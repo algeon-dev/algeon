@@ -243,7 +243,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
 ///
 /// This runtime sizing only informs betweenness seed selection. It carries no
 /// reservation or rejection authority, so an allocation failure degrades the
-/// estimate instead of failing the query.
+/// estimate and does not fail the query.
 #[cfg(feature = "cugraph")]
 fn graph_runtime_vertex_count_probe(
     context: &ExecutionContext,

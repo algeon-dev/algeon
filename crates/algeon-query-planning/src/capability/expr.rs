@@ -252,8 +252,8 @@ pub(super) fn validate_join_residual_expr_capability(
             validate_join_residual_expr_capability(expr)
         },
         Expr::Cast { expr, .. } => validate_join_residual_expr_capability(expr),
-        // TRY_CAST is rejected from join residuals: null-on-failure changes
-        // the filter semantics versus strict CAST.
+        // TRY_CAST is rejected from join residuals. Null-on-failure changes the
+        // filter semantics compared with strict CAST.
         Expr::TryCast { .. } => Err(ExpressionCapabilityRejection {
             reason: "join_residual_expression_family_not_supported",
             expression_family: expr_family(expr),

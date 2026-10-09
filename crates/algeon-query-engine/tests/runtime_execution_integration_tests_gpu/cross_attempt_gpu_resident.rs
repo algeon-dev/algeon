@@ -301,7 +301,7 @@ fn frozen_resident_release_waits_for_a_reader_on_another_stream() {
         thread::yield_now();
     }
 
-    // The pool hands out its most recently returned stream first, so the
+    // The pool issues its most recently returned stream first, so the
     // holder takes the producer's stream and the reader runs on another one.
     let holder = admit();
     let holder_context = holder.acquire_context().expect("holder context");
@@ -558,17 +558,17 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
 /// allocate through the attempt binding, so they charge to the borrower's
 /// grant and never to the cache share.
 ///
-/// The capped attempt proves this by grant arithmetic rather than peak
-/// ordering. A cold attempt peak cannot serve as the cap: the cold path
-/// stages cross-domain copies the warm hit never repeats, so the cold
-/// high-water structurally exceeds the warm one and a cold-sized grant would
-/// fund the workspace too. Instead the cap covers exactly the warm attempt's
-/// non-workspace footprint; the edge upload plus one full output row-set;
-/// with wide margins on both sides. The capped run must then clear the
-/// upload and fail with a typed query-domain capacity error inside engine
-/// execution; had the workspace charged the cache share instead, the attempt
-/// would never exceed the cap and the run would succeed. The graph stays
-/// reusable with identical results afterwards.
+/// The capped attempt proves this by grant arithmetic. A cold attempt peak
+/// cannot serve as the cap: the cold path stages cross-domain copies the warm
+/// hit never repeats, so the cold high-water structurally exceeds the warm one
+/// and a cold-sized grant would fund the workspace too. The cap funds the edge
+/// upload plus one and a half output row-sets, which sits strictly between the
+/// warm attempt's non-workspace allocation (the upload plus one output row-set)
+/// and its workspace-inclusive allocation, with wide margins on both sides. The
+/// capped run must then clear the upload and fail with a typed query-domain
+/// capacity error inside engine execution; had the workspace charged the cache
+/// share instead, the attempt would never exceed the cap and the run would
+/// succeed. The graph stays reusable with identical results afterwards.
 #[test]
 fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
     const CACHE_CAP_BYTES: u64 = 16 * 1024 * 1024;
@@ -627,7 +627,7 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
     assert!(cold_peak > 0, "the cold attempt measures its own upload and copy");
 
     // The cap sits strictly between the warm attempt's non-workspace
-    // footprint and its workspace-inclusive footprint. It funds the edge
+    // allocation and its workspace-inclusive allocation. It funds the edge
     // upload plus one and a half PageRank output row-sets (int32 vertex plus
     // float64 rank per vertex); headroom for the upload, the output, and
     // handle creation; but not the multi-vector algorithm workspace that
@@ -661,7 +661,7 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
     assert_eq!(cache_evictable_bytes(), parked_bytes, "failed cleanup adds no cache charge");
 
     // The warm hit runs workspace and outputs in the attempt domain while the
-    // parked bytes stay exactly where the cold run left them.
+    // parked bytes stay where the cold run left them.
     let (warm_batch, _, _) =
         execute_pagerank_attempt(&service, &plan, &edge_schema, &edge_batch, "attempt-domain-pagerank-graph-v1", None)
             .expect("warm pagerank execution after failed cleanup");
@@ -672,13 +672,13 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
     assert_eq!(cache_evictable_bytes(), 0);
 }
 
-/// Two different resident graphs execute in genuinely overlapping attempts
-/// under default caps: a PageRank attempt and a BFS attempt over distinct
-/// graphs are barrier-released together, and the test observes both grants
-/// live at the same instant instead of inferring overlap from timing. Both
-/// attempts use the service default cap; no per-query tuning; and must
-/// succeed with results identical to their sequential baselines, in disjoint
-/// allocation domains, without adding any cache-share charge.
+/// Two different resident graphs execute in overlapping attempts under default
+/// caps: a PageRank attempt and a BFS attempt over distinct graphs are
+/// barrier-released together, and the test observes both grants live at the
+/// same instant. It does not infer overlap from timing. Both attempts use the
+/// service default cap; no per-query tuning; and must succeed with results
+/// identical to their sequential baselines, in disjoint allocation domains,
+/// without adding any cache-share charge.
 #[test]
 fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
     const CACHE_CAP_BYTES: u64 = 16 * 1024 * 1024;
@@ -989,8 +989,8 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
         vec!["src".to_string(), "dst".to_string(), "label".to_string(), "weight".to_string()],
     )
     // A scan limit keeps each planned row group as its own read, so the
-    // resident output is a concatenation of several chunks rather than one
-    // merged read.
+    // resident output is a concatenation of several chunks. The source does not
+    // perform one merged read.
     .with_scan_limit(Some(4_096));
     let mut builder = plan::QueryPlanBuilder::new();
     let scan = builder.add_source(source::SourceNode::LocalParquet(source));

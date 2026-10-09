@@ -80,7 +80,8 @@ pub(super) fn attach_input(
     input: &NormalizedNativeInput<'_>,
     output: &LoweredNativeInput,
 ) -> Result<(), QueryError> {
-    // Row-count weights carry one row per read unit, not the frontend rows.
+    // Row-count weights carry one row per read unit. Frontend statistics do not
+    // describe this input, and no advisory is attached.
     if output.row_count_weights {
         return Ok(());
     }

@@ -475,8 +475,8 @@ fn normalize_native_input(
 }
 
 fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
-    // Native shapes treat repartition and coalesce-partitions as exchange
-    // boundaries that can be peeled while preserving the child semantics.
+    // Repartition, coalesce-partitions without a fetch, and cooperative yield
+    // only move rows. Peeling them preserves the child semantics.
     if let Some(repartition) = plan.downcast_ref::<RepartitionExec>() {
         repartition.input().as_ref()
     } else if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>() {

@@ -1,5 +1,3 @@
-//! Tests for DataFrame column-level convenience.
-
 use arrow::{array::Decimal128Array, datatypes::DataType as ArrowDataType};
 use cudf::{
     DataFrame, DataType, ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, TypeId,
@@ -34,10 +32,6 @@ fn assert_amount_decimal128_scale_8(df: &DataFrame) {
     assert_eq!(amount.values().as_ref(), &[100_000_000i128, -200_000_000, 0]);
 }
 
-// ---------------------------------------------------------------------------
-// Column-level convenience (with_column, fillna_with_scalar, cast_column)
-// ---------------------------------------------------------------------------
-
 fn test_with_column_adds_new_column() {
     let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
@@ -48,11 +42,9 @@ fn test_with_column_adds_new_column() {
     assert_eq!(result.num_rows(), 3);
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
-    // Original column preserved.
     let a_vals: Vec<i32> = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
 
-    // New column present.
     let b_vals: Vec<f64> = result.series("b").unwrap().to_vec_strict::<f64>().unwrap();
     assert_eq!(b_vals, vec![10.0, 20.0, 30.0]);
 }
@@ -70,11 +62,9 @@ fn test_with_column_replaces_existing_column() {
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
-    // "a" unchanged.
     let a_vals: Vec<i32> = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2]);
 
-    // "b" replaced.
     let b_vals: Vec<i32> = result.series("b").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(b_vals, vec![99, 100]);
 }
@@ -90,7 +80,6 @@ fn test_with_column_preserves_schema_order_on_replace() {
     )
     .unwrap();
 
-    // Replace middle column.
     let replacement = column_from_slice(&[42i32]).unwrap();
     let result = df.with_column("y", replacement).unwrap();
 
@@ -103,7 +92,6 @@ fn test_with_column_preserves_schema_order_on_replace() {
 fn test_with_column_mismatched_row_count_returns_error() {
     let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
-    // New column has 2 rows, DataFrame has 3.
     let new_col = column_from_slice(&[10i32, 20]).unwrap();
     let err = df.with_column("b", new_col).expect_err("expected row count mismatch error");
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
@@ -126,11 +114,9 @@ fn test_fillna_with_scalar_fills_values() {
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
-    // "a" unchanged.
     let a_vals: Vec<i32> = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
 
-    // "b" has nulls replaced.
     let b_vals: Vec<i32> = result.series("b").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(b_vals, vec![10, 99, 30]);
 }
@@ -176,11 +162,9 @@ fn test_cast_column_changes_type() {
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
-    // "a" unchanged, still i32.
     let a_vals: Vec<i32> = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
 
-    // "b" cast to f64.
     let b_type = result.series("b").unwrap().dtype().unwrap();
     assert_eq!(b_type.id(), TypeId::Float64);
     let b_vals: Vec<f64> = result.series("b").unwrap().to_vec_strict::<f64>().unwrap();
@@ -211,7 +195,6 @@ fn test_cast_column_preserves_schema_order() {
 
     assert_eq!(result.column_names(), vec!["x", "y", "z"]);
 
-    // y is now Int64.
     let y_type = result.series("y").unwrap().dtype().unwrap();
     assert_eq!(y_type.id(), TypeId::Int64);
     let y_vals: Vec<i64> = result.series("y").unwrap().to_vec_strict::<i64>().unwrap();

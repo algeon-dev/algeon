@@ -1,28 +1,22 @@
-//! Specification tests: null semantics in GroupBy operations.
+//! Specification tests for null semantics in GroupBy operations.
 //!
 //! These tests lock down cuDF/libcudf null behavior for:
 //! - Null values in aggregation value columns (sum, count, mean, min, max)
 //! - Null values in groupby key columns
 //! - Count with include_nulls vs exclude_nulls
 //! - All-null groups
-//!
-//! All tests require a GPU.
 
 use cudf::{AggSpec, DataFrame, Exec, GroupByAgg};
 
 use crate::common::{column_from_slice, column_from_slice_nullable, dataframe_from_columns};
 
-/// Helper: build a DataFrame with key and value columns for groupby tests.
+/// Builds a DataFrame with key and value columns for groupby tests.
 fn df_with_nullable_values() -> DataFrame {
     // key: [1, 1, 2, 2], value: [10, null, 30, 40]
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = column_from_slice_nullable(&[10i64, 0, 30, 40], &[true, false, true, true]).unwrap();
     dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap()
 }
-
-// ===========================================================================
-// Sum with null values in value column
-// ===========================================================================
 
 fn test_groupby_sum_skips_nulls_in_values() {
     let df = df_with_nullable_values();
@@ -37,10 +31,6 @@ fn test_groupby_sum_skips_nulls_in_values() {
     pairs.sort_by_key(|&(k, _)| k);
     assert_eq!(pairs, vec![(Some(1), Some(10)), (Some(2), Some(70))]);
 }
-
-// ===========================================================================
-// Min / Max with null values
-// ===========================================================================
 
 fn test_groupby_min_skips_nulls() {
     let df = df_with_nullable_values();
@@ -70,10 +60,6 @@ fn test_groupby_max_skips_nulls() {
     assert_eq!(pairs, vec![(Some(1), Some(10)), (Some(2), Some(40))]);
 }
 
-// ===========================================================================
-// Mean with null values
-// ===========================================================================
-
 fn test_groupby_mean_skips_nulls() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Mean)]).unwrap();
@@ -88,10 +74,6 @@ fn test_groupby_mean_skips_nulls() {
     assert!((pairs[0].1 - 10.0).abs() < 1e-10);
     assert!((pairs[1].1 - 35.0).abs() < 1e-10);
 }
-
-// ===========================================================================
-// Count with include_nulls vs exclude_nulls
-// ===========================================================================
 
 fn test_groupby_count_excludes_nulls_by_default() {
     let df = df_with_nullable_values();
@@ -128,10 +110,6 @@ fn test_groupby_count_includes_nulls_when_requested() {
     // key=2: [30, 40] -> count=2
     assert_eq!(pairs, vec![(1, 2), (2, 2)]);
 }
-
-// ===========================================================================
-// All-null group
-// ===========================================================================
 
 fn test_groupby_sum_all_null_group() {
     // key: [1, 1, 2], value: [null, null, 10]
@@ -176,10 +154,6 @@ fn test_groupby_min_all_null_group() {
     // key=2: [10] -> min=10
     assert_eq!(pairs[1], (2, Some(10)));
 }
-
-// ===========================================================================
-// Null keys in GroupBy
-// ===========================================================================
 
 fn test_groupby_null_keys_excluded_by_default() {
     // key: [1, null, 1, 2], value: [10, 20, 30, 40]

@@ -6,12 +6,16 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Covariance eigensolver used by the fitted decomposition.
 pub enum MlDecompositionSolver {
+    /// Covariance eigendecomposition with the divide-and-conquer solver.
     CovEigDq,
+    /// Covariance eigendecomposition with the Jacobi solver.
     CovEigJacobi,
 }
 
 impl MlDecompositionSolver {
+    /// Canonical solver option value used in SQL and plan display.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::CovEigDq => "cov_eig_dq",
@@ -27,15 +31,24 @@ impl fmt::Display for MlDecompositionSolver {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Bindings and fit-transform settings for query-local truncated SVD.
 pub struct MlTsvdParams {
+    /// Dense rows fitted and transformed by this invocation.
     pub input: MlRelationBinding,
+    /// Number of transformed `pc_<index>` columns.
     pub n_components: usize,
+    /// Covariance eigensolver used for the fit.
     pub solver: MlDecompositionSolver,
+    /// Finite nonnegative eigensolver convergence tolerance.
     pub tolerance: f64,
+    /// Maximum eigensolver iteration count.
     pub n_iterations: u32,
 }
 
 impl MlTsvdParams {
+    /// Uses registry defaults for the solver, tolerance, and iteration limit.
+    ///
+    /// The supplied binding and component count are retained without validation.
     pub fn new(input: MlRelationBinding, n_components: usize) -> Self {
         let (solver, tolerance, n_iterations) = decomposition_defaults(CumlOperation::Tsvd.descriptor());
         Self { input, n_components, solver, tolerance, n_iterations }

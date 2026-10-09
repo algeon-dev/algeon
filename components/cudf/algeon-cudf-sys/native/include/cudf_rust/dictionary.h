@@ -12,15 +12,14 @@
 extern "C" {
 #endif
 
-/// Encode a column into a dictionary column with explicit execution context.
+/// Encode a column into a dictionary column.
 ///
 /// The result is an owning column of type DICTIONARY32 whose children are:
 ///   - child 0: indices column (type `indices_type_id`, default INT32)
 ///   - child 1: keys column (unique, sorted values from the input)
 ///
-/// Example: [429, 111, 213, 111, 213, 429, 213]
-///   keys:    [111, 213, 429]
-///   indices: [2, 0, 1, 0, 1, 2, 1]
+/// For example, encoding [429, 111, 213, 111, 213, 429, 213] yields keys
+/// [111, 213, 429] and indices [2, 0, 1, 0, 1, 2, 1].
 ///
 /// The caller must free the result with `cudf_column_destroy`.
 ///
@@ -32,8 +31,7 @@ cudf_status_t cudf_dictionary_encode_ex(cudf_column_view_handle input,
                                         cudf_column_handle* out,
                                         cudf_exec_options_t const* options);
 
-/// Decode a dictionary column back to a regular column with explicit execution
-/// context.
+/// Decode a dictionary column back to a regular column.
 ///
 /// The input must be a DICTIONARY32 column. The result is a regular column
 /// with the same type as the dictionary keys.
@@ -61,7 +59,7 @@ cudf_status_t cudf_dictionary_keys(cudf_column_view_handle dict_column,
 cudf_status_t cudf_dictionary_indices(cudf_column_view_handle dict_column,
                                       cudf_column_view_handle* out);
 
-/// Replace the keys of a dictionary column with explicit execution context.
+/// Replace the keys of a dictionary column.
 ///
 /// Any new elements found in `keys` are added; any existing keys not in
 /// `keys` are removed (rows that referenced removed keys become null).
@@ -77,8 +75,7 @@ cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
                                           cudf_column_handle* out,
                                           cudf_exec_options_t const* options);
 
-/// Align multiple dictionary columns to a shared key set with explicit
-/// execution context.
+/// Align multiple dictionary columns to a shared key set.
 ///
 /// The keys from all input dictionary columns are concatenated, deduplicated,
 /// and used to re-key each column via `set_keys`. After this call every
@@ -90,7 +87,7 @@ cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
 /// handles. Each matched column must be freed with `cudf_column_destroy`,
 /// then the array itself must be freed with `cudf_free_column_array`.
 ///
-/// Contract:
+/// Preconditions:
 /// - `num_columns` must be > 0
 /// - `dict_columns` must point to at least `num_columns` entries
 /// - `out_columns` must be non-NULL

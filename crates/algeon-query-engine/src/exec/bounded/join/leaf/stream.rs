@@ -120,7 +120,8 @@ impl ResidentFrameStreamSource for JoinLeafSourceFrameStreamSource {
                         self.batches.clear();
                         return Some(Err(error));
                     }
-                    // Retry children are work, not retained outputs: yield one before allocating its sibling.
+                    // Retry children are pending work and hold no retained output. Yield one
+                    // before allocating its sibling.
                     self.batches.push_front((right, next_attempt));
                     self.batches.push_front((left, next_attempt));
                 },

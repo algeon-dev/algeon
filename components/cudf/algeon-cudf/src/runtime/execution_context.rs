@@ -11,9 +11,9 @@ use crate::core::{error::Result, memory::DeviceMemoryResource};
 /// [`Exec::RETAINED`] keeps the primary input's retained stream and memory
 /// resource. [`crate::Runtime::exec`] selects a runtime's handles, and
 /// [`Exec::new`], [`Exec::with_stream`], and [`Exec::with_memory_resource`]
-/// borrow other same-device handles for one operation. An `Exec` is not
-/// retained provenance by itself: the output's provenance resolves from the
-/// primary input plus the handles this value selects. When the selected
+/// borrow other same-device handles for one operation. An `Exec` by itself
+/// does not carry retained provenance. The output's provenance resolves from
+/// the primary input plus the handles this value selects. When the selected
 /// stream or memory resource differs from the input's, columns the operation
 /// leaves unchanged are copied so the output keeps one provenance.
 #[derive(Clone, Copy)]
@@ -42,11 +42,11 @@ impl<'a> Exec<'a> {
 
     /// Override the effective memory resource for one operation.
     ///
-    /// **Outputs-only semantics** (matching upstream libcudf's `mr`
-    /// parameter): the override receives the operation's output allocations.
-    /// libcudf temporaries resolve through the device's long-lived memory
-    /// domain and are accounted to the operation's stream; for budgeting,
-    /// attach a stream reservation instead of overriding the resource.
+    /// The override has outputs-only semantics, matching upstream libcudf's `mr`
+    /// parameter. It receives the operation's output allocations. libcudf
+    /// temporaries resolve through the device's long-lived memory domain and are
+    /// accounted to the operation's stream. For budgeting, attach a stream
+    /// reservation, because the override does not apply to temporaries.
     ///
     /// `mr` must have been created on the same CUDA device as the primary
     /// input runtime, or the operation fails with a runtime-binding mismatch.

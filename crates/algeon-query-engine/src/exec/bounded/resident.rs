@@ -2,8 +2,8 @@ use super::GpuDataFrame;
 
 /// A frame together with the device bytes observed when it was produced.
 ///
-/// `device_bytes` is a sizing input for later chunking and join decisions
-/// rather than an accounting record: the frame's allocations are charged to the attempt's
+/// `device_bytes` is a sizing input for later chunking and join decisions. It is
+/// not an accounting record: the frame's allocations are charged to the attempt's
 /// memory domain by the allocator, and the figure is not refreshed when the
 /// frame is filtered or aliased.
 pub(in crate::exec) struct ResidentGpuFrame {

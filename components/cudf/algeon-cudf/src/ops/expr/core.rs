@@ -13,64 +13,121 @@ pub enum Expr {
     /// A broadcast literal scalar value. Construct via [`lit()`].
     Literal(ScalarValue),
     /// Element-wise binary operation.
-    BinaryOp { lhs: Box<Expr>, op: BinaryOperator, rhs: Box<Expr> },
+    BinaryOp {
+        lhs: Box<Expr>,
+        op: BinaryOperator,
+        rhs: Box<Expr>,
+    },
     /// Element-wise binary operation with caller-selected output dtype.
-    BinaryOpWithType { lhs: Box<Expr>, op: BinaryOperator, rhs: Box<Expr>, output_type: DataType },
+    BinaryOpWithType {
+        lhs: Box<Expr>,
+        op: BinaryOperator,
+        rhs: Box<Expr>,
+        output_type: DataType,
+    },
     /// Element-wise unary operation.
-    UnaryOp { op: UnaryOperator, input: Box<Expr> },
+    UnaryOp {
+        op: UnaryOperator,
+        input: Box<Expr>,
+    },
     /// Element-wise SQL-style rounding. Half-way ties round away from zero.
-    Round { input: Box<Expr>, decimal_places: i32 },
+    Round {
+        input: Box<Expr>,
+        decimal_places: i32,
+    },
     /// Cast to a target type.
     ///
     /// With a `precision`, the target is a decimal type declared with that
     /// precision; see [`Expr::cast_decimal`]. Without one, the cast is
     /// libcudf's.
-    Cast { input: Box<Expr>, target: DataType, precision: Option<u8> },
-    /// SQL `TRY_CAST` to a target type: rows that cannot be represented in the
-    /// target type evaluate to null instead of raising an error.
+    Cast {
+        input: Box<Expr>,
+        target: DataType,
+        precision: Option<u8>,
+    },
+    /// SQL `TRY_CAST` to a target type. Rows that cannot be represented in the
+    /// target type evaluate to null and do not raise an error.
     ///
     /// Runtime support is currently limited to `STRING → integer` targets;
     /// other type pairs return an error at evaluation time.
-    TryCast { input: Box<Expr>, target: DataType },
-    /// Null-check: produces BOOL8 where `true` = null.
+    TryCast {
+        input: Box<Expr>,
+        target: DataType,
+    },
+    /// Null check, producing BOOL8 with `true` for each null row.
     IsNull(Box<Expr>),
-    /// Validity-check: produces BOOL8 where `true` = non-null.
+    /// Validity check, producing BOOL8 with `true` for each non-null row.
     IsNotNull(Box<Expr>),
     /// Assign a schema/output name to an inner expression.
-    Alias { inner: Box<Expr>, name: String },
+    Alias {
+        inner: Box<Expr>,
+        name: String,
+    },
     /// Replace nulls with a scalar value.
-    FillNaScalar { input: Box<Expr>, value: ScalarValue },
+    FillNaScalar {
+        input: Box<Expr>,
+        value: ScalarValue,
+    },
     /// Replace nulls with corresponding values from another expression.
-    FillNaExpr { input: Box<Expr>, fill: Box<Expr> },
+    FillNaExpr {
+        input: Box<Expr>,
+        fill: Box<Expr>,
+    },
     /// Forward or backward fill of nulls.
-    FillNullPolicy { input: Box<Expr>, policy: FillPolicy },
+    FillNullPolicy {
+        input: Box<Expr>,
+        policy: FillPolicy,
+    },
     /// Cumulative (prefix scan) operation.
-    Scan { input: Box<Expr>, agg: ScanAgg },
-    /// Broadcast aggregate: reduce to scalar, then broadcast to row count.
-    Reduce { input: Box<Expr>, agg: ReduceAgg },
-    /// String operation.
-    StringOp { input: Box<Expr>, op: StringOperator },
+    Scan {
+        input: Box<Expr>,
+        agg: ScanAgg,
+    },
+    /// Aggregate reduced to a scalar, then broadcast to the row count.
+    Reduce {
+        input: Box<Expr>,
+        agg: ReduceAgg,
+    },
+    StringOp {
+        input: Box<Expr>,
+        op: StringOperator,
+    },
     /// Row-wise string concatenation. Null inputs contribute empty strings.
     StringConcat(Vec<Expr>),
-    /// Datetime component extraction.
-    DateTimeComponent { input: Box<Expr>, component: DatetimeComponent },
-    /// Datetime floor/truncation.
-    DateTimeFloor { input: Box<Expr>, frequency: DatetimeRoundingFrequency },
+    DateTimeComponent {
+        input: Box<Expr>,
+        component: DatetimeComponent,
+    },
+    DateTimeFloor {
+        input: Box<Expr>,
+        frequency: DatetimeRoundingFrequency,
+    },
     /// Calendrical timestamp offset with month, day, and nanosecond fields.
-    DateTimeOffset { input: Box<Expr>, months: i32, days: i32, nanoseconds: i64 },
-    /// Conditional: row-wise `if cond then true_val else false_val`.
+    DateTimeOffset {
+        input: Box<Expr>,
+        months: i32,
+        days: i32,
+        nanoseconds: i64,
+    },
+    /// Row-wise conditional with `if cond then true_val else false_val` semantics.
     ///
     /// Construct via the staged [`when()`] conditional expression chain.
     /// Output name is `None`; an explicit `.alias()` is required for use in
     /// `with_columns`.
-    IfElse { condition: Box<Expr>, true_val: Box<Expr>, false_val: Box<Expr> },
+    IfElse {
+        condition: Box<Expr>,
+        true_val: Box<Expr>,
+        false_val: Box<Expr>,
+    },
     /// Set membership against a literal list.
-    InList { input: Box<Expr>, values: Vec<Expr>, negated: bool },
+    InList {
+        input: Box<Expr>,
+        values: Vec<Expr>,
+        negated: bool,
+    },
 }
 
 impl Expr {
-    // -- Builder methods ---------------------------------------------------
-
     /// Assign a schema/output name used by DataFrame materialization APIs.
     pub fn alias(self, name: impl Into<String>) -> Expr {
         Expr::Alias { inner: Box::new(self), name: name.into() }
@@ -99,8 +156,8 @@ impl Expr {
         Expr::Cast { input: Box::new(self), target, precision: Some(precision) }
     }
 
-    /// Try-cast the result to the given type, evaluating to null for rows
-    /// the target type cannot represent rather than raising an error.
+    /// Try-cast the result to the given type. Rows the target type cannot
+    /// represent evaluate to null and do not raise an error.
     ///
     /// Runtime support is currently limited to `STRING → integer`; other
     /// pairs return an error at evaluation time.
@@ -183,10 +240,10 @@ impl Expr {
 
     /// Element-wise binary operation with an explicit output type.
     ///
-    /// Use this when the caller needs libcudf's
-    /// `binary_operation(..., output_type)` contract instead of inferred
-    /// output typing. It is useful for
-    /// fixed-point decimal operations where the result scale is a semantic
+    /// Use this to pass a caller-chosen output type to libcudf's
+    /// `binary_operation(..., output_type)`. Without this method, the output
+    /// type is inferred from the operand types and the operator. It is useful
+    /// for fixed-point decimal operations where the result scale is a semantic
     /// requirement of the query plan.
     pub fn binary_op_with_type(self, rhs: impl IntoExpr, op: BinaryOperator, output_type: impl Into<DataType>) -> Expr {
         Expr::BinaryOpWithType {
@@ -230,14 +287,12 @@ impl Expr {
     /// Element-wise SQL-style rounding.
     ///
     /// Half-way ties round away from zero, matching DataFusion and common SQL
-    /// `ROUND` behavior rather than cuDF's `Rint` half-even unary operator.
+    /// `ROUND` behavior. cuDF's `Rint` unary operator rounds ties to even.
     pub fn round(self, decimal_places: i32) -> Expr {
         Expr::Round { input: Box::new(self), decimal_places }
     }
 
-    // -- Null fill / cumulative builders ----------------------------------
-
-    /// Replace null values with a scalar. Name: `fillna` (matches `SeriesOps::fillna`).
+    /// Replace null values with a scalar. The name `fillna` matches `SeriesOps::fillna`.
     pub fn fillna(self, value: impl Into<ScalarValue>) -> Expr {
         Expr::FillNaScalar { input: Box::new(self), value: value.into() }
     }
@@ -247,12 +302,12 @@ impl Expr {
         Expr::FillNaExpr { input: Box::new(self), fill: Box::new(fill) }
     }
 
-    /// Forward fill: replace each null with the nearest preceding non-null value.
+    /// Replace each null with the nearest preceding non-null value.
     pub fn ffill(self) -> Expr {
         Expr::FillNullPolicy { input: Box::new(self), policy: FillPolicy::Preceding }
     }
 
-    /// Backward fill: replace each null with the nearest following non-null value.
+    /// Replace each null with the nearest following non-null value.
     pub fn bfill(self) -> Expr {
         Expr::FillNullPolicy { input: Box::new(self), policy: FillPolicy::Following }
     }
@@ -277,8 +332,6 @@ impl Expr {
         Expr::Scan { input: Box::new(self), agg: ScanAgg::Product }
     }
 
-    // -- String builders ---------------------------------------------------
-
     /// Access string expression methods for string-specific transforms.
     pub fn str(self) -> ExprStringNamespace {
         ExprStringNamespace(self)
@@ -288,8 +341,6 @@ impl Expr {
     pub fn dt(self) -> ExprDatetimeNamespace {
         ExprDatetimeNamespace(self)
     }
-
-    // -- Name resolution ---------------------------------------------------
 
     /// Returns the output column name, if determinable.
     ///
@@ -302,7 +353,6 @@ impl Expr {
         match self {
             Expr::Column(name) => Some(name),
             Expr::Alias { name, .. } => Some(name),
-            // Single-input nodes inherit from inner expression.
             Expr::Cast { input, .. }
             | Expr::TryCast { input, .. }
             | Expr::IsNull(input)
@@ -323,8 +373,6 @@ impl Expr {
             Expr::InList { input, .. } => input.output_name(),
         }
     }
-
-    // -- Evaluation --------------------------------------------------------
 
     /// Evaluate this expression against a DataFrame.
     ///

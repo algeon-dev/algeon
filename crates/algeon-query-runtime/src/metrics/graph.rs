@@ -49,8 +49,9 @@ pub struct GraphAlgorithmRuntimeMetrics {
     pub output_columns: u64,
     /// Output device bytes when known.
     pub output_device_bytes: Option<u64>,
-    /// Graph-stage reservation high-water bytes, or CUDA async-pool high-water bytes when reservation evidence is absent.
-    /// Successful graph rows that do no graph allocation report zero instead of null.
+    /// Graph-stage reservation high-water bytes, or CUDA async-pool high-water
+    /// bytes when reservation evidence is absent. Successful graph rows that do
+    /// no graph allocation report `Some(0)`.
     pub graph_peak_bytes: Option<u64>,
     /// Runtime elapsed nanoseconds.
     pub elapsed_ns: u64,
@@ -74,9 +75,9 @@ impl QueryMetrics {
     /// Opens a pending measured-peak observation row for one graph executor
     /// invocation.
     ///
-    /// The caller supplies the plan [`NodeId`] that owns this graph node, so
-    /// the completion sample can correlate by typed node identity rather than
-    /// reparsing the rendered `node_id` string.
+    /// The caller supplies the plan [`NodeId`] that owns this graph node. The
+    /// completion sample then correlates by typed node identity without parsing
+    /// the rendered `node_id` string.
     pub fn record_graph_claim_calibration(&mut self, node_id: NodeId, algorithm: GraphAlgorithm) {
         self.graph_claim_calibration_rows.push(GraphMeasuredPeakRow::pending(
             self.inherited_query_id(),

@@ -87,7 +87,7 @@ cudf_status_t cudf_scalar_create_string_ex(char const* value,
                                            cudf_exec_options_t const* options,
                                            cudf_scalar_handle* out);
 
-/// Deep-copy a scalar with explicit execution options.
+/// Deep-copy a scalar.
 ///
 /// Supports all scalar subtypes: numeric, boolean, string, timestamp,
 /// duration, fixed-point decimal, list, and struct.  Returns
@@ -111,7 +111,7 @@ cudf_status_t cudf_scalar_data_type(cudf_scalar_handle handle,
                                     cudf_type_id_t* out_type_id,
                                     int32_t* out_scale);
 
-/// Check if a scalar is valid (non-null) with explicit execution options.
+/// Check if a scalar is valid (non-null).
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// On success, `out` is ready to read when this call returns because libcudf
@@ -122,7 +122,7 @@ cudf_status_t cudf_scalar_is_valid_ex(cudf_scalar_handle handle,
                                       int32_t* out,
                                       cudf_exec_options_t const* options);
 
-/// Get the raw value of a fixed-width scalar with explicit execution options.
+/// Get the raw value of a fixed-width scalar.
 ///
 /// `out` must point to memory large enough for the scalar's physical
 /// representation. `options` must name an explicit valid device and non-NULL

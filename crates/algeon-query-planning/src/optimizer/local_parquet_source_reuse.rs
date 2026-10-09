@@ -56,7 +56,7 @@ pub struct LocalParquetSourceReuseOptions {
     /// not read or drops the variant's reader predicate. Such a group is
     /// reused only when an upper bound on the merged scan's selected bytes is
     /// known and at most this value, whatever consumes the variants. A group
-    /// whose merged scan reads exactly what every variant reads is reused at
+    /// whose merged scan is identical to what every variant reads is reused at
     /// any size.
     pub max_variant_selected_bytes: u64,
 }
@@ -70,7 +70,7 @@ impl LocalParquetSourceReuseOptions {
         Self { enabled: false, max_variant_selected_bytes: Self::DEFAULT_MAX_VARIANT_SELECTED_BYTES }
     }
 
-    /// Validates internal consistency for local Parquet source-reuse limits.
+    /// Rejects a zero `max_variant_selected_bytes`; no other field is checked.
     pub fn validate(&self) -> Result<()> {
         if self.max_variant_selected_bytes == 0 {
             return Err(QueryError::new(
@@ -104,12 +104,10 @@ pub struct LocalParquetSourceReuseDiagnostics {
 }
 
 impl LocalParquetSourceReuseDiagnostics {
-    /// Returns true when the pass produced no candidate evidence.
     pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -685,8 +683,8 @@ impl SourceReuseRewrite {
             source_file_indices_for_columns(&file_indices_by_column, &pure_filter_columns);
         let mut files = representative.source.files.clone();
         // These byte counts described the representative's column roles; the
-        // shared source has different roles, so they are cleared rather than
-        // carried as wrong evidence.
+        // shared source has different roles, so they are cleared. Keeping them
+        // would report wrong evidence.
         for file in &mut files {
             file.projected_row_group_compressed_bytes = None;
             file.projected_row_group_uncompressed_bytes = None;

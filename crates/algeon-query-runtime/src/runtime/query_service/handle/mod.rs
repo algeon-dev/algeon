@@ -344,8 +344,8 @@ impl QueryHandle {
                 .with_fact("context_setup_claim", "root"));
             }
             // Concurrent fragments under one admitted query must not share the
-            // root stream: cuDF rejects a second live query-domain budget token
-            // on the same stream. Bind each secondary acquire to a dedicated
+            // root stream, because cuDF rejects a second live query-domain budget
+            // token on the same stream. Bind each secondary acquire to a dedicated
             // service stream while preserving the shared grant/domain.
             let context = self.clone_auxiliary_context(
                 &cancellation,
@@ -497,7 +497,7 @@ impl QueryHandle {
     }
 }
 
-/// Execution context borrowed from a [`QueryHandle`].
+/// Execution context acquired from a [`QueryHandle`].
 #[derive(Debug)]
 pub struct AdmittedQueryContext {
     context: ExecutionContext,

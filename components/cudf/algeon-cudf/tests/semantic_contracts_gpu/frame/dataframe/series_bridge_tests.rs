@@ -1,16 +1,8 @@
-//! Integration tests for Series-aware DataFrame constructors and accessors.
-//!
-//! All tests require a GPU.
-
 use std::sync::Arc;
 
 use cudf::{DataFrame, ErrorCode, ErrorKind, Series, TypeId, testing::prelude::*};
 
 use crate::common::{assert_duplicate_name_error, assert_missing_column_error, error_context_value, series};
-
-// ---------------------------------------------------------------------------
-// from_series: happy path
-// ---------------------------------------------------------------------------
 
 fn test_from_series_happy_path_dynamic_iterator() {
     let ids = series::<i32>("ids", &[1, 2, 3]).unwrap();
@@ -45,10 +37,6 @@ fn test_from_series_empty_series() {
     assert_eq!(df.num_rows(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// from_series: rejects duplicates
-// ---------------------------------------------------------------------------
-
 fn test_from_series_rejects_duplicate_names() {
     let a = series::<i32>("a", &[1, 2]).unwrap();
     let b = series::<i32>("b", &[3, 4]).unwrap();
@@ -59,10 +47,6 @@ fn test_from_series_rejects_duplicate_names() {
     let err = result.unwrap_err();
     assert_duplicate_name_error(&err, "x");
 }
-
-// ---------------------------------------------------------------------------
-// from_series: rejects length mismatch
-// ---------------------------------------------------------------------------
 
 fn test_from_series_rejects_length_mismatch_dynamic_iterator() {
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
@@ -78,10 +62,6 @@ fn test_from_series_rejects_length_mismatch_dynamic_iterator() {
     assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
-
-// ---------------------------------------------------------------------------
-// from_series: happy path (dynamic iterator)
-// ---------------------------------------------------------------------------
 
 fn test_from_series_happy_path() {
     let ids = series::<i32>("ids", &[1, 2, 3]).unwrap();
@@ -99,7 +79,7 @@ fn test_from_series_with_str_keys() {
     let a = series::<i32>("a", &[10, 20]).unwrap();
     let b = series::<f64>("b", &[1.0, 2.0]).unwrap();
 
-    // Using &str keys (not String) to test Into<String> flexibility.
+    // &str keys exercise the Into<String> bound.
     let pairs = vec![("alpha", a), ("beta", b)];
     let df = DataFrame::from_series(pairs).unwrap();
 
@@ -134,10 +114,6 @@ fn test_from_series_rejects_length_mismatch() {
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
-// ---------------------------------------------------------------------------
-// series(): returns sharing Arc
-// ---------------------------------------------------------------------------
-
 fn test_series_returns_series_values() {
     let ids = series::<i32>("ids", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", ids)]).unwrap();
@@ -154,7 +130,7 @@ fn test_series_shares_arc_with_dataframe() {
     let s = df.series("id").unwrap();
 
     // The returned Series should share the same underlying GPU data
-    // (Arc pointer equality).
+    // (device pointer equality).
     let df_col_ptr = df.series("id").unwrap().testing_view().unwrap().device_data_ptr().unwrap();
     let series_ptr = s.testing_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(df_col_ptr, series_ptr);
@@ -169,10 +145,6 @@ fn test_series_nonexistent_column_returns_error() {
     assert_missing_column_error(&result.unwrap_err(), "nonexistent");
 }
 
-// ---------------------------------------------------------------------------
-// Round-trip: construct from Series, retrieve via series()
-// ---------------------------------------------------------------------------
-
 fn test_round_trip_from_explicit_columns_to_series() {
     let original = series::<f64>("orig", &[1.0, 2.0, 3.0]).unwrap();
     let original_ptr = original.testing_view().unwrap().device_data_ptr().unwrap();
@@ -182,7 +154,6 @@ fn test_round_trip_from_explicit_columns_to_series() {
     assert_eq!(retrieved.len(), 3);
     assert_eq!(retrieved.dtype().unwrap().id(), TypeId::Float64);
 
-    // The retrieved Series should share the same GPU allocation.
     let retrieved_ptr = retrieved.testing_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(original_ptr, retrieved_ptr);
 }
@@ -198,16 +169,11 @@ fn test_round_trip_from_series_to_series() {
     let sa = df.series("alpha").unwrap();
     let sb = df.series("beta").unwrap();
 
-    // Names come from the DataFrame keys, not the original Series names.
+    // Column names come from the DataFrame keys.
 
-    // GPU data is shared (zero-copy).
     assert_eq!(sa.testing_view().unwrap().device_data_ptr().unwrap(), a_ptr);
     assert_eq!(sb.testing_view().unwrap().device_data_ptr().unwrap(), b_ptr);
 }
-
-// ---------------------------------------------------------------------------
-// from_series preserves Arc sharing from input Series
-// ---------------------------------------------------------------------------
 
 fn test_from_series_preserves_arc_sharing() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -216,7 +182,6 @@ fn test_from_series_preserves_arc_sharing() {
     let df = DataFrame::from_series([("x", s)]).unwrap();
     let retrieved = df.series("x").unwrap();
 
-    // The Arc inside the DataFrame should be the same Arc as the input Series.
     assert!(Arc::ptr_eq(&arc_before, &retrieved.into_inner()));
 }
 

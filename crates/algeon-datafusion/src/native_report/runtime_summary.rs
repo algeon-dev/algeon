@@ -5,7 +5,8 @@ use super::{
     NativeDataFusionExecutionMetrics, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome, tsv::stable_tsv_field,
 };
 
-/// Flat runtime shape used by report rows instead of the richer enum variants.
+/// Flat runtime shape stored by report rows. Each `NativeDataFusionRuntime`
+/// variant maps onto these fields.
 #[derive(Debug, Clone)]
 pub(super) struct NativeDataFusionRuntimeSummary {
     pub(super) started: bool,

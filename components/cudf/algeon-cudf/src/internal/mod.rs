@@ -6,6 +6,8 @@
 //!
 //! - [`resolve`]: Column-name resolution and validation helpers.
 //! - [`reassemble`]: DataFrame reassembly from raw `Table` + names.
+//! - `testing_hooks`: Test-only DataFrame reassembly, compiled with `test`
+//!   or the `test-hooks` feature.
 
 pub(crate) mod reassemble;
 pub(crate) mod resolve;

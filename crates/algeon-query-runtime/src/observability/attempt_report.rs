@@ -662,7 +662,7 @@ impl From<cudf::QueryMemoryDomainUsage> for AttemptFinalDomainUsage {
 /// `DeviceLocal` means the release path proved that the relevant cleanup and
 /// health facts belong to the attempt's immutable device. `Unknown` means the
 /// cleanup path could not establish that boundary, so the engine closes the
-/// entire backend rather than guessing a device owner.
+/// entire backend without guessing a device owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AttemptFaultIsolation {
@@ -773,9 +773,9 @@ pub enum AttemptEvidenceProvenance {
 
 /// One bounded resource-evidence value together with its provenance.
 ///
-/// `value` is absent exactly for [`AttemptEvidenceProvenance::Unavailable`]
-/// in engine-produced reports. Consumers must retain the provenance rather
-/// than interpreting an absent value as an ordinal zero or an exact sample.
+/// In engine-produced reports, `value` is absent if and only if the provenance
+/// is [`AttemptEvidenceProvenance::Unavailable`]. Consumers must retain the
+/// provenance. An absent value is neither an ordinal zero nor an exact sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptEvidenceField<T> {
     pub provenance: AttemptEvidenceProvenance,
@@ -950,8 +950,8 @@ pub(crate) struct AttemptTerminalCommit {
 }
 
 /// Result of the post-quarantine check over the immutable compatible-device
-/// set captured at admission. This is internal finalizer input rather than a
-/// second scheduler decision: it only gates retry advice in the sealed report.
+/// set captured at admission. This is internal finalizer input that only gates
+/// retry advice in the sealed report; it adds no second scheduler decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AttemptAlternateDeviceEligibility {
     NotApplicable,
@@ -1311,8 +1311,8 @@ fn has_proven_device_local_fault(
         && native_fault_evidence.as_ref().is_some_and(has_proven_device_local_fault_evidence)
 }
 
-/// The native evidence forms that establish a device-local fault rather than
-/// a conservative quarantine. The release finalizer and sealed report share
+/// The native evidence forms that establish a device-local fault, as distinct
+/// from a conservative quarantine. The release finalizer and sealed report share
 /// this predicate so alternate eligibility cannot be calculated for weaker
 /// evidence than the report will accept.
 pub(crate) fn has_proven_device_local_fault_evidence(evidence: &AttemptNativeFaultEvidence) -> bool {
@@ -1344,7 +1344,7 @@ pub struct AttemptAdmissionFact {
 /// Final queue state captured when a queued admission receives its immutable
 /// grant.
 ///
-/// This is a sealed controller fact rather than a runner-side estimate.
+/// This is a sealed controller fact and is not a runner-side estimate.
 /// `submission_sequence` is FIFO identity, independent of the later
 /// admission sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1424,7 +1424,7 @@ pub struct QueryAttemptReport {
     pub health_transition: Option<AttemptHealthTransition>,
     /// Bounded cuDF/cuGraph native status, isolation, and teardown facts from
     /// the same terminal release commit. `None` means the attempt did not own
-    /// a device-backed domain, not a fabricated healthy device sample.
+    /// a device-backed domain. No native device status applies to such an attempt.
     pub native_fault_evidence: Option<AttemptNativeFaultEvidence>,
     /// Bounded ledger, immutable-cap, domain-usage, and allocator evidence
     /// from the sole terminal release commit. `None` means the attempt did
@@ -1477,7 +1477,7 @@ pub struct SealedAttemptProjection {
 ///
 /// Every consumer that renders attempt facts with labels (DataFusion metrics,
 /// Flight query stats, and future bounded exporters) must use this projection
-/// rather than duplicating enum-to-string mappings at its own boundary.
+/// and must not duplicate enum-to-string mappings at its own boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SealedAttemptLabels {
     pub disposition: &'static str,

@@ -122,7 +122,6 @@ pub enum SourceNode {
 }
 
 impl SourceNode {
-    /// Returns the native output schema exposed by this source node.
     pub(crate) fn output_schema(&self) -> &SchemaRef {
         match self {
             Self::LocalParquet(source) => source.output_schema(),
@@ -194,7 +193,7 @@ pub struct GpuResidentSource {
     /// A frontend-proved hard upper bound on the number of input rows.
     ///
     /// This evidence is optional because a generic device-resident handle does
-    /// not intrinsically have a planning-time cardinality.  When present, it
+    /// not intrinsically have a planning-time cardinality. When present, it
     /// can admit bounded operators without inspecting or materializing the
     /// handle first.
     pub row_count_upper_bound: Option<u64>,

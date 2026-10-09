@@ -3,8 +3,8 @@
 /// Validate that a barrier-released workload cannot shed requests merely
 /// because its admission queue is smaller than the synchronized request wave.
 ///
-/// This intentionally uses the full wave size rather than subtracting the
-/// configured active-query limit: memory, placement, or per-device caps can
+/// This intentionally uses the full wave size and does not subtract the
+/// configured active-query limit. Memory, placement, or per-device caps can
 /// make the immediately active subset smaller than that limit.
 pub fn validate_synchronized_admission_queue(
     queue_env: &str,

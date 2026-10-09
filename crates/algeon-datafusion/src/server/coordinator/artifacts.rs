@@ -752,6 +752,7 @@ impl QueryCoordinator {
                     LiveStatsRead::Failed => return Err(Self::artifact_render_failed(query_id)),
                     LiveStatsRead::Closed => return Ok(None),
                     LiveStatsRead::Wait(waiter) => {
+                        // Release the state lock: the finalizer takes it before publishing stats.
                         drop(state);
                         match waiter.wait() {
                             LiveStatsWaitResult::Hit(stats) => return Ok(Some(stats)),
@@ -767,6 +768,7 @@ impl QueryCoordinator {
                         let Some(captured) = record.captured.as_ref().cloned() else {
                             let max_bytes = usize::try_from(record.artifact_max_bytes).unwrap_or(usize::MAX);
                             let stats = uncaptured_live_stats_payload(query_id, max_bytes);
+                            // `complete` can wait on the finalizer, which needs the state lock.
                             drop(state);
                             return Ok(read.complete(stats));
                         };
@@ -779,6 +781,7 @@ impl QueryCoordinator {
             captured.set_output_metrics(hot.output_batches, hot.output_rows, hot.output_bytes, hot.overflow);
             let max_bytes = usize::try_from(artifact_max_bytes).unwrap_or(usize::MAX);
             let stats = captured.to_query_stats_payload(max_bytes).bytes;
+            // `complete` can wait on the finalizer; free the capture clone first.
             drop(captured);
             return Ok(read.complete(stats));
         }

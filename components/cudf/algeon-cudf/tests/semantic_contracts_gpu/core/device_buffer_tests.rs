@@ -7,10 +7,6 @@ use cudf::{
 
 use crate::common::{column_from_device_buffer, column_from_device_buffer_nullable, error_context_value};
 
-// ---------------------------------------------------------------------------
-// DeviceBuffer lifecycle
-// ---------------------------------------------------------------------------
-
 fn new_allocates_requested_size() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(1024).unwrap();
@@ -196,10 +192,7 @@ fn from_host_data_empty_slice() {
     assert_eq!(buf.size_bytes().unwrap(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// Zero-copy adoption; non-nullable
-// ---------------------------------------------------------------------------
-
+// Adoption of non-nullable buffers is zero-copy.
 fn adopt_i32_roundtrip() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[10, 20, 30];
@@ -325,10 +318,7 @@ fn adopt_rejects_row_count_exceeding_i32_max() {
     assert_eq!(error_context_value(&err, "row_count").as_deref(), Some(expected.as_str()));
 }
 
-// ---------------------------------------------------------------------------
-// Zero-copy adoption; nullable
-// ---------------------------------------------------------------------------
-
+// Adoption of nullable buffers is zero-copy.
 fn adopt_nullable_with_nulls() {
     let rt = Runtime::new().unwrap();
     // Data: [10, 20, 30, 40] with validity [true, false, true, false] → null_count = 2

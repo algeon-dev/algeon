@@ -1,16 +1,16 @@
 //! Exact-request singleflight for expensive BFS calls.
 //!
 //! This holds only a transient published result until its joined followers
-//! consume it. The graph identity is a coalescing key, not a
-//! device-resident cache claim; the resident cache owns any retained device
+//! consume it. The graph identity is a coalescing key. It makes no
+//! device-resident cache claim, and the resident cache owns any retained device
 //! allocation separately.
 //!
-//! libcugraph multi-source BFS produces one nearest-source forest, not one
-//! independent result per source. Serving coalescing therefore groups only
-//! requests with identical traversal semantics and publishes the completed
-//! result to followers. A GPU-resident publication borrows the leader
-//! attempt's attached domain members while followers copy it, so the leader
-//! rendezvouses with its joined followers before it may release: publication
+//! libcugraph multi-source BFS produces one nearest-source forest. It does not
+//! produce one independent result per source. Serving coalescing therefore
+//! groups only requests with identical traversal semantics and publishes the
+//! completed result to followers. A GPU-resident publication borrows the leader
+//! attempt's attached domain members while followers copy it. The leader must
+//! rendezvous with its joined followers before it may release. Publication
 //! resolves the generation, and the leader waits until every joined follower
 //! has copied or dropped the handoff.
 
@@ -38,8 +38,8 @@ use crate::error::{Error, ErrorCode, Result};
 
 const OPERATION: &str = "algeon_datafusion.graph_execution.bfs_singleflight";
 const DEFAULT_MAX_BATCH_WIDTH: usize = 32;
-/// The coordinator remains a serving primitive, not an unbounded event
-/// recorder. A fresh same-key cohort is far smaller than this bounded projection.
+/// The coordinator remains a serving primitive with a bounded event record. A
+/// fresh same-key cohort is far smaller than this bounded projection.
 const MAX_BFS_SINGLEFLIGHT_EVENT_SNAPSHOTS: usize = 256;
 
 /// Exact compatibility key for one device-local independent BFS traversal.
@@ -85,9 +85,13 @@ pub struct GraphBfsSingleflightSnapshot {
 pub struct GraphBfsSingleflightEventSnapshot {
     /// Per-coordinator monotonically increasing sequence number.
     pub sequence: u64,
+    /// Process-visible CUDA ordinal on which this coalescing generation executes.
     pub device_ordinal: usize,
+    /// One-way fingerprint of the exact request key used for BFS coalescing.
     pub singleflight_key_fingerprint: String,
+    /// One-way caller-correlation fingerprint, or `None` without a correlation id.
     pub correlation_fingerprint: Option<String>,
+    /// Device-local group generation associated with this event.
     pub generation: u64,
     /// `leader_join`, `follower_join`, `leader_traversal`,
     /// `leader_published`, `follower_copy`, or `leader_failed`.
@@ -136,7 +140,7 @@ impl GraphBfsSingleflight {
 
     /// Joins a coalescing group and retains the leader's engine-minted attempt
     /// id only in the in-process follower state. It is projected later by the
-    /// follower's own sealed attempt snapshot, never by coordinator events.
+    /// follower's own sealed attempt snapshot. Coordinator events do not carry it.
     pub(crate) fn join_with_attempt(
         &self,
         key: GraphBfsSingleflightKey,
@@ -572,8 +576,8 @@ impl GpuHandoffDrain {
 
     async fn wait_until_drained(&self, cancellation: &ExecutionCancellation) -> Result<()> {
         loop {
-            // Enabled before the count is read: a follower that settles in
-            // between notifies a registered waiter instead of nobody.
+            // Enabled before the count is read. A follower that settles in between
+            // notifies this registered waiter; an unregistered one would miss the wakeup.
             let settled = self.notify.notified();
             tokio::pin!(settled);
             settled.as_mut().enable();

@@ -686,7 +686,7 @@ fn capability_admission_refuses_a_plan_reading_a_column_its_input_does_not_produ
 fn capability_admission_rejects_a_type_the_backend_does_not_support_with_its_validation_code() {
     // A timezone-aware timestamp is a valid Arrow group key that the native
     // aggregate cannot key on. Validation reports it as unsupported, which is
-    // a rejection a frontend may fall back from, not a malformed plan.
+    // a rejection a frontend may fall back from, and the plan itself is well formed.
     let timestamp = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("ts", timestamp.clone(), false),
@@ -973,7 +973,7 @@ fn admitted_plan_refuses_a_pruned_source_selecting_a_row_group_its_file_does_not
     let admitted = decision.admission().expect("a filtered scan is admitted");
 
     // Footer metadata reports one row group, yet the pruned selection keeps
-    // row group 2: the resolved source is malformed, not unsupported.
+    // row group 2, so the resolved source is malformed and fails with `InvalidPlan`.
     let broken = file_scan_plan(
         LocalParquetFile::new("/tmp/footer-pruned-scan.parquet")
             .with_file_size_bytes(4096)

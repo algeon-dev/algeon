@@ -14,6 +14,9 @@ use super::{CumlAlgoExec, CumlLogicalNode};
 use crate::session::planning_native_execution_config;
 
 #[derive(Debug)]
+/// DataFusion physical extension planner for validated cuML logical nodes.
+///
+/// Calls outside this family remain available to other extension planners.
 pub struct CumlExtensionPlanner;
 
 #[async_trait]

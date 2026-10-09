@@ -98,7 +98,7 @@ cudf_status_t cudf_device_buffer_copy_from_host_range_async_ex(cudf_device_buffe
 ///
 /// The allocation is portable across CUDA devices (`cudaHostAllocPortable`).
 /// Pinned host memory is a scarce global resource: callers should retain and
-/// reuse allocations (e.g. as staging slabs) instead of allocating per
+/// reuse allocations (e.g. as staging slabs) and should not allocate per
 /// operation.
 ///
 /// On success `*out` is a valid host pointer that must be released with
@@ -110,9 +110,9 @@ cudf_status_t cudf_pinned_host_alloc(size_t size, void** out);
 cudf_status_t cudf_pinned_host_free(void* ptr);
 
 /// Create a column by adopting (moving) an existing device buffer.
-/// Zero-copy: no device-to-device memcpy occurs.
+/// The adoption is zero-copy, and no device-to-device memcpy occurs.
 ///
-/// The buffer handle is consumed: after a successful call, the handle
+/// The buffer handle is consumed. After a successful call, the handle
 /// is no longer valid and must NOT be passed to
 /// cudf_device_buffer_destroy.
 ///
@@ -120,7 +120,7 @@ cudf_status_t cudf_pinned_host_free(void* ptr);
 /// transferred).
 ///
 /// `type_id` must be a fixed-width type.
-/// `row_count` is the number of elements (not bytes).
+/// `row_count` is measured in elements.
 /// Buffer byte size must equal `row_count * element_size_of(type_id)`.
 ///
 /// The resulting column has no null mask (null_count = 0).
@@ -130,7 +130,7 @@ cudf_status_t cudf_column_adopt_device_buffer(cudf_type_id_t type_id,
                                               cudf_column_handle* out);
 
 /// Create a nullable column by adopting data and null-mask buffers.
-/// Zero-copy: no device-to-device memcpy occurs.
+/// The adoption is zero-copy, and no device-to-device memcpy occurs.
 ///
 /// Both `data_buffer` and `null_mask_buffer` are consumed on success.
 /// On failure, both remain valid.

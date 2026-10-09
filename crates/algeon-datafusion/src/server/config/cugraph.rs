@@ -1,10 +1,11 @@
 use super::{env::EnvValues, *};
 use crate::cugraph_sql::GpuIslandHostBoundaryConfig;
 
-/// Enables registration of cuGraph SQL functions. Defaults to `true`; set it
-/// to `false` to hide the SQL frontend. A feature-off server still
-/// registers the public SQL frontend when enabled, but execution then returns
-/// its structured `required_feature_disabled` capability error.
+/// Enables registration of cuGraph SQL functions. Defaults to `true`. When
+/// `false`, the cuGraph SQL family is not installed, so `cugraph_*` relations
+/// fail with a not-found error. In a binary built without the `cugraph`
+/// feature, `true` registers the functions and execution returns the
+/// structured `required_feature_disabled` capability error.
 pub const ALGEON_SERVER_CUGRAPH_ENABLED_ENV: &str = "ALGEON_SERVER_CUGRAPH_ENABLED";
 /// Default cuGraph graph construction backend. Use `python_cugraph` or
 /// `raw_libcugraph`; named graph arguments can override it for one call.

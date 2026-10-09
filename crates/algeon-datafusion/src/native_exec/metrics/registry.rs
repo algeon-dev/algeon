@@ -43,7 +43,8 @@ macro_rules! define_registry {
     ($( $field:ident => $name:literal: $kind:ident, )*) => {
         #[derive(Debug, Clone)]
         // Fields are written through `AlgeonNativeMetrics: Deref<Target = NativeMetricRegistry>`
-        // from the descriptor recording macros. Keep the full ordered registry even when a
+        // from the descriptor recording macros. Keep the full ordered registry even when the
+        // active plan paths leave some fields unread.
         #[expect(
             dead_code,
             reason = "fields are recorded via macro and subset of metric fields may be unread depending on active plan paths"

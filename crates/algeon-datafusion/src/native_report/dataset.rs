@@ -6,8 +6,8 @@ use std::path::PathBuf;
 /// They project into `WorkloadDatasetMetadata` for embedding into shared report
 /// surfaces (`NativeFallbackPressureReport`, `NativeDataFusionPlanningReport`,
 /// `NativeDataFusionExecutionReport`). The per-table breakdown fields are
-/// pre-formatted CSV strings rather than typed table lists so the shared report
-/// surface does not have to know about workload-specific table schemas.
+/// pre-formatted CSV strings. This keeps the shared report surface independent of
+/// workload-specific table schemas.
 ///
 /// `scale_factor` is `Option<String>` because not every workload has the
 /// TPC-style scale-factor concept (e.g. ClickBench).

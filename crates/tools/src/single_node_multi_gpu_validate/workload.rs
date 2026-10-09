@@ -33,8 +33,8 @@ pub(super) struct SelectedQuery {
     pub(super) kind: FixtureKind,
     pub(super) label: String,
     pub(super) sql: String,
-    /// True when the query drives a cuGraph construction/algorithm path rather
-    /// than a cuDF relational path.
+    /// True when the query drives a cuGraph construction or algorithm path.
+    /// Otherwise the query runs on the cuDF relational path.
     pub(super) graph: bool,
     /// Whether the query is expected to acquire a device placement. The
     /// runner-owned feature-disabled capability probe is deliberately
@@ -65,10 +65,11 @@ impl SelectedQuery {
     }
 }
 
-/// One intentionally serialized completion consumer for the handoff-pressure probe. The semaphore
-/// permit is acquired before the public completion receiver is awaited and is
-/// held until that receiver has drained, creating the real handoff pressure
-/// the probe is meant to test rather than merely sleeping each task.
+/// One intentionally serialized completion consumer for the handoff-pressure probe.
+/// The semaphore permit is acquired before the public completion receiver is awaited and is
+/// held until that receiver has drained. Holding the permit through the drain produces
+/// handoff pressure for the probe to test. A sleep in each task alone would not serialize
+/// the receivers.
 #[derive(Debug, Clone)]
 pub(super) struct CompletionSink {
     delay: Duration,
@@ -117,8 +118,8 @@ impl CompletionSink {
     }
 }
 
-/// The artifact projection of a selected query. The SQL itself is never
-/// persisted: the artifact records identity, not raw statements.
+/// The artifact projection of a selected query. The SQL text is never persisted, and the
+/// artifact records only the query identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct SelectedQueryDescriptor {
     pub(super) fixture_index: usize,
@@ -128,11 +129,11 @@ pub(super) struct SelectedQueryDescriptor {
 }
 
 /// The DBLP edge table the cuGraph table functions read. `edges_by_src` is the
-/// source-sorted layout, which is what the algorithm paths want.
+/// source-sorted layout used by the algorithm paths.
 const DBLP_EDGE_TABLE: &str = "edges_by_src";
 /// A traversal source that exists in the canonical V12 vertex space. DBLP paper
-/// ids do not start at zero, so a synthetic source is rejected as invalid
-/// input rather than traversing nothing.
+/// ids do not start at zero, so a synthetic source is rejected as invalid input.
+/// Without that rejection, the traversal would visit no vertices.
 const DBLP_TRAVERSAL_SOURCE: i64 = 1091;
 
 /// cuGraph SQL table-function names.

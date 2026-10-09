@@ -37,7 +37,8 @@ if NEXTEST_TEST_GROUP=gpu-exclusive timeout 5 "${wrapper}" "${lock}" flock --non
   fail "gpu-exclusive test does not hold an exclusive lock"
 fi
 
-# An ancestor holding the lock passes its descriptor down instead of deadlocking.
+# An ancestor holding the lock passes its descriptor down. Locking again would block
+# on the ancestor's lock and deadlock the wrapped test.
 if ! timeout 5 flock --exclusive "${lock}" env NEXTEST_TEST_GROUP=gpu "${wrapper}" "${lock}" true; then
   fail "wrapper deadlocked under an ancestor holding the lock"
 fi

@@ -228,7 +228,6 @@ static cudf_status_t cudf_groupby_aggregate_from_groupby(
     return CUDF_SUCCESS;
   }
 
-  // Flatten result columns into a single array.
   int32_t total = 0;
   for (auto& [results] : result_values) {
     total += static_cast<int32_t>(results.size());

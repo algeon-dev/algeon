@@ -32,7 +32,7 @@ impl Sampler {
         let signal = Arc::clone(&stop);
         let started = Instant::now();
         // Capture the baseline before the caller can submit work. Spawning a
-        // sampler thread and hoping its first poll wins that race makes the
+        // sampler thread and relying on its first poll to win that race makes the
         // resulting CUDA-free delta unsuitable for claim-versus-VRAM
         // calibration.
         let mut initial = SamplerResult::empty(sample_interval);
@@ -56,8 +56,9 @@ impl Sampler {
             let mut device_series = initial.device_series;
             let mut process_series = initial.process_series;
             loop {
-                // Waiting on the condvar rather than sleeping keeps `stop`
-                // prompt, so the last sample lands right after the run ends.
+                // Waiting on the condvar keeps `stop` prompt, so the last sample
+                // lands right after the run ends. A plain sleep would defer the stop
+                // check by up to one sample interval.
                 let (lock, condition) = &*signal;
                 let Ok(stopped) = lock.lock() else {
                     break;

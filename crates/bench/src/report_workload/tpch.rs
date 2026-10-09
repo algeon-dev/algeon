@@ -86,17 +86,18 @@ pub fn tpch_tuned_cpu_session_config() -> SessionConfig {
     config
 }
 
-/// Conservative native optimizer config used by default TPC-H report surfaces.
-///
-/// The bounded profile uses the default source chunking: a 64 MiB source chunk
-/// target, one row group per chunk, three retry attempts, and one row group as
-/// the retry floor. Decision-grade benchmark binaries override this through
-/// their own TPC-H env-var surface.
 /// Device budget that native TPC-H report callers give the backend executing
 /// [`tpch_native_optimizer_config`]. Callers that must size a device to the
-/// same bound read it here instead of restating the literal.
+/// same bound read this constant. The literal is not restated at each call
+/// site.
 pub const TPCH_NATIVE_DEVICE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Conservative native optimizer config used by default TPC-H report surfaces.
+///
+/// The bounded profile uses the default source chunking: no source-byte
+/// ceiling, one row group per chunk, three retry attempts, and one row group as
+/// the retry floor. Decision-grade benchmark binaries override this through
+/// their own TPC-H env-var surface.
 pub fn tpch_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
     AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default())
 }

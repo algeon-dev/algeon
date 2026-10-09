@@ -16,12 +16,12 @@ use crate::server::adapter_error::Result;
 /// clients classify it as an update and execute through `executeUpdate` (the
 /// update channel). Some clients still re-run that same handle, so the second
 /// execution would otherwise hit DataFusion's "already exists" / "not found"
-/// catalog error. We deduplicate no-result-set DDL per handle: the first
-/// execution runs, later executions of the *same* handle are no-ops.
-/// Query / DML prepared statements set `no_result_ddl = false` and are never
-/// deduplicated, so they can still be executed repeatedly.
+/// catalog error. Repeat executions of a no-result-set DDL handle are
+/// deduplicated: the first execution runs, and later executions of the *same*
+/// handle are no-ops. Query / DML prepared statements set `no_result_ddl = false`
+/// and are never deduplicated, so they can still be executed repeatedly.
 ///
-/// Contract: a no-result-set DDL handle is applied **at most once**. This is
+/// A no-result-set DDL handle is applied **at most once**. This is
 /// scoped to *one* handle; a fresh `CreatePreparedStatement` (a distinct
 /// handle) re-runs the DDL and still surfaces a genuine duplicate, so an
 /// independent client running `CREATE` against a pre-existing table is not
@@ -77,8 +77,8 @@ impl PreparedStatementEntry {
 /// Bounds the worst case for clients that leak handles by disconnecting
 /// without calling `ClosePreparedStatement`. Sized for DataGrip-class
 /// clients (a few hundred concurrent handles); raise when a real workload
-/// demands it. Hitting the cap returns `RESOURCE_EXHAUSTED` rather than
-/// silently evicting another connection's prepared statement.
+/// demands it. Hitting the cap returns `RESOURCE_EXHAUSTED` and evicts no other
+/// connection's prepared statement.
 const MAX_PREPARED_STATEMENTS: usize = 1024;
 
 /// Per-principal cap on live prepared-statement handles.
@@ -113,7 +113,7 @@ struct PreparedStatementState {
     entries: HashMap<String, Arc<PreparedStatementEntry>>,
     /// Live handle count per owner. An owner with no live handles is removed,
     /// so this map is bounded by the number of principals currently holding
-    /// prepared statements rather than by the number ever seen.
+    /// prepared statements. The number of principals ever seen does not bound it.
     per_owner: HashMap<Owner, usize>,
 }
 
@@ -153,8 +153,8 @@ impl PreparedStatementStore {
     }
 
     /// Remove `handle`, releasing its owner's quota. Returns whether a live
-    /// handle was removed, so a close of an unknown handle stays a traceable
-    /// no-op rather than an error.
+    /// handle was removed, so closing an unknown handle is a traceable no-op
+    /// that returns `false`.
     pub(super) fn remove(&self, handle: &str, owner: &Owner) -> bool {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.entries.remove(handle).is_none() {

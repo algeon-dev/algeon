@@ -8,7 +8,7 @@ const NATIVE_COMPONENT: rapids_build_support::NativeComponent = rapids_build_sup
     required_library: "lib/libcuml_rust.so",
     override_env: Some("CUML_INSTALL_DIR"),
     // A source shim is needed for test hooks; normal builds replay the
-    // canonical install's link manifest instead of recompiling native code.
+    // canonical install's link manifest and skip recompiling native code.
     source_required_env: Some("CARGO_FEATURE_TEST_HOOKS"),
     source_tree_sentinel: Some("../cuml/cmake/rapids_config.cmake"),
     build_script: "scripts/build/build_libcuml.sh",

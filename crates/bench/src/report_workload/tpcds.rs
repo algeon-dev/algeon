@@ -45,7 +45,7 @@ pub use parity::{
 pub const ALGEON_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "ALGEON_TPCDS_NATIVE_DEVICE_BUDGET_BYTES";
 /// Named native memory/source profile used by TPC-DS benchmark/report
 /// surfaces. Accepts `conservative` (default) or `sf100_gpu_throughput`;
-/// individual `ALGEON_TPCDS_NATIVE_*` knobs may still override the profile.
+/// individual `ALGEON_TPCDS_NATIVE_*` settings may still override the profile.
 pub const ALGEON_TPCDS_NATIVE_PROFILE_ENV: &str = "ALGEON_TPCDS_NATIVE_PROFILE";
 /// Planning target, in bytes, for native Parquet source chunks.
 pub const ALGEON_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "ALGEON_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES";
@@ -96,14 +96,13 @@ pub const ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV: &str =
 /// number of Parquet row groups.
 pub const TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS: usize = 32;
 
-/// Conservative bounded profile: current production-safe defaults.
+/// The conservative bounded profile uses current production-safe defaults.
 pub const TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
-/// SF100 throughput profile: TPC-H-like large local Parquet batches for GPU benchmarking.
+/// The SF100 throughput profile uses TPC-H-like large local Parquet batches for GPU benchmarking.
 pub const TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str = "sf100_gpu_throughput";
-/// Profile name used when explicit knobs do not match a named profile.
+/// Profile name used when explicit settings do not match a named profile.
 pub const TPCDS_NATIVE_PROFILE_CUSTOM: &str = "custom";
-/// SF100 throughput profile device budget, matching the 95 GiB probe.
-/// SF100 throughput profile source byte target: 32 GiB.
+/// SF100 throughput profile source byte target of 32 GiB.
 pub const TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64 = 34_359_738_368;
 /// SF100 throughput profile row-group batch target.
 pub const TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
@@ -174,8 +173,8 @@ pub fn tpcds_report_session_config() -> SessionConfig {
 /// This starts from [`tpcds_report_session_config`] and disables DataFusion
 /// table-level statistics collection. DataFusion physical join statistics
 /// can overflow on large multi-join TPC-DS plans; native source planning
-/// reads row-group metadata directly from Parquet footers instead of
-/// relying on those table estimates.
+/// reads row-group metadata directly from Parquet footers. It does not rely
+/// on those table estimates.
 pub fn tpcds_native_report_session_config() -> SessionConfig {
     native_tpcds_session_config(tpcds_report_session_config())
 }
@@ -187,9 +186,9 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
 
 /// Native optimizer config used by TPC-DS report surfaces.
 ///
-/// Numeric env vars parse unsigned integers. Source chunk bytes, row-group
+/// Numeric env vars parse unsigned integers. Source chunk bytes and row-group
 /// limits are planning targets; positive-value validation happens when the
-/// native execution context is built. Cost-selection knobs are intentionally
+/// native execution context is built. Cost-selection settings are intentionally
 /// dormant until the native SQL surface can distinguish ordinary TPC-DS shapes
 /// from GPU-only `cugraph_*` calls.
 pub fn tpcds_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
@@ -299,9 +298,9 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
 ) -> AlgeonNativeOptimizerConfig {
     let statistical_aggregate_execution_mode =
         optional_env_statistical_aggregate_execution_mode().unwrap_or(statistical_aggregate_execution_mode_default);
-    // Keep cost selection disabled for ordinary report surfaces: users can submit SQL containing
-    // `cugraph_*` table functions, and those plans must stay on the GPU rather
-    // than being declined by cost. The dedicated comparison benchmark installs
+    // Keep cost selection disabled for ordinary report surfaces. Users can submit SQL containing
+    // `cugraph_*` table functions, and those plans must stay on the GPU, so cost
+    // selection must not decline them. The dedicated comparison benchmark installs
     // its own cost-selection configuration after the GPU-island boundary is explicit.
     let cost_options = NativePlanCostOptions::disabled();
     AlgeonNativeOptimizerConfig::default()
@@ -326,8 +325,8 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
 /// `ALGEON_TPCDS_NATIVE_PROFILE` chooses a named base profile:
 /// `conservative` keeps the existing bounded defaults, while
 /// `sf100_gpu_throughput` applies the TPC-H-like SF100 local Parquet profile.
-/// The individual `ALGEON_TPCDS_NATIVE_*` knobs override either base. If
-/// those final values exactly match a named profile, the resolved
+/// The individual `ALGEON_TPCDS_NATIVE_*` settings override either base. If
+/// those final values match a named profile, the resolved
 /// `profile_name` is that profile; otherwise it is `custom`.
 pub fn tpcds_native_profile_settings_from_env() -> TpcdsNativeProfileSettings {
     tpcds_native_profile_settings_and_device_memory_limit_from_env().0
@@ -518,8 +517,8 @@ fn optional_env_statistical_aggregate_execution_mode_for(
 
 /// Builds fallback-pressure planning items for all TPC-DS queries.
 ///
-/// Planning failures are returned as per-query workload items so reports keep
-/// a row for each query instead of aborting the whole workload.
+/// Planning failures are returned as per-query workload items. Reports keep a
+/// row for each query, and no planning failure aborts the workload.
 pub async fn tpcds_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
@@ -675,9 +674,10 @@ pub enum TpcdsExecutionProgressEvent<'a> {
 
 /// Builds execution report items for an optional exact query-id subset.
 ///
-/// Unknown query ids are silently ignored. Progress callbacks are emitted in
-/// selected-query order: one start event, then one finish event per query.
-/// Runtime outcome strings match the execution report vocabulary.
+/// Unknown query ids are ignored. Progress callbacks are emitted in
+/// selected-query order. Each selected query gets one start event followed by
+/// one finish event. Runtime outcome strings match the execution report
+/// vocabulary.
 pub async fn tpcds_datafusion_execution_workload_items_filtered(
     root: &Path,
     session_config: SessionConfig,
@@ -804,8 +804,8 @@ async fn execute_tpcds_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFu
 }
 
 /// Registers TPC-DS tables with unique-key evidence carried in each provider
-/// schema's metadata, so native lowering proves single-row scans from the
-/// scan's own schema instead of external process state.
+/// schema's metadata. Native lowering proves single-row scans from the scan's
+/// own schema and does not consult external process state.
 pub async fn register_tpcds_tables_with_native_metadata(ctx: &SessionContext, root: &Path) -> WorkloadResult<()> {
     for &table in TPCDS_TABLES {
         let layout = discover_tpcds_table_layout(root, table)?;

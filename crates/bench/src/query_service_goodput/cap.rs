@@ -150,8 +150,9 @@ impl CapAssignment {
     ///
     /// Sequence-only assignments cannot identify a cap for calibration, so a
     /// manifest must provide an item, family or default rule whenever it also
-    /// contains sequence overrides. This keeps the frozen latency baseline
-    /// tied to an explicit cap rather than silently using the global fallback.
+    /// contains sequence overrides. This keeps the frozen latency baseline tied
+    /// to an explicit cap. With sequence overrides present, an item lacking such
+    /// a rule makes this function return an error.
     pub(super) fn calibration_caps(&self, items: &[WorkloadItem], fallback: u64) -> Result<Vec<u64>, Box<dyn Error>> {
         items
             .iter()

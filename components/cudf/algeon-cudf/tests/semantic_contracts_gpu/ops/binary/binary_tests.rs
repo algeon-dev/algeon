@@ -113,10 +113,6 @@ fn test_series_scalar_binary_operation_uses_series_provenance() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-// ---------------------------------------------------------------------------
-// String comparison: series vs series
-// ---------------------------------------------------------------------------
-
 fn test_string_equal_vv() {
     let a = series("a", &["foo", "bar", "baz"]).unwrap();
     let b = series("b", &["foo", "bar", "qux"]).unwrap();
@@ -169,10 +165,6 @@ fn test_string_greater_equal_vv() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
-// ---------------------------------------------------------------------------
-// String edge cases
-// ---------------------------------------------------------------------------
-
 fn test_string_equal_empty() {
     let a = series("a", &["", "hello", ""]).unwrap();
     let b = series("b", &["", "", "hello"]).unwrap();
@@ -190,10 +182,6 @@ fn test_string_equal_case_sensitive() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, false, true]);
 }
 
-// ---------------------------------------------------------------------------
-// String arithmetic errors
-// ---------------------------------------------------------------------------
-
 fn test_string_add_vv_error() {
     let a = series("a", &["foo", "bar"]).unwrap();
     let b = series("b", &["baz", "qux"]).unwrap();
@@ -201,10 +189,6 @@ fn test_string_add_vv_error() {
     let result = a.on(Exec::RETAINED).add(&b);
     assert!(result.is_err());
 }
-
-// ---------------------------------------------------------------------------
-// BinaryOperator::is_comparison
-// ---------------------------------------------------------------------------
 
 fn test_is_comparison_true_for_comparison_ops() {
     assert!(BinaryOperator::Equal.is_comparison());
@@ -228,10 +212,6 @@ fn test_is_comparison_false_for_arithmetic_ops() {
     assert!(!BinaryOperator::LogicalAnd.is_comparison());
     assert!(!BinaryOperator::BitwiseAnd.is_comparison());
 }
-
-// ---------------------------------------------------------------------------
-// infer_binary_output_type
-// ---------------------------------------------------------------------------
 
 fn decimal64(scale: i32) -> DataType {
     DataType::fixed_point(TypeId::Decimal64, scale).unwrap()
@@ -605,10 +585,7 @@ fn test_infer_mixed_string_numeric_comparison_rejected() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Integer division and remainder: arrow-arith row semantics
-// ---------------------------------------------------------------------------
-
+// Integer division and remainder follow arrow-arith row semantics.
 fn assert_division_by_zero(result: cudf::Result<cudf::Series>, operator: &str) {
     let error = result.expect_err("a zero divisor in a valid row must fail");
     assert_eq!(error.code(), ErrorCode::DivisionByZero);
@@ -746,10 +723,7 @@ fn test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics(
     assert_eq!(unsigned.on(Exec::RETAINED).div(&same).unwrap().to_vec_strict::<u32>().unwrap(), vec![1]);
 }
 
-// ---------------------------------------------------------------------------
-// Timestamp arithmetic: arrow-arith `add_checked` and `sub_checked` row semantics
-// ---------------------------------------------------------------------------
-
+// Timestamp arithmetic follows arrow-arith `add_checked` and `sub_checked` row semantics.
 const EVERY_TEMPORAL_RESOLUTION: [TimestampResolution; 4] = [
     TimestampResolution::Seconds,
     TimestampResolution::Milliseconds,
@@ -784,7 +758,7 @@ fn assert_temporal_overflow(result: cudf::Result<cudf::Series>, operator: &str, 
 fn test_timestamp_arithmetic_values_and_failures_follow_arrow_checked_arithmetic() {
     for resolution in EVERY_TEMPORAL_RESOLUTION {
         let context = format!("{resolution:?}");
-        // Results that land exactly on the Int64 limits are in range.
+        // Results that land on the Int64 limits are in range.
         let (_, timestamps) = all_valid(&[i64::MAX - 5, i64::MIN + 5, 10, -3], resolution);
         let (durations, _) = all_valid(&[5, -5, -4, 3], resolution);
         let sum = temporal_counts(timestamps.on(Exec::RETAINED).add(&durations));

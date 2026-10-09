@@ -411,9 +411,9 @@ pub(super) fn lower_hash_join_input(
     required_output_fields: &RequiredFields,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
-    // Flow: canonicalize the join type, derive DataFusion-output-preserving
-    // projection, collect keys/residual requirements, lower both children, add
-    // residual materializations, then order inputs for the native spec.
+    // Lowering canonicalizes the join type, derives the DataFusion-output-preserving
+    // projection, collects key and residual requirements, lowers both children, adds
+    // key and residual materializations, then orders the inputs for the native spec.
     let canonical = canonical_join(join.join.join_type())?;
     let output_requests = hash_join_output_requests(join, required_output_fields)?;
     let residual = join
@@ -724,10 +724,10 @@ fn nested_loop_join_canonical(
 ) -> Result<CanonicalJoin, LoweringFailure> {
     // Predicate-free inner nested-loop joins are native cross joins.
     // Predicate-free left/right joins are also native cross joins when the null-supplying
-    // input is provably a scalar aggregate subtree: a scalar aggregate emits
-    // exactly one row, so there is no unmatched side to null-extend. Predicate
-    // inner joins may swap when only DataFusion-right columns are required,
-    // which keeps the output side compact while preserving DataFusion schema.
+    // input is provably a scalar aggregate subtree. A scalar aggregate emits exactly one row,
+    // which leaves no unmatched side to null-extend. Predicate inner joins may swap when
+    // only DataFusion-right columns are required. The swap keeps the output compact and
+    // preserves the DataFusion schema.
     if join.join.filter().is_none() && matches!(join.join.join_type(), JoinType::Inner) {
         return Ok(CanonicalJoin::new(CanonicalJoinKind::Cross, false));
     }

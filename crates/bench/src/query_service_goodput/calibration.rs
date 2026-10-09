@@ -23,7 +23,7 @@ const COLUMNS: &[&str] = &[
 ///
 /// The gate is deliberately limited to facts this process can observe. Source
 /// and native-library identity is recorded by the driver and carried through
-/// `source_identity`, which is reported but never silently compared.
+/// `source_identity`, which is reported but never compared.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct CalibrationIdentity {
     pub(super) gpu_model: String,

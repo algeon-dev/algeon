@@ -28,8 +28,8 @@ use crate::{
 /// [`PlanFacts`]).
 ///
 /// The plan always ends at an explicit [`ResultSink`]. Native execution keeps
-/// intermediate and final data GPU-resident by default; host materialization is a
-/// sink choice, not an implicit side effect of reaching the root.
+/// intermediate and final data GPU-resident by default. Host materialization is
+/// a sink choice; reaching the root does not perform it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryPlan {
     pub(super) nodes: Vec<QueryNode>,
@@ -130,7 +130,6 @@ impl QueryPlan {
         &self.annotations.dynamic_filter_routes
     }
 
-    /// Returns this plan with a replacement dynamic-filter route list.
     pub(crate) fn with_dynamic_filter_routes(mut self, routes: Vec<DynamicFilterRoute>) -> Self {
         self.annotations.dynamic_filter_routes = routes;
         self
@@ -250,8 +249,8 @@ impl QueryPlan {
     /// Return a copy of this plan with the same root and a GPU-resident sink.
     ///
     /// This is used by embedding frontends that need to feed a native plan's
-    /// output into another GPU consumer instead of materializing the existing
-    /// host-arrow boundary.
+    /// output into another GPU consumer. The existing host-arrow boundary is
+    /// replaced by the GPU-resident sink.
     pub fn clone_with_gpu_resident_sink(&self) -> Self {
         let mut plan = self.clone();
         plan.sink = ResultSink::GpuResident { input: self.root_id() };
@@ -264,7 +263,7 @@ impl QueryPlan {
     ///
     /// Embedding frontends use this when they implement bounded incremental
     /// device-to-host materialization themselves. Keeping this distinct from
-    /// [`Self::clone_with_gpu_resident_sink`] prevents a true GPU-to-GPU
+    /// [`Self::clone_with_gpu_resident_sink`] prevents a GPU-to-GPU
     /// consumer from acquiring a host-materialization contract it does not
     /// own.
     pub fn clone_with_deferred_host_materialization_sink(&self) -> Self {
@@ -359,8 +358,9 @@ impl QueryPlan {
 
     /// Returns the schema visible at the plan boundary.
     ///
-    /// GPU-resident plans derive this from the sink input. Host sinks carry an
-    /// explicit schema because materialization is a boundary contract.
+    /// GPU-resident and deferred host sinks derive this from the sink input. A
+    /// host Arrow sink carries an explicit schema because materialization is a
+    /// boundary contract.
     pub fn output_schema(&self) -> &SchemaRef {
         match &self.sink {
             ResultSink::GpuResident { input } | ResultSink::DeferredHostArrow { input, .. } => {
@@ -376,10 +376,12 @@ impl QueryPlan {
         self.sink.caller_visible_host_schema().unwrap_or_else(|| self.output_schema())
     }
 
+    /// Number of entries in this plan's node arena.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Whether any node in the arena is a join.
     pub fn contains_join(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::Join(_)))
     }
@@ -388,6 +390,7 @@ impl QueryPlan {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
     }
 
+    /// Whether any node performs graph edge normalization.
     pub fn contains_edge_normalize(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::EdgeNormalize(_)))
     }
@@ -397,6 +400,7 @@ impl QueryPlan {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::VectorAlgorithm(_)))
     }
 
+    /// Whether any node executes a machine-learning algorithm.
     pub fn contains_ml_algorithm(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::MlAlgorithm(_)))
     }
@@ -436,8 +440,8 @@ impl fmt::Display for NodeId {
 ///
 /// The node id records its stable address, `kind` records the operation and
 /// input edges, and `facts` records planner/executor facts about the node's
-/// output. Facts are descriptive contracts used by validators and diagnostics;
-/// they are not hidden knobs that rewrite execution behavior.
+/// output. Facts are descriptive contracts used by validators and diagnostics,
+/// and they do not change how execution runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryNode {
     /// Stable id whose index matches this node's position in [`QueryPlan::nodes`].

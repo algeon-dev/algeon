@@ -102,10 +102,12 @@ impl CompiledPipeline {
 pub struct PipelineTaskId(usize);
 
 impl PipelineTaskId {
+    /// Creates an identity from a graph-local index without checking membership.
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
 
+    /// Returns the zero-based index within the owning compiled graph.
     pub const fn index(self) -> usize {
         self.0
     }
@@ -116,6 +118,7 @@ impl PipelineTaskId {
 pub struct PipelineEdgeId(usize);
 
 impl PipelineEdgeId {
+    /// Creates an identity from a graph-local index without checking membership.
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
@@ -130,6 +133,7 @@ impl PipelineEdgeId {
 pub struct PipelineBarrierId(usize);
 
 impl PipelineBarrierId {
+    /// Creates an identity from a graph-local index without checking membership.
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
@@ -144,6 +148,7 @@ impl PipelineBarrierId {
 pub struct ResidentResourceId(usize);
 
 impl ResidentResourceId {
+    /// Creates an identity from a graph-local index without checking membership.
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
@@ -157,7 +162,7 @@ impl ResidentResourceId {
 ///
 /// A task names the operator work to perform and the resident resources it
 /// consumes or produces. The scheduler uses task ids and dependencies; the
-/// operator interpreter owns the actual cuDF work.
+/// operator interpreter owns the cuDF work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineTask {
     id: PipelineTaskId,
@@ -188,7 +193,6 @@ impl PipelineTask {
         }
     }
 
-    /// Create a task associated with a native plan node.
     pub(crate) fn for_plan_node(id: PipelineTaskId, physical: TaskPhysical, plan_node: NodeId) -> Self {
         Self { plan_node: Some(plan_node), ..Self::new(id, physical) }
     }
@@ -288,7 +292,7 @@ pub enum AcceptedInputForm {
 /// Final-sort execution strategy, selected once at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SortStrategy {
-    /// Sort the whole input, then hand one frame downstream.
+    /// Sort the whole input, then emit one frame downstream.
     FullSort,
     /// Fuse the single downstream limit into a top-k over the sort input.
     FusedTopK {
@@ -599,11 +603,11 @@ impl ResidentResource {
         self.lifetime
     }
 
-    /// Strongest payload form the producer may hand this resource's consumers.
+    /// Strongest payload form the producer may pass to this resource's consumers.
     ///
-    /// The producer may hand over a weaker form than this: a deferred source
-    /// read that observes a single chunk materializes it, and a shared stream
-    /// is collected eagerly. It never hands over a stronger one.
+    /// The producer may emit a weaker form than this: a deferred source read
+    /// that observes a single chunk materializes it, and a shared stream is
+    /// collected eagerly. It never emits a stronger one.
     pub fn data_form(&self) -> ResidentDataForm {
         self.data_form
     }

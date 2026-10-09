@@ -31,7 +31,6 @@ pub fn alias_wrapped_column(expr: &Expr) -> Option<&ColumnRef> {
     }
 }
 
-/// Returns whether a string representation cast preserves the source value and row identity.
 pub(crate) fn representation_cast_preserves_identity(source_type: &DataType, target_type: &DataType) -> bool {
     source_type == target_type
         || matches!(
@@ -95,7 +94,7 @@ pub enum Expr {
         target_type: DataType,
     },
     /// SQL `TRY_CAST` to an Arrow data type. Rows whose value cannot be
-    /// represented in `target_type` evaluate to null instead of raising.
+    /// represented in `target_type` evaluate to null and do not raise an error.
     ///
     /// Native execution currently admits only `Utf8` → integer targets;
     /// other type pairs are rejected during validation/lowering.
@@ -114,8 +113,8 @@ pub enum Expr {
         /// Right operand.
         right: Box<Expr>,
         /// Optional declared output type for operators whose result type is a
-        /// frontend contract rather than something the native backend can infer
-        /// from operands alone.
+        /// frontend contract. The native backend cannot infer that type from
+        /// operands alone.
         output_type: Option<DataType>,
     },
     /// SQL `LIKE` or `NOT LIKE` string predicate.
@@ -215,7 +214,7 @@ pub enum Expr {
     /// SQL `CONCAT(expr, ...)` string expression.
     ///
     /// Native execution follows DataFusion semantics: null inputs contribute
-    /// empty strings rather than producing a null output row.
+    /// empty strings and do not produce a null output row.
     Concat(Vec<Expr>),
     /// SQL `ABS` over a numeric input.
     Abs(Box<Expr>),
@@ -225,7 +224,7 @@ pub enum Expr {
     /// the native contract because cudf's expression builder can infer a
     /// physical type that still needs to be aligned with DataFusion's exposed
     /// schema. Results follow IEEE 754: domain errors produce NaN or an
-    /// infinity instead of raising, and null inputs produce null.
+    /// infinity without raising an error, and null inputs produce null.
     UnaryMath {
         /// Function applied to each row.
         op: UnaryMathOp,
@@ -730,14 +729,23 @@ impl CaseWhen {
 /// Date or timestamp field named by `EXTRACT` or `DATE_TRUNC`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DatePart {
+    /// Calendar year field.
     Year,
+    /// Calendar month field.
     Month,
+    /// Day of month for extraction, or day boundary for truncation.
     Day,
+    /// Hour boundary for timestamp truncation.
     Hour,
+    /// Minute field for supported extraction, or minute boundary for truncation.
     Minute,
+    /// Second boundary for timestamp truncation.
     Second,
+    /// Millisecond boundary for timestamp truncation.
     Millisecond,
+    /// Microsecond boundary for timestamp truncation.
     Microsecond,
+    /// Nanosecond boundary for timestamp truncation.
     Nanosecond,
 }
 
@@ -827,21 +835,37 @@ pub enum BinaryOp {
     Add,
     /// Arithmetic subtraction. Temporal handling is context/type-dependent.
     Subtract,
+    /// Arithmetic multiplication under the operands' admitted dtype contract.
     Multiply,
+    /// Arithmetic division under the operands' admitted dtype contract.
     Divide,
+    /// Arithmetic remainder.
     Modulo,
+    /// Integer bitwise AND.
     BitwiseAnd,
+    /// Integer bitwise OR.
     BitwiseOr,
+    /// Integer bitwise exclusive OR.
     BitwiseXor,
+    /// Integer shift left by the right operand.
     ShiftLeft,
+    /// Integer shift right by the right operand.
     ShiftRight,
+    /// SQL equality; a null operand produces null.
     Eq,
+    /// SQL inequality; a null operand produces null.
     NotEq,
+    /// Strict less-than comparison.
     Lt,
+    /// Less-than-or-equal comparison.
     LtEq,
+    /// Strict greater-than comparison.
     Gt,
+    /// Greater-than-or-equal comparison.
     GtEq,
+    /// SQL three-valued boolean conjunction.
     And,
+    /// SQL three-valued boolean disjunction.
     Or,
 }
 

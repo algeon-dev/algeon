@@ -22,7 +22,7 @@ impl AdmissionController {
 
     /// Returns a point-in-time admission snapshot for service reports.
     ///
-    /// It only reads: a cancelled or expired waiter is not counted as
+    /// It only reads. A cancelled or expired waiter is not counted as
     /// queued, and its own step or the next submission sweep removes it, so
     /// a reader never finishes another caller's request.
     pub(in crate::runtime::query_service) fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {

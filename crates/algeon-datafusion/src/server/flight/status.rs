@@ -117,13 +117,13 @@ pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> Result<()> {
         // DDL carries no result set, but DataFusion executes it eagerly in
         // `execute_logical_plan` and yields an empty stream. The shared do_get
         // path (`execute_ticket`) runs that identically for statement and
-        // prepared tickets, so prepared DDL flows through the query channel just
+        // prepared tickets, so prepared DDL flows through the query channel
         // like a non-prepared statement (see `verify_statement_query_plan`).
         // JDBC clients such as DataGrip always wrap statements in a server-side
         // prepared statement and call `execute()`, never `execute_update()`, so
-        // rejecting DDL here made `CREATE EXTERNAL TABLE` / `DROP` unrunnable
-        // from those clients. We still reject query-producing DDL (CTAS / CREATE
-        // INDEX) to match `verify_prepared_statement_plan`.
+        // rejecting DDL here would make `CREATE EXTERNAL TABLE` / `DROP`
+        // unrunnable from those clients. This path still rejects query-producing
+        // DDL (CTAS / CREATE INDEX) to match `verify_prepared_statement_plan`.
         LogicalPlan::Ddl(ddl) => {
             verify_update_ddl(ddl, "algeon_datafusion.server.flight.get_flight_info_prepared_statement.verify_plan")
         },

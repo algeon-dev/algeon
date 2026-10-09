@@ -1,5 +1,3 @@
-//! Tests for DataFrame groupby aggregation.
-
 use cudf::{
     AggSpec, DataFrame, ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, GroupByAgg,
     core::error::{FactKeyName, FactValue},
@@ -61,10 +59,6 @@ fn assert_no_budget_error_details(err: &cudf::Error) {
     assert!(err.budget_exhaustion().is_none(), "an unbudgeted operation carries no budget scope");
 }
 
-// ---------------------------------------------------------------------------
-// Groupby aggregation
-// ---------------------------------------------------------------------------
-
 fn test_groupby_single_key_sum() {
     // keys: [1, 2, 1, 2], values: [10, 20, 30, 40]
     // Expected: key=1 → sum=40, key=2 → sum=60
@@ -75,16 +69,14 @@ fn test_groupby_single_key_sum() {
 
     let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
-    // Should have 2 columns: "key" and "value_sum"
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.num_rows(), 2);
 
-    // Check schema names
     let names = result.column_names();
     assert_eq!(names[0], "key");
     assert_eq!(names[1], "value_sum");
 
-    // Verify data (sort by key for determinism)
+    // Pairs are sorted by key below for determinism.
     let key_data: Vec<i32> = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let sum_data: Vec<i64> = result.series("value_sum").unwrap().to_vec_strict::<i64>().unwrap();
 
@@ -391,7 +383,6 @@ fn test_groupby_single_key_multiple_aggregations_same_column() {
         .agg(&[AggSpec::new("score", GroupByAgg::Min), AggSpec::new("score", GroupByAgg::Max)])
         .unwrap();
 
-    // Should have 3 columns: "key", "score_min", "score_max"
     assert_eq!(result.num_columns(), 3);
     assert_eq!(result.num_rows(), 2);
 
@@ -422,7 +413,6 @@ fn test_groupby_multiple_keys() {
 
     let result = df.groupby(["a", "b"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
-    // Should have 3 columns: "a", "b", "value_sum"
     assert_eq!(result.num_columns(), 3);
     assert_eq!(result.num_rows(), 4);
 
@@ -463,7 +453,7 @@ fn test_groupby_nonexistent_key_column_returns_error() {
 }
 
 fn test_groupby_result_column_naming_convention() {
-    // Verify naming: "{column}_{aggregation}"
+    // Result columns are named "{column}_{aggregation}".
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let prices = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
 

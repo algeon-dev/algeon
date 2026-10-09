@@ -162,9 +162,9 @@ impl ReplaceWithBackrefsOutputSizePreflight {
 
     /// Conservative requested-byte workspace upper bound for size and execute.
     ///
-    /// This is a requested/CUDA-utilized byte fact, not an aligned reservation
-    /// charge. Use [`required_budget_bytes`](Self::required_budget_bytes) for a
-    /// bounded token.
+    /// This is a requested/CUDA-utilized byte fact. It does not include the aligned
+    /// reservation charge. Use [`required_budget_bytes`](Self::required_budget_bytes) for
+    /// a bounded token.
     pub fn temporary_workspace_bytes(self) -> usize {
         self.temporary_workspace_bytes
     }

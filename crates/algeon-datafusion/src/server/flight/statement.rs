@@ -157,9 +157,10 @@ impl DatafusionAlgeonFlightSqlService {
 
     /// Retain the immutable report at the attempt-owned seal point.
     ///
-    /// This is intentionally a synchronous seal observer rather than a
-    /// detached receiver task: a Flight terminal lease must never become
-    /// releasable before the coordinator has the identical sealed report.
+    /// This is intentionally a synchronous seal observer. A Flight terminal
+    /// lease must never become releasable before the coordinator has the
+    /// identical sealed report, and a detached receiver task cannot guarantee
+    /// that ordering.
     pub(super) fn register_attempt_report_handoff(
         &self,
         attempt: &AlgeonAttempt,

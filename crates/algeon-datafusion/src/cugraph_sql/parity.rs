@@ -9,14 +9,12 @@ use serde_json::Value;
 
 use super::CugraphAlgorithm;
 
-/// Manifest JSON resident next to locally prepared cuGraph datasets.
+/// Repository-relative directory holding the locally prepared cuGraph datasets and manifest.
 pub const CUGRAPH_DATA_DIR_FROM_CARGO_MANIFEST: &str = "fixture/graph/cugraph";
 /// Manifest file describing locally prepared cuGraph parity datasets.
 pub const CUGRAPH_DATA_MANIFEST_PATH: &str = "fixture/graph/cugraph/manifest.json";
 
 /// Comparator family expected for a parity row.
-///
-/// Comparator family used by the registry-driven parity harness.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParityComparator {
@@ -37,10 +35,10 @@ pub enum ParityComparator {
     /// Seeded random output; sequence + grouping must match plus the
     /// distribution baseline.
     SeededSequence,
-    /// Run-order-sensitive layouts compared by structure instead of points:
-    /// the RMS radius stays within `tolerance.rel` of the oracle's and the
-    /// Spearman correlation between layout and graph distances is at least
-    /// `1 - tolerance.abs`.
+    /// Run-order-sensitive layouts compared by structure. Point coordinates are
+    /// not checked. The RMS radius stays within `tolerance.rel` of the oracle's,
+    /// and the Spearman correlation between layout and graph distances is at
+    /// least `1 - tolerance.abs`.
     RankCorrelation,
     /// Edge sets canonicalized as unordered `(min, max)` pairs.
     EdgeSubgraph,
@@ -122,9 +120,9 @@ impl ParityTolerance {
 /// One row in the cuGraph parity spec registry.
 ///
 /// Adding an algorithm/dataset combination is one new const entry in
-/// [`CUGRAPH_PARITY_SPECS`], not a new file. `params_json` is the
-/// canonical JSON form of the algorithm parameters; it must match
-/// exactly the `header.params` of the generated oracle JSON.
+/// [`CUGRAPH_PARITY_SPECS`]. No new file is required. `params_json` is the
+/// canonical JSON form of the algorithm parameters; it must equal the
+/// `header.params` of the generated oracle JSON.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
 pub struct ParitySpec {
@@ -204,16 +202,14 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         dataset: "karate",
         // Mirrors `CugraphEigenvectorCentralityParams::default()`. The
         // Python oracle accepts the same keys, so the header round-trip
-        // assertion in the parity harness compares apples-to-apples.
+        // assertion in the parity harness compares matching key sets.
         params_json: r#"{"epsilon":1e-06,"max_iterations":200}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/eigenvector_centrality__default.json"),
         comparator: ParityComparator::Numeric,
-        // Eigenvector centrality is sensitive to convergence tolerance;
-        // PageRank uses abs=1e-5 / rel=1e-3 which is a good starting point
-        // for a deterministic small graph. Tighten once Polbooks / Netscience
-        // entries land.
+        // Eigenvector centrality is sensitive to convergence tolerance; this
+        // row uses the PageRank tolerance (abs=1e-5, rel=1e-3).
         tolerance: ParityTolerance { abs: 1.0e-5, rel: 1.0e-3 },
     },
     ParitySpec {
@@ -229,10 +225,9 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/hits__default.json"),
         comparator: ParityComparator::Numeric,
-        // HITS uses two float score columns; the existing Numeric
-        // comparator compares column-by-column under abs/rel tolerance.
-        // Start with the same tolerance used for PageRank/eigenvector
-        // and tighten once Polbooks / Netscience rows land.
+        // HITS uses two float score columns; the Numeric comparator compares
+        // them column by column under the same abs/rel tolerance as
+        // PageRank and eigenvector centrality.
         tolerance: ParityTolerance { abs: 1.0e-5, rel: 1.0e-3 },
     },
     ParitySpec {
@@ -263,7 +258,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         dataset: "karate",
         // cuGraph's upstream Katz reference (`ref/katz/karate.csv`) was
         // generated with the algorithm's documented default options;
-        // mirror those exactly so the oracle header round-trip and the
+        // mirror those defaults so the oracle header round-trip and the
         // RefCsv top-K comparison are consistent.
         params_json: r#"{"alpha":0.01,"beta":1.0,"epsilon":1e-06,"max_iterations":1000}"#,
         seed: None,
@@ -278,7 +273,6 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         // vertex list; tolerance fields are unused for `TopKVertices`.
         tolerance: ParityTolerance::exact(),
     },
-    // Oracle-backed parity specs for additional algorithms.
     ParitySpec {
         label: "sssp/karate@source=0",
         algorithm: CugraphAlgorithm::Sssp,
@@ -336,7 +330,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/weakly_connected_components__default.json"),
-        // Labels are partition identifiers, not ordered; use
+        // Labels are unordered partition identifiers; use
         // partition-equivalence comparison.
         comparator: ParityComparator::PartitionEquivalence,
         tolerance: ParityTolerance::exact(),
@@ -388,8 +382,8 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         tolerance: ParityTolerance::exact(),
     },
     ParitySpec {
-        // MST is a weighted algorithm. Use cuGraph's upstream weighted
-        // toy_graph fixture rather than the unweighted karate graph so
+        // MST is a weighted algorithm, and the unweighted karate graph does not
+        // serve it. Use cuGraph's upstream weighted toy_graph fixture so
         // `refresh_cugraph_oracle --all` can produce a meaningful row.
         label: "minimum_spanning_tree/toy_graph@default",
         algorithm: CugraphAlgorithm::MinimumSpanningTree,
@@ -410,8 +404,8 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/leiden__default.json"),
-        // Leiden partition labels are arbitrary identifiers; compare by
-        // partition equivalence, not exact label equality.
+        // Leiden partition labels are arbitrary identifiers. Compare them by
+        // partition equivalence; exact label equality does not apply.
         comparator: ParityComparator::PartitionEquivalence,
         tolerance: ParityTolerance::exact(),
     },
@@ -429,8 +423,8 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         // the ECG contract promises no identical communities across runs. The
         // oracle also comes from another build (pylibcugraph 26.06.00, per its
         // header). The check therefore compares vertex coverage, community
-        // count and modularity against the oracle instead of its exact
-        // set-of-sets partition.
+        // count and modularity against the oracle. It does not compare the
+        // oracle's exact set-of-sets partition.
         comparator: ParityComparator::PartitionQuality,
         tolerance: ParityTolerance { abs: 5.0e-2, rel: 0.0 },
     },
@@ -446,9 +440,9 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         // Spectral clustering runs k-means over a Lanczos embedding. A
         // fixed seed makes the random initialization repeatable, but GPU
         // parallel reductions accumulate in scheduling order, so
-        // same-seed replays may choose an equally valid partition. Keep
-        // the Python result as a modularity baseline instead of requiring
-        // its exact set-of-sets partition.
+        // same-seed replays may choose an equally valid partition. The
+        // Python result serves as a modularity baseline. Its exact
+        // set-of-sets partition is not required.
         comparator: ParityComparator::PartitionQuality,
         tolerance: ParityTolerance { abs: 5.0e-2, rel: 0.0 },
     },
@@ -458,7 +452,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         dataset: "karate",
         // Mirrors the unweighted default SQL call and GraphForceAtlas2Params::default();
         // pass every option explicitly because Python cuGraph defaults differ
-        // for some layout knobs while the `cugraph` crate follows libcugraph C API defaults.
+        // for some layout settings while the `cugraph` crate follows libcugraph C API defaults.
         params_json: r#"{"max_iter":500,"outbound_attraction_distribution":false,"lin_log_mode":false,"prevent_overlapping":false,"overlap_scaling_ratio":2.0,"edge_weight_influence":1.0,"jitter_tolerance":1.0,"barnes_hut_optimize":false,"barnes_hut_theta":0.5,"scaling_ratio":2.0,"strong_gravity_mode":false,"gravity":1.0,"verbose":false,"seed":0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
@@ -688,8 +682,8 @@ fn parity_reference_from_json(v: &Value) -> ParityReference {
     }
 }
 
-/// Absolute path to the generated oracle JSON for one parity row, when the
-/// row has a generated-oracle contract.
+/// Path to the generated oracle JSON under `data_root` for one parity row,
+/// when the row has a generated-oracle contract.
 pub fn oracle_path(data_root: &Path, spec: &ParitySpec) -> Option<PathBuf> {
     spec.oracle_relpath.map(|path| data_root.join("oracle").join(path))
 }
@@ -769,15 +763,15 @@ pub enum OracleLookup {
     Mismatch { path: PathBuf, reason: String },
     /// The oracle JSON could not be parsed.
     Invalid { path: PathBuf, reason: String },
-    /// The row owns a hand-verified result rather than a generated oracle.
+    /// The row owns a hand-verified result and has no generated oracle.
     NotApplicable,
 }
 
 /// Load + cross-check the oracle JSON header for a parity row.
 ///
 /// Returns [`OracleLookup::Missing`] when the file is absent so callers
-/// can degrade gracefully; only spec violations on a present file
-/// produce a `Mismatch`/`Invalid` outcome.
+/// can degrade gracefully. A present file that cannot be read or parsed
+/// produces `Invalid`, and one that disagrees with the spec produces `Mismatch`.
 ///
 /// When `manifest` is `Some`, the oracle's `header.dataset_sha256` is
 /// cross-checked against the manifest entry for `spec.dataset`. This

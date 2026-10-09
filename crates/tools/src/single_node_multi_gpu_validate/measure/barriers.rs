@@ -21,7 +21,7 @@ pub(super) struct CloseUnderLoadBarrier {
     pub(super) submitted_attempts: u64,
 }
 
-/// The per-attempt deadline/cancellation storm knobs, resolved from the arrival plan once.
+/// The per-attempt deadline and cancellation storm settings, resolved from the arrival plan once.
 #[derive(Clone, Copy, Default)]
 pub(super) struct StormKnobs {
     pub(super) attempt_deadline_ms: Option<u64>,

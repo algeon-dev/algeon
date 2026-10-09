@@ -23,9 +23,8 @@ pub const TPCH_TABLES: &[&str] =
 pub const ALGEON_TPCH_SCALE_FACTOR_ENV: &str = "ALGEON_TPCH_SCALE_FACTOR";
 /// Free-form provenance command recorded in dataset metadata.
 pub const ALGEON_TPCH_GENERATION_COMMAND_ENV: &str = "ALGEON_TPCH_GENERATION_COMMAND";
-/// Optional caller-supplied content fingerprint. When unset, only the cheaper
-/// metadata fingerprint is recorded unless the caller explicitly requests a
-/// content-fingerprint pass.
+/// Truthy flag requesting a content-fingerprint pass. Without it, only the cheaper
+/// metadata fingerprint is recorded.
 pub const ALGEON_TPCH_CONTENT_FINGERPRINT_ENV: &str = "ALGEON_TPCH_CONTENT_FINGERPRINT";
 
 /// In-repo default Parquet root for the TPC-H SF1 fixture.
@@ -225,9 +224,9 @@ fn try_default_local_tpch_sf1_dataset() -> Option<(PathBuf, TpchDatasetMetadata)
     default_tpch_dataset(default_tpch_parquet_root(TpchDefaultScale::Sf1), "sf1")
 }
 
-/// Lower-level helper: probe an arbitrary local Parquet root for the
-/// fixed TPC-H table set and, if all tables are discoverable, describe it as
-/// an external fixture with a synthetic `generation_command`. Returns `None`
+/// This lower-level helper probes an arbitrary local Parquet root for the
+/// fixed TPC-H table set and, if all tables are discoverable, describes it as
+/// an external fixture with a synthetic `generation_command`. It returns `None`
 /// when the directory is missing or the fixture is incomplete.
 pub fn default_tpch_dataset(root: &str, scale_factor: &str) -> Option<(PathBuf, TpchDatasetMetadata)> {
     let root_path = PathBuf::from(root);
@@ -281,8 +280,7 @@ pub fn describe_tpch_dataset(
 /// Describes a complete TPC-H fixture and optionally hashes file contents.
 ///
 /// Metadata fingerprints are cheap and derived from Parquet metadata. Content
-/// fingerprints scan table bytes and use a stable `tpch-content-fnv1a64-v1`
-/// report vocabulary.
+/// fingerprints scan table bytes and emit `content-fnv1a64:*` values.
 pub fn describe_tpch_dataset_with_content_fingerprint(
     root: &Path,
     scale_factor: impl Into<String>,

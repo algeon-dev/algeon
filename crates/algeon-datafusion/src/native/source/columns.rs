@@ -30,11 +30,11 @@ use crate::{
 
 /// Column-role bridge from a DataFusion Parquet scan to native source metadata.
 ///
-/// DataFusion exposes columns through multiple coordinate systems: table schema,
-/// file schema, pushed scan projection, filter projection, and partition values.
-/// The native engine needs a frontend-neutral description instead: which
-/// physical file columns the source must read and emit, which partition columns
-/// it must synthesize, which emitted source columns are expected to remain after
+/// DataFusion exposes columns through several coordinate systems (table schema,
+/// file schema, pushed scan projection, filter projection, and partition values).
+/// The native engine needs a frontend-neutral description of which physical file
+/// columns the source must read and emit, which partition columns it must
+/// synthesize, which emitted source columns are expected to remain after
 /// source-adjacent native filtering/projection, and which emitted columns exist
 /// only to evaluate filters. This struct keeps those roles separate so lowering
 /// can remove filter-only columns after filters while still emitting them from
@@ -43,8 +43,8 @@ use crate::{
 pub(in crate::native) struct NativeParquetColumnRequirements {
     /// Physical Parquet columns that the native source must read and emit.
     ///
-    /// This excludes partition columns because they are supplied from
-    /// DataFusion `PartitionedFile` metadata, not from file pages. Columns used
+    /// This excludes partition columns, which are supplied from DataFusion
+    /// `PartitionedFile` metadata and are absent from file pages. Columns used
     /// only by native filters are included so those filters can consume them.
     pub(in crate::native) read_columns: Vec<String>,
     /// File-schema indices for `read_columns`.
@@ -54,16 +54,16 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     /// These may include file columns and synthetic partition columns. This is
     /// role/diagnostic metadata and does not define the source node's emitted
     /// schema; `native_source_output_schema` emits all `read_columns` plus all
-    /// represented partition columns.
+    /// partition and missing columns.
     pub(in crate::native) projected_output_columns: Vec<String>,
-    /// File or partition source references for `projected_output_columns`.
+    /// File, partition, or missing-column source references for `projected_output_columns`.
     pub(in crate::native) projected_output_column_source_refs: Vec<NativeSourceColumnRef>,
     /// Source columns emitted only so source-adjacent predicates can evaluate.
     ///
     /// These should be removed by a later native projection when they are not
     /// needed downstream.
     pub(in crate::native) pure_filter_columns: Vec<String>,
-    /// File or partition source references for `pure_filter_columns`.
+    /// File, partition, or missing-column source references for `pure_filter_columns`.
     pub(in crate::native) pure_filter_column_source_refs: Vec<NativeSourceColumnRef>,
     /// Source columns required by source-adjacent predicates.
     pub(in crate::native) predicate_columns: Vec<String>,
@@ -87,14 +87,6 @@ impl NativeParquetColumnRequirements {
     }
 }
 
-/// Computes source column roles for aggregate-root native lowering.
-///
-/// Required/projected roles are derived from the aggregate, optional
-/// pre-aggregate projection, and optional source filter. Filter-only columns are
-/// read and emitted by the native source so filters can evaluate them, then
-/// omitted from the columns expected to survive the source-adjacent native
-/// projection. When the aggregate can be answered as a zero-column count, no
-/// file or partition columns are required.
 /// Computes source column roles when lowering starts from required scan-output columns.
 ///
 /// This path is used by native shapes that already know which DataFusion scan
@@ -266,11 +258,11 @@ fn first_supported_physical_file_column(file_schema: &SchemaRef) -> Result<Strin
         .ok_or(CapabilityReason::UnsupportedType)
 }
 
-/// Builds the native source node's emitted schema from file and partition columns.
+/// Builds the native source node's emitted schema from file, partition, and missing columns.
 ///
-/// The schema follows all read file columns first, then synthetic partition
-/// columns, so native expressions can address both kinds of source data
-/// uniformly. `projected_output_columns` is role/diagnostic metadata about what
+/// The schema lists all read file columns first, then synthetic partition
+/// columns, then missing columns. Native expressions can address all three kinds
+/// of source data uniformly. `projected_output_columns` is role/diagnostic metadata about what
 /// should remain after source-adjacent native filtering/projection; it does not
 /// define this schema. Pure filter columns are still emitted here and should be
 /// removed by a later native projection when they are not needed downstream.
@@ -352,7 +344,7 @@ fn native_required_missing_columns(
     Ok(columns)
 }
 
-/// Resolves logical source column names to file-schema or partition-column refs.
+/// Resolves logical source column names to file-schema, partition-column, or missing-column refs.
 fn column_source_refs(
     file_schema: &SchemaRef,
     partition_columns: &[NativePartitionColumn],

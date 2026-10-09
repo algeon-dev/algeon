@@ -54,19 +54,17 @@ impl Default for ProjectionSimplificationOptions {
 pub struct ProjectionSimplificationDiagnostics {
     /// Number of projection nodes considered.
     pub considered_count: usize,
-    /// Number of identity projections removed.
+    /// Number of projections replaced by their input or by a fused projection.
     pub applied_count: usize,
     /// Per-candidate evidence in traversal order.
     pub candidates: Vec<ProjectionSimplificationCandidateDiagnostics>,
 }
 
 impl ProjectionSimplificationDiagnostics {
-    /// Returns true when the pass produced no candidate evidence.
     pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -81,15 +79,16 @@ pub struct ProjectionSimplificationCandidateDiagnostics {
     pub(crate) rule_name: &'static str,
     /// Projection node considered before rewrite.
     pub(crate) candidate_node_id: NodeId,
-    /// Input node that replaces the projection when applied.
+    /// Node that replaces the projection when applied. It is the input's image for
+    /// an identity projection and the fused projection for a chain.
     pub(crate) replacement_node_id: Option<NodeId>,
-    /// True when this candidate was removed from the returned plan.
+    /// True when this projection was replaced in the returned plan.
     pub(crate) applied: bool,
-    /// Rejection reason when the projection was not removed.
+    /// Rejection reason when the projection was not replaced.
     pub rejected_reason: Option<ProjectionSimplificationRejectedReason>,
 }
 
-/// Reasons an identity-projection simplification candidate was rejected.
+/// Reasons a projection-simplification candidate was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionSimplificationRejectedReason {
     /// Pass was disabled.

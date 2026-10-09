@@ -20,9 +20,6 @@ use crate::{
 };
 
 /// One per-device cache allocation owner.
-///
-/// `None` is returned when the ledger profile has a zero cache cap.  Thus the
-/// disabled baseline creates no CUDA allocator domain at all.
 #[derive(Debug, Clone)]
 pub(crate) struct DeviceCacheAllocationFactory {
     ledger: DeviceLedger,
@@ -30,7 +27,10 @@ pub(crate) struct DeviceCacheAllocationFactory {
 }
 
 impl DeviceCacheAllocationFactory {
-    /// Create the one physical cache domain for `ledger`, if caching is enabled.
+    /// Create the one physical cache domain for `ledger`.
+    ///
+    /// Returns `None` when the ledger profile has a zero cache cap. The disabled
+    /// baseline then creates no CUDA allocator domain at all.
     pub(crate) fn new(ledger: DeviceLedger) -> Result<Option<Self>> {
         let capacity = ledger.profile().cache_cap_bytes;
         if capacity == 0 {

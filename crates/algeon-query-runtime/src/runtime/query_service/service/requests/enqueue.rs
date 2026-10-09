@@ -74,7 +74,6 @@ impl QueryService {
         self.admit_async_with_request(QueryAdmissionRequest::test_attempt()).await
     }
 
-    /// Admits a query asynchronously with consolidated request-scoped admission metadata.
     #[cfg(test)]
     pub(crate) async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
         self.admit_async_with_request_and_permits(request, None, None, None, None).await
@@ -136,7 +135,6 @@ impl QueryService {
         Ok(handle)
     }
 
-    /// Enqueues a query admission request with consolidated request-scoped metadata.
     #[cfg(test)]
     pub(crate) fn enqueue_admission_with_request(
         &self,

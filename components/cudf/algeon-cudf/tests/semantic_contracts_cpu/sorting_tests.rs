@@ -1,4 +1,3 @@
-//! Tests for sorting operations.
 use cudf::{
     ErrorCode, ErrorKind,
     core::error::{FactKeyName, FactValue},

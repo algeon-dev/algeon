@@ -56,9 +56,12 @@
 //! `cugraph` feature off, cuGraph UDTFs fail closed with a typed
 //! capability error; with `cuvs` or `cuml` off, the corresponding SQL family
 //! remains discoverable but execution fails before input staging; with
-//! `nvml` off, NVML telemetry reads report unavailable. The `bench-support`,
-//! `qualification` feature is an internal harness. Enable `server` to embed
-//! the Algeon Flight SQL server alongside the adapter.
+//! `nvml` off, NVML telemetry reads report unavailable. The `bench-support`
+//! and `qualification` features are internal harnesses: `bench-support` gates
+//! the application and test support surface, which sits outside the normal
+//! embedded and server report contract, and `qualification` closes admission
+//! on one live device ledger for the multi-GPU validation tool. Enable `server`
+//! to embed the Algeon Flight SQL server alongside the adapter.
 
 #[cfg(test)]
 extern crate self as algeon_datafusion;

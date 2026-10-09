@@ -7,11 +7,11 @@
 //!
 //! Work reaches the device along two paths that share one admission layer.
 //! A job-class permit is taken at submission and bounds how many accepted
-//! jobs exist; a saturated class fails with `ServiceOverloaded` rather than
+//! jobs exist; a saturated class fails with `ServiceOverloaded` without
 //! queueing, except for the admission envelope of a placed attempt, which is
 //! the one bounded waiter. The capacities derive from the device profile
 //! (`A_d` active attempts, `S_d` auxiliary slots per attempt); the design
-//! contract lives in `website/docs/design/admission.mdx`.
+//! contract lives in `website/docs/design/admission.mdx#device-profiles-and-grants`.
 //!
 //! An async job (`run*`, `spawn*`) is an `async` block whose body is
 //! synchronous GPU work. The runtime serves as a fixed-width thread pool for
@@ -146,9 +146,9 @@ impl GpuExecutionJobKind {
     ///
     /// A root query job is per-attempt lifecycle work, like the context setup
     /// it follows; only the auxiliary work that job issues underneath itself
-    /// is execution-class. Context setup is the one kind whose class depends
-    /// on the attempt's own claim rather than on the kind, so it is selected
-    /// explicitly through [`GpuExecutionPool::run_observed_scoped_in_class`].
+    /// is execution-class. Context setup is the one kind whose class is taken
+    /// from the attempt's own claim, so it is selected explicitly through
+    /// [`GpuExecutionPool::run_observed_scoped_in_class`].
     pub(crate) const fn job_class(self) -> GpuExecutionJobClass {
         match self {
             Self::ContextSetup | Self::QueryExecution | Self::Cleanup => GpuExecutionJobClass::Lifecycle,
@@ -218,7 +218,6 @@ pub(crate) struct GpuExecutionQueryTracker {
 }
 
 impl GpuExecutionQueryTracker {
-    /// Creates an empty aggregate query tracker.
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -386,9 +385,9 @@ impl GpuExecutionPool {
     /// Returns the process-global fallback pool for one CUDA device.
     ///
     /// A live fallback pool fixes the worker count for its device. Requesting a
-    /// different width is rejected rather than silently constructing another
-    /// executor for the same device. Once the last clone is dropped, a later
-    /// call may install a new width.
+    /// different width is rejected, and no second executor is constructed for
+    /// the same device. Once the last clone is dropped, a later call may install
+    /// a new width.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn shared_for_device(device_ordinal: usize, worker_count: usize) -> Result<Self> {
         validate_worker_count(device_ordinal, worker_count)?;
@@ -476,10 +475,10 @@ impl GpuExecutionPool {
     /// Runs one observed job through an explicit bounded resource class.
     ///
     /// Context setup retains its stable observation kind even when a later
-    /// fragment uses an auxiliary stream; its class is selected by the
-    /// admitted attempt's context reservation rather than inferred from that
-    /// observability label. Initial setup uses the lifecycle class; additional
-    /// fragment setup uses the execution class.
+    /// fragment uses an auxiliary stream. Its class comes from the admitted
+    /// attempt's context reservation, and the observability label does not
+    /// supply it. Initial setup uses the lifecycle class; additional fragment
+    /// setup uses the execution class.
     pub(crate) async fn run_observed_scoped_in_class<B, F, T>(
         self,
         kind: GpuExecutionJobKind,
@@ -493,9 +492,9 @@ impl GpuExecutionPool {
         T: Send + 'static,
     {
         self.check_resource_epoch(RUN_OPERATION)?;
-        // A job-class permit bounds every accepted awaited submission, not
-        // only detached `spawn` work. Acquiring asynchronously here would
-        // create an unbounded semaphore waiter queue containing arbitrary
+        // A job-class permit bounds every accepted awaited submission, in
+        // addition to detached `spawn` work. Acquiring asynchronously here
+        // would create an unbounded semaphore waiter queue containing arbitrary
         // caller futures. Same-pool composition uses the same bounded permit
         // below and executes inline only after that accounting succeeds.
         let class_permit = Arc::clone(self.class_semaphore_for_class(class))
@@ -620,7 +619,6 @@ impl GpuExecutionPool {
         self.spawn_observed(kind, RuntimeObservationHandle::disabled(), future)
     }
 
-    /// Detaches one observed job onto the device pool.
     #[cfg(test)]
     pub(crate) fn spawn_observed<F>(
         &self,
@@ -695,9 +693,9 @@ impl GpuExecutionPool {
     /// Detaches one admission-owned CUDA cleanup task onto this device pool.
     ///
     /// A live admitted attempt has exactly one release path, so this uses a
-    /// dedicated `A_d`-sized permit set rather than waiting in an unbounded
-    /// semaphore queue or competing with arbitrary root submissions. The
-    /// cleanup still waits only behind the fixed-width device runtime.
+    /// dedicated `A_d`-sized permit set. Cleanup never waits in an unbounded
+    /// semaphore queue, and it never competes with arbitrary root submissions.
+    /// The cleanup still waits only behind the fixed-width device runtime.
     pub(crate) fn spawn_release_cleanup_observed_with_completion<F, C>(
         &self,
         observation: RuntimeObservationHandle,
@@ -740,7 +738,7 @@ impl GpuExecutionPool {
     /// blocking threads, never on the fixed-width async workers, so serving
     /// workers cannot starve behind a decode. Admission still rides the same
     /// bounded class permit as every other submission: saturation fails fast
-    /// with a typed error instead of queueing unbounded waiters, and at most
+    /// with a typed error and does not queue unbounded waiters, and at most
     /// `execution_job_capacity` blocking workers run concurrently, so no
     /// second arbitrarily-sized thread pool appears behind this entry.
     ///
@@ -748,7 +746,7 @@ impl GpuExecutionPool {
     /// [`PoolBlockingWork::join`] therefore cannot starve the worker it waits
     /// for. Capacity is released before completion is delivered, so a resolved
     /// join implies the slot is reusable. Pool shutdown drops the completion
-    /// sender and the join reports a typed cancellation instead of hanging.
+    /// sender and the join reports a typed cancellation and does not hang.
     pub(crate) fn submit_blocking<F, T>(
         &self,
         kind: GpuExecutionJobKind,
@@ -835,7 +833,7 @@ impl GpuExecutionPool {
                 };
                 // The class slot, resource epoch, and job counters must be free
                 // before the completion reaches the waiter, so a resolved join
-                // implies a reusable slot rather than one still charged to this
+                // implies the slot is reusable and no longer charged to this
                 // worker.
                 drop(class_permit);
                 drop(_resource_epoch);
@@ -849,7 +847,7 @@ impl GpuExecutionPool {
 
     /// Allocates the job's identity and records it as enqueued. Job ids are
     /// unique per pool instance, so a backend generation change yields fresh
-    /// ids rather than continuing the previous pool's sequence.
+    /// ids and does not continue the previous pool's sequence.
     fn new_job_observation(
         &self,
         kind: GpuExecutionJobKind,
@@ -959,8 +957,8 @@ impl GpuExecutionPool {
     }
 
     /// Terminal process-exit path. It has no timeout because returning while
-    /// the Tokio runtime can still execute a CUDA-owning job would hand that
-    /// job to libcudart teardown.
+    /// the Tokio runtime can still execute a CUDA-owning job would let that
+    /// job run during libcudart teardown.
     fn close_and_join_for_process_exit(&self) {
         // Use the same gate as ordinary shutdown. Otherwise a submitter that
         // already checked `submissions_closed` could still enqueue a task
@@ -997,7 +995,7 @@ impl GpuExecutionPool {
     /// submission gate (`spawn_task` and the blocking submission path), which
     /// is what makes "closed" authoritative. The epoch is checked only here;
     /// the spawned task then retains it, so an epoch that closes after this
-    /// point waits for the job to finish instead of cancelling it.
+    /// point waits for the job to finish and does not cancel it.
     fn check_resource_epoch(&self, operation: &'static str) -> Result<()> {
         if self.inner.submissions_closed.load(Ordering::Acquire) {
             return Err(QueryError::new(QueryErrorCode::Cancelled, operation, "GPU execution pool is closing")

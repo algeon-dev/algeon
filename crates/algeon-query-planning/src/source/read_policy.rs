@@ -38,9 +38,19 @@ impl fmt::Display for ParquetReadStrategy {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ResolvedParquetInput {
     /// Local filesystem path, including a completed lakehouse-cache entry.
-    LocalKvikio { reader_path: String },
+    LocalKvikio {
+        /// Local path passed to the native reader, including a completed cache path.
+        reader_path: String,
+    },
     /// Remote object-store URI read by cuDF's explicit KvikIO datasource.
-    RemoteKvikio { uri: String, credential_mode: CredentialMode, storage_profile_id: Option<String> },
+    RemoteKvikio {
+        /// Object-store URI passed to the native datasource.
+        uri: String,
+        /// Credential acquisition policy selected during source resolution.
+        credential_mode: CredentialMode,
+        /// Named storage profile, or `None` when no explicit profile was selected.
+        storage_profile_id: Option<String>,
+    },
 }
 
 impl fmt::Debug for ResolvedParquetInput {
@@ -261,7 +271,7 @@ impl ResolvedParquetSource {
         }
     }
 
-    /// Builds a local cache hit read contract.
+    /// Builds a read contract for a local byte-cache entry, with the given cache status.
     pub fn local_cache_kvikio(
         original_location: impl Into<String>,
         reader_location: impl Into<String>,
@@ -284,7 +294,7 @@ impl ResolvedParquetSource {
     }
 
     /// Builds a remote path-based read contract where cuDF/libcudf owns the
-    /// object-store read instead of receiving a host-memory Parquet payload.
+    /// object-store read. Host-memory Parquet payloads are not representable.
     pub fn remote_kvikio(original_location: impl Into<String>, credential_mode: CredentialMode) -> Self {
         let original_location = original_location.into();
         Self {
@@ -379,7 +389,7 @@ impl ResolvedParquetSource {
         self
     }
 
-    /// Path or URI handed to cuDF.
+    /// Path or URI passed to cuDF.
     pub fn reader_location(&self) -> &str {
         self.input.reader_location()
     }

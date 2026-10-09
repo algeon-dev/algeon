@@ -25,7 +25,7 @@ impl DatafusionAlgeonFlightSqlService {
                 // A production DoPut record is attempt-owned from registration.
                 // If admission cannot mint that owner, explicitly let the
                 // coordinator finalize the failed planning lease without a
-                // report rather than retaining a permanently pending record.
+                // report, so the record does not stay permanently pending.
                 self.coordinator.allow_missing_attempt_report(&query_id);
                 let (status, captured) = adapter_error_to_status_and_capture(error);
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
@@ -72,6 +72,7 @@ impl DatafusionAlgeonFlightSqlService {
             "executing Flight SQL update statement"
         );
 
+        // Exit before the first await; a held enter guard puts other tasks inside this span.
         drop(_query_enter);
 
         let execution = self.attempt_invocation_execution(correlation_id.as_deref());

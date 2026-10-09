@@ -553,7 +553,8 @@ fn bounded_native_query_routes_many_string_morsels_away_from_source_adjacent_par
         .collect::<Vec<_>>();
     assert!(!partial_strategy_rows.is_empty());
     // Variable-width group keys take the group-key hash partition path even when
-    // source chunk count exceeds the old 64-morsel gate; admission is live-set based.
+    // the source chunk count exceeds 64, as with the 65 row groups written here.
+    // Admission is live-set based.
     // Later batches may reduce locally once the first batch proved strong
     // reduction, but none is demoted to row-balanced streaming.
     assert!(partial_strategy_rows.iter().all(|decision| {
@@ -1831,7 +1832,7 @@ fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and
         Field::new("sum_value", DataType::Int64, true),
     ]));
     // Footer row counts and projected bytes size the first batch before any
-    // decoded observation exists, exactly as adapter lowering supplies them.
+    // decoded observation exists, as adapter lowering supplies them.
     let source = fixture_local_parquet_source::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
         Arc::clone(&input_schema),

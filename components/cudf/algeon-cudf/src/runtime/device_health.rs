@@ -361,7 +361,7 @@ pub(crate) fn check_device_status_in(
 /// current host thread has proven entry to the immutable owner device.
 ///
 /// When the thread holds another device's entry, the teardown entry suspends
-/// it instead of quarantining the teardown device. On entry failure ownership
+/// it, and the teardown device is not quarantined. On entry failure ownership
 /// is still consumed exactly once, native FFI is not called, and the
 /// allocation is quarantined for process lifetime.
 pub fn drop_device_resource<T>(
@@ -515,9 +515,9 @@ mod tests {
     }
 
     /// Dropping another device's resource while this thread holds an entry
-    /// suspends for one teardown retry instead of quarantining the teardown
-    /// device. Without the retry the nested entry fails, the destructor never
-    /// runs, and the teardown device is marked unhealthy for the process.
+    /// suspends for one teardown retry, and the teardown device stays healthy.
+    /// Without the retry the nested entry fails, the destructor never runs, and
+    /// the teardown device is marked unhealthy for the process.
     #[test]
     fn cross_device_teardown_suspends_instead_of_quarantining() {
         let scope = DeviceSafetyTestScope::install([

@@ -3,12 +3,12 @@
 # checked-in snapshot without an explicit, reviewed snapshot update.
 #
 # `cargo public-api` uses the ordinary target directory and reuses dependency
-# metadata instead of building a second graph through trybuild fixtures.
+# metadata; it does not build a second graph through trybuild fixtures.
 #
 # This check is strictly stronger than the fixtures it replaces in one
 # respect: it fails on *any* unreviewed public API change, including
-# unintended additions, not just the specific forbidden items the old
-# hand-written cases enumerated. Reviewing and committing a snapshot update
+# unintended additions. The old hand-written cases enumerated only specific
+# forbidden items. Reviewing and committing a snapshot update
 # (this script's `write` mode) is the deliberate approval step for an
 # intentional API change.
 #
@@ -19,16 +19,16 @@
 # private item, method, field, or module) when reproduced without trybuild.
 #
 # `cargo public-api` has no `--toolchain` flag by design (it only supports
-# `cargo +toolchain public-api`); left to itself it resolves whatever `nightly`
-# currently means to rustup (see cargo-public-api's resolve_toolchain), a
-# floating channel, same as this repo's `cargo +nightly fmt`. rustdoc JSON's
-# content (not just its stable format-version number) can shift across
-# nightlies. Without recording that identity, a routine nightly bump presents
+# `cargo +toolchain public-api`); left to itself it resolves `nightly` to whichever
+# channel rustup currently maps it to (see cargo-public-api's resolve_toolchain), a
+# floating channel, same as this repo's `cargo +nightly fmt`. rustdoc JSON content
+# can shift across nightlies even when the stable format-version number is unchanged.
+# Without recording that identity, a routine nightly bump presents
 # as an unreviewable wall of "removed"/"added" API lines that looks like a
 # real regression. TOOLCHAIN.txt below pins the exact rustc build and
 # cargo-public-api version the snapshots were generated with, and `check`
-# compares identity *before* diffing content, so a toolchain drift is reported
-# as exactly that, distinctly from an actual API change.
+# compares identity *before* diffing content. A toolchain drift is reported
+# as its own failure, distinct from an actual API change.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -36,7 +36,7 @@ cd "${ROOT}"
 
 # Overridable so the fault-injection self-test
 # (scripts/ci/tests/check_public_api_surface_tests.sh) can point this at a
-# throwaway directory instead of mutating the real checked-in snapshots.
+# throwaway directory and leave the real checked-in snapshots untouched.
 SNAPSHOT_DIR=${PUBLIC_API_SNAPSHOT_DIR:-.config/policies/public-api}
 TOOLCHAIN_FILE="${SNAPSHOT_DIR}/TOOLCHAIN.txt"
 
@@ -83,6 +83,10 @@ Usage: bash scripts/ci/check_public_api_surface.sh {check|write} [cargo-public-a
 Any additional arguments (for example --all-features) are passed through to
 `cargo public-api` unchanged, so this check always inspects the same feature
 unification as the rest of the gate.
+
+Both modes require documentation on the application API and reachable workspace
+owner types. That check extracts complete rustdoc JSON separately because the
+ordinary API snapshots omit methods on some signature-reachable private paths.
 USAGE
 }
 
@@ -116,6 +120,13 @@ work_dir=$(mktemp -d "${TMPDIR:-/tmp}/algeon-datafusion-public-api.XXXXXX")
 trap 'rm -rf "${work_dir}"' EXIT
 
 current_identity=$(current_toolchain_identity) || exit 2
+
+if [[ "${PUBLIC_API_SKIP_DOCUMENTATION_POLICY:-0}" != "1" ]]; then
+  if ! cargo metadata --no-deps --format-version 1 >"${work_dir}/workspace.json"; then
+    echo "ERROR: cargo metadata failed for the application API documentation check." >&2
+    exit 1
+  fi
+fi
 
 if [[ "${mode}" == write ]]; then
   mkdir -p "${SNAPSHOT_DIR}"
@@ -180,6 +191,16 @@ for crate in "${CRATES[@]}"; do
     status=1
   fi
 done
+
+if [[ "${PUBLIC_API_SKIP_DOCUMENTATION_POLICY:-0}" != "1" ]]; then
+  if ! python3 scripts/ci/check_public_api_docs.py build \
+    --metadata "${work_dir}/workspace.json" --json-dir "${work_dir}/rustdoc" -- "$@"; then
+    status=1
+  elif ! python3 scripts/ci/check_public_api_docs.py check \
+    --metadata "${work_dir}/workspace.json" --json-dir "${work_dir}/rustdoc"; then
+    status=1
+  fi
+fi
 
 if [[ "${PUBLIC_API_SKIP_NATIVE_COMPONENT_POLICY:-0}" != "1" ]]; then
   if ! python3 scripts/ci/check_native_component_architecture.py "${SNAPSHOT_DIR}"; then

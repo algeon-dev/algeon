@@ -14,7 +14,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::sum`](crate::frame::series::SeriesOps::sum) or
     /// [`SeriesOps::sum_value`](crate::frame::series::SeriesOps::sum_value) when you
-    /// want a scalar result instead of a broadcast expression operand.
+    /// want a scalar result. This method returns a broadcast expression operand.
     pub fn sum(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Sum }
     }
@@ -23,7 +23,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::mean`](crate::frame::series::SeriesOps::mean) or
     /// [`SeriesOps::mean_value`](crate::frame::series::SeriesOps::mean_value) when
-    /// you want a scalar result instead of a broadcast expression operand.
+    /// you want a scalar result. This method returns a broadcast expression operand.
     pub fn mean(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Mean }
     }
@@ -32,7 +32,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::min`](crate::frame::series::SeriesOps::min) or
     /// [`SeriesOps::min_value`](crate::frame::series::SeriesOps::min_value) when you
-    /// want a scalar result instead of a broadcast expression operand.
+    /// want a scalar result. This method returns a broadcast expression operand.
     pub fn min(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Min }
     }
@@ -41,7 +41,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::max`](crate::frame::series::SeriesOps::max) or
     /// [`SeriesOps::max_value`](crate::frame::series::SeriesOps::max_value) when you
-    /// want a scalar result instead of a broadcast expression operand.
+    /// want a scalar result. This method returns a broadcast expression operand.
     pub fn max(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Max }
     }
@@ -50,7 +50,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::std`](crate::frame::series::SeriesOps::std) or
     /// [`SeriesOps::std_value`](crate::frame::series::SeriesOps::std_value) when you
-    /// want a scalar result instead of a broadcast expression operand.
+    /// want a scalar result. This method returns a broadcast expression operand.
     pub fn std(self, ddof: u32) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Std { ddof } }
     }
@@ -59,7 +59,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::var`](crate::frame::series::SeriesOps::var) or
     /// [`SeriesOps::var_value`](crate::frame::series::SeriesOps::var_value) when you
-    /// want a scalar result instead of a broadcast expression operand.
+    /// want a scalar result. This method returns a broadcast expression operand.
     pub fn var(self, ddof: u32) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Variance { ddof } }
     }
@@ -68,8 +68,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::median`](crate::frame::series::SeriesOps::median) or
     /// [`SeriesOps::median_value`](crate::frame::series::SeriesOps::median_value)
-    /// when you want a scalar result instead of a broadcast expression
-    /// operand.
+    /// when you want a scalar result. This method returns a broadcast expression operand.
     pub fn median(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Median }
     }
@@ -78,7 +77,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::any`](crate::frame::series::SeriesOps::any) or
     /// [`SeriesOps::any_value`](crate::frame::series::SeriesOps::any_value) when you
-    /// want a scalar result instead of a broadcast expression operand.
+    /// want a scalar result. This method returns a broadcast expression operand.
     pub fn any(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Any }
     }
@@ -87,7 +86,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::all`](crate::frame::series::SeriesOps::all) or
     /// [`SeriesOps::all_value`](crate::frame::series::SeriesOps::all_value) when you
-    /// want a scalar result instead of a broadcast expression operand.
+    /// want a scalar result. This method returns a broadcast expression operand.
     pub fn all(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::All }
     }
@@ -96,8 +95,7 @@ impl ExprAggNamespace {
     ///
     /// Use [`SeriesOps::product`](crate::frame::series::SeriesOps::product) or
     /// [`SeriesOps::product_value`](crate::frame::series::SeriesOps::product_value)
-    /// when you want a scalar result instead of a broadcast expression
-    /// operand.
+    /// when you want a scalar result. This method returns a broadcast expression operand.
     pub fn product(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Product }
     }

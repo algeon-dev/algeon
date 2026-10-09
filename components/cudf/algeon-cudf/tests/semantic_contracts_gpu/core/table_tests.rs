@@ -1,4 +1,3 @@
-//! Tests for Table and TableView.
 use cudf::{
     ErrorCode, Runtime, TypeId,
     core::{
@@ -176,7 +175,6 @@ fn test_table_view_from_column_views() {
     assert_eq!(table_view.num_columns().unwrap(), 2);
     assert_eq!(table_view.num_rows().unwrap(), 3);
 
-    // Verify column data is accessible through the table view
     let col0 = table_view.column(0).unwrap();
     assert_eq!(col0.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(col0.to_vec::<i32>().unwrap(), vec![1, 2, 3]);

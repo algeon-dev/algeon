@@ -111,8 +111,8 @@ const MAX_SNAPSHOT_SAMPLES: usize = 1024;
 
 /// The sampler cadence for a configured run window. Windows short enough to
 /// fit the retention bound at the base interval keep 250 ms; longer windows
-/// (long plateaus) trade cadence for whole-window coverage instead of
-/// truncating the series mid-window.
+/// (long plateaus) trade cadence for whole-window coverage. The series is not
+/// truncated mid-window.
 fn sample_interval_for(window: Duration) -> Duration {
     let window_ns = window.as_nanos().min(u128::from(u64::MAX)) as u64;
     // One slot is reserved for the terminal sample taken after the drive
@@ -170,11 +170,6 @@ impl RunTiming {
     }
 }
 
-/// The feature-off graph request is intentionally absent from normal relational
-/// round-robin selection.  The runner uses this profile-owned schedule to
-/// issue the declared warmup and measurement probes beside live relational
-/// attempts without changing the relational cohort's query distribution.
-
 #[derive(Clone)]
 pub(super) struct TraceSelection {
     pub(super) uri: Option<String>,
@@ -197,10 +192,10 @@ pub(super) struct ProbeSelection {
     /// Close initiated at the midpoint of the measurement window.
     pub(super) close_under_load: bool,
     /// The explicit reference OTLP exporter cell. None means the run records
-    /// that no exporter was requested rather than claiming export success.
+    /// that no exporter was requested. No export success is claimed.
     pub(super) otlp_export: Option<OtlpExportConfig>,
     /// The intentionally serialized public completion receiver. The sink is
-    /// a probe-only consumer delay, not an execution or admission policy.
+    /// a probe-only consumer delay. It does not set execution or admission policy.
     pub(super) slow_report_sink: Option<Duration>,
 }
 
@@ -212,9 +207,10 @@ fn unix_epoch_ns() -> u64 {
 /// Runs the measurement on a dedicated multi-thread runtime.
 ///
 /// The tool entrypoint pins a current-thread runtime, which would interleave
-/// rather than overlap attempts. A scoped thread owns a multi-thread runtime so
-/// the measured concurrency is real, without building a nested runtime inside
-/// the caller's and without changing every other subcommand's entrypoint.
+/// attempts without overlapping them. A scoped thread owns a multi-thread
+/// runtime so the measured attempts can overlap, without building a nested
+/// runtime inside the caller's and without changing every other subcommand's
+/// entrypoint.
 pub(super) fn run_on_owned_runtime(
     profile: &RunProfile,
     trace: TraceSelection,
@@ -386,7 +382,7 @@ async fn run_measured(
     let driven = outcome?;
     // Close after every submitted completion has been observed, so the
     // attempt rows remain canonical. The evidence retains a timeout or cleanup
-    // failure instead of erasing it with `.ok()`.
+    // failure, and `.ok()` does not discard it.
     let close = close_backend(&backend);
     // The same-key cache proof needs a cold cache on exactly one allocation
     // domain. It therefore runs only after the normal traffic backend closes,
@@ -638,8 +634,8 @@ async fn run_measured(
             // `GpuBackendDeviceStartupRecord` is not one of the nine
             // `Serialize` snapshot types and transitively holds a cuDF type, so
             // the artifact records the same startup facts through the
-            // aggregate's own device configuration rather than widening that
-            // frozen JSON contract from here.
+            // aggregate's own device configuration. The frozen JSON contract is
+            // not widened here.
             device_startup_records: serde_json::to_value(&devices)?,
             close,
         },
@@ -694,16 +690,16 @@ async fn run_measured(
 /// A completed warmup cohort is useful for cache conditioning but cannot
 /// satisfy a measured-run contract. In particular, duration-paced closed-loop
 /// work may spend the entire configured window draining a long warmup round;
-/// retain that artifact as non-qualifying rather than reporting zero-QPS data
-/// as a passing service measurement.
+/// retain that artifact as non-qualifying, so zero-QPS data never appears as
+/// a passing service measurement.
 fn has_measurement_attempts(aggregate: &MeasuredAggregate) -> bool {
     aggregate.window.measurement_attempts != 0
 }
 
 /// An explicit multi-phase schedule is an envelope only when every
 /// declared phase emitted a measured attempt. A long warmup or prior phase
-/// that consumes a later phase's wall-clock interval is a coverage failure,
-/// not a zero-QPS datum. A single implicit phase is covered by
+/// that consumes a later phase's wall-clock interval is a coverage failure.
+/// It does not produce a zero-QPS datum. A single implicit phase is covered by
 /// [`has_measurement_attempts`]; it intentionally has no per-step aggregate.
 fn every_configured_step_has_measurement_attempts(plan: &ArrivalPlan, aggregate: &MeasuredAggregate) -> bool {
     if plan.steps.len() <= 1 {
@@ -719,7 +715,7 @@ fn every_configured_step_has_measurement_attempts(plan: &ArrivalPlan, aggregate:
 
 /// Runs the explicit cold-cache coalescing cohorts. The throughput run may
 /// span several ordinal-local domains, so it cannot prove that equal keys
-/// actually joined one cache. This probe isolates one configured ordinal on a
+/// joined one cache. This probe isolates one configured ordinal on a
 /// fresh backend and retains only public observations before and after each
 /// cohort.
 async fn run_cache_same_key_probe(
@@ -913,9 +909,9 @@ fn cache_source_event_snapshots(backend: &AlgeonGpuBackend) -> ToolResult<Value>
 }
 
 /// Applies only the ordinary scenario clauses that the requested physical run
-/// is able to prove. Dedicated probes have their own strict predicates: the
-/// deadline barrier is serialized, while overload uses sealed queue facts
-/// rather than ordinary overlap clauses. The complete aggregate remains in
+/// is able to prove. Dedicated probes have their own strict predicates. The
+/// deadline barrier is serialized, while overload uses sealed queue facts and
+/// does not use the ordinary overlap clauses. The complete aggregate remains in
 /// the artifact in either case.
 fn selected_scenario_clauses_pass(
     scenarios: &super::aggregate::ScenarioEvidence,
@@ -947,7 +943,7 @@ fn selected_scenario_clauses_pass(
 /// Projects the explicit handoff-pressure contract. Every step must offer
 /// more completions than one serialized sink can drain; the profile preflight
 /// rejects any slower step before fixtures or CUDA are touched. The bounded
-/// drain allowance is derived from the actual started-task count and the
+/// drain allowance is derived from the started-task count and the
 /// configured sink delay, while backend close remains bounded by
 /// `CLOSE_TIMEOUT` in [`close_backend`].
 fn completion_sink_evidence(
@@ -1014,10 +1010,10 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<AlgeonGpuBackend
             native_execution.max_retry_attempts,
             native_execution.min_retry_chunk_row_groups,
         )?))
-        // Every cell of the backend-service stress program runs GPU-only: a
+        // Every cell of the backend-service stress program runs GPU-only. A
         // final plan that retains any DataFusion CPU operator fails planning
-        // with a structured FinalPlanRequirementUnsatisfied rather than
-        // silently falling back.
+        // with a structured FinalPlanRequirementUnsatisfied and does not fall
+        // back to CPU execution.
         .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
         .queue_policy(queue)
         .devices(profile.backend.device_profiles.iter().map(|device| {
@@ -1042,9 +1038,9 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<AlgeonGpuBackend
             };
             AlgeonGpuDeviceConfig::new(p, ownership)
         }))
-        // The engine's device-config rejection carries the field and reason;
-        // flattening the source chain keeps that actionable instead of leaving
-        // it behind an omitted source.
+        // The engine's device-config rejection carries the field and reason.
+        // Flattening the source chain keeps that actionable, since the top-level
+        // message alone omits the source.
         .build()
         .map_err(|error| format!("backend build rejected the profile: {}", error_chain(&error)))?;
     Ok(backend)

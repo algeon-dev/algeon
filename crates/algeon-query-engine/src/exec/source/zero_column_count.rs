@@ -18,9 +18,9 @@ use super::{
 /// Produces the count frame for a whole source with one row per planned chunk.
 ///
 /// Every chunk must carry a row count from the Parquet footer or row-group metadata; a chunk
-/// without one fails with `InvalidPlan`; no data is read as a fallback. The frame has
-/// one row per chunk rather than one per source row. Records the planned `ParquetSource` facts
-/// and the total source row count as the input batch.
+/// without one fails with `InvalidPlan`; no data is read as a fallback. The frame has one row
+/// per chunk. Records the planned `ParquetSource` facts and the total source row count as the
+/// input batch.
 pub(super) fn read_zero_column_count_source(
     context: &ExecutionContext,
     source_node_id: NodeId,

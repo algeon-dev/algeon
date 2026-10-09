@@ -114,8 +114,8 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
-    // The probe side streams in source batches, so partial count follows the
-    // batch plan rather than the row-group count.
+    // The probe side streams in source batches. Partial count follows the batch
+    // plan; the row-group count does not set it.
     assert!(metrics.partial_aggregate_count >= 2, "{metrics:?}");
     let final_merge = metrics
         .aggregate_strategy_decisions
@@ -249,7 +249,7 @@ fn bounded_grouped_aggregate_splits_wide_partials_without_resource_retries() {
 
     // Each 1024-row chunk bounds its 256-sum partial state at about 2.1 MB,
     // above this cap, so every chunk splits once before allocating. The four
-    // groups keep the real partials far below the cap.
+    // groups keep the measured partials far below the cap.
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 1_500_000,
         max_source_chunk_bytes: 1024 * 1024,

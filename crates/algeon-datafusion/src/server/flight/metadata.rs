@@ -55,7 +55,7 @@ pub(super) fn flight_sql_primary_keys_schema() -> Arc<Schema> {
 /// `CommandGetCrossReference` responses. The three RPCs share this 13-column
 /// foreign-key descriptor schema per the Flight SQL protobuf spec. DataFusion
 /// does not model foreign-key constraints, so the body is always empty; but
-/// the schema must still match exactly or arrow-flight clients refuse it.
+/// the schema must still match the spec or arrow-flight clients refuse it.
 pub(super) fn flight_sql_foreign_keys_schema() -> Arc<Schema> {
     static SCHEMA: OnceLock<Arc<Schema>> = OnceLock::new();
     Arc::clone(SCHEMA.get_or_init(|| {
@@ -77,7 +77,6 @@ pub(super) fn flight_sql_foreign_keys_schema() -> Arc<Schema> {
     }))
 }
 
-/// Empty-row `RecordBatch` matching [`flight_sql_foreign_keys_schema`].
 pub(super) fn empty_foreign_keys_batch() -> Result<RecordBatch, ArrowError> {
     let schema = flight_sql_foreign_keys_schema();
     let columns: Vec<ArrayRef> = vec![
@@ -98,7 +97,6 @@ pub(super) fn empty_foreign_keys_batch() -> Result<RecordBatch, ArrowError> {
     RecordBatch::try_new(schema, columns)
 }
 
-/// Empty-row `RecordBatch` matching [`flight_sql_primary_keys_schema`].
 pub(super) fn empty_primary_keys_batch() -> Result<RecordBatch, ArrowError> {
     let schema = flight_sql_primary_keys_schema();
     let columns: Vec<ArrayRef> = vec![
@@ -114,8 +112,8 @@ pub(super) fn empty_primary_keys_batch() -> Result<RecordBatch, ArrowError> {
 
 /// Build the single-batch response for `CommandGetTableTypes`.
 ///
-/// `FLIGHT_SQL_TABLE_TYPES` is the source of truth; keep it sorted at authoring
-/// time instead of re-sorting here.
+/// `FLIGHT_SQL_TABLE_TYPES` is the source of truth and must be sorted when it is
+/// authored. This function does not re-sort it.
 pub(super) fn build_table_types_batch() -> Result<RecordBatch, ArrowError> {
     debug_assert!(FLIGHT_SQL_TABLE_TYPES.windows(2).all(|w| w[0] < w[1]), "FLIGHT_SQL_TABLE_TYPES must be sorted");
     let column = StringArray::from_iter_values(FLIGHT_SQL_TABLE_TYPES.iter().copied());

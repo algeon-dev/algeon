@@ -139,7 +139,7 @@ pub struct SourceChunk {
     pub known_row_count: Option<u64>,
     /// Per-chunk row limit applied when a source scan limit cuts through this chunk.
     pub scan_limit_rows: Option<usize>,
-    /// True when chunk sizing relied on file-size estimates instead of row-group bytes.
+    /// True when chunk sizing relied on file-size estimates. Row-group bytes were unknown.
     pub size_estimate_based: bool,
     /// Stable diagnostic reason for the source chunk batching decision that
     /// applies to this chunk.

@@ -11,9 +11,9 @@
 //! Admission claims no device memory and no attempt capacity, and a
 //! missing size estimate cannot reject a plan; the query domain's allocator
 //! enforces allocation limits during execution
-//! (`website/docs/design/admission.mdx`). The `scope` module carries the plan
-//! and schema identity that lets execution check it is running the plan that
-//! was admitted.
+//! (`website/docs/design/admission.mdx#allocation-enforcement`). The `scope`
+//! module carries the plan and schema identity that lets execution check it
+//! is running the plan that was admitted.
 
 mod bounded;
 mod diagnostics;

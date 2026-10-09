@@ -66,8 +66,8 @@ fn build_lane_backend() -> Result<GpuBackendCore> {
         ..QueryExecutionConfig::default()
     };
     // Two forks per attempt back two execution lanes; two execution workers,
-    // beside the worker reserved for lifecycle jobs, let both lanes run at once
-    // instead of queueing behind one worker.
+    // beside the worker reserved for lifecycle jobs, let both lanes run at once,
+    // each on its own worker.
     let device = GpuBackendDeviceConfig::new(
         GpuBackendDeviceProfile::new(0)
             .with_max_active_attempts(1)
@@ -424,16 +424,16 @@ fn serial_compiled_cancelled_attempt_stops_before_any_task_runs() {
     assert_eq!(error.code(), QueryErrorCode::Cancelled, "cancellation is typed");
 }
 
-/// The production permit chain, run exactly as DataFusion runs it: a root
+/// The production permit chain, run as DataFusion runs it: a root
 /// query job holds its own root-class pool permit for the whole plan while
 /// the lanes underneath it run as auxiliary work, each on one attempt work
 /// lease.
 ///
-/// The backend's `S_d` equals the lane width, so the run has exactly enough
+/// The backend's `S_d` equals the lane width, so the run has enough
 /// attempt auxiliary capacity for its lanes and none to spare, and its root
 /// class has exactly one slot. A lane that took a root permit, or any work
 /// under a lane that took a second attempt auxiliary permit, would fail
-/// `ServiceOverloaded` or deadlock instead of completing.
+/// with `ServiceOverloaded` or deadlock, and the run would not complete.
 ///
 /// The stream-lease observation pins the permit shape without timing: every
 /// lease this run acquires is a lane lease, which `acquire_attempt_work_lease`
@@ -469,7 +469,7 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
     let executor = context.gpu_executor().expect("admitted context exposes its device executor");
     let observation = context.runtime_observation().clone();
     let runtime = TokioRuntimeBuilder::new_current_thread().enable_all().build().expect("test runtime");
-    // Exactly as DataFusion runs it: the root query job holds a root-class
+    // As DataFusion runs it: the root query job holds a root-class
     // permit for the whole plan while the lanes run underneath it.
     let output = runtime
         .block_on(executor.run_observed_scoped(
@@ -569,7 +569,7 @@ fn resident_chunk_cancellation_drains_workers_without_committing() {
 }
 
 /// A source read issued from an attempt work lease runs inline on that
-/// lease's own context and stream instead of leasing a nested worker.
+/// lease's own context and stream, and it does not lease a nested worker.
 ///
 /// This is the invariant that keeps the permit chain acyclic: the caller
 /// already holds this attempt's auxiliary permit behind its lease, so a
@@ -577,12 +577,12 @@ fn resident_chunk_cancellation_drains_workers_without_committing() {
 /// second permit of the same attempt. At full lane width that nesting
 /// deadlocks outright; this test deliberately holds only one of the
 /// backend's two attempt auxiliary permits, so a nested lease would still
-/// succeed and the assertion below fails on the observation rather than on a
-/// timeout.
+/// succeed. The assertion below then fails on the observation, and no timeout
+/// is involved.
 ///
 /// The plan is a grouped aggregate, because that is the shape whose chunk
 /// execution reaches `ScheduledLocalParquetRead`. The work-lease context is what
-/// a lane hands its task executor, so the guard is exercised at the boundary
+/// a lane passes to its task executor, so the guard is exercised at the boundary
 /// that owns it.
 ///
 /// The stream-lease observation separates the two dispatch shapes without
@@ -647,10 +647,11 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
         .with_runtime_execution_scope(lifecycle.execution_scope())
         .expect("observation scope applies");
 
-    // Hold one lane's work lease, exactly as the dispatcher hands one to a
+    // Hold one lane's work lease, as the dispatcher passes one to a
     // lane job. The attempt's remaining auxiliary permit is left free on
     // purpose: a regression that leased a nested worker would acquire it and
-    // be observed, instead of blocking forever.
+    // be observed. The free permit lets that lease succeed, so the test does
+    // not block forever.
     let lane_lease = context.acquire_attempt_work_lease(None).expect("lane work lease acquires");
     let lane_context = lane_lease.context().clone();
     assert!(lane_context.is_attempt_work_lease_context(), "a lane context is a work-lease context");
@@ -677,7 +678,7 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     assert_eq!(totals, expected, "every row of every chunk reaches the aggregate exactly once");
 
     // Batched chunk work has one source read, so logical row-group coverage
-    // comes from the source facts rather than source-worker lifecycle events.
+    // comes from the source facts; no source-worker lifecycle event supplies it.
     assert_eq!(metrics.source_chunks_attempted, ROW_GROUPS as u64);
     assert_eq!(metrics.source_chunks_committed, ROW_GROUPS as u64);
     let snapshot = owner.live_snapshot().expect("observation remains live");
@@ -720,7 +721,7 @@ fn every_live_attempt_caller_holds_a_distinct_fork_including_the_root() {
         "the attempt root claims no auxiliary fork; it runs on the route's reserved one"
     );
 
-    // A scheduled source read takes its lease exactly this way, naming the
+    // A scheduled source read takes its lease this way, naming the
     // worker it runs for. Before this fix that call registered no claim.
     let source_worker_lease = context
         .acquire_attempt_work_lease(Some((
@@ -753,7 +754,7 @@ fn every_live_attempt_caller_holds_a_distinct_fork_including_the_root() {
         "no lease is served the root's reserved fork, saw {lease_forks:?} against {root_fork}"
     );
 
-    // Releasing one lease frees exactly its fork, and the next caller takes
+    // Releasing one lease frees only its fork, and the next caller takes
     // it back without ever colliding with the still-live holder.
     let surviving = held[0];
     drop(lane_lease);
@@ -1060,8 +1061,8 @@ fn chunk_readiness_sync_failure_attributes_head_ordinal_and_commits_nothing() {
     assert_eq!(int64_values(&batch, 0), vec![Some(800)]);
 }
 
-/// Resident chunk workers record readiness and reach completion while stream synchronization is blocked.
-/// The coordinator completes after the test releases that synchronization hook.
+/// Resident chunk workers record readiness and reach completion while stream synchronization
+/// is blocked. The coordinator completes after the test releases that synchronization hook.
 #[test]
 fn lane_workers_complete_chunks_without_stream_synchronize() {
     let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");

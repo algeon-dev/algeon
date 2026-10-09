@@ -27,7 +27,6 @@ use crate::{
 
 const GROUPBY_SHIFT_VALUE_HANDLE_INLINE_CAPACITY: usize = 8;
 
-/// Output payload of a low-level grouped shift.
 pub(crate) struct GroupByShiftOutput {
     /// Unique key groups, one row per output values row, with rows clustered
     /// by group and inter-group order libcudf-defined.
@@ -38,9 +37,7 @@ pub(crate) struct GroupByShiftOutput {
     pub values: Table,
 }
 
-/// A single column shift request.
 pub(crate) struct GroupByShiftRequest<'a> {
-    /// Values column to shift.
     pub values: &'a ColumnView<'a>,
     /// Row shift offset (positive shifts rows toward larger indices within
     /// the group; negative shifts toward smaller indices).

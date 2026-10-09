@@ -46,12 +46,12 @@ typedef enum {
   CUDF_BINARY_NULL_NOT_EQUALS,       // 28
   CUDF_BINARY_NULL_MAX,              // 29
   CUDF_BINARY_NULL_MIN,              // 30
-  CUDF_BINARY_GENERIC_BINARY,        // 31 (alignment placeholder; requires PTX, not callable here)
+  CUDF_BINARY_GENERIC_BINARY,        // 31 (alignment placeholder; needs PTX this API cannot pass)
   CUDF_BINARY_NULL_LOGICAL_AND,  // 32 Spark-rule && (null, true) is null, (null, false) is false
   CUDF_BINARY_NULL_LOGICAL_OR,   // 33 Spark-rule || (null, true) is true, (null, false) is null
 } cudf_binary_operator_t;
 
-/// Binary operation: column op column with explicit execution context.
+/// Applies a binary operator to two columns.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_binary_operation_vv_ex(cudf_column_view_handle lhs,
@@ -61,7 +61,7 @@ cudf_status_t cudf_binary_operation_vv_ex(cudf_column_view_handle lhs,
                                           cudf_column_handle* out,
                                           cudf_exec_options_t const* options);
 
-/// Binary operation: column op scalar with explicit execution context.
+/// Applies a binary operator to a column and a scalar.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_binary_operation_vs_ex(cudf_column_view_handle lhs,
@@ -71,7 +71,7 @@ cudf_status_t cudf_binary_operation_vs_ex(cudf_column_view_handle lhs,
                                           cudf_column_handle* out,
                                           cudf_exec_options_t const* options);
 
-/// Binary operation: scalar op column with explicit execution context.
+/// Applies a binary operator to a scalar and a column.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_binary_operation_sv_ex(cudf_scalar_handle lhs,

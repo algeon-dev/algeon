@@ -124,9 +124,9 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
     // Chunk planning splits one source file into row-group chunks, so a batch
     // names the same file once per chunk. The cudf source must list each
     // distinct source file once and point every chunk at that file's position:
-    // the reader merges same-file chunks into one reader input by file index,
-    // so a per-chunk file entry would open one handle and parse one footer per
-    // row group instead of per file.
+    // the reader merges same-file chunks into one reader input by file index, so a per-chunk
+    // file entry would open one handle and parse one footer for each row group. A shared file
+    // entry opens one handle and parses one footer per file.
     let mut cudf_files = Vec::new();
     let mut cudf_file_positions = std::collections::BTreeMap::new();
     let mut batch_file_indexes = Vec::with_capacity(chunks.len());
@@ -357,9 +357,9 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_from_file<'a>(
 /// Builds the cuDF source contract from already-converted files.
 ///
 /// The schema covers every logical field of the source. `read_columns` is the subset decoded from
-/// the files; the output, pure-filter and `ReadColumn` references index into it rather than
-/// into the file schema. A pure-filter column is read to evaluate the predicate and is not part of the
-/// output.
+/// the files; the output, pure-filter and `ReadColumn` references index into it. They do not
+/// index the file schema. A pure-filter column is read to evaluate the predicate and is not part
+/// of the output.
 pub(in crate::exec::source) fn cudf_local_parquet_source_from_files<'a>(
     source: &LocalParquetSource,
     cudf_files: impl IntoIterator<Item = CudfLocalParquetFile>,

@@ -12,7 +12,7 @@
 //! facts and re-resolved once after the memory manager exists, because the
 //! manager's own installation consumes device memory the earlier facts could
 //! not see. `M` only moves down in that step. The capacity table in
-//! `website/docs/design/admission.mdx` owns the derived counts.
+//! `website/docs/design/admission.mdx#device-profiles-and-grants` owns the derived counts.
 //!
 //! The device memory manager and cuDF's device health are process-lifetime
 //! state, while the backend can be constructed more than once per process.
@@ -107,7 +107,6 @@ impl DeviceRegistryInstallProfile {
     }
 }
 
-/// Configuration used when installing a device registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeviceRegistryConfig {
     /// CUDA ordinals enabled for the service: non-empty, unique, and
@@ -352,7 +351,7 @@ impl DeviceRegistry {
 
         // Freeze managed capacity against post-install live free bytes. No
         // query object exists yet, so this snapshot sees only the backend's
-        // own installation footprint plus external pressure. Own idle pool
+        // own installation allocation plus external pressure. Own idle pool
         // backing is added back so reinstalling over a warm pool cannot
         // shrink the budget every generation. The frozen `M` only ever moves
         // down; re-resolution revalidates the cache share, the default grant,
@@ -632,8 +631,8 @@ fn managed_capacity_bytes(
     let configured_limit = match profile.capacity_policy {
         DeviceRegistryCapacityPolicy::Automatic { headroom_bytes, fallback_bytes, fraction } => {
             // For a static partition, automatic sizing starts from the owned
-            // partition rather than physical VRAM. Headroom must reduce the
-            // budget Algeon actually owns, not a larger whole-device number.
+            // partition. Headroom reduces the budget Algeon owns, which is at
+            // most the CUDA-visible total.
             let headroom_capacity = owned_capacity_bytes
                 .checked_sub(headroom_bytes)
                 .filter(|value| *value > 0)
@@ -769,9 +768,10 @@ fn install_device_memory_manager(
 }
 
 /// Immutable allocator options are the first process-level compatibility
-/// boundary. Check them before recovering the callback-owned tracker: a
-/// foreign allocator can be both callback-unrecoverable and incompatible, but
-/// only the latter tells the caller why its requested backend cannot start.
+/// boundary. Check them before recovering the callback-owned tracker. A
+/// foreign allocator can be both callback-unrecoverable and incompatible; the
+/// options-conflict error is the one that explains why the requested backend
+/// cannot start.
 fn device_memory_manager_options_conflict(
     device: cudf::DeviceId,
     installation: cudf::DeviceMemoryManagerInstallationState,
@@ -797,7 +797,8 @@ fn device_memory_manager_options_conflict(
 
 /// Hard query domains require cuDF's canonical stream-ordered async base.
 /// This stays in the registry because allocation-manager installation is a
-/// process-owned backend concern, not a caller-selectable execution policy.
+/// process-owned backend concern. The registry fixes these options, and no
+/// query-level execution policy selects them.
 fn canonical_device_memory_manager_options(
     allocation_limit_bytes: Option<usize>,
     release_threshold_bytes: Option<usize>,
@@ -812,10 +813,10 @@ fn canonical_device_memory_manager_options(
 }
 
 fn partition_fingerprint(device_ordinal: usize, allocation_limit_bytes: Option<usize>) -> [u8; 16] {
-    // Installation identity includes the exact immutable partition, rather
-    // than relying only on the separately compared manager options. Use two
-    // independent stable 64-bit mixes so a different device, ownership mode,
-    // or byte limit cannot preserve the old mode-only fingerprint.
+    // Installation identity includes the exact immutable partition, because
+    // the separately compared manager options are not part of the owner
+    // identity. Use two independent stable 64-bit mixes so a different device,
+    // ownership mode, or byte limit yields a different fingerprint.
     let mode = u64::from(allocation_limit_bytes.is_some());
     let limit = allocation_limit_bytes.map_or(u64::MAX, |value| value as u64);
     let device = device_ordinal as u64;
@@ -1052,7 +1053,7 @@ mod tests {
         assert_eq!(frozen.default_query_limit_bytes, 8);
 
         // Freezing at 15 fails closed: the explicit default no longer fits
-        // Q = 7, and the freeze must not clamp it silently.
+        // Q = 7, and the freeze returns an error and does not clamp it.
         let too_small = resolve_resource_profile(0, &profile(Some(8)), 15).unwrap_err();
         assert_eq!(too_small.fact_value("reason"), Some("default_query_limit_exceeds_managed_capacity"));
 

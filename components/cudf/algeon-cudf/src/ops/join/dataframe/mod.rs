@@ -191,10 +191,6 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
     )
 }
 
-/// Resolve the key names from `MergeOptions`, returning `(left_on, right_on, shared)`.
-///
-/// `shared` is `true` when `on()` was used (both sides share the same key names),
-/// meaning the output should emit one shared key column per key.
 fn merge_validation_error(
     operation: &'static str,
     message: &'static str,
@@ -295,6 +291,10 @@ pub(crate) fn trigger_projected_cross_join_input_row_limit_for_test() -> Result<
         .map(|plan| plan.output_rows())
 }
 
+/// Resolve the key names from `MergeOptions`, returning `(left_on, right_on, shared)`.
+///
+/// `shared` is `true` when `on()` was used (both sides share the same key names),
+/// meaning the output should emit one shared key column per key.
 fn resolve_join_keys(
     on: Option<&[String]>,
     left_on: Option<&[String]>,
@@ -384,11 +384,9 @@ fn merge_join_result_with_suffixes(
         .with_detail("right_columns", right_cols.len().to_string()));
     }
 
-    // Collect left and right payload names (after key columns).
     let left_payload_names: Vec<&str> = left_names[key_count..].iter().map(|s| s.as_str()).collect();
     let right_payload_names: Vec<&str> = right_names[key_count..].iter().map(|s| s.as_str()).collect();
 
-    // Find which payload names collide.
     let left_payload_set: FastHashSet<&str> = left_payload_names.iter().copied().collect();
     let right_payload_set: FastHashSet<&str> = right_payload_names.iter().copied().collect();
     let conflicting: FastHashSet<&str> = left_payload_set.intersection(&right_payload_set).copied().collect();
@@ -408,7 +406,6 @@ fn merge_join_result_with_suffixes(
         out_names.push(left_names[i].clone());
     }
 
-    // Left payload.
     for (idx, name) in left_payload_names.iter().enumerate() {
         let col_idx = key_count + idx;
         out_cols.push(Arc::clone(&left_cols[col_idx]));
@@ -426,7 +423,6 @@ fn merge_join_result_with_suffixes(
         }
     }
 
-    // Right payload.
     for (idx, name) in right_payload_names.iter().enumerate() {
         let col_idx = key_count + idx;
         out_cols.push(Arc::clone(&right_cols[col_idx]));

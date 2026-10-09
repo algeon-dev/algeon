@@ -150,7 +150,7 @@ pub(super) fn validate_parquet_projection(columns: Option<&[String]>, operation:
 /// Options for [`DataFrame::write_parquet_with_options`](crate::DataFrame::write_parquet_with_options).
 ///
 /// Column names always come from the DataFrame schema. This type only
-/// controls file-format knobs such as row group size.
+/// controls file-format settings such as row group size.
 ///
 /// # Defaults
 ///

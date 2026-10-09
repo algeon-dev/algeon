@@ -16,7 +16,7 @@ use super::{
 /// Native graph algorithm supported by the cuGraph operator boundary.
 ///
 /// Every variant must have a matching entry in [`GRAPH_OPERATION_REGISTRY`].
-/// Ref: <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/>
+/// The cuGraph C API index is at <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/>.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GraphAlgorithm {
     /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/centrality/#_CPPv416cugraph_pagerankPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tdd6size_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t>
@@ -488,7 +488,6 @@ impl GraphOperationDefinition {
         }
     }
 
-    /// Vertex-id dtype support for this algorithm.
     pub(crate) const fn vertex_id_type_support(&self) -> GraphVertexIdTypeSupport {
         match self.algorithm {
             GraphAlgorithm::MinimumSpanningTree | GraphAlgorithm::SpectralModularityMaximization => {
@@ -541,8 +540,7 @@ impl GraphOperationDefinition {
     /// Default native parameter payload for metadata and planning projections.
     ///
     /// Source-vertex algorithms use `0` as a placeholder because the real
-    /// source vertex remains a required SQL/parser input, not a defaulted
-    /// option.
+    /// source vertex remains a required SQL/parser input with no default value.
     pub fn default_params(&self) -> GraphAlgorithmParams {
         match self.algorithm {
             GraphAlgorithm::PageRank => GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),

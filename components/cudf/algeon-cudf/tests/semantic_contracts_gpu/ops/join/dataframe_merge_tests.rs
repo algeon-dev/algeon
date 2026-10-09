@@ -1,4 +1,3 @@
-//! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 use cudf::{
     DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoinOptions, DataFrameHashJoinOptions,
     DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
@@ -20,10 +19,6 @@ use crate::common::{
     last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
     reset_exec_observation, reset_sync_observation, sample_runtime,
 };
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn left_df() -> DataFrame {
     // id: [1, 2, 3], score: [10, 20, 30]
@@ -107,10 +102,6 @@ fn sorted_pair_indices(indices: &DataFrameJoinPairIndices) -> Vec<(i32, i32)> {
     pairs.sort();
     pairs
 }
-
-// ---------------------------------------------------------------------------
-// Query-planning semi/anti helpers and late materialization
-// ---------------------------------------------------------------------------
 
 fn test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_growth() {
     let rt = sample_runtime();
@@ -867,14 +858,6 @@ fn test_dataframe_left_anti_join_empty_result_preserves_schema() {
     assert!(i32_column(&result, "score").is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// MergeOptions builder
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Inner merge; same key name (on)
-// ---------------------------------------------------------------------------
-
 fn test_inner_merge_same_key() {
     let left = left_df();
     let right = right_df();
@@ -936,10 +919,6 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
-// ---------------------------------------------------------------------------
-// Left merge; different key names (left_on / right_on)
-// ---------------------------------------------------------------------------
-
 fn test_left_merge_asymmetric_keys() {
     let left = left_df_asym();
     let right = right_df_asym();
@@ -971,10 +950,6 @@ fn test_left_merge_asymmetric_keys() {
         ]
     );
 }
-
-// ---------------------------------------------------------------------------
-// Suffix handling for overlapping payload names
-// ---------------------------------------------------------------------------
 
 fn test_merge_suffix_overlapping_payload() {
     // Both sides have "score" as payload.
@@ -1020,10 +995,6 @@ fn test_merge_no_suffix_when_no_conflict() {
     // No conflict: "score" and "value" are distinct.
     assert_eq!(result.column_names(), vec!["id", "score", "value"]);
 }
-
-// ---------------------------------------------------------------------------
-// Full merge
-// ---------------------------------------------------------------------------
 
 fn test_full_merge() {
     let left = left_df();
@@ -1090,7 +1061,6 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
         expected_exec_stream
     );
 
-    // Verify materialized values from the full merge result.
     reset_sync_observation();
     let mut ids = result.series("id").unwrap().to_optional_vec::<i32>().unwrap();
     ids.sort();
@@ -1155,7 +1125,6 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
         expected_exec_stream
     );
 
-    // Verify materialized values from the full merge result.
     reset_sync_observation();
     let mut ids = result.series("id").unwrap().to_optional_vec::<i32>().unwrap();
     ids.sort();
@@ -1213,10 +1182,6 @@ fn test_full_merge_asymmetric_keys_preserves_separate_key_columns() {
         ]
     );
 }
-
-// ---------------------------------------------------------------------------
-// Invalid key errors
-// ---------------------------------------------------------------------------
 
 fn test_merge_missing_on_key_in_left() {
     let left = left_df();
@@ -1347,10 +1312,6 @@ fn test_merge_rejects_duplicate_output_names_after_reassembly() {
     assert_duplicate_name_error(&err, "right_id");
 }
 
-// ---------------------------------------------------------------------------
-// Multi-key merge
-// ---------------------------------------------------------------------------
-
 fn test_merge_multi_key_inner() {
     let lk0 = column_from_slice(&[1i32, 1, 2]).unwrap();
     let lk1 = column_from_slice(&[10i32, 20, 10]).unwrap();
@@ -1380,10 +1341,6 @@ fn test_merge_multi_key_inner() {
     rows.sort();
     assert_eq!(rows, vec![(1, 10, 100, 1000), (2, 10, 300, 2000)]);
 }
-
-// ---------------------------------------------------------------------------
-// NullEquality option
-// ---------------------------------------------------------------------------
 
 fn test_merge_null_equality_unequal() {
     // With null_equality(Unequal), null keys should NOT match.

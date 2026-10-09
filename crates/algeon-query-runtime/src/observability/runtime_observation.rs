@@ -148,7 +148,7 @@ impl RuntimeSpanId {
 /// Recorder limits copied into the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeObservationLimits {
-    /// Maximum retained topology rows and timeline events.
+    /// Maximum retained topology rows, timeline events and metrics detail rows.
     pub max_retained_records: u64,
     /// Maximum deterministic logical bytes charged to retained records.
     pub max_retained_bytes: u64,
@@ -182,56 +182,82 @@ pub struct RuntimeObservationManifest {
 /// One native plan node in the static topology.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlanNodeRow {
+    /// Plan invocation containing this node.
     pub plan_execution_id: PlanExecutionId,
+    /// Node identity within that plan invocation.
     pub node_id: RuntimePlanNodeId,
+    /// Stable native operator category used for diagnostic grouping.
     pub operator_kind: String,
 }
 
 /// One directed edge in the static native plan topology.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlanEdgeRow {
+    /// Plan invocation containing this dependency.
     pub plan_execution_id: PlanExecutionId,
+    /// Input-producing plan node.
     pub from_node_id: RuntimePlanNodeId,
+    /// Plan node that consumes the input.
     pub to_node_id: RuntimePlanNodeId,
+    /// Zero-based position of the input in the consuming node.
     pub input_ordinal: u32,
 }
 
 /// One compiled task definition in the static runtime topology.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TaskDefinitionRow {
+    /// Plan invocation whose compiled schedule defines this task.
     pub plan_execution_id: PlanExecutionId,
+    /// Compiled task identity within the plan invocation.
     pub task_id: RuntimeTaskId,
+    /// Originating plan node, or `None` for a task without a direct plan node.
     pub plan_node_id: Option<RuntimePlanNodeId>,
+    /// Stable compiled task category used for diagnostic grouping.
     pub task_kind: String,
 }
 
 /// One compiled dependency edge in the static runtime topology.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CompiledEdgeRow {
+    /// Plan invocation containing this compiled dependency.
     pub plan_execution_id: PlanExecutionId,
+    /// Dependency edge identity within the plan invocation.
     pub edge_id: RuntimePipelineEdgeId,
+    /// Compiled task that produces the dependency.
     pub from_task_id: RuntimeTaskId,
+    /// Compiled task that consumes the dependency.
     pub to_task_id: RuntimeTaskId,
+    /// Stable dependency category.
     pub edge_kind: String,
+    /// Resident resources carried by this dependency.
     pub resource_ids: Vec<RuntimeResourceId>,
 }
 
 /// One compiled barrier definition in the static runtime topology.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct BarrierDefinitionRow {
+    /// Plan invocation containing this barrier.
     pub plan_execution_id: PlanExecutionId,
+    /// Barrier identity within the compiled schedule.
     pub barrier_id: RuntimeBarrierId,
+    /// Stable synchronization-barrier category.
     pub barrier_kind: String,
+    /// Tasks whose completion precedes this barrier.
     pub upstream_task_ids: Vec<RuntimeTaskId>,
+    /// Tasks whose scheduling follows this barrier.
     pub downstream_task_ids: Vec<RuntimeTaskId>,
 }
 
 /// The compiled result-sink definition in the static runtime topology.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SinkDefinitionRow {
+    /// Plan invocation containing this result sink.
     pub plan_execution_id: PlanExecutionId,
+    /// Result-sink identity within the plan invocation.
     pub sink_id: RuntimeSinkId,
+    /// Stable result materialization category.
     pub sink_kind: String,
+    /// Compiled task that produces the sink input.
     pub input_task_id: RuntimeTaskId,
 }
 
@@ -247,9 +273,13 @@ pub struct JobDefinitionRow {
 /// One host worker definition used by GPU or source execution.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WorkerDefinitionRow {
+    /// Associated plan invocation, or `None` for query-wide work.
     pub plan_execution_id: Option<PlanExecutionId>,
+    /// Worker identity within this query observation.
     pub worker_id: RuntimeWorkerId,
+    /// Stable source or GPU worker category.
     pub worker_kind: String,
+    /// Associated CUDA ordinal, or `None` for a worker without a device binding.
     pub device_ordinal: Option<u32>,
 }
 
@@ -257,34 +287,56 @@ pub struct WorkerDefinitionRow {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeResourceDomain {
+    /// Resource stored in host memory.
     Host,
-    Device { device_ordinal: u32 },
+    /// Resource stored on the specified CUDA device.
+    Device {
+        /// CUDA device ordinal containing the resource.
+        device_ordinal: u32,
+    },
+    /// Resource retained in source or cache storage.
     Storage,
 }
 
 /// One resident resource in the static runtime topology.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RuntimeResourceRow {
+    /// Associated plan invocation, or `None` for query-wide ownership.
     pub plan_execution_id: Option<PlanExecutionId>,
+    /// Resident-resource identity within this observation.
     pub resource_id: RuntimeResourceId,
+    /// Stable resident-resource category.
     pub resource_kind: String,
+    /// Memory or storage domain containing the resource.
     pub domain: RuntimeResourceDomain,
+    /// Producing task, or `None` when no compiled task produces the resource.
     pub producer_task_id: Option<RuntimeTaskId>,
+    /// Compiled tasks that consume the resource.
     pub consumer_task_ids: Vec<RuntimeTaskId>,
+    /// Diagnostic label describing the resource's scheduled lifetime.
     pub lifetime: String,
 }
 
 /// Static topology accepted by the bounded recorder.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeTopologyRecord {
+    /// Native plan node definition.
     PlanNode(PlanNodeRow),
+    /// Directed input dependency between plan nodes.
     PlanEdge(PlanEdgeRow),
+    /// Compiled executable task definition.
     TaskDefinition(TaskDefinitionRow),
+    /// Resource dependency between compiled tasks.
     CompiledEdge(CompiledEdgeRow),
+    /// Compiled task synchronization barrier.
     BarrierDefinition(BarrierDefinitionRow),
+    /// Compiled result materialization sink.
     SinkDefinition(SinkDefinitionRow),
+    /// GPU executor job definition.
     JobDefinition(JobDefinitionRow),
+    /// Host worker definition for source or GPU execution.
     WorkerDefinition(WorkerDefinitionRow),
+    /// Resident-resource ownership and lifetime definition.
     Resource(RuntimeResourceRow),
 }
 
@@ -292,13 +344,21 @@ pub enum RuntimeTopologyRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryBoundaryKind {
+    /// Query observation began.
     Started,
+    /// Terminal query cleanup began.
     CleanupStarted,
+    /// Terminal query cleanup completed.
     CleanupFinished,
+    /// Query execution completed successfully.
     Succeeded,
+    /// An execution error ended the query.
     Failed,
+    /// Caller cancellation or deadline expiry ended the query.
     Cancelled,
+    /// The query owner was dropped before another terminal outcome.
     Dropped,
+    /// An unwind ended the query.
     Panicked,
 }
 
@@ -306,9 +366,13 @@ pub enum QueryBoundaryKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanExecutionBoundaryKind {
+    /// One native plan invocation began.
     Started,
+    /// The plan invocation completed successfully.
     Finished,
+    /// The plan invocation ended with an error, drop or panic.
     Failed,
+    /// Caller cancellation or deadline expiry ended the plan invocation.
     Cancelled,
 }
 
@@ -316,12 +380,22 @@ pub enum PlanExecutionBoundaryKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum TaskLifecycleState {
+    /// The task attempt became runnable.
     Ready,
+    /// The task attempt began execution.
     Started,
+    /// The task attempt completed successfully.
     Finished,
-    Failed { error_code: String },
+    /// A classified error ended the task attempt.
+    Failed {
+        /// Stable machine code of the classified error.
+        error_code: String,
+    },
+    /// Cooperative cancellation ended the task attempt.
     Cancelled,
+    /// The task lifecycle was dropped before another terminal state.
     Dropped,
+    /// An unwind ended the task attempt.
     Panicked,
 }
 
@@ -329,16 +403,27 @@ pub enum TaskLifecycleState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeReservationAction {
+    /// Request an initial byte reservation.
     Reserve,
+    /// Increase an existing reservation.
     Grow,
+    /// Decrease an existing reservation.
     Shrink,
+    /// Move a reservation charge to another ownership boundary.
     Transfer,
+    /// Create a reference to existing reservation ownership.
     Alias,
+    /// Change the reservation's diagnostic ownership label.
     Relabel,
+    /// Transfer a source result into resident-cache ownership.
     SourceCachePromote,
+    /// Remove resident source-cache ownership.
     SourceCacheEvict,
+    /// Return charged reservation bytes.
     Release,
+    /// Record an operation rejected against a reservation limit.
     Deny,
+    /// Undo an uncommitted ownership operation.
     Rollback,
 }
 
@@ -346,15 +431,25 @@ pub enum RuntimeReservationAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeReservationDisposition {
+    /// A nonterminal reservation operation changed ownership state.
     Applied,
+    /// The requested reservation charge was accepted.
     Granted,
+    /// The requested operation did not acquire a charge.
     Denied,
+    /// An explicit release returned the charge.
     ExplicitRelease,
+    /// Normal destruction returned the charge.
     DropRelease,
+    /// Destruction during unwinding returned the charge.
     UnwindRelease,
+    /// Terminal cleanup returned the charge.
     CleanupRelease,
+    /// Rollback returned an uncommitted charge.
     RollbackRelease,
+    /// An alias keeps the underlying charge retained.
     AliasDeferred,
+    /// Cancellation cleanup returned the charge.
     CancelledRelease,
 }
 
@@ -376,13 +471,24 @@ pub enum AdmissionLifecycleState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum GpuJobLifecycleState {
+    /// The pool accepted the job before a worker began it.
     Enqueued,
+    /// A worker began the job body.
     Started,
+    /// The job body completed successfully.
     Finished,
-    Failed { error_code: String },
+    /// A classified error ended the job body.
+    Failed {
+        /// Stable machine code of the classified error.
+        error_code: String,
+    },
+    /// Cooperative cancellation was requested for the accepted job.
     CancellationRequested,
+    /// Cancellation ended the job.
     Cancelled,
+    /// The job was dropped before another terminal state.
     Dropped,
+    /// An unwind ended the job body.
     Panicked,
 }
 
@@ -390,7 +496,9 @@ pub enum GpuJobLifecycleState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StreamLeaseAcquisition {
+    /// An existing pooled CUDA stream was leased.
     Reused,
+    /// A new CUDA stream was created for the lease.
     Created,
 }
 
@@ -398,14 +506,22 @@ pub enum StreamLeaseAcquisition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum StreamLeaseLifecycleState {
+    /// Stream acquisition began waiting for a lease.
     Enqueued,
+    /// A CUDA stream lease was acquired after the recorded host wait.
     Acquired {
+        /// Whether the lease reused a stream or created one.
         acquisition: StreamLeaseAcquisition,
+        /// Elapsed host acquisition wait in nanoseconds.
         host_wait_ns: u64,
     },
+    /// Cancellation was requested while acquiring a lease.
     CancellationRequested,
+    /// Cancellation ended stream acquisition.
     Cancelled,
+    /// A classified error ended stream acquisition.
     Failed {
+        /// Stable machine code of the stream acquisition error.
         error_code: String,
     },
     /// Query ownership transferred synchronously to pool-managed cleanup.
@@ -419,13 +535,18 @@ pub enum StreamLeaseLifecycleState {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeStreamLeaseScope {
     pub(crate) plan_execution_id: Option<PlanExecutionId>,
+    /// Associated compiled task, or `None` when acquisition has no task binding.
     pub task_id: Option<RuntimeTaskId>,
+    /// Source worker requesting the stream, or `None` outside source work.
     pub source_worker_id: Option<RuntimeWorkerId>,
+    /// GPU executor job requesting the stream, or `None` outside a job.
     pub gpu_job_id: Option<RuntimeJobId>,
+    /// GPU executor worker requesting the stream, or `None` when unavailable.
     pub gpu_worker_id: Option<RuntimeWorkerId>,
 }
 
 impl RuntimeStreamLeaseScope {
+    /// Creates a lease scope bound to one plan invocation with no worker or task correlation.
     pub fn for_plan(plan_execution_id: PlanExecutionId) -> Self {
         Self { plan_execution_id: Some(plan_execution_id), ..Self::default() }
     }
@@ -447,13 +568,35 @@ impl RuntimeStreamLeaseScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SourceReadLifecycleState {
+    /// A source-read job entered the scheduler.
     Enqueued,
-    WorkerStarted { queue_wait_ns: u64 },
-    ReadFinished { read_duration_ns: u64 },
-    ReadFailed { error_code: String, read_duration_ns: u64 },
+    /// The source worker began after the recorded queue wait.
+    WorkerStarted {
+        /// Nanoseconds from source job enqueue to worker start.
+        queue_wait_ns: u64,
+    },
+    /// The source worker completed the read.
+    ReadFinished {
+        /// Nanoseconds spent executing the source read.
+        read_duration_ns: u64,
+    },
+    /// A classified error ended the source read.
+    ReadFailed {
+        /// Stable machine code of the source-read error.
+        error_code: String,
+        /// Nanoseconds from read start to its error.
+        read_duration_ns: u64,
+    },
+    /// The consumer began waiting for the source worker result.
     ConsumerJoinStarted,
-    ConsumerJoinFinished { join_duration_ns: u64 },
+    /// The consumer finished joining the source worker result.
+    ConsumerJoinFinished {
+        /// Nanoseconds spent waiting for the source worker result.
+        join_duration_ns: u64,
+    },
+    /// Cooperative cancellation ended the source read.
     Cancelled,
+    /// An unwind ended the source read.
     Panicked,
 }
 
@@ -490,8 +633,10 @@ pub enum RuntimeMeasurementQuality {
 /// Task-lifecycle payload body retained out of line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeTaskLifecycleObservation {
+    /// Compiled task identity paired with its execution attempt number.
     pub attempt_id: TaskAttemptId,
     pub(crate) task_kind: String,
+    /// Task boundary recorded by the task lifecycle owner.
     pub lifecycle: TaskLifecycleState,
 }
 
@@ -502,6 +647,7 @@ pub struct RuntimeAdmissionObservation {
     pub(crate) lifecycle: AdmissionLifecycleState,
     pub(crate) queue_depth: usize,
     pub(crate) device_ordinal: Option<u32>,
+    /// Immutable admitted query capacity in bytes, or `None` before a grant.
     pub grant_bytes: Option<u64>,
 }
 
@@ -512,6 +658,7 @@ pub struct RuntimeGpuJobObservation {
     pub(crate) job_kind: String,
     pub(crate) device_ordinal: u32,
     pub(crate) worker_id: Option<RuntimeWorkerId>,
+    /// Executor-job boundary recorded by the pool owner.
     pub lifecycle: GpuJobLifecycleState,
 }
 
@@ -520,17 +667,24 @@ pub struct RuntimeGpuJobObservation {
 pub struct RuntimeStreamLeaseObservation {
     pub(crate) lease_id: RuntimeResourceId,
     pub(crate) device_ordinal: u32,
+    /// Explicit task, source-worker and GPU-job correlation attached at acquisition.
     pub scope: RuntimeStreamLeaseScope,
+    /// Stream lease boundary recorded by the pool owner.
     pub lifecycle: StreamLeaseLifecycleState,
 }
 
 /// Source-read payload body retained out of line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSourceReadObservation {
+    /// Compiled task that owns this source read.
     pub task_id: RuntimeTaskId,
+    /// Source worker that performed this read.
     pub worker_id: RuntimeWorkerId,
+    /// Zero-based source chunk index within this execution.
     pub chunk_index: usize,
+    /// Zero-based source file index within the source contract.
     pub file_index: usize,
+    /// Read, worker or consumer-join boundary recorded by the source scheduler.
     pub lifecycle: SourceReadLifecycleState,
 }
 
@@ -552,39 +706,69 @@ pub struct RuntimeResourceMeasurementObservation {
 /// Context-rich reservation payload body retained out of line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeReservationObservation {
+    /// Identity of the reservation operated on at this boundary.
     pub reservation_id: RuntimeReservationId,
+    /// Identity shared by reservations derived from the same ownership lineage.
     pub lineage_id: RuntimeReservationId,
+    /// Associated task attempt, or `None` outside task execution.
     pub task_attempt_id: Option<TaskAttemptId>,
+    /// Associated compiled task category, or `None` when unavailable.
     pub task_kind: Option<String>,
+    /// Reservation operation attempted at this boundary.
     pub action: RuntimeReservationAction,
+    /// Operation that was denied, or `None` when this record is not a denial.
     pub denied_action: Option<RuntimeReservationAction>,
+    /// Ownership result after the operation.
     pub disposition: RuntimeReservationDisposition,
+    /// Whether the reservation aliases existing ownership without a second charge.
     pub alias: bool,
+    /// Stable category of the reservation.
     pub reservation_kind: String,
+    /// Diagnostic memory-domain label.
     pub memory_space: String,
+    /// Diagnostic execution-boundary label for the charge.
     pub memory_boundary: String,
+    /// Bytes requested by the recorded operation.
     pub requested_bytes: u64,
+    /// Bytes granted by the recorded operation.
     pub granted_bytes: u64,
+    /// Signed change in charged reservation bytes at this boundary.
     pub charged_delta_bytes: i128,
+    /// Reservation bytes charged after this operation.
     pub current_reserved_bytes: u64,
+    /// Byte limit against which the reservation was checked.
     pub budget_bytes: u64,
+    /// Associated native plan node label, or `None` when unavailable.
     pub node_id: Option<String>,
+    /// Associated execution-stage label, or `None` when unavailable.
     pub stage: Option<String>,
+    /// Associated source chunk index, or `None` outside chunk work.
     pub chunk_index: Option<usize>,
+    /// Associated source file index, or `None` outside file work.
     pub file_index: Option<usize>,
+    /// Opaque query-scoped source-location digest, or `None` when unavailable.
+    /// The digest excludes raw source text from the observation.
     pub source_location_id: Option<RuntimeSourceLocationId>,
+    /// Selected row-group ordinals, or `None` when the operation has no selection.
     pub row_groups: Option<Vec<usize>>,
+    /// Source operation attempt number, or `None` outside bounded retries.
     pub attempt: Option<usize>,
+    /// Source retry bound, or `None` when unavailable.
     pub max_attempts: Option<usize>,
+    /// Associated resident-resource label, or `None` without a resident result.
     pub resident_resource_id: Option<String>,
+    /// Source sizing evidence label, or `None` outside source reservation.
     pub source_read_contract_quality: Option<String>,
+    /// Source contract planning byte charge, or `None` when unavailable.
     pub source_read_planning_bytes: Option<u64>,
+    /// Source contract estimated bytes, or `None` when unavailable.
     pub source_read_estimated_bytes: Option<u64>,
 }
 
 /// Secondary-cleanup-failure payload body retained out of line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCleanupFailureObservation {
+    /// Bounded secondary cleanup failure; the primary outcome remains separate.
     pub summary: CleanupFailureSummary,
 }
 
@@ -595,22 +779,39 @@ pub struct RuntimeCleanupFailureObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeOperatorStageKind {
+    /// Regular-expression replacement size preflight.
     RegexReplacePreflight,
+    /// Regular-expression replacement native execution.
     RegexReplaceExecute,
+    /// Native exact-cardinality measurement used for strategy selection.
     ExactCardinalityProbe,
+    /// Preparation of reusable groupby state.
     PreparedGroupbyPrepare,
+    /// Aggregation using prepared groupby state.
     PreparedGroupbyAggregate,
+    /// Direct libcudf groupby execution.
     LibcudfGroupby,
+    /// Hash partitioning of a native frame.
     HashPartition,
+    /// Aggregation of one partial input.
     PartialAggregate,
+    /// Merge of partial aggregate results.
     FinalMerge,
+    /// Top-k selection within one native partition.
     PartitionLocalTopK,
+    /// Final native sort of retained inputs.
     FinalSort,
+    /// Preparation of dense vector inputs for a native algorithm.
     VectorPack,
+    /// Native vector algorithm execution.
     VectorNative,
+    /// Assembly of vector algorithm output into query results.
     VectorAssemble,
+    /// Preparation of matrix inputs for a native ML algorithm.
     MlPack,
+    /// Native machine-learning algorithm execution.
     MlNative,
+    /// Assembly of ML algorithm output into query results.
     MlAssemble,
 }
 
@@ -649,26 +850,43 @@ impl fmt::Display for RuntimeOperatorStageKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum RuntimeOperatorStageState {
+    /// The native operator stage began.
     Started,
+    /// The native operator stage completed successfully.
     Finished,
-    Failed { error_code: String },
+    /// A classified error ended the operator stage.
+    Failed {
+        /// Stable machine code of the classified error.
+        error_code: String,
+    },
+    /// Cooperative cancellation ended the operator stage.
     Cancelled,
 }
 
 /// Operator-substage payload body retained out of line.
 ///
-/// Safe numerical facts only: no SQL, raw paths, or unbounded strings.
+/// The payload carries numeric facts and bounded string labels, such as
+/// `node_id` and `strategy_label`. It excludes SQL, raw paths, and unbounded
+/// strings.
+/// Constructors preserve caller labels without bounding or validating them;
+/// callers supply labels that satisfy the observation contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeOperatorStageObservation {
+    /// Native primitive or preparation stage measured by this span.
     pub stage_kind: RuntimeOperatorStageKind,
+    /// Start, completion or failure boundary within the stage span.
     pub lifecycle: RuntimeOperatorStageState,
     pub(crate) node_id: Option<String>,
     pub(crate) task_id: Option<RuntimeTaskId>,
+    /// Associated source chunk index, or `None` outside chunk work.
     pub chunk_index: Option<usize>,
     pub(crate) partition_index: Option<usize>,
     pub(crate) attempt: Option<u32>,
+    /// Bounded execution strategy label, or `None` when unavailable.
     pub strategy_label: Option<String>,
+    /// Observed input row count, or `None` without a row observation.
     pub input_rows: Option<u64>,
+    /// Observed output row count, or `None` without a row observation.
     pub output_rows: Option<u64>,
     pub(crate) input_bytes: Option<u64>,
     pub(crate) output_bytes: Option<u64>,
@@ -676,22 +894,29 @@ pub struct RuntimeOperatorStageObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) vector_algorithm: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Machine-learning algorithm label, or `None` outside ML stages.
     pub ml_algorithm: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Vector input role label, or `None` outside vector stages.
     pub vector_relation_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Number of coordinates in a dense vector, or `None` when unavailable.
     pub vector_dimension: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Native matrix layout label, or `None` when unavailable.
     pub matrix_layout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) execution_binding_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) device_ordinal: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Native component major version, or `None` without version evidence.
     pub native_version_major: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Native component minor version, or `None` without version evidence.
     pub native_version_minor: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Native component patch version, or `None` without version evidence.
     pub native_version_patch: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) bounded_control_scalar_events: Option<u64>,
@@ -731,36 +956,43 @@ impl RuntimeOperatorStageObservation {
         }
     }
 
+    /// Attaches the bounded native plan-node label for this stage.
     pub fn with_node_id(mut self, node_id: impl Into<String>) -> Self {
         self.node_id = Some(node_id.into());
         self
     }
 
+    /// Attaches the compiled task associated with this stage.
     pub fn with_task_id(mut self, task_id: RuntimeTaskId) -> Self {
         self.task_id = Some(task_id);
         self
     }
 
+    /// Attaches the source chunk index associated with this stage.
     pub fn with_chunk_index(mut self, chunk_index: usize) -> Self {
         self.chunk_index = Some(chunk_index);
         self
     }
 
+    /// Attaches the native partition index associated with this stage.
     pub fn with_partition_index(mut self, partition_index: usize) -> Self {
         self.partition_index = Some(partition_index);
         self
     }
 
+    /// Attaches the operation attempt number associated with this stage.
     pub fn with_attempt(mut self, attempt: u32) -> Self {
         self.attempt = Some(attempt);
         self
     }
 
+    /// Attaches a bounded execution strategy label without validating its content.
     pub fn with_strategy_label(mut self, strategy_label: impl Into<String>) -> Self {
         self.strategy_label = Some(strategy_label.into());
         self
     }
 
+    /// Attaches the observed input row count.
     pub fn with_input_rows(mut self, input_rows: u64) -> Self {
         self.input_rows = Some(input_rows);
         self
@@ -771,6 +1003,7 @@ impl RuntimeOperatorStageObservation {
         self
     }
 
+    /// Attaches the observed input size in bytes.
     pub fn with_input_bytes(mut self, input_bytes: u64) -> Self {
         self.input_bytes = Some(input_bytes);
         self
@@ -781,46 +1014,55 @@ impl RuntimeOperatorStageObservation {
         self
     }
 
+    /// Attaches the reservation charge in bytes associated with this stage.
     pub fn with_reserved_bytes(mut self, reserved_bytes: u64) -> Self {
         self.reserved_bytes = Some(reserved_bytes);
         self
     }
 
+    /// Attaches the native vector algorithm label.
     pub fn with_vector_algorithm(mut self, algorithm: impl Into<String>) -> Self {
         self.vector_algorithm = Some(algorithm.into());
         self
     }
 
+    /// Attaches the native machine-learning algorithm label.
     pub fn with_ml_algorithm(mut self, algorithm: impl Into<String>) -> Self {
         self.ml_algorithm = Some(algorithm.into());
         self
     }
 
+    /// Attaches the vector input role used by the native call.
     pub fn with_vector_relation_role(mut self, role: impl Into<String>) -> Self {
         self.vector_relation_role = Some(role.into());
         self
     }
 
+    /// Attaches the number of coordinates in each dense vector.
     pub fn with_vector_dimension(mut self, dimension: usize) -> Self {
         self.vector_dimension = Some(dimension);
         self
     }
 
+    /// Attaches the native matrix layout label.
     pub fn with_matrix_layout(mut self, layout: impl Into<String>) -> Self {
         self.matrix_layout = Some(layout.into());
         self
     }
 
+    /// Attaches the native execution binding identity for correlation.
     pub fn with_execution_binding_id(mut self, binding_id: u64) -> Self {
         self.execution_binding_id = Some(binding_id);
         self
     }
 
+    /// Attaches the CUDA ordinal on which the stage executes.
     pub fn with_device_ordinal(mut self, device_ordinal: usize) -> Self {
         self.device_ordinal = Some(device_ordinal);
         self
     }
 
+    /// Attaches the native component version as major, minor and patch values.
     pub fn with_native_version(mut self, major: u16, minor: u16, patch: u16) -> Self {
         self.native_version_major = Some(major);
         self.native_version_minor = Some(minor);
@@ -851,18 +1093,29 @@ impl RuntimeOperatorStageObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeObservationPayload {
+    /// Query lifecycle boundary stored with the event timestamp.
     QueryBoundary {
+        /// Query lifecycle transition represented by this event.
         boundary: QueryBoundaryKind,
     },
+    /// Native plan invocation boundary stored with the event timestamp.
     PlanExecutionBoundary {
+        /// Native plan invocation transition represented by this event.
         boundary: PlanExecutionBoundaryKind,
     },
+    /// Compiled task attempt lifecycle evidence.
     TaskLifecycle(Box<RuntimeTaskLifecycleObservation>),
+    /// Admission lifecycle and immutable grant evidence.
     Admission(Box<RuntimeAdmissionObservation>),
+    /// GPU executor job lifecycle evidence.
     GpuJob(Box<RuntimeGpuJobObservation>),
+    /// Stream acquisition and release lifecycle evidence.
     StreamLease(Box<RuntimeStreamLeaseObservation>),
+    /// Source worker and consumer-join lifecycle evidence.
     SourceRead(Box<RuntimeSourceReadObservation>),
+    /// Resource sample with its owning scope and provenance.
     ResourceMeasurement(Box<RuntimeResourceMeasurementObservation>),
+    /// Reservation ownership transition and byte charge evidence.
     Reservation(Box<RuntimeReservationObservation>),
     /// Secondary cleanup failure retained without replacing a primary query error.
     CleanupFailure(Box<RuntimeCleanupFailureObservation>),
@@ -873,11 +1126,16 @@ pub enum RuntimeObservationPayload {
 /// One dynamic event in recorder total order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeTimelineEvent {
+    /// Recorder sequence that orders this event with topology record attempts.
     pub sequence: ObservationSequence,
+    /// Nanoseconds elapsed from the query observation's monotonic clock origin.
     pub monotonic_ns: u64,
+    /// Associated native plan invocation, or `None` for query-wide events.
     pub plan_execution_id: Option<PlanExecutionId>,
+    /// Query-scoped span used to pair lifecycle events, or `None` without a span.
     pub span_id: Option<RuntimeSpanId>,
     pub(crate) parent_span_id: Option<RuntimeSpanId>,
+    /// Typed lifecycle or resource evidence retained by this event.
     pub payload: RuntimeObservationPayload,
 }
 
@@ -916,9 +1174,13 @@ pub enum RuntimeObservationRecordClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeObservationLossReason {
+    /// The configured retained-record limit was exhausted.
     RecordLimit,
+    /// The configured retained logical-byte budget was exhausted.
     ByteLimit,
+    /// A single record exceeded the entire configured logical-byte budget.
     Oversized,
+    /// A keyed source digest was unavailable; raw source text was not retained.
     SourceLocationKeyUnavailable,
     /// No plan execution was left unfrozen to carry the record when the
     /// session sealed.
@@ -935,7 +1197,9 @@ pub(crate) struct RuntimeObservationClassLoss {
 /// Count of dropped records for one reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeObservationReasonLoss {
+    /// Condition that prevented retention.
     pub reason: RuntimeObservationLossReason,
+    /// Records dropped for this condition; consult footer overflow metadata for exactness.
     pub count: u64,
 }
 
@@ -967,20 +1231,29 @@ where D: serde::Deserializer<'de> {
 /// retained JSONL carry the same sealed facts as the other projections.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeObservationFooter {
+    /// Whether the observation session sealed. Retention losses remain described separately.
     pub complete: bool,
+    /// Committed query outcome, or `None` when no outcome was supplied at seal.
     pub terminal: Option<RuntimeTerminalOutcome>,
+    /// Retained topology rows, timeline events and bounded detail records.
     pub retained_records: u64,
+    /// Deterministic logical bytes charged to retained records.
     pub retained_bytes: u64,
+    /// First record attempt declined for retention, or `None` when none was dropped.
     pub first_dropped_sequence: Option<ObservationSequence>,
+    /// Last attempted record sequence, or `None` when no record was attempted.
     pub last_attempted_sequence: Option<ObservationSequence>,
     pub(crate) dropped_by_class: Vec<RuntimeObservationClassLoss>,
+    /// Loss counts grouped by their closed retention reason.
     pub dropped_by_reason: Vec<RuntimeObservationReasonLoss>,
+    /// Whether at least one attempted record could not be retained.
     pub truncated: bool,
+    /// Whether recording encountered degradation, including recovered recorder poisoning.
     pub degraded: bool,
     pub(crate) poison_recoveries: u64,
     /// The exact sealed attempt report, when this observation belongs to an
-    /// execution attempt. This is optional so non-attempt observations retain
-    /// their existing JSONL shape.
+    /// execution attempt. A footer without an attempt report omits this field
+    /// when serialized.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

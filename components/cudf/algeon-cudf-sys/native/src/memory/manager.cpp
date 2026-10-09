@@ -273,9 +273,9 @@ void fill_installation_record(device_memory_manager_state* manager,
     out.status = CUDF_MEMORY_MANAGER_INSTALLATION_OWNED;
     out.retry  = CUDF_MEMORY_MANAGER_INSTALLATION_REUSABLE;
   }
-  // A rejected installation reports the reason this request was rejected,
-  // rather than a pre-existing health issue that happens to coexist with it.
-  // In particular, immutable option conflicts must not be masked by an
+  // A rejected installation reports the reason this request was rejected, even
+  // when a pre-existing health issue coexists with it. In particular, immutable
+  // option conflicts must not be masked by an
   // allocator that was also installed without a failure callback.
   if (requested_cause != CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE) {
     out.cause = requested_cause;

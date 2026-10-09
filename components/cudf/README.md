@@ -1,12 +1,16 @@
 # cuDF component
 
+`algeon-cudf` and `algeon-cudf-sys` are published implementation
+dependencies of Algeon. Applications use
+[`algeon-datafusion`](https://docs.rs/algeon-datafusion); the APIs below serve
+workspace component consumers. See the
+[API documentation boundary](https://algeon.dev/design#api-documentation).
+
 `components/cudf` is the Algeon Rust integration component built
 around [`libcudf`](https://github.com/algeon-dev/cudf). It is part of the
 root Cargo workspace; it is not a second repository or workspace.
 It exists only to support the native backend of
 [Algeon](https://github.com/algeon-dev/algeon/tree/main/components/cudf).
-Its Rust package and import names are workspace contracts, not an external
-semantic-versioning or publication promise.
 
 ## Focus
 
@@ -17,7 +21,7 @@ semantic-versioning or publication promise.
 
 ## Workspace
 
-- `components/cudf/algeon-cudf/` - the internal safe execution crate, packaged as `cudf` (import `cudf`).
+- `components/cudf/algeon-cudf/` - the internal safe execution crate, packaged as `algeon-cudf` (import `cudf`).
 - `components/cudf/algeon-cudf-sys/` - low-level FFI bindings and the native C shim around `libcudf` (import `cudf_sys`).
 - `components/algeon-interop/` - shared RAPIDS Rust interop contract types and traits.
 - `components/cudf/cudf/` - the pinned **[forked cuDF](https://github.com/algeon-dev/cudf)** source submodule used to build `libcudf`.

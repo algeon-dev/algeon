@@ -136,8 +136,6 @@ impl Series {
         self.column.device_allocated_size_bytes().map_err(|error| error.reanchor("series::device_allocated_size_bytes"))
     }
 
-    // -- Access --------------------------------------------------------------
-
     /// Returns `true` if both series share the same retained provenance
     /// (CUDA stream and memory resource).
     pub fn same_provenance(&self, other: &Series) -> bool {
@@ -177,7 +175,7 @@ impl Series {
     /// expected.
     ///
     /// # Cost
-    /// Device-to-host copy: one synchronous memcpy of `len * size_of::<T>()` bytes.
+    /// One synchronous device-to-host memcpy transfers `len * size_of::<T>()` bytes.
     ///
     /// # Errors
     /// - `ErrorKind::InvalidInput` with `ErrorCode::NullUnexpected` if the
@@ -207,8 +205,8 @@ impl Series {
     /// the host.
     ///
     /// # Cost
-    /// Two synchronous device-to-host memcpys: `len * size_of::<T>()` bytes
-    /// for data, plus `ceil(len / 8)` bytes for the null mask.
+    /// Two synchronous device-to-host memcpys transfer `len * size_of::<T>()` bytes
+    /// for data and `ceil(len / 8)` bytes for the null mask.
     ///
     /// # Errors
     /// Returns `ErrorKind::InvalidInput` with `ErrorCode::TypeMismatch` if the
@@ -259,7 +257,7 @@ impl Series {
     /// Copy string column data to a host `Vec<String>`, mapping null elements
     /// to empty strings (`""`).
     ///
-    /// This is a lossy conversion: null and genuinely empty strings become
+    /// This conversion is lossy. Null and empty strings become
     /// indistinguishable. When null fidelity matters, use
     /// [`to_optional_strings`](Self::to_optional_strings).
     ///
@@ -269,18 +267,6 @@ impl Series {
     pub fn to_strings_lossy(&self) -> Result<Vec<String>> {
         self.column.view()?.to_strings_lossy()
     }
-
-    // -- Scalar comparison ops -----------------------------------------
-
-    // -- Extended scalar comparison ops --------------------------------
-
-    // -- Column-vs-column comparison ops -------------------------------
-
-    // -- Arithmetic ops ------------------------------------------------
-
-    // -- Scalar arithmetic ops -----------------------------------------
-
-    // -- Static constructors for combining Series ----------------------------
 
     /// Ensure this Series is placed in the target runtime.
     ///
@@ -300,7 +286,6 @@ impl Series {
         Ok(series)
     }
 
-    /// Clone or deep-copy an `Arc<Column>` into the target domain.
     fn clone_or_copy_into_domain(
         column: &Arc<Column>,
         output_domain: &Arc<ExecutionDomain>,
@@ -313,8 +298,6 @@ impl Series {
         // copy_into_domain installs both fence directions internally.
         column.copy_into_domain(Arc::clone(output_domain), operation).map(Arc::new)
     }
-
-    // -- Convenience methods; unary ops inherit name ---------
 }
 
 // Operator overloads (Add, Sub, Mul, Div) live in the `ops` module.
@@ -344,7 +327,7 @@ impl SeriesOps<'_> {
     /// Return `length` rows starting at `offset`.
     ///
     /// Both `offset` and `length` are clamped to the series length, so
-    /// out-of-range values yield fewer rows rather than an error.
+    /// out-of-range values yield fewer rows and do not return an error.
     pub fn slice(&self, offset: usize, length: usize) -> Result<Series> {
         self.series.slice_with_context(offset, length, self.ctx, "series::slice")
     }
@@ -394,8 +377,7 @@ impl SeriesOps<'_> {
     /// Accepts any value that converts into a [`ScalarValue`].
     ///
     /// # Cost
-    /// GPU-allocating: produces a new `BOOL8` output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new `BOOL8` output column on the device and wraps it in a new `Series`.
     pub fn gt_scalar(&self, rhs: impl Into<ScalarValue>) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::Greater, self.ctx, "series::gt_scalar")
     }
@@ -405,8 +387,7 @@ impl SeriesOps<'_> {
     /// Accepts any value that converts into a [`ScalarValue`].
     ///
     /// # Cost
-    /// GPU-allocating: produces a new `BOOL8` output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new `BOOL8` output column on the device and wraps it in a new `Series`.
     pub fn lt_scalar(&self, rhs: impl Into<ScalarValue>) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::Less, self.ctx, "series::lt_scalar")
     }
@@ -416,8 +397,7 @@ impl SeriesOps<'_> {
     /// Accepts any value that converts into a [`ScalarValue`].
     ///
     /// # Cost
-    /// GPU-allocating: produces a new `BOOL8` output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new `BOOL8` output column on the device and wraps it in a new `Series`.
     pub fn eq_scalar(&self, rhs: impl Into<ScalarValue>) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::Equal, self.ctx, "series::eq_scalar")
     }
@@ -427,8 +407,7 @@ impl SeriesOps<'_> {
     /// Accepts any value that converts into a [`ScalarValue`].
     ///
     /// # Cost
-    /// GPU-allocating: produces a new `BOOL8` output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new `BOOL8` output column on the device and wraps it in a new `Series`.
     pub fn ne_scalar(&self, rhs: impl Into<ScalarValue>) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::NotEqual, self.ctx, "series::ne_scalar")
     }
@@ -438,8 +417,7 @@ impl SeriesOps<'_> {
     /// Accepts any value that converts into a [`ScalarValue`].
     ///
     /// # Cost
-    /// GPU-allocating: produces a new `BOOL8` output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new `BOOL8` output column on the device and wraps it in a new `Series`.
     pub fn ge_scalar(&self, rhs: impl Into<ScalarValue>) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::GreaterEqual, self.ctx, "series::ge_scalar")
     }
@@ -449,8 +427,7 @@ impl SeriesOps<'_> {
     /// Accepts any value that converts into a [`ScalarValue`].
     ///
     /// # Cost
-    /// GPU-allocating: produces a new `BOOL8` output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new `BOOL8` output column on the device and wraps it in a new `Series`.
     pub fn le_scalar(&self, rhs: impl Into<ScalarValue>) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::LessEqual, self.ctx, "series::le_scalar")
     }
@@ -458,8 +435,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self == rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
-    /// device and wraps it in a new `Series`.
+    /// Allocates a new unnamed `BOOL8` output column on the device and wraps it
+    /// in a new `Series`.
     pub fn eq(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::Equal, self.ctx, "series::eq")
     }
@@ -467,8 +444,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self != rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
-    /// device and wraps it in a new `Series`.
+    /// Allocates a new unnamed `BOOL8` output column on the device and wraps it
+    /// in a new `Series`.
     pub fn ne(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::NotEqual, self.ctx, "series::ne")
     }
@@ -476,8 +453,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self > rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
-    /// device and wraps it in a new `Series`.
+    /// Allocates a new unnamed `BOOL8` output column on the device and wraps it
+    /// in a new `Series`.
     pub fn gt(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::Greater, self.ctx, "series::gt")
     }
@@ -485,8 +462,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self < rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
-    /// device and wraps it in a new `Series`.
+    /// Allocates a new unnamed `BOOL8` output column on the device and wraps it
+    /// in a new `Series`.
     pub fn lt(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::Less, self.ctx, "series::lt")
     }
@@ -494,8 +471,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self >= rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
-    /// device and wraps it in a new `Series`.
+    /// Allocates a new unnamed `BOOL8` output column on the device and wraps it
+    /// in a new `Series`.
     pub fn ge(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::GreaterEqual, self.ctx, "series::ge")
     }
@@ -503,8 +480,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self <= rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
-    /// device and wraps it in a new `Series`.
+    /// Allocates a new unnamed `BOOL8` output column on the device and wraps it
+    /// in a new `Series`.
     pub fn le(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::LessEqual, self.ctx, "series::le")
     }
@@ -530,8 +507,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self + rhs`. Output type inferred.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new unnamed output column on the device and wraps it in a
+    /// new `Series`.
     pub fn add(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::Add, self.ctx, "series::add")
     }
@@ -539,8 +516,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self - rhs`. Output type inferred.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new unnamed output column on the device and wraps it in a
+    /// new `Series`.
     pub fn sub(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::Sub, self.ctx, "series::sub")
     }
@@ -548,8 +525,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self * rhs`. Output type inferred.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new unnamed output column on the device and wraps it in a
+    /// new `Series`.
     pub fn mul(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::Mul, self.ctx, "series::mul")
     }
@@ -557,8 +534,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self / rhs`. Output type inferred.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new unnamed output column on the device and wraps it in a
+    /// new `Series`.
     pub fn div(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::Div, self.ctx, "series::div")
     }
@@ -566,8 +543,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self + scalar`.
     ///
     /// # Cost
-    /// GPU-allocating: creates a device scalar from the host value, then
-    /// produces a new output column on the device.
+    /// Creates a device scalar from the host value, then produces a new output
+    /// column on the device.
     pub fn add_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::Add, self.ctx, "series::add_scalar")
     }
@@ -575,8 +552,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self - scalar`.
     ///
     /// # Cost
-    /// GPU-allocating: creates a device scalar from the host value, then
-    /// produces a new output column on the device.
+    /// Creates a device scalar from the host value, then produces a new output
+    /// column on the device.
     pub fn sub_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::Sub, self.ctx, "series::sub_scalar")
     }
@@ -584,8 +561,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self * scalar`.
     ///
     /// # Cost
-    /// GPU-allocating: creates a device scalar from the host value, then
-    /// produces a new output column on the device.
+    /// Creates a device scalar from the host value, then produces a new output
+    /// column on the device.
     pub fn mul_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::Mul, self.ctx, "series::mul_scalar")
     }
@@ -593,18 +570,18 @@ impl SeriesOps<'_> {
     /// Element-wise `self / scalar`.
     ///
     /// # Cost
-    /// GPU-allocating: creates a device scalar from the host value, then
-    /// produces a new output column on the device.
+    /// Creates a device scalar from the host value, then produces a new output
+    /// column on the device.
     pub fn div_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::Div, self.ctx, "series::div_scalar")
     }
 
-    /// Element-wise `self % rhs` (modulo). Output type inferred. Returns an
+    /// Element-wise `self % rhs` (modulo). Output type inferred. Returns a
     /// `Series`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new unnamed output column on the device and
-    /// wraps it in a new `Series`.
+    /// Allocates a new unnamed output column on the device and wraps it in a
+    /// new `Series`.
     pub fn rem(&self, rhs: &Series) -> Result<Series> {
         self.series.binary_series_in_context(rhs, BinaryOperator::Mod, self.ctx, "series::rem")
     }
@@ -612,8 +589,8 @@ impl SeriesOps<'_> {
     /// Element-wise `self % scalar`.
     ///
     /// # Cost
-    /// GPU-allocating: creates a device scalar from the host value, then
-    /// produces a new output column on the device.
+    /// Creates a device scalar from the host value, then produces a new output
+    /// column on the device.
     pub fn rem_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         self.series.binary_scalar_in_context(rhs, BinaryOperator::Mod, self.ctx, "series::rem_scalar")
     }
@@ -621,7 +598,7 @@ impl SeriesOps<'_> {
     /// Return a BOOL8 mask: `true` where elements are null.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new BOOL8 column on the device.
+    /// Allocates a new BOOL8 column on the device.
     pub fn is_null(&self) -> Result<Series> {
         self.series.is_null_with_context(self.ctx, "series::is_null")
     }
@@ -629,7 +606,7 @@ impl SeriesOps<'_> {
     /// Return a BOOL8 mask: `true` where elements are valid (non-null).
     ///
     /// # Cost
-    /// GPU-allocating: produces a new BOOL8 column on the device.
+    /// Allocates a new BOOL8 column on the device.
     pub fn is_not_null(&self) -> Result<Series> {
         self.series.is_not_null_with_context(self.ctx, "series::is_not_null")
     }
@@ -642,7 +619,7 @@ impl SeriesOps<'_> {
     /// Equivalent to cuDF Python's `Series.astype()`.
     ///
     /// # Cost
-    /// GPU-allocating: a new column is produced with the target dtype.
+    /// Allocates a new column with the target dtype.
     pub fn astype(&self, target: impl Into<DataType>) -> Result<Series> {
         self.series.cast_in_context(target, self.ctx, "series::astype")
     }
@@ -657,7 +634,7 @@ impl SeriesOps<'_> {
     /// Equivalent to cuDF Python's `cudf.to_datetime(series)`.
     ///
     /// # Cost
-    /// GPU-allocating: a new column is produced with the target timestamp dtype.
+    /// Allocates a new column with the target timestamp dtype.
     pub fn to_datetime(&self, resolution: Option<TimestampResolution>) -> Result<Series> {
         self.series.to_datetime_with_context(
             resolution,
@@ -676,7 +653,7 @@ impl SeriesOps<'_> {
     /// Equivalent to cuDF Python's `cudf.to_numeric(series)`.
     ///
     /// # Cost
-    /// GPU-allocating: a new column is produced with the target numeric dtype.
+    /// Allocates a new column with the target numeric dtype.
     pub fn to_numeric(&self, target: TypeId) -> Result<Series> {
         if !target.is_numeric() && !target.is_boolean() {
             return Err(unsupported_numeric_target_error("series::to_numeric", target));
@@ -689,7 +666,7 @@ impl SeriesOps<'_> {
     /// Equivalent to cuDF Python's `Series.log()` / `np.log(series)`.
     ///
     /// # Cost
-    /// GPU-allocating: a new column is produced with the transformed values.
+    /// Allocates a new column with the transformed values.
     pub fn log(&self) -> Result<Series> {
         self.series.unary_with_context(UnaryOperator::Log, self.ctx, "series::log")
     }
@@ -699,7 +676,7 @@ impl SeriesOps<'_> {
     /// Equivalent to cuDF Python's `Series.fillna(scalar)`.
     ///
     /// # Cost
-    /// GPU-allocating: a new column is produced with nulls replaced.
+    /// Allocates a new column with nulls replaced.
     pub fn fillna<T: CudfType>(&self, value: T) -> Result<Series> {
         self.series.fillna_with_context(value, self.ctx, "series::fillna")
     }
@@ -709,29 +686,29 @@ impl SeriesOps<'_> {
     /// Both series must have the same dtype and length.
     ///
     /// # Cost
-    /// GPU-allocating: a new column is produced with nulls replaced.
+    /// Allocates a new column with nulls replaced.
     pub fn fillna_with_series(&self, other: &Series) -> Result<Series> {
         self.series.fillna_with_series_with_context(other, self.ctx, "series::fillna_with_series")
     }
 
-    /// Forward fill: replace each null with the nearest preceding non-null
-    /// value. Leading nulls (with no preceding non-null value) remain null.
+    /// Forward fill replaces each null with the nearest preceding non-null value.
+    /// Leading nulls (with no preceding non-null value) remain null.
     ///
     /// Equivalent to cuDF Python's `Series.ffill()` / `Series.fillna(method='ffill')`.
     ///
     /// # Cost
-    /// GPU-allocating: a new column is produced with nulls forward-filled.
+    /// Allocates a new column with nulls forward-filled.
     pub fn ffill(&self) -> Result<Series> {
         self.series.fillna_policy_with_context(FillPolicy::Preceding, self.ctx, "series::ffill")
     }
 
-    /// Backward fill: replace each null with the nearest following non-null
-    /// value. Trailing nulls (with no following non-null value) remain null.
+    /// Backward fill replaces each null with the nearest following non-null value.
+    /// Trailing nulls (with no following non-null value) remain null.
     ///
     /// Equivalent to cuDF Python's `Series.bfill()` / `Series.fillna(method='bfill')`.
     ///
     /// # Cost
-    /// GPU-allocating: a new column is produced with nulls backward-filled.
+    /// Allocates a new column with nulls backward-filled.
     pub fn bfill(&self) -> Result<Series> {
         self.series.fillna_policy_with_context(FillPolicy::Following, self.ctx, "series::bfill")
     }
@@ -742,7 +719,7 @@ impl SeriesOps<'_> {
     /// Equivalent to cuDF Python's `Series.isin()`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new BOOL8 column.
+    /// Allocates a new BOOL8 column.
     pub fn isin(&self, values: &Series) -> Result<Series> {
         self.series.isin_with_context(values, self.ctx, "series::isin")
     }
@@ -754,7 +731,7 @@ impl SeriesOps<'_> {
     /// Equivalent to cuDF Python's `Series.unique()`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new column containing only distinct values.
+    /// Allocates a new column containing only distinct values.
     pub fn unique(&self) -> Result<Series> {
         self.series.unique_with_context(self.ctx, "series::unique")
     }
@@ -777,8 +754,8 @@ impl SeriesOps<'_> {
     /// reuse for later [`Codebook::encode`] / [`Codebook::decode`] calls.
     ///
     /// # Cost
-    /// GPU-allocating: produces the distinct key series plus positional code
-    /// storage for the reusable codebook.
+    /// Allocates the distinct key series plus positional code storage for the
+    /// reusable codebook.
     pub fn codebook(&self) -> Result<Codebook> {
         self.series.codebook_with_context(self.ctx, "series::codebook")
     }
@@ -789,15 +766,15 @@ impl SeriesOps<'_> {
 
     /// Encode this series as row-aligned integer codes plus a reusable codebook.
     ///
-    /// Unlike the old tuple API, this returns a typed [`Factorized`] result
-    /// that distinguishes row-aligned encoded indices from the reusable
-    /// [`Codebook`] used to encode and decode arbitrary series later.
+    /// Returns a typed [`Factorized`] result that distinguishes row-aligned
+    /// encoded indices from the reusable [`Codebook`] used to encode and decode
+    /// arbitrary series later.
     ///
     /// Equivalent to cuDF Python's `Series.factorize()`, but with an explicit
     /// reusable codebook type.
     ///
     /// # Cost
-    /// GPU-allocating: produces row codes plus the codebook keys/codes.
+    /// Allocates row codes plus the codebook keys/codes.
     pub fn factorize(&self) -> Result<Factorized> {
         self.series.factorize_with_context(self.ctx, "series::factorize")
     }
@@ -811,7 +788,7 @@ impl SeriesOps<'_> {
     /// Equivalent to cuDF Python's `Series.sort_values()`.
     ///
     /// # Cost
-    /// GPU-allocating: a new sorted column is produced.
+    /// Allocates a new sorted column.
     pub fn sort_values(&self, options: SortOptions) -> Result<Series> {
         self.series.sort_values_with_context(options, self.ctx, "series::sort_values")
     }

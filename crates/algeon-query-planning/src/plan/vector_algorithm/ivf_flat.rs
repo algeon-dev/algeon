@@ -6,17 +6,29 @@ use super::{
 /// Query-local IVF-Flat build and search parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorIvfFlatParams {
+    /// Dense rows indexed into inverted lists.
     pub dataset: VectorRelationBinding,
+    /// Dense query rows matched against the dataset.
     pub queries: VectorRelationBinding,
+    /// Number of neighbors returned per query row.
     pub k: usize,
+    /// Distance or similarity used to rank neighbors.
     pub metric: VectorDistanceMetric,
+    /// Number of inverted lists; must not exceed dataset row count.
     pub n_lists: u32,
+    /// Lists searched per query; must not exceed `n_lists`.
     pub n_probes: u32,
+    /// Maximum iterations for fitting list centers.
     pub kmeans_n_iters: u32,
+    /// Fraction of dataset rows used to fit list centers, in `(0, 1]`.
     pub kmeans_trainset_fraction: f64,
 }
 
 impl VectorIvfFlatParams {
+    /// Uses registry defaults for list training and search tuning.
+    ///
+    /// The supplied bindings, neighbor count, metric, and list count are retained
+    /// without validation.
     pub fn new(
         dataset: VectorRelationBinding,
         queries: VectorRelationBinding,

@@ -1,6 +1,6 @@
 //! Owned GPU device buffer backed by `rmm::device_buffer`.
 //!
-//! **Advanced/Core.** This is a low-level building block for zero-copy
+//! This is advanced core API. It is a low-level building block for zero-copy
 //! ownership transfer into [`Column`](super::Column). Most users should
 //! construct columns via [`Runtime::column_from_slice`](crate::Runtime::column_from_slice)
 //! or [`Runtime::series`](crate::Runtime::series) instead.
@@ -29,7 +29,7 @@ use crate::{
 /// It retains the explicit runtime domain that created it so the stream and
 /// memory-resource owners outlive the allocation and so later zero-copy
 /// adoption into a [`Column`](super::Column) can reject cross-device misuse
-/// before handing ownership to libcudf.
+/// before ownership passes to libcudf.
 ///
 /// The primary use case is to prepare device memory externally (e.g., from
 /// another CUDA library) and then transfer ownership into a

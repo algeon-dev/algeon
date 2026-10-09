@@ -172,7 +172,7 @@ pub(super) fn spawn_sampler(
                 let device = cudf::DeviceId::new(*ordinal).ok()?;
                 // Alias the manager the backend installed. Installing one here
                 // is rejected whenever the backend's options differ, which
-                // would leave every pool counter silently reported as zero.
+                // would leave every pool counter reported as zero with no error.
                 cudf::DeviceMemoryManager::for_device(device).ok().map(|manager| (*ordinal, manager))
             })
             .collect::<BTreeMap<_, _>>();
@@ -181,6 +181,7 @@ pub(super) fn spawn_sampler(
             let mut samples = samples.lock().unwrap();
             samples.aggregate.push(aggregate);
             samples.by_device.extend(by_device);
+            // Release the lock before the sleep so readers do not wait out the interval.
             drop(samples);
             std::thread::sleep(interval);
         }

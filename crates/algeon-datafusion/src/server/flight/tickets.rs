@@ -15,7 +15,7 @@ use crate::server::coordinator::QueryKey;
 /// Statement and prepared-statement queries share execution code, but clients
 /// see different RPC surfaces and operation names. Keeping this tag in the
 /// ticket lets errors, diagnostics, and ticket payloads stay tied to the path
-/// the client actually used.
+/// the client used.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum StatementTicketKind {
     Statement,
@@ -123,9 +123,8 @@ impl StatementTicketKind {
 /// client-visible operation context.
 ///
 /// Update statements do not pass through the coordinator's statement-ticket
-/// handoff, so this is the
-/// lightweight equivalent of `StatementTicketKind` for planning/collect errors
-/// and tracing labels.
+/// handoff, so this is the lightweight equivalent of `StatementTicketKind` for
+/// planning/collect errors and tracing labels.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum UpdateStatementKind {
     Statement,
@@ -150,7 +149,7 @@ impl UpdateStatementKind {
     }
 }
 
-/// Owns the resources that must live exactly as long as a lazy DoGet stream.
+/// Owns the resources whose lifetime must match a lazy DoGet stream.
 ///
 /// `DoGet` returns before the stream is fully polled, so ordinary stack cleanup
 /// would release admission and cancellation state too early. The stream holds
@@ -316,7 +315,7 @@ impl CoordinatorExecutionTerminal {
 
     /// Completes a terminal whose sealed attempt report could not be retained
     /// by the coordinator. Unlike an execution outcome, this must bypass the
-    /// report gate: waiting for a report that was just rejected would retain
+    /// report gate. Waiting for a report that was rejected would retain
     /// the execution lease indefinitely.
     pub(super) fn finish_attempt_report_delivery_failed(
         &self,
@@ -360,9 +359,9 @@ impl CoordinatorExecutionTerminal {
     }
 
     /// Records that the client dropped its response stream. This remains
-    /// distinct from a cancellation status delivered to the client: the
+    /// distinct from a cancellation status delivered to the client. The
     /// immutable attempt report can be cancelled while Flight delivery was
-    /// simply abandoned by the peer.
+    /// abandoned by the peer.
     pub(super) fn finish_dropped(&self, stage: &'static str) {
         self.finish(CoordinatorExecutionTerminalOutcome::Dropped { stage });
     }
@@ -405,6 +404,7 @@ impl CoordinatorExecutionTerminal {
                 log_statement_status(&self.query_id, Some(&self.sql), stage, self.started_at, &status);
             },
             CoordinatorExecutionTerminalOutcome::Dropped { stage } => {
+                // The lease drop commits `Dropped`; like the other arms, commit before logging.
                 drop(lease);
                 tracing::info!(
                     query_id = self.query_id,

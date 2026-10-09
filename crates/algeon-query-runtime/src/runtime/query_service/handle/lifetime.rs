@@ -66,8 +66,8 @@ enum RootContextSetupState {
     Unclaimed,
     InFlight,
     Ready,
-    /// Release was requested; no context starts. Being a value rather than a
-    /// bare wakeup, a waiter that read the state just before the release still
+    /// Release was requested; no context starts. The watch channel keeps the
+    /// last value. A waiter that read the state just before the release still
     /// sees it on its next read.
     Released,
 }
@@ -254,8 +254,8 @@ impl QueryHandleLifetime {
                 root_context_binding_gate: Mutex::new(None),
             }
         });
-        // The attempt, not this handle, holds the release: only its terminal
-        // commit returns the grant.
+        // The attempt holds the release, and this handle does not. Only its
+        // terminal commit returns the grant.
         let release: Arc<dyn AdmittedGrantRelease> = Arc::clone(&lifetime) as Arc<dyn AdmittedGrantRelease>;
         let attempt_already_terminal = match &*lifetime.lock_state() {
             LifetimeState::Active(resources) => resources.completion.bind_grant_release(release),
@@ -725,13 +725,14 @@ impl AdmittedGrantRelease for QueryHandleLifetime {
 pub(in crate::runtime::query_service) struct ReleaseCommitGate {
     pub(super) entered: AtomicUsize,
     pub(super) gate: Barrier,
-    // Drops the completion payload at the barrier instead of sealing it, as
-    // a release that unwinds between finalization and the seal would.
+    // Drops the completion payload at the barrier. The payload's Drop recovery
+    // seals the observation, as a release that unwinds between finalization
+    // and the seal would.
     pub(super) drop_completion: bool,
 }
 
 /// Barrier held while the attempt still owns its admission envelope, so a
-/// test can observe exactly what a concurrent admission sees before the lane,
+/// test can observe what a concurrent admission sees before the lane,
 /// grant, and permit are released.
 #[cfg(test)]
 #[derive(Debug)]

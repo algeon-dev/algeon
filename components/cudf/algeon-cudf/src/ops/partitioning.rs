@@ -10,7 +10,6 @@ use crate::{
     runtime::execution_domain::ExecutionDomain,
 };
 
-/// Result of a hash partition operation.
 #[derive(Debug)]
 pub(crate) struct HashPartitionedTable {
     table: Table,

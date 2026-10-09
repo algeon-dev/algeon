@@ -1,4 +1,3 @@
-//! Tests for Column::factorize
 use cudf::{
     ErrorCode, ErrorKind, Exec, Series, TypeId,
     core::{
@@ -33,20 +32,15 @@ fn test_factorize_i32_with_duplicates() {
     let codes_view = codes.testing_view().unwrap();
     let uniques_view = uniques.testing_view().unwrap();
 
-    // Codes should be Int32.
     assert_eq!(codes_view.data_type().unwrap().id(), TypeId::Int32);
-    // Uniques should preserve the original element type.
     assert_eq!(uniques_view.data_type().unwrap().id(), TypeId::Int32);
 
-    // 3 unique values.
     assert_eq!(uniques_view.len().unwrap(), 3);
-    // Same number of codes as input rows.
     assert_eq!(codes_view.len().unwrap(), 7);
 
     let codes_host = codes_view.to_vec::<i32>().unwrap();
     let uniques_host = uniques_view.to_vec::<i32>().unwrap();
 
-    // Verify mapping: data[i] == uniques[codes[i]].
     for (i, &code) in codes_host.iter().enumerate() {
         assert_eq!(
             data[i], uniques_host[code as usize],
@@ -55,7 +49,7 @@ fn test_factorize_i32_with_duplicates() {
         );
     }
 
-    // Verify uniques contain exactly the input distinct values (order is not guaranteed).
+    // Verify uniques contain the input distinct values (order is not guaranteed).
     let mut expected_uniques = data;
     expected_uniques.sort();
     expected_uniques.dedup();
@@ -78,14 +72,12 @@ fn test_factorize_string_column() {
     assert_eq!(codes_view.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(uniques_view.data_type().unwrap().id(), TypeId::String);
 
-    // 3 unique strings.
     assert_eq!(uniques_view.len().unwrap(), 3);
     assert_eq!(codes_view.len().unwrap(), 5);
 
     let codes_host = codes_view.to_vec::<i32>().unwrap();
     let uniques_host = uniques_view.to_strings_lossy().unwrap();
 
-    // Verify mapping.
     for (i, &code) in codes_host.iter().enumerate() {
         assert_eq!(
             strings[i], uniques_host[code as usize],
@@ -114,7 +106,6 @@ fn test_factorize_with_nulls() {
     assert!(!codes_mask[1], "code at null position 1 should be null");
     assert!(!codes_mask[4], "code at null position 4 should be null");
 
-    // Valid codes should map correctly.
     let codes_host = codes_view.to_vec::<i32>().unwrap();
     let uniques_host = uniques_view.to_vec::<i32>().unwrap();
     for (i, (&code, &valid)) in codes_host.iter().zip(codes_mask.iter()).enumerate() {
@@ -199,7 +190,6 @@ fn test_factorize_f64_column() {
     let codes_host = codes_view.to_vec::<i32>().unwrap();
     let uniques_host = uniques_view.to_vec::<f64>().unwrap();
 
-    // Verify mapping.
     for (i, &code) in codes_host.iter().enumerate() {
         assert!(
             (data[i] - uniques_host[code as usize]).abs() < 1e-9,
@@ -213,7 +203,7 @@ fn test_factorize_f64_column() {
 }
 
 fn test_factorize_codes_are_owned_independent_of_input() {
-    // Verify codes and uniques are owned (deep-copied), not borrowing from input.
+    // Verify codes and uniques are owned (deep-copied) and do not borrow from input.
     let (codes, uniques) = {
         let data = vec![1i32, 2, 1, 3, 2];
         let col = column_from_slice(&data).unwrap();
@@ -228,8 +218,6 @@ fn test_factorize_codes_are_owned_independent_of_input() {
     assert_eq!(codes_host.len(), 5);
     assert_eq!(uniques_host.len(), 3);
 }
-
-// --- DataFrame::factorize tests ---
 
 fn test_dataframe_factorize_by_name() {
     let col = column_from_slice(&[10i32, 20, 10, 30, 20]).unwrap();
@@ -257,9 +245,8 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     let row_codes = factorized.row_codes();
     let uniques = factorized.codebook().keys();
 
-    // This is the tempting but invalid pattern: slice row-aligned factorize
-    // codes down to uniques.len() and reuse them as if they were a stable key
-    // to code mapping.
+    // Row-aligned factorize codes are not a key-to-code mapping. Slicing them to
+    // uniques.len() and reusing them as a stable lookup does not yield [0, 1, 2].
     let first_positions = series("first_positions", &[0i32, 1, 2]).unwrap();
     let wrong_lookup_values = row_codes.on(Exec::RETAINED).gather(&first_positions).unwrap();
     assert_eq!(wrong_lookup_values.len(), uniques.len());

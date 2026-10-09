@@ -6,7 +6,7 @@
 //! Those questions live here, and the engine supplies the RAPIDS answers.
 //!
 //! The contract is deliberately small: it exists to cut this crate's
-//! dependency on a component, not to anticipate a second backend. Inputs and
+//! dependency on a component. It does not anticipate a second backend. Inputs and
 //! outputs are query IR, Arrow types, and [`QueryError`], never a component
 //! handle, expression, runtime context, or allocator.
 //!
@@ -48,7 +48,7 @@ pub enum AggregateBinding {
 ///
 /// An implementation must answer with the same component rules execution
 /// binds with. A query that this contract accepts and a kernel then rejects is
-/// a defect in the implementation, not a tolerated outcome.
+/// a defect in the implementation. It is not a tolerated outcome.
 ///
 /// `Send + Sync` because [`AnalysisContext`] crosses `async fn` boundaries in
 /// engine and adapter pipeline stages, and those futures must stay `Send`.
@@ -66,8 +66,8 @@ pub trait BackendCapabilities: fmt::Debug + Send + Sync {
     /// An `Err` means the kernel has no binding for the operand pair, and
     /// validation reports it as an unsupported expression. Validation reaches
     /// this after its own temporal, interval and decimal rules have run; a
-    /// declared `output_type` is accepted only for decimal division and is
-    /// checked by those rules rather than inferred here.
+    /// declared `output_type` is accepted only for decimal division, and those
+    /// rules check it. This method does not infer it.
     fn binary_output_type(&self, op: BinaryOp, left: &ArrowDataType, right: &ArrowDataType) -> Result<ArrowDataType>;
 
     /// Proves the backend can bind this expression for this use.
@@ -84,18 +84,18 @@ pub trait BackendCapabilities: fmt::Debug + Send + Sync {
     /// names the binding produces.
     ///
     /// The names are what plan validation compares against the declared output
-    /// schema, so the proof and the schema check read one result instead of
-    /// two independent derivations.
+    /// schema, so the proof and the schema check read one result. Neither
+    /// derives the names independently.
     fn aggregate_output_names(&self, spec: &AggregateSpec, binding: AggregateBinding) -> Result<Vec<String>>;
 }
 
 /// Carries the backend capability through one analysis or validation pass.
 ///
-/// This is a short-lived borrow, not stored state: neither [`QueryPlan`] nor
-/// the capability analysis nor a compiled artifact holds it, so plan IR and
-/// proof never take on an implementation's lifetime. The one value that does
-/// outlive the pass is `policy`, which the admission artifact records so
-/// execution runs under the thresholds the plan was admitted with.
+/// This is a short-lived borrow. Neither [`QueryPlan`] nor the capability
+/// analysis nor a compiled artifact holds it, so plan IR and proof never take
+/// on an implementation's lifetime. The one value that does outlive the pass is
+/// `policy`, which the admission artifact records so execution runs under the
+/// thresholds the plan was admitted with.
 ///
 /// [`QueryPlan`]: crate::plan::QueryPlan
 #[derive(Debug, Clone, Copy)]

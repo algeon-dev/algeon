@@ -1,10 +1,8 @@
-//! Tests for CU-4: forward fill and backward fill.
+//! Tests for forward fill and backward fill.
 
 use cudf::Exec;
 
 use crate::common::{nullable_series, series};
-
-// -- Forward fill (ffill) tests -----------------------------------------------
 
 fn test_replace_nulls_policy_ffill_basic() {
     // [1, null, null, 4] → [1, 1, 1, 4]
@@ -40,8 +38,6 @@ fn test_replace_nulls_policy_ffill_empty() {
     let result = s.on(Exec::RETAINED).ffill().unwrap();
     assert_eq!(result.len(), 0);
 }
-
-// -- Backward fill (bfill) tests ----------------------------------------------
 
 fn test_replace_nulls_policy_bfill_basic() {
     // [1, null, null, 4] → [1, 4, 4, 4]

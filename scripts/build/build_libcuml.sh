@@ -98,7 +98,7 @@ extra_cmake_args=(
     "-U" "FETCHCONTENT_UPDATES_DISCONNECTED_CUVS"
     "-DCMAKE_PREFIX_PATH=${cudf_install_dir};${cuvs_install_dir}"
 )
-# Avoid an old build tree silently retaining a different source/install identity.
+# Avoid an old build tree retaining a different source/install identity.
 if [[ -f "${build_dir}/CMakeCache.txt" ]]; then
     cached_source="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${build_dir}/CMakeCache.txt")"
     if [[ -n "${cached_source}" && "$(realpath -m -- "${cached_source}")" != "${source_tree}/cpp" ]]; then

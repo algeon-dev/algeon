@@ -45,7 +45,7 @@ pub fn is_narrow_decimal_carry_type(data_type: &ArrowDataType) -> bool {
 /// Returns the physical byte width for Arrow scalar fixed-width values used by
 /// native sizing heuristics.
 ///
-/// This is not a general Arrow memory-layout classifier: it intentionally
+/// This is not a general Arrow memory-layout classifier. It intentionally
 /// preserves the native execution paths that do not size `Float16` or
 /// fixed-size binary values as fixed-width inputs.
 pub fn arrow_fixed_width_byte_size(data_type: &ArrowDataType) -> Option<u64> {

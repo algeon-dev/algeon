@@ -234,7 +234,7 @@ fn lower_filter_binary_expr(
     output_type: Option<&ArrowDataType>,
 ) -> Result<CudfExpr> {
     // Filter predicates lower AND/OR through the null-aware AST operators so the
-    // post-read FilterNode path matches SQL/Spark 3-valued logic exactly (e.g.
+    // post-read FilterNode path matches SQL/Spark 3-valued logic (e.g.
     // `true OR null` is `true`, `false AND null` is `false`). This is the same
     // semantics libcudf's reader_predicate uses (NULL_LOGICAL_*), so a predicate
     // replayed as a FilterNode by `local_parquet_source_reuse` keeps the same row
@@ -596,8 +596,9 @@ fn lower_filter_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<Cud
     validate_in_list_literal_values(list)?;
     if !ExpressionLoweringPolicy::default().filter_in_list_should_use_row_predicate_tree(list.len()) {
         // Large dynamic-filter keysets are post-decode filters. Keeping them as
-        // cudf InList lets cudf use its boolean-mask path instead of recursively
-        // lowering a deeply nested row-predicate OR/AND tree.
+        // cudf InList lets cudf use its boolean-mask path and keeps the predicate
+        // a single node. A row-predicate OR/AND tree for the same keyset nests
+        // once per value.
         return lower_in_list(expr, list, negated);
     }
     let Some((first, rest)) = list.split_first() else {

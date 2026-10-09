@@ -72,7 +72,8 @@ pub enum CudfAllocationAttribution {
     /// report this as a reached query cap.
     UnattributedAllocationFailure,
     /// Not an allocation failure at all. A co-attached budget annotation, if
-    /// any, describes the scope the error passed through, not its cause.
+    /// any, describes the scope the error passed through. It does not describe
+    /// the cause.
     NonAllocationFailure,
 }
 

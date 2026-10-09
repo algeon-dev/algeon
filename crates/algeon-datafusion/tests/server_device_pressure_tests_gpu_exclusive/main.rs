@@ -25,7 +25,7 @@ async fn a_physically_exhausted_device_fails_the_query_without_quarantining_itse
 
     // The lease allocates through its own CUDA resource, outside the manager
     // the ledger accounts for, so admission still succeeds and the failure has
-    // to come from the driver rather than from the query's cap.
+    // to come from the driver. The query's own cap must not be the cause.
     let lease = PhysicalMemoryPressureLease::establish(DeviceId::new(0).expect("device zero"))
         .expect("bounded physical pressure must be establishable on an installed device");
     let facts = lease.facts();
@@ -115,7 +115,7 @@ async fn a_bounded_streaming_query_survives_device_starvation_arriving_mid_strea
 
     // Bounded streaming releases each chunk before reading the next, so the
     // query's resident set stays flat and it never has to grow its pool into
-    // the starved device -- however far the result set exceeds free memory.
+    // the starved device, however far the result set exceeds free memory.
     while let Some(batch) =
         stream.try_next().await.expect("a flat-working-set query must not fail when free memory disappears")
     {

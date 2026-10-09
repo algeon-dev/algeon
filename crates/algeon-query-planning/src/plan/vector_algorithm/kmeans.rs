@@ -92,11 +92,13 @@ impl VectorKMeansParams {
     }
 }
 
-/// K-means admits only the native L2 family; this is intentionally not the
-/// broader kNN distance enum.
+/// Cluster-assignment metrics accepted by K-means: expanded squared L2 (`L2Expanded`) and
+/// the square root of expanded L2 (`L2SqrtExpanded`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VectorKMeansMetric {
+    /// Squared Euclidean distance using the expanded form.
     L2Expanded,
+    /// Euclidean distance using the square root of the expanded form.
     L2SqrtExpanded,
 }
 

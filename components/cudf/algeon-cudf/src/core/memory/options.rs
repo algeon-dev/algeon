@@ -6,9 +6,19 @@ use crate::core::error::{self, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceMemoryManagerBase {
     /// Use CUDA's stream-ordered async memory pool.
-    CudaAsync { initial_pool_size: Option<usize>, release_threshold: Option<usize> },
+    CudaAsync {
+        /// Initial pool size in bytes; `None` or zero selects RMM's default.
+        initial_pool_size: Option<usize>,
+        /// Pool release threshold in bytes; `None` or `usize::MAX` selects RMM's default.
+        release_threshold: Option<usize>,
+    },
     /// Use RMM's pool resource around the raw CUDA resource.
-    Pool { initial_pool_size: usize, maximum_pool_size: Option<usize> },
+    Pool {
+        /// Initial RMM pool size in bytes.
+        initial_pool_size: usize,
+        /// Maximum RMM pool size in bytes; `None` or zero selects the native default.
+        maximum_pool_size: Option<usize>,
+    },
 }
 
 impl Default for DeviceMemoryManagerBase {
@@ -20,6 +30,7 @@ impl Default for DeviceMemoryManagerBase {
 /// Options applied when a device memory manager is first created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DeviceMemoryManagerOptions {
+    /// Physical allocator selected when the process-local device manager is created.
     pub base: DeviceMemoryManagerBase,
     /// Immutable hard limit enforced by the process manager. `None` leaves the
     /// selected physical base unpartitioned.

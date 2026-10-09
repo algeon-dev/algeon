@@ -108,8 +108,8 @@ fn shared_sliced_nested_and_empty_resident_outputs_pass_owner_attestation() {
 }
 
 /// A retained GPU result keeps the backend generation alive: close must
-/// surface pending cleanup instead of false quiescence, and completes only
-/// after the final owner releases.
+/// surface pending cleanup and must not report quiescence early. It completes
+/// only after the final owner releases.
 #[test]
 fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescence() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for resident output");
@@ -237,8 +237,8 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
     let first = service
         .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("first admission");
-    // Hold normal observer delivery after the terminal commit. A replacement
-    // must still see capacity only after the attempt completion is published.
+    // Hold normal observer delivery after the terminal commit. Capacity becomes
+    // available to a replacement only after the attempt completion is published.
     let delivery_gate = attempt_owner.arm_delivery_gate_for_test();
 
     let queued_service = service.clone();
@@ -281,9 +281,8 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
         .expect("queued admission task")
         .expect("queued admission succeeds");
     // Capture state while deferred observer delivery is blocked. This is the
-    // actual reuse boundary: the replacement has admitted, but tail delivery
-    // has not run. The old generic observer path leaves completion unready
-    // here; the synchronous terminal commit cannot.
+    // reuse boundary. The replacement has admitted, but tail delivery has not
+    // run. The synchronous terminal commit keeps completion ready at this point.
     let completion_ready_before_delivery = completion.is_ready();
     let report_ready_before_delivery =
         completion.try_report().is_some_and(|report| report.timestamps.report_ready_ns.is_some());
@@ -971,7 +970,8 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
 
 /// Owner attestation must reject a residual the allocation registry still
 /// owns but no published output owner holds. The residual here is a real
-/// device allocation leaked into the attempt domain, not a counter mismatch.
+/// device allocation leaked into the attempt domain. No counter is edited to
+/// produce the mismatch.
 #[test]
 fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for resident attestation");
@@ -998,7 +998,7 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
         .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
     let grant = admitted.lifetime.memory_grant().expect("memory grant");
-    // Leak a real allocation into the attempt domain and forget it. The
+    // Leak a device allocation into the attempt domain with std::mem::forget. The
     // registry keeps owning it, so freeze must see a live allocation that no
     // published output owner accounts for.
     let leaked_context = admitted.acquire_context().expect("attempt context for leaked allocation");
@@ -1186,7 +1186,7 @@ fn owner_terminal_during_admission_publishes_one_report_and_keeps_ledgers_open()
 }
 
 /// A stream synchronization failure during cleanup is device-local fault
-/// evidence: the device closes before report publication and the attempt's
+/// evidence. The device closes before report publication, and the attempt's
 /// capacity is never reusable, while the report still publishes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
@@ -1217,7 +1217,7 @@ async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
     );
     assert!(binding.observation_handle().sealed_snapshot().is_some(), "report still publishes after failed cleanup");
 
-    // The attempt's capacity is never reusable: a new admission cannot place
+    // The attempt's capacity is never reusable. A new admission cannot place
     // on the closed device.
     let error = service.admit_query().expect_err("closed device rejects new admission");
     assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
@@ -1315,8 +1315,8 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
 
 /// A duplicate stream-cleanup handoff is an internal ownership violation. It
 /// must still run the release report path as `CallbackAbandoned` before
-/// dropping the immutable grant, so the service becomes fail-closed instead
-/// of silently making capacity reusable without a terminal observation.
+/// dropping the immutable grant. The service becomes fail-closed, and capacity
+/// is not made reusable without a terminal observation.
 #[test]
 fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_release() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for cleanup collision");
@@ -1411,7 +1411,7 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     assert_eq!(error.fact_value("reason"), Some("backend_unhealthy"));
 }
 
-/// An OOM-class outcome alone never quarantines: the device stays open and
+/// An OOM-class outcome alone never quarantines. The device stays open, and
 /// healthy capacity is reusable after report-ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
@@ -1446,10 +1446,10 @@ async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
     drop(second);
 }
 
-/// A reservation-limit callback produces an exactly joined allocator record in
-/// the terminal resource block. The release commit keeps that record distinct
-/// from immutable attempt facts, the atomic ledger snapshot, and separately
-/// timed usage samples.
+/// A reservation-limit callback produces an allocator record with attempt-exact
+/// provenance in the terminal resource block. The release commit keeps that
+/// record distinct from immutable attempt facts, the atomic ledger snapshot,
+/// and separately timed usage samples.
 #[test]
 fn oom_release_projects_truthful_resource_evidence() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for OOM resource evidence");
@@ -1539,7 +1539,7 @@ fn oom_release_projects_truthful_resource_evidence() {
 }
 
 /// The backend-unhealthy latch rejects new submissions with a structured
-/// error while the in-flight attempt finishes untouched.
+/// error while the previously admitted attempt finishes untouched.
 #[test]
 fn backend_unhealthy_rejects_new_submissions_while_inflight_finishes() {
     let service = test_service(2, 8);
@@ -1563,7 +1563,7 @@ fn backend_unhealthy_rejects_new_submissions_while_inflight_finishes() {
     let queued_error = service.try_admit_query().expect_err("try admission also rejects while unhealthy");
     assert_eq!(queued_error.fact_value("reason"), Some("backend_unhealthy"));
 
-    // In-flight work is untouched and its release commits normally.
+    // Admitted work is untouched and its release commits normally.
     drop(active);
     let deadline = Instant::now() + Duration::from_secs(10);
     wait_until(
@@ -1573,9 +1573,8 @@ fn backend_unhealthy_rejects_new_submissions_while_inflight_finishes() {
     );
 }
 
-/// Disposition mapping: abandoned cleanup callbacks mark the backend
-/// unhealthy (unknown isolation); completed cleanup with a healthy device is
-/// healthy reuse.
+/// Abandoned cleanup callbacks mark the backend unhealthy (unknown isolation).
+/// Completed cleanup with a healthy device is healthy reuse.
 #[test]
 fn disposition_mapping_matches_isolation_rules() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for disposition mapping");
@@ -1718,10 +1717,11 @@ fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
 
-    // Retain a real resident owner so this attempt's terminal commit takes
-    // the frozen-resident path rather than an ordinary capacity release. The
-    // allocation must exist in the attempt domain: owner attestation reads
-    // the allocation registry, not a synthetic charge.
+    // Retain a resident owner so this attempt's terminal commit takes the
+    // frozen-resident path. Without a resident owner, the commit is an ordinary
+    // capacity release. Owner attestation reads the allocation registry, and a
+    // synthetic charge does not appear there. The allocation must therefore
+    // exist in the attempt domain.
     let grant = producer.lifetime.memory_grant().expect("producer memory grant");
     let producer_context = producer.acquire_context().expect("producer context");
     let producer_runtime = producer_context.context().shared_runtime().expect("producer runtime");

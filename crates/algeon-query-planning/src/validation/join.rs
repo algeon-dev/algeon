@@ -1215,7 +1215,7 @@ mod tests {
 
         let error = validate_join_residual_column_sides(&expr).expect_err("input2 should be rejected");
 
-        // A binary join has no input 2: the plan is malformed, not a backend gap.
+        // A binary join has no input 2, so the plan is malformed and reports InvalidPlan.
         assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
         assert_eq!(error.operation(), "query_engine.join.validate_residual");
         assert_eq!(error.fact_value("column"), Some("name"));

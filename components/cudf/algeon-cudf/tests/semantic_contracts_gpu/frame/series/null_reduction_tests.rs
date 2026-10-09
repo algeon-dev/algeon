@@ -1,20 +1,14 @@
-//! Specification tests: null behavior in Series reductions, scans, and aggregations.
+//! Specification tests for null behavior in Series reductions, scans, and aggregations.
 //!
 //! These tests lock down cuDF/libcudf null semantics for:
 //! - Scalar reductions (sum, min, max, mean, median, std, var, any, all, product)
 //!   with partial nulls, all-null input, and empty input
 //! - Cumulative scans (cumsum, cummin, cummax, cumprod) with nulls
 //! - minmax with nulls
-//!
-//! All tests require a GPU.
 
 use cudf::Exec;
 
 use crate::common::{nullable_series, series};
-
-// ===========================================================================
-// sum with nulls
-// ===========================================================================
 
 fn test_sum_partial_nulls_skips_nulls() {
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
@@ -44,10 +38,6 @@ fn test_sum_single_element() {
     let result = s.on(Exec::RETAINED).sum().unwrap();
     assert_eq!(result.value::<i64>().unwrap(), 42);
 }
-
-// ===========================================================================
-// min / max with nulls
-// ===========================================================================
 
 fn test_min_partial_nulls_skips_nulls() {
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
@@ -86,10 +76,6 @@ fn test_max_single_element() {
     assert_eq!(s.on(Exec::RETAINED).max().unwrap().value::<i32>().unwrap(), 42);
 }
 
-// ===========================================================================
-// mean with nulls
-// ===========================================================================
-
 fn test_mean_partial_nulls_skips_nulls() {
     // [10, null, 30] -> mean = (10+30)/2 = 20.0
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
@@ -112,10 +98,6 @@ fn test_mean_single_element() {
     assert!((v - 3.5).abs() < 1e-10);
 }
 
-// ===========================================================================
-// median with nulls
-// ===========================================================================
-
 fn test_median_partial_nulls() {
     // [10, null, 30, 20] -> valid values [10, 20, 30] -> median = 20.0
     let s = nullable_series::<i32>("x", &[10, 0, 30, 20], &[true, false, true, true]).unwrap();
@@ -136,10 +118,6 @@ fn test_median_single_element() {
     let v = s.on(Exec::RETAINED).median().unwrap().value::<f64>().unwrap();
     assert!((v - 7.0).abs() < 1e-10);
 }
-
-// ===========================================================================
-// std / var with nulls
-// ===========================================================================
 
 fn test_std_partial_nulls() {
     // [10, null, 30] -> valid values [10, 30], sample std (ddof=1)
@@ -165,10 +143,6 @@ fn test_std_all_null() {
     let result = s.on(Exec::RETAINED).std(1).unwrap();
     assert!(!result.is_valid().unwrap());
 }
-
-// ===========================================================================
-// any / all with nulls
-// ===========================================================================
 
 fn test_any_with_true_and_null() {
     // [true, null, false] -> any should be true (at least one true exists)
@@ -210,10 +184,6 @@ fn test_any_all_null() {
     assert!(!result.value::<bool>().unwrap());
 }
 
-// ===========================================================================
-// product with nulls
-// ===========================================================================
-
 fn test_product_partial_nulls() {
     // [2, null, 5] -> product of valid = 10
     let s = nullable_series::<i32>("x", &[2, 0, 5], &[true, false, true]).unwrap();
@@ -226,10 +196,6 @@ fn test_product_single_element() {
     let s = series::<i32>("x", &[7]).unwrap();
     assert_eq!(s.on(Exec::RETAINED).product().unwrap().value::<i32>().unwrap(), 7);
 }
-
-// ===========================================================================
-// minmax with nulls
-// ===========================================================================
 
 fn test_minmax_partial_nulls() {
     // [10, null, 30, 5] -> min=5, max=30
@@ -245,10 +211,6 @@ fn test_minmax_single_element() {
     assert_eq!(min_s.value::<i32>().unwrap(), 42);
     assert_eq!(max_s.value::<i32>().unwrap(), 42);
 }
-
-// ===========================================================================
-// Cumulative scans with nulls
-// ===========================================================================
 
 fn test_cumsum_with_nulls() {
     // [1, null, 3, 4] -> cumsum should skip nulls in the running total
@@ -297,10 +259,6 @@ fn test_cumprod_with_nulls() {
     assert_eq!(vals[2], Some(6));
     assert_eq!(vals[3], Some(24));
 }
-
-// ===========================================================================
-// Cumulative scans on empty series
-// ===========================================================================
 
 fn test_cumsum_empty() {
     let s = series::<i32>("x", &[]).unwrap();

@@ -76,8 +76,8 @@ use crate::{
 
 /// Fallback and upper bound for the default service stream pool size.
 ///
-/// The pool creates streams lazily, so this is a concurrency cap rather than a
-/// startup allocation count. `default_service_stream_pool_size_for_device`
+/// The pool creates streams lazily. This value caps concurrency and does not
+/// set a startup allocation count. `default_service_stream_pool_size_for_device`
 /// uses this value as the fallback when device SM count detection is
 /// unavailable and as the upper bound when detection succeeds.
 #[cfg(any(test, feature = "test-hooks"))]
@@ -302,8 +302,8 @@ impl ServiceStreamPool {
     ///
     /// This is the fallback used by native execution when a service has not
     /// injected its own pool yet. Pools are keyed by `(device ordinal,
-    /// pool_size)` so differently sized service tests do not silently share a
-    /// capacity contract.
+    /// pool_size)` so differently sized service tests do not share a capacity
+    /// contract.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn for_device(device: DeviceId, pool_size: usize) -> Result<Self> {
         validate_service_stream_pool_size(pool_size)?;
@@ -388,7 +388,7 @@ impl ServiceStreamPool {
     /// completed, then explicitly stop and join the cleanup supervisor, under
     /// the caller's absolute shutdown deadline.
     ///
-    /// The wait ends when `created` is zero: a closed pool never idles a
+    /// The wait ends when `created` is zero. A closed pool never idles a
     /// runtime, so every lease returning through cleanup destroys one, and
     /// zero means no runtime exists in any state. `waiting_acquires` must
     /// also be zero so no parked acquirer wakes against a joined supervisor.
@@ -404,6 +404,7 @@ impl ServiceStreamPool {
         // Runtime destruction is a CUDA call; the cleanup thread and any
         // acquirer need the pool mutex meanwhile.
         drop(state);
+        // Destroy the idle runtimes before the wait, so `created == 0` means none exists.
         drop(idle);
         self.inner.state_changed.notify_all();
         let mut state = self.lock_state_until(deadline, operation)?;
@@ -458,14 +459,14 @@ impl ServiceStreamPool {
     }
 
     /// Terminal process-exit path. Unlike normal API shutdown it has no
-    /// caller-selected timeout: returning while this worker can still destroy
+    /// caller-selected timeout. Returning while this worker can still destroy
     /// CUDA state would race libcudart finalization.
     pub(super) fn close_and_join_for_process_exit(&self) {
         // Ordinary shutdown waits for every lease because its destructor is
         // part of the reusable-capacity contract. `std::process::exit` skips
         // those destructors, so waiting for externally held leases here would
         // deadlock the atexit hook. Mark the terminal boundary first: a lease
-        // racing this hook is leaked instead of running CUDA destruction after
+        // racing this hook is leaked and does not run CUDA destruction after
         // the cleanup supervisor has been joined.
         self.inner.process_exit_started.store(true, Ordering::Release);
         self.inner.closed.store(true, Ordering::Release);
@@ -483,7 +484,7 @@ impl ServiceStreamPool {
         self.inner.cleanup_supervisor.join_for_process_exit();
     }
 
-    /// Wait until exactly `expected_leased_runtimes` created runtimes remain
+    /// Wait until `expected_leased_runtimes` created runtimes remain
     /// checked out and every other runtime has completed cleanup.
     #[cfg(test)]
     pub(crate) fn wait_until_quiescent(

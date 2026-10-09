@@ -142,8 +142,8 @@ impl S3SourceStorageProfile {
         self
     }
 
-    /// Whether remote-direct cuDF reads would need settings that are scoped to
-    /// this profile instead of available through process-global KvikIO config.
+    /// Whether remote-direct cuDF reads need settings scoped to this profile.
+    /// Process-global KvikIO config does not provide them.
     pub fn requires_scoped_remote_direct_profile(&self) -> bool {
         self.region.as_ref().is_some_and(|region| !region.trim().is_empty())
             || !matches!(self.credential, S3SourceStorageCredential::DefaultChain)

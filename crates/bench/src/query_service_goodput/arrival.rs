@@ -29,15 +29,16 @@ pub(super) struct Arrival {
     pub(super) item_index: usize,
     pub(super) phase: Phase,
     /// Explicit cap carried by this arrival into query-service admission.
-    /// Keeping it on the trace makes the assignment part of the paired input
-    /// rather than an observation reconstructed after execution.
+    /// Keeping it on the trace makes the assignment part of the paired input.
+    /// It is set when `build_trace` creates the arrival and is not reconstructed
+    /// after execution.
     pub(super) requested_query_cap_bytes: u64,
 }
 
 /// Deterministic open-loop arrival trace.
 ///
 /// The trace is generated once from the seed and replayed identically by every
-/// comparison group, so groups are paired rather than independently sampled.
+/// comparison group. The groups are paired, and no group samples its own trace.
 pub(super) fn build_trace(config: &GoodputConfig, weights: &[u32], rate_qps: f64) -> Vec<Arrival> {
     let total_seconds = config.warmup_seconds + config.window_seconds;
     let mut rng = SplitMix64::new(config.seed);
@@ -85,7 +86,7 @@ pub(super) fn build_trace(config: &GoodputConfig, weights: &[u32], rate_qps: f64
     arrivals
 }
 
-/// SplitMix64. Inlined rather than taken as a dependency so a recorded seed
+/// SplitMix64. Inlined with no external crate dependency, so a recorded seed
 /// reproduces the exact trace regardless of the dependency graph.
 #[derive(Debug)]
 pub(super) struct SplitMix64 {

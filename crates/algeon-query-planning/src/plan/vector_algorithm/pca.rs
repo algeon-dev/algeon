@@ -5,7 +5,9 @@ use super::{common::VectorRelationBinding, definition::CuvsOperation};
 /// PCA solver selected by the SQL options contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VectorPcaSolver {
+    /// Covariance eigendecomposition with the divide-and-conquer solver.
     CovEigDq,
+    /// Covariance eigendecomposition with the Jacobi solver.
     CovEigJacobi,
 }
 

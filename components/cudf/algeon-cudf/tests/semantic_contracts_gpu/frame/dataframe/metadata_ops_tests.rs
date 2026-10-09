@@ -1,8 +1,4 @@
-//! Integration tests for zero-copy metadata ops (cuDF-style signatures).
-//!
-//! Tests: without_columns, rename_columns, with_column, assign, and Arc sharing verification.
-//!
-//! All tests require a GPU.
+//! Zero-copy metadata ops with cuDF-style signatures.
 
 use std::sync::Arc;
 
@@ -13,7 +9,6 @@ use crate::common::{
     last_exec_stream_value, lock_event_observation, reset_exec_observation, series,
 };
 
-/// Helper: build a 3-row, 3-column DataFrame.
 fn sample_df() -> DataFrame {
     let ids = series::<i32>("ids", &[1, 2, 3]).unwrap();
     let scores = series::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
@@ -21,10 +16,6 @@ fn sample_df() -> DataFrame {
 
     DataFrame::from_series([("id", ids), ("score", scores), ("flag", flags)]).unwrap()
 }
-
-// ===========================================================================
-// without_columns: removes correct columns, preserves others
-// ===========================================================================
 
 fn test_without_columns_removes_single_column() {
     let df = sample_df();
@@ -85,7 +76,6 @@ fn test_without_columns_preserves_column_order() {
     let df = sample_df();
     let result = df.without_columns(["score"]).unwrap();
 
-    // "id" should still come before "flag"
     assert_eq!(result.column_names(), &["id", "flag"]);
 }
 
@@ -96,10 +86,6 @@ fn test_without_columns_original_dataframe_still_reads_excluded_column() {
     assert_eq!(result.column_names(), &["id", "flag"]);
     assert_eq!(df.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
-
-// ===========================================================================
-// rename_columns: multi-column rename
-// ===========================================================================
 
 fn test_rename_columns_single_pair() {
     let df = sample_df();
@@ -139,7 +125,6 @@ fn test_rename_columns_nonexistent_source_returns_error() {
 
 fn test_rename_columns_duplicate_target_returns_error() {
     let df = sample_df();
-    // Both "id" and "score" renamed to the same target
     let err = df.rename_columns([("id", "same"), ("score", "same")]).expect_err("expected duplicate rename target");
 
     assert_duplicate_name_error(&err, "same");
@@ -173,7 +158,6 @@ fn test_rename_columns_swap_is_allowed() {
 
     assert_eq!(result.column_names(), &["flag", "score", "id"]);
 
-    // Data should follow the original column, not the new name
     let original_id_ptr = dataframe_device_ptr(&df, "id");
     let original_flag_ptr = dataframe_device_ptr(&df, "flag");
     assert_eq!(original_id_ptr, dataframe_device_ptr(&result, "flag"));
@@ -236,9 +220,8 @@ fn test_select_is_metadata_only_no_execution_or_device_copy() {
     assert_eq!(selected.testing_execution_domain_mr_value(), df.testing_execution_domain_mr_value());
 }
 
-// ===========================================================================
-// with_column: accepts both Column and Series via Into<Series>
-// ===========================================================================
+// The with_column tests below pass Series inputs and check column replacement, Arc sharing,
+// and row-count validation.
 
 fn test_with_column_adds_new_column() {
     let df = sample_df();
@@ -280,14 +263,13 @@ fn test_with_column_shares_arc_from_input_series() {
 
     let result = df.with_column("extra", extra).unwrap();
 
-    // The inserted column should share the same Arc as the input Series
     let result_series = result.series("extra").unwrap();
     assert!(Arc::ptr_eq(&extra_arc, &result_series.into_inner()));
 }
 
 fn test_with_column_row_count_mismatch_returns_error() {
     let df = sample_df(); // 3 rows
-    let wrong_len = series::<i32>("x", &[1, 2]).unwrap(); // 2 rows
+    let wrong_len = series::<i32>("x", &[1, 2]).unwrap();
 
     let result = df.with_column("x", wrong_len);
 
@@ -300,10 +282,6 @@ fn test_with_column_row_count_mismatch_returns_error() {
     assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
-
-// ===========================================================================
-// assign: adds/replaces multiple columns
-// ===========================================================================
 
 fn test_assign_adds_multiple_new_columns() {
     let df = sample_df();
@@ -323,7 +301,7 @@ fn test_assign_replaces_existing_column() {
 
     let result = df.assign([("score", new_score)]).unwrap();
 
-    assert_eq!(result.num_columns(), 3); // no new columns, just replaced
+    assert_eq!(result.num_columns(), 3); // No new columns; existing columns are replaced.
     assert_eq!(result.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
 }
 
@@ -363,7 +341,7 @@ fn test_assign_shares_arc_from_input_series() {
 
 fn test_assign_row_count_mismatch_returns_error() {
     let df = sample_df(); // 3 rows
-    let wrong = series::<i32>("x", &[1]).unwrap(); // 1 row
+    let wrong = series::<i32>("x", &[1]).unwrap();
 
     let result = df.assign([("x", wrong)]);
 
@@ -434,10 +412,6 @@ fn test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
     assert_eq!(result.num_rows(), 2);
     assert_eq!(result.series("values").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8]);
 }
-
-// ===========================================================================
-// Combined operations: verify Arc sharing chains
-// ===========================================================================
 
 fn test_without_columns_then_assign_preserves_sharing() {
     let df = sample_df();

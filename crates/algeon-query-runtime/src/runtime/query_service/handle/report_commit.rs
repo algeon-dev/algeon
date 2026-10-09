@@ -48,13 +48,13 @@ pub(super) fn project_pool_usage(usage: cudf::DeviceMemoryPoolUsage) -> AttemptA
     }
 }
 
-/// The report commit: disposition decision, health commit, and observation
-/// seal, always before capacity release.
+/// The report commit decides the disposition, commits health, and seals the
+/// observation, always before capacity release.
 ///
 /// Prepared on the releasing thread while the envelope still exists, then run
 /// inside the stream cleanup completion after the fence. It therefore carries
-/// clones of everything it needs (grant, domain, service) rather than
-/// borrowing the release, which has moved into the fence guard by then.
+/// clones of everything it needs (grant, domain, service). It does not borrow
+/// the release, which has moved into the fence guard by then.
 pub(super) struct QueryHandleReportCommit {
     pub(super) service: Option<Arc<QueryServiceInner>>,
     pub(super) admission_request_id: AdmissionRequestId,
@@ -127,8 +127,8 @@ impl QueryHandleReportCommit {
         // Publication records the admission facts under the admission mutex,
         // so an admitted claim always accepts its one terminal commit.
         debug_assert!(committed.is_ok(), "admitted attempt rejected its terminal commit: {committed:?}");
-        // The release is committed: record the terminal admission lifecycle
-        // event before the seal so the sealed report retains it. The
+        // The release is committed. The terminal admission lifecycle event is
+        // recorded before the seal so the sealed report retains it. The
         // mechanical capacity release still happens only after the seal.
         if let Some(service) = self.service.as_ref() {
             let queue_depth = service.admission.state.lock().unwrap_or_else(PoisonError::into_inner).queued.len();
@@ -141,8 +141,8 @@ impl QueryHandleReportCommit {
                 None,
             );
         }
-        // Deterministic-barrier hook: tests prove cleanup-complete without
-        // report-ready cannot admit a replacement.
+        // A deterministic barrier lets tests prove that cleanup completion
+        // without report readiness cannot admit a replacement.
         #[cfg(test)]
         if let Some(gate) = self.release_commit_gate {
             gate.entered.fetch_add(1, Ordering::AcqRel);
@@ -175,8 +175,8 @@ impl QueryHandleReportCommit {
     ) -> SettledCapacityCommit {
         // Seal attempt-owned cache-scope windows before this report chooses
         // any allocator evidence. A context clone cannot append to a report
-        // in flight, and an unclosed checkout remains unavailable rather than
-        // racing its private ring against the terminal commit.
+        // in flight, and an unclosed checkout remains unavailable and does not
+        // race its private ring against the terminal commit.
         let cache_scope_allocator_event = self.cache_scope_allocator_correlation.seal_and_take_exact_event();
         let allocator_event_evidence = self.finish_allocator_domain_correlation(evidence);
         // The admitted-domain event remains the canonical source when it is
@@ -341,11 +341,12 @@ impl QueryHandleReportCommit {
             Ok(usage) => usage,
             Err(error) => return FrozenResidentCommit::Failed { error, usage: None },
         };
-        // Owner attestation reads the allocation registry, not two
-        // independently derived byte totals. A frozen domain that still owns
-        // allocations must agree with its own registry; a residual the
-        // registry does not account for is an unowned allocation and
-        // therefore a cleanup failure rather than a resident result.
+        // Owner attestation reads the allocation registry. The sum of the live
+        // allocations' aligned bytes must equal the frozen domain's
+        // `current_aligned_bytes` usage sample, each live allocation must belong
+        // to a published output owner, and the frozen bytes must not exceed the
+        // immutable query cap. A failed check is a cleanup failure. The attempt
+        // then does not report a resident result.
         let live = match domain.live_allocations() {
             Ok(live) => live,
             Err(error) => return FrozenResidentCommit::Failed { error, usage: Some(usage) },
@@ -433,7 +434,7 @@ impl QueryHandleReportCommit {
     }
 
     /// Checks the frozen compatible-device set after the failed device has
-    /// been quarantined. This is a bounded proof for report advice only: a
+    /// been quarantined. This is a bounded proof for report advice only. A
     /// later admission must independently re-check placement and capacity.
     fn alternate_device_eligibility_after_quarantine(
         &self,
@@ -447,9 +448,9 @@ impl QueryHandleReportCommit {
             return AttemptAlternateDeviceEligibility::NotApplicable;
         }
         if !capacity_health_committed {
-            // A device-local fault is insufficient by itself: retrying on an
-            // alternate also requires proof that the failed device was
-            // actually removed from admission before this report seals.
+            // A device-local fault is insufficient by itself. Retrying on an
+            // alternate also requires proof that the failed device was removed
+            // from admission before this report seals.
             return AttemptAlternateDeviceEligibility::Unavailable;
         }
 
@@ -482,9 +483,9 @@ impl QueryHandleReportCommit {
     }
 
     /// Constructs the one bounded resource block. Immutable grant/domain facts
-    /// remain attempt-exact even if cleanup lost device isolation; every
+    /// remain attempt-exact even if cleanup lost device isolation. Every
     /// device-local snapshot and allocator record stays unavailable in that
-    /// case instead of being associated with a guessed device.
+    /// case, and none is associated with a guessed device.
     fn resource_evidence(
         &self,
         device_sample_ns: Option<u64>,
@@ -599,7 +600,7 @@ impl QueryHandleReportCommit {
 
     /// Keeps a closed, bounded interval only after the stream/domain cleanup
     /// callback proves completion. Any failed or abandoned cleanup is an
-    /// explicit unattributed state rather than a guessed retired watermark.
+    /// explicit unattributed state, and no retired watermark is guessed.
     fn finish_allocator_domain_correlation(&self, evidence: CleanupEvidence) -> Option<AllocatorEventEvidenceRead> {
         let service = self.service.as_ref()?;
         let binding = self.allocator_domain_attempt?;

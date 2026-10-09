@@ -9,9 +9,9 @@
 //! The manager and its callback are process-lifetime, while backends are
 //! constructed per generation. The registry below therefore keeps one
 //! tracker per ordinal before installation (`pending`) and rebinds it to the
-//! manager's installation generation afterwards (`installed`), so a later
-//! backend recovers the tracker the live callback already points at instead
-//! of starting a second counter the callback would never update.
+//! manager's installation generation afterwards (`installed`). A later backend
+//! recovers the tracker the live callback already points at, because the
+//! callback would never update a second counter.
 
 use std::{
     collections::HashMap,
@@ -69,16 +69,29 @@ struct DeviceMemoryFailureTrackerInner {
 /// Point-in-time device memory allocation-failure report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceMemoryFailureReport {
+    /// CUDA ordinal monitored by the installed allocation-failure callback.
     pub device_ordinal: usize,
+    /// Whether the native memory manager updates this report's tracker.
     pub callback_installed: bool,
+    /// Whether callback installation was unavailable; excludes `callback_installed`.
     pub callback_install_unavailable: bool,
+    /// Allocation failures observed over the memory-manager installation lifetime.
     pub allocation_failure_count: u64,
+    /// Sum of failed allocation request sizes in bytes.
     pub total_failed_allocation_bytes: u64,
+    /// Largest failed allocation request size in bytes; zero before any failure.
     pub largest_failed_allocation_bytes: u64,
+    /// Always zero because this memory-manager callback declines allocator retries.
     pub trim_retry_count: u64,
+    /// Failure callbacks carrying a CUDA async-pool usage sample.
     pub pool_usage_observation_count: u64,
+    /// Most recent failed request size in bytes; zero before any failure.
     pub last_failed_allocation_bytes: u64,
+    /// Pool-reserved bytes from the last callback carrying a pool sample.
+    /// Zero before the first sample; consult `pool_usage_observation_count`.
     pub last_pool_reserved_current_bytes: u64,
+    /// Pool-used bytes from the last callback carrying a pool sample.
+    /// Zero before the first sample; consult `pool_usage_observation_count`.
     pub last_pool_used_current_bytes: u64,
 }
 
@@ -365,7 +378,6 @@ impl DeviceMemoryFailureTracker {
         }
     }
 
-    /// Returns a point-in-time report.
     pub(crate) fn report(&self) -> DeviceMemoryFailureReport {
         DeviceMemoryFailureReport {
             device_ordinal: self.inner.device_ordinal,

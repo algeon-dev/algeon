@@ -74,7 +74,7 @@ impl QueryService {
     ///
     /// Telemetry is observability-only and is never consulted by admission or
     /// placement. A failed substrate is represented by status fields in each
-    /// snapshot rather than failing diagnostics as a whole.
+    /// snapshot. With no error return, this method cannot fail as a whole.
     pub fn device_telemetry_snapshots(&self) -> Vec<DeviceTelemetrySnapshot> {
         self.device_telemetry_snapshots_with(&AlgeonNvmlTelemetry)
     }
@@ -131,7 +131,7 @@ impl QueryService {
     ///
     /// `expected_leased_runtimes` contains `(device_ordinal, count)` pairs.
     /// Omitted configured devices expect zero leases. Duplicate or unknown
-    /// ordinals are rejected instead of being silently merged.
+    /// ordinals are rejected. They are not merged.
     #[cfg(test)]
     pub(crate) fn wait_for_stream_pools_quiescent(
         &self,

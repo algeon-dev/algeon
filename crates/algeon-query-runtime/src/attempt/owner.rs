@@ -7,7 +7,9 @@
 //! query service's release path can finish the attempt. Completion receivers
 //! observe one immutable report once that finalizer is consumed.
 //!
-//! Lock order: the finalizer slot is taken before the attempt lock, in
+//! # Lock order
+//!
+//! The finalizer slot is taken before the attempt lock, in
 //! `AttemptFinalizerSlot::claim`, and no path takes them the other way round.
 //! The attempt lock covers the lifecycle and the completion state together.
 //! `AttemptShared::changed` is the one condition variable for both the
@@ -182,8 +184,8 @@ impl fmt::Debug for AttemptReportPublisher {
 
 /// Shared routing for one [`AttemptFinalizer`]. Cloning an admission binding
 /// clones this routing handle, never the finalizer itself. Before admission,
-/// the owner-side path consumes it with `NotRequired`; after a grant is
-/// published, the admission envelope takes it exactly once.
+/// the owner-side path consumes it through `finalize_not_admitted`; the
+/// admission claim takes it exactly once.
 #[derive(Clone)]
 pub(crate) struct AttemptFinalizerSlot(Arc<Mutex<Option<AttemptFinalizer>>>);
 
@@ -222,7 +224,7 @@ impl Clone for AttemptCompletion {
 
 /// Adapter-internal minting capability for one attempt's completion receivers.
 ///
-/// The factory crosses crates so the adapter attempt object can hand out
+/// The factory crosses crates so the adapter attempt object can issue
 /// independent counted receivers on demand and read the sealed report for its
 /// seal observer. It is never an application receiver itself: cloning or
 /// dropping a factory never changes the active receiver count, so it cannot
@@ -291,8 +293,8 @@ impl CompletionState {
 ///
 /// The attempt owns its admission: every native fragment it executes shares
 /// the one grant, so the grant is released when the attempt's outcome turns
-/// terminal, not when one fragment's stream ends or its query handle drops.
-/// The release itself waits for fragments still running.
+/// terminal. The end of one fragment's stream or the drop of its query handle
+/// does not release it. The release itself waits for fragments still running.
 pub(crate) trait AdmittedGrantRelease: Send + Sync {
     fn request_release(&self);
 }
@@ -355,7 +357,7 @@ struct AttemptCore {
     counters: Arc<AttemptBackendCounters>,
     completion_queue: Option<Arc<AttemptCompletionQueue>>,
     // The begin-vs-close linearization artifact. It fences observation
-    // quiescence only until the report is published: a caller holding a
+    // quiescence only until the report is published. A caller holding a
     // finished stream or completion must never delay backend close.
     observation_permit: Mutex<Option<ObservationPermit>>,
 }
@@ -399,9 +401,9 @@ impl AttemptCore {
             match &completion.report {
                 Some(report) if completion.report_visible => Some(Arc::clone(report)),
                 Some(_) => {
-                    // Publication is draining the pre-visibility queue. Join
-                    // it rather than invoke independently, so a concurrent
-                    // late registration cannot race completion visibility.
+                    // Publication is draining the pre-visibility queue. The sink
+                    // joins that drain and is not invoked independently, so a
+                    // concurrent late registration cannot race completion visibility.
                     completion.sealed_report_sinks.push(sink.take().expect("sink exists"));
                     None
                 },
@@ -522,12 +524,12 @@ impl AttemptCore {
         if let Some(outcome) = lifecycle.terminal_outcome() {
             return outcome.clone();
         }
-        // A caller can capture a borrowed native failure before it hands the
-        // error back to a transport wrapper.  In particular, an admitted
-        // handle may start cleanup before that outer wrapper receives the
-        // error.  The stored summary is therefore the only truthful terminal
-        // classification available at this boundary; do not replace it with
-        // a mechanical drop/cancellation fallback.
+        // A caller can capture a borrowed native failure before it returns the
+        // error to a transport wrapper. In particular, an admitted handle may
+        // start cleanup before that outer wrapper receives the error. The stored
+        // summary is therefore the only truthful terminal classification
+        // available at this boundary; do not replace it with a mechanical
+        // drop/cancellation fallback.
         let fallback =
             lifecycle.primary_failure_summary().map(RuntimeTerminalOutcome::from_primary_failure).unwrap_or(fallback);
         let at = self.monotonic_ns();
@@ -570,8 +572,8 @@ impl AttemptCore {
         // share one lock hold. The stored report stays unreadable until every
         // pre-registered projection consumed it. Sinks consume that exact Arc
         // before the visibility flag wakes any completion receiver; late
-        // registrations clone this canonical allocation directly rather than
-        // retaining another copy.
+        // registrations clone this canonical allocation directly. They do not
+        // retain another copy.
         let report = {
             let mut state = self.shared.lock();
             loop {
@@ -614,7 +616,7 @@ impl AttemptCore {
         for waker in wakers {
             waker.wake();
         }
-        // Abandoned-report delivery is best-effort: overflow is counted and
+        // Abandoned-report delivery is best-effort. Overflow is counted and
         // never blocks planning, GPU workers, or cleanup.
         if abandoned && let Some(queue) = &self.completion_queue {
             if queue.try_push(Arc::clone(&report)) {
@@ -623,7 +625,7 @@ impl AttemptCore {
                 self.counters.completion_queue_overflowed.fetch_add(1, Ordering::AcqRel);
             }
         }
-        // The report is durable: the attempt's observation permit has nothing
+        // The report is durable. The attempt's observation permit has nothing
         // left to fence and is released before any waiter observes close
         // quiescence. Report and completion state carry no lease.
         self.observation_permit.lock().unwrap_or_else(sync::PoisonError::into_inner).take();
@@ -655,8 +657,8 @@ impl AttemptOwner {
         clock: Arc<dyn RuntimeObservationClock>,
     ) -> AttemptBegin {
         // A disabled diagnostic config is normalized to a zero-limit bounded
-        // session so the recorder still seals and delivers observers: the
-        // fixed summary and completion must survive any diagnostic loss.
+        // session so the recorder still seals and delivers observers. The fixed
+        // summary and completion must survive any diagnostic loss.
         let observation = if request.observation.is_enabled() {
             request.observation
         } else {
@@ -789,8 +791,8 @@ impl AttemptOwner {
         self.0.core.observation.arm_delivery_gate()
     }
 
-    /// The one terminal commit hook: outcome terminal, then (for admitted
-    /// attempts) cleanup-complete and report-ready are deferred to the
+    /// The one terminal commit hook makes the outcome terminal. For admitted
+    /// attempts, cleanup-complete and report-ready are deferred to the
     /// post-GPU-cleanup seal; otherwise the commit completes immediately.
     pub fn commit_terminal(&self, outcome: RuntimeTerminalOutcome) -> Result<(), AttemptLifecycleError> {
         let terminal = self.0.core.terminalize_for_release(outcome)?;
@@ -858,8 +860,8 @@ impl Drop for AttemptOwner {
             let _ = self.commit_terminal(RuntimeTerminalOutcome::Panicked);
             return;
         }
-        // An attempt dropped after its cancellation took effect ends with
-        // that cancellation, not as an abandoned `Dropped` attempt.
+        // An attempt dropped after its cancellation took effect ends with that
+        // cancellation. Without cancellation, the drop records `Dropped`.
         let _ = match self.0.core.cancellation.check("query_engine.attempt.owner_drop") {
             Err(cancellation) => self.commit_query_error(&cancellation),
             Ok(()) => self.commit_terminal(RuntimeTerminalOutcome::Dropped),
@@ -1045,7 +1047,7 @@ impl AttemptFinalizer {
     ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
         // Only the attempt's terminal commit requests the release, so the
         // committed outcome is already in place; the linear finalizer
-        // resolves it rather than manufacturing a second commit.
+        // resolves it and does not manufacture a second commit.
         Ok(self.0.canonical_terminal_outcome(fallback))
     }
 
@@ -1661,7 +1663,6 @@ mod tests {
         let queue = Arc::new(AttemptCompletionQueue::new(1).expect("queue"));
         let (begin, _clock, counters) =
             test_begin(RuntimeObservationConfig::native_execution(), Some(Arc::clone(&queue)));
-        // Abandon the only receiver before the report exists.
         drop(begin.completion.completion());
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         assert_eq!(counters.snapshot().reports_ready, 1);
@@ -1671,7 +1672,7 @@ mod tests {
         assert_eq!(drained.len(), 1);
         assert!(matches!(drained[0].outcome, RuntimeTerminalOutcome::Succeeded));
 
-        // Second abandoned report overflows the capacity-one queue.
+        // The second abandoned report fills the capacity-one queue.
         let (begin2, _clock2, counters2) =
             test_begin(RuntimeObservationConfig::native_execution(), Some(Arc::clone(&queue)));
         drop(begin2.completion.completion());
@@ -1695,10 +1696,10 @@ mod tests {
         drop(begin.completion.completion());
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         let report = queue.drain(8).pop().expect("abandoned report");
-        // Hold the queue mutex while a pusher arrives: with spare capacity
-        // the push must wait for the lock, not fail as if the queue were
-        // full. The barrier plus hold window prove the pusher attempted its
-        // push while contended.
+        // Hold the queue mutex while a pusher arrives: with spare capacity, the
+        // push waits for the lock and does not fail as if the queue were full.
+        // The barrier plus hold window prove the pusher attempted its push while
+        // contended.
         let guard = queue.hold_lock_for_test();
         let barrier = sync::Barrier::new(2);
         let (pushed_tx, pushed_rx) = sync::mpsc::channel();
@@ -1814,7 +1815,7 @@ mod tests {
         );
         let publisher = admission.report_publisher();
 
-        // This models synchronous `input.execute` failure: the adapter still
+        // This models a synchronous `input.execute` failure. The adapter still
         // borrows the native error while dropping the admitted handle starts
         // cleanup and finalization before the outer DataFusion boundary can
         // commit its own generic fallback.
@@ -2016,7 +2017,7 @@ mod terminalize_race_tests {
         handle.record_planning_started().unwrap();
         handle.record_planning_finished().unwrap();
         handle.set_disposition(AttemptDisposition::Native).unwrap();
-        // The admission binding terminalizes the rejection at its source.
+        // The admission rejection terminalizes the request at its source.
         admission_rejection
             .reject(&QueryError::new(
                 QueryErrorCode::ServiceOverloaded,
@@ -2024,7 +2025,7 @@ mod terminalize_race_tests {
                 "injected admission rejection",
             ))
             .unwrap();
-        // The wrapper's later commit loses and observes the structured error.
+        // The wrapper's later commit is refused with DoubleTerminalization.
         assert_eq!(
             begin.owner.commit_terminal(RuntimeTerminalOutcome::Failed {
                 error_code: AttemptFailureCode::DatafusionError,

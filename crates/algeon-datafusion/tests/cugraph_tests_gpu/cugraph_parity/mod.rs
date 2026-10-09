@@ -4,12 +4,12 @@
 //! The registry-driven GPU test executes every advertised algorithm through
 //! its public SQL table function and compares Arrow results with pinned Python
 //! cuGraph oracle data, curated Katz CSVs, or a small hand-verified contract.
-//! ECG is the exception: its randomized ensemble is checked for replay
-//! stability and partition quality against the oracle, not an exact
-//! cross-build partition. Spectral modularity maximization is the same kind
-//! of exception: its seed only fixes the random initialization, so replays
-//! are checked for partition quality against the initial run and the oracle,
-//! not exact equality.
+//! ECG is an exception. Its randomized ensemble is checked for replay
+//! stability and partition quality against the oracle, and the check does not
+//! require an exact cross-build partition. Spectral modularity maximization is
+//! also an exception. Its seed only fixes the random initialization, so replays
+//! are checked for partition quality against the initial run and the oracle.
+//! Exact equality is not required.
 
 mod compare;
 mod datasets;
@@ -163,9 +163,9 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
         }
         // RefCsv-truth specs additionally require their primary
         // reference file to be present and parseable on disk. Surface
-        // a missing/invalid ref CSV as a hard test failure: the GPU
-        // comparator path relies on this file being loadable, and silently
-        // degrading would hide that gap.
+        // a missing/invalid ref CSV as a hard test failure. The GPU
+        // comparator path relies on this file being loadable, and ignoring
+        // the failure would hide that gap.
         if let ParityTruthSource::RefCsv { path } = spec.truth_source
             && let Err(error) = load_ref_csv_vertex_list(&loaded.data_root, path)
         {
@@ -178,8 +178,8 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
     }
     assert!(mismatches.is_empty(), "local oracle JSON disagrees with parity spec:\n{}", mismatches.join("\n"),);
     if !missing.is_empty() {
-        // The CPU lookup test reports a structured refresh command rather
-        // than failing so fixture preparation remains diagnosable. The GPU
+        // The CPU lookup test reports a structured refresh command without
+        // failing. That keeps fixture preparation diagnosable. The GPU
         // acceptance test above requires every oracle to be present.
         eprintln!(
             "cuGraph parity harness: {} oracle JSON file(s) need refresh; {} present.\n{}",
@@ -263,8 +263,8 @@ async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
                     panic!("{}: same-binary, same-seed ECG replay was unstable: {reason}\nSQL: {sql}", spec.label)
                 });
             } else {
-                // Spectral promises a stable quality, not a bit-identical
-                // partition: a fixed seed does not survive GPU scheduling
+                // Spectral promises a stable quality. Partitions need not be
+                // bit-identical. A fixed seed does not survive GPU scheduling
                 // order in k-means centroid accumulation.
                 compare::compare_repeated_partition_quality(&batches, &replay, &edges, spec.tolerance).unwrap_or_else(
                     |reason| {

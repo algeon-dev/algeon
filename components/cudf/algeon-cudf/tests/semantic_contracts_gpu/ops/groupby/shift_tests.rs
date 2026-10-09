@@ -1,12 +1,9 @@
-//! Tests for `DataFrame::groupby(...).shift(...)`.
-
 use cudf::{ErrorCode, Exec, ScalarValue, ShiftSpec, TypeId};
 
 use crate::common::{column_from_slice, dataframe_from_columns, scalar};
 
-/// Restore input row order on the resulting DataFrame by sorting on the key
-/// and value columns. libcudf does not promise inter-group output ordering,
-/// so tests build deterministic expectations after sorting.
+/// Sorts a vector of pairs so tests can compare results without depending on
+/// inter-group output order, which libcudf does not promise.
 fn sort_pairs<K: Ord + Copy, V: Ord + Copy>(mut pairs: Vec<(K, V)>) -> Vec<(K, V)> {
     pairs.sort();
     pairs
@@ -85,11 +82,9 @@ fn groupby_shift_lead_with_value_fill() {
     assert_eq!(
         triples,
         vec![
-            // Group 1 (key=1)
             (1, -1, -1), // last row in group: LEAD is filled
             (1, 1, 20),  // row_id=0 → next row_id=1, next value=20
             (1, 2, 30),  // row_id=1 → next row_id=2, next value=30
-            // Group 2 (key=2)
             (2, -1, -1), // last row in group: LEAD is filled
             (2, 4, 200), // row_id=3 → next row_id=4, next value=200
         ]

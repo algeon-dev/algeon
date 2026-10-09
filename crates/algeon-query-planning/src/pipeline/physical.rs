@@ -19,26 +19,44 @@ use crate::{
 /// What a task executes, with the spec of kinds that need one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskPhysical {
+    /// Read a source using the compiled source-output contract.
     SourceRead(SourceReadPlan),
+    /// Borrow an existing GPU-resident input.
     GpuResidentSource,
+    /// Import host Arrow literal batches.
     LiteralBatchSource,
+    /// Evaluate a unary operation such as filter or projection.
     Unary,
+    /// Accumulate and finalize aggregate state with optional top-k fusion.
     Aggregate(AggregatePlan),
+    /// Evaluate window expressions over the required input ordering.
     Window,
+    /// Construct the resident join build state.
     JoinBuild(JoinPlan),
+    /// Probe join state with the other input.
     JoinProbe(JoinPlan),
+    /// Gather join matches into output columns.
     JoinMaterialize,
+    /// Produce the final ordering under the compiled sort strategy.
     FinalSort(SortStrategy),
+    /// Apply the plan's row limit.
     Limit,
+    /// Combine the union's input resources.
     Union,
+    /// Normalize graph edges before graph construction.
     EdgeNormalize,
+    /// Execute the graph operation represented by the plan node.
     GraphAlgorithm,
+    /// Execute the vector operation represented by the plan node.
     VectorAlgorithm,
+    /// Execute the machine-learning operation represented by the plan node.
     MlAlgorithm,
+    /// Materialize results at the declared output boundary.
     SinkMaterialize,
 }
 
 impl TaskPhysical {
+    /// Returns the task-kind label corresponding to this physical specification.
     pub const fn kind(&self) -> PipelineTaskKind {
         match self {
             Self::SourceRead(_) => PipelineTaskKind::SourceRead,
@@ -65,6 +83,7 @@ impl TaskPhysical {
 /// How a local Parquet source task reads its source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceReadPlan {
+    /// Whether the read materializes a frame or remains deferred for consumers.
     pub output: SourceOutput,
     /// The source has dynamic-filter routes. Their producers run before this
     /// task, so a source read by its only consumer applies them here.
@@ -88,14 +107,30 @@ pub enum SourceOutput {
     Frame,
     /// Read the source as a join leaf stream with the unary stages above it
     /// (`adjacent_stages`) and materialize it into one frame.
-    JoinLeafFrame { adjacent_stages: bool },
+    JoinLeafFrame {
+        /// Whether unary stages between source and consumer are applied during reading.
+        adjacent_stages: bool,
+    },
     /// Keep a join leaf read deferred for the consumers to pull.
-    JoinLeafStream { adjacent_stages: bool },
+    JoinLeafStream {
+        /// Whether unary stages between source and consumer are applied during reading.
+        adjacent_stages: bool,
+    },
     /// Keep a read deferred for an aggregate to pull chunk by chunk.
-    AggregateInputStream { adjacent_stages: bool, chunk_hints: AggregateInputHints },
+    AggregateInputStream {
+        /// Whether unary stages between source and consumer are applied during reading.
+        adjacent_stages: bool,
+        /// Structural facts used when selecting aggregate input chunk sizes.
+        chunk_hints: AggregateInputHints,
+    },
     /// Keep a read deferred for consumers that include both a join input and
     /// an aggregate.
-    SharedJoinAggregateStream { adjacent_stages: bool, chunk_hints: AggregateInputHints },
+    SharedJoinAggregateStream {
+        /// Whether unary stages between source and consumer are applied during reading.
+        adjacent_stages: bool,
+        /// Structural facts used when selecting aggregate input chunk sizes.
+        chunk_hints: AggregateInputHints,
+    },
     /// Keep a read deferred through a chain of unary stages whose consumers
     /// take only frames. The last stage reads the source chunk by chunk,
     /// applies the stages to each chunk and concatenates the stage outputs in
@@ -200,6 +235,7 @@ fn strategy_list(strategies: &[JoinStrategy]) -> String {
 /// What an aggregate task fuses into its execution.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AggregatePlan {
+    /// Fused top-k stages, or `None` when aggregation has no top-k fusion.
     pub topk: Option<TopKFusion>,
 }
 

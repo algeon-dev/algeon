@@ -1,7 +1,7 @@
 # Repository-owned clean-build and CPU artifact policy.
 #
-# Controlled clean build: The canonical Cargo subprocess is launched with env -i
-# semantics. Only allowlisted toolchain/location variables enter the build.
+# The canonical Cargo subprocess is launched with env -i semantics. Only
+# allowlisted toolchain/location variables enter the build.
 
 [clean_environment]
 pass_through = [

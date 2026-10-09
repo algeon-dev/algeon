@@ -3,7 +3,7 @@
 //! # Cancellation contract
 //!
 //! Each in-flight statement registers a Flight [`CancellationToken`] and its
-//! attempt's [`AttemptCancellation`], the one token native execution observes.
+//! attempt's [`AttemptCancellation`], which native execution reads.
 //! The Flight token stops `DoGet`; the attempt token is checked cooperatively
 //! at query-engine boundaries and does not preempt an in-flight libcudf/CUDA
 //! call.

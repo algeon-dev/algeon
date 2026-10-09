@@ -32,12 +32,16 @@ use crate::{
 static NEXT_CUML_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
+/// Validated operation settings retained by the specialized physical execution wrapper.
 pub struct CumlRelationFunctionSpec {
     operation: CumlOperation,
     options: CumlValidatedOptions,
     model: Option<Arc<MlForestModelSnapshot>>,
 }
 
+/// Physical execution wrapper for one cuML call with validated input relations.
+///
+/// Native execution stages the declared inputs and exposes the operation's Arrow result schema.
 pub type CumlAlgoExec = RelationFunctionExec<CumlRelationFunctionSpec>;
 
 impl RelationFunctionExec<CumlRelationFunctionSpec> {
@@ -64,6 +68,7 @@ impl RelationFunctionExec<CumlRelationFunctionSpec> {
         )
     }
 
+    /// Returns the registered operation executed by this physical wrapper.
     pub fn operation(&self) -> CumlOperation {
         self.spec().operation
     }

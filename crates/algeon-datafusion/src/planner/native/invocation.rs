@@ -121,8 +121,8 @@ impl Invocation {
 
     /// Returns this attempt invocation's one admission ticket and whether this
     /// call minted it from `source` and `evidence`, or `None` for an invocation
-    /// without an attempt. The first fragment's ticket stands: a caller that
-    /// did not mint extends its evidence before admission instead of minting a
+    /// without an attempt. The first fragment's ticket stands. A caller that
+    /// did not mint it extends its evidence before admission and mints no
     /// replacement.
     pub(crate) fn attempt_admission_ticket(
         &self,

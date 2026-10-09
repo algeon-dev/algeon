@@ -166,7 +166,8 @@ pub(super) fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
 
 // Companion to the above isolates BFS with only a weight binding
 // (no edge_id). A null weight must never drop its edge, so every vertex stays
-// reachable. Before the fix this returned i32::MAX sentinels for 1 and 2.
+// reachable. Dropping null-weight edges would return i32::MAX sentinels for
+// vertices 1 and 2.
 pub(super) fn bfs_null_weight_does_not_drop_reachable_edges() {
     let context = backend_context();
 

@@ -65,8 +65,8 @@ impl AdmissionController {
     /// Admits the selected waiter on the queue-selected device.
     ///
     /// The queue's oldest-runnable decision already ranked eligible devices;
-    /// this performs the health check and the ledger transaction on exactly
-    /// that device.
+    /// this performs the health check and the ledger transaction on that
+    /// device.
     pub(in crate::runtime::query_service) fn try_place_on_device(
         &self,
         device_ordinal: usize,

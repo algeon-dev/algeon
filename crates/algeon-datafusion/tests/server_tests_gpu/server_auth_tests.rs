@@ -77,9 +77,9 @@ async fn basic_handshake_rejects_wrong_password() {
     server.abort();
 
     // FlightSqlServiceClient::handshake wraps tonic Status in
-    // ArrowError::IpcError. We only need to assert the call failed and
-    // the message reflects unauthenticated; that's what a real client
-    // would surface to the user.
+    // ArrowError::IpcError. The test asserts only that the call failed and
+    // that the message reflects unauthenticated, which is the message a
+    // client surfaces to the user.
     let display = err.to_string();
     assert!(
         display.contains("Unauthenticated") || display.to_ascii_lowercase().contains("invalid"),
@@ -109,7 +109,7 @@ async fn query_without_handshake_rejects_with_unauthenticated() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_user_cannot_redeem_another_users_ticket() {
-    // A query id is an opaque bearer reference handed back on the wire.
+    // A query id is an opaque bearer reference that the server returns on the wire.
     // Authentication alone would let any other logged-in user redeem it.
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();
@@ -214,8 +214,8 @@ async fn one_user_cannot_use_another_users_prepared_statement() {
 
 /// Ask for a prepared statement's `FlightInfo` over the raw Flight channel,
 /// carrying the client's own bearer token. The Flight SQL client builds this
-/// request only from a `PreparedStatement` it owns, which is exactly what this
-/// test must not do.
+/// request only from a `PreparedStatement` it owns, which is what this test
+/// must not do.
 async fn get_flight_info_for_prepared(
     client: &mut FlightSqlServiceClient<Channel>,
     handle: &[u8],
@@ -304,7 +304,7 @@ fn warm_cuda_once() {
     });
 }
 
-/// Reserve a loopback port and hand back the live listener so the caller can
+/// Reserve a loopback port and return the live listener so the caller can
 /// pass it straight to `serve_with_listener`. Keeping the socket bound closes
 /// the bind/serve gap where a parallel test could steal the port.
 fn free_local_addr() -> (TcpListener, SocketAddr) {

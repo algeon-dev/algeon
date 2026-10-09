@@ -8,8 +8,8 @@ fn main() {
         return;
     }
     rapids_build_support::configure(rapids_build_support::Config {
-        // `all` rather than per-target: the bin carries `test = true`, so its
-        // unit-test harness needs the same rpath, and this crate has no
+        // `all` applies the link arg to every target. The bin carries `test = true`,
+        // so its unit-test harness needs the same rpath, and this crate has no
         // separate test or bench targets for the narrower flags to apply to.
         link_arg_targets: rapids_build_support::LinkArgTargets::new(true, false, false),
         consumers: rapids_build_support::RapidsConsumers::new(

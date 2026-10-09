@@ -67,8 +67,8 @@ impl Default for LouvainParams {
 
 /// Compute Louvain communities on a forward-stored graph.
 ///
-/// Prefer using [`Graph::louvain`](crate::graph::Graph::louvain) instead of
-/// calling this function directly.
+/// Prefer using [`Graph::louvain`](crate::graph::Graph::louvain), which calls
+/// this function.
 pub(crate) fn louvain(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<Forward>,

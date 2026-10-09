@@ -9,7 +9,7 @@
 //! defines the envelope), removes it with a terminal
 //! error, or leaves it queued. Placement ends only queue membership; the
 //! attempt's grant is held until its terminal commit, as
-//! `website/docs/design/admission.mdx` specifies.
+//! `website/docs/design/admission.mdx#from-capability-validation-to-admission` specifies.
 //!
 //! Three lock rules hold throughout. The admission mutex
 //! (`AdmissionController::state`) protects the queue, the pending-preflight
@@ -458,9 +458,9 @@ impl AdmissionState {
 ///
 /// Queue maintenance is deliberately allowed to remove an expired, cancelled,
 /// or health-rejected request on behalf of a different caller.  The owning
-/// blocking/async waiter still needs the precise terminal result rather than
-/// discovering that its request vanished and waiting until its ordinary queue
-/// deadline. Store the one owned error before releasing the admission mutex.
+/// blocking/async waiter still needs the precise terminal result. A waiter
+/// that only finds its request missing waits until its ordinary queue deadline.
+/// Store the one owned error before releasing the admission mutex.
 /// A queue sweep separately retains the immutable completion disposition, so
 /// handing this error to the waiter cannot suppress terminal completion.
 #[derive(Debug, Default)]
@@ -510,9 +510,8 @@ pub(super) struct AdmissionRequest {
     pub(super) attempt_id: AttemptId,
     pub(super) completion: QueryCompletion,
     /// Optional plan proof submitted by planning.  This is distinct from the
-    /// always-resolved placement requirement below: no proof means execution
-    /// coverage validation remains unavailable, rather than asserting an
-    /// empty proof.
+    /// always-resolved placement requirement below. Without a proof, execution
+    /// coverage validation stays unavailable, and no empty proof is asserted.
     pub(super) submitted_plan_capability_evidence: Option<AttemptCapabilityEvidence>,
     /// Device-specific entries retained from submission
     /// through the execution context that consumes the selected grant.
@@ -647,8 +646,8 @@ impl QueryCompletion {
 
     /// Samples the query-relative attempt clock only when this completion
     /// owns the admitted attempt finalizer. A missing binding stays
-    /// unavailable in stable resource evidence rather than receiving a
-    /// fabricated wall-clock timestamp.
+    /// unavailable in stable resource evidence. No wall-clock timestamp is
+    /// substituted.
     pub(super) fn attempt_monotonic_ns(&self) -> Option<u64> {
         self.attempt_admission.as_ref().map(AttemptAdmission::monotonic_ns)
     }
@@ -874,6 +873,8 @@ impl QueryCompletionActivityTail {
                     if let Some(delivery) = delivery {
                         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| delivery.deliver()));
                     }
+                    // The permit fences delivery only and cannot cover the activity destructor.
+                    // That destructor may reenter backend close and wait on other permits.
                     drop(permit);
                     tail_dispatcher.dispatch_activity_tail(move || QueryCompletion::finish_activity(activity));
                 });
@@ -920,8 +921,8 @@ impl Drop for QueryCompletion {
             completion_dispatcher: self.completion_dispatcher.take(),
             gpu_resource_permit: self.gpu_resource_permit.take(),
         };
-        // `finish` consumes the payload. Keep a local mutable binding only so
-        // its fields are emptied before this Drop implementation returns.
+        // `finish` consumes the payload. The local binding takes the fields out
+        // of `self` so they are emptied before this Drop implementation returns.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| recovered.finish(fallback)));
     }
 }
@@ -972,9 +973,9 @@ impl AdmissionWaiter {
     /// The ledger transaction in `try_place_on_device` can decline a device
     /// the queue selected, because selection ranks a snapshot and the ledger
     /// decides on current state. A declined placement at the queue deadline
-    /// is reported as `memory_grant_wait_timeout` for that device instead of
-    /// the plain `queue_wait_elapsed`, so a memory-bound wait keeps its own
-    /// taxonomy.
+    /// is reported as `memory_grant_wait_timeout` for that device. A deadline
+    /// that finds no selected device stays `queue_wait_elapsed`. A memory-bound
+    /// wait keeps its own taxonomy.
     pub(crate) fn try_place(&mut self) -> Result<Option<PlacedAdmission>> {
         if let Some(error) = self.terminal.take() {
             self.queued = false;
@@ -1198,6 +1199,7 @@ impl AdmissionWaiter {
                 // The grant's release observer and the completion's observers both
                 // take the admission mutex; neither may run under the guard.
                 drop(state);
+                // The completion seals after every GPU reference is released; free the grant first.
                 drop(placed_query);
                 finish_removed_request_error(Some(admitted), &error);
                 return Err(error);
@@ -1205,6 +1207,7 @@ impl AdmissionWaiter {
             let lifecycle_ticket = state.lifecycle.begin_provisional(Arc::downgrade(&self.controller));
             self.queued = false;
             self.controller.notify_admission_available();
+            // Release the admission mutex before cloning the admitted request into the result.
             drop(state);
             return Ok(Some(PlacedAdmission {
                 placed_query,
@@ -1269,8 +1272,8 @@ impl AdmissionWaiter {
         loop {
             // `Notify::notify_waiters` wakes only futures already registered,
             // so the `Notified` is created and enabled before the step. A
-            // wakeup that lands between the step and the await is then kept
-            // instead of lost.
+            // wakeup that lands between the step and the await is kept by the
+            // enabled `Notified`.
             let notified = controller.admission_notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
@@ -1284,8 +1287,8 @@ impl AdmissionWaiter {
                 }
             };
             match self.remaining_wait() {
-                // The deadline has passed; the next step reports the timeout
-                // and removes the request rather than this loop deciding it.
+                // The deadline has passed. The next step reports the timeout and removes
+                // the request. This loop does not decide it.
                 Some(remaining_wait) if remaining_wait.is_zero() => continue,
                 Some(remaining_wait) => {
                     let _ = time::timeout(remaining_wait, wake).await;

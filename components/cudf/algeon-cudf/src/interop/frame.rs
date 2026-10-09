@@ -20,11 +20,12 @@ impl Series {
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedColumnExport::try_activate_read_lease`].
     ///
-    /// The export describes `self`'s device buffers without taking ownership, so
-    /// it cannot outlive that borrow. Returns an [`InteropError`] when a column's
-    /// layout falls outside the prepared device profile, its buffers are not on a
-    /// CUDA device, or the execution binding or producer readiness of `self`'s
-    /// runtime domain is unavailable.
+    /// The export describes `self`'s device buffers and holds a shared
+    /// `Arc<Column>` for its lifetime. The returned type still borrows `self`,
+    /// so it cannot outlive that borrow. Returns an [`InteropError`] when a
+    /// column's layout falls outside the prepared device profile, its buffers
+    /// are not on a CUDA device, or the execution binding or producer readiness
+    /// of `self`'s runtime domain is unavailable.
     pub fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
         prepare_from_owned_column(self.as_column(), "interop::Series::try_prepare_device_column_export")
             .map(|export| export.with_retained_owner(self.arc()))
@@ -77,10 +78,11 @@ impl DataFrame {
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedTableExport::try_activate_read_lease`].
     ///
-    /// The export describes `self`'s device buffers without taking ownership, so
-    /// it cannot outlive that borrow. Returns an [`InteropError`] when a column's
-    /// layout falls outside the prepared device profile, its buffers are not on a
-    /// CUDA device, or the execution binding or producer readiness of `self`'s
+    /// The export describes `self`'s device buffers and holds a clone of `self`
+    /// for its lifetime. The returned type still borrows `self`, so it cannot
+    /// outlive that borrow. Returns an [`InteropError`] when a column's layout
+    /// falls outside the prepared device profile, its buffers are not on a CUDA
+    /// device, or the execution binding or producer readiness of `self`'s
     /// runtime domain is unavailable.
     pub fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
         prepare_device_table_export_from_columns(

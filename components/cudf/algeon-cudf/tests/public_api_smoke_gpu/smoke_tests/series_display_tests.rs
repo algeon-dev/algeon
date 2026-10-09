@@ -1,5 +1,3 @@
-//! Smoke tests for Series Display and Debug formatting.
-
 use crate::common::{nullable_series, series};
 
 fn test_display_smoke_reports_series_metadata_without_materializing_values() {

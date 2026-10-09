@@ -270,7 +270,7 @@ fn native_optimizer_rule_builds_join_fed_side_from_advisory_statistics_and_match
 }
 
 /// Same shape with skewed keys: DataFusion's estimate for `dim ⋈ mid` is far
-/// below its true size, so the advisory-selected build side is actually the
+/// below its true size, so the advisory-selected build side is the
 /// larger input. The orientation is only a strategy choice; results must
 /// still match.
 fn native_optimizer_rule_keeps_results_correct_when_advisory_build_side_is_misestimated() {

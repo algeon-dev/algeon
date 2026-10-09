@@ -1,5 +1,3 @@
-//! Semantic tests for mixed equality and conditional join index operations.
-
 use cudf::{
     DataFrame, DataFrameCrossJoinOptions, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
     DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, ErrorCode, Exec, JoinType, NullEquality, Runtime, Series,
@@ -544,8 +542,8 @@ fn dataframe_mixed_full_join_size_data_begin_and_materialize_in_use_borrowed_han
 
 fn dataframe_mixed_full_join_size_data_materialize_indices_in_rejects_foreign_stream() {
     // Cross-stream materialization of mixed full join retained size data is a hard
-    // upstream error. The binding must surface it cleanly instead of masking the
-    // stream-identity contract.
+    // upstream error. The binding surfaces it with the ForeignInvalidArgument code,
+    // and the stream-identity check stays visible to callers.
     let (left, right) = dataframe_mixed_inputs();
     let predicate = left_less_than_right();
     let options = dataframe_mixed_join_options();

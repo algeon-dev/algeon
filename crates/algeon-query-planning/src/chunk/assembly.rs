@@ -355,8 +355,8 @@ pub fn single_all_row_groups_chunk(
 ///
 /// A metadata-only count source models each selected file as one count weight.
 /// When no row groups survive planning, that source still needs the additive
-/// identity so the lowered `SUM(weight)` yields `COUNT(*) = 0` rather than
-/// SQL `SUM(empty) = NULL`.
+/// identity so the lowered `SUM(weight)` yields `COUNT(*) = 0`. Plain SQL `SUM`
+/// over an empty input yields `NULL`, and `COUNT(*)` must yield `0`.
 #[doc(hidden)]
 #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 pub fn zero_column_count_identity_chunk(

@@ -36,7 +36,7 @@ impl ColumnRef {
     /// Build a column reference scoped to an input ordinal.
     ///
     /// This is the preferred qualifier for binary-input nodes such as joins.
-    /// `input` is zero-based and identifies the node input, not a field index.
+    /// `input` is zero-based and identifies the node input. It does not index fields.
     /// Equality and hashing include the qualifier and both names, so a join
     /// key spelled with a different `display_name` is a different key.
     pub fn input(input: usize, name: impl Into<String>, display_name: impl Into<String>) -> Self {
@@ -47,18 +47,22 @@ impl ColumnRef {
         }
     }
 
+    /// Input identity, or `None` when the column is unqualified.
     pub fn qualifier(&self) -> Option<&ColumnQualifier> {
         self.qualifier.as_ref()
     }
 
+    /// Column name used for input-schema resolution.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Frontend spelling retained for diagnostics and expression identity.
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
 
+    /// Whether this reference names an explicit input ordinal.
     pub fn is_qualified(&self) -> bool {
         self.qualifier.is_some()
     }

@@ -35,9 +35,9 @@ const GPU_WAIT_OPERATION: &str = "query_engine.backend_lifecycle.wait_for_gpu_qu
 
 /// Backend lifecycle state.
 ///
-/// The state word's closed bit and both permit counts form one linearization domain:
-/// an acquisition that wins the compare-and-exchange is counted before close,
-/// while one that observes the closed bit is rejected.  The mutex is only a
+/// The state word's closed bit and both permit counts form one linearization domain.
+/// An acquisition that wins the compare-and-exchange is counted before close,
+/// while one that reads the closed bit is rejected.  The mutex is only a
 /// condition-variable coordination point; it is not part of the acquisition
 /// gate and therefore [`BackendLifecycle::close`] never waits for it.
 struct BackendLifecycleInner {
@@ -99,7 +99,6 @@ pub(crate) struct BackendLifecycleSnapshot {
 }
 
 impl BackendLifecycleSnapshot {
-    /// Returns whether no observation work remains.
     #[cfg(test)]
     pub(crate) const fn is_observation_quiescent(self) -> bool {
         self.active_observation_permits == 0
@@ -112,7 +111,6 @@ impl BackendLifecycleSnapshot {
 }
 
 impl BackendLifecycle {
-    /// Creates an open observation lifecycle.
     pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(BackendLifecycleInner {
@@ -194,12 +192,10 @@ impl BackendLifecycle {
         previous & CLOSING_BIT == 0
     }
 
-    /// Returns whether this lifecycle has entered closing state.
     pub(crate) fn is_closing(&self) -> bool {
         self.inner.state.load(Ordering::Acquire) & CLOSING_BIT != 0
     }
 
-    /// Returns the currently counted observation permits.
     pub(crate) fn active_observation_permits(&self) -> usize {
         self.inner.state.load(Ordering::Acquire) & OBSERVATION_COUNT_MASK
     }
@@ -462,12 +458,10 @@ impl PublicHandleTracker {
         }
     }
 
-    /// Returns the number of currently minted public-handle leases.
     pub(crate) fn active_handles(&self) -> usize {
         self.state.load(Ordering::Acquire) & PUBLIC_HANDLES_COUNT_MASK
     }
 
-    /// Returns whether the last-handle callback has fired.
     pub(crate) fn callback_fired(&self) -> bool {
         self.state.load(Ordering::Acquire) & PUBLIC_HANDLES_FIRED_BIT != 0
     }

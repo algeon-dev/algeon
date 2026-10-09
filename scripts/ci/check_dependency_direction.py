@@ -30,7 +30,7 @@ DATAFUSION_PACKAGE_PREFIX = "datafusion"
 # Packages whose presence anywhere in the planning closure means planning
 # cannot be built, tested, or packaged without CUDA/RAPIDS or DataFusion. A
 # declared-dependency check is not enough: any of these can arrive through a
-# helper crate several edges away, which is exactly how the coupling grew
+# helper crate several edges away, which is how the coupling grew
 # before. `--all-features` resolution makes the union of every feature the
 # subject, so an optional dependency cannot hide behind a feature flag either.
 PLANNING_FORBIDDEN_PACKAGES = frozenset(COMPONENT_PACKAGES) | {RUNTIME_PACKAGE, EXECUTION_PACKAGE}

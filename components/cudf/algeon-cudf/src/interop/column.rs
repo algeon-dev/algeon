@@ -165,8 +165,8 @@ impl Column {
     /// stream and perform a same-device device-to-device copy. Prepared host
     /// exports activate synchronously by return and upload their host-visible
     /// bytes into new device ownership inside the destination runtime. Both
-    /// paths synchronize completion before returning so producer liveness can
-    /// end honestly.
+    /// paths synchronize completion before returning. The producer's liveness
+    /// can end once the call returns.
     pub fn try_import_from_prepared_column_export_into_runtime(
         export: &PreparedColumnExport<'_>,
         runtime: &Runtime,
@@ -199,8 +199,8 @@ impl Column {
     /// Unlike the borrow-preserving [`Column::try_prepare_device_column_export`]
     /// adapter, this consuming variant upgrades the column itself into the
     /// prepared-export root. The returned export carries retained owner
-    /// state, so downstream consumers can defer completion honestly without
-    /// widening lifetimes through borrowed aliases.
+    /// state that keeps the column alive. Downstream consumers can defer
+    /// completion without widening lifetimes through borrowed aliases.
     pub fn try_into_prepared_device_column_export(self) -> Result<PreparedColumnExport<'static>, InteropError> {
         prepare_into_owned_column_root(self, "interop::Column::try_into_prepared_device_column_export")
     }

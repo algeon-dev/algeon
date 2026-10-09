@@ -1,4 +1,4 @@
-//! Integration tests for execution-context plumbing.
+//! Integration tests for execution-context propagation.
 //!
 //! These tests verify that non-default CUDA streams and memory resources are
 //! correctly propagated through the FFI shim layer and through the current
@@ -6,16 +6,17 @@
 //!
 //! # Test categories
 //!
-//! 1. **Type properties**: `Exec` is Copy, default has null handles.
-//! 2. **Existing `_ex` FFI**: `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
-//!    `cudf_column_create_from_device_data_ex` use explicit streams (pass today).
-//! 3. **High-level execution-context contract**: hidden safe-layer hooks
+//! 1. **Existing `_ex` FFI**: `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
+//!    `cudf_column_create_from_device_data_ex` use explicit streams.
+//! 2. **High-level execution-context contract**: hidden safe-layer hooks
 //!    route explicit-lineage operations through `_ex` entry points and preserve
 //!    explicit retained provenance under borrowed overrides.
-//! 4. **Strict-context rejection**: production `_ex` APIs reject missing or
+//! 3. **Retained-domain default behavior**: APIs outside the scoped override path
+//!    derive explicit execution from the retained source domain.
+//! 4. **Allocator context**: explicit memory resource is passed through.
+//! 5. **Borrowed handle identity**: `as_borrowed_sys` preserves the sys-handle identity.
+//! 6. **Strict-context rejection**: production `_ex` APIs reject missing or
 //!    partial execution options.
-//! 5. **Allocator context**: explicit memory resource is passed through.
-//! 6. **cudf type contracts**: CudaStream, DeviceMemoryResource are Send+Sync.
 use std::{
     ffi::{c_char, c_void},
     ptr,
@@ -35,16 +36,11 @@ use cudf_sys::test_support::{
 
 use crate::common::{column_from_slice, series};
 
-// ---------------------------------------------------------------------------
-// Safe wrappers around observation hooks
-// ---------------------------------------------------------------------------
-
 /// Reset observation state so the next `_ex` call's context is cleanly visible.
 fn obs_reset() {
     unsafe { cudf_test_exec_reset_observation() };
 }
 
-/// Last stream value seen by an `_ex` shim call.
 fn obs_last_stream() -> usize {
     let mut out: usize = 0;
     let status = unsafe { cudf_test_exec_last_stream_value(&mut out) };
@@ -60,7 +56,6 @@ fn obs_last_sync_stream() -> usize {
     out
 }
 
-/// Last device observed by an `_ex` shim call.
 fn obs_last_device() -> i32 {
     let mut out: i32 = -1;
     let status = unsafe { cudf_test_exec_last_device(&mut out) };
@@ -68,7 +63,6 @@ fn obs_last_device() -> i32 {
     out
 }
 
-/// Last memory-resource raw pointer seen by an `_ex` shim call.
 fn obs_last_mr() -> *mut c_void {
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_test_exec_last_mr_raw(&mut out) };
@@ -121,11 +115,6 @@ fn strict_exec_owners() -> (CudaStream, DeviceMemoryResource, cudf_sys::cudf_exe
     (stream, mr, exec)
 }
 
-// ---------------------------------------------------------------------------
-// Helper: create a cudf_sys column from i32 data (via cudf safe API, then
-// extract the raw handle for _ex FFI calls).
-// ---------------------------------------------------------------------------
-
 /// Create an i32 column and return its raw cudf_column_handle.
 ///
 /// The caller is responsible for destroying the handle.
@@ -148,7 +137,6 @@ fn create_i32_column_raw(data: &[i32]) -> cudf_sys::cudf_column_handle {
     handle
 }
 
-/// Create an i64 column and return its raw cudf_column_handle.
 fn create_i64_column_raw(data: &[i64]) -> cudf_sys::cudf_column_handle {
     let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
     let (_stream, _mr, exec) = strict_exec_owners();
@@ -168,7 +156,6 @@ fn create_i64_column_raw(data: &[i64]) -> cudf_sys::cudf_column_handle {
     handle
 }
 
-/// Create a bool column and return its raw cudf_column_handle.
 fn create_bool_column_raw(data: &[bool]) -> cudf_sys::cudf_column_handle {
     let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
     let (_stream, _mr, exec) = strict_exec_owners();
@@ -188,7 +175,6 @@ fn create_bool_column_raw(data: &[bool]) -> cudf_sys::cudf_column_handle {
     handle
 }
 
-/// Create a nullable i32 column and return its raw cudf_column_handle.
 fn create_i32_nullable_column_raw(data: &[i32], validity_bits: u8) -> cudf_sys::cudf_column_handle {
     let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
     let mask = [validity_bits];
@@ -210,7 +196,6 @@ fn create_i32_nullable_column_raw(data: &[i32], validity_bits: u8) -> cudf_sys::
     handle
 }
 
-/// Create an i32 scalar and return its raw cudf_scalar_handle.
 fn create_i32_scalar_raw(value: i32) -> cudf_sys::cudf_scalar_handle {
     let mut handle: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let (stream, _mr, exec) = strict_exec_owners();
@@ -257,7 +242,6 @@ fn table_view_column_raw(table: cudf_sys::cudf_table_view_handle, index: i32) ->
     view
 }
 
-/// Read device data pointer from a column view.
 fn column_view_device_ptr(view: cudf_sys::cudf_column_view_handle) -> *const c_void {
     let mut ptr: *const c_void = ptr::null();
     let status = unsafe { cudf_sys::cudf_column_view_data_ptr(view, &mut ptr) };
@@ -418,22 +402,14 @@ fn assert_exec_options_copy_validation_error(
     destroy_column(col);
 }
 
-// ===========================================================================
-// Category 1: cudf_sys::ExecutionContext type properties (FFI layer)
-// ===========================================================================
-
-// ===========================================================================
-// Category 2: Existing _ex operations (pass today)
-//
-// These tests use the 3 existing _ex FFI variants to verify that explicit
+// These tests use the existing `_ex` FFI variants to verify that explicit
 // stream handles reach the C++ shim's observation hooks.
 //
 // All column creation and manipulation uses cudf_sys FFI directly (not the
 // cudf safe API) because Column::raw_handle() is pub(crate).
-// ===========================================================================
 
 /// `cudf_column_copy_ex` with an explicit stream records that stream in the
-/// observation hook, not the process-global default.
+/// observation hook. The explicit stream differs from the process-global default.
 fn column_copy_ex_uses_explicit_stream() {
     let col = create_i32_column_raw(&[10, 20, 30]);
 
@@ -612,7 +588,6 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     // until the stream completes.
     stream.synchronize().expect("stream sync failed");
 
-    // Verify round-trip: read back the copied column.
     let out_view = column_view_raw(out_handle);
     let mut host_buf = [0i64; 4];
     let (_read_stream, _read_mr, read_exec) = strict_exec_owners();
@@ -767,7 +742,7 @@ fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
     destroy_table(table);
 }
 
-/// Production `_ex` ops reject null options instead of falling back to ambient
+/// Production `_ex` ops reject null options; they do not fall back to ambient
 /// defaults.
 fn column_copy_ex_null_options_are_rejected() {
     let col = create_i32_column_raw(&[10, 20, 30]);
@@ -872,12 +847,8 @@ fn table_copy_ex_uses_explicit_stream_and_mr() {
     destroy_table(table);
 }
 
-// ===========================================================================
-// Category 3: High-level execution-context contract
-//
 // These tests exercise hidden safe-layer hooks that validate execution-context
 // routing below the current public `Runtime v1` surface.
-// ===========================================================================
 
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
     let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 501))]).unwrap();
@@ -1041,12 +1012,8 @@ fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
     assert_dataframe_i32_values(&filtered, "id", &[3, 2]);
 }
 
-// ===========================================================================
-// Category 4: Retained-domain default behavior
-//
-// Verify that existing high-level APIs outside the scoped override path still
-// derive explicit execution from the retained source domain.
-// ===========================================================================
+// Existing high-level APIs outside the scoped override path still derive
+// explicit execution from the retained source domain.
 
 /// Calling `Column::deep_copy()` without an override keeps using the source
 /// column's retained runtime stream.
@@ -1060,13 +1027,6 @@ fn column_deep_copy_uses_source_runtime_stream_without_override() {
     let observed = obs_last_stream();
     assert_eq!(observed, source_stream, "Column::deep_copy() should use the source runtime stream");
 }
-
-// ===========================================================================
-// Category 5: Allocator context
-//
-// Verify that explicit memory resources are recorded by observation hooks
-// when passed through _ex operations.
-// ===========================================================================
 
 /// Column copy with an explicit pool memory resource records that resource.
 fn column_copy_ex_pool_mr_is_observed() {
@@ -1089,7 +1049,6 @@ fn column_copy_ex_pool_mr_is_observed() {
     let observed_mr = obs_last_mr();
     assert!(!observed_mr.is_null(), "observed mr should be non-null after _ex call");
 
-    // The pool MR's raw pointer should differ from the process-global default.
     assert_ne!(observed_mr, default_mr, "pool MR should differ from the process-global default MR");
 
     stream.synchronize().expect("stream sync failed");
@@ -1097,7 +1056,6 @@ fn column_copy_ex_pool_mr_is_observed() {
     destroy_column(col);
 }
 
-/// Column copy with both explicit stream AND memory resource.
 fn column_copy_ex_stream_and_mr_combined() {
     let col = create_i32_column_raw(&[7, 8, 9]);
 
@@ -1124,12 +1082,8 @@ fn column_copy_ex_stream_and_mr_combined() {
     destroy_column(col);
 }
 
-// ===========================================================================
-// Category 6: cudf layer CudaStream / DeviceMemoryResource type contracts
-//
 // These verify that the cudf wrappers (CudaStream, DeviceMemoryResource)
 // have the properties needed for Exec construction.
-// ===========================================================================
 
 /// `CudaStream::as_borrowed_sys` preserves the sys-handle identity.
 fn cuda_stream_as_borrowed_sys_preserves_handle() {
@@ -1158,13 +1112,9 @@ fn device_memory_resource_as_borrowed_sys_preserves_handle() {
     assert_eq!(mr.testing_raw_handle_value(), underlying as usize);
 }
 
-// ===========================================================================
-// Category 7: Exec options validation (negative tests)
-//
 // These tests construct raw `cudf_exec_options_t` structs with deliberately
 // invalid fields and verify that the C++ shim rejects them before performing
 // any side-effects (such as device switching).
-// ===========================================================================
 
 /// A `cudf_exec_options_t` with `struct_size` smaller than the actual struct
 /// is rejected with `CUDF_ERROR_INVALID_OPERATION`.

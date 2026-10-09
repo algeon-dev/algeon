@@ -1,14 +1,14 @@
 //! Route candidates from column equalities in an inner join's residual.
 //!
-//! A mixed join evaluates `left.a = right.b` inside its residual instead of as
-//! a hash key. The equality constrains the consumer side as a key would, so a
-//! supported hash build below the producer side that carries the same source
-//! column can supply a payload to the consumer's local Parquet source. The
-//! residual join is never its own producer. Candidates are reported only when
-//! the producer side is already filtered or is smaller than the consumer by
-//! rows or bytes; otherwise the producer-before-consumer dependency would cost
-//! more than the rows it removes. Only equalities that are conjuncts of the
-//! residual's top-level `AND` qualify; one under `OR` or `NOT` constrains
+//! A mixed join evaluates `left.a = right.b` inside its residual. It does not use
+//! that equality as a hash key. The equality constrains the consumer side as a
+//! key would, so a supported hash build below the producer side that carries the
+//! same source column can supply a payload to the consumer's local Parquet
+//! source. The residual join is never its own producer. Candidates are reported
+//! only when the producer side is already filtered or is smaller than the
+//! consumer by rows or bytes; otherwise the producer-before-consumer dependency
+//! would cost more than the rows it removes. Only equalities that are conjuncts
+//! of the residual's top-level `AND` qualify; one under `OR` or `NOT` constrains
 //! nothing on its own.
 
 use super::{

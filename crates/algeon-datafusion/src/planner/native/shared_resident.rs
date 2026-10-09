@@ -8,7 +8,7 @@
 //! reference, so a CTE that feeds two function inputs, or one input and a
 //! join in the root, is planned in two units.
 //!
-//! This pass hands the island's unit plans to the shared-resident extraction
+//! This pass gives the island's unit plans to the shared-resident extraction
 //! stage, which owns the matching and the retention rule. It admits the
 //! producers that stage creates and the units rewritten to read them, then
 //! rebinds the island so each reading unit lists the producer among its

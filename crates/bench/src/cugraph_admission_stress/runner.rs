@@ -107,7 +107,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
 
     let backend = build_backend(&config)?;
 
-    // Seed discovery for traversal algorithms: cheap via parquet stats.
+    // Seed discovery for traversal algorithms is cheap via parquet stats.
     let seed = match config.bfs_seed {
         Some(seed) => seed,
         None => discover_seed(&backend, &config).await?,

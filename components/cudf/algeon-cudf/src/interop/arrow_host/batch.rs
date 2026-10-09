@@ -41,8 +41,9 @@ impl DataFrame {
     /// corresponding Arrow array type. The schema (column names and types)
     /// is preserved.
     ///
-    /// If you need device-resident handoff instead of host materialization, use
-    /// [`crate::DataFrame::try_prepare_device_table_export`].
+    /// If you need a device-resident handoff, use
+    /// [`crate::DataFrame::try_prepare_device_table_export`]. This method always
+    /// copies columns to host memory.
     ///
     /// # Supported types
     ///
@@ -191,8 +192,8 @@ impl Runtime {
 /// Convert an Arrow [`RecordBatch`] to a GPU [`DataFrame`] via host copy
 /// inside the caller-provided runtime.
 ///
-/// Prefer [`Runtime::dataframe_from_record_batch()`] or
-/// [`DataFrame::from_record_batch()`] for a more ergonomic API.
+/// The method forms [`Runtime::dataframe_from_record_batch()`] and
+/// [`DataFrame::from_record_batch()`] delegate to this function.
 ///
 /// Each Arrow array is copied from host memory to the GPU. Column names and
 /// supported logical values are preserved, and imported columns inherit the
@@ -261,15 +262,15 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
 /// - stages source bytes through reusable pinned slabs
 ///   (`crate::runtime::host_staging`) so the host-to-device copies are true
 ///   asynchronous DMA, and
-/// - waits only on the staging copies' completion events instead of full
-///   stream synchronizations per batch.
+/// - waits on the staging copies' completion events. It does not issue a
+///   full stream synchronization per batch.
 ///
 /// Columns whose type or nullability is outside the staged fast path
 /// (non-primitive layouts such as strings and booleans, decimals, or any
 /// column with nulls) are concatenated on the host with Arrow's `concat`
 /// kernel and imported through the same per-column path as
-/// [`dataframe_from_record_batch`]; one import per column instead of one
-/// per column per batch.
+/// [`dataframe_from_record_batch`]. Each such column is imported once for
+/// all batches.
 ///
 /// All batches must share `batches[0]`'s schema. The combined row count must
 /// fit cudf's row-count type (`i32`).

@@ -48,11 +48,17 @@ pub struct MemoryFailure {
 pub struct MemoryUsage {
     /// Allocation limit the allocator enforced for the member.
     pub limit_bytes: u64,
+    /// Highest requested bytes held concurrently by this member.
     pub peak_bytes: u64,
+    /// Highest allocator-aligned bytes held concurrently by this member.
     pub peak_aligned_bytes: u64,
+    /// Requested allocation bytes still held at the snapshot.
     pub current_bytes: u64,
+    /// Aligned allocation bytes still held at the snapshot.
     pub current_aligned_bytes: u64,
+    /// Number of rejected or failed allocations recorded for the member.
     pub failed_allocation_count: u64,
+    /// Largest failed allocation request in bytes; zero when none was recorded.
     pub largest_failed_allocation_bytes: u64,
 }
 
@@ -62,8 +68,11 @@ pub struct MemoryUsage {
 /// together with the error code, never the labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResourceBoundary {
+    /// Stable label of the memory-accounting boundary.
     pub memory_boundary: &'static str,
+    /// Stage label for the failed operation.
     pub stage: &'static str,
+    /// Plan node associated with the failure, or `None` when unavailable.
     pub node_id: Option<NodeId>,
     /// Semantic join input whose working set failed.
     pub side: Option<JoinSide>,
@@ -78,18 +87,21 @@ impl ResourceBoundary {
     }
 
     #[must_use]
+    /// Sets the diagnostic execution-stage label.
     pub const fn with_stage(mut self, stage: &'static str) -> Self {
         self.stage = stage;
         self
     }
 
     #[must_use]
+    /// Records the semantic join input whose working set failed.
     pub const fn with_side(mut self, side: JoinSide) -> Self {
         self.side = Some(side);
         self
     }
 
     #[must_use]
+    /// Records the execution position available to an operator-owned local retry.
     pub const fn with_resume(mut self, resume: &'static str) -> Self {
         self.resume = Some(resume);
         self
@@ -104,13 +116,18 @@ impl ResourceBoundary {
 /// exact allocator event independently. `Unknown` stays fail-closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocationSource {
+    /// No allocator family was established; attribution remains unknown.
     Unknown,
+    /// RMM reported an out-of-memory exception through the query resource path.
     RmmOutOfMemory,
+    /// A direct RMM allocation threw `rmm::bad_alloc`.
     RmmBadAlloc,
+    /// A native allocation threw `std::bad_alloc`.
     StdBadAlloc,
 }
 
 impl AllocationSource {
+    /// Stable allocator-family label used in diagnostic facts.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",

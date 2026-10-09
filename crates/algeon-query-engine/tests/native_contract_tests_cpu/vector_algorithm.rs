@@ -190,7 +190,7 @@ fn vector_column_binding_validates_fixed_size_list_element_type_after_relational
 }
 
 /// Schema nullability is not part of the input contract: null IDs, features,
-/// list rows, and list elements fail at execution instead of at planning.
+/// list rows, and list elements pass planning and fail at execution.
 #[test]
 fn nullable_typed_ids_features_and_list_vectors_are_admitted() {
     let nullable_wide = Arc::new(Schema::new(vec![

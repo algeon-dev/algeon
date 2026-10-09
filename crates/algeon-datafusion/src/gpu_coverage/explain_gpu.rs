@@ -14,7 +14,9 @@ pub enum ExplainGpuOutputMode {
 /// A parsed `EXPLAIN GPU` Flight SQL extension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExplainGpuStatement {
+    /// SQL after the extension prefix and output option, without parsing or rewriting it.
     pub inner_sql: String,
+    /// Requested projection of the shared plan-time coverage evidence.
     pub output_mode: ExplainGpuOutputMode,
 }
 
@@ -22,8 +24,8 @@ pub struct ExplainGpuStatement {
 ///
 /// `None` means the statement is an ordinary DataFusion statement. Once the
 /// exact `EXPLAIN GPU` prefix is present, malformed extension options produce
-/// a structured request error instead of being delegated to DataFusion's
-/// unrelated `EXPLAIN` implementation.
+/// a structured request error. DataFusion's unrelated `EXPLAIN` implementation
+/// does not handle these statements.
 pub fn parse_explain_gpu(sql: &str) -> Result<Option<ExplainGpuStatement>> {
     let Some(after_explain) = consume_keyword(sql, "EXPLAIN") else {
         return Ok(None);

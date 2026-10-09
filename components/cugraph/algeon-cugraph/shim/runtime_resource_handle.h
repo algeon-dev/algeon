@@ -2,7 +2,7 @@
 
 // Crate-local C++ shim: cugraph-sys stays limited to upstream C API bindings,
 // while cugraph needs to build a raft::handle_t from a cudf Runtime stream
-// and RMM memory resource before handing it to cugraph_create_resource_handle().
+// and RMM memory resource before passing it to cugraph_create_resource_handle().
 
 #include <cugraph_c/graph.h>
 #include <cugraph_c/resource_handle.h>

@@ -1,7 +1,7 @@
 //! Runtime integration contract tests.
 //!
-//! These tests validate the current runtime/threading contract described by
-//! `docs/PROPOSAL.md` and the retained-domain public API:
+//! These tests validate the runtime/threading contract of the retained-domain
+//! public API:
 //!
 //! 1. Send+Sync static assertions for owned types.
 //! 2. Negative assertions for view types (!Send).
@@ -34,10 +34,6 @@ use tokio::{
 };
 
 use crate::common::{column_from_slice, column_from_strs, dataframe_from_columns, sample_df, series};
-
-// ===========================================================================
-// Category 1: Send+Sync static assertions for owned types
-// ===========================================================================
 
 assert_impl_all!(DataFrame: Send, Sync);
 assert_impl_all!(Series: Send, Sync);
@@ -73,38 +69,12 @@ fn cuda_event_can_record_wait_and_synchronize() {
     assert!(event.is_ready().unwrap());
 }
 
-// ===========================================================================
-// Category 2: Negative assertions for view types
-//
-// ColumnView and TableView contain raw NonNull<c_void> pointers
-// without `unsafe impl Send/Sync`. The compiler auto-derives !Send !Sync.
-//
-// We verify this with `static_assertions`-style negative tests. These use
-// trait-bound checks that fail at compile time if the type unexpectedly
-// gains Send or Sync in the future.
-//
-// Approach: use `std::marker::PhantomData` + a const assertion trick.
-// If the type IS Send, the negative test would fail to compile; which is
-// exactly what we want to guard against.
-// ===========================================================================
-
+// ColumnView and TableView contain raw NonNull<c_void> pointers without
+// `unsafe impl Send/Sync`, so the compiler derives !Send and !Sync for both.
+// The `assert_not_impl_any!` checks below fail at compile time if either type
+// gains Send or Sync.
 assert_not_impl_any!(ColumnView<'static>: Send, Sync);
 assert_not_impl_any!(TableView<'static>: Send, Sync);
-
-// NOTE: The authoritative negative test is that the following code DOES NOT
-// compile (verified manually and kept here as the authoritative example):
-//
-//   let col = column_from_slice(&[1i32]).unwrap();
-//   let view = col.testing_view().unwrap();
-//   spawn_blocking(move || {
-//       view.len()  // ERROR: ColumnView is !Send
-//   });
-//
-// Similarly for TableView.
-
-// ===========================================================================
-// Category 3: DataFrame spawn_blocking round-trip
-// ===========================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_sort_survives_spawn_blocking() {
@@ -180,10 +150,6 @@ async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
     drop(result);
 }
 
-// ===========================================================================
-// Category 4: Series spawn_blocking round-trip
-// ===========================================================================
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_sort_survives_spawn_blocking() {
     let series = series::<i64>("vals", &[50, 10, 30, 20, 40]).unwrap();
@@ -221,24 +187,18 @@ async fn series_unique_in_spawn_blocking() {
     assert_eq!(unique.on(Exec::RETAINED).nunique().unwrap(), 3);
 }
 
-// ===========================================================================
-// Category 5: I/O from spawn_blocking
-// ===========================================================================
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parquet_round_trip_in_spawn_blocking() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("runtime_test.parquet");
     let path_clone = path.clone();
 
-    // Write from spawn_blocking.
     let df = sample_df();
     spawn_blocking(move || df.write_parquet(&path))
         .await
         .expect("blocking task panicked")
         .expect("write_parquet failed");
 
-    // Read from a separate spawn_blocking.
     let loaded = spawn_blocking(move || {
         let runtime = cudf::Runtime::builder().build().unwrap();
         DataFrame::read_parquet(
@@ -254,10 +214,6 @@ async fn parquet_round_trip_in_spawn_blocking() {
     assert_eq!(loaded.num_rows(), 5);
     assert_eq!(loaded.column_names(), vec!["id", "score"]);
 }
-
-// ===========================================================================
-// Category 6: Host materialization from spawn_blocking
-// ===========================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_materialization_to_vec_in_spawn_blocking() {
@@ -291,13 +247,11 @@ async fn arrow_round_trip_across_spawn_blocking() {
 
     let df = sample_df();
 
-    // GPU → host (RecordBatch) in spawn_blocking.
     let batch = spawn_blocking(move || df.to_record_batch())
         .await
         .expect("blocking task panicked")
         .expect("to_record_batch failed");
 
-    // host → GPU (DataFrame) in another spawn_blocking.
     let df2 = spawn_blocking(move || {
         let runtime = cudf::Runtime::builder().build().unwrap();
         dataframe_from_record_batch(&runtime, &batch)
@@ -311,29 +265,20 @@ async fn arrow_round_trip_across_spawn_blocking() {
     assert_eq!(ids, vec![3, 1, 4, 1, 5]);
 }
 
-// ===========================================================================
-// Category 7: Multiple operations chained in one spawn_blocking
-// ===========================================================================
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chained_pipeline_in_spawn_blocking() {
-    // Full pipeline: create → sort → head → groupby → materialize.
     let result = spawn_blocking(|| -> cudf::Result<Vec<(i32, i64)>> {
         let keys = column_from_slice(&[2i32, 1, 2, 1, 3, 3]).unwrap();
         let vals = column_from_slice(&[10i64, 20, 30, 40, 50, 60]).unwrap();
         let df = dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals])?;
 
-        // Sort by key.
         let sorted = df.on(Exec::RETAINED).sort_values(["key"], SortOptions::new())?;
 
-        // Take first 4 rows.
         let top = sorted.on(Exec::RETAINED).head(4)?;
         assert_eq!(top.num_rows(), 4);
 
-        // GroupBy sum.
         let agg_result = top.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)])?;
 
-        // Materialize to host.
         let key_data: Vec<i32> = agg_result.series("key").unwrap().to_vec_strict::<i32>()?;
         let sum_data: Vec<i64> = agg_result.series("value_sum").unwrap().to_vec_strict::<i64>()?;
 
@@ -375,20 +320,14 @@ async fn join_inside_spawn_blocking() {
     assert_eq!(result, 2);
 }
 
-// ===========================================================================
-// Category 8: Filter operations in spawn_blocking
-// ===========================================================================
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_filter_in_spawn_blocking() {
     let df = sample_df();
     let result = spawn_blocking(move || -> cudf::Result<Vec<i32>> {
-        // Build a boolean mask: score > 20.0
         let score_series = df.series("score")?;
         let mask_series = score_series.on(Exec::RETAINED).gt_scalar(20.0f64)?;
         let filtered = df.on(Exec::RETAINED).filter(&mask_series)?;
 
-        // Materialize filtered ids to host.
         let ids = filtered.series("id").unwrap().to_vec_strict::<i32>()?;
         Ok(ids)
     })
@@ -400,10 +339,6 @@ async fn dataframe_filter_in_spawn_blocking() {
     // score > 20 → rows 0,2,4 → id=[3,4,5].
     assert_eq!(result, vec![3, 4, 5]);
 }
-
-// ===========================================================================
-// Category 9: Concurrent compute on shared data (Sync soundness)
-// ===========================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_sort_on_shared_arc_dataframe() {
@@ -432,13 +367,8 @@ async fn concurrent_sort_on_shared_arc_dataframe() {
     assert_eq!(desc_ids, vec![5, 4, 3, 1, 1]);
 }
 
-// ===========================================================================
-// Runtime responsiveness: async heartbeat during GPU work
-// ===========================================================================
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
-    // Heartbeat counter: counts async ticks while GPU work runs.
     let ticker = tokio::spawn(async {
         let start = Instant::now();
         let mut ticks = 0usize;
@@ -449,7 +379,6 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
         ticks
     });
 
-    // Stress the GPU via DataFrame operations from spawn_blocking.
     let workers = 4;
     let mut handles = Vec::with_capacity(workers);
 
@@ -474,10 +403,6 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
     assert!(ticks >= 10, "Tokio runtime heartbeat stalled during DataFrame GPU ops (ticks={ticks})");
 }
 
-// ===========================================================================
-// Timeout behavior: wrapping spawn_blocking in timeout is safe
-// ===========================================================================
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn timeout_on_spawn_blocking_is_safe() {
     // Even if the timeout fires, the blocking thread completes its GPU work
@@ -489,12 +414,12 @@ async fn timeout_on_spawn_blocking_is_safe() {
         sorted
     });
 
-    // Use a generous timeout; we are testing safety, not speed.
+    // The 30 s timeout bounds the wait for the blocking task. This test checks safe completion;
+    // it does not check speed.
     let result = timeout(Duration::from_secs(30), handle).await;
 
     match result {
         Ok(Ok(df)) => {
-            // Normal case: completed within timeout.
             assert_eq!(df.num_rows(), 5);
         },
         Ok(Err(e)) => panic!("spawn_blocking panicked: {e}"),
@@ -503,8 +428,8 @@ async fn timeout_on_spawn_blocking_is_safe() {
             // finished). This is safe; no GPU corruption, the DataFrame
             // will be dropped when the blocking thread exits.
             //
-            // In CI this should not happen (30s is very generous), but
-            // this branch documents the contract: timeout doesn't crash.
+            // In CI this should not happen (the 30 s timeout bounds the wait for the
+            // blocking task), but this branch documents that a timeout does not crash.
         },
     }
 }

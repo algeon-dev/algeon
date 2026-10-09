@@ -1,4 +1,5 @@
 //! Attempt-scoped cooperative cancellation and deadline helpers.
+
 use std::time::Instant;
 
 use query_planning::error::Result;
@@ -27,9 +28,13 @@ impl AttemptCancellation {
     pub fn cancel(&self) {
         self.execution.cancel()
     }
+    /// Returns whether caller cancellation was requested or the deadline expired.
+    /// Use [`Self::check`] to distinguish the reasons.
     pub fn is_cancelled(&self) -> bool {
         self.execution.is_cancelled()
     }
+    /// Returns the absolute deadline in the process monotonic clock domain.
+    /// `None` means that the attempt has no deadline.
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
     }

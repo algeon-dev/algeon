@@ -175,7 +175,7 @@ fn serial_hash_probe_frames(
 /// The native `HashJoinHandle` is already `Send+Sync` behind an `Arc`, probes
 /// take `&self`, and each lane supplies its own `Exec` stream,
 /// so sharing this immutable view needs no new `unsafe` impl. The timer is
-/// intentionally excluded: it measures the coordinator's build, not lanes.
+/// intentionally excluded: it measures the coordinator's build, and no lane reports it.
 struct SharedHashBuild {
     build_side: JoinSide,
     probe_side: JoinSide,

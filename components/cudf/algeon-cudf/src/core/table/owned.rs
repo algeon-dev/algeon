@@ -162,9 +162,9 @@ impl Table {
                 None => cudf_sys::cudf_table_create(handles.as_mut_ptr(), num_columns, &mut table_handle),
             }
         };
-        // If creation failed, we've already released ownership of the columns
-        // into the handles vec. The C shim nulls them out on success, but on
-        // failure we need to destroy them ourselves.
+        // If creation failed, `handles` still owns the released columns. The C shim
+        // nulls the handles on success, so on failure this loop destroys each
+        // non-null handle.
         if status != cudf_sys::CUDF_SUCCESS {
             for &h in &handles {
                 if !h.is_null() {
@@ -252,7 +252,7 @@ impl Table {
     /// the same order as they were when the table was created.
     ///
     /// This is a zero-copy operation on the GPU; column device memory is
-    /// transferred, not copied.
+    /// transferred without being copied.
     pub fn into_columns(self) -> Result<Vec<Column>> {
         let this = std::mem::ManuallyDrop::new(self);
         let Self { handle: _, domain: _, retained_owners: _ } = &*this;
@@ -263,13 +263,13 @@ impl Table {
         let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
         let mut out_count: i32 = 0;
 
-        // SAFETY: raw_handle is valid (we just read it from self before forget).
+        // SAFETY: raw_handle is valid. ManuallyDrop suppressed the Drop that would destroy it.
         let status = unsafe { cudf_sys::cudf_table_release_columns(raw_handle, &mut out_columns, &mut out_count) };
 
         if status != cudf_sys::CUDF_SUCCESS {
             let primary_error = error::check_status_in(status, "table::into_columns").unwrap_err();
-            // On failure, the C shim did NOT consume the table.
-            // We must destroy it ourselves to avoid a leak.
+            // On failure, the C shim did not consume the table, so this function
+            // destroys it to avoid a leak.
             drop_device_owned_handle(
                 raw_handle,
                 domain.device_id(),

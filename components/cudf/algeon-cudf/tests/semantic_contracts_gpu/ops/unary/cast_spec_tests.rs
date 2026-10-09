@@ -1,9 +1,4 @@
-//! Specification tests for type casting (`astype` / `cast`).
-//!
-//! These tests systematically cover cast behavior across type pairs,
-//! including edge cases that are not covered by the basic unary tests.
-//!
-//! All tests require a GPU.
+//! Cast behavior across type pairs, including edge cases that the basic unary tests do not cover.
 
 use std::sync::Arc;
 
@@ -34,10 +29,7 @@ fn decimal128_series_from_arrow(values: Vec<Option<i128>>, precision: u8, scale:
     df.series("amount").unwrap()
 }
 
-// ===========================================================================
-// Integer width widening (lossless)
-// ===========================================================================
-
+// Integer width widening is lossless.
 fn test_cast_i8_to_i16() {
     let s = series::<i8>("x", &[i8::MIN, 0, i8::MAX]).unwrap();
     let result = s.on(Exec::RETAINED).astype(TypeId::Int16).unwrap();
@@ -58,10 +50,6 @@ fn test_cast_i32_to_i64() {
     let vals = result.to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![i32::MIN as i64, 0, i32::MAX as i64]);
 }
-
-// ===========================================================================
-// Float ↔ Integer
-// ===========================================================================
 
 fn test_cast_i32_to_f32() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -121,10 +109,6 @@ fn test_cast_f64_to_decimal128_uses_target_scale_and_preserves_nulls() {
     assert!(values.is_valid(2));
 }
 
-// ===========================================================================
-// Bool ↔ Integer
-// ===========================================================================
-
 fn test_cast_bool_to_i32() {
     let s = series::<bool>("x", &[true, false, true]).unwrap();
     let result = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
@@ -146,10 +130,6 @@ fn test_cast_bool_to_i64() {
     assert_eq!(vals, vec![0, 1]);
 }
 
-// ===========================================================================
-// Unsigned ↔ Signed
-// ===========================================================================
-
 fn test_cast_u8_to_i16() {
     let s = series::<u8>("x", &[0, 127, 255]).unwrap();
     let result = s.on(Exec::RETAINED).astype(TypeId::Int16).unwrap();
@@ -163,10 +143,6 @@ fn test_cast_u32_to_i64() {
     let vals = result.to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![0, u32::MAX as i64]);
 }
-
-// ===========================================================================
-// Null preservation through cast
-// ===========================================================================
 
 fn test_cast_preserves_null_mask() {
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
@@ -185,10 +161,6 @@ fn test_cast_all_null_column() {
     assert_eq!(vals, vec![None, None]);
 }
 
-// ===========================================================================
-// Empty column cast
-// ===========================================================================
-
 fn test_cast_empty_column() {
     let s = series::<i32>("x", &[]).unwrap();
     let result = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
@@ -196,23 +168,12 @@ fn test_cast_empty_column() {
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
 }
 
-// ===========================================================================
-// Same-type cast (noop)
-// ===========================================================================
-
+// Casting to the same type leaves the values unchanged.
 fn test_cast_same_type() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
-
-// ===========================================================================
-// Series display omits schema names
-// ===========================================================================
-
-// ===========================================================================
-// is_supported_cast
-// ===========================================================================
 
 fn decimal_rescale_workspace_contract_is_scale_sensitive() {
     let scale_zero = DataType::fixed_point(TypeId::Decimal128, 0).unwrap();
@@ -258,12 +219,8 @@ fn test_is_supported_cast_bool_to_int() {
     assert!(is_supported_cast(&from, &to).unwrap());
 }
 
-// ===========================================================================
-// Integer-to-timestamp cast (supported by libcudf)
-// ===========================================================================
-
+// Integer-to-timestamp casts are supported by libcudf.
 fn test_cast_i64_to_timestamp_microseconds() {
-    // libcudf requires int64 → duration → timestamp (direct int→timestamp is not supported).
     let s = series::<i64>("x", &[0, 1_000_000, 1_618_000_000_000_000]).unwrap();
     let dur = s.on(Exec::RETAINED).astype(TypeId::DurationMicroseconds).unwrap();
     let result = dur.on(Exec::RETAINED).astype(TypeId::TimestampMicroseconds).unwrap();
@@ -280,10 +237,6 @@ fn test_cast_timestamp_to_i64() {
     let back = back_dur.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
     assert_eq!(back.to_vec_strict::<i64>().unwrap(), vec![0, 1000, 2000]);
 }
-
-// ===========================================================================
-// Timestamp and duration to integer: the stored count in the type's own unit
-// ===========================================================================
 
 const EVERY_RESOLUTION: [TimestampResolution; 4] = [
     TimestampResolution::Seconds,
@@ -338,10 +291,7 @@ fn test_cast_timestamp_and_duration_to_narrower_integers_check_the_stored_count(
     }
 }
 
-// ===========================================================================
-// Timestamp and duration between resolutions: Arrow's multiply and truncate
-// ===========================================================================
-
+// Timestamp and duration casts between resolutions follow Arrow's multiply and truncate rules.
 fn test_cast_integer_to_timestamp_reads_the_integer_as_the_tick_count() {
     let counts = [Some(0), Some(-1), Some(1_700_000_000_123), Some(i64::MAX), Some(i64::MIN), None];
     for resolution in EVERY_RESOLUTION {
@@ -509,10 +459,6 @@ fn test_cast_dates_to_timestamps_fail_where_the_product_leaves_int64_and_timesta
     assert_eq!(actual, expected);
 }
 
-// ===========================================================================
-// Convenience method: to_datetime
-// ===========================================================================
-
 fn test_to_datetime_default_microseconds() {
     let s = series::<i64>("ts", &[0, 1_000_000]).unwrap();
     let result = s.on(Exec::RETAINED).to_datetime(None).unwrap();
@@ -540,7 +486,6 @@ fn test_to_datetime_seconds() {
 fn test_to_datetime_round_trip() {
     let s = series::<i64>("ts", &[0, 1000, 2000]).unwrap();
     let dt = s.on(Exec::RETAINED).to_datetime(Some(TimestampResolution::Microseconds)).unwrap();
-    // libcudf requires timestamp → duration → int64 for the reverse path.
     let dur = dt.on(Exec::RETAINED).astype(TypeId::DurationMicroseconds).unwrap();
     let back = dur.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
     assert_eq!(back.to_vec_strict::<i64>().unwrap(), vec![0, 1000, 2000]);
@@ -552,10 +497,6 @@ fn test_to_datetime_preserves_nulls() {
     assert_eq!(result.null_count(), 1);
     assert_eq!(result.dtype().unwrap().id(), TypeId::TimestampMicroseconds);
 }
-
-// ===========================================================================
-// Convenience method: to_numeric
-// ===========================================================================
 
 fn test_to_numeric_f64_to_i64() {
     let s = series::<f64>("x", &[1.9, 2.0, 3.1]).unwrap();
@@ -591,10 +532,6 @@ fn test_to_numeric_rejects_timestamp_target() {
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "series::to_numeric");
 }
-
-// ===========================================================================
-// Range-checked integer targets and integer-to-string casts
-// ===========================================================================
 
 fn assert_cast_out_of_range(input: cudf::Series, target: TypeId, reason: &str) {
     let source = format!("{:?}", input.dtype().unwrap().id()).to_lowercase();
@@ -749,10 +686,6 @@ fn test_cast_integer_to_string_formats_plain_decimal_text() {
     assert!(!is_supported_cast(&DataType::new(TypeId::Float64), &DataType::new(TypeId::String)).unwrap());
 }
 
-// ===========================================================================
-// Casts into decimal types with a declared precision
-// ===========================================================================
-
 fn decimal_target(id: TypeId, scale: i8) -> DataType {
     DataType::fixed_point(id, -i32::from(scale)).unwrap()
 }
@@ -782,7 +715,7 @@ fn assert_decimal_cast_error(error: &cudf::Error, reason: &str) {
 }
 
 /// The cast must give the values of an Arrow `CAST` in non-safe mode, and fail
-/// exactly where Arrow fails.
+/// where Arrow fails.
 fn assert_decimal_cast_matches_arrow(name: &str, input: &cudf::Series, array: ArrayRef, precision: u8, scale: i8) {
     let expected = arrow_cast_into_decimal(array, precision, scale);
     let actual = cast_into_decimal(input, TypeId::Decimal128, precision, scale);

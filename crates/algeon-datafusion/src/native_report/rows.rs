@@ -47,7 +47,9 @@ pub struct NativeDataFusionPlanningRow {
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
     pub unsupported_category: Option<String>,
-    /// Rejected capability decisions emitted by the selected candidate.
+    /// Capability decision rows for this candidate. When the capability contract
+    /// rejected it, these are its blocking rejections; otherwise they are the
+    /// decision rows of its accepted contract.
     pub capability_decision_rows: Vec<CapabilityDecisionRow>,
     /// Compiled graph summaries for capability-supported candidates.
     pub capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
@@ -95,7 +97,9 @@ pub struct NativeDataFusionExecutionRow {
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
     pub unsupported_category: Option<String>,
-    /// Capability gate rows emitted by the selected candidate.
+    /// Capability decision rows for this candidate. When the capability contract
+    /// rejected it, these are its blocking rejections; otherwise they are the
+    /// decision rows of its accepted contract.
     pub capability_decision_rows: Vec<CapabilityDecisionRow>,
     /// Compiled graph summaries for capability-supported candidates.
     pub capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,

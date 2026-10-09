@@ -9,7 +9,7 @@
 //! commit (health, disposition, seal), then the envelope drop that returns
 //! the lane, grant, backend permit, and lifecycle ticket in that order.
 //! Report-ready therefore always precedes capacity reuse, which is the
-//! ordering `website/docs/design/admission.mdx` requires.
+//! ordering `website/docs/design/admission.mdx#resident-handoff-and-release` requires.
 //!
 //! Every path is consuming. A release that cannot reach its fence, because a
 //! queued callback was dropped or a thread unwound, commits with
@@ -221,7 +221,8 @@ impl QueryHandleRelease {
         // attempt domain; it must be gone before `release_unconsumed_physical`
         // destroys that domain below.
         drop(root_context);
-        // Fence accounting on root-stream cleanup; publishing from the GPU job can deadlock reentrant backend close.
+        // Fence accounting on root-stream cleanup; publishing from the GPU job can
+        // deadlock reentrant backend close.
         let commit = self.prepare_report_commit();
         if let Some(stream_lease) = self.envelope.as_mut().and_then(|envelope| envelope.release_unconsumed_physical()) {
             let external_completion = self.take_external_completion();
@@ -291,7 +292,7 @@ impl QueryHandleRelease {
     }
 
     /// Captures everything the report commit needs after GPU cleanup
-    /// completes: the service for health plumbing, the device, and the
+    /// completes: the service for health commits, the device, and the
     /// attempt domain clone for the final usage sample.
     fn prepare_report_commit(&mut self) -> QueryHandleReportCommit {
         let (domain, memory_grant, allocator_domain_attempt) =
@@ -399,8 +400,8 @@ impl Drop for QueryHandleRelease {
         }
 
         // A panic may reach the recovery destructor before `start_release`.
-        // Preserve the envelope-owned cleanup fence instead of leaking an
-        // Active ticket in the tracker.
+        // Preserve the envelope-owned cleanup fence. Without it, an Active
+        // ticket would leak in the tracker.
         if let Some(envelope) = self.envelope.as_mut() {
             envelope.begin_terminal_cleanup();
         }

@@ -10,8 +10,7 @@
 extern "C" {
 #endif
 
-/// Drop rows from a table where key columns contain nulls with explicit
-/// execution context.
+/// Drop rows from a table when their non-null key count is below `keep_threshold`.
 ///
 /// `keys` is an array of column indices, `num_keys` is its length.
 /// `keep_threshold` is the minimum number of non-null key values required
@@ -60,8 +59,7 @@ cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
                                cudf_table_handle* out,
                                cudf_exec_options_t const* options);
 
-/// Create a new table by removing consecutive duplicate rows with explicit
-/// execution context.
+/// Create a new table by removing consecutive duplicate rows.
 ///
 /// Equal rows must already be adjacent for all duplicates to be removed.
 /// `options` must be non-NULL and must carry an explicit device, stream, and

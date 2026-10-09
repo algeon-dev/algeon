@@ -6,9 +6,9 @@
 //! serializes concurrent copies process-wide, which measurably collapses
 //! multi-query throughput. Pinning is expensive (page-table work scales with
 //! bytes), so slabs are allocated lazily, retained for the process lifetime,
-//! and recycled through a bounded pool instead of being allocated per upload.
+//! and recycled through a bounded pool that uploads lease from.
 //!
-//! Sizing knobs (read once at first use):
+//! Sizing settings (read once at first use):
 //! - `CUDF_HOST_STAGING_SLAB_BYTES`: bytes per slab (default 16 MiB).
 //! - `CUDF_HOST_STAGING_SLAB_COUNT`: maximum retained slabs (default 8).
 
@@ -123,6 +123,7 @@ impl PinnedSlabPool {
             }
             if state.created < self.max_slabs {
                 state.created += 1;
+                // Release the pool lock before the pinned allocation; the error arm re-locks it.
                 drop(state);
                 match PinnedSlab::alloc(self.slab_bytes) {
                     Ok(slab) => return Ok(PinnedSlabLease { pool: self, slab: Some(slab) }),
@@ -135,6 +136,7 @@ impl PinnedSlabPool {
                             )
                         })?;
                         state.created -= 1;
+                        // Release the pool lock before notify_one; woken acquirers re-lock state.
                         drop(state);
                         self.available.notify_one();
                         return Err(error.reanchor("host_staging::acquire"));

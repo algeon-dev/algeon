@@ -26,7 +26,6 @@ use crate::core::{
     types::{DataType, TypeId},
 };
 
-/// Convert a single `ColumnView` to an Arrow `Array`.
 fn column_view_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn Array>> {
     match dtype.id() {
         TypeId::Int8 => numeric_to_arrow::<i8>(cv),
@@ -112,7 +111,6 @@ pub(super) fn map_arrow_ffi_export_error(operation: &'static str, error: ArrowEr
     .with_source(error)
 }
 
-/// Convert a numeric column to the corresponding Arrow primitive array.
 fn numeric_to_arrow<T>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
 where T: ArrowPrimitiveMapping {
     let data: Vec<T> = cv.to_vec()?;
@@ -352,7 +350,6 @@ fn decimal128_array_from_values(
     Ok(Arc::new(arr))
 }
 
-/// Convert a Bool8 column to an Arrow BooleanArray.
 fn bool_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     // Avoid constructing Rust `bool` values directly from raw device bytes.
     let data: Vec<bool> = cv.to_raw_bytes()?.into_iter().map(|byte| byte != 0).collect();
@@ -369,7 +366,6 @@ fn bool_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     }
 }
 
-/// Convert a String column to an Arrow StringArray.
 fn string_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     let operation = "arrow::string_to_arrow";
     let data = cv.to_optional_strings()?;

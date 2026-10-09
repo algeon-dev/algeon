@@ -250,7 +250,7 @@ fn lower_validated_physical_expr(
     if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
         let current = dynamic_filter.current().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         // Dynamic filters are mutable. Validate the current snapshot before
-        // deriving a new lowering proof rather than trusting the older root.
+        // deriving a new lowering proof. The proof of the older root does not carry over.
         let current = validate_physical_expr_contract(&current, input_schema)?;
         return lower_validated_physical_expr(&current, scope);
     }
@@ -365,7 +365,7 @@ fn lower_in_list_expr(
 }
 
 /// Lowers a `CASE` so that native evaluation, which visits every row of every
-/// branch, fails on exactly the rows where DataFusion does.
+/// branch, fails on the same rows where DataFusion does.
 ///
 /// DataFusion evaluates a `WHEN` condition only on the rows no earlier branch
 /// selected (for `CASE base WHEN value`, also only where `base` is not NULL),

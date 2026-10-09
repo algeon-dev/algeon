@@ -231,7 +231,7 @@ pub(super) fn betweenness_k_resolves_to_sorted_first_vertices() {
     // Chain A (0->..->19, 19 edges) and chain B (1000->..->1009, 9 edges),
     // with B's edges listed first so first-seen order differs from sorted
     // order. k=2 must resolve to sorted seeds {0,1}, giving nonzero scores
-    // exactly on chain-A interior vertices {1..=18} (18 vertices). First-seen
+    // only on chain-A interior vertices {1..=18} (18 vertices). First-seen
     // seeds {1000,1001} would instead score 8 chain-B vertices.
     let mut src_values: Vec<i32> = Vec::new();
     let mut dst_values: Vec<i32> = Vec::new();

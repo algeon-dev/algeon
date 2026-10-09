@@ -39,7 +39,7 @@ impl GpuFunctionAvailability {
 ///
 /// Family adapters own the values. The common catalog validates cross-family
 /// invariants and owns the stable Arrow projection used by the three metadata
-/// metadata UDTFs.
+/// UDTFs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GpuFunctionDescriptor {
     /// Exact canonical execution function name, for example `cuvs_kmeans`.

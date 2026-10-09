@@ -2,7 +2,7 @@
 //!
 //! The compiled graph records how each task consumes its inputs and what
 //! payload form each resource may carry, so the executor reads one decision
-//! instead of re-deriving it from the plan on every task.
+//! and does not re-derive it from the plan on every task.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -70,8 +70,7 @@ pub(super) fn resolve_task_and_resource_contracts(
 
 /// Working state of contract resolution. Tasks and resources are indexed by
 /// id position; `task` and `resource` return `None` when an id is out of
-/// position so that a malformed graph resolves to the narrowest contract
-/// instead of a wrong one.
+/// position so that a malformed graph resolves to the narrowest contract.
 struct ContractGraph<'a> {
     plan: &'a QueryPlan,
     tasks: Vec<PipelineTask>,
@@ -130,8 +129,8 @@ impl ContractGraph<'_> {
             let data_form = self.resource_data_form(&self.resources[index]);
             let sharing = self.resource_sharing(&self.resources[index], data_form);
             // Consumers of a shared immutable resource read one copy, so the
-            // producer materializes a deferred source read instead of handing
-            // each consumer a source it would read again.
+            // producer materializes a deferred source read. Otherwise each
+            // consumer would read the source again.
             let data_form =
                 if sharing == ResourceSharing::SharedImmutableFrame && data_form == ResidentDataForm::SourceStream {
                     ResidentDataForm::Frame
@@ -621,7 +620,7 @@ impl ContractGraph<'_> {
     /// as a resident frame stream is narrowed to the strategies whose kernels
     /// consume probe chunks directly and to keyed-hash builds; every other
     /// strategy concatenates the stream first, so the narrowing shapes memory
-    /// rather than deciding support.
+    /// and does not decide support.
     fn consumers_accept_frame_stream(&self, resource: &ResidentResource) -> bool {
         !resource.consumers().is_empty()
             && resource.consumers().iter().all(|consumer| {
@@ -777,7 +776,7 @@ impl ContractGraph<'_> {
     }
 
     /// A unary stage re-stages whatever its input carries, so its output can
-    /// stay a deferred source stream exactly when its input is one. The input
+    /// stay a deferred source stream only when its input is one. The input
     /// resource is always resolved first: resource ids follow the plan's
     /// reachable postorder.
     fn unary_input_form(&self, task: &PipelineTask) -> ResidentDataForm {

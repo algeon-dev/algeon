@@ -9,7 +9,7 @@ license-file = "../../LICENSE"
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/algeon-build-support"
-readme = "../../README.md"
+readme = "README.md"
 keywords = ["build-dependencies", "cuda", "gpu", "rapids"]
 categories = ["development-tools::build-utils"]
 

@@ -1,9 +1,8 @@
-//! A named-column wrapper around GPU columns for ergonomic DataFrame operations.
+//! A named-column wrapper around GPU columns for DataFrame operations.
 //!
 //! [`DataFrame`] stores columns individually as `Arc<Column>`, enabling
 //! schema-only operations like rename, select, without_columns, and clone to
-//! share GPU memory via reference counting instead of deep-copying column
-//! data.
+//! share GPU memory via reference counting. Column data is not deep-copied.
 use std::sync::Arc;
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -24,8 +23,8 @@ use crate::{
 
 /// A GPU DataFrame: a named, ordered collection of GPU columns.
 ///
-/// `DataFrame` is an immutable value; every mutating operation returns a
-/// **new** `DataFrame` rather than modifying in place.
+/// `DataFrame` is an immutable value. Every mutating operation returns a
+/// **new** `DataFrame` and leaves the receiver unchanged.
 ///
 /// Columns are stored as `Arc<Column>`, so operations that don't change
 /// column data (rename, select, without_columns, clone, with_column for
@@ -312,7 +311,7 @@ impl DataFrame {
     /// and is intended for internal reassembly helpers that have already
     /// performed those checks.
     ///
-    /// # Safety contract (logic, not memory)
+    /// # Safety contract (logic invariants only)
     ///
     /// The caller must ensure:
     /// - No duplicate keys in `columns`
@@ -382,9 +381,10 @@ impl DataFrame {
     ///
     /// # Cost
     ///
-    /// Conditional: zero-copy for uniquely-owned columns, GPU-allocating
-    /// (deep-copy) for shared columns. If you know all columns are unique
-    /// (e.g. the `DataFrame` was just constructed), this is effectively free.
+    /// The cost depends on column sharing. Uniquely owned columns move without
+    /// a copy. Shared columns are deep-copied, which allocates GPU memory. If you
+    /// know all columns are unique (e.g. the `DataFrame` was just constructed),
+    /// this is effectively free.
     pub fn try_into_table(self) -> Result<(Table, Vec<String>)> {
         let mut names: Vec<String> = Vec::with_capacity(self.columns.len());
         let mut cols: Vec<Column> = Vec::with_capacity(self.columns.len());
@@ -413,8 +413,6 @@ impl DataFrame {
         Ok((table, names))
     }
 
-    // -- Internal helpers ----------------------------------------------------
-
     /// Build a borrowed [`TableView`] from the individual `Arc<Column>`s.
     pub(crate) fn build_table_view(&self) -> Result<TableView<'_>> {
         let views: Vec<ColumnView<'_>> = self.columns.values().map(|col| col.view()).collect::<Result<Vec<_>>>()?;
@@ -432,7 +430,6 @@ impl DataFrame {
         dataframe_from_table_and_names(table, names)
     }
 
-    /// Returns owned column names.
     pub(crate) fn column_names_owned(&self) -> Vec<String> {
         self.columns.keys().cloned().collect()
     }

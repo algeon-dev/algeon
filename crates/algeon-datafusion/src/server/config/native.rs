@@ -24,8 +24,6 @@ pub const ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "ALGEON_SE
 /// Bounded source chunk planning mode. Accepts `conservative` or
 /// `local_parquet_throughput`.
 pub const ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
-/// Enables per-query CUDA allocator domains and sets the immutable private-pool
-/// ceiling as a positive multiple of the initial admission grant.
 /// Floating statistical aggregate execution contract. Accepts
 /// `gpu_native_tolerant` (the default, which may differ from DataFusion in
 /// floating-point results) or `datafusion_exact_host_welford`.
@@ -42,7 +40,7 @@ pub enum ServerNativeConfigScope {
     NativeExecution,
     /// Bounded execution setting.
     BoundedExecution,
-    /// Service-level source IO resource setting, not session-scoped.
+    /// Service-level source IO resource setting. Sessions do not scope it.
     SourceIoResource,
 }
 

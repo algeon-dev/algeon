@@ -9,8 +9,8 @@
 //! and from the source's read set when nothing else reads it. `COUNT` over a
 //! column without nulls equals the row count, so the result is unchanged; the
 //! carrier must be non-null because `COUNT` skips a null carrier row. A grouped
-//! aggregate takes a key column rather than the literal because its partial stage
-//! cannot read a literal argument.
+//! aggregate uses a key column as its argument. A literal argument cannot serve
+//! there, because its partial stage cannot read one.
 //!
 //! The pass rebuilds the node list (`RewrittenNodes::rebuilt`), memoizing one
 //! image per (node, required columns) pair; a node reached under two column
@@ -74,7 +74,6 @@ impl CountNonNullColumnPruningDiagnostics {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;

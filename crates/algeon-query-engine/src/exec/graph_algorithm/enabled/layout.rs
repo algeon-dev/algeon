@@ -222,8 +222,8 @@ where
     V: CugraphElement + cudf::CudfType,
 {
     // The cuGraph handle has routed this stream's current-resource allocations to the query
-    // domain, so side-input checks run on that stream and resource rather than cuDF's default
-    // execution context, whose different route the adaptor rejects.
+    // domain, so side-input checks run on that stream and resource. cuDF's default execution
+    // context has a different route, which the adaptor rejects.
     let overrides = runtime.exec();
     if let Some(attributes) = attributes {
         validate_force_atlas2_vertex_series::<V>(&attributes.vertex, "vertex_attributes.vertex", overrides)?;

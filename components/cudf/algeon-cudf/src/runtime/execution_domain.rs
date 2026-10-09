@@ -7,7 +7,7 @@
 //! - the device memory resource (MR) that should back follow-on allocations
 //!
 //! `ExecutionDomain` is the private bundle that stores that metadata.
-//! It is not a general scheduler or execution-policy object. Its job is narrow:
+//! Its job is narrow and excludes general scheduling and execution policy:
 //!
 //! - remember retained provenance after an operation returns
 //! - supply explicit stream and memory-resource handles from retained
@@ -99,7 +99,8 @@ impl EnteredExecution {
 ///
 /// Tokens are deduplicated by allocation identity. Keeping one flat Arc-backed
 /// slice avoids recursive provenance chains and bounds repeated inheritance to
-/// the number of distinct owners rather than the number of derivations.
+/// the number of distinct owners. Derivations that add no new owner leave the
+/// set unchanged.
 #[derive(Clone, Default)]
 struct RetainedLifetimes {
     tokens: Option<Arc<[Arc<dyn Send + Sync>]>>,
@@ -269,7 +270,7 @@ impl ExecutionDomain {
     /// Synchronize this domain's stream so that the host can read device memory
     /// produced on it.
     ///
-    /// This is a **host fence** (`cudaStreamSynchronize`): the calling CPU
+    /// This is a **host fence** (`cudaStreamSynchronize`). The calling CPU
     /// thread blocks until all GPU work enqueued on the stream completes.
     ///
     /// Use this before copying device data to the host (e.g. `to_host()`,
@@ -284,11 +285,11 @@ impl ExecutionDomain {
     /// Insert two-way device-side ordering between a cross-stream input
     /// (`source`) and the consuming operation's output domain (`target`).
     ///
-    /// The forward direction happens immediately: a CUDA event is recorded on
-    /// the source stream and the target stream waits on it, so the consumer
+    /// The forward direction happens immediately. A CUDA event is recorded on
+    /// the source stream, and the target stream waits on it. The consumer thus
     /// never reads bytes that are still being produced. The reverse direction
-    /// is carried by the returned [`ConsumerCompletionFence`]: hold it across
-    /// the FFI call that enqueues the consuming operation; when it drops it
+    /// is carried by the returned [`ConsumerCompletionFence`]. Hold it across
+    /// the FFI call that enqueues the consuming operation. When it drops, it
     /// records a completion event on the target stream and makes the source
     /// stream wait on it. Neither direction blocks the calling CPU thread.
     pub(crate) fn insert_stream_dependency(
@@ -477,7 +478,7 @@ impl ExecutionDomain {
 /// stream and every registered cross-stream input's retained stream waits on
 /// it. Without this, dropping an input right after the operation enqueues its
 /// stream-ordered deallocation on the input's own stream, and the pool can
-/// hand the block to new work on that stream while the consuming kernel is
+/// reuse the block for new work on that stream while the consuming kernel is
 /// still reading it (device use-after-free).
 ///
 /// Hold the fence across the FFI call that enqueues the consuming operation:
@@ -492,7 +493,7 @@ impl ExecutionDomain {
 /// (event creation, record, or wait fails; in practice only after a sticky
 /// CUDA error), the drop falls back to host-synchronizing the output stream,
 /// which restores safety at the cost of blocking the calling thread. Both
-/// failures are reported on stderr; they are never silently ignored.
+/// failures are reported on stderr. Neither is discarded.
 #[must_use = "hold the fence across the consuming FFI call; dropping it earlier breaks consumer-to-owner stream ordering"]
 pub(crate) struct ConsumerCompletionFence {
     output: Arc<ExecutionDomain>,
@@ -556,8 +557,8 @@ impl Drop for ConsumerCompletionFence {
         }
         if let Err(error) = self.fire() {
             // The device-side fence could not be recorded (or only partially:
-            // fire() stops at the first failure). Returning silently would
-            // reopen the use-after-free this fence exists to close, so fall
+            // fire() stops at the first failure). Returning without a fallback
+            // would reopen the use-after-free this fence exists to close, so fall
             // back to a host fence: block until the consuming work on the
             // output stream completes. After that, no input stream can
             // deallocate under an in-flight consumer. Slow but safe.

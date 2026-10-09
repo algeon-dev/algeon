@@ -38,16 +38,24 @@ impl SourceChunkPlanningOptions {
         self.local_parquet_throughput_min_device_budget_bytes
     }
 
+    /// Sets the row-group cap available when local-throughput planning widens a
+    /// conservative chunk. The value must be nonzero; call [`Self::validate`]
+    /// after changing options.
     pub fn with_local_parquet_throughput_max_row_groups_per_chunk(mut self, row_groups: usize) -> Self {
         self.local_parquet_throughput_max_row_groups_per_chunk = row_groups;
         self
     }
 
+    /// Sets the minimum device budget in bytes that permits local-throughput
+    /// chunk widening. A smaller budget retains conservative chunks.
+    /// The value must be nonzero; this setter does not validate it.
     pub fn with_local_parquet_throughput_min_device_budget_bytes(mut self, bytes: u64) -> Self {
         self.local_parquet_throughput_min_device_budget_bytes = bytes;
         self
     }
 
+    /// Rejects zero row-group or device-budget limits with
+    /// [`QueryErrorCode::InvalidConfiguration`].
     pub fn validate(&self) -> QueryResult<()> {
         validate_source_chunk_planning_nonzero_usize(
             "local_parquet_throughput_max_row_groups_per_chunk",

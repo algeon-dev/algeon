@@ -32,7 +32,7 @@ use crate::gpu_backend::DEFAULT_NATIVE_DEVICE_BUDGET_BYTES;
 pub const ALGEON_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "ALGEON_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES";
 /// Named native memory/source profile used by ClickBench benchmark/report
 /// surfaces. Accepts `conservative` (default) or `clickbench_gpu_throughput`;
-/// individual `ALGEON_CLICKBENCH_NATIVE_*` knobs may still override the profile.
+/// individual `ALGEON_CLICKBENCH_NATIVE_*` settings may still override the profile.
 pub const ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV: &str = "ALGEON_CLICKBENCH_NATIVE_PROFILE";
 /// Planning target, in bytes, for native Parquet source chunks.
 pub const ALGEON_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "ALGEON_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES";
@@ -50,15 +50,15 @@ pub const ALGEON_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
 pub const ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str =
     "ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
 
-/// Conservative bounded profile: production-safe ClickBench defaults.
+/// The conservative bounded profile uses production-safe ClickBench defaults.
 pub const CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
 /// GPU throughput profile for local ClickBench Parquet on high-memory cards.
 pub const CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT: &str = "clickbench_gpu_throughput";
-/// Profile name used when explicit knobs do not match a named profile.
+/// Profile name used when explicit settings do not match a named profile.
 pub const CLICKBENCH_NATIVE_PROFILE_CUSTOM: &str = "custom";
 /// Throughput profile device budget, matching the TPC SF100 95 GiB probe.
 pub const CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64 = 102_005_473_280;
-/// Throughput profile source byte target: 32 GiB.
+/// Throughput profile source byte target of 32 GiB.
 pub const CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64 = 34_359_738_368;
 /// Throughput profile row-group batch target.
 pub const CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
@@ -149,9 +149,9 @@ pub fn clickbench_tuned_cpu_session_config() -> SessionConfig {
 /// Native optimizer config used by ClickBench report and benchmark surfaces.
 ///
 /// Resolves [`ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV`] plus optional
-/// `ALGEON_CLICKBENCH_NATIVE_*` overrides. Defaults remain conservative (64 MiB /
-/// 1 row group); callers select normal or strict native execution when they
-/// install the resulting rule.
+/// `ALGEON_CLICKBENCH_NATIVE_*` overrides. Defaults remain conservative (no
+/// source-byte ceiling, 1 row group); callers select normal or strict native
+/// execution when they install the resulting rule.
 pub fn clickbench_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
     clickbench_native_optimizer_config_with_profile_settings(&clickbench_native_profile_settings_from_env())
 }
@@ -179,8 +179,8 @@ pub fn clickbench_native_optimizer_config_with_profile_settings(
 /// `ALGEON_CLICKBENCH_NATIVE_PROFILE` chooses a named base profile:
 /// `conservative` keeps the existing bounded defaults, while
 /// `clickbench_gpu_throughput` applies the TPC SF100-like local Parquet
-/// throughput knobs. Individual `ALGEON_CLICKBENCH_NATIVE_*` knobs override
-/// either base. If those final values exactly match a named profile, the
+/// throughput settings. Individual `ALGEON_CLICKBENCH_NATIVE_*` settings override
+/// either base. If those final values match a named profile, the
 /// resolved `profile_name` is that profile; otherwise it is `custom`.
 pub fn clickbench_native_profile_settings_from_env() -> ClickbenchNativeProfileSettings {
     clickbench_native_profile_settings_with_env(|name| std::env::var(name).ok())
@@ -484,10 +484,11 @@ pub enum ClickbenchExecutionProgressEvent<'a> {
 
 /// Builds execution report items for an optional exact query-id subset.
 ///
-/// Unknown query ids are silently ignored. Progress callbacks are emitted in
-/// selected-query order: one start event, then one finish event per query.
-/// Duplicate requested ids do not duplicate output. Runtime outcome strings
-/// are `planning_failure`, `not_started`, `succeeded`, or `failed`.
+/// Unknown query ids are ignored. Progress callbacks are emitted in
+/// selected-query order. Each selected query gets one start event followed by
+/// one finish event. Duplicate requested ids do not duplicate output. Runtime
+/// outcome strings are `planning_failure`, `not_started`, `succeeded`,
+/// `failed`, `cancelled`, `dropped`, or `panicked`.
 pub async fn clickbench_datafusion_execution_workload_items_filtered(
     root: &Path,
     session_config: SessionConfig,

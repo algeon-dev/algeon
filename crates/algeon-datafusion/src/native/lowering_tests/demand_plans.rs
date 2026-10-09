@@ -70,7 +70,7 @@ async fn representative_query_plans_match_golden() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-representative-plans");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
-    // Without file statistics DataFusion keeps COUNT(*) instead of folding it
+    // Without file statistics DataFusion keeps COUNT(*) and does not fold it
     // to a literal.
     let config = || SessionConfig::new().with_target_partitions(1).with_collect_statistics(false);
     let mut displays = Vec::new();

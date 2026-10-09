@@ -373,8 +373,8 @@ fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build()
         "query domain peak {peak_bytes} must stay below a second whole copy of the {} byte inner output",
         outer_metrics.build_bytes
     );
-    // The inner join yields its output in gather-map slices, so the outer
-    // build consumes several frames rather than one concatenated input.
+    // The inner join yields its output in gather-map slices. The outer build
+    // consumes several frames; it does not receive one concatenated input.
     assert!(
         metrics.join_strategy_decisions.iter().any(|decision| {
             decision.node_id == "n4"
@@ -503,8 +503,8 @@ fn bounded_native_query_releases_build_partitions_when_cancelled_during_build_re
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(join).unwrap();
-    // Warm the reader and kernels so the deadline below elapses inside the
-    // build chunk recovery tree rather than during first-use initialization.
+    // Warm the reader and kernels first. The deadline below then elapses inside
+    // the build chunk recovery tree, after first-use initialization has finished.
     let warm =
         backend_context_with_memory_control_policy(build_recovery_policy(128 * 1024 * 1024, row_groups_per_chunk));
     let warm_result = execute_query_plan(&warm, &plan).unwrap();

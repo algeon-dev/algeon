@@ -62,8 +62,9 @@ impl ExecutionCancellation {
     }
 
     /// Resolves to the typed error that ends a wait: the cancellation, or the
-    /// deadline once it elapses. A waiter returns it directly rather than
-    /// reading the clock again, which a paused Tokio clock can disagree with.
+    /// deadline once it elapses. A waiter returns it directly and does not
+    /// read the clock again, since a paused Tokio clock can disagree with a
+    /// fresh reading.
     pub async fn terminated(&self, operation: &'static str) -> QueryError {
         self.cancelled_or_expired().await;
         match self.check(operation) {
@@ -110,7 +111,8 @@ impl ExecutionCancellation {
         self.deadline.is_some_and(|deadline| Instant::now() >= deadline)
     }
 
-    /// Returns a structured native error if cancellation has been requested.
+    /// Returns a structured native error if cancellation has been requested or the deadline has
+    /// elapsed. Explicit cancellation takes precedence over expiry.
     pub fn check(&self, operation: &'static str) -> Result<()> {
         if self.cancellation_requested() {
             return Err(QueryError::new(QueryErrorCode::Cancelled, operation, "native query execution was cancelled")

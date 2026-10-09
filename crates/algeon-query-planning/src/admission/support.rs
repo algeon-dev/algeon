@@ -74,7 +74,7 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
 /// Checks graph shape plus plan-node compatibility for compiled execution.
 ///
 /// `analysis` is the capability analysis the pipeline was compiled from; the
-/// shared-producer lineage contract reads its invariants instead of running a
+/// shared-producer lineage contract reads its invariants and does not run a
 /// second analysis.
 pub fn compiled_bounded_query_plan_support(
     plan: &QueryPlan,
@@ -120,10 +120,10 @@ pub fn compiled_bounded_query_plan_support(
 
 /// Pipelines whose every task contract the compiled executor already owns.
 ///
-/// Admission is capability-driven, not shape-driven: any pipeline composed
-/// only of these task kinds is judged by the same task/resource contracts as
-/// join plans, whether it contains a union. A union of independent
-/// branches is the first acceptance case, not an admission switch.
+/// Admission is capability-driven and does not depend on the plan shape: any
+/// pipeline composed only of these task kinds is judged by the same task/resource
+/// contracts as join plans, whether it contains a union. A union of independent
+/// branches is the first acceptance case. It does not select a separate admission path.
 /// Aggregate and final-sort tasks use the same compiled contracts; join
 /// build/probe/materialize tasks run on the coordinator through the same
 /// claim/output-ready/commit protocol while their independent input branches

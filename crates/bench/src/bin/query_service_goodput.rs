@@ -14,9 +14,9 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("query_service_goodput: {error}");
-            // Backend and engine errors carry their reason in the source chain
-            // rather than in the outermost message, so printing only the top
-            // level turns a specific refusal into "initialization failed".
+            // Backend and engine errors carry their reason in the source chain. The
+            // outermost message omits that reason, so printing only the top level
+            // turns a specific refusal into "initialization failed".
             let mut source = error.source();
             while let Some(cause) = source {
                 eprintln!("  caused by: {cause}");

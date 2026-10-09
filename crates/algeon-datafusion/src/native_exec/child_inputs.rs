@@ -80,8 +80,8 @@ pub(crate) struct NativeChildBinding {
     pub(crate) input_name: String,
     pub(crate) role: &'static str,
     pub(crate) schema: SchemaRef,
-    /// Projection from `schema` into the exact ID/vector column set consumed
-    /// by the accelerator. Host-staged inputs are already projected and use an
+    /// Projection from `schema` into the ID/vector column set consumed by
+    /// the accelerator. Host-staged inputs are already projected and use an
     /// identity mapping; device producers remain device-resident and are
     /// projected by the native consumer plan.
     pub(crate) projection: Vec<usize>,
@@ -90,8 +90,8 @@ pub(crate) struct NativeChildBinding {
 pub(crate) struct UploadedNativeChildren {
     pub(crate) inputs: GpuResidentInputMap,
     pub(crate) bindings: Vec<NativeChildBinding>,
-    /// One exact Arrow-to-cuDF upload boundary for every ordinary child that
-    /// was staged on the host before entering the shared native context.
+    /// One Arrow-to-cuDF upload boundary for every ordinary child that was
+    /// staged on the host before entering the shared native context.
     pub(crate) host_to_device_uploads: Vec<HostToDeviceUpload>,
 }
 
@@ -221,7 +221,8 @@ impl StagedNativeChildren {
                 },
             }
         }
-        // Uploads own their device buffers, so the completed host staging quota can be released before native compute.
+        // Uploads own their device buffers, so the completed host staging quota
+        // can be released before native compute.
         drop(reservation);
         Ok(UploadedNativeChildren { inputs, bindings, host_to_device_uploads })
     }
@@ -1079,7 +1080,7 @@ pub(crate) mod tests {
         assert_eq!(task_context.memory_pool().reserved(), 0, "cancellation returns every claimed byte");
     }
 
-    /// Staging that waits on a pending input wakes on cancellation, not a
+    /// Staging that waits on a pending input wakes on cancellation without a
     /// timer.
     #[tokio::test(start_paused = true)]
     async fn cancelling_staging_while_its_input_is_pending_wakes_it_without_a_timer() {

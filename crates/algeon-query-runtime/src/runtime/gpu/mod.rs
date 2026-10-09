@@ -6,8 +6,9 @@
 //! for each configured ordinal; `placement` ranks ledgers for a new attempt;
 //! `lanes` assigns each admitted attempt its identity slot; `memory_failure`
 //! counts allocator failures for reports; `owner` makes sure only one live
-//! backend exists per process. The capacity and admission contract these
-//! modules implement is `website/docs/design/admission.mdx`.
+//! backend exists per process. The capacity and admission contracts these
+//! modules implement are `website/docs/design/admission.mdx#device-profiles-and-grants`
+//! and `website/docs/design/admission.mdx#from-capability-validation-to-admission`.
 
 pub(crate) mod device_context;
 pub(crate) mod inventory;

@@ -20,8 +20,10 @@ use super::{
 use crate::planner::NativeCapabilityCompiledGraphDiagnostics;
 
 pub(crate) trait TsvRow {
+    /// Column names in the same order and count as `fields`.
     const COLUMNS: &'static [&'static str];
 
+    /// Cells follow `COLUMNS` order and contain no literal tabs, newlines, or carriage returns.
     fn fields(&self) -> Vec<String>;
 
     fn to_tsv_line(&self) -> String {

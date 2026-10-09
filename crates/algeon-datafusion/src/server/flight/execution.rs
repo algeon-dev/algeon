@@ -27,7 +27,7 @@ use crate::server::attempt::AlgeonAttempt;
 /// implementation. `take_until` and client disconnects may discard this
 /// wrapper at any poll boundary; its `Drop` cancels the attempt before Rust
 /// drops the inner [`crate::server::attempt::AttemptStream`], so terminalization observes
-/// `Cancelled` rather than an unrelated client-drop outcome.
+/// `Cancelled` before any client-drop outcome can be recorded.
 struct FlightExecutionBody {
     inner: Option<SendableRecordBatchStream>,
     cancellation: BoxFuture<'static, ()>,
@@ -82,7 +82,7 @@ impl Stream for FlightExecutionBody {
             // Reaching EOF is the execution-resource boundary. Do not retain
             // the exhausted DataFusion stream (and its admission ticket)
             // until tonic later drops the response wrapper. This is also the
-            // only reliable Flight success boundary: an empty synthetic tail
+            // only reliable Flight success boundary. An empty synthetic tail
             // may not be polled after stream encoding finishes, which would
             // otherwise drop the coordinator lease as `Dropped`.
             this.inner = None;
@@ -423,9 +423,9 @@ impl DatafusionAlgeonFlightSqlService {
 
         // DataGrip-class clients re-run held prepared-statement handles. A
         // no-result-set DDL handle that already executed once is a no-op on
-        // re-execution: return an empty result so the client's `execute()`
-        // succeeds instead of surfacing DataFusion's "already exists" /
-        // "not found" catalog error from the duplicate run.
+        // re-execution. Returning an empty result lets the client's `execute()`
+        // succeed. Without that result, the duplicate run would surface
+        // DataFusion's "already exists" / "not found" catalog error.
         if let Some(handle) = &prepared_handle
             && self.prepared_statements.get(handle).is_some_and(|entry| entry.ddl_already_executed())
         {
@@ -438,7 +438,6 @@ impl DatafusionAlgeonFlightSqlService {
                 attempt.complete_without_result_stream();
             }
             coordinator_terminal.finish_success("stream");
-            drop(guard);
             return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
         }
 
@@ -573,7 +572,7 @@ impl DatafusionAlgeonFlightSqlService {
             },
         };
         // `execute_logical_plan` has run any DDL side effect by now, so record
-        // the success: a re-run of this prepared handle short-circuits to an
+        // the success. A re-run of this prepared handle short-circuits to an
         // empty result (`mark_executed` self-guards on `no_result_ddl`, so
         // query/DML handles are unaffected).
         if let Some(handle) = &prepared_handle
@@ -585,12 +584,13 @@ impl DatafusionAlgeonFlightSqlService {
             // DataFusion executes DDL from `execute_logical_plan`; a CTAS
             // input has already run under this statement's attempt. The
             // returned DataFrame is the statement's empty result, so the
-            // attempt commits here instead of planning and executing it.
+            // attempt commits here without planning or executing that DataFrame.
             if let Some(attempt) = attempt.as_ref() {
                 attempt.complete_without_result_stream();
             }
             coordinator_terminal.finish_success("stream");
             coordinator_terminal.wait_finished().await;
+            // Deregister cancellation at completion, as a streamed result does when its stream ends.
             drop(guard);
             return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
         }

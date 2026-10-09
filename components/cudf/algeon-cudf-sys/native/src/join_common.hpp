@@ -38,7 +38,6 @@
 #include <vector>
 
 namespace cudf_rust::join {
-/// Concatenate key and payload views into one table view.
 inline cudf::table_view concat_views(cudf::table_view const& keys, cudf::table_view const& payload)
 {
   std::vector<cudf::column_view> cols;
@@ -142,7 +141,6 @@ inline std::unique_ptr<cudf::table> gather_table(
   rmm::cuda_stream_view stream,
   rmm::device_async_resource_ref mr)
 {
-  // Wrap the device_uvector as a column_view for gather.
   cudf::column_view map_view(cudf::data_type{cudf::type_id::INT32},
                              static_cast<cudf::size_type>(map->size()),
                              map->data(),

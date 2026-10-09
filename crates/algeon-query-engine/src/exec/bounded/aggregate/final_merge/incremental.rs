@@ -3,8 +3,8 @@
 //! `should_execute_incremental_partitioned_final_aggregate_merge` selects it when the aggregate
 //! capability decision picks the partitioned merge for the final stage and the aggregate has no
 //! grouping sets. The retained merge in `compiled.rs` keeps every partial until the stream ends.
-//! This merge folds partials as they arrive and holds bytes in proportion to the merged state
-//! instead of the input.
+//! This merge folds partials as they arrive. Retained bytes track the merged state plus the
+//! pending batch.
 //!
 //! `push` collects raw partials in `pending_raw`. When the next partial would pass the batch byte
 //! threshold, or `MAX_PENDING_PARTIALS` partials are waiting, the batch is concatenated and
@@ -49,7 +49,7 @@ use crate::exec::{
 const MAX_PENDING_PARTIALS: usize = 16;
 
 /// Whether a compiled aggregate over a partial stream should merge its partials
-/// incrementally into group-key-aligned partition states instead of retaining
+/// incrementally into group-key-aligned partition states. The other path retains
 /// every partial until the stream ends.
 pub(in crate::exec::bounded::aggregate) fn should_execute_incremental_partitioned_final_aggregate_merge(
     aggregate: &AggregateNode,
@@ -324,8 +324,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             )
             .map(|frame| ResidentFrameStreamPayload::new(vec![frame]));
         }
-        // A single partial needs no merge, exactly as the whole-set path
-        // projects it directly without recording a merge attempt.
+        // A single partial needs no merge. The whole-set path also projects it
+        // directly without recording a merge attempt.
         if self.partial_count == 1 && self.partition_count.is_none() {
             let partial = self.pending_raw.pop().expect("single partial is pending");
             return execute_compiled_final_aggregate_projection(
@@ -425,7 +425,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
     }
 
     /// Concatenates the pending raw partials and hash-partitions them once, so
-    /// each partition receives one aligned slice per batch instead of one per chunk.
+    /// each partition receives one aligned slice per batch, regardless of the chunk count.
     fn partition_pending_raw(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<()> {
         let partition_count = match self.partition_count {
             Some(count) => count,

@@ -54,8 +54,8 @@ pub(super) fn discover_shared_subplan_materialization_candidates(
         families.entry(signature.family_key.clone()).or_default().push(signature);
     }
 
-    // The family key hashes source locations, so families are reported in
-    // plan order (by their first aggregate) rather than by key.
+    // The family key hashes source locations, so families are sorted by the plan
+    // position of their first aggregate.
     let mut families = families.into_values().filter(|family| family.len() >= 2).collect::<Vec<_>>();
     for family in &mut families {
         family.sort_by_key(|signature| signature.aggregate_node_id);

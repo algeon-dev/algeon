@@ -18,8 +18,8 @@ use crate::{
 };
 
 /// Borrowed, normalized representation of a DataFusion physical subtree that
-/// the native path knows how to lower: one recursive input tree whose root is
-/// the candidate's output.
+/// the native path can lower. It is one recursive input tree whose root is the
+/// candidate's output.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativePlan<'a> {
     /// Candidate metadata emitted in planning reports, derived from `input`.
@@ -55,7 +55,7 @@ pub(in crate::native) enum NormalizedNativeInput<'a> {
 
 impl NormalizedNativeInput<'_> {
     // Shapes are consumed by reports and tests, so they describe the accepted
-    // physical operators rather than implementation details.
+    // physical operators. They do not describe implementation details.
     pub(in crate::native) fn shape(&self) -> CandidateShape {
         match self {
             Self::Source(source) => source.shape(),
@@ -113,8 +113,8 @@ impl NormalizedNativeGpuResidentSource<'_> {
 }
 
 /// Local Parquet source recognized by the native path. A directly attached
-/// `FilterExec` is stored here so Parquet pruning/projection can reason about
-/// scan, filter, and output columns together.
+/// `FilterExec` is stored here so Parquet pruning and projection analyze scan,
+/// filter, and output columns together.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeSource<'a> {
     pub(in crate::native) scan: &'a DataSourceExec,
@@ -186,7 +186,7 @@ pub(in crate::native) struct NormalizedNativeAggregate<'a> {
     pub(in crate::native) distributed_exchange: Option<&'a str>,
     /// Whole final output statistics, before peeling a distributed partial/final pair.
     pub(in crate::native) statistics_output: &'a AggregateExec,
-    /// Mirrors root aggregate semantics: true only for a validated partial
+    /// Mirrors root aggregate semantics. True only for a validated partial
     /// aggregate from a distributed final/partial pair.
     pub(in crate::native) aggregate_allows_partial: bool,
     /// Native aggregate output schema. For distributed pairs this preserves the
@@ -260,7 +260,7 @@ impl NormalizedNativeSort<'_> {
 /// Sort ordering carried by a normalized native sort node.
 ///
 /// A sort borrows the original DataFusion `SortExec`. A sort-preserving merge
-/// or a declared output ordering provides only an ordering, so the normalizer
+/// or a declared output ordering provides only an ordering; the normalizer
 /// stores it with the schemas it resolves against.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeSortExprs<'a> {

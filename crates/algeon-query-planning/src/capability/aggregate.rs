@@ -40,7 +40,7 @@ fn aggregate_expr_is_exact_distinct_count(expr: &AggregateExpr) -> bool {
 pub enum AggregateStateContract {
     /// No distinct or group-only dedup state is required.
     Plain,
-    /// SQL setop-style dedup: grouped keys with no aggregate expressions.
+    /// SQL setop-style dedup over grouped keys that have no aggregate expressions.
     DedupGroupOnly,
     /// Exact count-distinct state represented as `COUNT(DISTINCT col)` or
     /// native `NUnique(col)`.
@@ -165,58 +165,76 @@ impl AggregateStrategyExecutionOptions {
     pub(crate) const DEFAULT_EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 10_000_000;
     pub(crate) const DEFAULT_EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 7_000_000;
     pub(crate) const DEFAULT_PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
+    /// Default maximum selected row groups for source-adjacent prepared sort grouping.
     pub const DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS: u64 = 64;
+    /// Default maximum source-read bytes for source-adjacent prepared sort grouping.
     pub const DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES: u64 = 384 * 1024 * 1024;
+    /// Default maximum chunk fan-in for source-adjacent prepared sort grouping.
     pub const DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN: u64 = 64;
 
+    /// Maximum distinct-group/input-row ratio, in parts per million, for the
+    /// encoded-key partial aggregation strategy.
     pub fn encoded_key_partial_low_cardinality_threshold_ppm(&self) -> u64 {
         self.encoded_key_partial_low_cardinality_threshold_ppm
     }
 
+    /// Minimum input row count for considering encoded-key partial aggregation.
     pub fn encoded_key_partial_min_input_rows(&self) -> u64 {
         self.encoded_key_partial_min_input_rows
     }
 
+    /// Maximum number of grouping columns admitted to the exact cardinality probe.
     pub fn exact_grouped_key_cardinality_probe_max_key_columns(&self) -> usize {
         self.exact_grouped_key_cardinality_probe_max_key_columns
     }
 
+    /// Minimum input row count for probing a single string key with AVG state.
     pub fn exact_single_string_avg_cardinality_probe_min_input_rows(&self) -> u64 {
         self.exact_single_string_avg_cardinality_probe_min_input_rows
     }
 
+    /// Minimum input row count for the general single-key cardinality probe.
     pub fn exact_single_key_cardinality_probe_min_input_rows(&self) -> u64 {
         self.exact_single_key_cardinality_probe_min_input_rows
     }
 
+    /// Minimum input row count for the multi-column grouping cardinality probe.
     pub fn exact_grouped_key_cardinality_probe_min_input_rows(&self) -> u64 {
         self.exact_grouped_key_cardinality_probe_min_input_rows
     }
 
+    /// Maximum distinct string-key groups admitted to the prepared strategy.
     pub fn exact_single_string_key_prepared_max_groups(&self) -> u64 {
         self.exact_single_string_key_prepared_max_groups
     }
 
+    /// Maximum input row count for an exact three-column grouping probe.
     pub fn exact_three_key_cardinality_probe_max_input_rows(&self) -> u64 {
         self.exact_three_key_cardinality_probe_max_input_rows
     }
 
+    /// Maximum input row count for an exact five-column grouping probe.
     pub fn exact_five_key_cardinality_probe_max_input_rows(&self) -> u64 {
         self.exact_five_key_cardinality_probe_max_input_rows
     }
 
+    /// Maximum distinct-group/input-row ratio, in parts per million, for
+    /// prepared sort grouping.
     pub fn prepared_sort_groupby_low_cardinality_threshold_ppm(&self) -> u64 {
         self.prepared_sort_groupby_low_cardinality_threshold_ppm
     }
 
+    /// Maximum selected row groups for source-adjacent prepared sort grouping.
     pub fn source_adjacent_prepared_sort_groupby_max_row_groups(&self) -> u64 {
         self.source_adjacent_prepared_sort_groupby_max_row_groups
     }
 
+    /// Maximum source-read bytes for source-adjacent prepared sort grouping.
     pub fn source_adjacent_prepared_sort_groupby_max_source_read_bytes(&self) -> u64 {
         self.source_adjacent_prepared_sort_groupby_max_source_read_bytes
     }
 
+    /// Maximum chunk fan-in for source-adjacent prepared sort grouping.
     pub fn source_adjacent_prepared_sort_groupby_max_fan_in(&self) -> u64 {
         self.source_adjacent_prepared_sort_groupby_max_fan_in
     }
@@ -260,11 +278,15 @@ impl AggregateStrategyExecutionOptions {
         Ok(())
     }
 
+    /// Sets the distinct-group/input-row ratio limit in parts per million.
+    /// [`Self::validate`] rejects values above 1,000,000.
     pub fn with_encoded_key_partial_low_cardinality_threshold_ppm(mut self, threshold_ppm: u64) -> Self {
         self.encoded_key_partial_low_cardinality_threshold_ppm = threshold_ppm;
         self
     }
 
+    /// Sets the minimum input rows for encoded-key partial aggregation.
+    /// This setter retains the supplied threshold without validation.
     pub fn with_encoded_key_partial_min_input_rows(mut self, rows: u64) -> Self {
         self.encoded_key_partial_min_input_rows = rows;
         self
@@ -282,11 +304,15 @@ impl AggregateStrategyExecutionOptions {
         self
     }
 
+    /// Sets the distinct-group/input-row ratio limit for prepared sort grouping
+    /// in parts per million. [`Self::validate`] rejects values above 1,000,000.
     pub fn with_prepared_sort_groupby_low_cardinality_threshold_ppm(mut self, threshold_ppm: u64) -> Self {
         self.prepared_sort_groupby_low_cardinality_threshold_ppm = threshold_ppm;
         self
     }
 
+    /// Sets the selected-row-group bound for source-adjacent prepared sort
+    /// grouping. Zero disables that strategy branch.
     pub fn with_source_adjacent_prepared_sort_groupby_max_row_groups(mut self, row_groups: u64) -> Self {
         self.source_adjacent_prepared_sort_groupby_max_row_groups = row_groups;
         self

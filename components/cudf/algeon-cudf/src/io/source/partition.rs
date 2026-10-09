@@ -30,7 +30,7 @@ impl PartitionColumn {
         &self.name
     }
 
-    /// Partition column dtype.
+    /// Dtype that every partition value for this column must match.
     pub fn data_type(&self) -> DataType {
         self.data_type
     }

@@ -171,7 +171,7 @@ fn assert_bounded_similarity_pair_input_is_admitted() {
 
     // The allocator is the sole arbiter of admission; a generous bounded
     // budget only needs to prove the large resident pair input is admitted
-    // and handed off zero-copy exactly once, not double-charged.
+    // and passed to the graph node zero-copy exactly once, with one charge against the grant.
     let context = backend_context_with_grant(64 * 1024 * 1024);
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());

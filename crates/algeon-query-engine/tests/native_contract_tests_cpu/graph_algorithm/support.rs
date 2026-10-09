@@ -143,16 +143,13 @@ pub(super) fn edge_schema_with_edge_id(vertex_type: DataType, weight_type: DataT
     ]))
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// cuGraph public-contract gate
-// ═══════════════════════════════════════════════════════════════════════════
-
 /// The native registry names that require the cuGraph graph implementation.
 ///
-/// This is deliberately a contract over our public dependency and descriptor
-/// layer, rather than a parser for its implementation source. API
-/// changes in the local `cugraph` crate are caught by the compile-time type references
-/// below and by the execution adapters that call those APIs.
+/// This is a contract over the public dependency and descriptor layer. It does
+/// not parse the implementation source of the local `cugraph` crate. API
+/// changes in that crate are caught by the compile-time references in
+/// `graph_operation_registry_has_cugraph_public_contracts` and by the execution
+/// adapters that call those APIs.
 #[cfg(feature = "cugraph")]
 pub(super) const CUGRAPH_REGISTRY_NAMES: &[&str] = &[
     "pagerank",

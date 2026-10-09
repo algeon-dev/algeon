@@ -146,7 +146,7 @@ pub struct GraphResidencyDescriptor {
     graph_vertex_upper_bound: Option<u64>,
     /// Footer-proven raw edge-row count for this exact source rowset. Edge
     /// normalization retains that source frame while the normalized graph
-    /// frame is live, so bounded graph admission must retain this fact.
+    /// frame is live. Bounded graph admission must retain this fact.
     graph_raw_edge_row_count: Option<u64>,
     /// Arrow dtype of the graph vertex columns.
     pub vertex_data_type: ArrowDataType,
@@ -241,7 +241,6 @@ pub struct ResidentGraphKey {
     pub weight_column: Option<String>,
     /// Stable edge-id binding, when present.
     pub(crate) edge_id_column: Option<String>,
-    /// Whether graph construction treats edges as directed.
     pub(crate) directed: bool,
     /// Whether cuGraph may renumber vertices internally.
     pub(crate) renumber: bool,
@@ -249,7 +248,6 @@ pub struct ResidentGraphKey {
     pub(crate) edge_preparation: GraphEdgePreparationKey,
     /// Concrete cuGraph graph orientation.
     pub orientation: GraphResidencyOrientation,
-    /// Arrow dtype of the graph vertex columns.
     pub(crate) vertex_data_type: ArrowDataType,
     /// Arrow dtype of the semantic weight column when consumed.
     pub(crate) weight_data_type: Option<ArrowDataType>,
@@ -266,13 +264,9 @@ pub(crate) enum GraphEdgePreparationKey {
     PythonCompatible {
         /// Whether reverse edges are inserted before deduplication.
         add_reverse: bool,
-        /// Duplicate-edge retention policy.
         dedup: EdgeDedupStrategy,
-        /// Duplicate-weight conflict policy.
         weight_combiner: EdgeWeightCombiner,
-        /// Source-vertex column consumed by normalization.
         source_column: String,
-        /// Destination-vertex column consumed by normalization.
         destination_column: String,
         /// Weight column consumed by normalization, when present.
         weight_column: Option<String>,
@@ -349,7 +343,7 @@ impl EffectiveGraphEdgeBindings {
 /// Derive graph residency facts from an edge-source native plan.
 ///
 /// This helper intentionally analyzes the plan that produced the GPU-resident
-/// edge frame, not the graph plan that later consumes that frame.
+/// edge frame. It does not analyze the graph plan that later consumes that frame.
 pub fn graph_residency_descriptor_for_edge_plan(
     plan: &QueryPlan,
     spec: &GraphAlgorithmSpec,

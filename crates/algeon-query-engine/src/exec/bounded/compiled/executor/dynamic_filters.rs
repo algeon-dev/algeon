@@ -949,7 +949,7 @@ fn dynamic_filter_i64_range_from_series(
                 (Some(min), Some(max)) => {
                     let (Ok(min), Ok(max)) = (i64::try_from(min), i64::try_from(max)) else {
                         // A value above `i64::MAX` cannot be represented in the i64 range
-                        // payload; skip the filter instead of misreporting it as empty.
+                        // payload. The filter is skipped and is not reported as empty.
                         return Ok(None);
                     };
                     Some((Some(min), Some(max)))

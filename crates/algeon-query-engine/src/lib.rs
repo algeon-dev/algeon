@@ -1,5 +1,9 @@
 //! Algeon native query engine: execution composition over RAPIDS.
 //!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion) and its re-exports.
+//! See the [API documentation boundary](https://algeon.dev/design#api-documentation).
+//!
 //! The native IR, validation, capability and admission contracts, and the
 //! optimizer belong to `query_planning`; attempts, device ledgers, contexts,
 //! and observation belong to `query_runtime`. Callers import those owners

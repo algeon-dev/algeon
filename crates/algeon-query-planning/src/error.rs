@@ -42,7 +42,7 @@ pub enum QueryErrorCode {
     Cancelled,
     /// A compiled pipeline contract refuses a plan that must execute natively.
     ///
-    /// This is a capability rejection rather than a malformed-plan error.
+    /// This is a capability rejection. A malformed plan is reported as `InvalidPlan`.
     UnsupportedPipelineContract,
     /// A specific operator within an otherwise recognizable plan is unsupported.
     UnsupportedOperator,
@@ -52,8 +52,8 @@ pub enum QueryErrorCode {
     UnsupportedType,
     /// The native IR violates executor invariants or cannot be validated.
     ///
-    /// Use this when the plan is malformed for the native engine, not when the
-    /// plan is well-formed but outside the supported catalogue.
+    /// Use this when the plan is malformed for the native engine. A well-formed
+    /// plan outside the supported catalogue is reported with an `Unsupported*` code.
     InvalidPlan,
     /// Caller-supplied execution-attempt correlation is invalid or oversized.
     InvalidAttemptCorrelation,
@@ -65,8 +65,8 @@ pub enum QueryErrorCode {
     InvalidConfiguration,
     /// Runtime graph inputs violate an engine-owned graph-operation contract.
     ///
-    /// Unlike [`Self::InvalidPlan`], this describes materialized edge or
-    /// side-input data rather than malformed native IR.
+    /// This code describes materialized edge or side-input data. `InvalidPlan`
+    /// describes malformed native IR.
     GraphInputInvalid,
     /// cuDF rejected an input, including permanent `NotFound` conditions.
     CudfInvalidInput,
@@ -270,7 +270,8 @@ impl fmt::Display for QueryErrorKind {
 
 /// Retry and remediation status for native-engine errors.
 ///
-/// This is a coarse source classification, not attempt retry advice.
+/// This is a coarse source classification. Attempt retry advice is derived
+/// only after terminal evidence is sealed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryErrorStatus {
     /// The same request will not succeed without changing its query, input,
@@ -282,9 +283,9 @@ pub enum QueryErrorStatus {
     /// A dependency/runtime failure has been observed to recur or is known to
     /// continue. Stop automatic retries and escalate or wait for intervention.
     ///
-    /// This remains distinct from [`Self::Permanent`] because it records a
-    /// continuing dependency failure rather than a request that must change;
-    /// neither status alone is retry advice.
+    /// This remains distinct from [`Self::Permanent`]. It records a continuing
+    /// dependency failure, while `Permanent` records a request that must change.
+    /// Neither status alone is retry advice.
     Persistent,
 }
 
@@ -434,12 +435,19 @@ pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageC
 /// code's name, so wrapping changes no report value.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AttemptFailureCode {
+    /// Failure classified by the canonical native query error taxonomy.
     Query(QueryErrorCode),
+    /// The backend was closing when the attempt needed service.
     BackendClosing,
+    /// A DataFusion-owned failure terminated the attempt.
     DatafusionError,
+    /// The result consumer dropped the attempt before normal completion.
     Dropped,
+    /// Attempt execution unwound after a panic.
     Panicked,
+    /// Stream completion could not establish safe resource release.
     StreamSynchronizationFailed,
+    /// A cleanup callback was abandoned before it could report completion.
     CleanupCallbackAbandoned,
 }
 
@@ -453,10 +461,12 @@ impl AttemptFailureCode {
         Self::CleanupCallbackAbandoned,
     ];
 
+    /// Wraps a native error code as an attempt failure without changing its classification.
     pub const fn from_query_error_code(code: QueryErrorCode) -> Self {
         Self::Query(code)
     }
 
+    /// Stable label used by attempt reports for this failure code.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Query(code) => code.as_str(),
@@ -513,8 +523,8 @@ impl<'de> Deserialize<'de> for AttemptFailureCode {
 ///
 /// Decoration never panics: empty keys are ignored and duplicate inserts keep
 /// the first value. Rejected keys are reported deterministically under
-/// `fact_collision_keys` so a colliding decoration stays diagnosable instead
-/// of replacing the primary error's facts. Callers that own a key and must
+/// `fact_collision_keys` so a colliding decoration stays diagnosable without
+/// replacing the primary error's facts. Callers that own a key and must
 /// overwrite it use [`QueryError::with_query_id`], [`QueryError::with_trace_id`],
 /// or another explicit overwrite path, never a second [`QueryError::with_fact`].
 /// The native engine reserves `cudf_code`, `cudf_kind`, `cudf_status`,
@@ -536,6 +546,7 @@ impl Facts {
         Self::default()
     }
 
+    /// Looks up a stored fact by name, returning `None` when absent.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
     }
@@ -596,7 +607,7 @@ impl QueryError {
     ///
     /// Panics when `operation` or `message` is empty. Construction-time
     /// identity must be present; later decoration ([`Self::with_fact`],
-    /// [`Self::with_source`]) never panics and keeps the first value instead.
+    /// [`Self::with_source`]) never panics and keeps the first value.
     pub fn new(code: QueryErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
         let message = message.into();
         assert!(!operation.is_empty(), "query-engine error operation must not be empty");
@@ -635,7 +646,7 @@ impl QueryError {
     /// `key` must be a non-empty static string and should be treated as part of
     /// the diagnostic contract once exposed. `value` is stringified with
     /// [`ToString`]. A duplicate or empty key never panics and never replaces
-    /// the primary error's facts: the first value wins and the rejected key is
+    /// the primary error's facts. The first value wins, and the rejected key is
     /// recorded under the `fact_collision_keys` fact. Layered `with_fact` calls must
     /// therefore use distinct keys per layer; wrapping an error must not
     /// re-emit a key the wrapped error already owns.
@@ -767,7 +778,7 @@ impl QueryError {
     ///
     /// A second source is discarded so error decoration cannot replace the
     /// original causal chain. Layers that need to add context wrap the error
-    /// in a new [`QueryError`] instead of re-attaching a source.
+    /// in a new [`QueryError`] and do not re-attach a source.
     #[must_use]
     pub fn with_source<E>(mut self, source: E) -> Self
     where E: StdError + Send + Sync + 'static {
@@ -817,6 +828,8 @@ impl QueryError {
         self.0.facts.as_ref()
     }
 
+    /// Returns a stored fact by name. Typed failure-context projections are
+    /// available through [`Self::wire_facts`].
     pub fn fact_value(&self, key: &str) -> Option<&str> {
         self.0.facts.get(key)
     }

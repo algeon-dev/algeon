@@ -2,7 +2,7 @@
 //!
 //! A cache-disabled companion is derived from the same validated opt-in
 //! profile by zeroing the one cache control, `cache_cap_bytes`. This prevents a
-//! calibration from silently changing its workload mix, queue contract, or
+//! calibration from changing its workload mix, queue contract, or
 //! device envelope while comparing the two states.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,8 +25,8 @@ pub(super) struct CacheCalibrationClause {
 
 /// Direct samples of the one cuDF cache allocation domain paired with the
 /// ledger observation read by that same domain owner.  This deliberately does
-/// not try to derive cache residency from aggregate CUDA/NVML free bytes:
-/// those include unrelated attempt allocations and allocator-pool state.
+/// not try to derive cache residency from aggregate CUDA/NVML free bytes.
+/// Those include unrelated attempt allocations and allocator-pool state.
 #[derive(Debug, Clone, Default, Serialize)]
 pub(super) struct CacheSamplingEvidence {
     pub(super) samples_with_cache_reports: u64,
@@ -74,8 +74,8 @@ struct CacheActivityCounters {
 
 /// Sealed evidence from the dedicated, cold-cache same-key probe. The
 /// probe runs source and BFS cohorts separately on a fresh single-ordinal
-/// backend; its snapshots remain public backend DTOs, not a runner-owned
-/// cache event store.
+/// backend; its snapshots remain public backend DTOs. The runner keeps no
+/// separate cache event store.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct CacheSameKeyProbeEvidence {
     pub(super) target_device_ordinal: usize,
@@ -113,7 +113,7 @@ pub(super) struct CacheSameKeyCohortEvidence {
 
 /// Two sequential public-backend measurements and their cache-accounting
 /// comparison. The full measurements remain embedded so QPS and latency are
-/// evaluated from their own report rows rather than from a third cache store.
+/// evaluated from their own report rows. No third cache store is used.
 #[derive(Debug, Serialize)]
 pub(super) struct CacheCalibrationEvidence {
     pub(super) cache_disabled: MeasuredRunArtifact,
@@ -988,8 +988,8 @@ mod tests {
 
     #[test]
     fn empty_measurements_do_not_claim_cache_residency() {
-        // This test pins the conservative rule at the owning artifact layer:
-        // a run with no ledger samples is never interpreted as zero cache use.
+        // This test pins the conservative rule at the owning artifact layer.
+        // A run with no ledger samples is never interpreted as zero cache use.
         assert_eq!(peak_cache_residency(&empty_measurement()), None);
     }
 

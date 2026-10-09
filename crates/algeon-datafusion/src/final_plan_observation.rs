@@ -41,26 +41,34 @@ impl FinalPlanCoverage {
         }
     }
 
+    /// Returns whether the plan is native, mixed, or entirely DataFusion execution.
     pub const fn disposition(&self) -> FinalPlanDisposition {
         self.disposition
     }
 
+    /// Counts native execution wrappers, including cuVS and cuML relation calls.
     pub const fn native_fragment_count(&self) -> usize {
         self.native_fragment_count
     }
 
+    /// Counts explicit cuGraph call nodes outside native relational fragments.
     pub const fn explicit_gpu_island_count(&self) -> usize {
         self.explicit_gpu_island_count
     }
 
+    /// Counts boundaries where DataFusion execution or host input staging surrounds GPU work.
     pub const fn datafusion_boundary_count(&self) -> usize {
         self.datafusion_boundary_count
     }
 
+    /// Counts boundaries that require GPU results to become host Arrow batches.
+    ///
+    /// This includes the terminal output boundary and intermediate DataFusion consumers.
     pub const fn host_materialization_count(&self) -> usize {
         self.host_materialization_count
     }
 
+    /// Returns whether at least one native fragment or explicit GPU algorithm uses the GPU runtime.
     pub const fn has_gpu_runtime(&self) -> bool {
         self.has_gpu_runtime
     }
@@ -186,7 +194,8 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
 }
 
 /// Whether a cuGraph input relation reaches the graph as a native GPU-resident
-/// producer, instead of DataFusion batches staged through host Arrow.
+/// producer. Otherwise the relation is staged as DataFusion batches through host
+/// Arrow.
 #[cfg(feature = "cugraph")]
 pub(crate) fn cugraph_input_runs_natively(input: &dyn ExecutionPlan) -> bool {
     native_graph_input_execution_plan(input).is_some() || gpu_resident_producer(input).is_some()

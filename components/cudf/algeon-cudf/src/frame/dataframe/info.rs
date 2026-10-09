@@ -37,18 +37,18 @@ bitflags::bitflags! {
         const NULL_COUNTS      = 0b0000_0011;
         /// Include payload bytes.
         ///
-        /// Reports bytes required to represent the logical payload, not the
-        /// allocator-rounded device footprint. For explicit-runtime objects,
+        /// Reports bytes required to represent the logical payload. Allocator
+        /// rounding and padding are excluded. For explicit-runtime objects,
         /// this accounting path honors retained provenance.
         const PAYLOAD_BYTES    = 0b0000_0100;
         /// Include total device-allocated bytes.
         ///
-        /// Reports the actual owned device allocation footprint, including
-        /// allocator rounding and padding.
+        /// Reports the owned device allocation size, including allocator
+        /// rounding and padding.
         const DEVICE_ALLOCATED = 0b0000_1000;
         /// Both `PAYLOAD_BYTES` and `DEVICE_ALLOCATED`.
         const MEMORY           = 0b0000_1100;
-        /// All detail: `NULL_COUNTS` | `MEMORY`.
+        /// Equal to `NULL_COUNTS` | `MEMORY`.
         const ALL              = 0b0000_1111;
     }
 }
@@ -124,8 +124,8 @@ pub struct DataFrameMemoryAccounting {
     pub payload_bytes: Option<usize>,
     /// Total device-allocated bytes across all columns.
     ///
-    /// This is the actual device allocation footprint owned by the DataFrame's
-    /// columns and may exceed `payload_bytes`.
+    /// This is the device allocation size owned by the DataFrame's columns and
+    /// may exceed `payload_bytes`.
     pub device_allocated_bytes: Option<usize>,
 }
 
@@ -139,16 +139,16 @@ pub struct ColumnMemoryAccounting {
     pub payload_bytes: Option<usize>,
     /// Total device-allocated bytes for the column.
     ///
-    /// This is the column's actual owned device allocation footprint and may
-    /// exceed `payload_bytes`.
+    /// This is the device allocation size owned by the column and may exceed
+    /// `payload_bytes`.
     pub device_allocated_bytes: Option<usize>,
 }
 
 /// Opaque retained-owner identity for a DataFrame column.
 ///
 /// This identity is stable while the retained column owner is alive and is
-/// intended for alias/ownership accounting. It is deliberately not an
-/// allocation pointer contract.
+/// intended for alias/ownership accounting. Equal identities name the same
+/// retained column owner. The wrapped value is private to this module.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ColumnMemoryIdentity(usize);
 
@@ -275,12 +275,12 @@ impl DataFrame {
     /// - [`InfoDetail::PAYLOAD_BYTES`] reports bytes required to represent
     ///   the column payload, including nested child payloads and payload-sized
     ///   null-mask bytes.
-    /// - [`InfoDetail::DEVICE_ALLOCATED`] reports actual owned device
-    ///   allocation footprint, including allocator rounding and padding.
+    /// - [`InfoDetail::DEVICE_ALLOCATED`] reports the owned device allocation
+    ///   size, including allocator rounding and padding.
     ///
     /// Payload bytes are not allocation bytes. For explicit-runtime objects,
-    /// payload accounting honors retained provenance rather than
-    /// silently falling back to the default stream.
+    /// payload accounting honors retained provenance and does not fall back to
+    /// the default stream.
     pub fn info_with(&self, detail: InfoDetail) -> Result<DataFrameInfo> {
         let include_columns = detail.includes_columns();
         let include_null_counts = detail.includes_null_counts();
@@ -384,8 +384,8 @@ impl DataFrame {
     ///
     /// This is a metadata-only ownership snapshot for query engines that need
     /// to distinguish schema aliases from newly materialized output columns.
-    /// The identity is based on retained column ownership, not byte counts or
-    /// raw allocation addresses.
+    /// The identity is based on retained column ownership. Byte counts and raw
+    /// allocation addresses do not enter into it.
     pub fn memory_identity(&self) -> DataFrameMemoryIdentity {
         let columns = self
             .columns

@@ -152,7 +152,7 @@ fn ensure_suite_backend(backend: &mut Option<GpuBackendCore>) -> Result<()> {
     Ok(())
 }
 
-// The shared execution cases historically spell their suite request as
+// The shared execution cases spell their suite request as
 // `suite_backend::Runtime::new()`. In this integration target that name intentionally
 // resolves to an inert request token. It serializes backend ownership for the
 // whole test and can only create contexts through the public backend/session

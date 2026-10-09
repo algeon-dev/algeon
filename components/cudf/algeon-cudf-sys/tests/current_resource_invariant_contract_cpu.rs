@@ -62,7 +62,7 @@ fn shim_contains_no_current_resource_guard_or_swap_machinery() {
                 // Reading the ambient current resource inside an operation is
                 // how swap-dependent routing sneaks back in: under the old
                 // guard these reads observed the swapped-in resource, and
-                // without the swap they silently observe the device domain
+                // without the swap they observe the device domain
                 // instead. Operations must route through explicit handles.
                 "get_current_device_resource",
             ] {

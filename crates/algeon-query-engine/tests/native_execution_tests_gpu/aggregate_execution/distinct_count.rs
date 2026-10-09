@@ -166,9 +166,9 @@ fn bounded_grouped_count_distinct_ignores_null_values_and_keeps_null_groups() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// Regression test: per-chunk NUnique values must NOT be Sum-merged when a
-/// grouped COUNT(DISTINCT) is combined with other aggregates and the source
-/// spans multiple Parquet files.  This is the q10/q23 bug pattern.
+/// This regression test covers per-chunk NUnique values, which must NOT be
+/// Sum-merged when a grouped COUNT(DISTINCT) is combined with other aggregates
+/// and the source spans multiple Parquet files.  This is the q10/q23 bug pattern.
 ///
 /// File 1 data:  (key=1, value=10), (key=1, value=20), (key=2, value=30)
 /// File 2 data:  (key=1, value=10), (key=1, value=40), (key=2, value=30), (key=2, value=50)
@@ -244,8 +244,8 @@ fn bounded_grouped_count_distinct_with_count_star_across_multiple_files_is_corre
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// Same as above but with COUNT(DISTINCT) as the only aggregate, verifying the
-/// fix does not regress the sole-distinct-aggregate case.
+/// Same as above but with COUNT(DISTINCT) as the only aggregate, which guards
+/// the sole-distinct-aggregate case against regressions.
 #[test]
 fn bounded_grouped_count_distinct_only_across_multiple_files_is_correct() {
     let dir = unique_temp_dir("query-engine-bounded-multifile-distinct-only");

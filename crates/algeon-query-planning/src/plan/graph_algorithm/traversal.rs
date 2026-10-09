@@ -69,7 +69,7 @@ impl GraphBfsPathOutput {
 /// materialized graph domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphBfsEndpointPolicy {
-    /// Preserve the native/cuGraph contract: absent endpoints are invalid input.
+    /// Matches the native/cuGraph contract. Absent endpoints are invalid input.
     Strict,
     /// Return an empty result when all path endpoints are absent. Partial
     /// multi-source misses remain errors so callers do not lose diagnostics.

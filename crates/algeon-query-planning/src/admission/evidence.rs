@@ -38,8 +38,8 @@ pub const CUGRAPH_GRAPH_EXECUTION_CAPABILITY: ExecutionCapability = ExecutionCap
 
 /// A cuGraph graph-execution plan scope admitted for one attempt.
 ///
-/// The scope is retained rather than a capability label alone: a label would
-/// let evidence issued for one graph plan authorize an unrelated one.
+/// The scope is retained. A capability label alone would let evidence issued
+/// for one graph plan authorize an unrelated one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttestedCugraphGraphExecutionScope {
     pub(crate) execution_scope_fingerprint: PlanFingerprint,

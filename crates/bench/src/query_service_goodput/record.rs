@@ -24,7 +24,7 @@ pub(super) enum OutcomeClass {
     FailedUnknownAllocation,
     /// Cancelled, including the harness cancelling after its own timeout.
     Cancelled,
-    /// Planning refused the plan; this is a support fact, not a memory failure.
+    /// Planning refused the plan. This is a support fact and is not a memory failure.
     FailedUnsupported,
     /// Any other terminal failure.
     FailedOther,
@@ -58,8 +58,8 @@ impl OutcomeClass {
 
 /// Classifies one arrival from its stable labels.
 ///
-/// Inputs are labels rather than engine types so the taxonomy is verifiable
-/// without a device. `fingerprint_match` is `None` when no frozen output was
+/// Inputs are plain labels and booleans, so the taxonomy is verifiable without a
+/// device. `fingerprint_match` is `None` when no frozen output was
 /// available to compare against.
 pub(super) fn classify(
     terminal_outcome: Option<&str>,

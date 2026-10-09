@@ -101,9 +101,8 @@ def _load_python_cugraph():
         import pylibcugraph  # noqa: F401
         import numpy  # noqa: F401
     except ImportError as exc:
-        # The shared RAPIDS venv documented in AGENTS.md is the expected
-        # environment. When it is unavailable, exit with 77 so callers
-        # can degrade gracefully.
+        # Exit with 77 so callers can degrade gracefully on hosts without
+        # RAPIDS Python.
         print(
             f"cuGraph Python stack unavailable: {exc}. "
             "Activate the shared ~/code/algeon/algeon/.venv to refresh oracles.",
@@ -542,9 +541,9 @@ def _minimum_spanning_tree(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[s
     reports python_error for unweighted fixtures instead of silently pinning
     an arbitrary spanning tree.
     """
-    # Reject uniform-weight graphs: MST is non-unique when all edge weights
-    # are equal (e.g. karate with all weights=1.0), so any tie-broken result
-    # would be an oracle-fragile arbitrary spanning tree.
+    # Uniform-weight graphs are rejected because MST is non-unique when all edge weights
+    # are equal (e.g. karate with all weights=1.0). Any tie-broken result would be an
+    # oracle-fragile arbitrary spanning tree.
     edge_df = graph.view_edge_list().to_pandas()
     weight_col = next((c for c in ("weight", "weights") if c in edge_df.columns), None)
     if weight_col is not None and edge_df[weight_col].nunique() <= 1:
@@ -568,7 +567,8 @@ def _minimum_spanning_tree(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[s
 
 
 def _leiden(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
-    # Python cuGraph uses `max_iter` (not `max_level`) and `random_state` (not `seed`).
+    # Python cuGraph takes max_iter and random_state; this oracle reads them from the
+    # max_level and seed params.
     max_iter = int(params.get("max_level", 100))
     resolution = float(params.get("resolution", 1.0))
     random_state = int(params.get("seed", 0))
@@ -581,7 +581,7 @@ def _leiden(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _ecg(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
-    # Python cuGraph uses `random_state` (not `seed`).
+    # Python cuGraph takes random_state; this oracle reads it from the seed param.
     min_weight = float(params.get("min_weight", 0.001))
     ensemble_size = int(params.get("ensemble_size", 10))
     max_level = int(params.get("max_level", 100))
@@ -631,8 +631,8 @@ def _spectral_modularity_maximization(cugraph_mod, graph, params: Dict[str, Any]
 
 
 def _force_atlas2(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
-    # Pass every option explicitly: Python cuGraph defaults differ from
-    # the Rust `cugraph` crate for a few ForceAtlas2 knobs, while the adapter mirrors
+    # Every option is passed explicitly because Python cuGraph defaults differ from
+    # the Rust `cugraph` crate for a few ForceAtlas2 settings, while the adapter mirrors
     # libcugraph C API defaults.
     df = cugraph_mod.force_atlas2(
         graph,
@@ -701,13 +701,13 @@ ALGORITHMS = {
         "edge_attr": False,
         "run": _edge_betweenness_centrality,
     },
-    # SSSP: Forward layout, directed graph, requires a source_vertex param.
+    # SSSP uses the forward layout on a directed graph; source_vertex defaults to 0 when absent.
     "sssp": {
         "layout": "forward",
         "directed": True,
         "run": _sssp,
     },
-    # Degree algorithms: Transposed layout matches the native engine adapter.
+    # Degree algorithms use the transposed layout, matching the native engine adapter.
     "degrees_all": {
         "layout": "transposed",
         "directed": True,

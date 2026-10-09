@@ -9,8 +9,8 @@
 //!   leaves the precision. A negative target scale truncates toward zero.
 //! - Float to decimal evaluates `round(10^scale * value)` in `f64`, rounding
 //!   half away from zero, and fails on NaN, infinity, and out-of-range
-//!   results. libcudf converts the exact binary value, truncating instead of
-//!   rounding, and turns NaN and infinity into nulls.
+//!   results. libcudf truncates the exact binary value without rounding, and
+//!   turns NaN and infinity into nulls.
 //! - Decimal to decimal rounds half away from zero when digits are dropped,
 //!   where libcudf truncates, and fails when the rescaled value leaves the
 //!   precision.

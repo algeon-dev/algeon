@@ -96,12 +96,10 @@ pub struct DynamicFilterRouteDiscoveryDiagnostics {
 }
 
 impl DynamicFilterRouteDiscoveryDiagnostics {
-    /// Returns true when the pass produced no route evidence.
     pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.route_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.route_count += other.route_count;

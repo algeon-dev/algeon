@@ -1,4 +1,3 @@
-//! Tests for concatenation operations.
 use cudf::{
     ErrorCode, ErrorKind, Exec, Series,
     testing::{

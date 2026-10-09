@@ -67,7 +67,7 @@ def copy_tree(workspace: Path, tree: Path) -> None:
     ).stdout
     # `-s` prints `mode object stage\tpath` for tracked files; untracked files
     # have no stage line. Gitlinks (mode 160000) are the native submodules:
-    # they are linked rather than copied, because CPU contract tests
+    # they are symlinked into the tree, because CPU contract tests
     # `include_str!` their sources.
     files, submodules = [], []
     for entry in listed.split(b"\0"):

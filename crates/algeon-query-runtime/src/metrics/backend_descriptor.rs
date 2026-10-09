@@ -38,8 +38,9 @@ pub enum BackendMetricUpdatePoint {
     ReportReady,
 }
 
-/// A closed label domain.  `cardinality` is a contract bound, not a sample
-/// value; stores must reject values outside the corresponding closed domain.
+/// A closed label domain. `cardinality` is a contract bound on the number of
+/// label values, set in the descriptor and not computed from observed samples.
+/// Stores must reject values outside the corresponding closed domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendMetricLabel {
     pub(crate) name: &'static str,

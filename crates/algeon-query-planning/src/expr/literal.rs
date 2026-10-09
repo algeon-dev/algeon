@@ -4,7 +4,7 @@
 //! they have no value to infer a type from. Decimal, date, timestamp,
 //! duration, and interval literals use Arrow-compatible raw encodings;
 //! whether a literal is supported in a given expression context is decided
-//! during expression lowering, not here.
+//! during expression lowering. This module does not make that decision.
 
 use std::fmt;
 

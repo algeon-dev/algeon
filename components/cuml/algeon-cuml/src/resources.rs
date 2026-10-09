@@ -229,8 +229,8 @@ impl CumlResources {
             ));
         }
         let manager = self.runtime.device_memory_manager().map_err(|e| from_cudf(op, e))?;
-        // cuML allocates through RMM's current resource, not the RAFT handle's
-        // workspace resource. Keep this route installed through the native call.
+        // cuML allocates through RMM's current resource; the RAFT handle's workspace
+        // resource is not used. Keep this route installed through the native call.
         let _route =
             manager.route_current_resource(self.runtime.stream(), manager.resource()).map_err(|e| from_cudf(op, e))?;
         call(n.raw(op)?)

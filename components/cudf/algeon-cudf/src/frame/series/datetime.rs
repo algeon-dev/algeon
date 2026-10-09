@@ -26,7 +26,7 @@ impl SeriesDatetimeOps<'_> {
     /// Equivalent to cuDF Python's `Series.dt.year`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new `INT16` device column.
+    /// Allocates a new `INT16` device column.
     pub fn year(&self) -> Result<Series> {
         self.series.datetime_component_with_context(DatetimeComponent::Year, self.ctx, "series::dt::year")
     }
@@ -39,7 +39,7 @@ impl SeriesDatetimeOps<'_> {
     /// Equivalent to cuDF Python's `Series.dt.month`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new `INT16` device column.
+    /// Allocates a new `INT16` device column.
     pub fn month(&self) -> Result<Series> {
         self.series.datetime_component_with_context(DatetimeComponent::Month, self.ctx, "series::dt::month")
     }
@@ -52,7 +52,7 @@ impl SeriesDatetimeOps<'_> {
     /// Equivalent to cuDF Python's `Series.dt.day`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new `INT16` device column.
+    /// Allocates a new `INT16` device column.
     pub fn day(&self) -> Result<Series> {
         self.series.datetime_component_with_context(DatetimeComponent::Day, self.ctx, "series::dt::day")
     }

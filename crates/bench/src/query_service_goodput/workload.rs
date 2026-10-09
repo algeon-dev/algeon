@@ -49,8 +49,8 @@ pub(super) struct WorkloadItem {
     ///
     /// One for SQL items. For graph items whose parameters set how much work
     /// a single query performs (betweenness seed count), this is that count,
-    /// so a split configuration and a batched configuration are comparable on
-    /// completed work rather than on completed query count.
+    /// so a split configuration and a batched configuration are comparable by
+    /// completed work. Counting completed queries would not make them comparable.
     pub(super) work_units: u64,
 }
 
@@ -147,10 +147,10 @@ const GRAPH_ITEMS: &[(&str, u64)] = &[
 
 /// Builds one graph item's SQL.
 ///
-/// Each item aggregates the algorithm's output rather than counting them, so a
-/// wrong result cannot pass the harness fingerprint: a plain row count is the
-/// vertex count for every vertex-keyed algorithm and would be identical whether
-/// the scores were computed or not.
+/// Each item aggregates the algorithm's output, so a wrong result cannot pass
+/// the harness fingerprint: a plain row count is the vertex count for every
+/// vertex-keyed algorithm and would be identical whether the scores were
+/// computed or not.
 ///
 /// Which aggregate is usable depends on the algorithm's reproducibility.
 /// Component labels are canonicalized to the minimum vertex id of each

@@ -242,7 +242,7 @@ impl AdmissionController {
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
     ) -> Result<PreparedSubmission> {
         // The claim runs before any queue, ledger, stream, or lifecycle
-        // change; a rejected claim leaves the attempt exactly as it was.
+        // change; a rejected claim leaves the attempt unchanged.
         let attempt_admission = request.claim_attempt_admission().map_err(attempt_admission_claim_error)?;
         let queue_deadline = request.queue_deadline;
         let requested_query_cap_bytes = request.requested_query_cap_bytes();
@@ -330,7 +330,8 @@ impl AdmissionController {
         let mut state = self.lock_admission()?;
         let sweep = self.sweep_expired_queued_requests_locked(&mut state);
         if !sweep.is_empty() {
-            // Queue-sweep completion may reenter service shutdown, so release the admission lock first.
+            // Queue-sweep completion may reenter service shutdown. The admission
+            // lock is released first.
             drop(state);
             sweep.finish();
             state = self.lock_admission()?;

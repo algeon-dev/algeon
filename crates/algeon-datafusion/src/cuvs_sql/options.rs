@@ -21,6 +21,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Validated columns bound to one named relation role in a cuVS SQL call.
 pub struct CuvsVectorRelationBinding {
     relation_role: CuvsRelationRole,
     id: String,
@@ -28,14 +29,17 @@ pub struct CuvsVectorRelationBinding {
 }
 
 impl CuvsVectorRelationBinding {
+    /// Returns the semantic input role associated with this relation.
     pub fn relation_role(&self) -> CuvsRelationRole {
         self.relation_role
     }
 
+    /// Returns the bound row-id column used to correlate results with input rows.
     pub fn id(&self) -> &str {
         &self.id
     }
 
+    /// Returns the validated dense-vector representation and column binding.
     pub fn vector(&self) -> &DenseVectorBinding {
         &self.vector
     }
@@ -53,10 +57,12 @@ pub struct CuvsValidatedOptions {
 }
 
 impl CuvsValidatedOptions {
+    /// Returns normalized option JSON used as this call's identity and serialized representation.
     pub fn canonical_json(&self) -> &str {
         &self.canonical_json
     }
 
+    /// Returns validated relation bindings in the operation descriptor's role order.
     pub fn bindings(&self) -> &[CuvsVectorRelationBinding] {
         &self.bindings
     }

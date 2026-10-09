@@ -43,7 +43,6 @@ fn column_filter_args(
     columns: Option<&Vec<String>>,
     operation: &'static str,
 ) -> Result<(Option<Vec<CString>>, Vec<*const c_char>)> {
-    // Convert column names to CStrings at the call site, then build the pointer array.
     let cstring_columns: Option<Vec<CString>> = columns
         .map(|cols| {
             cols.iter()
@@ -78,7 +77,6 @@ fn assemble_table_output(
     // Wrap early so table is freed via RAII if collect_column_names() fails.
     let table = unsafe { Table::from_raw_with_domain(table_handle, output_domain) }?;
 
-    // Convert the C string array into Vec<String> and free the C memory.
     // SAFETY: names_ptr and num_names were returned by a successful FFI call.
     // cudf_io_free_column_names frees the C-allocated name strings and array.
     let column_names = unsafe {
@@ -168,7 +166,6 @@ fn prepare_single_range(options: &ParquetTableReadOptions<'_>) -> Result<(i64, i
     const OPERATION: &str = "io::parquet::read_parquet_table";
     let num_rows_context = options.num_rows.map(|num_rows| num_rows.to_string()).unwrap_or_else(|| "all".to_string());
 
-    // Validate that row_groups is not combined with skip_rows or num_rows.
     if options.row_groups.is_some() && (options.skip_rows > 0 || options.num_rows.is_some()) {
         return Err(row_group_combination_error(
             options.row_groups.as_ref().map_or(0, Vec::len),
@@ -208,7 +205,7 @@ struct SingleReadOutputs {
 }
 
 fn invoke_single_read(inputs: &SingleReadInputs<'_>, outputs: &mut SingleReadOutputs) -> cudf_sys::cudf_status_t {
-    // Build row_groups pointer; the Option<Vec> must outlive the FFI call.
+    // `rg_ptr` borrows from `inputs.row_groups`, which must outlive the FFI call.
     let (rg_ptr, num_rg) = match inputs.row_groups {
         Some(rg) if !rg.is_empty() => (rg.as_ptr(), rg.len() as i32),
         _ => (ptr::null(), 0),

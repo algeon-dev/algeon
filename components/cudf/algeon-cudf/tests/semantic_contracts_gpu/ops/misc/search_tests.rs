@@ -1,4 +1,4 @@
-//! Tests for CU-2: Series and ColumnView membership (isin).
+//! Tests for Series and ColumnView membership (isin).
 use cudf::{ErrorCode, ErrorKind, Exec, testing::prelude::*};
 
 use crate::common::{
@@ -6,10 +6,6 @@ use crate::common::{
     error_context_value, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
     lock_event_observation, reset_dependency_observation, reset_exec_observation, reset_sync_observation, series,
 };
-
-// ---------------------------------------------------------------------------
-// Series::isin
-// ---------------------------------------------------------------------------
 
 fn test_series_isin_with_duplicate_values() {
     let s = series::<i32>("x", &[1, 3, 4]).unwrap();
@@ -26,10 +22,6 @@ fn test_series_isin_float64() {
     let mask = s.on(Exec::RETAINED).isin(&values).unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false]);
 }
-
-// ---------------------------------------------------------------------------
-// ColumnView::isin
-// ---------------------------------------------------------------------------
 
 fn test_isin_i32_some_matches() {
     let col = column_from_slice(&[1i32, 2, 3, 4, 5]).unwrap();
@@ -132,7 +124,6 @@ fn test_isin_column_with_nulls() {
     let validity = mv.to_host_validity().unwrap().expect("mask should be nullable");
     assert_eq!(validity, vec![true, false, true, false]);
 
-    // Valid positions should be true for 1 and 3.
     assert_eq!(mv.to_vec::<bool>().unwrap(), vec![true, false, true, false]);
 }
 

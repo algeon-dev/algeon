@@ -36,12 +36,12 @@ pub(super) struct RunProfile {
     pub(super) scenario_requirements: Option<ScenarioRequirementsProfile>,
     /// Opt-in QPS-envelope contract. The generic runner only asserts the
     /// queue/recovery rules when a profile explicitly declares this workload
-    /// class measurement, rather than guessing from a file name.
+    /// class measurement. The runner does not infer the class from a file name.
     #[serde(default)]
     pub(super) qps_envelope: Option<QpsEnvelopeProfile>,
     /// Explicit calibration contract between the admission/cache claims and
-    /// the load-induced CUDA memory delta.  The runner never guesses a band
-    /// from a workload name: qualification profiles name the tolerated fixed
+    /// the load-induced CUDA memory delta.  The runner does not derive a band
+    /// from a workload name. Qualification profiles name the tolerated fixed
     /// overhead and multiplicative pricing slack themselves.
     #[serde(default)]
     pub(super) vram_calibration: Option<VramCalibrationProfile>,
@@ -73,7 +73,7 @@ pub(super) struct RunProfile {
 /// suite needs. A scan-envelope run, for example, must prove placement
 /// progress but cannot be rejected merely because it does not create two
 /// concurrent jobs on one device. This profile-owned selector prevents a raw
-/// proof obligation from silently becoming a stress qualification gate.
+/// proof obligation from becoming a stress qualification gate.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ScenarioRequirementsProfile {
@@ -96,15 +96,15 @@ pub(super) struct ScenarioRequirementsProfile {
 
 /// Profile-owned QPS-envelope requirements.
 ///
-/// A measured envelope must be a real multi-phase curve, and every phase must
+/// A measured envelope must be a multi-phase curve, and every phase must
 /// retain some successful GPU work.  Rate profiles may additionally name a
 /// post-overload recovery phase and the latency band it must return to.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct QpsEnvelopeProfile {
     /// The minimum number of successful GPU-reaching completions required in
-    /// each configured step.  A zero-QPS all-failure cell is diagnostic, not
-    /// a workload knee.
+    /// each configured step.  A zero-QPS all-failure cell is diagnostic evidence
+    /// only and cannot establish a workload knee.
     #[serde(default = "default_qps_min_gpu_reaching_completions_per_step")]
     pub(super) min_gpu_reaching_completions_per_step: u64,
     /// The explicit low-rate recovery phase after the highest offered rate.
@@ -167,12 +167,12 @@ pub(super) struct GraphClaimCalibrationProfile {}
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FeatureOffCugraphProbeProfile {
-    /// A graph UDTF rejection is a control-plane operation, not an unbounded
-    /// work item. The measured report latency must stay below this cap.
+    /// A graph UDTF rejection is a bounded control-plane operation. The measured
+    /// report latency must not exceed this cap.
     pub(super) max_rejection_latency_ms: u64,
     /// Exact number of runner-owned UDTF requests issued before the observed
     /// warmup boundary.  Keeping it explicit prevents round-robin workload
-    /// selection from silently changing the qualification denominator.
+    /// selection from changing the qualification denominator.
     pub(super) warmup_probe_attempts: usize,
     /// Exact number of runner-owned UDTF requests issued after the observed
     /// warmup boundary, while relational work is still live in the measured
@@ -391,8 +391,8 @@ pub(super) struct SchedulingProfile {
     #[serde(default)]
     pub(super) arrival_rate_per_second: Option<u64>,
     /// Optional exact bound on closed-loop rounds. This is an explicit
-    /// scenario shape, not a hidden drain margin: it leaves the remaining
-    /// declared window for cooperative finalization.
+    /// scenario shape that leaves the remaining declared window for cooperative
+    /// finalization.
     #[serde(default)]
     pub(super) max_rounds: Option<usize>,
     #[serde(default)]
@@ -402,8 +402,8 @@ pub(super) struct SchedulingProfile {
     #[serde(default)]
     pub(super) measurement_seconds: u64,
     /// How a rate-mode arrival that the queue cannot accept is treated. The
-    /// artifact must record this: it is what separates offered from achieved
-    /// arrival rate.
+    /// setting separates offered from achieved arrival rate, so the artifact must
+    /// record it.
     #[serde(default)]
     pub(super) rate_overrun: RateOverrunPolicy,
     /// Multi-phase arrival. A non-empty list switches the run to steps
@@ -412,15 +412,15 @@ pub(super) struct SchedulingProfile {
     /// envelope curve. The scalar window/rate fields stay at their defaults.
     #[serde(default)]
     pub(super) steps: Vec<ScheduleStepProfile>,
-    /// Deadline storm: every attempt receives a caller deadline of
+    /// Every attempt in a deadline storm receives a caller deadline of
     /// `min(submission + attempt_deadline_ms, run deadline)`.
     #[serde(default)]
     pub(super) attempt_deadline_ms: Option<u64>,
-    /// Cancellation storm: every Nth submitted attempt is cancelled
+    /// Every Nth submitted attempt in a cancellation storm is cancelled
     /// mid-flight through the public attempt cancellation handle.
     #[serde(default)]
     pub(super) cancel_every_n: Option<usize>,
-    /// Cancellation storm: delay before each storm cancellation fires.
+    /// In a cancellation storm, the delay before each cancellation fires.
     /// Requires `cancel_every_n`; a zero delay cancels at the planning
     /// boundary.
     #[serde(default)]
@@ -551,8 +551,8 @@ pub(super) struct CacheStressProfile {
 ///
 /// The runner creates a fresh single-ordinal backend for this bounded probe,
 /// then drives source and BFS cohorts separately. That makes cold-cache,
-/// cohort width, and allocation-domain ownership explicit rather than
-/// inferring them from an unrelated QPS window.
+/// cohort width, and allocation-domain ownership explicit. None of them is
+/// inferred from an unrelated QPS window.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CacheSameKeyProbeProfile {
@@ -590,7 +590,6 @@ impl RunProfile {
         Ok(profile)
     }
 
-    /// Query labels selected across every workload, in profile order.
     pub(super) fn selected_query_count(&self) -> usize {
         self.workloads.iter().map(|workload| workload.queries.len()).sum()
     }
@@ -598,9 +597,9 @@ impl RunProfile {
     /// Returns the cache-disabled half of an opt-in paired calibration.
     ///
     /// This preserves every workload, scheduling, admission, and device field
-    /// except the one cache control: each ordinal-local `cache_cap_bytes`.
-    /// It is intentionally derived rather than read from another profile so a
-    /// cache calibration cannot compare two unrelated runs.
+    /// except the cache controls: `cache.mode`, `cache.stress`, and each
+    /// ordinal-local `cache_cap_bytes`. The companion is derived from this
+    /// profile, so a cache calibration cannot compare two unrelated runs.
     pub(super) fn cache_disabled_companion(&self) -> ToolResult<Self> {
         if self.cache.mode != CacheMode::Enabled {
             return Err("--cache-calibration requires cache.mode enabled in --config".into());
@@ -617,7 +616,7 @@ impl RunProfile {
 
     /// Validates the finite cohort used by the explicit overload probe.
     ///
-    /// This is deliberately a profile shape rather than a second admission
+    /// This is deliberately a profile shape and adds no second admission
     /// policy: the backend still owns queueing, FIFO placement, and report
     /// sealing. The runner only requires enough bounded offered
     /// work for those public facts to be falsifiable.
@@ -671,7 +670,7 @@ impl RunProfile {
 
     /// Validates the fixed two-step physical allocator-pressure probe.
     ///
-    /// The runner establishes real external CUDA pressure before `q01`, then
+    /// The runner establishes external CUDA pressure before `q01`, then
     /// releases it before the `edge_scan` recovery attempt. Profile validation
     /// owns the finite sequencing contract; the sealed report reducer later
     /// proves that the observed physical request remained below every immutable
@@ -873,8 +872,8 @@ impl RunProfile {
     }
 
     /// Steps mode replaces the scalar window/rate fields with an explicit
-    /// sequential phase list. The shape rules keep a steps profile from
-    /// silently reading as the single-phase profile it no longer is.
+    /// sequential phase list. The shape rules reject leftover single-phase fields,
+    /// so a steps profile cannot also describe a single-phase run.
     fn validate_steps_scheduling(&self) -> ToolResult<()> {
         let scheduling = &self.scheduling;
         if scheduling.measurement_seconds != 0 {
@@ -1051,7 +1050,7 @@ impl RunProfile {
     }
 
     /// The profile's cache mode must describe the single ledger-accounted
-    /// cache control the backend actually receives.  A nonzero ordinal-local
+    /// cache control the backend receives.  A nonzero ordinal-local
     /// cap is the cache opt-in; there is no second cache switch in the runner.
     fn validate_cache_mode(&self) -> ToolResult<()> {
         let enabled_ordinals = self
@@ -1332,10 +1331,10 @@ fn validate_device_profiles(device_profiles: &[DeviceProfile]) -> ToolResult<()>
             .into());
         }
         // Mirrors `GpuBackendDeviceProfile::derived_installation_bounds`, the
-        // runtime's rule, so a misconfigured profile fails here instead of at
-        // backend build: one root slot plus `source_work_per_attempt`
-        // auxiliary slots and one execution worker per active attempt, plus
-        // the worker the runtime reserves for lifecycle jobs.
+        // runtime's rule. A misconfigured profile fails here, before backend
+        // build: one root slot plus `source_work_per_attempt` auxiliary slots
+        // and one execution worker per active attempt, plus the worker the
+        // runtime reserves for lifecycle jobs.
         let required_slots = profile
             .max_active_attempts
             .checked_mul(profile.source_work_per_attempt.saturating_add(1))

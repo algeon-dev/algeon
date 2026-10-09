@@ -24,11 +24,18 @@ pub struct AttemptBackendCounters {
     pub(crate) completion_queue_overflowed: AtomicU64,
 }
 
+/// Monotonic attempt and abandoned-report delivery counters for one backend.
+/// A report becomes ready after cleanup and sealing, independently of whether
+/// a caller retains a completion receiver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttemptBackendCountersSnapshot {
+    /// Attempts created by this backend, including attempts rejected later.
     pub attempts_begun: u64,
+    /// Attempts whose immutable terminal report has been published.
     pub reports_ready: u64,
+    /// Reports routed into the abandoned-report queue with no active receiver.
     pub completion_queue_pushed: u64,
+    /// Abandoned reports rejected because the configured queue was full.
     pub completion_queue_overflowed: u64,
 }
 
@@ -62,8 +69,8 @@ impl AttemptCompletionQueue {
 
     /// Returns `false` only when the queue is full; a contended lock waits.
     pub(crate) fn try_push(&self, report: Arc<QueryAttemptReport>) -> bool {
-        // Blocking is bounded by one VecDeque push or drain; a failed try_lock
-        // used to miscount a contended push as a capacity overflow.
+        // Blocking is bounded by one VecDeque push or drain. Waiting for the lock
+        // keeps a contended push from counting as a capacity overflow.
         let mut queue = self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if queue.len() == self.capacity {
             false
@@ -78,8 +85,8 @@ impl AttemptCompletionQueue {
         queue.drain(..n).collect()
     }
 
-    /// Holds the queue mutex so tests can prove a contended push waits for
-    /// capacity instead of failing as if the queue were full.
+    /// Holds the queue mutex so tests can prove that a contended push waits for
+    /// the lock and does not fail as if the queue were full.
     #[cfg(test)]
     pub(super) fn hold_lock_for_test(&self) -> MutexGuard<'_, VecDeque<Arc<QueryAttemptReport>>> {
         self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner)

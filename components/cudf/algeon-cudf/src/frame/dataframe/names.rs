@@ -62,7 +62,6 @@ impl DataFrame {
             rename_map.insert(old.as_str(), new.as_str());
         }
 
-        // Compute the full target name set and check for conflicts.
         let mut target_names: FastHashSet<String> = fast_hash_set_with_capacity(self.columns.len());
 
         for name in self.columns.keys() {

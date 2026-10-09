@@ -389,7 +389,8 @@ async fn product_pruning_reads_footers_through_the_installed_s3_storage() {
 
 #[tokio::test]
 async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evidence() {
-    // HTTP 404 stops at footer metadata instead of the native read this fixture exercises.
+    // The tracking store serves the fixture bytes, so footer metadata resolves and
+    // execution reaches the native read; a 404 endpoint would stop at the footer.
     let backend = hermetic_backend("http://127.0.0.1:9");
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-combined-ticket");
     let runtime_env = Arc::new(RuntimeEnv::default());
@@ -540,7 +541,8 @@ async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
 
 #[tokio::test]
 async fn native_composed_resolves_consumer_and_producer_metadata_before_admission_context() {
-    // HTTP 404 stops at footer metadata instead of the native read this fixture exercises.
+    // The tracking store serves the fixture bytes, so footer metadata resolves and
+    // execution reaches the native read; a 404 endpoint would stop at the footer.
     let backend = hermetic_backend("http://127.0.0.1:9");
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-composed-before-admission");
     let runtime_env = Arc::new(RuntimeEnv::default());

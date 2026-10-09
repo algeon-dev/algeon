@@ -2,8 +2,8 @@
 //!
 //! Source: `ClickBench/datafusion/queries.sql` upstream. Each entry's `sql` is
 //! the canonical query string; only the `id` and Rust scaffolding are owned by
-//! this crate. Re-vendor from the upstream file instead of hand-editing
-//! individual queries.
+//! this crate. Update individual queries by re-vendoring the upstream file, and
+//! do not hand-edit them.
 
 /// Number of vendored ClickBench queries.
 pub const CLICKBENCH_QUERY_COUNT: usize = 43;

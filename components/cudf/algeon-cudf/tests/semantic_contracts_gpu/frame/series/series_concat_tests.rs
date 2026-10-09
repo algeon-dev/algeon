@@ -1,14 +1,6 @@
-//! Integration tests for `Series::concat`.
-//!
-//! All tests require a GPU.
-
 use cudf::{ErrorCode, ErrorKind, Exec, Runtime, Series, TypeId};
 
 use crate::common::{error_context_value, nullable_series, series};
-
-// ===========================================================================
-// Basic concatenation
-// ===========================================================================
 
 fn test_concat_two_i32_series() {
     let a = series::<i32>("a", &[1, 2]).unwrap();
@@ -54,10 +46,6 @@ fn test_concat_strings() {
     assert_eq!(result.to_strings_strict().unwrap(), vec!["hello", "world"]);
 }
 
-// ===========================================================================
-// Edge cases
-// ===========================================================================
-
 fn test_concat_single_series() {
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
 
@@ -87,10 +75,6 @@ fn test_concat_preserves_nulls() {
     assert_eq!(result.len(), 3);
     assert_eq!(result.null_count(), 1);
 }
-
-// ===========================================================================
-// Error cases
-// ===========================================================================
 
 fn test_concat_empty_slice_returns_error() {
     let err = Series::concat(&[], Exec::RETAINED).expect_err("concat of empty slice should fail");

@@ -1,6 +1,6 @@
 //! Black-box runtime-observability acceptance for the `algeon_server` binary.
 //!
-//! This is an explicit tool, not a Cargo test. It starts the server as a child
+//! This is an explicit tool; it is not a Cargo test. It starts the server as a child
 //! process over local Parquet files, drives Flight SQL statements and the
 //! query-stats and runtime-artifact actions, restarts the server, and writes one
 //! evidence JSON. See `--help` for the options.

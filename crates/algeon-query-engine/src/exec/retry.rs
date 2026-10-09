@@ -18,10 +18,10 @@ const BOUNDED_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
 /// What a bounded retry boundary may do after one typed resource failure.
 ///
-/// The classification follows the failure's proven source, not its coarse
-/// `ResourceExhausted` kind: only an allocation the query-domain allocator
-/// rejected against this attempt's immutable cap is evidence that a smaller
-/// working set can succeed inside the same grant.
+/// The classification follows the failure's proven source. Its coarse
+/// `ResourceExhausted` kind does not decide the class: only an allocation the
+/// query-domain allocator rejected against this attempt's immutable cap is
+/// evidence that a smaller working set can succeed inside the same grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec) enum ResourceFailureRecovery {
     /// The failed unit of work has been released by the boundary that owned it

@@ -10,9 +10,9 @@
 //!
 //! Rows project the shared [`crate::report::CandidateOutcomeKind`] labels and
 //! the shared [`crate::planner::FinalPlanCoverage`] facts; this module keeps
-//! no parallel decision enums. Planning failures carry no executable plan, so
-//! candidate outcome and final-plan cells serialize as `none`, never as zero
-//! counts or a fabricated disposition.
+//! no parallel decision enums. Planning failures carry no executable plan.
+//! Their candidate outcome and final-plan cells serialize as `none`, and never
+//! hold zero counts or a fabricated disposition.
 //! Capability rejection columns contain the stable strings returned by
 //! [`crate::capability::CapabilityReason::code`].
 

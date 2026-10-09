@@ -1,4 +1,9 @@
 //! Safe Rust integration with NVIDIA cuML.
+//!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion); workspace code
+//! uses this crate for its component contracts. See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
 
 mod class_prediction;
 mod decomposition;

@@ -12,7 +12,7 @@ use crate::clickbench_benchmark::KVIKIO_COMPAT_MODE_ENV;
 /// the source revision, native build, GPU, driver, and process limits that
 /// produced it. A fact the process cannot observe renders as `unknown`; the
 /// line never substitutes a default for a missing fact, because a wrong
-/// default (fd limit, cap, GPU) is exactly what makes runs incomparable.
+/// default (fd limit, cap, GPU) is what makes runs incomparable.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct RunProvenance {
     pub(super) revision: Option<String>,

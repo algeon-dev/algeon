@@ -282,7 +282,7 @@ pub fn init_cuda_device(ordinal: usize) -> Result<()> {
 ///
 /// Graceful shutdown sequence on signal:
 /// 1. Close the admission gate so pending and future execution admits
-///    fail fast instead of acquiring a permit during drain.
+///    fail fast and do not acquire a permit during drain.
 /// 2. Cancel the server-wide shutdown [`tokio_util::sync::CancellationToken`].
 ///    Every per-statement token is a child of this token, so cancellation
 ///    cascades to statements already executing as well as tickets still waiting
@@ -293,21 +293,21 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
     FlightSqlServer::builder().config(config).build().await?.serve().await
 }
 
-/// Serve on an already-bound listener instead of binding `config.bind_addr`.
+/// Serve on an already-bound listener.
 ///
-/// This lets a caller reserve the port up front and hand the live socket to the
+/// This lets a caller reserve the port up front and pass the live socket to the
 /// server, eliminating the bind/serve gap. Unlike [`serve`], the TCP socket accepts
 /// connections before CUDA/session/admission startup finishes, so an early client
-/// succeeds at the TCP layer and its first RPC blocks until gRPC is ready rather
-/// than being refused. `config.bind_addr` is ignored in favour of the listener's address.
+/// succeeds at the TCP layer and its first RPC blocks until gRPC is ready. Such a
+/// client is not refused. `config.bind_addr` is ignored in favour of the listener's address.
 pub async fn serve_with_listener(config: ServerConfig, listener: std::net::TcpListener) -> Result<()> {
     FlightSqlServer::builder().config(config).listener(listener).build().await?.serve().await
 }
 
 /// How [`FlightSqlServer`] obtains its TCP socket.
 enum Listen {
-    /// Bind `addr` only once startup is complete (matches historical `serve`
-    /// behaviour: full init, then bind, so the socket never exists half-ready).
+    /// Binds `addr` only after full initialization, so the socket never exists
+    /// half-ready.
     Addr(std::net::SocketAddr),
     /// Adopt a listener the caller already bound.
     Prebound(std::net::TcpListener),
@@ -546,7 +546,7 @@ fn shutdown_future(
 ) -> (ShutdownFuture, Option<oneshot::Receiver<JoinHandle<()>>>) {
     match shutdown {
         ServerShutdown::OsSignals => {
-            // Hand back the escalation-watchdog handle so we can abort it once
+            // Hand back the escalation-watchdog handle so it can be aborted once
             // the server has drained. Without this, a SIGINT received after a
             // clean shutdown would still trigger the spawned `process::exit`.
             let (watchdog_tx, watchdog_rx) = oneshot::channel();
@@ -618,9 +618,9 @@ fn validate_injected_queue_policy(injected: &AlgeonGpuQueuePolicy, config: &Serv
 }
 
 /// Validate injected backends against the records frozen by the engine after
-/// discovery and allocator installation.  A planner budget is intentionally
-/// absent from this comparison: it is an unadmitted planning template, while
-/// capacity and query limits are ordinal-local controller facts.
+/// discovery and allocator installation. A planner budget is intentionally
+/// absent from this comparison because it is an unadmitted planning template.
+/// Capacity and query limits are ordinal-local controller facts.
 fn validate_injected_startup_profiles(records: &[GpuBackendDeviceStartupRecord], config: &ServerConfig) -> Result<()> {
     let configured_profiles = configured_profile_map(config)?;
     let configured_ownership = configured_ownership_map(config)?;
@@ -863,9 +863,9 @@ fn cugraph_enabled(config: &ServerConfig) -> bool {
 /// Emit a one-shot startup WARN when this binary was built with the `cugraph`
 /// feature but cuGraph UDTFs were disabled at runtime
 /// (`ALGEON_SERVER_CUGRAPH_ENABLED=false`). Without it the
-/// the `cugraph_*` relation planner is not installed and queries fail with a
+/// `cugraph_*` relation planner is not installed and queries fail with a
 /// not-found error, which is easy to misread as a build problem when the
-/// feature is actually compiled in. The cfg-gated definitions keep this a
+/// feature is compiled in. The cfg-gated definitions keep this a
 /// no-op on feature-off builds, where enabling the runtime setting instead
 /// registers the public frontend and returns its capability error at execution.
 #[cfg(feature = "cugraph")]
@@ -889,8 +889,8 @@ fn cugraph_registry_algorithm_count(config: &ServerConfig) -> usize {
 }
 
 /// Emit a one-shot startup line summarizing the configured application-layer
-/// authentication mode. Authentication is intentionally owned by Flight RPCs,
-/// never by GPU admission or controller code.
+/// authentication mode. Authentication is intentionally owned by Flight RPCs.
+/// GPU admission and controller code do not authenticate callers.
 fn log_auth_mode_snapshot(mode: &AuthMode) {
     match mode {
         AuthMode::Disabled => tracing::warn!(
@@ -907,7 +907,7 @@ fn log_auth_mode_snapshot(mode: &AuthMode) {
 }
 
 /// Resolve when the process receives SIGINT or SIGTERM. cudf and cugraph are
-/// Linux-only, so the whole server is Linux-only and we do not gate on `unix`.
+/// Linux-only, so the whole server is Linux-only and this code does not gate on `unix`.
 /// The future also resolves if the signal stream errors out so the server
 /// does not hang holding a broken listener.
 async fn wait_for_shutdown_signal() {
@@ -938,7 +938,7 @@ async fn wait_for_shutdown_signal() {
 /// SIGSEGV inside `rmm::device_buffer::allocate_async` during the first
 /// `DoGet`.
 /// The build-time guard in `build.rs` pins what the link graph resolves; this
-/// backstop catches what the loader actually mapped.
+/// backstop catches what the loader mapped.
 fn ensure_single_librmm_runtime_mapping() -> Result<()> {
     let maps = match std::fs::read_to_string("/proc/self/maps") {
         Ok(maps) => maps,

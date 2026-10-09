@@ -2,8 +2,8 @@
 //!
 //! This module answers the developer-facing planning question: whether the
 //! optimized physical path contains known DataFusion CPU execution. It is a
-//! plan-time diagnosis surface only, not runtime admission, not an execution
-//! verdict, and not sealed-attempt retry advice.
+//! plan-time diagnosis surface only and does not decide runtime admission,
+//! execution verdicts, or sealed-attempt retry advice.
 //!
 //! Each validation produces one [`QueryGpuPlanningOutcome`]: either a planned
 //! [`FinalPlanCoverage`] describing the single completed executable plan, or
@@ -64,14 +64,14 @@ pub(crate) const GPU_COVERAGE_REJECTION_REASON_FACT: &str = "gpu_coverage_reject
 /// an installed native optimizer rule; validation plans with that rule and its
 /// completed-plan requirements.
 ///
-/// Candidate outcomes are retained as optimizer diagnostics, not an alternative
-/// verdict. One report can hold several decision kinds at once; they never
-/// re-derive the completed plan's disposition.
+/// Candidate outcomes are retained as optimizer diagnostics. They do not form
+/// an alternative verdict. One report can hold several decision kinds at once;
+/// they never re-derive the completed plan's disposition.
 ///
 /// `validated_under.catalog_snapshot` is a constant label for the cloned
-/// planning state, not a catalog or table-state fingerprint. Do not compare
-/// coverage verdicts across catalog, view, or table changes solely by this
-/// field.
+/// planning state. It is not a catalog or table-state fingerprint. Do not
+/// compare coverage verdicts across catalog, view, or table changes solely by
+/// this field.
 pub fn validate_query<'a>(
     ctx: &'a SessionContext,
     sql: impl AsRef<str> + Send + 'a,

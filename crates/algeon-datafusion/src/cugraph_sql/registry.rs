@@ -3,62 +3,117 @@ use query_planning::plan::{GraphAlgorithm as NativeGraphAlgorithm, GraphVertexId
 
 use super::types::CugraphGraphOptions;
 
+/// SQL function name for [`CugraphAlgorithm::PageRank`].
 pub const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
+/// SQL function name for [`CugraphAlgorithm::PersonalizedPageRank`].
 pub const CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION: &str = "cugraph_personalized_pagerank";
+/// SQL function name for [`CugraphAlgorithm::Bfs`].
 pub const CUGRAPH_BFS_FUNCTION: &str = "cugraph_bfs";
+/// SQL function name for [`CugraphAlgorithm::Louvain`].
 pub const CUGRAPH_LOUVAIN_FUNCTION: &str = "cugraph_louvain";
+/// SQL function name for [`CugraphAlgorithm::EigenvectorCentrality`].
 pub const CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION: &str = "cugraph_eigenvector_centrality";
+/// SQL function name for [`CugraphAlgorithm::KatzCentrality`].
 pub const CUGRAPH_KATZ_CENTRALITY_FUNCTION: &str = "cugraph_katz_centrality";
+/// SQL function name for [`CugraphAlgorithm::Hits`].
 pub const CUGRAPH_HITS_FUNCTION: &str = "cugraph_hits";
+/// SQL function name for [`CugraphAlgorithm::BetweennessCentrality`].
 pub const CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION: &str = "cugraph_betweenness_centrality";
+/// SQL function name for [`CugraphAlgorithm::EdgeBetweennessCentrality`].
 pub const CUGRAPH_EDGE_BETWEENNESS_CENTRALITY_FUNCTION: &str = "cugraph_edge_betweenness_centrality";
+/// SQL function name for [`CugraphAlgorithm::Sssp`].
 pub const CUGRAPH_SSSP_FUNCTION: &str = "cugraph_sssp";
+/// SQL function name for [`CugraphAlgorithm::DegreesAll`].
 pub const CUGRAPH_DEGREES_ALL_FUNCTION: &str = "cugraph_degrees_all";
+/// SQL function name for [`CugraphAlgorithm::InDegreesAll`].
 pub const CUGRAPH_IN_DEGREES_ALL_FUNCTION: &str = "cugraph_in_degrees_all";
+/// SQL function name for [`CugraphAlgorithm::OutDegreesAll`].
 pub const CUGRAPH_OUT_DEGREES_ALL_FUNCTION: &str = "cugraph_out_degrees_all";
+/// SQL function name for [`CugraphAlgorithm::WeaklyConnectedComponents`].
 pub const CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION: &str = "cugraph_weakly_connected_components";
+/// SQL function name for [`CugraphAlgorithm::StronglyConnectedComponents`].
 pub const CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION: &str = "cugraph_strongly_connected_components";
+/// SQL function name for [`CugraphAlgorithm::TriangleCountAll`].
 pub const CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION: &str = "cugraph_triangle_count_all";
+/// SQL function name for [`CugraphAlgorithm::CoreNumber`].
 pub const CUGRAPH_CORE_NUMBER_FUNCTION: &str = "cugraph_core_number";
+/// SQL function name for [`CugraphAlgorithm::KCore`].
 pub const CUGRAPH_K_CORE_FUNCTION: &str = "cugraph_k_core";
+/// SQL function name for [`CugraphAlgorithm::MinimumSpanningTree`].
 pub const CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION: &str = "cugraph_minimum_spanning_tree";
+/// SQL function name for [`CugraphAlgorithm::Leiden`].
 pub const CUGRAPH_LEIDEN_FUNCTION: &str = "cugraph_leiden";
+/// SQL function name for [`CugraphAlgorithm::Ecg`].
 pub const CUGRAPH_ECG_FUNCTION: &str = "cugraph_ecg";
+/// SQL function name for [`CugraphAlgorithm::SpectralModularityMaximization`].
 pub const CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION: &str = "cugraph_spectral_modularity_maximization";
+/// SQL function name for [`CugraphAlgorithm::ForceAtlas2`].
 pub const CUGRAPH_FORCE_ATLAS2_FUNCTION: &str = "cugraph_force_atlas2";
+/// SQL function name for [`CugraphAlgorithm::Jaccard`].
 pub const CUGRAPH_JACCARD_FUNCTION: &str = "cugraph_jaccard";
+/// SQL function name for [`CugraphAlgorithm::Sorensen`].
 pub const CUGRAPH_SORENSEN_FUNCTION: &str = "cugraph_sorensen";
+/// SQL function name for [`CugraphAlgorithm::Overlap`].
 pub const CUGRAPH_OVERLAP_FUNCTION: &str = "cugraph_overlap";
+/// SQL function name for [`CugraphAlgorithm::Cosine`].
 pub const CUGRAPH_COSINE_FUNCTION: &str = "cugraph_cosine";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Algorithms registered as relation-aware cuGraph SQL functions.
 pub enum CugraphAlgorithm {
+    /// Rank vertices by damped incoming-link influence.
     PageRank,
+    /// Rank vertices using a caller-supplied personalization relation.
     PersonalizedPageRank,
+    /// Traverse unweighted paths from one or more sources.
     Bfs,
+    /// Detect communities by hierarchical modularity optimization.
     Louvain,
+    /// Compute vertex influence from neighboring centrality scores.
     EigenvectorCentrality,
+    /// Compute attenuated neighbor influence with a constant bias.
     KatzCentrality,
+    /// Compute hub and authority scores.
     Hits,
+    /// Score vertices by their contribution to shortest paths.
     BetweennessCentrality,
+    /// Score edges by their contribution to shortest paths.
     EdgeBetweennessCentrality,
+    /// Compute weighted shortest distances from one source.
     Sssp,
+    /// Return incoming and outgoing vertex degrees.
     DegreesAll,
+    /// Return incoming vertex degrees.
     InDegreesAll,
+    /// Return outgoing vertex degrees.
     OutDegreesAll,
+    /// Label components using connectivity without edge direction.
     WeaklyConnectedComponents,
+    /// Label components whose vertices are mutually reachable by directed paths.
     StronglyConnectedComponents,
+    /// Count triangles involving each vertex.
     TriangleCountAll,
+    /// Return each vertex's largest containing k-core.
     CoreNumber,
+    /// Extract the subgraph meeting the requested core-number bound.
     KCore,
+    /// Return minimum-weight spanning edges.
     MinimumSpanningTree,
+    /// Detect communities with modularity refinement.
     Leiden,
+    /// Detect communities using an ensemble of Louvain partitions.
     Ecg,
+    /// Cluster vertices from a modularity spectral embedding.
     SpectralModularityMaximization,
+    /// Compute two-dimensional vertex layout coordinates.
     ForceAtlas2,
+    /// Compare neighbor sets by intersection over union.
     Jaccard,
+    /// Compare neighbor sets by twice their intersection over combined sizes.
     Sorensen,
+    /// Compare neighbor sets by intersection over the smaller set.
     Overlap,
+    /// Compare neighbor vectors using cosine similarity.
     Cosine,
 }
 
@@ -68,10 +123,12 @@ impl CugraphAlgorithm {
         CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.algorithm)
     }
 
+    /// Returns the registered SQL function name for this algorithm.
     pub fn function_name(self) -> &'static str {
         self.definition().sql_function_name
     }
 
+    /// Returns the stable native algorithm code used by diagnostics and reports.
     pub fn code(self) -> &'static str {
         self.native_algorithm().as_str()
     }
@@ -117,8 +174,10 @@ impl CugraphAlgorithm {
 /// name follows the `cugraph_<native_name>` convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CugraphOperationDefinition {
+    /// SQL algorithm represented by this registry entry.
     pub algorithm: CugraphAlgorithm,
     native_algorithm: NativeGraphAlgorithm,
+    /// Function identifier recognized by the cuGraph SQL binder.
     pub sql_function_name: &'static str,
 }
 

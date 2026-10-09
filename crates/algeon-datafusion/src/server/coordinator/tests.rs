@@ -1,5 +1,3 @@
-//! Unit tests for the query coordinator.
-
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
@@ -537,7 +535,7 @@ fn unavailable_projection_keeps_canonical_attempt_outcome_separate_from_delivery
     let mut bounded = config();
     // The sealed observation JSONL cannot fit, but the bounded unavailable
     // stats control payload still can. This exercises the post-handoff
-    // unavailable projection rather than the normal captured-query formatter.
+    // unavailable projection. The normal captured-query formatter is not exercised.
     bounded.per_query_artifact_max_bytes = 512;
     let coordinator = QueryCoordinator::new(bounded);
     attach_cancelled_attempt_then_fail_delivery(

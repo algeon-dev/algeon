@@ -21,7 +21,8 @@ use crate::{
 
 /// Options for writing a Parquet file.
 ///
-/// **Advanced.** Most users should prefer [`DataFrame::write_parquet`](crate::DataFrame::write_parquet).
+/// This is an advanced options type. Most users should prefer
+/// [`DataFrame::write_parquet`](crate::DataFrame::write_parquet).
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ParquetTableWriteOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
@@ -85,7 +86,6 @@ pub(crate) fn write_parquet_with_exec(
 ) -> Result<()> {
     let filepath = path_to_cstring(&options.filepath, "io::parquet::write_parquet")?;
 
-    // Validate column name count matches the table before the FFI call.
     if let Some(ref names) = options.column_names {
         let expected = table.num_columns()?;
         if names.len() != expected {
@@ -98,7 +98,6 @@ pub(crate) fn write_parquet_with_exec(
         }
     }
 
-    // Convert column names to CStrings at the call site.
     let cstring_names: Option<Vec<CString>> = options
         .column_names
         .as_ref()
@@ -121,7 +120,7 @@ pub(crate) fn write_parquet_with_exec(
         })
         .transpose()?;
 
-    // Build the pointer array; the Vec must outlive the FFI call.
+    // `name_ptrs_vec` must outlive the FFI call.
     let mut name_ptrs_vec: Vec<*const c_char> =
         cstring_names.as_ref().map(|names| names.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
     let (name_ptrs, num_cols) = if name_ptrs_vec.is_empty() {

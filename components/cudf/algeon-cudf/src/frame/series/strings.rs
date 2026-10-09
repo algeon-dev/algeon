@@ -24,14 +24,12 @@ pub struct SeriesStringOps<'a> {
 }
 
 impl SeriesStringOps<'_> {
-    // -- Case conversion ---------------------------------------------------
-
     /// Convert each string element to lowercase.
     ///
     /// The input must be a `STRING` column.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new STRING column.
+    /// Allocates a new STRING column.
     pub fn lower(&self) -> Result<Series> {
         self.series.string_unary_with_context(strings::to_lower_impl, self.ctx, "series::str::lower")
     }
@@ -41,12 +39,10 @@ impl SeriesStringOps<'_> {
     /// The input must be a `STRING` column.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new STRING column.
+    /// Allocates a new STRING column.
     pub fn upper(&self) -> Result<Series> {
         self.series.string_unary_with_context(strings::to_upper_impl, self.ctx, "series::str::upper")
     }
-
-    // -- Find / contains / starts_with / ends_with -------------------------
 
     /// Element-wise literal substring containment test.
     ///
@@ -56,7 +52,7 @@ impl SeriesStringOps<'_> {
     /// Equivalent to cuDF Python's `Series.str.contains(pat, regex=False)`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new BOOL8 column.
+    /// Allocates a new BOOL8 column.
     pub fn contains(&self, pat: &str) -> Result<Series> {
         self.series.string_scalar_in_context(pat, self.ctx, "series::str::contains", strings::str_contains_impl)
     }
@@ -68,7 +64,7 @@ impl SeriesStringOps<'_> {
     /// This is not a regex API.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new BOOL8 column. The selected stream is
+    /// Allocates a new BOOL8 column. The selected stream is
     /// synchronized before returning because libcudf temporarily borrows the
     /// host pattern bytes.
     pub fn like(&self, pattern: &str) -> Result<Series> {
@@ -94,7 +90,7 @@ impl SeriesStringOps<'_> {
     /// Equivalent to cuDF Python's `Series.str.startswith(pat)`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new BOOL8 column.
+    /// Allocates a new BOOL8 column.
     pub fn starts_with(&self, pat: &str) -> Result<Series> {
         self.series.string_scalar_in_context(pat, self.ctx, "series::str::starts_with", strings::starts_with_impl)
     }
@@ -106,33 +102,29 @@ impl SeriesStringOps<'_> {
     /// Equivalent to cuDF Python's `Series.str.endswith(pat)`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new BOOL8 column.
+    /// Allocates a new BOOL8 column.
     pub fn ends_with(&self, pat: &str) -> Result<Series> {
         self.series.string_scalar_in_context(pat, self.ctx, "series::str::ends_with", strings::ends_with_impl)
     }
 
-    // -- Slice ---------------------------------------------------------------
-
     /// Slice each string using zero-based character positions.
     ///
     /// `StringSliceOptions::start` and `stop` use a half-open `[start, stop)`
-    /// range over Unicode character positions, not bytes. `None` leaves a
-    /// bound open. Null input elements produce null output.
+    /// range over Unicode character positions. Byte offsets are not used.
+    /// `None` leaves a bound open. Null input elements produce null output.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new STRING column.
+    /// Allocates a new STRING column.
     pub fn slice(&self, options: StringSliceOptions) -> Result<Series> {
         self.series.string_slice_in_context(options, self.ctx, "series::str::slice")
     }
-
-    // -- Strip / trim -------------------------------------------------------
 
     /// Strip whitespace from both sides of each string.
     ///
     /// Equivalent to cuDF Python's `Series.str.strip()`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new STRING column.
+    /// Allocates a new STRING column.
     pub fn strip(&self) -> Result<Series> {
         self.strip_chars(StripSide::Both, "")
     }
@@ -159,16 +151,14 @@ impl SeriesStringOps<'_> {
         self.series.strip_in_context(side, to_strip, self.ctx, "series::str::strip_chars")
     }
 
-    // -- Attributes ---------------------------------------------------------
-
-    /// Character count (not byte count) per string.
+    /// Character count per string. The byte count is returned by `byte_count`.
     ///
     /// Returns an `INT32` Series. Null input elements produce null output.
     ///
     /// Equivalent to cuDF Python's `Series.str.len()`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new INT32 column.
+    /// Allocates a new INT32 column.
     pub fn len(&self) -> Result<Series> {
         self.series.string_unary_with_context(strings::count_characters_impl, self.ctx, "series::str::len")
     }
@@ -178,12 +168,12 @@ impl SeriesStringOps<'_> {
     /// Returns an `INT32` Series.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new INT32 column.
+    /// Allocates a new INT32 column.
     pub fn byte_count(&self) -> Result<Series> {
         self.series.string_unary_with_context(strings::count_bytes_impl, self.ctx, "series::str::byte_count")
     }
 
-    // -- Regex replace with back-references --------------------------------
+    // Replace with back-references treats `pattern` as a regular expression.
 
     /// Exact retained-output and temporary-workspace preflight for replace-with-backrefs.
     pub fn replace_with_backrefs_output_size(
@@ -199,8 +189,6 @@ impl SeriesStringOps<'_> {
         )
     }
 
-    // -- Numeric conversion (TRY_CAST string -> integer) -------------------
-
     /// Parse each string element as an integer of `output_type`, returning
     /// null for rows that do not parse cleanly or overflow the target type.
     /// Null input rows stay null. Mirrors SQL `TRY_CAST(s AS <int_type>)`.
@@ -208,7 +196,7 @@ impl SeriesStringOps<'_> {
     /// `output_type` must be an integral data type.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new column of `output_type`.
+    /// Allocates a new column of `output_type`.
     pub fn try_to_integers(&self, output_type: &DataType) -> Result<Series> {
         self.series.try_to_integers_in_context(output_type, self.ctx, "series::str::try_to_integers")
     }

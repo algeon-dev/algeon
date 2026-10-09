@@ -34,9 +34,8 @@
 #                               full-column interactive look (needs a terminal)
 #   --parquet-dir PATH          override dataset auto-detection
 #   --out PATH                  TSV output path (default: /tmp/bench-one/...)
-#   --dev                       use the dev (debug) profile instead of release;
-#                               faster to compile, but timings are meaningless
-#                               for tuning (default: release)
+#   --dev                       use the dev (debug) profile; it compiles faster, but
+#                               its timings are meaningless for tuning (default: release)
 #   --no-review                 skip the human-readable summary
 #   --dry-run                   print the resolved env + command without running
 #

@@ -801,10 +801,9 @@ fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScala
 
 /// Three group-only dedup aggregates combined by two stacked keyed LeftAnti
 /// joins under an outermost groupless `count(*)`, i.e. `count(*) from ((a
-/// except b) except c)`. Models a CHAIN of EXCEPT DISTINCTs rather than a
-/// single one: the second anti join's probe side is the first anti join
-/// itself, proven dedup transitively instead of being a dedup aggregate
-/// directly.
+/// except b) except c)`. Models a CHAIN of EXCEPT DISTINCTs. The second anti
+/// join's probe side is the first anti join itself. That probe side is not a
+/// dedup aggregate, so its dedup is proven transitively.
 fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
     let key_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
     let one_schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));

@@ -37,16 +37,23 @@ impl DeviceTelemetryStatus {
 pub struct DeviceTelemetrySnapshot {
     /// Wall-clock sample time for correlating diagnostics with external telemetry.
     pub(crate) sampled_at_unix_ms: u64,
+    /// CUDA ordinal sampled by this diagnostic snapshot.
     pub device_ordinal: usize,
+    /// Availability of the CUDA memory sample.
     pub cuda_status: DeviceTelemetryStatus,
     pub(crate) cuda_total_bytes: Option<u64>,
+    /// CUDA-visible free bytes, or `None` when the CUDA sample is unavailable.
     pub cuda_free_bytes: Option<u64>,
+    /// Availability of optional NVML telemetry, independent of CUDA availability.
     pub nvml_status: DeviceTelemetryStatus,
     pub(crate) nvml_total_bytes: Option<u64>,
     pub(crate) nvml_reserved_bytes: Option<u64>,
+    /// NVML-used framebuffer bytes, or `None` when memory telemetry is unavailable.
     pub nvml_used_bytes: Option<u64>,
     pub(crate) nvml_free_bytes: Option<u64>,
+    /// NVML GPU utilization percentage, or `None` when unavailable.
     pub gpu_utilization_pct: Option<u32>,
+    /// NVML memory-controller utilization percentage, or `None` when unavailable.
     pub memory_utilization_pct: Option<u32>,
 }
 
@@ -115,6 +122,7 @@ fn sampled_at_unix_ms() -> u64 {
 /// Snapshot of the stable facts algeon needs for one CUDA device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceFacts {
+    /// CUDA device ordinal sampled by backend construction.
     pub device: usize,
     /// NVML product name, when the optional NVML diagnostics substrate is available.
     pub model_name: Option<String>,
@@ -138,7 +146,7 @@ pub(crate) trait GpuInventory: Send + Sync {
     ///
     /// `Err` means the required CUDA facts for the ordinal are unavailable.
     /// Optional fields are `None` when their diagnostics substrate is
-    /// unavailable rather than failing the query.
+    /// unavailable, and the call still returns `Ok`.
     fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts>;
 }
 

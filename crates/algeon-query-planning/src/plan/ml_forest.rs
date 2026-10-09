@@ -12,12 +12,13 @@ const SNAPSHOT: &str = "query_engine.plan.ml_forest";
 
 /// SHA-256 of the model file bytes a statement was planned against.
 ///
-/// The digest covers the source file, not the derived checkpoint, so operators
-/// can compare it with `sha256sum <model file>`.
+/// The digest covers the source file only. The derived checkpoint is not hashed,
+/// so operators can compare the digest with `sha256sum <model file>`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MlForestModelDigest([u8; 32]);
 
 impl MlForestModelDigest {
+    /// Computes SHA-256 over the supplied source bytes without reading a file.
     pub fn of(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
     }
@@ -60,14 +61,20 @@ impl fmt::Display for MlForestModelDigest {
 /// Serialized tree-ensemble format named by the `model_format` option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MlForestModelFormat {
+    /// XGBoost model serialized as JSON.
     XgboostJson,
+    /// XGBoost model serialized as UBJSON.
     XgboostUbjson,
+    /// XGBoost legacy binary model.
     XgboostLegacy,
+    /// LightGBM serialized model.
     LightGbm,
+    /// Treelite model checkpoint.
     TreeliteCheckpoint,
 }
 
 impl MlForestModelFormat {
+    /// Canonical value accepted by the `model_format` option.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::XgboostJson => "xgboost_json",
@@ -78,6 +85,7 @@ impl MlForestModelFormat {
         }
     }
 
+    /// Parses an exact `model_format` value; returns `None` for any other string.
     pub fn from_option_value(value: &str) -> Option<Self> {
         match value {
             "xgboost_json" => Some(Self::XgboostJson),
@@ -100,7 +108,9 @@ impl fmt::Display for MlForestModelFormat {
 /// features, so execution widens the Float32 input matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MlForestPrecision {
+    /// Forest scoring uses Float32 feature values.
     Single,
+    /// Forest scoring uses Float64 feature values.
     Double,
 }
 
@@ -125,7 +135,10 @@ pub enum MlForestOutputContract {
     /// One Float32 `prediction` per row.
     Score,
     /// One Int32 `prediction` per row in `0..classes`.
-    ClassIndex { classes: usize },
+    ClassIndex {
+        /// Number of classes whose native scores are compared; at least two.
+        classes: usize,
+    },
     /// `output_0..output_{n-1}` Float32 values per row.
     Vector(usize),
 }
@@ -161,10 +174,13 @@ impl fmt::Display for MlForestOutputContract {
 /// Facts nvForest's importer reported for the planned model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MlForestModelFacts {
+    /// Positive number of feature values required per row.
     pub num_features: usize,
+    /// Positive tree count reported by the importer.
     pub num_trees: usize,
     /// Native per-row output stride.
     pub native_output_stride: usize,
+    /// Feature precision reported by the importer.
     pub precision: MlForestPrecision,
 }
 
@@ -185,7 +201,13 @@ pub struct MlForestModelSnapshot {
 }
 
 impl MlForestModelSnapshot {
-    /// Digests `source` and checks that `output` is a shape `facts` can produce.
+    /// Digests `source` and retains shared ownership of the derived checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidPlan` for empty source or checkpoint bytes, zero feature,
+    /// tree, or output-stride facts, or an output shape incompatible with the
+    /// native stride. Vector and class-index outputs require a stride of at least two.
     pub fn new(
         source: &[u8],
         checkpoint: impl Into<Arc<[u8]>>,
@@ -229,26 +251,32 @@ impl MlForestModelSnapshot {
         &self.checkpoint
     }
 
+    /// Returns SHA-256 of the original source model bytes.
     pub fn digest(&self) -> MlForestModelDigest {
         self.digest
     }
 
+    /// Returns the serialized source format used when binding this snapshot.
     pub fn format(&self) -> MlForestModelFormat {
         self.format
     }
 
+    /// Returns importer facts that execution must verify when loading the checkpoint.
     pub fn facts(&self) -> MlForestModelFacts {
         self.facts
     }
 
+    /// Number of feature values required in each input row.
     pub fn num_features(&self) -> usize {
         self.facts.num_features
     }
 
+    /// Returns the result shape bound to this model at planning.
     pub fn output(&self) -> MlForestOutputContract {
         self.output
     }
 
+    /// Returns the imported forest's feature arithmetic precision.
     pub fn precision(&self) -> MlForestPrecision {
         self.facts.precision
     }

@@ -148,7 +148,7 @@ fn cache_fill_reserve_bytes(
 /// Charges the fetched payload to the host cache-fill budget. Growth never
 /// waits, since two fills each holding part of the budget would deadlock, so a
 /// payload the remaining budget cannot cover is refused. The caller then
-/// drops the payload with its permit instead of publishing unaccounted bytes.
+/// drops the payload with its permit, so unaccounted bytes are never published.
 fn account_cache_fill_payload_bytes(permit: &mut CacheFillBytePermit, actual_bytes: u64) -> Result<()> {
     if permit.try_grow(actual_bytes.max(1))? {
         return Ok(());

@@ -276,8 +276,8 @@ impl Drop for RuntimeOperatorStageGuard {
         if self.terminal_recorded {
             return;
         }
-        // Unwind or early-drop without an explicit terminal still leaves a
-        // truthful terminal rather than an orphaned Started.
+        // An unwind or early drop without an explicit terminal still records a
+        // truthful terminal, so no Started event is left orphaned.
         let lifecycle = if thread::panicking() {
             RuntimeOperatorStageState::Failed { error_code: "panicked".to_string() }
         } else {
@@ -317,10 +317,10 @@ where
 
 /// Runtime-owned execution scope exposed to operator-stage observation.
 ///
-/// The observation layer deliberately depends on this narrow value contract,
-/// rather than on the runtime's concrete execution context.  That keeps the
-/// observation-to-runtime edge out of the layering graph while preserving the
-/// established [`stage_context_from_execution`] call surface.
+/// The observation layer depends only on this narrow value contract, and the
+/// runtime's concrete execution context lies outside that dependency set. The
+/// observation-to-runtime edge therefore stays out of the layering graph, and
+/// the established [`stage_context_from_execution`] call surface is preserved.
 pub trait RuntimeExecutionStageContext {
     /// Returns the observation handle, plan execution id, and parent span id
     /// that scope one operator stage.
@@ -336,7 +336,8 @@ pub trait RuntimeExecutionStageContext {
     ) -> (RuntimeObservationHandle, Option<PlanExecutionId>, Option<RuntimeSpanId>);
 }
 
-/// Helper that builds stage observation identity from a runtime execution scope.
+/// Returns the observation handle, plan execution id, and parent span id
+/// of a runtime execution scope.
 pub fn stage_context_from_execution(
     context: &impl RuntimeExecutionStageContext,
 ) -> (RuntimeObservationHandle, Option<PlanExecutionId>, Option<RuntimeSpanId>) {

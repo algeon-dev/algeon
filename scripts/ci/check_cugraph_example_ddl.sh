@@ -2,7 +2,7 @@
 # Policy check: every CREATE statement in the cuGraph documentation SQL blocks
 # uses CREATE OR REPLACE. Readers run the example pages in one Flight SQL
 # session, so a page must rerun cleanly and pages that share a view name must
-# overwrite each other instead of failing on "already exists".
+# overwrite each other so that none fails with "already exists".
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)

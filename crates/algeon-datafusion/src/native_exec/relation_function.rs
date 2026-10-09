@@ -86,7 +86,12 @@ pub(crate) trait RelationFunctionSpec: Clone + std::fmt::Debug + Send + Sync + '
     const HOST_OUTPUT_MEMORY_CONSUMER: &'static str;
     fn operation_name(&self) -> &'static str;
     fn binding_count(&self) -> usize;
+    /// Roles follow child order and contain exactly `binding_count()` entries.
     fn roles(&self) -> Vec<&'static str>;
+    /// Returns unique schema indices in ID, feature, and target order.
+    ///
+    /// The caller must provide `index < binding_count()`. A child schema that
+    /// does not satisfy its binding contract returns an error.
     fn required_projection(&self, index: usize, schema: SchemaRef) -> Result<Vec<usize>>;
     /// Lowers the function into a native plan with a host Arrow sink; every
     /// other sink is derived from that plan.
@@ -98,6 +103,11 @@ pub(crate) trait RelationFunctionSpec: Clone + std::fmt::Debug + Send + Sync + '
 }
 
 #[derive(Clone, Debug)]
+/// Shared DataFusion execution wrapper specialized by cuVS and cuML call specifications.
+///
+/// It preserves validated input ordering, stages input relations, and executes
+/// one native call under the attempt's admission authority. Specialized public
+/// aliases provide the application-facing operation types.
 pub struct RelationFunctionExec<S> {
     spec: S,
     inputs: Vec<Arc<dyn ExecutionPlan>>,

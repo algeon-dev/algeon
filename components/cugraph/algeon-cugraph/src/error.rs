@@ -3,8 +3,8 @@
 //! attempted, an optional human-readable message, optional key-value context
 //! pairs, and an optional source error. This makes it easy to diagnose
 //! failures without losing the underlying cause. The status is the
-//! observation, not permission to retry: callers decide recovery only after
-//! cleanup and device-health checks.
+//! observation and does not grant permission to retry. Callers decide recovery
+//! only after cleanup and device-health checks.
 
 use std::{
     backtrace::{Backtrace, BacktraceStatus},
@@ -42,10 +42,10 @@ enum NativeCudaFailure {
 
 /// Categorisation of cuGraph and library-level errors.
 ///
-/// Each variant describes **what the caller should do**, not which dependency
-/// failed. Variants that originate in the raw C API map to the corresponding
-/// `CUGRAPH_*` error codes; library-only variants cover Rust-side interop,
-/// lifecycle, and I/O boundaries.
+/// Each variant describes **what the caller should do**. It does not name the
+/// dependency that failed. Variants that originate in the raw C API map to the
+/// corresponding `CUGRAPH_*` error codes; library-only variants cover Rust-side
+/// interop, lifecycle, and I/O boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorKind {
@@ -464,7 +464,7 @@ impl Error {
 
     /// Whether the source reported a transient condition.
     ///
-    /// This is the observation, not permission to retry: the caller must
+    /// This is the observation and does not permit a retry. The caller must
     /// still complete cleanup and device-health checks first.
     pub fn is_temporary(&self) -> bool {
         self.status == ErrorStatus::Temporary

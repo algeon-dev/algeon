@@ -4,7 +4,7 @@
 //! path (which inserts on successful credential check) and the
 //! [`super::AuthInterceptor`] path (which looks up on every
 //! authenticated RPC). Both paths share a single [`dashmap::DashMap`] so
-//! contention on the hot per-RPC lookup is minimal.
+//! contention on the per-RPC lookup is minimal.
 
 use std::{
     sync::Arc,
@@ -20,13 +20,13 @@ use tonic::Status;
 /// a small fixed-size struct (a `String` token key, a username, an
 /// `Option<Instant>`), so this bounds the store to a few MiB even if clients
 /// never reconnect to let old tokens expire and get swept. Sized well above
-/// any realistic single-deployment client count while still being a real
-/// bound, not an unbounded map.
+/// any realistic single-deployment client count and still caps the map
+/// size.
 const MAX_LIVE_TOKENS: usize = 100_000;
 
 /// Identity attached to an authenticated request. Populated by the
-/// interceptor and read by any downstream handler that wants to log /
-/// authorize against the calling user. Carried inside the
+/// interceptor and read by any downstream handler that logs or authorizes
+/// against the calling user. Carried inside the
 /// [`tonic::Request`] extensions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
@@ -73,7 +73,7 @@ impl TokenStore {
     }
 
     /// Same as [`TokenStore::new`] but with an overridden capacity, so
-    /// capacity-boundary tests do not need to actually mint
+    /// capacity-boundary tests do not need to mint
     /// [`MAX_LIVE_TOKENS`] tokens to exercise the limit.
     #[cfg(test)]
     pub(crate) fn with_capacity_for_tests(max_live_tokens: usize) -> Self {
@@ -86,13 +86,13 @@ impl TokenStore {
     ///
     /// At capacity, sweeps expired entries to reclaim space from tokens that
     /// were never looked up again (`validate` only sweeps on hit) and retries
-    /// once; if the store is still full, issuance fails rather than growing
-    /// the map without bound.
+    /// once; if the store is still full, issuance fails and the map does not
+    /// grow.
     ///
-    /// The sweep is a full scan, so it runs only on the capacity edge rather
-    /// than on every handshake: below the cap the map is already bounded and
-    /// scanning buys nothing, while sweeping unconditionally would make a
-    /// login storm quadratic in the number of live tokens.
+    /// The sweep is a full scan, so it runs only at the capacity edge. Below
+    /// the cap the map is already bounded and scanning buys nothing, while
+    /// sweeping on every issuance would make a login storm quadratic in the
+    /// number of live tokens.
     pub fn issue(&self, principal: Principal, ttl: Option<Duration>) -> Result<String, Status> {
         if self.inner.len() >= self.max_live_tokens {
             self.sweep_expired();
@@ -123,15 +123,15 @@ impl TokenStore {
         self.inner.retain(|_, entry| entry.expires_at.is_none_or(|expires_at| now < expires_at));
     }
 
-    /// Look up `token`. Expired entries are removed on hit, so a single
-    /// caller that races against expiry observes the same outcome
-    /// across retries. Returns `None` if the token is unknown or
+    /// Look up `token`. Expired entries are removed on hit, so every lookup
+    /// after expiry returns `None`. Returns `None` if the token is unknown or
     /// expired.
     pub fn validate(&self, token: &str) -> Option<Principal> {
         let entry = self.inner.get(token)?;
         if let Some(expires_at) = entry.expires_at
             && Instant::now() >= expires_at
         {
+            // Release the entry's shard read guard before `remove` locks that shard for writing.
             drop(entry);
             self.inner.remove(token);
             return None;
@@ -227,7 +227,7 @@ mod tests {
             store.issue(principal("alice"), Some(Duration::from_millis(0))).expect("issue under capacity");
         }
         std::thread::sleep(Duration::from_millis(1));
-        // Hitting the cap must sweep rather than report the store as full:
+        // Hitting the cap sweeps expired entries before reporting the store as full:
         // every entry in it is already unusable.
         let token = store.issue(principal("bob"), None).expect("sweep reclaims capacity for a fresh issuance");
         assert_eq!(store.len(), 1, "the sweep must clear all expired entries, not just enough for one slot");
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn live_tokens_at_capacity_are_not_swept() {
         // The sweep runs on the capacity edge, so it must still distinguish
-        // expired entries from live ones rather than clearing the store.
+        // expired entries from live ones and leave live tokens in the store.
         const CAPACITY: usize = 8;
         let store = TokenStore::with_capacity_for_tests(CAPACITY);
         for _ in 0..CAPACITY {

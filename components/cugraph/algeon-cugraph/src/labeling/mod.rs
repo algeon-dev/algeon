@@ -2,7 +2,7 @@
 //!
 //! Connected-components algorithms return per-vertex integer labels. Each
 //! label is the minimum vertex id of its component, so labels are run-stable
-//! and expressed in the caller-visible vertex space rather than cuGraph's
+//! and expressed in the caller-visible vertex space, independent of cuGraph's
 //! internal hook-race assignment.
 
 pub mod connected_components;

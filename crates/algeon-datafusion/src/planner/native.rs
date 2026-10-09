@@ -525,7 +525,7 @@ fn append_cugraph_input_planning_reports(_plan: &dyn ExecutionPlan, _report: &mu
 
 /// Roots a directly constructed native plan in the admission node the
 /// optimizer rule would place. Unit tests that build native execs without the
-/// optimizer rule use this instead of duplicating the admission plumbing.
+/// optimizer rule call this to reuse the admission wiring. They do not copy it.
 #[cfg(test)]
 pub(crate) fn wrap_direct_native_plan_with_admission(
     plan: Arc<dyn ExecutionPlan>,

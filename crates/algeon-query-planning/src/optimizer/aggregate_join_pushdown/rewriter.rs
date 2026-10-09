@@ -160,10 +160,10 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
     ) -> Result<NodeId, AggregateJoinPushdownRejectedReason> {
         let lineage = AggregateJoinLineage::new(aggregate, join, projection_chain)?;
         let measure_side = lineage.single_measure_side()?;
-        // For inner joins we allow group keys on either side or split across
-        // both: the pre-aggregate only carries measure-side group keys, and the
-        // final aggregate still sees the other-side keys through the rebuilt
-        // join's output projection.
+        // Inner joins accept group keys on either side or split across both:
+        // the pre-aggregate only carries measure-side group keys, and the final
+        // aggregate still sees the other-side keys through the rebuilt join's
+        // output projection.
         let preagg_group_columns = lineage.group_columns_for_side(measure_side);
         self.rewrite_join_aggregate_with_preagg(
             aggregate,
@@ -336,13 +336,12 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         let reserved_preagg_aliases =
             preagg_state_aliases.iter().flat_map(|aliases| aliases.iter().cloned()).collect::<Vec<_>>();
         // The aggregate executor requires aggregate measure arguments to be
-        // plain column references. When every measure already resolves to a
-        // plain column from the measure-side input (the q70/q86 case with no
-        // projection chain), skip the materializing projection and have the
-        // pre-aggregate read those columns directly. When at least one measure
-        // came from a computed projection-chain expression (the q67 case),
-        // materialize all measures once under fresh aliases so the pre-aggregate
-        // can still reference them as plain columns.
+        // plain column references. When every measure resolves, after the
+        // projection chain is inlined, to a plain column of the measure-side
+        // input, skip the materializing projection and have the pre-aggregate
+        // read those columns directly. When at least one measure is a computed
+        // expression after inlining, materialize all measures once under fresh
+        // aliases so the pre-aggregate can still reference them as plain columns.
         let needs_materializing_projection =
             lineage.measure_columns.iter().any(|measure| !matches!(measure.side_input_aggregate.expr, Expr::Column(_)));
 

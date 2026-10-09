@@ -1,9 +1,9 @@
 //! Pure reduction over collected attempt reports and sampled snapshots.
 //!
 //! Nothing here touches a GPU or a clock, so every scenario assertion is
-//! unit-testable. The observation inputs are deliberately narrow structs
-//! rather than the engine snapshots themselves: the binary projects the
-//! snapshots once, and the reduction stays testable without CUDA.
+//! unit-testable. The observation inputs are deliberately narrow structs. The
+//! engine snapshots are not used directly. The binary projects each snapshot
+//! once, and the reduction stays testable without CUDA.
 //!
 //! Only the measured run constructs these values, so the CPU-only feature
 //! reaches them from tests alone.
@@ -73,7 +73,7 @@ pub(super) struct AttemptObservation {
     pub(super) admission_wait: Option<AdmissionWaitEvidence>,
     /// Ledger grant identity, when the report carried available resource
     /// evidence. `None` means the evidence field was unavailable, which is a
-    /// non-qualifying result rather than a skipped assertion.
+    /// non-qualifying result. The assertion is not skipped.
     pub(super) grant_id: Option<u64>,
     pub(super) domain_id: Option<u64>,
     pub(super) domain_pool_usage: Option<QueryDomainPoolUsageObservation>,
@@ -82,7 +82,7 @@ pub(super) struct AttemptObservation {
     pub(super) physical_execution_ns: Option<u64>,
     /// Submit and terminal instants on the engine's shared observation clock.
     /// Both come from the sealed report, so intervals from different attempts
-    /// are comparable and the overlap witness can actually fail.
+    /// are comparable and the overlap witness can fail.
     pub(super) submitted_ns: u64,
     pub(super) outcome_terminal_ns: u64,
 }
@@ -110,7 +110,7 @@ pub(super) struct GraphClaimCalibrationSnapshot {
     pub(super) truncated: bool,
     pub(super) rows: Vec<GraphClaimCalibrationRow>,
     /// The execution owner explicitly classified this graph attempt before
-    /// sealing. Rows do not imply physical execution: a BFS singleflight
+    /// sealing. Rows do not imply physical execution. A BFS singleflight
     /// follower intentionally has no locally measured graph row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) execution: Option<GraphClaimCalibrationExecution>,
@@ -191,8 +191,8 @@ impl GraphClaimCalibrationEvidence {
     }
 }
 
-/// Per-attempt failure is intentionally a closed vocabulary rather than a
-/// rendered error. The raw typed rows beside it remain the evidence.
+/// Per-attempt failure is intentionally recorded as a closed vocabulary value.
+/// The raw typed rows beside it remain the evidence.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct GraphClaimCalibrationAttemptEvidence {
     pub(super) sequence: usize,
@@ -239,8 +239,8 @@ pub(super) struct DeviceOccupancyPeaks {
     pub(super) peak_live_grants_bytes: u64,
     pub(super) peak_resident_owner_bytes: u64,
     pub(super) allocation_failure_count: u64,
-    /// Minimum observed logical root-stream slot availability. Profile-derived
-    /// accounting, not a CUDA stream counter.
+    /// Minimum observed logical root-stream slot availability, derived from the
+    /// profile. The value is not a CUDA stream counter.
     pub(super) min_root_streams_available: usize,
     pub(super) min_root_worker_slots_available: usize,
 }
@@ -287,8 +287,8 @@ pub(super) struct MeasuredAggregate {
     pub(super) report_aggregate_equality: ReportAggregateEquality,
 }
 
-/// One step's envelope curve point: throughput and latency computed over
-/// exactly the attempts that step measured, against its own window.
+/// A step's envelope curve point holds the throughput and latency computed
+/// over the attempts that step measured, against that step's own window.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct StepAggregate {
     pub(super) step_index: usize,
@@ -388,8 +388,8 @@ pub(super) struct AttemptRow {
     pub(super) failure: Option<AttemptFailureClass>,
     pub(super) terminal_evidence: AttemptTerminalEvidence,
     /// Per-attempt public-report attribution check. This is a
-    /// deterministic projection of the sealed facts beside it, not a second
-    /// event stream or inference from runner control flow.
+    /// deterministic projection of the sealed facts beside it. It does not form
+    /// a second event stream or infer anything from runner control flow.
     pub(super) attribution: super::operability::AttemptAttribution,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) graph_claim_calibration: Option<GraphClaimCalibrationSnapshot>,
@@ -414,7 +414,7 @@ pub(super) struct AttemptRow {
 
 /// A single scenario clause and whether the run evidenced it.
 ///
-/// `not_evidenced` is a first-class outcome: a clause that needs a capability
+/// `not_evidenced` is a first-class outcome. A clause that needs a capability
 /// this phase does not own is recorded as a declared gap, never as a pass.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct ScenarioClause {
@@ -546,7 +546,7 @@ pub(super) struct ScenarioEvidence {
     /// ordering is reconstructed from runner scheduling.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) overload_fairness: Option<OverloadFairnessEvidence>,
-    /// Logical slot occupancy is recorded, never asserted: the ledger derives
+    /// Logical slot occupancy is recorded and never asserted. The ledger derives
     /// these counts from the immutable profile, so they cannot witness CUDA
     /// stream identity. Nsight owns stream-level overlap.
     pub(super) logical_slot_occupancy: LogicalSlotOccupancyEvidence,
@@ -594,7 +594,7 @@ pub(super) struct QuarantineFallbackEvidence {
     pub(super) pre_ack_witness_offset_ns: u64,
     /// The target ledger sequence observed with the live grant/job. Together
     /// with the synchronous injector acknowledgement, this pins the barrier to
-    /// controller state rather than the runner's submission order.
+    /// controller state. The runner's submission order does not affect it.
     pub(super) pre_ack_ledger_sequence: u64,
     pub(super) pre_ack_live_grants: usize,
     pub(super) pre_ack_active_query_jobs: usize,
@@ -653,8 +653,8 @@ impl CacheQuarantineEvidence {
 
 /// Evidence for an ordinary query-domain cap exhaustion collected entirely
 /// from sealed attempt reports. A `reservation_limit` event is intentionally
-/// not relabelled as a physical allocator failure: it proves the bounded
-/// domain contract and its recovery path instead.
+/// not relabelled as a physical allocator failure. It proves the bounded domain
+/// contract and its recovery path.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct DomainExhaustionEvidence {
     /// The predicate requires exactly one failed native attempt rejected by
@@ -779,7 +779,7 @@ pub(super) struct PhysicalPressureLeaseFacts {
 }
 
 /// Explicit proof for a genuine allocator failure under external CUDA
-/// pressure. This is separate from [`DomainExhaustionEvidence`]: a
+/// pressure. This is separate from [`DomainExhaustionEvidence`]. A
 /// `reservation_limit` result does not establish a physical allocation
 /// failure, and conversely a physical event is rejected if the immutable
 /// logical caps could have caused it.
@@ -805,7 +805,7 @@ pub(super) struct PhysicalAllocatorPressureEvidence {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) observed_physical_request_bytes: Option<u64>,
     /// Diagnostic comparison against the aggregate CUDA free-memory snapshot.
-    /// A false value does not disprove an exact physical allocator decline:
+    /// A false value does not disprove an exact physical allocator decline.
     /// CUDA's total free bytes do not establish contiguous allocatable capacity.
     pub(super) physical_request_exceeds_free_under_pressure: bool,
     pub(super) grant_cap_exceeds_physical_request: bool,
@@ -1228,10 +1228,10 @@ impl QuarantineFallbackEvidence {
     }
 }
 
-/// Repeated-quarantine evidence: each cycle reuses the single-quarantine
-/// barrier semantics against a rotation target, and the section evidences
-/// only when every configured cycle landed with the fleet stabilizing on the
-/// remaining ordinals afterwards.
+/// This evidence repeats the single-quarantine barrier semantics for each
+/// cycle, against a rotation target. The section evidences only when every
+/// configured cycle landed, with the fleet stabilizing on the remaining
+/// ordinals afterwards.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct QuarantineCyclesEvidence {
     pub(super) status: ClauseStatus,
@@ -1300,11 +1300,11 @@ pub(super) struct LogicalSlotOccupancyEvidence {
 /// Equality between the artifact's published per-attempt rows and the summary
 /// aggregates beside them.
 ///
-/// Both sides are counted independently: the `rows_*` figures are recounted
+/// Both sides are counted independently. The `rows_*` figures are recounted
 /// from the emitted [`AttemptRow`]s, while the `aggregate_*` figures come from
 /// the throughput and placement reductions over the observations. A reduction
-/// that dropped, duplicated, or misattributed an attempt breaks the equality
-/// instead of hiding inside a single shared expression.
+/// that dropped, duplicated, or misattributed an attempt breaks the equality.
+/// The two sides share no single expression that could hide that error.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct ReportAggregateEquality {
     pub(super) rows_measurement_attempts: u64,
@@ -1394,7 +1394,7 @@ impl MeasuredAggregate {
     }
 }
 
-/// Per-step throughput/latency over exactly the attempts the step measured.
+/// Per-step throughput/latency over the attempts the step measured.
 /// Warmup arrivals belong to no step's measurement; step windows are
 /// disjoint measurement phases, so their union is the run's measurement set.
 fn step_aggregate(window: &StepWindow, observations: &[AttemptObservation]) -> StepAggregate {
@@ -1557,9 +1557,9 @@ fn scenarios(
 
 fn same_device_clauses(observations: &[AttemptObservation], placement: &[DevicePlacement]) -> Vec<ScenarioClause> {
     // Scenario 1 asks whether *a* device carried concurrent attempts, so select
-    // the ordinal with the highest witnessed occupancy rather than the one that
-    // merely placed the most. Ties break on attempts placed and then on ordinal
-    // so the selection is deterministic across runs.
+    // the ordinal with the highest witnessed occupancy. Ties break on attempts
+    // placed and then on the lower ordinal, so the selection is deterministic
+    // across runs.
     let busiest = placement.iter().max_by_key(|device| {
         (device.occupancy.peak_active_query_jobs, device.attempts_placed, usize::MAX - device.configuration.ordinal)
     });
@@ -1600,7 +1600,7 @@ fn same_device_clauses(observations: &[AttemptObservation], placement: &[DeviceP
 
 /// Every attempt on the ordinal must carry an available identity and all of
 /// them must be pairwise distinct. An unavailable evidence field fails the
-/// clause rather than shrinking the sample.
+/// clause. The sample is not shrunk.
 fn distinctness_clause(
     name: &'static str,
     on_device: &[&AttemptObservation],
@@ -1628,8 +1628,8 @@ fn distinctness_clause(
 }
 
 /// Lifetime overlap between two attempts on the same ordinal, measured on the
-/// engine's shared observation clock. A witness of concurrent admission and
-/// residency, not proof of GPU kernel overlap.
+/// engine's shared observation clock. This is a witness of concurrent admission
+/// and residency. It is not proof of GPU kernel overlap.
 ///
 /// Overlap requires strictly positive intersection, so two attempts that merely
 /// share a submit instant and then run back to back do not qualify.
@@ -1659,8 +1659,8 @@ fn overlap_clause(on_device: &[&AttemptObservation], ordinal: usize) -> Scenario
     }
 }
 
-/// `peak_active_query_jobs` only increments when a job actually starts, so it
-/// is falsifiable evidence of device-local concurrency.
+/// `peak_active_query_jobs` only increments when a job starts, so it is
+/// falsifiable evidence of device-local concurrency.
 fn occupancy_witness_clause(device: &DevicePlacement, ordinal: usize) -> ScenarioClause {
     let peak = device.occupancy.peak_active_query_jobs;
     if peak >= 2 {
@@ -1803,9 +1803,9 @@ fn clause(clause: &'static str, status: ClauseStatus, detail: String) -> Scenari
 
 /// Recounts the published rows and compares them with the summary reductions.
 ///
-/// The row side reads only the emitted [`AttemptRow`]s; the same values a
-/// consumer of the artifact would count; so it does not share an expression
-/// with the aggregate side.
+/// The row side reads only the emitted [`AttemptRow`]s and counts the same
+/// values a consumer of the artifact would count. It does not share an
+/// expression with the aggregate side.
 fn equality(
     window: &MeasurementWindow,
     placement: &[DevicePlacement],

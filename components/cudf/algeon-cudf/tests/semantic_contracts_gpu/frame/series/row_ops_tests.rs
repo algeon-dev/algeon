@@ -1,9 +1,5 @@
-//! Integration tests for `Series` row-selection convenience methods.
-//!
 //! Methods under test: `head`, `tail`, `slice`, `gather`, `filter`,
 //! `dropna`, `drop_duplicates`, `value_counts`.
-//!
-//! All tests require a GPU.
 
 use cudf::{
     ErrorCode, ErrorKind, Exec, Series,
@@ -114,7 +110,7 @@ fn test_value_counts_for_unnamed_series_uses_fallback_value_name() {
     assert_eq!(rows, vec![(5, 2), (7, 1)]);
 }
 
-// -- Semantic lock-down: stable across the column-primitive refactor --------
+// The tests below lock row-selection semantics across the column-primitive refactor.
 
 fn test_head_on_empty_series_returns_empty_with_name() {
     let s = series::<i32>("x", &[]).unwrap();
@@ -182,8 +178,8 @@ fn test_dropna_on_non_nullable_returns_same_values() {
 }
 
 fn test_value_counts_with_sentinel_collision_name() {
-    // value_counts now returns schema-neutral output names regardless of the
-    // source series name, including names that match the old sentinel.
+    // value_counts returns schema-neutral output names regardless of the source series name,
+    // including `__cudf_series_value__`.
     let values = series::<i32>("__cudf_series_value__", &[1, 1, 2]).unwrap();
 
     let counts = values.on(Exec::RETAINED).value_counts().unwrap();

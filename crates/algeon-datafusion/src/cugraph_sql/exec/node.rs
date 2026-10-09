@@ -44,6 +44,11 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
+/// DataFusion physical wrapper for a validated cuGraph call.
+///
+/// Native producers supply resident GPU inputs; other inputs are staged as Arrow
+/// under the configured host boundary limits. The wrapper preserves the call's
+/// validated result schema and does not replay a native failure on DataFusion.
 pub struct CugraphAlgoExec {
     pub(super) spec: CugraphAlgorithmSpec,
     pub(super) edge_source: Arc<dyn ExecutionPlan>,
@@ -505,7 +510,7 @@ impl CugraphAlgoExec {
                 GraphBfsSingleflightJoin::Follower(mut follower) => {
                     match follower.wait(native_context.cancellation()).await? {
                         GraphBfsFollowerOutcome::Ready(result) => {
-                            // Release unused host staging before importing or handing off the published result.
+                            // Release unused host staging before importing or returning the published result.
                             drop(staged_inputs.take());
                             let started = Instant::now();
                             self.graph_claim_calibration_capture

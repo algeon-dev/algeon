@@ -29,7 +29,6 @@ use query_planning::{
     source::{GpuResidentSource, SourceNode},
 };
 
-/// Build a default params variant for one registered algorithm.
 pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
     match algorithm {
         GraphAlgorithm::PageRank => GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
@@ -204,7 +203,7 @@ fn registry_algorithms_preserve_edge_normalize_provenance_under_default_policy()
 fn registry_pins_current_cugraph_sql_inventory() {
     // Pin the current SQL-side inventory in registry order so an unintentional
     // change shows up as a focused test failure here, separate from the cuGraph
-    // SQL plumbing tests. Extend this list when a new algorithm lands; the
+    // SQL tests in `cugraph_sql_tests`. Extend this list when a new algorithm lands; the
     // matching native-side pin lives in
     // `crates/algeon-query-engine/tests/native_contract_tests/graph_algorithm.rs`.
     let registered: Vec<_> = CUGRAPH_OPERATION_REGISTRY.iter().map(|e| e.algorithm).collect();

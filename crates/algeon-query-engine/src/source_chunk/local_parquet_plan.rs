@@ -88,7 +88,7 @@ fn rapids_source_read_sizing() -> SourceReadSizing<'static> {
 /// [`plan_local_parquet_source_chunks`], [`plan_local_parquet_source_chunks_with_execution_context`],
 /// and [`plan_local_parquet_source_chunks_with_metadata_cache`]; a caller that
 /// already owns both a cache and a context (for example, to plan with footers
-/// it already loaded) can call it directly instead of duplicating one of those.
+/// it already loaded) can call it directly. Such a caller does not need to duplicate one of those.
 pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     source_node_id: NodeId,
     source: &LocalParquetSource,

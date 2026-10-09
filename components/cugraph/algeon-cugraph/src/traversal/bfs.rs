@@ -137,8 +137,7 @@ pub struct BfsTargetInfo {
 
 /// Perform breadth-first search from one or more source vertices.
 ///
-/// Prefer using [`Graph::bfs`](Graph::bfs) instead of calling
-/// this function directly.
+/// The public entry point is [`Graph::bfs`](Graph::bfs); this function is crate-private.
 pub(crate) fn bfs<V: CugraphElement>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<Forward>,
@@ -149,7 +148,7 @@ pub(crate) fn bfs<V: CugraphElement>(
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
     // The C++ BFS defaults to std::numeric_limits<vertex_t>::max() for unlimited
-    // depth. Since vertex_t is typically int32_t, we use i32::MAX.
+    // depth. Since vertex_t is typically int32_t, this uses i32::MAX.
     let limit = params.depth_limit.map(usize::from).unwrap_or(i32::MAX as usize);
     let graph_ptr = graph.as_ptr(handle, "bfs")?;
 

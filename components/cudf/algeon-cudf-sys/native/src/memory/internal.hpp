@@ -75,7 +75,7 @@ class allocator_event_ring final {
   struct slot {
     // Writers never wait for this flag. A contending callback leaves its
     // sequence without a stable record; consumers must treat that as
-    // unavailable rather than risking a mixed payload.
+    // unavailable to avoid reading a mixed payload.
     std::atomic_flag writer_active = ATOMIC_FLAG_INIT;
     std::atomic<std::uint64_t> published_sequence{0};
     std::atomic<std::uint64_t> monotonic_time_ns{0};
@@ -142,8 +142,8 @@ void fill_usage(cudf_memory_resource_usage_t& out,
 
 /// Shared live-allocation gate for one manager's base resource and every
 /// private query-domain pool it creates.  A static partition is an ownership
-/// boundary, so a query domain must consume the same limit rather than getting
-/// an independent private-pool allowance.
+/// boundary, so each query domain consumes that same limit and has no
+/// independent private-pool allowance.
 class manager_allocation_limit_state final {
  public:
   explicit manager_allocation_limit_state(std::size_t limit_bytes) : limit_bytes_{limit_bytes} {}

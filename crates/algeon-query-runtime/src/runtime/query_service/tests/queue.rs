@@ -199,7 +199,8 @@ async fn query_service_execution_token_cancels_a_queued_async_admission() {
     assert!(service.try_admit_query().unwrap().is_some(), "cancellation must not retain capacity");
 }
 
-/// A queued async admission wakes on its cancellation token, not a timer.
+/// A queued async admission wakes on its cancellation token. The paused-clock
+/// test asserts that no time elapses between cancellation and the waiter's return.
 #[tokio::test(start_paused = true)]
 async fn cancelling_a_queued_async_admission_wakes_it_without_a_timer() {
     let service = test_service(1, 8);
@@ -477,8 +478,9 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     let error = waiter.try_admit().expect_err("saturated ordinal one reports a memory-grant timeout");
 
     // This service is backed by the real installed devices, so the grant size
-    // is whatever ordinal one's profile issued; assert the selected-device
-    // scope and the live grant itself rather than a hardware-dependent literal.
+    // is whatever ordinal one's profile issued. The assertions check the
+    // selected-device scope and read the live grant, because the grant size
+    // depends on the installed hardware.
     let active_grant = format!("1:{}", active.device_budget_bytes());
     assert_eq!(error.fact_value("reason"), Some("memory_grant_wait_timeout"));
     assert_eq!(error.fact_value("requested_query_cap_bytes"), Some("0"));

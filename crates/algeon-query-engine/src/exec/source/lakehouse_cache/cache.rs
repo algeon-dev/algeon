@@ -362,8 +362,8 @@ fn acquire_lakehouse_cache_read_pin(
 /// without change. Every member selects all of its file's row groups, the
 /// source frame is the read columns unchanged, and every column is fixed
 /// width, so the cuDF write and re-read round-trip the types byte for byte. The policy
-/// also bounds the batch's estimated read bytes so the cache holds many small
-/// batches rather than a few large rewrites.
+/// also bounds the batch's estimated read bytes, so the cache holds many small
+/// batches and avoids a few large rewrites.
 fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &SourceChunkBatch) -> bool {
     let policy = LakehouseCachePolicy::default();
 
@@ -575,7 +575,7 @@ pub fn sanitize_cache_component(value: &str) -> String {
 /// Foreground fill: returns once a complete entry exists at `cache_path`.
 ///
 /// A complete entry of the expected size is served at once. A planned cache
-/// hit that is missing or the wrong size is an error rather than a refill,
+/// hit that is missing or the wrong size fails with an error and no refill runs,
 /// because the plan was costed as a hit and the mismatch means planning and
 /// the filesystem disagree. Otherwise the fill lock is taken, the entry is
 /// rechecked (another process may have finished it while this one waited),
@@ -602,7 +602,7 @@ fn ensure_local_cache_parquet_entry(
     context.check_cancellation("query_engine.lakehouse_cache.ensure")?;
     // Callers only reach this entry for `LocalCacheKvikio` reads, so a missing
     // content identity means the cached bytes cannot be attributed to the current
-    // object: refuse to serve or fill rather than matching on size alone.
+    // object. This function returns an error and does not match on size alone.
     if resolved_source.content_identity.as_deref().is_none_or(str::is_empty) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -806,7 +806,6 @@ fn enqueue_background_lakehouse_cache_entry_fill(
         "query_engine.lakehouse_cache.background_fill.concurrency",
     )?
     else {
-        drop(lock_guard);
         return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
     };
     let initial_budget_bytes = estimated_fetch_bytes.filter(|bytes| *bytes > 0).unwrap_or(1);
@@ -816,12 +815,8 @@ fn enqueue_background_lakehouse_cache_entry_fill(
         "query_engine.lakehouse_cache.background_fill.budget",
     ) {
         Ok(Some(permit)) => permit,
-        Ok(None) => {
-            drop(lock_guard);
-            return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_byte_budget_saturated"));
-        },
+        Ok(None) => return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_byte_budget_saturated")),
         Err(error) if error.code() == QueryErrorCode::MemoryReservationFailed => {
-            drop(lock_guard);
             return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_byte_budget_saturated"));
         },
         Err(error) => return Err(error),
@@ -1413,9 +1408,9 @@ async fn stream_lakehouse_cache_fill(
                     .with_fact_if_absent("background_fill_bytes", total_bytes)
             })?;
             if !grew {
-                // Another fill holds the budget: abandon this cache write
-                // rather than wait for it. The temp file goes away, nothing
-                // is published, and the reader already has its own data path.
+                // Another fill holds the budget: abandon this cache write without waiting
+                // for it. The temp file goes away, nothing is published, and the reader
+                // already has its own data path.
                 let _ = fs::remove_file(&temp_path);
                 return Ok(None);
             }

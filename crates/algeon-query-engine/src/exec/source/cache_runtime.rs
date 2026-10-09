@@ -64,7 +64,7 @@ pub(super) fn record_background_cache_chunk_fill_enqueue(context: &ExecutionCont
     }
 }
 
-/// Reads a batch from its optimized cache file instead of the per-chunk files.
+/// Reads a batch from its optimized cache file and does not open the per-chunk files.
 ///
 /// The optimized file holds the batch's source frame as written by
 /// `publish_lakehouse_optimized_batch_frame`, so the read uses a plain Parquet read with the

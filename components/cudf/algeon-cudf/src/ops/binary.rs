@@ -395,7 +395,6 @@ fn infer_primitive_binary_output(
     op: BinaryOperator,
     make_err: impl Fn(&str) -> Result<DataType>,
 ) -> Result<DataType> {
-    // Arithmetic: string types not allowed
     if lhs == TypeId::String || rhs == TypeId::String {
         return make_err("cannot perform arithmetic on string types");
     }
@@ -420,12 +419,11 @@ fn infer_primitive_binary_output(
         return Ok(DataType::new(TypeId::Bool8));
     }
 
-    // Bool8 + Bool8 → Bool8 (legacy bitwise/logical context)
+    // Any other operator on two Bool8 operands yields Bool8.
     if lhs == TypeId::Bool8 && rhs == TypeId::Bool8 {
         return Ok(DataType::new(TypeId::Bool8));
     }
 
-    // Both must be numeric from here
     let lhs_rank = match lhs.numeric_rank() {
         Some(r) => r,
         None => return make_err("unsupported type for binary operation"),
@@ -435,17 +433,14 @@ fn infer_primitive_binary_output(
         None => return make_err("unsupported type for binary operation"),
     };
 
-    // Same type → same type
     if lhs == rhs {
         return Ok(DataType::new(lhs));
     }
 
-    // Both float → wider float
     if lhs.is_float() && rhs.is_float() {
         return Ok(DataType::new(if lhs_rank >= rhs_rank { lhs } else { rhs }));
     }
 
-    // One float, one int → the float (float always wins over int)
     if lhs.is_float() && !rhs.is_float() {
         return Ok(DataType::new(lhs));
     }
@@ -453,7 +448,6 @@ fn infer_primitive_binary_output(
         return Ok(DataType::new(rhs));
     }
 
-    // Both signed or both unsigned → wider type
     if (lhs.is_signed_int() && rhs.is_signed_int()) || (lhs.is_unsigned_int() && rhs.is_unsigned_int()) {
         return Ok(DataType::new(if lhs_rank >= rhs_rank { lhs } else { rhs }));
     }
@@ -497,7 +491,7 @@ fn infer_primitive_binary_output(
     Ok(DataType::new(promoted))
 }
 
-/// Binary operation: column op column.
+/// Applies a binary operator to two columns.
 ///
 /// Works with both numeric and string columns. For strings, only comparison
 /// operators (`Equal`, `NotEqual`, `Less`, `Greater`, `LessEqual`,

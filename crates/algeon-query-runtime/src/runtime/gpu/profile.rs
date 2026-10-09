@@ -91,7 +91,7 @@ impl DeviceCapabilities {
     /// Whether admission must receive an explicit planner-produced requirement.
     ///
     /// An absent requirement is safe only when every execution capability is
-    /// accepted. Exact profiles must not interpret an empty implicit set as a
+    /// accepted. Exact profiles must not interpret an empty implicit set as
     /// evidence that the attempt can execute on the device.
     pub(crate) const fn requires_explicit_attempt_requirement(&self) -> bool {
         matches!(self.support, DeviceCapabilitySupport::Exact(_))
@@ -100,12 +100,13 @@ impl DeviceCapabilities {
 
 /// Frozen capacity and execution-slot bounds for one CUDA device.
 ///
-/// `cache_cap_bytes` (`K`) reserves a bounded per-device cache share carved
-/// out of the managed capacity (`M`). Query grants and frozen residents share
+/// `cache_cap_bytes` (`K`) reserves a bounded per-device cache share taken
+/// from the managed capacity (`M`). Query grants and frozen residents share
 /// only the remaining query share (`Q = M - K`); query admission never
 /// promises the same bytes that back the cache share.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceResourceProfile {
+    /// CUDA device whose ledger owns this resource profile.
     pub device_ordinal: usize,
     /// Capability metadata frozen with this device's resource envelope.
     pub device_capabilities: DeviceCapabilities,
@@ -116,6 +117,7 @@ pub struct DeviceResourceProfile {
     pub(crate) usable_capacity_bytes: u64,
     /// `M`: the bytes the ledger may promise to grants, residents, and cache.
     pub managed_capacity_bytes: u64,
+    /// Default immutable grant in bytes, before any resident-capacity adjustment at admission.
     pub default_query_limit_bytes: u64,
     /// `A_d`. Also the number of lifecycle job permits, root streams, and
     /// attempt lanes.
@@ -133,6 +135,7 @@ pub struct DeviceResourceProfile {
     pub stream_pool_size: usize,
     /// At least `A_d + A_d * S_d`, checked by `resolve`.
     pub worker_job_capacity: usize,
+    /// Cache share reserved from managed capacity in bytes.
     pub cache_cap_bytes: u64,
 }
 
@@ -147,7 +150,6 @@ pub struct DeviceResourceProfile {
 pub(crate) struct DeviceResourceEnvelope {
     /// Device ordinal this envelope resolves for.
     pub(crate) device_ordinal: usize,
-    /// Capability metadata frozen with this device's resource envelope.
     pub(crate) device_capabilities: DeviceCapabilities,
     /// Total configured allocation limit before headroom.
     pub(crate) configured_limit_bytes: u64,
@@ -164,7 +166,7 @@ pub(crate) struct DeviceResourceEnvelope {
     /// Each slot backs one auxiliary permit holder of the attempt: an
     /// execution lane, a source worker, or an auxiliary fragment context.
     /// The native route serves one disjoint fork subset per live holder, so
-    /// this count sizes the attempt's fork pool, not its operator width.
+    /// this count sizes the attempt's fork pool, and it is one input to the execution width below.
     /// Execution width is the minimum of this envelope, the free permits,
     /// the device execution-job capacity, and the ready work.
     pub(crate) source_work_per_attempt: usize,
@@ -188,9 +190,9 @@ impl DeviceResourceProfile {
     /// Derives the default per-query grant from the service parallelism
     /// target: `floor((M - K) / N)` with checked arithmetic.
     ///
-    /// This is a capacity-allocation policy, not a per-query estimate: with
-    /// no frozen residents the profile admits `N` default grants. An
-    /// explicitly configured default keeps its value after validation.
+    /// This is a capacity-allocation policy that does not estimate the memory a
+    /// query needs. With no frozen residents the profile admits `N` default
+    /// grants. An explicitly configured default keeps its value after validation.
     pub(crate) fn derive_default_query_limit_bytes(
         device_ordinal: usize,
         managed_capacity_bytes: u64,
@@ -565,7 +567,7 @@ mod tests {
     #[test]
     fn derives_default_query_limit_from_parallelism_target_and_cache_share() {
         // `floor((M - K) / N)`: the plan's `M = 24, K = 8, N = 2` fixture
-        // yields 8, so two defaults exactly fill the query share.
+        // yields 8, so two defaults sum to the query share.
         assert_eq!(DeviceResourceProfile::derive_default_query_limit_bytes(0, 24, 8, 2).unwrap(), 8);
         assert_eq!(DeviceResourceProfile::derive_default_query_limit_bytes(0, 10, 0, 3).unwrap(), 3);
         assert_eq!(DeviceResourceProfile::derive_default_query_limit_bytes(0, 1_000, 0, 1).unwrap(), 1_000);

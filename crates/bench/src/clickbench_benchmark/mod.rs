@@ -69,9 +69,7 @@ const TSV_COLUMNS: &[&str] = &[
 /// Reason categories:
 /// - `float_accumulation_variance`: deterministic result set, but different
 ///   valid Float64 accumulation orders produce last-bit AVG differences.
-///   q04 is `AVG("UserID")` over large-magnitude int64 values; q10 is
-///   `AVG("ResolutionWidth")` in a grouped query whose rank-10/rank-11
-///   `COUNT(*)` boundary is not tied.
+///   q04 is `AVG("UserID")` over large-magnitude int64 values.
 /// - `result_set_nondeterministic`: selected rows are engine-defined because
 ///   the SQL has `LIMIT`/`OFFSET` without a deterministic total ordering and
 ///   the ClickBench fixture has ties at the boundary.
@@ -375,9 +373,9 @@ fn aggregate_measurement(
     assert!(!runs.is_empty(), "iterations >= 1");
     let iteration_failure_count = runs.iter().filter(|r| r.outcome == RunOutcome::Failed).count();
     let native_rewritten = runs.iter().find_map(|r| r.native_rewritten).map(|_| {
-        // Treat as rewritten only if EVERY iteration was rewritten; mixed
-        // behavior would mean the rule's decision is flipping, which is a
-        // bug we want to surface rather than smooth over.
+        // Treat as rewritten only if EVERY iteration was rewritten. Mixed
+        // behavior means the rule's decision flips between iterations. That is
+        // a bug, and reporting the mixed case as not rewritten keeps it visible.
         runs.iter().all(|r| r.native_rewritten == Some(true))
     });
     if iteration_failure_count > 0 {
@@ -628,10 +626,11 @@ struct EngineMeasurement {
     output_bytes: Option<usize>,
     output_fingerprint: Option<String>,
     /// `None` on the CPU side. On the native side, `Some(true)` when the
-    /// optimizer rule actually replaced a sub-plan with a native node, else
-    /// `Some(false)`; in which case the recorded wall time is the retained
-    /// DataFusion baseline, not GPU execution. Used to gate `speedup_vs_cpu`
-    /// so the report cannot publish DataFusion-baseline time as native time.
+    /// optimizer rule replaced a sub-plan with a native node, else
+    /// `Some(false)`. In that case the recorded wall time is the retained
+    /// DataFusion baseline, which does not measure GPU execution. Used to gate
+    /// `speedup_vs_cpu` so the report cannot publish DataFusion-baseline time as
+    /// native time.
     native_rewritten: Option<bool>,
     samples_ms: Vec<u128>,
     /// Count of measured iterations that did not produce a successful result.
@@ -680,10 +679,10 @@ enum ParityStatus {
     /// Row counts agree but order-insensitive fingerprints differ.
     ContentMismatch,
     /// Both engines succeeded but the native rule did not rewrite this plan,
-    /// so the recorded native timing is the retained DataFusion baseline, not
-    /// native execution.
-    /// Parity is trivially equal here; the row is flagged so consumers
-    /// don't conflate it with a real native run.
+    /// so the recorded native timing is the retained DataFusion baseline. That
+    /// timing does not measure native execution.
+    /// Parity is trivially equal here; the row is flagged so consumers do not
+    /// conflate it with a native run.
     NativeNotRewritten,
     CpuOnlyFailed,
     NativeOnlyFailed,
@@ -750,9 +749,8 @@ impl BenchmarkRow {
     }
 
     /// `speedup_vs_cpu` is only meaningful when both sides succeeded **and**
-    /// the native rule actually rewrote the plan; otherwise the "native"
-    /// wall time is a retained DataFusion baseline and a 1.0× ratio would be
-    /// misleading.
+    /// the native rule rewrote the plan; otherwise the "native" wall time is a
+    /// retained DataFusion baseline and a 1.0× ratio would be misleading.
     fn speedup_vs_cpu(&self) -> Option<f64> {
         let cpu = self.cpu.as_ref()?;
         let native = self.native.as_ref()?;

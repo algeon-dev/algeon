@@ -32,11 +32,15 @@ use crate::{
 static NEXT_CUVS_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
+/// Validated operation settings retained by the specialized physical execution wrapper.
 pub struct CuvsRelationFunctionSpec {
     operation: CuvsOperation,
     options: CuvsValidatedOptions,
 }
 
+/// Physical execution wrapper for one cuVS call with validated input relations.
+///
+/// Native execution stages the declared inputs and exposes the operation's Arrow result schema.
 pub type CuvsAlgoExec = RelationFunctionExec<CuvsRelationFunctionSpec>;
 
 impl RelationFunctionExec<CuvsRelationFunctionSpec> {
@@ -62,6 +66,7 @@ impl RelationFunctionExec<CuvsRelationFunctionSpec> {
         )
     }
 
+    /// Returns the registered operation executed by this physical wrapper.
     pub fn operation(&self) -> CuvsOperation {
         self.spec().operation
     }

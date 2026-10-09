@@ -59,7 +59,7 @@ impl<'a> SourceRead<'a> {
         Self { source, chunks, mode, input: SourceReadInput::Path, pass_read_limit: None }
     }
 
-    /// Read the one requested chunk from `buffer` instead of its path.
+    /// Read the one requested chunk from `buffer` as its byte source.
     pub fn from_host_buffer(mut self, buffer: &'a [u8]) -> Self {
         self.input = SourceReadInput::HostBuffer(buffer);
         self
@@ -68,7 +68,7 @@ impl<'a> SourceRead<'a> {
     /// Bound read and decompression scratch to a share of `budget_bytes`, the
     /// allocation limit the read runs under. The decoded output must fit in
     /// the same budget, so scratch takes half of it; the divisor is a starting
-    /// point, not a measured optimum.
+    /// point that no measurement has tuned.
     pub fn with_pass_read_limit_for_budget(mut self, budget_bytes: usize) -> Self {
         const SCRATCH_SHARE_DIVISOR: u64 = 2;
         self.pass_read_limit = Some((budget_bytes as u64) / SCRATCH_SHARE_DIVISOR);

@@ -59,8 +59,8 @@ impl SelectedRowGroupStats {
 ///
 /// Diagnostics explain why a source can or cannot use the native direct device
 /// path. They are intentionally structural so adapters and tests can assert on
-/// stable fields instead of parsing displayed plans. Every native source reads
-/// Parquet files.
+/// stable fields without parsing displayed plans. Only local Parquet sources
+/// produce these diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDiagnostics {
     /// Comma-separated high-level Parquet read strategies represented by this source.
@@ -494,8 +494,9 @@ impl PredicateDisposition {
 
 /// Disposition of byte-range file entries.
 ///
-/// This describes the planning-time representation of file entries, not the
-/// lower-level reads performed by the selected Parquet backend.
+/// This describes the planning-time representation of file entries. The
+/// lower-level reads performed by the selected Parquet backend are not described
+/// here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ByteRangeDisposition {
     /// Source entries describe whole files.

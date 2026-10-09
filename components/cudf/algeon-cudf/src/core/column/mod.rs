@@ -1,6 +1,6 @@
 //! GPU column types and raw device-memory helpers.
 //!
-//! **Advanced/Core.** Most users should use [`Series`](crate::Series).
+//! This is advanced core API. Most users should use [`Series`](crate::Series).
 //! [`DeviceSlice`] is an even lower-level raw helper and is not the preferred
 //! cross-crate interop contract; see [`crate::interop`] for borrowed GPU-view
 //! interop.

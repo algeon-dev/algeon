@@ -458,8 +458,8 @@ fn date_trunc_output_unit_mismatch_rejects_during_native_planning() {
 
 fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
     // Native admission for TRY_CAST is currently limited to `STRING → integer`.
-    // Wrapping a numeric column in TRY_CAST keeps the structured rejection so
-    // the adapter falls back to CPU instead of treating it as a plain CAST.
+    // Wrapping a numeric column in TRY_CAST keeps the structured rejection and
+    // the adapter falls back to CPU; the cast is not lowered as a plain CAST.
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-try-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);

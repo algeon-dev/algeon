@@ -1,8 +1,8 @@
 //! Deterministic arrival planning.
 //!
-//! The plan is a pure value: offsets from an unspecified `t0`, never a clock
-//! read. That keeps the seed-to-schedule mapping reproducible and lets the
-//! whole schedule be asserted without a GPU.
+//! The plan is a pure value. Its offsets are measured from an unspecified
+//! `t0`, and planning reads no clock. That keeps the seed-to-schedule mapping
+//! reproducible and lets the whole schedule be asserted without a GPU.
 //!
 //! Only the measured run drives a plan, so the CPU-only feature reaches these
 //! values from tests alone.
@@ -38,14 +38,15 @@ pub(super) struct ScheduledArrival {
     pub(super) phase: SchedulePhase,
     /// The overrun policy this arrival was planned under. Rate steps may mix
     /// `delay` and `drop` phases inside one run, so the driver reads the
-    /// policy from the arrival rather than from one plan-level knob.
+    /// policy from each arrival, because the plan-level value cannot describe
+    /// every step.
     pub(super) rate_overrun: RateOverrunPolicy,
     pub(super) query_index: usize,
     pub(super) session_index: usize,
 }
 
-/// One sequential phase of the plan. A single-phase profile produces exactly
-/// one step spanning the whole measurement window, which keeps the driver on
+/// One sequential phase of the plan. A single-phase profile produces one step
+/// spanning the whole measurement window, which keeps the driver on
 /// one code path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(super) struct StepPlan {
@@ -73,10 +74,10 @@ pub(super) struct ArrivalPlan {
     /// `None` value preserves duration-paced closed-loop scheduling.
     pub(super) max_rounds: Option<usize>,
     /// Duration-paced closed-loop profiles construct each round at the driver
-    /// boundary instead of materializing a speculative wall-clock number of
+    /// boundary and do not materialize a speculative wall-clock number of
     /// arrivals. This prevents the planning cap from omitting later steps
     /// while retaining a finite, reproducible plan for rate and fixed-cohort
-    /// fixed-cohort validation scenarios.
+    /// validation scenarios.
     pub(super) duration_paced_concurrency: bool,
     pub(super) rate_overrun: &'static str,
     pub(super) warmup_ns: u64,
@@ -91,8 +92,8 @@ pub(super) struct ArrivalPlan {
     /// Sequential phases of this plan. Always non-empty; a single-phase
     /// profile contributes exactly one step.
     pub(super) steps: Vec<StepPlan>,
-    /// deadline/cancellation storm knobs, echoed from the profile so the driver can arm them
-    /// per attempt.
+    /// Deadline and cancellation storm settings, echoed from the profile so the
+    /// driver can arm them per attempt.
     pub(super) attempt_deadline_ms: Option<u64>,
     pub(super) cancel_every_n: Option<usize>,
     pub(super) cancel_after_ms: Option<u64>,
@@ -261,12 +262,12 @@ fn rate_overrun_label(policy: RateOverrunPolicy) -> &'static str {
     }
 }
 
-/// Closed-loop rounds of exactly `concurrency` arrivals.
+/// Closed-loop rounds of `concurrency` arrivals.
 ///
 /// Every arrival in a round shares offset zero and carries the round index; the
 /// driver submits round `N + 1` only once round `N` has drained. `concurrency`
-/// is therefore an in-flight ceiling, not an offered arrival rate, and the
-/// step window bounds the step rather than pacing it.
+/// is therefore an in-flight ceiling. It does not define an offered arrival
+/// rate, and the step window ends the step without pacing its arrivals.
 ///
 /// Rounds are planned generously against the step horizon because completion
 /// pacing is observed. The driver stops at the step deadline, and unsubmitted
@@ -283,8 +284,9 @@ fn plan_concurrency(
     session_count: usize,
     arrivals: &mut Vec<ScheduledArrival>,
 ) {
-    // A generous round budget: the driver ends on the wall-clock step
-    // deadline, and an attempt cannot be shorter than this floor in practice.
+    // Caps the planned rounds at one per MIN_ROUND_NS of the step window. The
+    // driver ends the step at its wall-clock deadline. This cap binds only when
+    // max_rounds exceeds that count.
     const MIN_ROUND_NS: u64 = 1_000_000;
     let duration_paced_rounds = usize::try_from(step_window_ns / MIN_ROUND_NS).unwrap_or(usize::MAX).max(1);
     let rounds = max_rounds.unwrap_or(duration_paced_rounds).min(duration_paced_rounds);
@@ -357,8 +359,8 @@ fn seconds_to_ns(seconds: u64) -> ToolResult<u64> {
     seconds.checked_mul(1_000_000_000).ok_or_else(|| "scheduling window overflows nanoseconds".into())
 }
 
-/// SplitMix64. Inlined rather than taken as a dependency so the recorded seed
-/// maps to the same schedule across toolchain and crate-version changes.
+/// SplitMix64, implemented here so the recorded seed maps to the same schedule
+/// across toolchain and crate-version changes.
 struct SplitMix64 {
     state: u64,
 }
@@ -406,9 +408,9 @@ mod tests {
         }
     }
 
-    /// Duration-paced concurrency profiles stay compact: the runner creates
-    /// their closed-loop rounds at the step boundary instead of silently
-    /// dropping later rounds or steps at the static planning cap.
+    /// Duration-paced concurrency profiles stay compact. The runner creates
+    /// their closed-loop rounds at the step boundary, so the static planning cap
+    /// cannot drop later rounds or steps.
     #[test]
     fn concurrency_mode_defers_duration_paced_rounds_to_the_driver() {
         let plan = ArrivalPlan::plan(&scheduling(ArrivalMode::Concurrency, None, 0), 3, 2).unwrap();
@@ -506,14 +508,14 @@ mod tests {
         huge.measurement_seconds = 3_600;
         let plan = ArrivalPlan::plan(&huge, 1, 1).unwrap();
         assert_eq!(plan.arrivals.len(), MAX_PLANNED_ATTEMPTS);
-        // A silent cap would read as "this is the plan you asked for".
+        // An unreported cap would read as "this is the plan you asked for".
         assert!(plan.truncated_by_attempt_cap);
 
         let modest = scheduling(ArrivalMode::Rate, Some(10), 1);
         assert!(!ArrivalPlan::plan(&modest, 1, 1).unwrap().truncated_by_attempt_cap);
 
         // Duration-paced concurrency mode carries no speculative round vector,
-        // so no later step can be silently cut off by the planning cap.
+        // so no later step can be cut off by the planning cap.
         let mut closed_loop = scheduling(ArrivalMode::Concurrency, None, 0);
         closed_loop.measurement_seconds = 3_600;
         let plan = ArrivalPlan::plan(&closed_loop, 1, 1).unwrap();
@@ -583,10 +585,10 @@ mod tests {
                 .filter(|arrival| arrival.step_index == 0)
                 .all(|arrival| arrival.rate_overrun == RateOverrunPolicy::Delay)
         );
-        // The denser second step offers meaningfully more arrivals.
+        // The denser second step offers more than three times as many arrivals.
         let step0 = plan.arrivals.iter().filter(|arrival| arrival.step_index == 0).count();
         assert!(step1.len() > step0 * 3, "step0 {step0} step1 {}", step1.len());
-        // Offsets stay global: a later step never plans inside an earlier window.
+        // Offsets stay global, so a later step never plans inside an earlier window.
         assert!(step1.iter().all(|arrival| arrival.offset_ns >= plan.steps[1].start_ns));
     }
 }

@@ -397,8 +397,8 @@ fn cache_metadata_path_fact(path: &Path) -> String {
 /// Stable, non-cryptographic fingerprint for cache metadata paths in diagnostics.
 ///
 /// This is FNV-1a 64-bit, chosen only so logs can correlate the same local path
-/// across runs without printing credential-bearing cache paths. The hex value is
-/// not reversible, not a security boundary, and must not be used as a cache key.
+/// across runs without printing credential-bearing cache paths. The hex value cannot be
+/// reversed, provides no security boundary, and must not be used as a cache key.
 fn stable_cache_metadata_hash(value: &str) -> u64 {
     fnv1a64(value.as_bytes())
 }

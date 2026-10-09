@@ -182,7 +182,7 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     let backend = build_injected_test_backend(&mut config);
-    // Match the certified mixed shape: a CPU ILIKE filter directly over the
+    // Match the certified mixed shape, a CPU ILIKE filter directly over the
     // local-Parquet native leaf. The server's normal multi-partition defaults
     // insert RepartitionExec and correctly make this candidate unsupported.
     let single_partition_config = SessionConfig::new()
@@ -258,7 +258,8 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
 
     // The mixed-boundary certificate clears the duplicated Parquet pruning hint only
     // after keeping the exact CPU ILIKE filter. Execute the query as a
-    // semantic regression check, not merely a coverage-shape assertion.
+    // semantic regression check that inspects the result rows, in addition to
+    // the coverage shape asserted above.
     let result_batches =
         execute_batches(&mut client, "SELECT label FROM explain_gpu_labels WHERE label ILIKE 'al%'").await;
     let mut labels = result_batches.iter().flat_map(|batch| utf8_values(batch.column(0))).collect::<Vec<_>>();

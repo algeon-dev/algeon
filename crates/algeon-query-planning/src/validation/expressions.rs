@@ -618,9 +618,9 @@ fn validate_in_list_expr(
                 "native IN list values must be literals",
             ));
         };
-        // A null in the list makes SQL `x IN (...)` null, rather than false,
-        // for every non-matching row; the native membership kernel has no
-        // three-valued form.
+        // A null in the list makes SQL `x IN (...)` evaluate to null for every
+        // non-matching row, where the result would otherwise be false. The
+        // native membership kernel has no three-valued form.
         if matches!(value, LiteralValue::Null(_)) {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedExpression,

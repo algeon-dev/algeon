@@ -304,7 +304,7 @@ async fn native_runtime_ln_exp_match_cpu_ieee_results() {
 }
 
 /// Null, NaN, and infinity must match exactly. Finite values may differ by a
-/// few units in the last place: DataFusion evaluates LN/EXP with the host libm
+/// few units in the last place. DataFusion evaluates LN/EXP with the host libm,
 /// while cuDF uses CUDA's device math library, and neither is required to be
 /// correctly rounded.
 fn ieee_values_match(expected: Option<f64>, actual: Option<f64>, ulp_distance: fn(f64, f64) -> u64) -> bool {

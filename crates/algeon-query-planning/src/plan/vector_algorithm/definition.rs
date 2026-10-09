@@ -14,25 +14,38 @@ use crate::plan::{
 
 /// Public SQL names for the query-local cuVS operations.
 pub const CUVS_BRUTE_FORCE_KNN_FUNCTION: &str = "cuvs_brute_force_knn";
+/// Canonical SQL function name for IVF-Flat nearest-neighbor search.
 pub const CUVS_IVF_FLAT_FUNCTION: &str = "cuvs_ivf_flat";
+/// Canonical SQL function name for IVF-PQ nearest-neighbor search.
 pub const CUVS_IVF_PQ_FUNCTION: &str = "cuvs_ivf_pq";
+/// Canonical SQL function name for CAGRA nearest-neighbor search.
 pub const CUVS_CAGRA_FUNCTION: &str = "cuvs_cagra";
+/// Canonical SQL function name for KMeans fit and assignment.
 pub const CUVS_KMEANS_FUNCTION: &str = "cuvs_kmeans";
+/// Canonical SQL function name for PCA fit-transform.
 pub const CUVS_PCA_FUNCTION: &str = "cuvs_pca";
+/// Canonical SQL function name for pairwise dense-vector distances.
 pub const CUVS_PAIRWISE_DISTANCE_FUNCTION: &str = "cuvs_pairwise_distance";
+/// Canonical SQL function name for selection of values within each vector.
 pub const CUVS_TOP_K_FUNCTION: &str = "cuvs_top_k";
 
 /// SQL relation argument roles in the canonical operation registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CuvsRelationRole {
+    /// Dense rows indexed for nearest-neighbor search.
     Dataset,
+    /// Dense query rows matched against the indexed dataset.
     Queries,
+    /// Dense rows consumed by a single-relation operation.
     Input,
+    /// Rows on the first axis of a pairwise distance result.
     X,
+    /// Rows on the second axis of a pairwise distance result.
     Y,
 }
 
 impl CuvsRelationRole {
+    /// Canonical lowercase relation argument name used by the SQL operation.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Dataset => "dataset",
@@ -58,17 +71,24 @@ impl CuvsRelationRole {
 /// Stable relational output contract selected by an operation descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CuvsOutputContract {
+    /// One row per neighbor with query and dataset identifiers, rank, and metric value.
     KnnNeighbors,
+    /// Input identifiers and query-local cluster assignments.
     KMeansAssignments,
+    /// Input identifiers followed by transformed principal components.
     PcaComponents,
+    /// One row per pair of input rows with both identifiers and the metric value.
     PairwiseDistances,
+    /// Selected values with input identifiers, rank, and vector dimension index.
     TopKValues,
 }
 
 /// Verified metrics for one vector element type within an operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CuvsVectorElementSupport {
+    /// Dense vector element type supported by the operation.
     pub element: VectorElementType,
+    /// Canonical metric option values supported for this element type; empty for operations without a metric.
     pub metrics: &'static [&'static str],
 }
 
@@ -76,7 +96,9 @@ pub struct CuvsVectorElementSupport {
 /// output-schema selection. Keep operation-specific facts in this registry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CuvsOperationDescriptor {
+    /// Identity selecting this registry entry.
     pub operation: CuvsOperation,
+    /// Canonical table-function identifier.
     pub sql_function_name: &'static str,
     /// Human-readable function title; SQL names remain canonical identifiers.
     pub display_name: &'static str,
@@ -89,10 +111,13 @@ pub struct CuvsOperationDescriptor {
     pub relation_roles: &'static [CuvsRelationRole],
     /// Supported dense-vector element types for every relation binding.
     pub vector_element_support: &'static [CuvsVectorElementSupport],
+    /// Result-shape family used to construct the Arrow schema.
     pub output_contract: CuvsOutputContract,
+    /// Required options, accepted values, and defaults.
     pub options: &'static [GpuOptionDefinition],
+    /// Ordered output field metadata, including repeated-field templates.
     pub output_fields: &'static [GpuOutputFieldDefinition],
-    /// Generic SQL that demonstrates the real execution syntax, not only the
+    /// Generic SQL that demonstrates the real execution syntax beyond the
     /// metadata-validation envelope.
     pub quickstart_sql: &'static str,
     /// Static and data-dependent lifecycle constraints that apply to this
@@ -582,21 +607,31 @@ const PCA_OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
 /// Operation identity used by native IR and the SQL adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CuvsOperation {
+    /// Exact neighbor search over the evaluated dataset.
     BruteForceKnn,
+    /// Approximate neighbor search with inverted lists storing full vectors.
     IvfFlat,
+    /// Approximate neighbor search with product-quantized inverted lists.
     IvfPq,
+    /// Approximate neighbor search with a query-local graph index.
     Cagra,
+    /// Evaluates every pair across two dense relations.
     PairwiseDistance,
+    /// Selects the smallest or largest values within each dense row.
     TopK,
+    /// Fits clusters and assigns the input rows.
     KMeans,
+    /// Fits principal components and transforms the input rows.
     Pca,
 }
 
 impl CuvsOperation {
+    /// Iterates supported operations in the canonical registry order.
     pub fn all() -> impl ExactSizeIterator<Item = Self> + Clone {
         CUVS_OPERATION_REGISTRY.iter().map(|descriptor| descriptor.operation)
     }
 
+    /// Returns this operation's static options, element support, and output contract.
     pub fn descriptor(self) -> &'static CuvsOperationDescriptor {
         CUVS_OPERATION_REGISTRY
             .iter()
@@ -604,11 +639,15 @@ impl CuvsOperation {
             .expect("cuVS operation registry is missing an operation variant")
     }
 
+    /// Looks up an exact canonical SQL name; returns `None` for an unknown name.
+    ///
+    /// This lookup does not normalize case.
     pub fn from_sql_function_name(name: &str) -> Option<Self> {
         CUVS_OPERATION_REGISTRY.iter().find(|descriptor| descriptor.sql_function_name == name).map(|d| d.operation)
     }
 }
 
+/// Supported cuVS operations in their canonical catalog order.
 pub const CUVS_OPERATION_REGISTRY: &[CuvsOperationDescriptor] = &[
     CuvsOperationDescriptor {
         operation: CuvsOperation::BruteForceKnn,
@@ -821,14 +860,21 @@ ORDER BY row_ordinal;"#,
 ];
 
 impl CuvsOperationDescriptor {
+    /// Returns supported metrics for `element`, or `None` when the element type is unsupported.
     pub fn element_support(&self, element: VectorElementType) -> Option<&CuvsVectorElementSupport> {
         self.vector_element_support.iter().find(|support| support.element == element)
     }
 
+    /// Looks up an exact option name; returns `None` if this operation has no such option.
     pub fn option(&self, name: &str) -> Option<&'static GpuOptionDefinition> {
         self.options.iter().find(|option| option.name == name)
     }
 
+    /// Builds a draft 2020-12 JSON Schema for this operation's options.
+    ///
+    /// The schema includes defaults, supported relation element types, and required
+    /// properties. Unknown properties are rejected; supported metric combinations
+    /// are also included in the metric description.
     pub fn options_json_schema(&self) -> Value {
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();

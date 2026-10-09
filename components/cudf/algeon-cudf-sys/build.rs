@@ -212,8 +212,8 @@ fn emit_shim_link_metadata(install_dir: &Path) -> PathBuf {
     // The freshly built libcudf_rust shim lives under the CMake install
     // prefix and must be tracked as `cudf-rust-runtime-lib` so downstream
     // `scripts/build/rapids.rs` can bake the exact rpath. This is emitted
-    // here (rather than inside the discovery helper) because the shim path
-    // is the build output itself, not a discovered dependency.
+    // here because the shim path is the build output itself. The discovery
+    // helper emits metadata for the discovered runtime dependencies.
     let shim = install_dir.join("lib/libcudf_rust.so");
     println!("cargo:rerun-if-changed={}", shim.display());
     println!("cargo:cudf-rust-runtime-lib={}", shim.display());

@@ -1,11 +1,10 @@
 //! Planning report shape: capability, cost-selection, and final-plan evidence.
 //!
-//! Each report answers one receiver: [`CandidateOutcome`] answers the
-//! optimizer with one row per candidate, the final-plan coverage in
-//! [`crate::gpu_coverage`] answers the developer with the completed plan, and
-//! the terminal attempt report answers the caller with how execution ended.
-//! Tests and downstream report rows assert on these structured outcomes
-//! rather than parsing printed physical plans.
+//! Each report has one reader. [`CandidateOutcome`] gives the optimizer one
+//! row per candidate, the final-plan coverage in [`crate::gpu_coverage`] gives
+//! the developer the completed plan, and the terminal attempt report gives the
+//! caller how execution ended. Tests and downstream report rows assert on these
+//! structured outcomes; they do not parse printed physical plans.
 //!
 //! [`CandidateOutcome`] is per-candidate evidence: one report holds one row
 //! per optimizer candidate, and several decision kinds can coexist. Candidate
@@ -244,9 +243,13 @@ impl std::fmt::Display for CandidateOutcomeKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateOutcome {
     /// Candidate was selected for native execution.
-    Selected { candidate: GpuCandidate },
+    Selected {
+        /// Candidate selected for native execution.
+        candidate: GpuCandidate,
+    },
     /// Candidate cannot execute under the native capability contract.
     NotSupported {
+        /// Candidate whose selection decision this outcome records.
         candidate: GpuCandidate,
         /// Stable capability reason code.
         capability_reason: CapabilityReason,
@@ -255,6 +258,7 @@ pub enum CandidateOutcome {
     },
     /// Candidate is native-capable but was not selected by the cost model.
     NotSelectedByCost {
+        /// Candidate whose selection decision this outcome records.
         candidate: GpuCandidate,
         /// Stable cost-selection reason code.
         cost_reason: NativePlanCostReason,
@@ -281,20 +285,35 @@ impl CandidateOutcome {
 /// report wire format depend on an engine-internal struct layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeCandidateCostEvidence {
+    /// Number of nodes in the native candidate IR.
     pub node_count: usize,
+    /// Number of source nodes in the candidate.
     pub source_count: usize,
+    /// Number of candidate sources backed by local Parquet.
     pub local_parquet_source_count: usize,
+    /// Whether all local-Parquet sources provide row-group selection metadata.
     pub selected_row_groups_known: bool,
+    /// Total selected Parquet row groups, or `None` when selection metadata is unavailable.
     pub selected_row_groups: Option<usize>,
+    /// Estimated source rows, or `None` when any local-Parquet source row count is unavailable.
     pub estimated_source_rows: Option<u64>,
+    /// Estimated projected source bytes, or `None` when any local-Parquet source byte estimate is unavailable.
     pub estimated_source_bytes: Option<u64>,
+    /// Whether all local-Parquet sources provide selected row-group byte evidence.
     pub selected_source_bytes_known: bool,
+    /// Number of joins in the candidate.
     pub join_count: usize,
+    /// Number of joins with a residual predicate beyond their equality keys.
     pub residual_join_count: usize,
+    /// Number of aggregate nodes in the candidate.
     pub aggregate_count: usize,
+    /// Number of aggregate nodes with grouping keys.
     pub grouped_aggregate_count: usize,
+    /// Number of sort nodes in the candidate.
     pub sort_count: usize,
+    /// Number of limit nodes in the candidate.
     pub limit_count: usize,
+    /// Smallest bounded sort fetch in rows, or `None` when no top-k bound exists.
     pub min_topk_fetch: Option<usize>,
 }
 
@@ -348,21 +367,27 @@ pub struct PlanningReport {
     outcomes: Vec<CandidateOutcome>,
 }
 
-/// Headline capability miss caused by table layout metadata rather than unsupported
-/// query semantics.
+/// Headline capability miss caused by table layout metadata. Unsupported query
+/// semantics are not the cause.
 #[derive(Debug, Clone, Copy)]
 pub struct DataLayoutFixableNotSupported<'a> {
+    /// Zero-based position of this miss in the report's discovery-ordered outcomes.
     pub outcome_index: usize,
+    /// Borrowed candidate that the native optimizer declined.
     pub candidate: &'a GpuCandidate,
+    /// Stable reason identifying the unsupported layout contract.
     pub capability_reason: CapabilityReason,
+    /// Layout property a table owner can change to remove this capability miss.
     pub property: &'static str,
 }
 
 impl PlanningReport {
+    /// Creates an empty report with no correlation identifiers.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Collects candidate decisions in iterator order with no correlation identifiers.
     pub fn from_outcomes(outcomes: impl IntoIterator<Item = CandidateOutcome>) -> Self {
         Self { outcomes: outcomes.into_iter().collect(), ..Self::default() }
     }
@@ -449,10 +474,14 @@ impl PlanningReport {
         self.outcomes.extend(other.outcomes);
     }
 
+    /// Appends a candidate selected for native replacement.
     pub fn push_selected(&mut self, candidate: GpuCandidate) {
         self.outcomes.push(CandidateOutcome::Selected { candidate });
     }
 
+    /// Appends a capability decline with no additional blocking evidence.
+    ///
+    /// A decline preserves the candidate's DataFusion execution path; it is not an execution error.
     pub fn push_not_supported(&mut self, candidate: GpuCandidate, capability_reason: CapabilityReason) {
         self.push_not_supported_with_detail(candidate, capability_reason, NotSupportedDetail::default());
     }
@@ -466,6 +495,7 @@ impl PlanningReport {
         self.outcomes.push(CandidateOutcome::NotSupported { candidate, capability_reason, detail });
     }
 
+    /// Appends a native-capable candidate retained on DataFusion with its cost reason and evidence.
     pub fn push_not_selected_by_cost(
         &mut self,
         candidate: GpuCandidate,
@@ -480,10 +510,14 @@ impl PlanningReport {
         &self.outcomes
     }
 
+    /// Counts candidates selected for native replacement.
     pub fn selected_count(&self) -> usize {
         self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::Selected { .. })).count()
     }
 
+    /// Returns the selected candidate only when the report contains exactly one.
+    ///
+    /// Returns `None` for zero or several selected candidates.
     pub fn single_selected_candidate(&self) -> Option<&GpuCandidate> {
         let mut rewritten = self.outcomes.iter().filter_map(|outcome| match outcome {
             CandidateOutcome::Selected { candidate } => Some(candidate),
@@ -493,14 +527,17 @@ impl PlanningReport {
         rewritten.next().is_none().then_some(candidate)
     }
 
+    /// Counts capability declines and cost declines together.
     pub fn not_selected_count(&self) -> usize {
         self.not_supported_count() + self.not_selected_by_cost_count()
     }
 
+    /// Counts candidates whose native capability contract was not satisfied.
     pub fn not_supported_count(&self) -> usize {
         self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::NotSupported { .. })).count()
     }
 
+    /// Counts native-capable candidates retained on DataFusion by cost selection.
     pub fn not_selected_by_cost_count(&self) -> usize {
         self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::NotSelectedByCost { .. })).count()
     }

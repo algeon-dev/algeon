@@ -1,9 +1,9 @@
 // Service admission semantics on the Flight SQL path: queue bounds,
 // cancellation, client disconnect, and the queue-wait deadline.
 //
-// Every case occupies the single GPU slot with a suspended holder attempt
-// rather than a timer, so queue depth is a coordinated state rather than a
-// race against real device work.
+// Every case occupies the single GPU slot with a suspended holder attempt, so
+// queue depth is a coordinated state that the test controls. The outcome does
+// not depend on how long real device work takes.
 
 use super::*;
 

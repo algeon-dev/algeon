@@ -170,6 +170,7 @@ impl QueryCoordinator {
         let terminal = record.terminal.take().expect("finalization requires a terminal payload");
         let terminal_outcome = terminal.compact_outcome();
         debug_assert_eq!(record.terminal_outcome, Some(terminal_outcome));
+        // Only the compact outcome is kept; release the payload before `wait_drained` blocks.
         drop(terminal);
         let live_stats_cache = Arc::clone(&record.live_stats_cache);
         live_stats_cache.close();
@@ -189,6 +190,7 @@ impl QueryCoordinator {
             #[cfg(test)]
             finalization_gate,
         };
+        // Renderers drain without the state lock; holding it would stall every coordinator call.
         drop(state);
         live_stats_cache.wait_drained();
         Some(inputs)
@@ -333,6 +335,7 @@ impl QueryCoordinator {
     pub(crate) fn install_finalization(&self, mut output: FinalizationOutput, now: Instant) {
         let mut state = self.lock_state();
         let Some(record) = state.records.get(&output.key) else {
+            // `abandon` locks only the live stats cache; keep it out of the state lock window.
             drop(state);
             output.live_stats_cache.abandon();
             return;
@@ -341,6 +344,7 @@ impl QueryCoordinator {
             || record.key != output.key
             || record.finalization_claim != Some(output.claim)
         {
+            // `abandon` locks only the live stats cache; keep it out of the state lock window.
             drop(state);
             output.live_stats_cache.abandon();
             return;
@@ -426,6 +430,7 @@ impl QueryCoordinator {
         if Self::live_count_locked(&state) == 0 {
             state.shutdown_deadline = None;
         }
+        // Publish and notify outside the state lock; woken coordinator waiters lock it again.
         drop(state);
         output.live_stats_cache.publish_optional_terminal(terminal_stats);
         self.notify.notify_waiters();

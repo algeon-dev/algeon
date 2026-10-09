@@ -3,10 +3,9 @@ use query_planning::error::QueryError;
 /// Retry/resume facts attached to bounded retry failures.
 ///
 /// These fields document what bounded execution can safely retry after a
-/// retryable resource-exhaustion failure: the retry
-/// action, resume boundary, already-committed chunks/partials, and merge fan-in.
-/// The fact keys emitted by
-/// [`Self::attach_to_error`] are stable diagnostics used by tests and higher
+/// retryable resource-exhaustion failure: the retry action, resume boundary,
+/// already-committed chunks/partials, and merge fan-in. The fact keys emitted
+/// by [`Self::attach_to_error`] are stable diagnostics used by tests and higher
 /// level error reports.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RetryFacts {

@@ -4,7 +4,7 @@
 //! high-level counterpart to the low-level owned [`Column`](crate::core::Column)
 //! type.
 //!
-//! Clone is cheap: it bumps the `Arc` reference count; no GPU data is copied.
+//! Cloning is cheap. It bumps the `Arc` reference count and copies no GPU data.
 
 mod constructors;
 mod context;

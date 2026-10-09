@@ -126,7 +126,6 @@ impl QueryMetrics {
         self.record_task_execution(compiled_task_id, operator_kind);
     }
 
-    /// Records execution of a task id and operator kind.
     pub(crate) fn record_task_execution(&mut self, task_id: impl ToString, operator_kind: impl Into<String>) {
         self.register_task_definition(task_id, operator_kind);
     }

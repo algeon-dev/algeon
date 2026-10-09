@@ -16,9 +16,10 @@
 namespace {
 cudf_status_t to_binary_operator(cudf_binary_operator_t input, cudf::binary_operator* out)
 {
-  // GENERIC_BINARY requires user-provided PTX and is not callable through this shim; it only
-  // exists in the enum to keep the integer values aligned with cudf::binary_operator so the
-  // NULL_LOGICAL_* operators that follow it map by static_cast.
+  // GENERIC_BINARY requires user-provided PTX, which these entry points do not take. The range
+  // check excludes it, so the shim returns CUDF_ERROR_INVALID_OPERATION before libcudf runs. The
+  // enum entry keeps the integer values aligned with cudf::binary_operator so the NULL_LOGICAL_*
+  // operators that follow it map by static_cast.
   bool const in_low_range = input >= CUDF_BINARY_ADD && input <= CUDF_BINARY_NULL_MIN;
   bool const is_null_logic =
     input == CUDF_BINARY_NULL_LOGICAL_AND || input == CUDF_BINARY_NULL_LOGICAL_OR;

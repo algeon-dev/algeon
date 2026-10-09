@@ -179,8 +179,8 @@ fn borrowed_graph_execution_releases_the_borrower_stream_route_on_repark() {
         graph.park(&entered).expect("park cache-bound graph")
     };
 
-    // Borrow the cached storage under a query-like binding, exactly as the
-    // resident-cache hit path does, then return it to the cache.
+    // Borrow the cached storage under a query-like binding, as the resident-cache
+    // hit path does, then return it to the cache.
     let borrower_runtime = Arc::new(explicit_runtime());
     let reparked = {
         let borrower_handle = ResourceHandle::for_runtime(Arc::clone(&borrower_runtime)).expect("borrower handle");

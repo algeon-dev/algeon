@@ -1,6 +1,6 @@
 //! Single-authority server query lifecycle, observation, and retention registry.
 //!
-//! Lock ordering is structural: registry methods never call the native engine,
+//! Lock ordering is structural. Registry methods never call the native engine,
 //! render plans, encode JSONL, or await while holding `state`. Finalization
 //! first extracts immutable inputs under the registry mutex, performs sealing
 //! and encoding outside it, and then conditionally installs the result for the

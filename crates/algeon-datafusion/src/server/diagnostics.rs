@@ -4,8 +4,9 @@
 //! [`crate::server::report::PlanningReport`] for "why was this not native?". This module
 //! logs that evidence without adding a public reporting API:
 //!
-//!   selection counts plus the first unsupported-capability class and the kind
-//!   of what blocked it.
+//! - [`log_native_planning_report_for_tables`] emits a debug line with selection
+//!   counts, the first unsupported-capability class, and the kind of what blocked
+//!   it.
 //! - [`log_native_planning_report_for_tables`] also emits a warn line for
 //!   data-layout-fixable capability misses, with the referenced table list and reason.
 //! - [`FlightSqlNativeNotSupportedClass`], read from [`CapabilityReason::facts`], buckets
@@ -52,7 +53,6 @@ pub fn log_native_planning_report_for_tables(query_id: &str, report: Option<&Pla
     }
 }
 
-/// Structured field set for the data-layout-fixable native-planning warning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DataLayoutFixablePlanningEventFields<'a> {
     pub tables: &'a str,

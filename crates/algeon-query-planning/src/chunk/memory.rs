@@ -1,8 +1,8 @@
 /// Slot model used to derive a per-source-task chunk target from a device budget.
 ///
 /// Each slot represents one live chunk-sized region that may coexist during the
-/// source task. The model is a planning heuristic, not an executor allocation
-/// ledger.
+/// source task. The model is a planning heuristic. It does not record the
+/// executor's allocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceTaskMemoryModel {
     source_read_slots: u64,
@@ -19,7 +19,7 @@ impl SourceTaskMemoryModel {
             source_read_slots: 1,
             // Source-adjacent filter/projection chains can retain a large input,
             // an operator work region, and the transformed output before the
-            // downstream aggregate takes ownership.
+            // downstream aggregate receives it.
             source_adjacent_operator_slots: if has_source_adjacent_stages { 3 } else { 0 },
             downstream_operator_slots: 1,
             retained_output_slots: 1,
@@ -55,8 +55,8 @@ impl SourceTaskMemoryModel {
     /// The decoded chunk and its stage output are live next to the retained
     /// stage outputs of earlier chunks, and the final concatenation copies
     /// those outputs once more. The last two regions grow with the stage
-    /// output rather than the chunk, so their single slots assume stages that
-    /// do not widen their input.
+    /// output and do not scale with the chunk. Because of that, their single
+    /// slots assume stages that do not widen their input.
     pub const fn unary_chain_frame() -> Self {
         Self {
             source_read_slots: 1,

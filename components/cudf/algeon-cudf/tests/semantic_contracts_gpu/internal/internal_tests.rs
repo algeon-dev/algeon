@@ -1,6 +1,4 @@
-//! Tests for the `internal` module's infrastructure.
-//!
-//! `resolve` and `reassemble` are `pub(crate)`, so we verify them
+//! `resolve` and `reassemble` are `pub(crate)`, so these tests verify them
 //! **indirectly** through public DataFrame operations that exercise the
 //! internal helpers.
 //!
@@ -21,10 +19,8 @@ use crate::common::{
     error_context_value, series,
 };
 
-// ---------------------------------------------------------------------------
-// Borrowed TableView construction; exercised via filter, sort, distinct, drop_nulls
+// Borrowed TableView construction is exercised via filter, sort, and drop_duplicates.
 // These operations internally build table views from temporary column views.
-// ---------------------------------------------------------------------------
 
 fn filter_preserves_row_and_column_counts() {
     // filter internally uses build_borrowed_table_view_from_columns.
@@ -53,7 +49,6 @@ fn sort_preserves_schema_names_and_lengths() {
     assert_eq!(sorted.num_rows(), 3);
     assert_eq!(sorted.column_names(), vec!["a", "b"]);
 
-    // Verify sorted order.
     let a_view = sorted.series("a").unwrap();
     let a_vals = a_view.to_vec_strict::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
@@ -77,10 +72,6 @@ fn reassembly_after_drop_duplicates_preserves_schema() {
     assert_eq!(distinct.column_names(), vec!["x", "y"], "schema names preserved");
 }
 
-// ---------------------------------------------------------------------------
-// resolve helpers; column name resolution errors
-// ---------------------------------------------------------------------------
-
 fn sort_with_missing_column_returns_error() {
     // resolve_column_names should produce a clear error for unknown columns.
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
@@ -90,9 +81,7 @@ fn sort_with_missing_column_returns_error() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-// ---------------------------------------------------------------------------
-// reassemble helpers; from_table_with_names via join
-// ---------------------------------------------------------------------------
+// Reassembly goes through `from_table_with_names` for join.
 
 fn join_reassembly_preserves_schema_names() {
     // join internally uses reassembly helpers to rebuild DataFrames.
@@ -109,7 +98,6 @@ fn join_reassembly_preserves_schema_names() {
 
     // Inner join on [2,3] → 2 rows.
     assert_eq!(joined.num_rows(), 2);
-    // Schema: key + lval + rval.
     assert_eq!(joined.column_names(), vec!["key", "lval", "rval"]);
 }
 
@@ -139,9 +127,7 @@ fn reassembly_name_count_mismatch_uses_canonical_count_contract() {
     assert_eq!(error_context_value(&err, "columns_count").as_deref(), None);
 }
 
-// ---------------------------------------------------------------------------
-// validate_no_duplicate_names; exercised via DataFrame constructors
-// ---------------------------------------------------------------------------
+// `validate_no_duplicate_names` is exercised via DataFrame constructors.
 
 fn from_series_rejects_duplicate_names() {
     let a = series::<i32>("a", &[1]).unwrap();

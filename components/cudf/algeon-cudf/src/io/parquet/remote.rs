@@ -10,7 +10,7 @@ pub enum RemoteCredentialMode {
     /// libcudf/KvikIO resolves credentials from process-global configuration.
     #[default]
     SharedProcessEnv,
-    /// Placeholder for future scoped credential passing across the FFI boundary.
+    /// Profile credential settings are passed across the FFI boundary.
     ScopedProfile,
 }
 
@@ -24,7 +24,7 @@ impl RemoteCredentialMode {
     }
 }
 
-/// Non-secret remote Parquet source profile.
+/// Remote Parquet source profile. Its `Debug` output redacts static credentials.
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
 pub struct RemoteParquetProfile {
     profile_id: Option<String>,
@@ -254,7 +254,7 @@ impl RemoteParquetSource {
         })
     }
 
-    /// Attach a non-secret remote profile.
+    /// Attach a remote profile, which may carry static credentials.
     pub fn with_profile(mut self, profile: RemoteParquetProfile) -> Self {
         self.profile = profile;
         self
@@ -376,9 +376,13 @@ pub struct RemoteParquetDatasourceProbe {
 
 /// Probe remote Parquet capability available at the cudf boundary.
 ///
-/// This is intentionally conservative: until cudf-sys/libcudf returns backend
-/// evidence, `RequireDirect` is reported unavailable and other modes are
-/// reported as unverified path-reader capability.
+/// A custom endpoint with path-style access disabled is reported as
+/// `CredentialModeUnsupported` before any other check. With KvikIO remote IO
+/// enabled in the libcudf build, every other read mode reports
+/// `KvikioRemoteDatasource`. Without it, `RequireDirect` and `RequireKvikio`
+/// are reported unavailable, and `PreferDirect` and `AllowHostFallback` are
+/// reported as unverified path-reader capability when the profile is
+/// path-reader compatible and as unavailable otherwise.
 pub fn remote_parquet_capability(source: &RemoteParquetSource) -> RemoteParquetCapability {
     remote_parquet_capability_with_status(source, remote_parquet_backend_build_status())
 }
@@ -414,8 +418,8 @@ pub(super) fn remote_parquet_capability_with_status(
 ///
 /// This opens the datasource but does not launch a Parquet decode. The lower
 /// layer may still contact object-store metadata services while opening the
-/// datasource, so callers should use this as an explicit capability check, not
-/// as a cheap pure function.
+/// datasource, so each call is an explicit capability check with possible
+/// network cost.
 pub fn probe_remote_parquet_datasource(
     source: &RemoteParquetSource,
     preferred_read_size_bytes: Option<u64>,

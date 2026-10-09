@@ -2,8 +2,8 @@
 //! evidence.
 //!
 //! These facts answer "is the plan about to execute the plan that was
-//! admitted?". They deliberately carry no bytes: allocation limits belong to
-//! the query domain's allocator, not to a planning-time manifest.
+//! admitted?". They deliberately carry no bytes. Allocation limits belong to
+//! the query domain's allocator, and a planning-time manifest carries none.
 
 use std::collections::HashSet;
 

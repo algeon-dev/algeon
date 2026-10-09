@@ -7,7 +7,7 @@
 //! Admission truth lives in the device ledger; cache owners contribute
 //! correlation observations and telemetry stays diagnostic-only. TSV,
 //! DataFusion metrics, and `QueryMetrics` are projections of the same
-//! runtime observation snapshot, not a second event store.
+//! runtime observation snapshot. No second event store exists.
 
 pub use query_runtime::{
     metrics::{

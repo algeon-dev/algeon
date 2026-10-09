@@ -1,5 +1,10 @@
 # query-engine
 
+`algeon-query-engine` is a published implementation dependency of Algeon.
+Applications use [`algeon-datafusion`](https://docs.rs/algeon-datafusion)
+and its re-exported types. This page describes the workspace owner API; see
+the [API documentation boundary](https://algeon.dev/design#api-documentation).
+
 `query-engine` is the native execution owner. It depends on
 `query-planning` and `query-runtime` and composes one planning proof with one
 runtime grant for native execution. It exports only its own modules: callers,
@@ -24,9 +29,9 @@ in the DataFusion adapter crate.
   belongs to the runtime's native boundary.
 - `tests/runtime_execution_integration_tests_gpu/` covers planning/runtime/execution composition.
 
-See [`query-planning`](../query-planning/README.md) for IR,
+See [`query-planning`](../algeon-query-planning/README.md) for IR,
 capability, proof, admission contracts, and pipelines. See
-[`query-runtime`](../query-runtime/README.md) for lifecycle, query
+[`query-runtime`](../algeon-query-runtime/README.md) for lifecycle, query
 service, device resources, caches, observation, and metrics.
 
 ## Validation

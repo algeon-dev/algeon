@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # The approved release closure. Publishing to crates.io requires every normal
 # and build dependency to be published too, so this set must stay closed under
-# the dependency relation -- a check below enforces that.
+# the dependency relation; a check below enforces that.
 PUBLISHED = frozenset(
     {
         "algeon-datafusion",
@@ -112,7 +112,7 @@ def main() -> None:
         fail(f"release closure names packages that are not workspace members: {', '.join(sorted(unknown))}")
 
     # crates.io rejects a package whose normal or build dependency is
-    # unpublished, so catch that here rather than mid-release.
+    # unpublished. This check reports it before the release.
     for name in sorted(PUBLISHED):
         for dependency in members[name]["dependencies"]:
             if dependency.get("kind") == "dev":

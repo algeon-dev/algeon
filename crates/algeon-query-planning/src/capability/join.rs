@@ -22,7 +22,7 @@ use crate::{
 /// Threshold policy used by capability admission and runtime keyed-hash join
 /// strategy selection.
 ///
-/// This is an expert Rust surface only. Keep server/session/user-facing knobs
+/// This is an expert Rust surface only. Keep server/session/user-facing settings
 /// out until the admission and runtime contracts have a reviewed tuning model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -57,34 +57,42 @@ impl KeyedHashJoinStrategyOptions {
     /// [`DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD`](Self::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD).
     pub(crate) const DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 
+    /// Build row threshold used to classify a keyed hash build as large.
     pub fn large_keyed_hash_build_row_threshold(&self) -> u64 {
         self.large_keyed_hash_build_row_threshold
     }
 
+    /// Build byte threshold used alongside row evidence to classify a large build.
     pub fn large_keyed_hash_build_bytes_threshold(&self) -> u64 {
         self.large_keyed_hash_build_bytes_threshold
     }
 
+    /// Probe byte threshold used when considering partitioned execution.
     pub fn large_keyed_hash_probe_bytes_threshold(&self) -> u64 {
         self.large_keyed_hash_probe_bytes_threshold
     }
 
+    /// Build row bound for considering a reusable hash build even for one probe.
     pub fn small_reusable_hash_build_row_threshold(&self) -> u64 {
         self.small_reusable_hash_build_row_threshold
     }
 
+    /// Build byte bound paired with the small reusable-build row threshold.
     pub fn small_reusable_hash_build_bytes_threshold(&self) -> u64 {
         self.small_reusable_hash_build_bytes_threshold
     }
 
+    /// Probe byte bound under which a one-shot join can avoid partitioning.
     pub fn small_one_shot_probe_bytes_threshold(&self) -> u64 {
         self.small_one_shot_probe_bytes_threshold
     }
 
+    /// Maximum build rows for the one-shot left-join path with a small probe.
     pub fn max_small_probe_left_one_shot_build_row_threshold(&self) -> u64 {
         self.max_small_probe_left_one_shot_build_row_threshold
     }
 
+    /// Maximum build bytes for the one-shot left-join path with a small probe.
     pub fn max_small_probe_left_one_shot_build_bytes_threshold(&self) -> u64 {
         self.max_small_probe_left_one_shot_build_bytes_threshold
     }
@@ -117,11 +125,15 @@ impl KeyedHashJoinStrategyOptions {
         Ok(())
     }
 
+    /// Sets the large-build row threshold. Call [`Self::validate`] to check
+    /// its ordering against the small reusable-build threshold.
     pub fn with_large_keyed_hash_build_row_threshold(mut self, rows: u64) -> Self {
         self.large_keyed_hash_build_row_threshold = rows;
         self
     }
 
+    /// Sets the large-build threshold in bytes. Call [`Self::validate`] to
+    /// check its ordering against the small reusable-build byte threshold.
     pub fn with_large_keyed_hash_build_bytes_threshold(mut self, bytes: u64) -> Self {
         self.large_keyed_hash_build_bytes_threshold = bytes;
         self
@@ -133,11 +145,15 @@ impl KeyedHashJoinStrategyOptions {
         self
     }
 
+    /// Sets the small reusable-build row threshold. This setter does not
+    /// validate its ordering against the large-build threshold.
     pub fn with_small_reusable_hash_build_row_threshold(mut self, rows: u64) -> Self {
         self.small_reusable_hash_build_row_threshold = rows;
         self
     }
 
+    /// Sets the small reusable-build byte threshold. This setter does not
+    /// validate its ordering against the large-build byte threshold.
     pub fn with_small_reusable_hash_build_bytes_threshold(mut self, bytes: u64) -> Self {
         self.small_reusable_hash_build_bytes_threshold = bytes;
         self
@@ -598,8 +614,8 @@ pub fn keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
 }
 
 /// Whether a probe kernel of `strategy` pulls its probe input chunk by
-/// chunk, so a frame-stream probe input stays chunked instead of being
-/// concatenated first.
+/// chunk, so a frame-stream probe input stays chunked and is not concatenated
+/// first.
 pub(crate) fn join_probe_streams_chunks(join: &JoinNode, form: JoinForm, strategy: JoinStrategy) -> bool {
     match form {
         JoinForm::KeyedEqui | JoinForm::KeyedFilteredSemiAnti | JoinForm::KeylessOuterCross => {

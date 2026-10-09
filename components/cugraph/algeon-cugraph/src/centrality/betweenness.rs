@@ -43,7 +43,7 @@ impl Default for BetweennessCentralityParams {
 /// Compute vertex betweenness centrality on a graph.
 ///
 /// Prefer using [`Graph::betweenness_centrality`](crate::graph::Graph::betweenness_centrality)
-/// instead of calling this function directly.
+/// and avoid calling this function directly.
 pub(crate) fn betweenness_centrality<T, V: CugraphElement>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<T>,

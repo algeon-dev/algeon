@@ -163,7 +163,7 @@ impl QueryCoordinator {
         // Releasing an unconsumed ticket can terminalize its attempt. That
         // synchronously seals the observation, whose report observer reenters
         // the coordinator. Keep the payload alive until after the state mutex
-        // is released, just as cancellation and shutdown do for their
+        // is released, in the same way cancellation and shutdown do for their
         // callback-capable handles.
         let (shutdown_due, expired_ticket_payloads) = {
             let mut state = self.lock_state();
@@ -223,6 +223,7 @@ impl QueryCoordinator {
                 expired_ticket_payloads,
             )
         };
+        // Dropping a payload can attach its attempt's report, which the finalization below reads.
         drop(expired_ticket_payloads);
         self.finalize_ready();
         if shutdown_due {
@@ -489,6 +490,7 @@ impl QueryCoordinator {
             Self::enforce_retention_locked(&self.config, &mut state, now);
             (converted, discarded)
         };
+        // Drop the discarded handles before notifying; a dropped attempt re-enters the coordinator.
         drop(discarded);
         self.notify.notify_waiters();
         converted

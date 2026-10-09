@@ -24,8 +24,8 @@ use crate::{
 
 /// Compute both in-degrees and out-degrees for vertices in a graph.
 ///
-/// Prefer using [`Graph::degrees`](crate::graph::Graph::degrees) instead
-/// of calling this function directly.
+/// Callers use [`Graph::degrees`](crate::graph::Graph::degrees), which calls
+/// this function.
 pub(crate) fn degrees<V: CugraphElement>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<Transposed>,
@@ -58,8 +58,8 @@ pub(crate) fn degrees<V: CugraphElement>(
 
 /// Compute only in-degrees for vertices in a graph.
 ///
-/// Prefer using [`Graph::in_degrees`](crate::graph::Graph::in_degrees)
-/// instead of calling this function directly.
+/// Prefer using [`Graph::in_degrees`](crate::graph::Graph::in_degrees),
+/// which calls this function.
 pub(crate) fn in_degrees<V: CugraphElement>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<Transposed>,
@@ -92,8 +92,8 @@ pub(crate) fn in_degrees<V: CugraphElement>(
 
 /// Compute only out-degrees for vertices in a graph.
 ///
-/// Prefer using [`Graph::out_degrees`](crate::graph::Graph::out_degrees)
-/// instead of calling this function directly.
+/// Prefer using [`Graph::out_degrees`](crate::graph::Graph::out_degrees),
+/// which calls this function.
 pub(crate) fn out_degrees<T, V: CugraphElement>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<T>,

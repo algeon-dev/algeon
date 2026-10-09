@@ -55,7 +55,6 @@ fn test_expr_floor_div_f64() {
 }
 
 fn test_series_mul_scalar_mixed_types() {
-    // Int32 * Float64 scalar → Float64
     let s = series::<i32>("x", &[2, 3, 4]).unwrap();
     let result = s.on(Exec::RETAINED).mul_scalar(1.5f64).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);

@@ -1,7 +1,7 @@
 //! DataFusion physical-plan lowering into native query-engine IR.
 //!
-//! Lowering is planning-only: it returns native query plans plus structured
-//! planning/source diagnostics, but does not execute or allocate GPU memory.
+//! Lowering is planning-only. It returns native query plans plus structured
+//! planning/source diagnostics and does not execute or allocate GPU memory.
 //! Its only I/O is reading Parquet footers, shared per planning pass through
 //! `FooterScope`.
 //!
@@ -9,10 +9,11 @@
 //! for the demand of its parent, and returns a `NativeLoweringResult`. The
 //! `plan` is `Some` only when the report holds a single selected candidate;
 //! it then has a host sink in the DataFusion output schema, schema metadata
-//! included. Ordering is not enforced here: the native optimizer may change
-//! what the plan reproduces, so `reestablish_declared_output_ordering_if_needed`
-//! runs after it. A candidate the IR cannot express is a reported decline; a
-//! lowered plan that breaks an IR invariant is an adapter defect and an error.
+//! included. Ordering is not enforced here.
+//! `reestablish_declared_output_ordering_if_needed` runs after the native
+//! optimizer, because the optimizer may change what the plan reproduces. A
+//! candidate the IR cannot express is a reported decline; a lowered plan that
+//! breaks an IR invariant is an adapter defect and an error.
 //!
 //! The translation contract lives in `website/docs/design/native-lowering.mdx`.
 
@@ -79,7 +80,7 @@ use crate::{
 /// Rejection raised while lowering a normalized candidate.
 ///
 /// `reason` is the public classification. `cause` names what rejected the
-/// candidate when the rejecting site knows: the shared expression contract,
+/// candidate when the rejecting site supplies it: the shared expression contract,
 /// whose capability and types planning reports project the unsupported
 /// category from, or the operator, function, or ordering that blocked it. It
 /// is boxed so a `Result` carrying a rejection stays small.

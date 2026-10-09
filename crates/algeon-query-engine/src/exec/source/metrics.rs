@@ -2,13 +2,13 @@ use query_runtime::observability::{RuntimeExecutionObservationScope, SourceReadF
 
 use super::{ExecutionMetrics, LocalParquetSource, QueryError, SourceChunk, SourceChunkPlan, comma_separated_usize};
 
-/// Records what a source's chunk plan already knows about its Parquet files.
+/// Records the facts a source's chunk plan already holds about its Parquet files.
 ///
-/// The `ParquetSource` fact reports planned values rather than bytes read. `known_bytes` per file
-/// is the larger of the file size and the sum of planned row-group bytes for that file, plus the
-/// planned bytes of any chunk whose file index is outside the source. `selected_row_groups` sums
-/// the chunks' known counts, with 0 for an unknown count. Planning time is recorded as metadata
-/// load time.
+/// The `ParquetSource` fact reports planned values and does not measure bytes read.
+/// `known_bytes` per file is the larger of the file size and the sum of planned row-group bytes
+/// for that file, plus the planned bytes of any chunk whose file index is outside the source.
+/// `selected_row_groups` sums the chunks' known counts, with 0 for an unknown count. Planning time
+/// is recorded as metadata load time.
 pub(in crate::exec) fn record_bounded_parquet_source_metrics(
     source: &LocalParquetSource,
     chunk_plan: &SourceChunkPlan,
@@ -51,8 +51,8 @@ pub(in crate::exec) fn record_bounded_parquet_source_metrics(
 ///
 /// Every production execution admits a plan-execution scope before any source
 /// is read (`execute_query_plan_with_observation`), so a missing scope means a
-/// harness skipped admission. That is a bug to surface, not a reason to lose
-/// facts production would have counted.
+/// harness skipped admission. That is a bug to surface; it does not justify
+/// losing facts production would have counted.
 pub(in crate::exec) fn admitted_source_read_scope(
     scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Option<&RuntimeExecutionObservationScope> {

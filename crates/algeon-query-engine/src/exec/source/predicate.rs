@@ -330,8 +330,8 @@ fn source_reader_column_index(source: &LocalParquetSource, column: &str) -> Resu
 }
 
 /// Returns the (left, right) literal target dtypes for a binary node: each side's literal takes
-/// the dtype of the other side's source column. AND and OR operands are predicates rather than
-/// values, so they get no target.
+/// the dtype of the other side's source column. AND and OR operands are predicates; they take no
+/// literal target.
 fn source_reader_binary_literal_target_types(
     source: &LocalParquetSource,
     left: &Expr,

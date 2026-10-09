@@ -62,7 +62,6 @@ export CARGO_TARGET_DIR
 unset ALGEON_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \\
   CUVS_INSTALL_DIR CUVS_ROOT CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR
 
-# Tag the shell so you can see which worktree you're in.
 PS1_WT_TAG="(wt:$name) "
 case "\${PS1:-}" in
     *"\$PS1_WT_TAG"*) ;;

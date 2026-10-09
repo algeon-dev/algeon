@@ -232,6 +232,26 @@ Doctest commands and loader requirements are in [Tests](../website/docs/build/te
 Rustdoc is always strict. The harness appends `-D warnings` after any
 caller-provided `RUSTDOCFLAGS`, and an earlier `-A warnings` cannot weaken it.
 
+The `public-api-surface` phase also checks the
+[application API documentation boundary](../website/docs/design/index.mdx#api-documentation).
+After comparing ordinary API snapshots, it extracts complete workspace
+rustdoc JSON once with private and hidden items included. This provides
+method signatures for types exposed through another type's fields or methods.
+Each invocation copies that successful build's JSON into its own temporary
+directory; the checker does not inspect older target artifacts.
+
+The extraction command disables only `rustdoc::broken_intra_doc_links`,
+`rustdoc::private_intra_doc_links` and `rustdoc::redundant_explicit_links`.
+Private link rendering is outside the documentation-presence check, and the
+preceding public rustdoc phase retains its strict flags. Feature and target
+arguments match the snapshot invocation. The snapshot policy self-test runs
+the real-rustdoc regression suite, including a dependency documentation
+removal that fails while the signatures still match:
+
+```bash
+bash scripts/ci/tests/check_public_api_surface_tests.sh
+```
+
 The [shared build-support crate](../website/docs/build/overview.md#workspace-and-publication-contracts)
 has an isolated policy suite in the full gate's self-test phase. The suite can
 also run alone, without loading or modifying RAPIDS libraries:

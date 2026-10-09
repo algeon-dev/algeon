@@ -21,7 +21,8 @@ cudf_status_t cudf_replace_nulls_scalar_ex(cudf_column_view_handle input,
                                            cudf_exec_options_t const* options);
 
 /// Replace null values in a column with corresponding values from another
-/// column using an explicit execution context.
+/// column.
+///
 /// `options` must be non-NULL, name an explicit valid device, provide a
 /// non-NULL stream, and provide a non-NULL memory resource. `options->mr` must
 /// outlive the returned column.

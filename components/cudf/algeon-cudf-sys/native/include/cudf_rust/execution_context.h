@@ -12,13 +12,13 @@
 extern "C" {
 #endif
 
-/// Bit 0 of `flags`: when set, `device` was explicitly provided by the caller
+/// When bit 0 of `flags` is set, `device` was explicitly provided by the caller
 /// and the shim must switch to it before entering libcudf.
 #define CUDF_EXEC_FLAG_DEVICE_EXPLICIT 1u
 
-/// Bit 1 of `flags`: when set, `reserved[0]` bounds the read and decompression
+/// When bit 1 of `flags` is set, `reserved[0]` bounds the read and decompression
 /// scratch of Parquet reads, in bytes, which row-group selection alone cannot
-/// bound. The rows returned are unchanged. The limit is a hint: a single row
+/// bound. The rows returned are unchanged. The limit is a hint. A single row
 /// group that does not fit within it is still loaded.
 #define CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT 2u
 

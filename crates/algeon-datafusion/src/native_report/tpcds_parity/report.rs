@@ -98,10 +98,14 @@ impl ParityFloatTolerance {
         Self { absolute: 0.0, relative: 0.0 }
     }
 
+    /// Constructs absolute and relative float error bounds without validating them.
+    ///
+    /// A zero/zero pair keeps exact comparisons; tolerance is enabled when either bound is positive.
     pub const fn new(absolute: f64, relative: f64) -> Self {
         Self { absolute, relative }
     }
 
+    /// Returns whether either float tolerance bound is positive.
     pub fn is_enabled(self) -> bool {
         self.absolute > 0.0 || self.relative > 0.0
     }
@@ -264,9 +268,10 @@ impl NativeTpcdsParityExternalOutputStatus {
 
 /// External oracle output summary projected into one parity TSV row.
 ///
-/// `cpu_parity_*` fields compare the oracle output against CPU DataFusion, not
-/// against native GPU output. Optional counts and fingerprints serialize as
-/// `none` when the oracle is not configured or did not produce output.
+/// `cpu_parity_*` fields compare the oracle output against CPU DataFusion.
+/// They do not compare it against native GPU output. Optional counts and
+/// fingerprints serialize as `none` when the oracle is not configured or did
+/// not produce output.
 #[derive(Debug, Clone)]
 pub struct NativeTpcdsParityExternalOutputSummary {
     /// Whether the external oracle was configured and produced output.
@@ -314,10 +319,16 @@ pub struct NativeTpcdsParityReport {
 }
 
 impl NativeTpcdsParityReport {
+    /// Keeps precomputed parity rows and their float tolerance in the supplied order.
+    ///
+    /// This constructor does not compare outputs; dataset and statistical-mode metadata are unset.
     pub fn from_rows(rows: Vec<NativeTpcdsParityRow>, float_tolerance: ParityFloatTolerance) -> Self {
         Self { rows, workload_dataset: None, float_tolerance, statistical_aggregate_execution_mode: None }
     }
 
+    /// Compares supplied workload outputs using the configured float tolerance and collects rows in iterator order.
+    ///
+    /// It consumes recorded outputs and failures without planning or executing queries.
     pub fn collect(
         items: impl IntoIterator<Item = NativeTpcdsParityWorkloadItem>,
         float_tolerance: ParityFloatTolerance,
@@ -418,8 +429,8 @@ mod tests {
     }
 }
 
-/// Workload-item input for the parity report: paired CPU + native execution
-/// outcomes for one TPC-DS query.
+/// Workload-item input for the parity report, pairing the CPU and native
+/// execution outcomes for one TPC-DS query.
 #[derive(Debug, Clone)]
 pub struct NativeTpcdsParityWorkloadItem {
     /// Stable TPC-DS query id such as `q01`.

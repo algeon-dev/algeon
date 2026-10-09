@@ -10,8 +10,8 @@ pub enum LakehouseCacheFillOutcome {
     /// The background fill failed after it was accepted for execution.
     Failed,
     /// The fill gave up its cache write because the byte budget could not
-    /// cover its growth. Growth never waits, so this is routine saturation
-    /// rather than an error; the reader still gets its data.
+    /// cover its growth. Growth never waits, so this outcome reports routine
+    /// saturation. The reader still gets its data.
     Abandoned,
 }
 

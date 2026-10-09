@@ -171,7 +171,7 @@ impl DatafusionAlgeonFlightSqlService {
         self.auth.check(request.metadata()).map(|principal| Owner::from_principal(principal.as_ref()))
     }
 
-    /// Authorize `caller` to name `id`, then hand back the caller so the
+    /// Authorize `caller` to name `id`, then return the caller so the
     /// authorized id and its owner stay bound at the call site.
     pub(super) fn authorize_id<T>(&self, request: &Request<T>, id: &str) -> Result<Owner, Status> {
         let caller = self.check_auth(request)?;

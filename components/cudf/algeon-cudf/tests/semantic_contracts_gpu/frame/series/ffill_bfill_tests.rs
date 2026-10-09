@@ -1,14 +1,6 @@
-//! Tests for SeriesOps::ffill() and SeriesOps::bfill() convenience methods.
-//!
-//! All tests require a GPU.
-
 use cudf::Exec;
 
 use crate::common::{nullable_series, series};
-
-// ===========================================================================
-// ffill (forward fill)
-// ===========================================================================
 
 fn test_series_ffill_basic() {
     let s = nullable_series::<i32>("x", &[1, 0, 0, 4], &[true, false, false, true]).unwrap();
@@ -36,10 +28,6 @@ fn test_series_ffill_float64() {
     let result = s.on(Exec::RETAINED).ffill().unwrap();
     assert_eq!(result.to_optional_vec::<f64>().unwrap(), vec![Some(1.5), Some(1.5), Some(3.5)]);
 }
-
-// ===========================================================================
-// bfill (backward fill)
-// ===========================================================================
 
 fn test_series_bfill_basic() {
     let s = nullable_series::<i32>("x", &[1, 0, 0, 4], &[true, false, false, true]).unwrap();
@@ -69,20 +57,16 @@ fn test_series_bfill_empty() {
 }
 
 fn test_series_bfill_single_element() {
-    // Single non-null
     let s = series::<i32>("x", &[42]).unwrap();
     let result = s.on(Exec::RETAINED).bfill().unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 
-    // Single null
     let s = nullable_series::<i32>("x", &[0], &[false]).unwrap();
     let result = s.on(Exec::RETAINED).bfill().unwrap();
     assert_eq!(result.null_count(), 1);
 }
 
-// ===========================================================================
-// ffill then bfill (common pattern: fill interior nulls)
-// ===========================================================================
+// A common way to fill interior nulls is ffill followed by bfill.
 
 fn test_series_ffill_then_bfill_fills_all_interior() {
     // [null, 2, null, 4, null] → ffill → [null, 2, 2, 4, 4] → bfill → [2, 2, 2, 4, 4]

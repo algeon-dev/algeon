@@ -570,7 +570,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_constrained_consu
     // intervening `Limit`. Applying the keyset filter in place at the source would change which
     // rows the `Limit` selects, so the shared source must NOT be lowered to an in-place source
     // post-decode filter. (Without the `Limit` arm being rejected, this route would be wrongly
-    // admitted as a `LocalParquetSource` consumer and silently drop rows the limited branch needs.)
+    // admitted as a `LocalParquetSource` consumer and drop rows the limited branch needs.)
     let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
         limited_constrained_partsupp_consumer: true,
         ..SharedPartsuppDynamicFilterPlanOptions::default()

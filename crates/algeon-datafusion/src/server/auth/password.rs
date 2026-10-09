@@ -9,6 +9,9 @@ use argon2::{
 use rand::{TryRng, rngs::SysRng};
 
 #[derive(Debug)]
+/// Failure to parse an Argon2 hash or produce a salted password hash.
+///
+/// [`verify_password`] returns `Ok(false)` for a password mismatch.
 pub enum PasswordHashError {
     /// The PHC string in the config file is malformed.
     InvalidHash(String),
@@ -49,8 +52,9 @@ pub(crate) fn validate_password_hash(phc_string: &str) -> Result<(), PasswordHas
 /// Verify a plaintext password against an Argon2 PHC string. Returns
 /// `Ok(true)` on match, `Ok(false)` on mismatch (the only two outcomes
 /// callers should branch on). A malformed `phc_string` returns
-/// [`PasswordHashError::InvalidHash`] so the config-file mistake
-/// surfaces during handshake rather than as a silent auth failure.
+/// [`PasswordHashError::InvalidHash`], so the config-file mistake surfaces
+/// during handshake as an error. It is not reported as an authentication
+/// failure.
 pub fn verify_password(password: &str, phc_string: &str) -> Result<bool, PasswordHashError> {
     let parsed = PasswordHash::new(phc_string).map_err(|error| PasswordHashError::InvalidHash(error.to_string()))?;
     match Argon2::default().verify_password(password.as_bytes(), &parsed) {

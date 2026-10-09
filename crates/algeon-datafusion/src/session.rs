@@ -62,8 +62,8 @@ type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
 
 /// Extension methods for adding native GPU planning to a DataFusion session.
 pub trait AlgeonSessionStateBuilderExt {
-    /// Planning and coverage path: register algeon native rewriting before
-    /// DataFusion's final physical-plan validation rule. This method does not
+    /// Registers algeon native rewriting before DataFusion's final physical-plan
+    /// validation rule, on the planning and coverage path. This method does not
     /// create or own a GPU admission source, although a config obtained from
     /// [`AlgeonGpuBackend::optimizer_config`](crate::backend::AlgeonGpuBackend::optimizer_config)
     /// can already be bound to its backend. For canonical production
@@ -280,7 +280,7 @@ fn build_cugraph_subplan_state(
     relational_rewrite_enabled: bool,
 ) -> SessionState {
     // Graph edge and predicate sources feed graph construction or host-side
-    // staging, so each nested scan must present one ordered run: a declared
+    // staging, so each nested scan must present one ordered run. A declared
     // fixture ordering (the source-sorted DBLP layout) only survives from a
     // single file group, and native graph ingress parallelizes reads internally.
     // `new_from_existing` disables default catalog creation because the nested

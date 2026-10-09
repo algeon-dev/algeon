@@ -527,7 +527,7 @@ fn disabled_query_session_keeps_exact_totals_without_capturing_trace() {
         RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::Started }
     });
 
-    // Trace behaviour is exactly what a disabled session always had.
+    // Trace behaviour matches what a disabled session always had.
     assert!(!handle.is_enabled());
     assert!(matches!(disposition, RuntimeObservationRecordDisposition::Disabled));
     assert_eq!(payload_builds.load(Ordering::SeqCst), 0, "a disabled trace must not build payloads");

@@ -189,8 +189,8 @@ fn multi_column_bound_is_sum_of_per_column_bounds() {
 fn q72_n15_shape_bound_matches_observed_order_of_magnitude() {
     // Approximation of the q72 n15 partition's projection from the
     // research note: ~73 bytes/row at ~815M rows ≈ 58 GB observed.
-    // Build a synthetic 15-column fixed-width projection averaging
-    // ~5 bytes/row (mix of Int32, Int64, Date32) and verify the
+    // Build a synthetic 15-column fixed-width projection of 108 data bytes per
+    // row (Int32, Int64, Decimal128, Date32 and Float64 columns) and verify the
     // closed-form bound is on the right order of magnitude.
     let rows = 814_891_956u64;
     let projection = [
@@ -214,7 +214,7 @@ fn q72_n15_shape_bound_matches_observed_order_of_magnitude() {
     let observed = 58_268_236_464u64; // partition 1 observed reservation bytes
     // Bound must be ≥ observed (correctness).
     assert!(bound >= observed, "bound {bound} below observed {observed}");
-    // Bound must not be wildly larger (sanity; within 2× is the
+    // Bound must not be wildly larger (sanity; within 4× is the
     // expected over-reservation for a synthetic projection).
     assert!(bound <= observed * 4, "bound {bound} more than 4x observed {observed}");
 }

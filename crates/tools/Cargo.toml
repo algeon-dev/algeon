@@ -84,7 +84,7 @@ single-node-multi-gpu-validate-run = [
   "algeon-datafusion/nvml",
 ]
 # The base run feature intentionally keeps `cugraph` off. It is the required
-# feature-off service cell: graph UDTFs must reject structurally while the
+# feature-off service cell, where graph UDTFs must reject structurally while the
 # relational load continues. Graph qualification opts in explicitly.
 single-node-multi-gpu-validate-run-cugraph = [
   "single-node-multi-gpu-validate-run",

@@ -111,8 +111,8 @@ impl Drop for TestPauseHandle {
 impl QueryService {
     /// Performs an explicit, controlled device-local quarantine transition.
     ///
-    /// This is intentionally an engine capability rather than a backend
-    /// configuration mode. It owns the same ledger health state consulted by
+    /// This is intentionally an engine capability. Backend configuration does
+    /// not select it. It owns the same ledger health state consulted by
     /// placement, takes the fleet admission gate used by placement, and leaves
     /// native cuDF health untouched. A caller can therefore validate fallback
     /// after a quarantine without claiming to have produced a real CUDA fault.

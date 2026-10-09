@@ -1,7 +1,3 @@
-//! Integration tests for high-level host-returning `Series` reduction helpers.
-//!
-//! All tests require a GPU.
-
 use cudf::{ErrorKind, Exec};
 
 use crate::common::{nullable_series, series};

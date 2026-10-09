@@ -1,4 +1,9 @@
 //! Generated raw FFI bindings to the pinned cuVS 26.08 C API.
+//!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion); workspace code
+//! uses this crate for its component contracts. See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
 
 #![allow(clippy::allow_attributes)] // reason = "generated FFI bindings use allow attributes"
 

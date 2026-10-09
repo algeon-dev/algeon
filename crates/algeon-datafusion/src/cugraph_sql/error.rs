@@ -6,9 +6,9 @@ use crate::gpu_functions::REQUIRED_FEATURE_DISABLED;
 
 /// Stable feature-off execution rejection for a cuGraph SQL operation.
 ///
-/// The frontend deliberately remains available without native cuGraph support,
-/// so this boundary must be reached before a graph source is scanned, staged,
-/// or handed to a native executor.
+/// The frontend deliberately remains available without native cuGraph support.
+/// This boundary must be reached before a graph source is scanned, staged, or
+/// passed to a native executor.
 #[cfg(not(feature = "cugraph"))]
 pub(super) fn feature_disabled(algorithm: CugraphAlgorithm) -> Error {
     Error::new(

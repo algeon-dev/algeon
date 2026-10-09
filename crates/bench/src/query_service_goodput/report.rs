@@ -208,7 +208,7 @@ pub(super) struct RunReport<'a> {
     /// Exact backend attempt counters read after every attempt's report wait
     /// returned. `attempts_begun - reports_ready` is then the number of
     /// attempts whose report never published, so an incomplete observation
-    /// is a run fact rather than a line in stderr.
+    /// is recorded as a run fact in `summary.tsv`.
     pub(super) attempt_counters: AttemptBackendCountersSnapshot,
 }
 

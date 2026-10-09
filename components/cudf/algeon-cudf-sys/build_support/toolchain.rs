@@ -71,8 +71,9 @@ pub(crate) fn find_executable_in_path(tool: &str, path: OsString) -> Result<Path
 }
 
 /// Resolve a build tool from an optional absolute env override, falling back
-/// to a one-shot PATH lookup. The resolved path is canonical when possible so
-/// callers fingerprint the actual executable instead of ambient PATH.
+/// to a one-shot PATH lookup. The resolved path is canonical when possible, so
+/// callers fingerprint the executable file itself. Later PATH changes do not
+/// affect the returned path.
 pub(crate) fn resolve_tool_from_env_or_name(env_key: &str, default_name: &str) -> Result<PathBuf, String> {
     match env::var(env_key) {
         Ok(value) => resolve_explicit_tool_path(env_key, &value),

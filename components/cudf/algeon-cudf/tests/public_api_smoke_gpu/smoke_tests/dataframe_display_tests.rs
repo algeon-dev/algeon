@@ -1,5 +1,3 @@
-//! Smoke tests for DataFrame Display and Debug formatting.
-
 use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, dataframe_from_columns};
 
 fn test_display_smoke_reports_schema_metadata_without_materializing_values() {

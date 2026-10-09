@@ -1,5 +1,3 @@
-//! Semantic tests for conditional join index operations.
-
 use std::sync::Arc;
 
 use arrow::{
@@ -149,8 +147,8 @@ fn dataframe_conditional_full_join_size_data_materialize_indices_in_uses_executi
 
 fn dataframe_conditional_full_join_size_data_materialize_indices_in_rejects_foreign_stream() {
     // Cross-stream materialization of conditional full join retained size data is a
-    // hard upstream error. The binding must surface it cleanly instead of masking the
-    // stream-identity contract.
+    // hard upstream error. The binding surfaces it with the ForeignInvalidArgument code,
+    // and the stream-identity check stays visible to callers.
     let (left, right) = dataframe_conditional_inputs(&[2, 5, 9], &[1, 3, 6]);
     let predicate = left_less_than_right();
     let options = dataframe_conditional_options();

@@ -47,7 +47,7 @@ where
 /// its native allocations, but a hit resumes it under the attempt runtime:
 /// the attempt stream waits on the park event, and algorithm workspace,
 /// auxiliary streams, and outputs allocate through the attempt binding, so
-/// they charge to the borrower's grant; never to the cache share. Only the
+/// they charge to the borrower's grant. The cache share is not charged. Only the
 /// final dataframe is retained into the attempt domain, and the graph is
 /// re-parked before the checkout returns to the cache.
 #[cfg(feature = "cugraph")]
@@ -158,7 +158,8 @@ where
             // `ResourceHandle::enter` may retain a stream route through its
             // result temporary. Ordinary reverse drop releases every local
             // owner before the transaction's fenced fail-closed destructor
-            // decides whether its prospective precharge can return.
+            // checks whether its prospective precharge can return.
+            // Destroy the cache-scope edge frame and runtime before the abort proves teardown.
             drop(cached_edges);
             drop(cache_runtime);
             // Keep an unsuccessful cache-scope interval fail-closed.
@@ -247,7 +248,7 @@ where
         },
     };
     if !shrunk {
-        // The graph exceeded its conservative reservation and must die before scope teardown.
+        // The graph exceeded its conservative reservation and must be destroyed before scope teardown.
         drop(parked);
         // The runtime can retain a current-resource route, so release it before scope teardown proof.
         drop(cache_runtime);
@@ -298,12 +299,12 @@ where
     // Scope this work so every attempt-runtime owner (including the runtime
     // clone on early failures) has dropped before the scope fence below. A
     // failed re-park consumes and drops the graph, but cannot return a
-    // checkout; its correlation guard must therefore discard rather than
-    // claim terminal allocator evidence from a drop path.
+    // checkout; its correlation guard must therefore discard the window, and a
+    // drop path never supplies terminal allocator evidence.
     //
     // Execution enters on the attempt binding, so workspace and outputs
     // charge to the borrower's grant: an undersized grant fails closed in the
-    // attempt domain instead of borrowing cache capacity.
+    // attempt domain, and cache capacity is not borrowed.
     let execution = {
         let attempt_handle_runtime = std::sync::Arc::new(attempt_runtime.clone());
         (|| {

@@ -6,7 +6,7 @@
 //! Arrow (or Arrow → CPU → GPU).
 //!
 //! Device-resident handoff to other RAPIDS libraries uses the prepared exports
-//! in [`crate::interop::contract`], not this module.
+//! in [`crate::interop::contract`]. This module performs host copies only.
 //!
 //! # Example
 //!

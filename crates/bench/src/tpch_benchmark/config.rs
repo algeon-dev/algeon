@@ -271,7 +271,7 @@ pub(super) enum NativeTpchDeviceBudget {
     /// automatic policy (physical memory minus its headroom).
     Automatic,
     /// Explicit managed capacity; the runtime rejects values above the owned
-    /// device memory with a structured error instead of clamping.
+    /// device memory with a structured error and does not clamp them.
     Explicit { bytes: u64 },
 }
 

@@ -30,7 +30,6 @@ class cudf_device_guard {
     if (active_) { cudaSetDevice(previous_); }
   }
 
-  // non-copyable
   cudf_device_guard(cudf_device_guard const&) = delete;
 
   cudf_device_guard& operator=(cudf_device_guard const&) = delete;

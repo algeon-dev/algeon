@@ -58,7 +58,6 @@ fn factorization_key_order(order: DictionaryKeyOrder) -> factorization::KeyOrder
 /// Generate a simple context helper that resolves the output domain, gets a
 /// column view, and wraps the result as a `Series`.
 macro_rules! series_context_op {
-    // Unary with fixed operation string
     (unary fn $method:ident($($param:ident : $pty:ty),*), $operation:literal,
      |$cv:ident, $domain:ident, $exec:ident, $op:ident| $call:expr) => {
         fn $method(&self, $($param: $pty,)* ctx: Exec<'_>) -> Result<Series> {
@@ -70,7 +69,6 @@ macro_rules! series_context_op {
             Series::from_column(col)
         }
     };
-    // Unary with caller-supplied operation string
     (unary fn $method:ident($($param:ident : $pty:ty),*),
      caller_op |$cv:ident, $domain:ident, $exec:ident, $op:ident| $call:expr) => {
         fn $method(&self, $($param: $pty,)* ctx: Exec<'_>, $op: &'static str) -> Result<Series> {
@@ -81,7 +79,6 @@ macro_rules! series_context_op {
             Series::from_column(col)
         }
     };
-    // Binary (two-Series): adds require_same_device + fence for the other Series
     (binary fn $method:ident($other:ident : &Series),
      $operation:literal, |$cv:ident, $other_cv:ident, $domain:ident, $exec:ident, $op:ident| $call:expr) => {
         fn $method(
@@ -168,7 +165,7 @@ impl Series {
         Ok((output_domain, consumer_fence))
     }
 
-    // ── Hand-written helpers (unique control flow) ──────────────────────
+    // These helpers are hand-written because their control flow is unique.
 
     /// Concatenate `series` in order, running where `exec` selects; the
     /// output provenance resolves from the first series.
@@ -532,8 +529,6 @@ impl Series {
         reduction::minmax_impl(&cv, &output_domain, exec_options.options(), operation)
     }
 
-    // ── Macro-generated unary helpers ───────────────────────────────────
-
     pub(super) fn is_nan_with_context(&self, ctx: Exec<'_>, operation: &'static str) -> Result<Series> {
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
@@ -570,7 +565,6 @@ impl Series {
         Series::from_column(col)
     }
 
-    // Unary helpers with caller-supplied operation string
     series_context_op!(unary fn unary_in_context(op: UnaryOperator),
     caller_op |cv, output_domain, exec, operation| unary::unary_operation_impl(
         &cv,
@@ -735,7 +729,7 @@ impl Series {
         Series::from_column(col)
     }
 
-    // ── Cast (special: `impl Into<DataType>` needs local conversion) ───
+    // Cast is hand-written because its `impl Into<DataType>` target needs a local conversion.
 
     pub(super) fn cast_in_context(
         &self,
@@ -751,8 +745,6 @@ impl Series {
         Series::from_column(col)
     }
 
-    // ── Fillna with scalar (generic over T: CudfType) ──────────────────
-
     pub(super) fn fillna_with_context<T: CudfType>(
         &self,
         value: T,
@@ -767,8 +759,6 @@ impl Series {
             replace::replace_nulls_with_exec_options(&cv, &scalar, &output_domain, exec_options.options(), operation)?;
         Series::from_column(col)
     }
-
-    // ── Macro-generated binary helpers ──────────────────────────────────
 
     pub(super) fn fillna_with_series_with_context(
         &self,
@@ -830,8 +820,7 @@ impl Series {
         Series::from_column(col)
     }
 
-    // ── Binary with type inference (hand-written; output type depends on both inputs) ──
-
+    // Hand-written because the output type depends on both inputs.
     pub(super) fn binary_series_in_context(
         &self,
         other: &Series,

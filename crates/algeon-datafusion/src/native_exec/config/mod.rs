@@ -44,9 +44,10 @@ use crate::{
 
 /// Adapter-side native execution configuration.
 ///
-/// This type holds the DataFusion-facing knobs for native cuDF execution. It does not eagerly create
-/// cuDF runtime state. Production `ExecutionContext` values are acquired only
-/// through backend admission when an accepted native plan begins execution.
+/// This type holds the DataFusion-facing settings for native cuDF execution.
+/// It does not eagerly create cuDF runtime state. Production `ExecutionContext`
+/// values are acquired only through backend admission when an accepted native
+/// plan begins execution.
 #[derive(Debug, Clone)]
 pub struct AlgeonNativeExecutionConfig {
     pub(super) source_chunking: SourceChunking,
@@ -198,10 +199,12 @@ impl AlgeonNativeExecutionConfig {
         self
     }
 
+    /// Borrows the optional diagnostic query correlation id carried by this execution template.
     pub fn query_id(&self) -> Option<&QueryId> {
         self.query_id.as_ref()
     }
 
+    /// Borrows the optional parent trace correlation id carried by this execution template.
     pub fn trace_id(&self) -> Option<&TraceId> {
         self.trace_id.as_ref()
     }
@@ -217,6 +220,7 @@ impl AlgeonNativeExecutionConfig {
             .or_else(|| self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution))
     }
 
+    /// Returns the bounded runtime observation retention policy copied into native execution.
     pub fn runtime_observation_config(&self) -> RuntimeObservationConfig {
         self.metrics_capture
             .as_ref()
@@ -240,7 +244,7 @@ impl AlgeonNativeExecutionConfig {
     /// Defaults to [`StatisticalAggregateExecutionMode::GpuNativeTolerant`],
     /// whose results can differ from DataFusion in floating-point bits. Select
     /// [`StatisticalAggregateExecutionMode::DataFusionExactHostWelford`] when
-    /// results must match DataFusion exactly. In that mode a candidate whose
+    /// results must be identical to DataFusion's. In that mode a candidate whose
     /// statistical aggregate input DataFusion reads through more than one
     /// partition stays on DataFusion, whose own result then depends on the
     /// order partitions deliver rows.
@@ -253,7 +257,7 @@ impl AlgeonNativeExecutionConfig {
     ///
     /// Route discovery, admission, and runtime payload handling read one
     /// threshold set through [`Self::planning_policy`]. It is intentionally
-    /// not exposed as a session/server knob until the expert surface is reviewed.
+    /// not exposed as a session/server setting until the expert surface is reviewed.
     pub fn with_dynamic_filter_execution_options(mut self, options: DynamicFilterExecutionOptions) -> Self {
         self.planning_policy.dynamic_filter = options;
         self
@@ -264,7 +268,7 @@ impl AlgeonNativeExecutionConfig {
     /// Capability admission, admission reports, and runtime observed-build
     /// strategy selection read one threshold set through
     /// [`Self::planning_policy`]. It is intentionally not exposed as a
-    /// session/server knob until the expert surface is reviewed.
+    /// session/server setting until the expert surface is reviewed.
     pub fn with_keyed_hash_join_strategy_options(mut self, options: KeyedHashJoinStrategyOptions) -> Self {
         self.planning_policy.keyed_hash_join = options;
         self
@@ -275,7 +279,7 @@ impl AlgeonNativeExecutionConfig {
     /// This policy is copied into native execution contexts so runtime
     /// aggregate strategy selection, exact-cardinality probes, and strategy
     /// metric rows share one threshold set. It is intentionally not exposed as
-    /// a session/server knob until the expert surface is reviewed.
+    /// a session/server setting until the expert surface is reviewed.
     pub fn with_aggregate_strategy_execution_options(mut self, options: AggregateStrategyExecutionOptions) -> Self {
         self.aggregate_strategy_execution_options = options;
         self
@@ -283,7 +287,7 @@ impl AlgeonNativeExecutionConfig {
 
     /// Set expert local-throughput source chunk planning policy.
     ///
-    /// This policy is intentionally Rust-only; public source chunk knobs remain
+    /// This policy is intentionally Rust-only; public source chunk settings remain
     /// the bounded memory policy and source chunk planning mode.
     pub fn with_source_chunk_planning_options(mut self, options: SourceChunkPlanningOptions) -> Self {
         self.source_chunk_planning_options = options;

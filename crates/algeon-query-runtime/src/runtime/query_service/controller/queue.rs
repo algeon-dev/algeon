@@ -207,8 +207,8 @@ impl AdmissionController {
                 .max(snapshot.query_share_bytes.saturating_sub(snapshot.frozen_resident_bytes));
             can_ever_fit |= snapshot.can_ever_fit_query_cap(requested_query_cap_bytes);
         }
-        // A fully closed fleet is a health failure, not an impossible cap. Let
-        // the canonical closed-fleet error own that case.
+        // A fully closed fleet is a health failure. This check returns Ok for it,
+        // and the canonical closed-fleet error owns that case.
         if open_device_count == 0 && !device_entries.is_empty() {
             return Ok(());
         }
@@ -304,6 +304,7 @@ impl AdmissionController {
     ) -> QueryError {
         let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
         let queue_depth = state.queued.len();
+        // Release the guard before the terminal callback, which may reenter backend shutdown.
         drop(state);
 
         let error = admission_mutex_poisoned_error();
@@ -325,9 +326,10 @@ impl AdmissionController {
         !self.admission_open.load(Ordering::Acquire) || state.closed
     }
 
-    /// Terminal admission rejection for service shutdown. Persistent device
-    /// health is evaluated against each request's compatible ledgers, because
-    /// that is the scheduler's sole health authority.
+    /// Terminal admission rejection for service shutdown. It checks only
+    /// whether admission is closed. Persistent device health is evaluated
+    /// against each request's compatible ledgers, because that is the
+    /// scheduler's sole health authority.
     pub(in crate::runtime::query_service) fn admission_terminal_rejection(
         &self,
         state: &AdmissionState,
@@ -339,8 +341,9 @@ impl AdmissionController {
     }
 
     /// Shutdown-path lock: recovers a poisoned guard, because the queue and
-    /// ticket state stay valid across a panic, and gives up at `deadline`
-    /// with a cleanup-deadline error instead of waiting out a placement.
+    /// ticket state stay valid across a panic. It gives up at `deadline` with
+    /// a cleanup-deadline error. Shutdown does not wait past `deadline` for a
+    /// placement that holds the mutex.
     pub(in crate::runtime::query_service) fn lock_admission_until(
         &self,
         deadline: Instant,
@@ -356,8 +359,9 @@ impl AdmissionController {
     /// Runs on submission so a full queue of dead waiters cannot reject live
     /// work. Each removed request has its terminal error recorded in its
     /// shared `QueuedAdmissionTerminal` before the mutex is released, because
-    /// the owning waiter may step before the sweep's `finish` runs and must
-    /// find its exact error rather than a missing request.
+    /// the owning waiter may step before the sweep's `finish` runs. The waiter
+    /// must find its exact error. A waiter that finds only a missing request
+    /// waits until its ordinary queue deadline.
     pub(in crate::runtime::query_service) fn sweep_expired_queued_requests_locked(
         &self,
         state: &mut AdmissionState,
@@ -365,10 +369,10 @@ impl AdmissionController {
         if let Err(error) = self.reconcile_native_admission_health() {
             eprintln!("[query-engine] warning: native admission-health reconciliation failed: {error}");
         }
-        // Terminal intent has a strict precedence. A caller that cancelled or
-        // expired while queued must be removed before a concurrent health
-        // transition must not replace that terminal result with a
-        // persistent-device failure.
+        // Terminal intent takes precedence over health. A caller that cancelled
+        // or expired while queued is removed before the health revalidation
+        // below, so a concurrent health transition cannot replace that terminal
+        // result with a persistent-device failure.
         let now = Instant::now();
         let mut expired = Vec::new();
         let mut cancelled = Vec::new();
@@ -510,7 +514,7 @@ impl AdmissionController {
 
     /// When no waiter is runnable, the oldest waiter still drives the
     /// placement attempt so its memory-blocked wait keeps the
-    /// `memory_grant_wait_timeout` taxonomy instead of the plain queue
+    /// `memory_grant_wait_timeout` taxonomy and does not end as a plain queue
     /// timeout. The drive fails placement and falls back to waiting.
     pub(in crate::runtime::query_service) fn fallback_driver_selection_locked(
         &self,
@@ -611,8 +615,8 @@ pub(in crate::runtime::query_service) fn query_service_shutdown_timeout(
 /// the admission guard is released.
 #[derive(Debug, Default)]
 pub(in crate::runtime::query_service) struct QueueSweep {
-    /// The outcome is captured with the removed request, not recovered from
-    /// its waiter-facing error handoff during `finish`.
+    /// The outcome is captured with the removed request. `finish` does not
+    /// read the waiter-facing error, which the waiter may already have taken.
     pub(in crate::runtime::query_service) expired: Vec<(AdmissionRequest, RuntimeTerminalOutcome)>,
     pub(in crate::runtime::query_service) cancelled: Vec<AdmissionRequest>,
     /// Health rejections also retain their lifecycle projection so waiter

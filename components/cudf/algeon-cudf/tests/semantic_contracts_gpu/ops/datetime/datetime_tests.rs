@@ -1,5 +1,3 @@
-//! Integration tests for datetime extract operations.
-
 use cudf::{ErrorCode, ErrorKind, Exec, TypeId};
 
 use crate::common::{error_context_value, nullable_series, series};

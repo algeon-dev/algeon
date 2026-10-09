@@ -283,8 +283,8 @@ async fn fragments_bound_after_the_claim_join_its_grant() {
         .expect_err("a plan no fragment bound stays outside the admitted identities");
     assert_eq!(error.fact_value("reason"), Some("admitted_capability_scope_mismatch"));
 
-    // The grant belongs to the attempt, not to the fragment that acquired
-    // the context: once that context ends, a later fragment still joins it.
+    // The grant belongs to the attempt. Once the context that a fragment
+    // acquired ends, a later fragment still joins the same grant.
     drop(context);
     let fourth_plan = resident_host_plan("fourth-fragment");
     ticket

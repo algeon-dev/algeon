@@ -199,8 +199,8 @@ pub(in crate::exec) fn materialize_left_only_join_output_projection(
     })
 }
 
-/// Materializes a mark-join output: all left-side columns from the probe frame
-/// (not gathered, because every probe row appears) plus a Boolean mark column.
+/// Materializes a mark-join output. The output holds all left-side columns from the
+/// probe frame (not gathered, because every probe row appears) plus a Boolean mark column.
 ///
 /// `matching_indices` are the left-semi indices returned by the filtered-join
 /// probe. They identify which *probe* rows have a match. The mark column is
@@ -230,7 +230,7 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
         )
     })?;
 
-    // Build the Boolean mark column:
+    // The Boolean mark column is built in two steps.
     // 1. Create a sequential Int32 Series [0, 1, ..., probe_rows-1].
     // 2. Test membership against matching_indices (hash-set, O(N+M)).
     let mark_series = if matching_indices.is_empty() {

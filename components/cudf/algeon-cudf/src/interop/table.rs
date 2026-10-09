@@ -62,8 +62,8 @@ impl Table {
     /// prepared-device layout set. Prepared host exports activate
     /// synchronously by return and upload their host-visible bytes into new
     /// device ownership inside the destination runtime. Both paths
-    /// synchronize completion before returning so producer liveness can end
-    /// honestly.
+    /// synchronize completion before returning. The producer's liveness can
+    /// end once the call returns.
     pub fn try_import_from_prepared_table_export_into_runtime(
         export: &PreparedTableExport<'_>,
         runtime: &Runtime,
@@ -96,10 +96,9 @@ impl Table {
     /// device export.
     ///
     /// This consuming variant upgrades the table itself into the prepared
-    /// export root so the returned export can retain honest producer
-    /// ownership. Borrow-preserving table exports remain available through
-    /// [`Table::try_prepare_device_table_export`] when callers explicitly want
-    /// a non-owning projection instead.
+    /// export root. The returned export retains producer ownership. Callers
+    /// that need a non-owning projection use
+    /// [`Table::try_prepare_device_table_export`].
     pub fn try_into_prepared_device_table_export(self) -> Result<PreparedTableExport<'static>, InteropError> {
         prepare_into_owned_table_root(self, None, "interop::Table::try_into_prepared_device_table_export")
     }

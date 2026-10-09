@@ -20,9 +20,9 @@ pub(super) struct SharedScalarFilteredMaterializationEstimate {
 
 /// Internal sizing policy for shared scalar filtered-aggregate materialization estimates.
 ///
-/// These estimates are optimizer diagnostics and admission evidence only. Keep
-/// them internal until runtime budget reporting can expose a stable production
-/// tuning model for shared filtered aggregate materialization.
+/// These estimates are optimizer diagnostics only. Keep them internal until
+/// runtime budget reporting can expose a stable production tuning model for
+/// shared filtered aggregate materialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SharedScalarFilteredMaterializationEstimatePolicy {
     shared_filter_predicate_bytes_per_row: u64,

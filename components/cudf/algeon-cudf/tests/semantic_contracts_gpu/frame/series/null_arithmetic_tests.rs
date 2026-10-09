@@ -1,4 +1,4 @@
-//! Specification tests: null propagation in Series arithmetic and comparisons.
+//! Specification tests for null propagation in Series arithmetic and comparisons.
 //!
 //! These tests lock down cuDF/libcudf null semantics at the Series API level:
 //! - Null + value = null (null propagates through arithmetic)
@@ -6,16 +6,10 @@
 //! - Scalar ops on nullable series preserve null positions
 //! - Both-null positions stay null
 //! - Null positions at different indices merge correctly
-//!
-//! All tests require a GPU.
 
 use cudf::{Exec, Series};
 
 use crate::common::{nullable_series, series};
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Create a nullable i32 series: [10, null, 30]
 fn series_with_null_middle() -> Series {
@@ -31,10 +25,6 @@ fn series_non_null() -> Series {
 fn series_with_null_last() -> Series {
     nullable_series::<i32>("c", &[100, 200, 0], &[true, true, false]).unwrap()
 }
-
-// ===========================================================================
-// Null propagation in Series-vs-Series arithmetic
-// ===========================================================================
 
 fn test_add_null_plus_value_propagates_null() {
     let a = series_with_null_middle(); // [10, null, 30]
@@ -103,10 +93,6 @@ fn test_rem_with_nulls() {
     assert_eq!(vals, vec![Some(1), None, Some(2)]);
 }
 
-// ===========================================================================
-// Null propagation in scalar arithmetic
-// ===========================================================================
-
 fn test_add_scalar_preserves_nulls() {
     let a = series_with_null_middle(); // [10, null, 30]
     let result = a.on(Exec::RETAINED).add_scalar(5i32).unwrap();
@@ -141,14 +127,6 @@ fn test_rem_scalar_preserves_nulls() {
     let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(3), None, Some(2)]);
 }
-
-// ===========================================================================
-// Operator overloads with nullable series
-// ===========================================================================
-
-// ===========================================================================
-// Null propagation in Series-vs-Series comparisons
-// ===========================================================================
 
 fn test_eq_null_propagates() {
     let a = series_with_null_middle(); // [10, null, 30]
@@ -202,17 +180,13 @@ fn test_le_null_propagates() {
 }
 
 fn test_eq_null_vs_null_is_null_not_true() {
-    // Two nulls compared: null == null should be null, not true.
+    // Two nulls compared: null == null evaluates to null, so the result is not true.
     let a = series_with_null_middle(); // [10, null, 30]
     let b = nullable_series::<i32>("d", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = a.on(Exec::RETAINED).eq(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
 }
-
-// ===========================================================================
-// Null propagation in scalar comparisons
-// ===========================================================================
 
 fn test_gt_scalar_preserves_nulls() {
     let a = series_with_null_middle(); // [10, null, 30]
@@ -256,10 +230,6 @@ fn test_le_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
 }
 
-// ===========================================================================
-// Null propagation in string comparisons
-// ===========================================================================
-
 fn test_eq_scalar_string_preserves_nulls() {
     let s = nullable_series("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.on(Exec::RETAINED).eq_scalar("hello").unwrap();
@@ -273,10 +243,6 @@ fn test_gt_scalar_string_preserves_nulls() {
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
-
-// ===========================================================================
-// Unary ops on nullable series
-// ===========================================================================
 
 fn test_neg_preserves_nulls() {
     let a = series_with_null_middle(); // [10, null, 30]
@@ -331,10 +297,6 @@ fn test_is_not_null_on_nullable() {
     assert_eq!(vals, vec![true, false, true]);
 }
 
-// ===========================================================================
-// All-null series in arithmetic
-// ===========================================================================
-
 fn test_add_all_null_series() {
     let a = nullable_series::<i32>("a", &[0, 0, 0], &[false, false, false]).unwrap();
     let b = series_non_null();
@@ -350,10 +312,6 @@ fn test_eq_all_null_series() {
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![None, None, None]);
 }
-
-// ===========================================================================
-// NaN vs null distinction in float operations
-// ===========================================================================
 
 fn test_is_nan_does_not_flag_null_as_nan() {
     let a = nullable_series::<f64>("a", &[1.0, f64::NAN, 0.0], &[true, true, false]).unwrap();

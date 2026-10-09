@@ -267,9 +267,9 @@ fn fingerprint_debug(value: &impl std::fmt::Debug) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-/// Fingerprint only declarative session settings, never opaque invocation
-/// extensions. Attempt-local bindings carry admission handles and cancellation
-/// state but cannot change coverage planning; including their debug output
+/// Fingerprint only declarative session settings. Opaque invocation extensions
+/// are excluded. Attempt-local bindings carry admission handles and cancellation
+/// state but cannot change coverage planning, and including their debug output
 /// would make otherwise identical SQL surfaces report different evidence.
 fn fingerprint_session_config(config: &ConfigOptions) -> String {
     let mut entries = config.entries().into_iter().map(|entry| (entry.key, entry.value)).collect::<Vec<_>>();

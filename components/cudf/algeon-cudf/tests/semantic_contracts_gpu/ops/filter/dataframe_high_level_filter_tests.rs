@@ -7,10 +7,6 @@ use crate::common::{
     reset_sync_observation, sample_df, sample_runtime, series,
 };
 
-// ---------------------------------------------------------------------------
-// filter(&Series); happy path
-// ---------------------------------------------------------------------------
-
 fn test_filter_series_mask_basic() {
     let df = sample_df();
     // Build a boolean mask via Series comparison: id > 2
@@ -69,10 +65,6 @@ fn test_filter_series_mask_all_false() {
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
 }
 
-// ---------------------------------------------------------------------------
-// filter(&Series); preserves output column names
-// ---------------------------------------------------------------------------
-
 fn test_filter_series_preserves_column_names() {
     let df = sample_df();
     let mask = series::<bool>("m", &[true, false, true, false, true]).unwrap();
@@ -82,10 +74,6 @@ fn test_filter_series_preserves_column_names() {
     assert_eq!(filtered.column_index("id"), Some(0));
     assert_eq!(filtered.column_index("score"), Some(1));
 }
-
-// ---------------------------------------------------------------------------
-// filter(&Series); rejects wrong-length mask
-// ---------------------------------------------------------------------------
 
 fn test_filter_series_rejects_wrong_length_mask() {
     let df = sample_df(); // 5 rows
@@ -101,10 +89,6 @@ fn test_filter_series_rejects_wrong_length_mask() {
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("5"));
 }
 
-// ---------------------------------------------------------------------------
-// filter(&Series); rejects non-BOOL8 mask
-// ---------------------------------------------------------------------------
-
 fn test_filter_series_rejects_non_bool_mask() {
     let df = sample_df();
     // Pass an i32 series as mask; should be rejected.
@@ -119,10 +103,6 @@ fn test_filter_series_rejects_non_bool_mask() {
     assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("bool8"));
 }
-
-// ---------------------------------------------------------------------------
-// filter(&Series); works with comparison-produced masks
-// ---------------------------------------------------------------------------
 
 fn test_filter_series_with_eq_scalar_mask() {
     let df = sample_df();

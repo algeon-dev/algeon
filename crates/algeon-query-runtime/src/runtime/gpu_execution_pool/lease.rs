@@ -77,8 +77,8 @@ impl GpuExecutorLease {
     /// Submits one blocking worker onto the lease's dedicated device executor.
     ///
     /// This is the synchronous-work counterpart to [`run`](Self::run): the
-    /// worker runs on a bounded blocking thread instead of an async pool
-    /// worker, under the same class admission. It fits this lease's remit of
+    /// worker runs on a bounded blocking thread. It does not run on an async
+    /// pool worker, and the same class admission applies. It fits this lease's remit of
     /// synchronous GPU work without exposing pool construction, detached
     /// spawning, shutdown, or counters.
     pub fn submit_blocking<F, T>(
@@ -174,10 +174,10 @@ impl<C: FnOnce()> Drop for BlockingCompletionNotify<C> {
 impl<T> PoolBlockingWork<T> {
     /// Drains the worker and returns its exactly-once terminal outcome.
     ///
-    /// Join is a drain: a worker that already started is always awaited and
-    /// its value handed back, so the caller can release whatever that worker
+    /// Join drains the worker. A worker that already started is always awaited and
+    /// its value returned, so the caller can release whatever that worker
     /// produced through its own accounting. A worker lost to pool shutdown or
-    /// process exit reports typed cancellation instead of hanging; a worker
+    /// process exit reports typed cancellation and does not hang; a worker
     /// panic reports the pool's typed panic error. A resolved join implies
     /// the worker's class slot is already reusable.
     pub fn join(self) -> Result<T> {

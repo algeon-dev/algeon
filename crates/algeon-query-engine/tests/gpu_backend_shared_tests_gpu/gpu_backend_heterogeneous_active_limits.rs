@@ -58,9 +58,8 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
     let first = session.admit_query_with_request(QueryAdmissionRequest::test_attempt()).expect("first query admits");
     let second = session.admit_query_with_request(QueryAdmissionRequest::test_attempt()).expect("second query admits");
     let third = session.admit_query_with_request(QueryAdmissionRequest::test_attempt()).expect("third query admits");
-    // Least-loaded placement decides the visiting order; the contract here is
-    // how many attempts each device ends up holding, not which one is picked
-    // first while both are idle.
+    // Least-loaded placement decides the visiting order. The contract here is how many attempts
+    // each device ends up holding; the device picked first while both are idle is not asserted.
     let mut placed = [0usize; 2];
     for handle in [&first, &second, &third] {
         placed[handle.device_ordinal()] += 1;
@@ -130,7 +129,7 @@ fn device_startup_records_carry_ordinal_local_resource_profiles() {
     assert_eq!(first.worker_job_capacity, 2 * 3);
     assert_eq!(second.worker_job_capacity, 3);
     // Default query limits are ordinal-local: each resolves to its own
-    // managed capacity rather than inheriting a value from device 0.
+    // managed capacity and does not inherit a value from device 0.
     assert_eq!(first.default_query_limit_bytes, DEVICE_CAPACITY_BYTES);
     assert_eq!(second.default_query_limit_bytes, DEVICE_ONE_LIMIT_BYTES);
     assert_eq!(first.cache_cap_bytes, 0);

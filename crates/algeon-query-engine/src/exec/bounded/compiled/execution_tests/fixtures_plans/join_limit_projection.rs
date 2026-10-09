@@ -59,7 +59,7 @@ fn join_limit_projection_plan() -> QueryPlan {
 ///
 /// This is the TPC-DS q32/q38/q87/q92/q97 shape: a `date_dim`-style scan is
 /// filtered once and fanned out to several join branches. A deferrable Parquet
-/// read hands the filter a source stream and the filter re-stages it; the
+/// read gives the filter a source stream and the filter re-stages it; the
 /// joins share the filter's output, so the filter reads the scan once into
 /// the frame both joins build from.
 pub(in crate::exec::bounded::compiled::execution_tests) fn shared_filtered_dimension_fan_out_plan(

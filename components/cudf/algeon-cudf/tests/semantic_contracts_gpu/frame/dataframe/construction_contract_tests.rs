@@ -1,5 +1,3 @@
-//! Tests for DataFrame construction contracts.
-//!
 //! These cases protect the rule that `DataFrame` is the schema authority:
 //! constructors take explicit output names, and `Series` values are nameless.
 use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series, testing::prelude::*};
@@ -20,10 +18,6 @@ fn assert_length_mismatch_contract(
     assert_eq!(error_context_value(err, "actual_rows").as_deref(), Some(actual_rows));
     assert_eq!(error_context_value(err, "expected_rows").as_deref(), Some(expected_rows));
 }
-
-// ---------------------------------------------------------------------------
-// from_series: explicit schema names
-// ---------------------------------------------------------------------------
 
 fn test_from_series_uses_explicit_names() {
     let x = series::<i32>("source_x", &[1, 2, 3]).unwrap();
@@ -86,10 +80,6 @@ fn test_dataframe_series_accessor_uses_schema_name_not_original_series_name() {
     assert_eq!(projected.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
     assert_eq!(df.column_names(), vec!["schema_name"]);
 }
-
-// ---------------------------------------------------------------------------
-// dataframe! macro
-// ---------------------------------------------------------------------------
 
 fn test_dataframe_macro_uses_from_series() {
     let x = series::<i32>("src", &[1, 2]).unwrap();

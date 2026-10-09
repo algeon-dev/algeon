@@ -1,10 +1,10 @@
 //! Bounded, post-callback attribution for cuDF allocator-ring records.
 //!
-//! The allocator callback cannot inspect engine state.  Instead, the engine
-//! records the exact domain identity that an admitted envelope owns and joins
-//! ring records only after the callback has completed. This module deliberately
-//! retains no domain handles; terminal finalization may request one bounded,
-//! exactly joined record without creating a second event store.
+//! The allocator callback cannot inspect engine state. The engine records the
+//! exact domain identity that an admitted envelope owns and joins ring records
+//! only after the callback has completed. This module deliberately retains no
+//! domain handles; terminal finalization may request one bounded record that
+//! joins by exact identity without creating a second event store.
 
 #[cfg(feature = "cugraph")]
 use std::sync::Arc;
@@ -71,8 +71,8 @@ impl AttemptCacheScopeAllocatorCorrelation {
 /// Exact identity of one cache scope's private allocator-event ring.
 ///
 /// Cache scopes remain alive across multiple graph checkouts, unlike admitted
-/// query domains. A correlation therefore owns one explicit sequence window
-/// per checkout rather than retiring the scope identity after its first use.
+/// query domains. A correlation therefore owns one explicit sequence window for
+/// each checkout. The scope identity is not retired after its first use.
 #[cfg(feature = "cugraph")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct CacheScopeAllocatorIdentity {
@@ -118,7 +118,8 @@ impl CacheScopeAllocatorIdentity {
 /// one window while a resident graph checkout remains exclusive, then retain a
 /// single exact event for final report projection. Events from different scope
 /// rings have no common sequence order, so competing exact candidates are
-/// deliberately unavailable instead of arbitrarily choosing one.
+/// deliberately unavailable. The collector does not select one of them
+/// arbitrarily.
 #[cfg(feature = "cugraph")]
 #[derive(Debug, Default)]
 pub(crate) struct AttemptCacheScopeCorrelationCollector {
@@ -134,17 +135,17 @@ struct AttemptCacheScopeCorrelationState {
     /// Once a window cannot prove its complete private-ring interval, this
     /// attempt must not substitute a cache event for its admitted-domain
     /// evidence. The collector is deliberately fail-closed across its
-    /// lifetime: the unknown window could contain the terminal failure.
+    /// lifetime. The unknown window could contain the terminal failure.
     discarded: bool,
     /// The terminal report commit closes admission to new windows before it
-    /// consumes evidence. Context clones can retain the collector, so this is
-    /// an explicit state transition rather than an ownership assumption.
+    /// consumes evidence. Context clones can retain the collector. The seal is
+    /// therefore recorded as an explicit state transition.
     sealed: bool,
 }
 
 /// Outcome of reading one fully bounded private allocator-event interval.
 ///
-/// A window with no failures is different from an invalid window: a later
+/// A window with no failures differs from an invalid window. A later
 /// sequential checkout of the same scope may still supply exact evidence only
 /// in the former case. Every unstable, overwritten, malformed, or incomplete
 /// read makes the whole attempt's cache fallback unavailable.
@@ -166,8 +167,8 @@ impl AttemptCacheScopeCorrelationCollector {
     /// scope exclusive. If native bounds cannot be read or the same scope is
     /// already active, the returned guard records no evidence and never
     /// changes execution behavior. An unavailable lower bound is still a
-    /// terminal evidence failure for this attempt: a later cache event cannot
-    /// safely prove it was the terminal allocation failure.
+    /// terminal evidence failure for this attempt. A later cache event cannot
+    /// safely prove that it was the terminal allocation failure.
     pub(crate) fn begin(self: &Arc<Self>, scope: Arc<CacheAllocationScope>) -> CacheScopeCorrelationGuard {
         let identity = CacheScopeAllocatorIdentity::from_cudf(scope.identity());
         let Some(observed_after_sequence) =
@@ -189,9 +190,9 @@ impl AttemptCacheScopeCorrelationCollector {
 
     /// Seals the attempt-owned collector before final report commit and
     /// transfers its one unambiguous exact cache event. Active, dropped, or
-    /// double-sealed windows are unavailable: the report must never race a
-    /// later context clone or infer a terminal event around an unclosed
-    /// interval.
+    /// double-sealed windows are unavailable. The report must never overlap a
+    /// later context clone's allocator evidence, and it must never infer a
+    /// terminal event around an unclosed interval.
     pub(crate) fn seal_and_take_exact_event(&self) -> Option<AllocatorEvent> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.sealed {
@@ -425,7 +426,7 @@ impl AllocatorDomainIdentity {
 
 /// The availability result of one ring position after it is read by the engine.
 ///
-/// `Missing` and `Overwritten` are terminal attribution states.  They must not
+/// `Missing` and `Overwritten` are terminal attribution states. They must not
 /// fall back to a later device sample or to another attempt-domain identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AllocatorEventAvailability {
@@ -502,8 +503,8 @@ impl AllocatorEventCorrelationInput {
     }
 }
 
-/// Whether a precisely correlated record belongs to an active or already
-/// released attempt-domain interval.
+/// Whether an exact correlation belongs to an active or already released
+/// attempt-domain interval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AllocatorEventAttemptState {
     Live,
@@ -568,8 +569,8 @@ pub(crate) struct AllocatorDomainAttempt {
 
 /// Bounded allocator-ring evidence observed while one completed domain moves
 /// to its retired correlation interval. A device record that cannot be joined
-/// exactly remains explicitly unattributed; it is never a substitute attempt
-/// event.
+/// by exact identity remains explicitly unattributed; it is never a substitute
+/// attempt event.
 #[derive(Debug, Default)]
 pub(crate) struct AllocatorEventEvidenceRead {
     pub(crate) exact: Option<AllocatorEvent>,
@@ -580,8 +581,8 @@ pub(crate) struct AllocatorEventEvidenceRead {
 ///
 /// Failure to observe the diagnostic identity or watermark leaves the event
 /// unattributed; it must never change an already-approved admission. A full
-/// bounded index likewise declines the optional registration rather than
-/// evicting a live attempt mapping.
+/// bounded index likewise declines the optional registration and keeps every
+/// live attempt mapping.
 pub(crate) fn register_admitted_domain(
     index: &Mutex<AllocatorEventCorrelationIndex>,
     domain: &QueryMemoryDomain,
@@ -604,7 +605,7 @@ pub(crate) fn register_admitted_domain(
 }
 
 /// Retires one attempt mapping after GPU cleanup and scans the bounded
-/// retained ring interval for one exactly correlated event.
+/// retained ring interval for one event with an exact correlation.
 ///
 /// The final watermark is observed before the correlation lock is acquired;
 /// every cuDF FFI read likewise happens without that mutex. Once retirement
@@ -684,8 +685,8 @@ pub(crate) fn discard_admitted_domain(index: &Mutex<AllocatorEventCorrelationInd
 /// A bounded index of active and recently retired allocator domains.
 ///
 /// `observed_after_sequence` is an exclusive boundary captured after the
-/// admission-domain identity is installed.  `observed_through_sequence` is an
-/// inclusive boundary captured after that domain's cleanup.  Those two
+/// admission-domain identity is installed. `observed_through_sequence` is an
+/// inclusive boundary captured after that domain's cleanup. Those two
 /// boundaries prevent old ring slots and later domain-id reuse from gaining an
 /// attribution merely because their three-part identity happens to match.
 #[derive(Debug)]
@@ -720,7 +721,7 @@ enum RetiredBinding {
         retirement_order: u64,
     },
     /// Once an identity has collided, retaining its old event window would be
-    /// a guess.  It remains explicitly unattributed until bounded eviction.
+    /// a guess. It remains explicitly unattributed until bounded eviction.
     Ambiguous {
         retirement_order: u64,
     },
@@ -740,7 +741,7 @@ impl AllocatorEventCorrelationIndex {
     /// Registers an admitted attempt-domain identity.
     ///
     /// The caller must use a cuDF ring watermark taken after the identity was
-    /// installed.  Events at or before that watermark are deliberately stale;
+    /// installed. Events at or before that watermark are deliberately stale;
     /// the callback was never allowed to look up the attempt while they ran.
     #[must_use]
     pub(crate) fn register_live(
@@ -785,9 +786,9 @@ impl AllocatorEventCorrelationIndex {
     /// Transitions a completed attempt domain into the bounded retired index.
     ///
     /// `observed_through_sequence` must be a cuDF ring watermark captured only
-    /// after cleanup for this domain has completed.  It is inclusive so an
-    /// event read after the attempt is gone can still correlate exactly to the
-    /// retired interval.
+    /// after cleanup for this domain has completed. It is inclusive so an
+    /// event read after the attempt is gone can still be correlated with the
+    /// retired interval through its exact identity.
     #[must_use]
     pub(crate) fn retire(
         &mut self,
@@ -906,7 +907,7 @@ impl AllocatorEventCorrelationIndex {
 
     /// Drops a live binding when cleanup cannot obtain a final ring watermark.
     ///
-    /// It deliberately creates no retired entry: an unknown upper boundary
+    /// It deliberately creates no retired entry. An unknown upper boundary
     /// must not become a guess about which later event belonged to this
     /// attempt. A mismatched attempt remains untouched.
     #[must_use]

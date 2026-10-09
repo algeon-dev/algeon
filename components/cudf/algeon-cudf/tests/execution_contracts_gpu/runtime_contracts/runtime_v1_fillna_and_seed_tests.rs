@@ -3,8 +3,8 @@
 //! Coverage:
 //! - `DataFrame::copy_into_runtime` + `fillna_with_series`: explicit placement
 //! - `Series::copy_into_runtime` + `fillna_with_series`: explicit placement
-//! - `DataFrame::fillna_with_series`: v2: mixed-domain default path succeeds
-//! - `SeriesOps::fillna_with_series`: v2: mixed-domain default path succeeds
+//! - `DataFrame::fillna_with_series`: mixed-domain default path succeeds
+//! - `SeriesOps::fillna_with_series`: mixed-domain default path succeeds
 //! - `Runtime::empty_column`: retains explicit domain
 //! - `Runtime::column_from_device_ptr`: uses `_ex` FFI, retains explicit domain
 use std::{ffi::c_void, ptr};
@@ -45,10 +45,6 @@ fn obs_current_device_resource() -> *mut c_void {
     out
 }
 
-// ---------------------------------------------------------------------------
-// copy_into_runtime + fillna_with_series; DataFrame
-// ---------------------------------------------------------------------------
-
 /// Left DataFrame in domain A, fill series in domain B, target runtime C.
 /// Explicit placement makes the target runtime step visible before
 /// `fillna_with_series` runs.
@@ -57,14 +53,12 @@ fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let rt_b = sample_runtime();
     let target_rt = sample_runtime();
 
-    // Build a DataFrame with a nullable column in domain A.
     let df = DataFrame::from_series([
         ("id", rt_a.series(&[1i32, 2, 3]).unwrap()),
         ("val", rt_a.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap()),
     ])
     .unwrap();
 
-    // Fill series in domain B.
     let fill = rt_b.series(&[99i32, 99, 99]).unwrap();
 
     let df = df.copy_into_runtime(&target_rt).unwrap();
@@ -80,8 +74,8 @@ fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
-/// v2 semantics: mixed-domain fillna_with_series succeeds via the default
-/// path (without `_with_runtime`). Output provenance follows the input
+/// Mixed-domain fillna_with_series succeeds via the default path (without
+/// `_with_runtime`). Output provenance follows the input
 /// DataFrame (primary input for replace-nulls).
 fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let rt_a = sample_runtime();
@@ -96,7 +90,6 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let fill = rt_b.series(&[99i32, 99, 99]).unwrap();
     let expected_mr = df.testing_execution_domain_mr_value();
 
-    // Without runtime, mixed domains now succeed under v2.
     obs_reset();
     let result = df.on(Exec::RETAINED).fillna_with_series("val", &fill).unwrap();
 
@@ -130,10 +123,6 @@ fn df_fillna_after_copy_into_runtime_same_domain_works() {
     assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
-// ---------------------------------------------------------------------------
-// copy_into_runtime + fillna_with_series; Series
-// ---------------------------------------------------------------------------
-
 /// Same as the DataFrame test but at the Series level.
 /// Explicit placement makes the target runtime step visible.
 fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
@@ -160,9 +149,9 @@ fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
-/// v2 semantics: mixed-domain SeriesOps::fillna_with_series succeeds via the
-/// default path (without `_with_runtime`). Output provenance follows the
-/// input series (primary input for replace-nulls).
+/// Mixed-domain SeriesOps::fillna_with_series succeeds via the default path
+/// (without `_with_runtime`). Output provenance follows the input series
+/// (primary input for replace-nulls).
 fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
@@ -171,7 +160,6 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let fill = rt_b.series(&[99i32, 99, 99]).unwrap();
     let expected_mr = series.as_column().testing_execution_domain_mr_value();
 
-    // Without runtime, mixed domains now succeed under v2.
     obs_reset();
     let result = series.on(Exec::RETAINED).fillna_with_series(&fill).unwrap();
 
@@ -183,12 +171,8 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
-// ---------------------------------------------------------------------------
-// Runtime::empty_column
-// ---------------------------------------------------------------------------
-
 /// An empty column created via `Runtime::empty_column` carries the runtime's
-/// explicit domain instead of relying on any implicit fallback.
+/// explicit domain; no implicit fallback supplies it.
 fn runtime_empty_column_retains_explicit_domain() {
     let rt = sample_runtime();
     obs_reset();
@@ -208,15 +192,9 @@ fn runtime_empty_column_in_dataframe_no_mixed_domain_error() {
     let df = DataFrame::from_series([("id", rt.series(&[1i32; 0]).unwrap())]).unwrap();
     let empty_col = rt.empty_column(TypeId::Int64).unwrap();
 
-    // Adding an empty column in the same domain should succeed without
-    // the mixed-domain error.
     let result = df.with_column("extra", Series::from_column(empty_col).unwrap());
     assert!(result.is_ok(), "expected Ok but got: {:?}", result.err());
 }
-
-// ---------------------------------------------------------------------------
-// Runtime::column_from_device_ptr
-// ---------------------------------------------------------------------------
 
 /// `Runtime::column_from_device_ptr` tags the result with the runtime's
 /// explicit domain.
@@ -242,16 +220,13 @@ fn runtime_column_from_device_ptr_uses_ex_ffi() {
     let expected_stream = rt.stream().testing_raw_handle_value();
     let default_mr = obs_current_device_resource() as usize;
 
-    // Allocate source data in the runtime's domain.
     let source = rt.series(&[1i64, 2, 3, 4]).unwrap();
     let device_ptr = source.testing_view().unwrap().device_data_ptr().unwrap();
 
     obs_reset();
     let col = unsafe { rt.column_from_device_ptr(device_ptr, 4, TypeId::Int64).unwrap() };
 
-    // The observation hook should have recorded the runtime's stream (not default).
     assert_eq!(obs_last_stream(), expected_stream);
-    // The observation hook should have recorded the runtime's MR (not default).
     assert_ne!(obs_last_mr() as usize, default_mr);
     assert_eq!(col.testing_execution_domain_mr_value(), rt.memory_resource().testing_raw_handle_value());
 }

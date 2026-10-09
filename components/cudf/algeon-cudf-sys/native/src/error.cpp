@@ -166,7 +166,7 @@ namespace {
 cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status)
 {
   try {
-    throw;  // re-throw current exception
+    throw;
   } catch (cudf::rust::memory::attributed_out_of_memory const& e) {
     set_attributed_exception_detail(e);
     return CUDF_ERROR_OUT_OF_MEMORY;
@@ -251,4 +251,4 @@ cudf_status_t translate_io_exception() { return translate_exception_impl(CUDF_ER
 //     return CUDF_SUCCESS;
 //   } CUDF_RUST_CATCH
 //
-// Defined in the internal header below.
+// Defined in `shim_common.h`.

@@ -42,7 +42,7 @@ pub(super) async fn get_query_stats_raw(client: &mut FlightSqlServiceClient<Chan
 
 /// A completed native Flight attempt publishes exactly one immutable report.
 /// `GetQueryStats` is a retained projection of that report, so duplicate
-/// headers would expose a second publication path rather than more telemetry.
+/// headers would expose a second publication path.
 pub(super) fn assert_single_sealed_attempt_report(payload: &str) {
     let values = |key: &str| payload.lines().filter_map(|line| line.strip_prefix(key)).collect::<Vec<_>>();
     let attempt_ids = values("# attempt_id=");
@@ -238,7 +238,7 @@ fn warm_cuda_once() {
     });
 }
 
-/// Reserve a loopback port and hand back the live listener so the caller can
+/// Reserve a loopback port and return the live listener so the caller can
 /// pass it straight to `serve_with_listener`. Keeping the socket bound closes
 /// the bind/serve gap where a parallel test could steal the port.
 pub(super) fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
@@ -283,10 +283,10 @@ pub(super) async fn wait_for_shared_ledger_queue(backend: &AlgeonGpuBackend, exp
 
 /// Wait until the backend query-service GPU admission ledger is empty.
 ///
-/// Native CUDA cleanup is handed off to the service GPU execution pool, so a
+/// Native CUDA cleanup runs on the service GPU execution pool, so a
 /// just-finished handle may still briefly occupy `active_queries` / cleanup
-/// accounting while stream pool work drains. DataFusion-baseline assertions use this
-/// fence before reading ledger counters.
+/// accounting while stream pool work drains. DataFusion-baseline assertions
+/// use this fence before reading ledger counters.
 pub(super) async fn wait_for_empty_gpu_ledger(backend: &AlgeonGpuBackend) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

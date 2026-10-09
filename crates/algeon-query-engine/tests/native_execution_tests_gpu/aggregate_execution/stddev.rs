@@ -579,7 +579,7 @@ fn bounded_join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
 
     // Probe files deliberately carry no byte estimates so chunk batching keeps
     // every chunk a singleton batch, which routes leaf reads through the
-    // spawned source-read workers instead of serial batch reads.
+    // spawned source-read workers, and serial batch reads are not used.
     let left = LocalParquetSource::from_files(
         left_paths.iter().map(LocalParquetFile::new).collect(),
         Arc::clone(&left_schema),

@@ -5,7 +5,8 @@
 //! ledgers, and the GPU resources (device contexts, stream pools, execution
 //! pools, resident caches) those ledgers account for. `backend_core` installs
 //! it behind a resource generation and closes it through the phased drain
-//! defined here. The contract is `website/docs/design/admission.mdx`.
+//! defined here. The contract is
+//! `website/docs/design/admission.mdx#from-capability-validation-to-admission`.
 //!
 //! Submodules split along ownership lines. `controller` owns scheduling state
 //! and never a CUDA object; `admission` owns the queued request, its placement
@@ -62,10 +63,10 @@ pub use service::{
 ///
 /// `StreamPoolClose` stops new stream leases so no admitted attempt can start
 /// GPU work the later phases would have to wait for. `AdmissionQuiescence`
-/// waits for every queued request, pending submission, and lifecycle ticket;
-/// the three phases after it are reported as pending rather than entered
-/// while it is unfinished, because an attempt still releasing needs the
-/// execution pool to run its cleanup job.
+/// waits for every queued request, pending submission, and lifecycle ticket.
+/// While it is unfinished, the three phases after it are reported as pending
+/// and are not entered, because an attempt still releasing needs the execution
+/// pool to run its cleanup job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueryServiceDrainPhase {
     StreamPoolClose,
@@ -94,7 +95,7 @@ impl QueryServiceDrainPhase {
 /// `DeadlineElapsed` is retryable: the next pass re-enters the phase. Any
 /// other error is `PermanentFailure`, which the close coordinator records as
 /// fail-closed; the two are distinguished by the `cleanup_deadline_elapsed`
-/// marker on the error rather than by its code.
+/// marker on the error. The error code does not decide it.
 #[derive(Debug)]
 pub(crate) enum QueryServiceDrainPhaseOutcome {
     Quiescent {

@@ -137,15 +137,15 @@ pub fn is_supported_arrow_numeric_type(dt: &ArrowDataType) -> bool {
 /// Return whether a cudf logical dtype can materialize into the requested
 /// Arrow host type without changing the column's logical values.
 ///
-/// This follows the export side of the host-copy interop contract. It is not
-/// the same as Arrow import mapping: this predicate accepts exact Decimal32/64
-/// mappings, while schema-less export canonicalizes every physical decimal to
-/// Decimal128 because libcudf retains scale but not Arrow precision metadata.
+/// This follows the export side of the host-copy interop contract, which differs
+/// from Arrow import mapping. The predicate accepts exact Decimal32/64 mappings,
+/// while schema-less export canonicalizes every physical decimal to Decimal128
+/// because libcudf retains scale but not Arrow precision metadata.
 ///
 /// Nested cudf dtypes do not retain their child schema in [`DataType`], so
-/// this dtype-only predicate deliberately returns `false` for Arrow list
-/// types. Owners with a concrete column view, such as `GpuRecordBatch`, must
-/// validate the actual child dtype and any fixed-size shape contract.
+/// this dtype-only predicate returns `false` for Arrow list types by design.
+/// Owners with a concrete column view, such as `GpuRecordBatch`, must validate
+/// the actual child dtype and any fixed-size shape contract.
 pub fn cudf_dtype_can_export_to_arrow_type(cudf_dtype: DataType, arrow_type: &ArrowDataType) -> bool {
     match arrow_type {
         ArrowDataType::Decimal128(_, scale) if cudf_dtype.id().is_decimal() => {
@@ -164,8 +164,8 @@ pub fn cudf_dtype_can_export_to_arrow_type(cudf_dtype: DataType, arrow_type: &Ar
 
 /// Validate an Arrow schema without copying data and return cudf planner metadata.
 ///
-/// Nullability is retained as schema metadata rather than folded into the cudf
-/// physical dtype.
+/// Nullability is kept as schema metadata, separate from the cudf physical
+/// dtype.
 pub fn validate_arrow_schema(schema: &Schema, row_count: usize) -> Result<ArrowHostSchema> {
     let operation = "arrow_host::validate_arrow_schema";
     let names = schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();

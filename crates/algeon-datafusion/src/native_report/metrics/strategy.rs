@@ -141,7 +141,6 @@ pub struct NativeAggregateStrategyMetricRow {
     pub aggregate_structural_key: String,
     /// Evidence source used by partial aggregate cardinality cost models.
     pub prior_cardinality_evidence_scope: String,
-    /// Aggregate strategy execution option row version.
     /// Encoded-key partial aggregation low-cardinality threshold in PPM.
     pub aggregate_encoded_key_partial_low_cardinality_threshold_ppm: usize,
     /// Minimum input rows before encoded-key partial aggregation may run.
@@ -188,7 +187,7 @@ pub struct NativeAggregateStrategyMetricRow {
     pub exact_cardinality_probe_input_rows: usize,
     /// Non-null distinct values measured by the exact-cardinality probe.
     pub exact_cardinality_probe_non_null_distinct_count: String,
-    /// Null rows observed by the exact-cardinality probe.
+    /// Null rows observed by the exact-cardinality probe, or `none` when the fact is absent.
     pub exact_cardinality_probe_null_count: String,
     /// Group count measured by the exact-cardinality probe, including the null group.
     pub exact_cardinality_probe_num_groups: String,

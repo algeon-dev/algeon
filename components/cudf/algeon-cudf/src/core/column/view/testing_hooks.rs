@@ -68,7 +68,7 @@ pub(crate) fn column_view_copy_fixed_width_to_host_for_benchmark(
         return Ok(0);
     }
 
-    // Match the production fixed-width host-materialization contract exactly:
+    // Match the production fixed-width host-materialization contract:
     // establish host visibility first, then use the same FFI copy whose
     // selected stream is synchronized before it returns. Only the destination
     // allocation kind differs between benchmark lanes.

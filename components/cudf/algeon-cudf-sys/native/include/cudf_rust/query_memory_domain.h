@@ -51,7 +51,7 @@ cudf_status_t cudf_query_memory_domain_freeze(cudf_query_memory_domain_handle do
 
 /// One surviving allocation owned by a query memory domain.
 ///
-/// `device_pointer` is the base pointer the allocator registered, not an
+/// `device_pointer` is the base pointer the allocator registered. It is not an
 /// interior column pointer. Owner attestation compares published output
 /// buffers against these base allocations.
 typedef struct {

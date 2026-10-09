@@ -1,5 +1,11 @@
 # cuML component
 
+`algeon-cuml` and `algeon-cuml-sys` are published implementation
+dependencies of Algeon. Applications use
+[`algeon-datafusion`](https://docs.rs/algeon-datafusion); the APIs below serve
+workspace component consumers. See the
+[API documentation boundary](https://algeon.dev/design#api-documentation).
+
 `components/cuml` provides Rust bindings to the pinned NVIDIA cuML `v26.08.00`
 source submodule. The component contains a native C++ shim, checked-in C ABI
 bindings, a safe Rust API, and integration tests. Normal Cargo builds do not run

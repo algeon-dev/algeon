@@ -6,10 +6,11 @@
 # stock cuGraph build:
 #
 #   1. One RMM per process: any process that loads libcugraph together with
-#      libcudf must bind every rmm symbol to a single librmm.so build. We make
-#      the cudf install prefix self-contained (scripts/build/bootstrap_cudf_install.sh)
-#      and force cuGraph to resolve RMM and rapids_logger from it via
-#      EXTRA_CMAKE_ARGS, instead of letting CPM build private copies.
+#      libcudf must bind every rmm symbol to a single librmm.so build. This script
+#      makes the cudf install prefix self-contained
+#      (scripts/build/bootstrap_cudf_install.sh) and forces cuGraph to resolve
+#      RMM and rapids_logger from it via EXTRA_CMAKE_ARGS, which keeps CPM from
+#      building private copies.
 #   2. A post-build check that no private RMM/rapids_logger copy leaked into the
 #      build tree where it could shadow the canonical one through stale rpaths.
 #   3. One cuVS per process: configure cuGraph with the canonical external

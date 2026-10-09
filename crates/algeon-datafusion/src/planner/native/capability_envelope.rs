@@ -97,7 +97,7 @@ impl NativeCapabilityCompiledGraphDiagnostics {
 ///
 /// `plan` is the candidate in the sink form execution runs, so the decision
 /// and the executed plan see the same sink. The boundary check and the
-/// accepted/rejected diagnostics read this decision instead of re-deriving it.
+/// accepted/rejected diagnostics read this decision; neither derives it again.
 /// A candidate the validator finds unsupported is rejected like any other
 /// missed contract; only a malformed candidate is an error.
 pub(super) fn native_admission_decision(

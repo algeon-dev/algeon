@@ -57,7 +57,6 @@ use crate::{
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, NotSupportedDetail, PlanningReport},
 };
 
-/// Optimizer attempt output, including the replacement plan and all report evidence.
 #[derive(Debug, Clone)]
 pub(super) struct NativeOptimizationAttempt {
     pub(super) plan: Arc<dyn ExecutionPlan>,
@@ -846,8 +845,8 @@ mod tests {
     #[test]
     fn non_join_candidate_is_rejected_at_planning_with_its_missing_contract() {
         // Row numbers under ORDER BY over a source that records no ordering:
-        // no compiled contract covers the window, so the candidate stays on
-        // DataFusion with that reason instead of running on a fallback.
+        // no compiled contract covers the window, so planning rejects the
+        // candidate and the plan stays on DataFusion with that reason.
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![2, 1])) as ArrayRef])
             .expect("literal batch");

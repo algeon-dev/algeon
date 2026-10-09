@@ -6,7 +6,8 @@
 //! `run-artifact.json` cell it matches; the summary fails closed on a shape
 //! mismatch and reports the server-minus-in-process throughput/latency delta.
 //!
-//! Load semantics:
+//! # Load semantics
+//!
 //! - Closed-loop: `clients` worker tasks each run attempts
 //!   sequentially until the shared deadline. The deadline stops new
 //!   submissions; an in-flight attempt always runs to its terminal state, so
@@ -19,30 +20,36 @@
 //!   missed schedule slots are not replayed in bursts. The achievable rate is
 //!   additionally bounded by the tokio timer resolution.
 //!
-//! Connection modes: pooled (default) connects one client per worker slot
-//! once with the long `connect_with_retry` budget used by
-//! `flight-sql-query`; churn connects a fresh client per attempt with a short
-//! retry budget because the server is already expected to accept connections.
+//! # Connection modes
 //!
-//! Ticket cancellation: every Nth attempt per worker
-//! (closed-loop) or every Nth scheduled attempt (open-loop) starts the DoGet
-//! stream of the first endpoint ticket, waits `--cancel-after-ms` (default
-//! 50), then cancels: first via the standard `CancelFlightInfo` action on
-//! the attempt's FlightInfo; when the server does not support that action
-//! (any action error, including `Unimplemented`/`InvalidArgument`), by
-//! dropping the DoGet stream, which the server treats as statement
-//! cancellation. Outcome classification after a cancel attempt:
-//! terminal tonic `Cancelled` stream error or a client-initiated stream drop
-//! records `cancelled`; a cleanly drained stream means the query won the
-//! race and records `succeeded`; any other terminal error records `failed`.
+//! The pooled mode (default) connects one client per worker slot once, with
+//! a long `connect_with_retry` budget that waits for a server still starting.
+//! The churn mode connects a fresh client per attempt with a short retry
+//! budget, because the server is already expected to accept connections.
+//!
+//! # Ticket cancellation
+//!
+//! Ticket cancellation applies to every Nth attempt per worker (closed-loop)
+//! or every Nth scheduled attempt (open-loop). A cancel attempt starts the
+//! DoGet stream of the first endpoint ticket, waits `--cancel-after-ms`
+//! (default 50), then cancels. It first uses the standard `CancelFlightInfo`
+//! action on the attempt's FlightInfo. When the server does not support that
+//! action (any action error, including `Unimplemented`/`InvalidArgument`), it
+//! cancels by dropping the DoGet stream, which the server treats as statement
+//! cancellation. After a cancel attempt, a terminal tonic `Cancelled` stream
+//! error or a client-initiated stream drop records `cancelled`. A cleanly
+//! drained stream means the query completed before the cancel took effect and
+//! records `succeeded`. Any other terminal error records `failed`.
 //! The `cancel_path` column records `none`, `flight_info`, or `drop`.
 //!
-//! Output discipline: `--out-dir` must not already exist (create-new
-//! semantics). `attempts.tsv` carries the `ATTEMPT_COLUMNS` header plus one
-//! row per attempt; `summary.json` retains only a redacted profile projection,
-//! outcome counts, nearest-rank latency percentiles, a matched in-process
-//! reduction, and their delta. SQL text, raw profile contents, URL userinfo,
-//! and raw error detail are never persisted.
+//! # Output discipline
+//!
+//! The `--out-dir` path must not already exist (create-new semantics).
+//! `attempts.tsv` carries the `ATTEMPT_COLUMNS` header plus one row per
+//! attempt; `summary.json` retains only a redacted profile projection, outcome
+//! counts, nearest-rank latency percentiles, a matched in-process reduction,
+//! and their delta. SQL text, raw profile contents, URL userinfo, and raw error
+//! detail are never persisted.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -153,7 +160,6 @@ impl ConnectionMode {
     }
 }
 
-/// Terminal state of one attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttemptOutcome {
     Succeeded,
@@ -757,8 +763,9 @@ fn tsv_field(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
 }
 
-/// Bounded error classification: tonic code names for RPC failures, fixed
-/// labels for non-tonic flight and transport failures. Never raw text.
+/// Maps a flight error to a bounded label: the tonic code name for RPC failures,
+/// and fixed labels for non-tonic flight and transport failures. Raw error text
+/// is never returned.
 fn flight_error_class(error: &FlightError) -> String {
     match error {
         FlightError::Tonic(status) => format!("{:?}", status.code()),
@@ -823,7 +830,7 @@ fn reduce(records: &[AttemptRecord]) -> Reduction {
     reduction
 }
 
-/// Nearest-rank percentile: the value at rank `ceil(q * n)` of sorted values.
+/// Returns the nearest-rank percentile, the value at rank `ceil(q * n)` of the sorted values.
 fn percentile_nearest_rank(values: &[u64], quantile: f64) -> Option<u64> {
     if values.is_empty() {
         return None;
@@ -967,7 +974,7 @@ fn latency_delta(server: Option<u64>, in_process: u64) -> serde_json::Value {
 #[cfg(not(test))]
 type FlightClient = FlightSqlServiceClient<Channel>;
 
-/// Pooled worker-slot connects mirror flight_sql_query's long budget: the
+/// Pooled worker-slot connects mirror flight_sql_query's long budget, because the
 /// server may still be starting when the run begins.
 #[cfg(not(test))]
 const POOLED_CONNECT_ATTEMPTS: usize = 600;
@@ -1009,7 +1016,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
         },
     }
     // Both load loops consume their sender once every worker/task clone is
-    // dropped, so the receiver observes a closed channel here.
+    // dropped, so `recv` returns `None` here.
     let mut records = Vec::new();
     let mut record_rx = record_rx;
     while let Some(record) = record_rx.recv().await {
@@ -1166,7 +1173,7 @@ async fn run_open_loop(
     Ok(())
 }
 
-/// One attempt against a churn connection: connect fresh, run, drop the
+/// An attempt against a churn connection connects fresh, runs, and drops the
 /// connection. A connect failure is a failed attempt, never a run abort.
 #[cfg(not(test))]
 async fn attempt_churn(
@@ -1278,8 +1285,8 @@ async fn drain_ticket(client: &mut FlightClient, ticket: Ticket, record: &mut At
     Ok(())
 }
 
-/// Cancel-scheduled attempt: start the first endpoint's DoGet stream, wait
-/// the configured delay, then cancel via `CancelFlightInfo`, falling back to
+/// A cancel-scheduled attempt starts the first endpoint's DoGet stream, waits
+/// the configured delay, then cancels via `CancelFlightInfo`. It falls back to
 /// dropping the stream when the server does not support the action.
 #[cfg(not(test))]
 async fn cancel_attempt(
@@ -1304,8 +1311,8 @@ async fn cancel_attempt(
             loop {
                 match stream.try_next().await {
                     Ok(Some(batch)) => record.rows += batch.num_rows() as u64,
-                    // The query drained cleanly despite the accepted cancel
-                    // request; the query won the race.
+                    // The stream drained cleanly despite the accepted cancel
+                    // request, so the attempt completed before the cancel took effect.
                     Ok(None) => return record.finish(attempt_start, AttemptOutcome::Succeeded, NO_ERROR_CLASS),
                     Err(error) => {
                         let outcome = match &error {

@@ -24,7 +24,7 @@ pub(crate) struct PlacementRequest {
     /// Device-independent requirement resolved once per candidate ledger.
     pub(crate) attempt_requirement: Option<AttemptCapabilityEvidence>,
     /// Device capabilities that must be present before this request can enter
-    /// capacity ranking. These are a safety predicate, not a placement hint.
+    /// capacity ranking. These form a safety predicate that ranking cannot relax.
     pub(crate) required_capabilities: Vec<ExecutionCapability>,
 }
 
@@ -88,20 +88,20 @@ pub(crate) struct PlacementCandidateSnapshot {
     pub(crate) candidate: PlacementCandidate,
     pub(crate) can_admit_now: bool,
     /// Whether the immutable device profile can ever satisfy this candidate's
-    /// resolved floor, independent of concurrent grants. This belongs beside
+    /// resolved query cap, independent of concurrent grants. This belongs beside
     /// the snapshot so callers do not reconstruct a different permanent-
     /// capacity classification after ranking.
     pub(crate) can_ever_fit_query_cap: bool,
 }
 
 impl PlacementCandidate {
-    /// Spare bytes beyond this candidate's required floor after admission.
+    /// Spare bytes beyond this candidate's query cap after admission.
     fn spare_after(&self) -> u64 {
         self.spare_capacity_bytes
     }
 }
 
-/// Documented stable placement ranking:
+/// Placement ranks candidates in this deterministic order:
 ///
 /// 1. spare capacity after admission, descending (least-loaded);
 /// 2. active attempts, ascending;
@@ -137,7 +137,7 @@ pub(crate) fn rank_placement_candidates(mut candidates: Vec<PlacementCandidate>,
 /// Returns `None` when the ledger cannot serve the request at all: its
 /// profile lacks a required capability or its admission is closed. A
 /// saturated open ledger stays a candidate so placement can distinguish a
-/// transiently busy device from one that can never fit the required floor.
+/// transiently busy device from one that can never fit the required query cap.
 pub(crate) fn placement_candidate_snapshot(
     ledger: &DeviceLedger,
     request: &PlacementRequest,

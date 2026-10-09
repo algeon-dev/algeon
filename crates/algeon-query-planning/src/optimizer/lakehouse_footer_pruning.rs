@@ -229,7 +229,8 @@ where
     }
 
     // Each request resolves against the latest plan so narrowings of one fact
-    // source by several dimensions compose instead of the last one winning.
+    // source by several dimensions compose. A later request starts from the row
+    // groups that earlier requests retained.
     for request in requests {
         let target_source_node_id = request.target_source_node_id;
         match resolve_dimension_derived_request(plan.clone(), resolver, &request).await? {

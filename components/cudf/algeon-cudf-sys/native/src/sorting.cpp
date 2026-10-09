@@ -16,7 +16,6 @@
 static_assert(sizeof(uint64_t) >= sizeof(std::size_t));
 
 namespace {
-/// Build a vector of cudf::order from the C enum array.
 cudf_status_t to_order_vec(cudf_order_t const *orders, int32_t n,
                            std::vector<cudf::order> *out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -37,7 +36,6 @@ cudf_status_t to_order_vec(cudf_order_t const *orders, int32_t n,
   return CUDF_SUCCESS;
 }
 
-/// Build a vector of cudf::null_order from the C enum array.
 cudf_status_t to_null_order_vec(cudf_null_order_t const *orders, int32_t n,
                                 std::vector<cudf::null_order> *out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");

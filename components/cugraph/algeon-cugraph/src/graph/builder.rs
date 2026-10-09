@@ -353,8 +353,8 @@ impl<'a> GraphBuilder<'a> {
         Ok(self)
     }
 
-    /// Set renumber from a bool. Used by cudf_interop where the flag comes
-    /// from a function parameter rather than a builder toggle.
+    /// Set renumber from a bool. Used by cudf_interop, where the flag comes from
+    /// a function parameter. The `renumber()` toggle is not used on this path.
     pub(crate) fn renumber_flag(mut self, renumber: bool) -> Self {
         self.renumber = renumber;
         self
@@ -494,10 +494,10 @@ impl<'a> GraphBuilder<'a> {
         }
 
         // vertices must be integer (i32 or i64) AND match src/dst dtype.
-        // The upstream C API silently casts mismatched vertex types via
-        // static_cast (copy_or_transform in graph_helper_impl.cuh), which
-        // can cause silent truncation (e.g. i64 → i32). We reject the
-        // mismatch here to prevent data corruption.
+        // The upstream C API casts mismatched vertex types via static_cast
+        // (copy_or_transform in graph_helper_impl.cuh), which can truncate
+        // values without an error (e.g. i64 → i32). The check below rejects
+        // the mismatch to prevent data corruption.
         if let Some((ptr, _)) = self.vertices {
             let dtype = Self::view_dtype(ptr)?;
             if !dtype.is_supported_index_type() {

@@ -210,8 +210,8 @@ fn validate_try_cast_expr(try_cast: &TryCastExpr, input_schema: &SchemaRef) -> R
     let source_type = physical_expr_data_type(try_cast.expr(), input_schema)?;
     if !is_supported_try_cast_pair(&source_type, try_cast.cast_type()) {
         // Unsupported type pairs stay on the UnsupportedExpression path so the
-        // planner's child-rewrite short-circuit treats TRY_CAST the same way
-        // it treated it before native admission of `STRING → integer`.
+        // planner's child-rewrite short-circuit treats TRY_CAST the same way for
+        // every pair that native admission does not accept.
         return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::TryCastPair).with_subject(
             ExpressionRejectionSubject::Cast { source: source_type, target: try_cast.cast_type().clone() },
         ));

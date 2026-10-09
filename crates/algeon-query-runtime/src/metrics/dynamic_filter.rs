@@ -5,7 +5,7 @@ use query_planning::{
 
 use super::{QueryMetrics, optional_i64, optional_str, optional_u64};
 
-/// Source-read footprint before or after applying a dynamic filter.
+/// Source-read row groups and bytes before or after applying a dynamic filter.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DynamicFilterSourceSnapshot {
     /// Planned row groups visible to the source consumer.
@@ -21,8 +21,8 @@ pub struct DynamicFilterRuntimeMetrics {
     pub(crate) query_id: Option<QueryId>,
     /// Plan-local dynamic-filter route id.
     pub dynamic_filter_id: String,
-    /// Event kind: `produced`, `skipped`, `applied`, `reader_predicate_rows`,
-    /// `applied_post_decode`, or `post_decode_rows`.
+    /// The event is one of `produced`, `skipped`, `applied`,
+    /// `reader_predicate_rows`, `applied_post_decode`, or `post_decode_rows`.
     pub event: String,
     /// Producer kind label.
     pub producer_kind: String,

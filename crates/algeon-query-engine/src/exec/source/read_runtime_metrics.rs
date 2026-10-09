@@ -5,7 +5,7 @@
 //! `query_runtime::metrics`; this module only fills them. `read_kind` identifies the shape:
 //! `chunk`, `chunk_batch`, `optimized_chunk_batch`, `file`, and the two enqueue-only kinds
 //! `background_cache_fill_file` and `background_cache_fill_chunk`. Byte fields are plan-time
-//! metadata and are 0 when the plan did not know them. `output_rows` and `elapsed` are measured.
+//! metadata and are 0 when the plan has no value for them. `output_rows` and `elapsed` are measured.
 //! `query_id` is left `None`; the recorder side owns correlation.
 
 use std::{collections::BTreeSet, time::Duration};
@@ -20,7 +20,7 @@ use super::{
 use crate::chunk::SourceChunkBatch;
 
 /// Records that a background cache fill was considered for a file. The row describes the enqueue
-/// decision and not a read: `output_rows` and `elapsed` are zero, `source_batching_reason` holds
+/// decision, so `output_rows` and `elapsed` are zero, `source_batching_reason` holds
 /// the enqueue outcome (`enqueued`, a skip reason, or an `enqueue_failed_*` string), and
 /// `source_chunk_planning_reason` holds the fill mode.
 pub(super) fn record_background_cache_file_fill_enqueue_runtime(
@@ -181,9 +181,9 @@ pub(super) fn record_source_chunk_read_runtime(
 
 /// Row groups a chunk read covers, or `None` when that cannot be determined cheaply.
 ///
-/// Uses the planned count when the plan knows it. A chunk that reads all row groups of a file with
-/// no recorded count opens the file footer on the calling thread, which only works for a path
-/// that exists locally; an object-store chunk without a count returns `None`.
+/// Uses the planned count when the plan records it. A chunk that reads all row groups of a
+/// file with no recorded count opens the file footer on the calling thread, which only works for
+/// a path that exists locally; an object-store chunk without a count returns `None`.
 pub(in crate::exec) fn observed_chunk_row_group_count(chunk: &SourceChunk) -> Option<usize> {
     chunk.known_read_row_group_count().or_else(|| {
         (chunk.reads_all_row_groups && chunk.path.is_file())

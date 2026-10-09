@@ -4,7 +4,6 @@ use query_planning::plan::{NodeId, QueryPlan};
 
 use super::*;
 
-// Selects which leaf is wrapped in an aggregate for multi-join fixtures.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum MultiJoinAggregateLeaf {
     FirstLeft,

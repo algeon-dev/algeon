@@ -16,9 +16,9 @@
 //! Predicate pruning, object stores, byte ranges, row-level selection, Iceberg
 //! delete files, Iceberg field-id or name mapping, partition transforms, and
 //! GDS/KvikIO direct-read policy all need their own source facts before callers
-//! may rely on them. Local sources therefore reject or keep those planner facts
-//! downstream instead of silently treating them as ordinary local full-file
-//! reads.
+//! may rely on them. Local sources therefore reject those planner facts or keep
+//! them for downstream handling. They are never treated as ordinary local
+//! full-file reads.
 
 use std::path::Path;
 

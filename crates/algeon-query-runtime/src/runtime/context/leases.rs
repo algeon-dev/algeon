@@ -16,7 +16,7 @@ impl ExecutionContext {
     /// service stream lease, and the derived context that owns them.
     ///
     /// This is the single bundle behind every piece of auxiliary attempt work
-    /// -- execution lanes and scheduled source reads alike. The derived
+    /// (execution lanes and scheduled source reads alike). The derived
     /// context's alias holds one auxiliary fork of the attempt pool alone for
     /// the lease's lifetime, so its native forks never reach a stream another
     /// live holder is launching on. The permit it takes is what bounds those
@@ -44,11 +44,11 @@ impl ExecutionContext {
     /// Acquires one attempt work lease only if this attempt's auxiliary
     /// envelope has a free slot right now.
     ///
-    /// Callers that already hold an attempt auxiliary permit -- the root
-    /// execution job dispatching lanes among them -- must never block on a
+    /// Callers that already hold an attempt auxiliary permit (the root
+    /// execution job dispatching lanes among them) must never block on a
     /// second one, because the holder they would wait for may be waiting on
     /// them. Returns `Ok(None)` when the envelope is fully claimed, so the
-    /// caller narrows its own width instead of deadlocking.
+    /// caller narrows its own width and does not deadlock.
     #[doc(hidden)]
     pub fn try_acquire_attempt_work_lease(&self) -> Result<Option<AttemptWorkLease>> {
         let attempt_auxiliary_permit = match self.admitted() {
@@ -95,15 +95,15 @@ impl ExecutionContext {
     /// than on the attempt's own root stream.
     ///
     /// Work issued from such a context already holds an attempt auxiliary
-    /// permit, so it must run inline instead of leasing a second one.
+    /// permit, so it must run inline and must not lease a second one.
     #[doc(hidden)]
     pub fn is_attempt_work_lease_context(&self) -> bool {
         matches!(*self.stream, StreamBinding::AttemptWork { .. })
     }
 
     /// Which auxiliary fork of the attempt pool this context's alias holds
-    /// alone. A context with no alias -- the attempt root, or a direct context
-    /// -- reports `None`; the root runs on the route's reserved fork instead.
+    /// alone. A context with no alias (the attempt root, or a direct context)
+    /// reports `None`; the root runs on the route's reserved fork instead.
     #[doc(hidden)]
     pub fn attempt_claimed_fork_index(&self) -> Option<usize> {
         match &*self.stream {

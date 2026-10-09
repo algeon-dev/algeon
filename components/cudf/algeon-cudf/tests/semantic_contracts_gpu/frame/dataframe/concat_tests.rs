@@ -1,4 +1,3 @@
-//! Tests for DataFrame concat, copy, rename, select.
 use cudf::{
     DataFrame, DataType, ErrorCode, ErrorKind, Exec, TypeId,
     frame::dataframe::{ConcatByNameOptions, SchemaAlignment},
@@ -426,15 +425,12 @@ fn test_rename_column() {
 
     let renamed = df.rename_column("old_name", "new_name").unwrap();
 
-    // New name works.
     assert_eq!(renamed.column_names(), vec!["new_name", "other"]);
     let vals: Vec<i32> = renamed.series("new_name").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![1, 2]);
 
-    // Old name no longer exists.
     assert!(renamed.series("old_name").is_err());
 
-    // Other column is preserved.
     let other_vals: Vec<i32> = renamed.series("other").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(other_vals, vec![10, 20]);
 }
@@ -513,7 +509,6 @@ fn test_select_preserves_data() {
     )
     .unwrap();
 
-    // Select single column.
     let selected = df.select(["y"]).unwrap();
 
     assert_eq!(selected.num_columns(), 1);
@@ -560,10 +555,8 @@ fn test_rename_same_name_is_schema_only_and_preserves_data() {
 
     let renamed = df.rename_column("a", "a").unwrap();
 
-    // No schema change.
     assert_eq!(renamed.column_names(), vec!["a", "b"]);
 
-    // Data unchanged.
     assert_eq!(renamed.series("a").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(renamed.series("b").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }

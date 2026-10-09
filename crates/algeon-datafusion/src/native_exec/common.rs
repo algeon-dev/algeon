@@ -1,8 +1,8 @@
 //! Shared helpers for native execution nodes.
 //!
-//! `AlgeonNativeExec` and the relation-function nodes advertise the same
-//! conservative `PlanProperties` and use the same error tagging at the
-//! DataFusion runtime boundary, so those concerns live here.
+//! `AlgeonNativeExec` and the relation-function nodes advertise the
+//! conservative `PlanProperties` built here and tag errors at the DataFusion
+//! runtime boundary with the helpers defined here.
 
 use std::{
     collections::BTreeSet,
@@ -99,8 +99,9 @@ impl HostOutputReservation {
     }
 }
 
-/// Conservative `PlanProperties` shared by all native execution wrappers:
-/// one unknown bounded partition, `Final` emission, no ordering guarantees.
+/// Conservative `PlanProperties` shared by all native execution wrappers.
+/// They declare one unknown bounded partition, `Final` emission, and no
+/// ordering guarantees.
 pub(super) fn conservative_properties(schema: SchemaRef) -> Arc<PlanProperties> {
     properties_with_equivalence(Arc::clone(&schema), EquivalenceProperties::new(schema))
         .expect("fresh equivalence properties must match schema")
@@ -442,7 +443,7 @@ pub(super) fn native_query_runtime_error_with_publication(
 /// `cpu_fallback_after_native_start=false`.
 ///
 /// Callers use these facts to distinguish context setup from query runtime,
-/// and to assert that a started native attempt is terminal rather than replayed
+/// and to assert that a started native attempt is terminal and never replayed
 /// through DataFusion.
 pub(super) fn mark_native_runtime_error(error: Error, stage: &'static str) -> Error {
     error
@@ -455,7 +456,7 @@ pub(super) fn mark_native_runtime_error(error: Error, stage: &'static str) -> Er
 /// The host path materializes the whole native result on the device before the
 /// output cursor yields its first chunk, so a failure before the first chunk
 /// has published nothing and could be re-run by a query retry contract. This
-/// adapter does not replay, so the distinction is reported, not acted on.
+/// adapter does not replay, so the distinction is only reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeOutputPublication {
     None,
@@ -488,7 +489,7 @@ mod tests {
 
     /// native wrappers keep one bounded partition with `Final` emission. Chunked
     /// device-to-host preparation happens inside that contract; rows are never streamed out
-    /// incrementally, so this must not silently become incremental emission.
+    /// incrementally, so this must not become incremental emission.
     #[test]
     fn native_wrapper_properties_keep_single_partition_final_emission() {
         use arrow::datatypes::{DataType, Field, Schema, SchemaRef};

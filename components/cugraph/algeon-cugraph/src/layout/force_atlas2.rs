@@ -308,8 +308,8 @@ fn graph_vertex_count<T: Transposition>(handle: &EnteredContext<'_>, graph: &mut
 
 /// Compute a Force Atlas 2 layout for a graph.
 ///
-/// Prefer using [`Graph::force_atlas2`](crate::graph::Graph::force_atlas2)
-/// instead of calling this function directly.
+/// Prefer using [`Graph::force_atlas2`](crate::graph::Graph::force_atlas2),
+/// which calls this function.
 pub(crate) fn force_atlas2<T: Transposition, V: CugraphElement, W: CugraphElement>(
     handle: &EnteredContext<'_>,
     rng_state: &mut RngState,

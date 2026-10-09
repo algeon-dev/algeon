@@ -1,10 +1,10 @@
 //! Measured graph-execution observation.
 //!
-//! These rows record what a graph attempt actually did on the device. They
+//! These rows record what a graph attempt did on the device. They
 //! carry no predicted or budgeted bytes: the allocator enforces a query's
 //! limit, so a planning-time claim would be an estimate masquerading as a
 //! fact. Keeping only the measurement leaves future capacity decisions with
-//! evidence instead of a model to calibrate.
+//! evidence. No model is stored to calibrate.
 
 use query_planning::{correlation::QueryId, plan::GraphAlgorithm};
 use serde_json::{Value, json};
@@ -16,11 +16,11 @@ use serde_json::{Value, json};
 pub enum GraphMeasuredPeakProvenance {
     /// An exclusive resident-graph cache scope reported its own allocator
     /// high-water mark after the warm graph execution had retired. This is
-    /// the only physical peak source for work that runs on the cache runtime
-    /// rather than the admitted attempt runtime.
+    /// the only physical peak source for work that runs on the cache runtime.
+    /// Work on the admitted attempt runtime does not take this path.
     CacheScopeHighWater,
     /// Neither runtime measurement completed. `measured_peak_bytes` is
-    /// unavailable rather than a synthetic zero.
+    /// unavailable. No synthetic zero stands in for it.
     Unavailable,
 }
 

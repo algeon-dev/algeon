@@ -303,8 +303,8 @@ fn credential_free_endpoint_identity(endpoint: &str) -> String {
 /// Caller-provided content identity (object ETag/version) used for cache scoping.
 ///
 /// Returns `None` when the caller supplied no usable identity. Size is
-/// deliberately not a fallback: same-size rewrites must map to no servable
-/// entry rather than to a stale hit.
+/// deliberately not a fallback. A same-size rewrite must map to no servable
+/// entry, and a stale hit must not be served.
 fn content_identity(metadata: &ParquetSourceMetadata) -> Option<String> {
     strong_content_identity(metadata).map(str::to_string)
 }

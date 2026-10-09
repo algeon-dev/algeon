@@ -252,7 +252,8 @@ fn partial_group_output_names(partial_aggregate: &AggregateExec) -> Vec<String> 
 fn distributed_aggregate_function_is_native_safe(kind: Option<NativeAggregateFunction>) -> bool {
     // AVG is allowed only because the state schema checks below require
     // DataFusion's explicit sum/count state layout and the final output check
-    // requires a floating result. It is not an average-of-averages shortcut.
+    // requires a floating-point or Decimal128 result. It is not an
+    // average-of-averages shortcut.
     matches!(
         kind,
         Some(
@@ -269,9 +270,10 @@ fn distributed_aggregate_state_exprs_are_native_safe(
     final_aggregate: &AggregateExec,
     partial_aggregate: &AggregateExec,
 ) -> bool {
-    // The final aggregate input must expose exactly the partial state fields in
-    // schema order. This is the provenance check that lets lowering execute the
-    // partial aggregate while reporting the final aggregate output schema.
+    // The final aggregate input must expose the partial state fields in schema
+    // order. Matching state fields establish provenance. Lowering can then
+    // execute the partial aggregate while reporting the final aggregate output
+    // schema.
     let mut state_index_base = final_aggregate.group_expr().expr().len();
     let final_input_schema = final_aggregate.input().schema();
     let partial_output_schema = partial_aggregate.schema();
@@ -310,8 +312,9 @@ fn distributed_final_output_is_native_safe(
     aggregate_name: &str,
     kind: Option<NativeAggregateFunction>,
 ) -> bool {
-    // AVG finalization consumes numeric state and produces a floating value;
-    // other distributed functions use the normal native type whitelist.
+    // AVG finalization consumes numeric state and produces a floating-point or
+    // Decimal128 value; other distributed functions use the normal native type
+    // whitelist.
     let schema = final_aggregate.schema();
     let Ok(field) = schema.field_with_name(aggregate_name) else {
         return false;

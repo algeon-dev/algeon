@@ -14,7 +14,6 @@ pub(crate) use query_planning::datatypes::{
 };
 use query_planning::expr::LiteralValue;
 
-/// Converts an Arrow temporal unit to the matching cuDF timestamp resolution.
 pub(crate) fn timestamp_unit_to_cudf_resolution(unit: &TimeUnit) -> TimestampResolution {
     match unit {
         TimeUnit::Second => TimestampResolution::Seconds,

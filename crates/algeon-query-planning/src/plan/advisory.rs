@@ -80,11 +80,11 @@ pub enum AdvisoryUnknownReason {
 /// The statistics cover the occurrence's complete output across all
 /// partitions; they never describe a device allocation scope.
 ///
-/// These records are diagnostic input only; build-side selection reads a
-/// join's own `JoinSpec::advisory_output_statistics`, not these bindings. They
-/// are not native bounds and cannot justify capability, admission, or grant
-/// size. Rewrites invalidate a record when its occurrence, schema, or
-/// dependencies change.
+/// These records are diagnostic input only. Build-side selection reads a
+/// join's own `JoinSpec::advisory_output_statistics` and does not read these
+/// bindings. They are not native bounds and cannot justify capability,
+/// admission, or grant size. Rewrites invalidate a record when its occurrence,
+/// schema, or dependencies change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdvisoryOutputBinding {
     /// Native occurrence the statistics describe; remapped by every rewrite.
@@ -96,6 +96,7 @@ pub struct AdvisoryOutputBinding {
     pub frontend: String,
     /// Version string of that frontend, for diagnostics only.
     pub frontend_version: String,
+    /// Frontend estimates and their precision for this node's output.
     pub statistics: AdvisoryOutputStatistics,
     /// Explains absent quantities; a present quantity retains its precision.
     pub unknown_reason: Option<AdvisoryUnknownReason>,

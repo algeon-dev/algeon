@@ -38,6 +38,7 @@ pub(super) use cache::{
     publish_lakehouse_optimized_batch_frame,
 };
 pub(in crate::exec::source) use s3::parse_s3_source_uri;
+
 #[cfg(test)]
 mod tests {
     use std::{

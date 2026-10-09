@@ -98,7 +98,8 @@ impl DataFramePreparedSort {
     ///
     /// This pre-allocation helper performs no allocation and rejects row counts
     /// above libcudf's `cudf::size_type` / `INT32_MAX` limit. It only covers
-    /// the retained sorted-order column, not libcudf sort temporary workspace.
+    /// the retained sorted-order column and does not cover libcudf sort
+    /// temporary workspace.
     pub fn sorted_order_reservation_size_bytes_for_len(output_rows: usize) -> Result<usize> {
         sorting::sorted_order_reservation_size_bytes_for_len(output_rows)
             .map_err(|error| error.reanchor("dataframe::prepared_sort::sorted_order_reservation_size_bytes_for_len"))

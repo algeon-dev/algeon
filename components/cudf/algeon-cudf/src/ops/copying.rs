@@ -1,4 +1,4 @@
-//! GPU-accelerated row gathering (take / index-select), scatter, and conditional copy operations.
+//! GPU-accelerated row gathering (take / index-select) and conditional copy operations.
 
 use std::{ptr, sync::Arc};
 

@@ -13,9 +13,9 @@ use crate::observability::{RuntimeObservationHandle, RuntimeStreamLeaseScope};
 /// Revocable context-scoped access to a service stream pool.
 ///
 /// Query-service handles retain their query admission anchor even before a
-/// stream is acquired. Each acquisition atomically checks both the query and
-/// service epochs and gives the returned stream lease a counted owner that
-/// survives derived runtime clones.
+/// stream is acquired. Each acquisition checks both the query and service epochs
+/// before the pool wait and again after it, and gives the returned stream lease a
+/// counted owner that survives derived runtime clones.
 #[derive(Debug, Clone)]
 pub struct QueryServiceStreamPool {
     pub(super) pool: ServiceStreamPool,

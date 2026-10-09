@@ -1,8 +1,9 @@
-//! GPU-accelerated datetime extraction operations.
+//! GPU-accelerated datetime operations.
 //!
-//! These functions operate on timestamp-typed columns and return newly
-//! allocated `INT16` component columns. Null input elements produce null
-//! output elements.
+//! These functions operate on timestamp-typed columns. Component extraction
+//! returns newly allocated `INT16` columns, and floor and calendrical-month
+//! offsets return newly allocated timestamp columns. Null input elements
+//! produce null output elements.
 
 use std::{ptr, sync::Arc};
 
@@ -19,7 +20,6 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum DatetimeComponent {
-    /// Calendar year.
     Year = 0,
     /// Calendar month, 1 through 12.
     Month = 1,

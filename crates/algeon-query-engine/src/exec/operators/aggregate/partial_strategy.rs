@@ -100,7 +100,7 @@ pub(super) fn select_partial_aggregate_strategy_decision_with_options(
     if !encoded_key_partial_available && !prepared_sort_groupby_available {
         return decision;
     }
-    // Source-adjacent parcel facts remain an admissibility envelope. They must
+    // Source-adjacent partition facts remain an admissibility envelope. They must
     // not, by themselves, select prepared sort-groupby. Prior completed partial
     // evidence remains the only reused cardinality path allowed to pick prepared.
     let prepared_sort_groupby_runtime_candidate = prepared_sort_groupby_available;
@@ -225,9 +225,9 @@ pub(super) fn add_prepared_sort_groupby_facts(
 }
 
 /// Selection from exact preflight facts. A single string key is judged by an
-/// absolute group count, because its grouped key output is proportional to the
-/// distinct strings rather than to the reduction ratio; every other key shape
-/// uses the ratio threshold.
+/// absolute group count, because its grouped key output scales with the distinct
+/// strings and does not track the reduction ratio. Every other key shape uses the
+/// ratio threshold.
 pub(super) fn prepared_sort_groupby_should_select_for_runtime_facts(
     decision: &AggregateStrategyCapabilityDecision,
     input_rows: u64,
@@ -572,10 +572,9 @@ fn select_prepared_sort_groupby_for_prior_cardinality(
     )
 }
 
-/// Selecting prepared sort-groupby supersedes an available encoded-key
-/// candidate rather than leaving it unmentioned: the encoded-key facts are
-/// rewritten and its rejection is inserted first, so the TSV row explains
-/// both outcomes.
+/// Selecting prepared sort-groupby supersedes an available encoded-key candidate and
+/// keeps it in the TSV row. The encoded-key facts are rewritten and its rejection is
+/// inserted first, so the row explains both outcomes.
 fn select_prepared_sort_groupby_with_cost_model(
     mut decision: AggregateStrategyCapabilityDecision,
     cost_model_status: &'static str,

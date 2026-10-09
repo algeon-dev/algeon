@@ -58,9 +58,8 @@ impl JoinOutputRequests {
             return hidden_row_count_preserving_output(left, right, canonical);
         }
 
-        // Build an iterator over only the non-mark bindings. When a mark
-        // column is present, its binding sits at `mark_binding_index` and
-        // must be skipped so that the zip with `outputs` stays aligned.
+        // The binding of a mark column sits at `mark_binding_index` and is skipped
+        // so that the zip with `outputs` stays aligned.
         let non_mark_bindings: Vec<_> = self
             .bindings
             .iter()

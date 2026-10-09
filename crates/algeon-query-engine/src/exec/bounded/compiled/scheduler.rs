@@ -653,8 +653,8 @@ pub(super) fn cleanup_preserving_primary<E>(
     E: CompiledTaskExecutor,
 {
     // `primary` continues on the returned-error path. Record every secondary
-    // cleanup error independently; the lifecycle, rather than the lossy
-    // timeline, owns the exact count and first-summary completeness.
+    // cleanup error independently. The lifecycle holds the exact count and
+    // first-summary completeness, because the bounded timeline may drop rows.
     let _ = primary;
     let _ = release_live_resources_on_error(executor, state, |cleanup_error| {
         record_cleanup_failure(observation_scope, phase, cleanup_error);

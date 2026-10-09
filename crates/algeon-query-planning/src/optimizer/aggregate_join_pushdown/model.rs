@@ -43,7 +43,6 @@ impl AggregateJoinPushdownDiagnostics {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;

@@ -416,8 +416,8 @@ fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_sour
 #[test]
 fn native_optimizer_rejects_widened_source_reuse_above_cap_for_any_consumer() {
     // Neither variant reads the superset, so the merged scan is bounded by the
-    // variant sum, 1 GiB, which exceeds the 500 MiB cap; the variants feed a
-    // union rather than a grouped aggregate.
+    // variant sum, 1 GiB, which exceeds the 500 MiB cap. The variants feed a union,
+    // and the rejection does not depend on the consumer.
     let plan = large_local_parquet_source_variants_plan();
     let result = optimize_query_plan(
         plan.clone(),
@@ -507,7 +507,7 @@ fn native_optimizer_rejects_widened_source_reuse_without_a_size_bound() {
 #[test]
 fn native_optimizer_reuses_source_variants_that_widen_nothing_at_any_size() {
     // Unknown and above-cap reads still merge when the merged scan reads
-    // exactly what every variant reads: scans with one scan contract, which
+    // the same columns that every variant reads: scans with one scan contract, which
     // keep their shared reader predicate, and scans of the same columns that
     // differ only in a branch-local key proof.
     let SourceNode::LocalParquet(filtered) = unsized_customer_address_source(&["id", "zip"], &[0, 2]) else {

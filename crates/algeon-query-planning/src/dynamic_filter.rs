@@ -37,10 +37,12 @@ use crate::{
 pub struct DynamicFilterId(pub(crate) usize);
 
 impl DynamicFilterId {
+    /// Creates a route identity from its plan-local index.
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
 
+    /// Returns the route's zero-based index within its native plan.
     pub const fn index(self) -> usize {
         self.0
     }
@@ -160,7 +162,7 @@ pub enum DynamicFilterProducer {
     },
     /// Aggregate or distinct group keys produce an exact keyset.
     AggregateGroupKeys {
-        /// Aggregate node producing distinct group keys.
+        /// Aggregate node whose group keys produce the exact keyset.
         aggregate_node_id: NodeId,
     },
 }
@@ -189,7 +191,7 @@ pub enum DynamicFilterConsumer {
     /// Local Parquet source consumes the filter for row-group pruning, reader
     /// predicate construction, or post-decode filtering.
     LocalParquetSource {
-        /// Source node receiving the payload.
+        /// Parquet source that applies the dynamic-filter payload.
         source_node_id: NodeId,
     },
     /// Hash-join probe side consumes the filter before probe work.
@@ -201,7 +203,7 @@ pub enum DynamicFilterConsumer {
     },
     /// Filter operator applies the payload as an additional predicate.
     Filter {
-        /// Filter node receiving the payload.
+        /// Filter node that combines the payload with its predicate.
         filter_node_id: NodeId,
     },
 }
@@ -303,8 +305,8 @@ pub enum DynamicFilter {
         max: i64,
     },
     /// Exact larger integer-like keyset applied after decode or at a join-probe
-    /// boundary. Reader predicate lowering intentionally ignores this payload
-    /// and uses only its range for row-group pruning.
+    /// boundary. Reader predicate lowering skips this payload, while row-group
+    /// pruning applies its values as a key filter.
     HashSetContainsI64 {
         /// Sorted unique values in the producer keyset.
         values: Vec<i64>,
@@ -321,8 +323,8 @@ impl DynamicFilter {
     /// Nulls are dropped before classification because an equality key never
     /// matches null. A keyset that fills its `[min, max]` span collapses to a
     /// range, which prunes row groups and reader rows but carries no exact
-    /// count; above `small_in_list_limit` the keyset stays exact and is
-    /// applied only after decode or at the probe.
+    /// count; above `small_in_list_limit` the keyset stays exact and is not
+    /// lowered into a reader predicate.
     pub fn from_i64_values(values: impl IntoIterator<Item = Option<i64>>, small_in_list_limit: usize) -> Self {
         let mut values = values.into_iter().flatten().collect::<Vec<_>>();
         if values.is_empty() {
@@ -381,7 +383,6 @@ fn values_form_dense_i64_range(values: &[i64], min: i64, max: i64) -> bool {
 /// Route payload status recorded by runtime dynamic-filter channels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DynamicFilterPayload {
-    /// The route produced a filter payload.
     Produced(DynamicFilter),
     /// The producer completed but no supported payload could be derived.
     Skipped {
@@ -418,7 +419,8 @@ impl DynamicFilterSet {
         self.payloads.contains_key(&id)
     }
 
-    /// Looks up a produced route payload.
+    /// Returns the payload of a route that produced one. Returns `None` for
+    /// skipped routes and for routes whose producer has not completed.
     pub fn produced(&self, id: DynamicFilterId) -> Option<&DynamicFilter> {
         match self.payloads.get(&id) {
             Some(DynamicFilterPayload::Produced(filter)) => Some(filter),
@@ -445,8 +447,10 @@ impl DynamicFilterSet {
 /// These values are shared by the optimizer and compiled execution so a route
 /// admitted during planning is evaluated against the same skip and payload
 /// thresholds at runtime. Keep this as one policy object before exposing any
-/// subset through user-facing configuration. Fields are crate-visible only;
-/// embedders should use the read-only accessors and `with_*` methods.
+/// subset through user-facing configuration. Fields are public and
+/// `#[doc(hidden)]`, except `max_range_reader_predicate_selectivity_ppm`,
+/// which is crate-visible. Embedders should use the read-only accessors and
+/// `with_*` methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DynamicFilterExecutionOptions {
@@ -554,8 +558,8 @@ impl DynamicFilterExecutionOptions {
     ///
     /// Zero-valued thresholds remain accepted because this is still an expert
     /// Rust surface and callers may use zero to disable narrow sub-behaviors.
-    /// The checks here only reject combinations that make planner and runtime
-    /// contracts contradictory.
+    /// The checks here reject values outside their bounds and combinations that
+    /// make planner and runtime contracts contradictory.
     pub fn validate(&self) -> Result<()> {
         if self.large_local_parquet_range_producer_rows != 0
             && self.max_build_rows != 0
@@ -586,11 +590,14 @@ impl DynamicFilterExecutionOptions {
         self
     }
 
+    /// Sets the producer row cap for materializing an exact host keyset.
     pub fn with_max_build_rows(mut self, rows: usize) -> Self {
         self.max_build_rows = rows;
         self
     }
 
+    /// Sets the producer row threshold for using range-only payloads with
+    /// local Parquet consumers.
     pub fn with_large_local_parquet_range_producer_rows(mut self, rows: usize) -> Self {
         self.large_local_parquet_range_producer_rows = rows;
         self
@@ -808,8 +815,8 @@ fn apply_dynamic_filter_to_source(
     footers: SourceFooterFacts<'_>,
 ) -> Result<()> {
     // No producer key survived, so no consumer row can match. The source keeps
-    // its node and schema and reads nothing; downstream operators see an empty
-    // input of the right schema instead of a changed plan shape.
+    // its node and schema and reads nothing. Downstream operators receive an
+    // empty input with the right schema, and the plan shape is unchanged.
     if matches!(filter, DynamicFilter::Empty) {
         mark_source_row_groups_empty(source);
         source.scan_limit = Some(0);
@@ -834,9 +841,9 @@ fn apply_dynamic_filter_to_source(
 
 /// Builds the set-aware row-group pruning filter carried by a dynamic-filter
 /// payload. Range payloads reuse their `[min,max]` bounds as one run; small/large
-/// keyset payloads coalesce their materialized
-/// `values` into runs so a scattered keyset prunes the gaps a single range would
-/// retain. Returns `None` when the payload carries nothing prunable.
+/// keyset payloads coalesce their materialized `values` into runs so a scattered
+/// keyset prunes the gaps a single range would retain. Returns `None` when the
+/// payload carries nothing prunable.
 fn dynamic_filter_row_group_key_filter(filter: &DynamicFilter) -> Option<DimensionKeyFilter> {
     match filter {
         DynamicFilter::Empty => None,
@@ -899,7 +906,7 @@ fn prune_source_row_groups_by_key_filter(
 
     // Without statistics there is nothing to prune on, and without a reduction
     // the selections stay untouched, so a file that selected all row groups
-    // keeps `None` rather than acquiring an explicit full list.
+    // keeps `None` and does not acquire an explicit full list.
     if !saw_statistics || retained_total >= selected_total {
         return Ok(());
     }
@@ -1029,12 +1036,10 @@ fn range_overlap_width(left: I64Range, right: I64Range) -> Option<u128> {
     (min <= max).then(|| range_width(I64Range { min, max })).flatten()
 }
 
-/// Builds a post-decode predicate for a dynamic-filter payload against an
-/// already-materialized input schema.
+/// Builds a predicate for a dynamic-filter payload against an input schema.
 ///
-/// This is intentionally schema-based rather than source-based so non-Parquet
-/// consumers, such as a hash-join probe input, can use the same payload
-/// semantics after decode.
+/// The predicate depends only on the schema. Non-Parquet consumers, such as a
+/// hash-join probe input, can apply the same payload semantics after decode.
 pub fn dynamic_filter_predicate_for_schema(schema: &Schema, column: &str, filter: &DynamicFilter) -> Option<Expr> {
     let data_type = schema.field_with_name(column).ok()?.data_type();
     let column_expr = Expr::column(column);

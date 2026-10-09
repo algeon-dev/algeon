@@ -140,9 +140,9 @@ impl RawDeviceArray {
 impl Drop for RawDeviceArray {
     fn drop(&mut self) {
         // SAFETY: this C view owns host metadata only; upstream's implementation
-        // simply deletes the pointer/length/type record and never enters
-        // CUDA. It therefore remains safe to release after device health
-        // has failed and must not be routed through device teardown.
+        // deletes the pointer/length/type record and never enters CUDA. It
+        // therefore remains safe to release after device health has failed and
+        // must not be routed through device teardown.
         unsafe { cugraph_type_erased_device_array_view_free(self.raw_view) };
         drop_device_resource(&mut self.raw, self.device, "RawDeviceArray::drop.array", DeviceResourceKind::DeviceArray);
     }
@@ -171,7 +171,7 @@ impl fmt::Debug for RawDeviceArrayView<'_> {
 }
 
 impl RawDeviceArrayView<'_> {
-    /// Wrap a raw C view pointer that is NOT owned by us.
+    /// Wrap a raw C view pointer that this wrapper does not own.
     ///
     /// # Safety
     ///
