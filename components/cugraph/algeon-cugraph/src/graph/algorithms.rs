@@ -440,8 +440,10 @@ impl Graph<Forward> {
     /// Compute Leiden communities on this forward-stored graph.
     ///
     /// Leiden is an undirected community-detection algorithm. This wrapper
-    /// requires forward graph storage but leaves graph-property validation to
-    /// the native library.
+    /// requires forward graph storage; libcugraph rejects a directed graph as
+    /// [`ErrorKind::InvalidInput`](crate::ErrorKind::InvalidInput). Every
+    /// returned community induces a connected subgraph, and the reported
+    /// modularity is that of the returned partition.
     pub fn leiden(
         &mut self,
         handle: &EnteredContext<'_>,

@@ -5,10 +5,22 @@ use cugraph::{
 use query_planning::plan::{GraphAlgorithmParams, GraphAlgorithmSpec};
 
 use super::{
-    ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
-    cudf_query_error, degree_type_to_cugraph, k_core_params, map_cugraph_error, normalize_graph_result_schema,
-    project_edge_list, run_with_cugraph_graph, table_graph_options,
+    DataFrame, ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, QueryError,
+    QueryErrorCode, Result, cudf_query_error, degree_type_to_cugraph, k_core_params, map_cugraph_error,
+    normalize_graph_result_schema, project_edge_list, run_with_cugraph_graph, table_graph_options,
 };
+
+/// Renames cuGraph component result columns to the SQL-facing names declared
+/// by the stable result schema.
+pub(super) fn rename_result_columns(
+    frame: DataFrame,
+    renames: &[(&str, &str)],
+    operation: &'static str,
+) -> Result<DataFrame> {
+    frame.rename_columns(renames.iter().copied()).map_err(|error| {
+        cudf_query_error(operation, "failed to rename cuGraph result columns to the stable SQL schema", error)
+    })
+}
 
 pub(super) fn execute_degrees_all(
     context: &ExecutionContext,
@@ -171,6 +183,11 @@ pub(super) fn execute_weakly_connected_components(
                 "query_engine.graph_algorithm.weakly_connected_components_result",
                 "failed to convert cuGraph WCC result to cudf DataFrame",
             ))?;
+            let frame = rename_result_columns(
+                frame,
+                &[("label", "component")],
+                "query_engine.graph_algorithm.weakly_connected_components_result",
+            )?;
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
@@ -214,6 +231,11 @@ pub(super) fn execute_strongly_connected_components(
                 "query_engine.graph_algorithm.strongly_connected_components_result",
                 "failed to convert cuGraph SCC result to cudf DataFrame",
             ))?;
+            let frame = rename_result_columns(
+                frame,
+                &[("label", "component")],
+                "query_engine.graph_algorithm.strongly_connected_components_result",
+            )?;
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
@@ -344,14 +366,11 @@ pub(super) fn execute_k_core(
                 "query_engine.graph_algorithm.k_core_result",
                 "failed to convert cuGraph k-core result to cudf DataFrame",
             ))?;
-            // cudf_interop produces "source" / "destination"; stable schema uses "src" / "dst".
-            let frame = frame.rename_columns([("source", "src"), ("destination", "dst")]).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.graph_algorithm.k_core_result",
-                    "failed to rename k-core edge columns to the stable SQL schema",
-                    error,
-                )
-            })?;
+            let frame = rename_result_columns(
+                frame,
+                &[("source", "src"), ("destination", "dst")],
+                "query_engine.graph_algorithm.k_core_result",
+            )?;
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: format!("k={},degree_type={}", params.k, params.degree_type.as_str()),
@@ -395,14 +414,11 @@ pub(super) fn execute_minimum_spanning_tree(
                 "query_engine.graph_algorithm.minimum_spanning_tree_result",
                 "failed to convert cuGraph MST result to cudf DataFrame",
             ))?;
-            // cudf_interop produces "source" / "destination"; stable schema uses "src" / "dst".
-            let frame = frame.rename_columns([("source", "src"), ("destination", "dst")]).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.graph_algorithm.minimum_spanning_tree_result",
-                    "failed to rename MST edge columns to the stable SQL schema",
-                    error,
-                )
-            })?;
+            let frame = rename_result_columns(
+                frame,
+                &[("source", "src"), ("destination", "dst")],
+                "query_engine.graph_algorithm.minimum_spanning_tree_result",
+            )?;
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),

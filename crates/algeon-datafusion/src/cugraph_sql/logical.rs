@@ -14,6 +14,7 @@ use super::{
     CugraphForceAtlas2InitialPositionsTable, CugraphForceAtlas2VertexAttributesTable, CugraphGraphEdgePredicateTable,
     CugraphGraphPredicateTable, CugraphSqlConfig,
     definitions::{CugraphArgumentKind, arguments_for_algorithm},
+    error::invalid_option,
     options, plan,
     planning::{validate_edge_source_schema, validate_predicate_source_schema},
     result_schema_for_params, result_schema_for_vertex_domain,
@@ -116,7 +117,9 @@ fn validated_spec(
     if algorithm == CugraphAlgorithm::Bfs {
         let selector_count = usize::from(source.is_some()) + usize::from(roles.contains(&CugraphRelationRole::Sources));
         if selector_count != 1 {
-            return Err(plan("cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources"));
+            return Err(invalid_option(
+                "cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources",
+            ));
         }
     }
     validate_contract_column_uniqueness(algorithm, inputs, roles)?;

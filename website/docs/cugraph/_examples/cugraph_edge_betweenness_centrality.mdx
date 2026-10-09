@@ -23,11 +23,11 @@ FROM citation_edges e
 JOIN ai_nodes a ON a.paper_id = e.src
 JOIN ai_nodes b ON b.paper_id = e.dst;
 
-SELECT ps.title AS citing, pd.title AS cited, ROUND(b.score, 5) AS edge_betweenness
+SELECT ps.title AS citing, pd.title AS cited, ROUND(b.value, 5) AS edge_betweenness
 FROM cugraph_edge_betweenness_centrality(edges => (SELECT src, dst FROM ai_edges)) b
-JOIN papers ps ON ps.paper_id = b.source
-JOIN papers pd ON pd.paper_id = b.destination
-ORDER BY b.score DESC
+JOIN papers ps ON ps.paper_id = b.src
+JOIN papers pd ON pd.paper_id = b.dst
+ORDER BY b.value DESC
 LIMIT 5;
 ```
 

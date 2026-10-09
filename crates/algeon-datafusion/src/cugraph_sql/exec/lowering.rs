@@ -251,7 +251,7 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
     if logical_mapping && let Some(limit) = result_options.limit {
         root = builder.add_limit(root, LimitSpec::fetch(limit)).map_err(native_plan_error)?;
     }
-    if let Some(codebook) = codebook {
+    if let Some(codebook) = &codebook {
         (root, _) = decode_logical_graph_result(&mut builder, &spec, root, root_schema, codebook)?;
         if spec.is_bfs_path_output() {
             root = builder
@@ -382,15 +382,19 @@ fn bfs_path_output_row_bound(
     if params.output.mode != CugraphBfsOutputMode::Path {
         return Ok(None);
     }
-    if let Some(depth) = params.depth_limit {
-        let depth = u64::try_from(depth).map_err(|_| plan("BFS path depth_limit must be non-negative"))?;
-        return depth.checked_add(1).map(Some).ok_or_else(|| plan("BFS path output row bound overflowed u64"));
-    }
-    edge_vertex_upper_bound
+    let vertex_rows = edge_vertex_upper_bound
         .or_else(|| edge_row_upper_bound.and_then(|rows| rows.checked_mul(2)))
-        .map(|rows| rows.max(1))
-        .map(Some)
-        .ok_or_else(|| plan("BFS path output requires a depth or graph vertex row bound"))
+        .map(|rows| rows.max(1));
+    let Some(depth) = params.depth_limit else {
+        return vertex_rows.map(Some).ok_or_else(|| plan("BFS path output requires a depth or graph vertex row bound"));
+    };
+    // A path of `depth` hops has `depth + 1` vertices. It never has more rows than the graph has
+    // vertices, so a depth beyond the vertex bound is the same as no depth limit.
+    let depth_rows = u64::try_from(depth)
+        .map_err(|_| plan("BFS path depth_limit must be non-negative"))?
+        .checked_add(1)
+        .ok_or_else(|| plan("BFS path output row bound overflowed u64"))?;
+    Ok(Some(vertex_rows.map_or(depth_rows, |rows| rows.min(depth_rows))))
 }
 
 pub(super) fn bfs_normalized_output_projection(
@@ -577,7 +581,6 @@ pub(super) fn native_algorithm_params(
         CugraphAlgorithmParams::Leiden(params) => GraphAlgorithmParams::Leiden(GraphLeidenParams {
             max_level: params.max_level,
             resolution: params.resolution,
-            theta: params.theta,
             seed: params.seed,
         }),
         CugraphAlgorithmParams::Ecg(params) => GraphAlgorithmParams::Ecg(GraphEcgParams {
@@ -593,9 +596,6 @@ pub(super) fn native_algorithm_params(
                 n_clusters: params.n_clusters,
                 n_eigenvectors: params.n_eigenvectors,
                 evs_tolerance: params.evs_tolerance,
-                evs_max_iterations: params.evs_max_iterations,
-                k_means_tolerance: params.k_means_tolerance,
-                k_means_max_iterations: params.k_means_max_iterations,
                 seed: params.seed,
             })
         },
@@ -796,6 +796,21 @@ mod tests {
             admission_evidence, runtime_evidence,
             "admission must attest the exact prepared graph and logical-output fragments runtime executes"
         );
+    }
+
+    #[test]
+    fn bfs_path_output_row_bound_treats_depth_beyond_the_graph_as_unlimited() {
+        let bound = |depth: i64, vertices: Option<u64>, edges: Option<u64>| {
+            let mut spec = bfs_spec(CugraphBfsSource::scalar_i64(0), CugraphBfsOutputMode::Path);
+            let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!() };
+            params.depth_limit = Some(depth);
+            bfs_path_output_row_bound(&spec, vertices, edges).unwrap()
+        };
+        assert_eq!(bound(0, Some(11), None), Some(1));
+        assert_eq!(bound(3, Some(11), None), Some(4));
+        assert_eq!(bound(i64::MAX, Some(11), None), Some(11));
+        assert_eq!(bound(i64::MAX, None, Some(5)), Some(10));
+        assert_eq!(bound(2, None, None), Some(3));
     }
 
     #[test]

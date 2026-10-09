@@ -13,7 +13,7 @@ use cugraph_sys::{
     cugraph_centrality_result_get_values, cugraph_centrality_result_get_vertices, cugraph_centrality_result_t,
     cugraph_edge_centrality_result_get_dst_vertices, cugraph_edge_centrality_result_get_edge_ids,
     cugraph_edge_centrality_result_get_src_vertices, cugraph_edge_centrality_result_get_values,
-    cugraph_edge_centrality_result_t, cugraph_hits_result_get_authorities,
+    cugraph_edge_centrality_result_t, cugraph_hits_result_converged, cugraph_hits_result_get_authorities,
     cugraph_hits_result_get_hub_score_differences, cugraph_hits_result_get_hubs,
     cugraph_hits_result_get_number_of_iterations, cugraph_hits_result_get_vertices, cugraph_hits_result_t,
 };
@@ -333,8 +333,8 @@ impl std::fmt::Debug for HitsResult {
 impl HitsResult {
     /// # Safety
     ///
-    /// `raw` must be a valid, non-null pointer returned by `cugraph_hits`.
-    /// Ownership is transferred to this struct.
+    /// `raw` must be a valid, non-null pointer returned by `cugraph_hits` or
+    /// `cugraph_hits_allow_nonconvergence`. Ownership is transferred to this struct.
     pub(crate) unsafe fn from_raw(
         raw: *mut cugraph_hits_result_t,
         device: i32,
@@ -393,6 +393,16 @@ impl HitsResult {
     pub fn number_of_iterations(&self) -> usize {
         // SAFETY: `self.raw` is a live HITS result owned by this wrapper.
         unsafe { cugraph_hits_result_get_number_of_iterations(self.raw) }
+    }
+
+    /// Whether HITS converged within its maximum iterations.
+    pub fn converged(&self) -> Result<bool> {
+        // SAFETY: `self.raw` is a live HITS result owned by this wrapper.
+        let b = unsafe { cugraph_hits_result_converged(self.raw) };
+        try_from_bool_t(b).ok_or_else(|| {
+            Error::new(ErrorKind::Unexpected, "HitsResult::converged")
+                .with_message(format!("invalid bool_t value returned by cuGraph: {}", b.0))
+        })
     }
 
     /// Convert this HITS result to a cudf DataFrame.

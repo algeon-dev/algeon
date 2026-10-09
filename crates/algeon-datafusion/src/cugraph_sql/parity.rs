@@ -404,7 +404,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         algorithm: CugraphAlgorithm::Leiden,
         dataset: "karate",
         // seed=0 matches GraphLeidenParams::default() seed.
-        params_json: r#"{"max_level":100,"resolution":1.0,"theta":1.0,"seed":0}"#,
+        params_json: r#"{"max_level":100,"resolution":1.0,"seed":0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/leiden__default.json"),
@@ -435,7 +435,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         algorithm: CugraphAlgorithm::SpectralModularityMaximization,
         dataset: "karate",
         // seed=0 matches GraphSpectralClusteringParams::default() seed.
-        params_json: r#"{"n_clusters":2,"n_eigenvectors":2,"evs_tolerance":0.01,"evs_max_iterations":500,"k_means_tolerance":0.001,"k_means_max_iterations":100,"seed":0}"#,
+        params_json: r#"{"n_clusters":2,"n_eigenvectors":2,"evs_tolerance":0.01,"seed":0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/spectral_modularity_maximization__default.json"),

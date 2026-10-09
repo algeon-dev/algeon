@@ -15,18 +15,18 @@ excludes years outside 1900 through 2020 and returns one row per pair.
 
 ```sql
 CREATE OR REPLACE TABLE scc_snapshot AS
-SELECT vertex, label
+SELECT vertex, component
 FROM cugraph_strongly_connected_components(
   edges => (SELECT src, dst FROM citation_edges), directed => true);
 
 WITH pairs AS (
-  SELECT label FROM scc_snapshot GROUP BY label HAVING COUNT(*) = 2)
+  SELECT component FROM scc_snapshot GROUP BY component HAVING COUNT(*) = 2)
 SELECT pa.year AS year_a, pa.title AS paper_a,
        pb.year AS year_b, pb.title AS paper_b,
        ABS(pa.year - pb.year) AS year_gap
 FROM pairs x
-JOIN scc_snapshot a ON a.label = x.label
-JOIN scc_snapshot b ON b.label = x.label AND a.vertex < b.vertex
+JOIN scc_snapshot a ON a.component = x.component
+JOIN scc_snapshot b ON b.component = x.component AND a.vertex < b.vertex
 JOIN papers pa ON pa.paper_id = a.vertex
 JOIN papers pb ON pb.paper_id = b.vertex
 WHERE pa.year BETWEEN 1900 AND 2020 AND pb.year BETWEEN 1900 AND 2020

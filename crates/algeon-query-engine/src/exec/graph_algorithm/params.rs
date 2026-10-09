@@ -7,7 +7,10 @@ use cugraph::{
     },
     community::{EcgParams, LeidenParams, LouvainParams, SpectralClusteringParams},
     layout::ForceAtlas2Params,
-    params::{BfsDepthLimit, ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
+    params::{
+        BfsDepthLimit, ClosedUnitF64, ClusterCount, FractionF64, HalfOpenUnitF64, IterationCount, NonNegativeF64,
+        PositiveF64,
+    },
     similarity::SimilarityParams,
     structure::KCoreParams,
     traversal::{BfsParams, SsspParams},
@@ -138,31 +141,19 @@ pub(super) fn personalized_pagerank_params(params: &GraphPageRankParams) -> Resu
 }
 
 pub(super) fn bfs_params(params: &GraphBfsParams) -> Result<BfsParams> {
-    let depth_limit = match params.depth_limit {
-        None | Some(0) => None,
-        Some(value) if value > 0 => {
-            let value = usize::try_from(value).map_err(|_| {
+    let depth_limit = params
+        .depth_limit
+        .map(|value| {
+            usize::try_from(value).map(BfsDepthLimit::new).map_err(|_| {
                 QueryError::new(
                     QueryErrorCode::InvalidPlan,
                     "query_engine.graph_algorithm.bfs_params",
-                    "BFS depth_limit does not fit usize",
+                    "BFS depth_limit must be non-negative",
                 )
                 .with_fact("depth_limit", value)
-            })?;
-            Some(BfsDepthLimit::new(value).map_err(map_cugraph_error(
-                "query_engine.graph_algorithm.bfs_params",
-                "invalid cuGraph BFS depth_limit",
-            ))?)
-        },
-        Some(value) => {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.graph_algorithm.bfs_params",
-                "BFS depth_limit must be non-negative",
-            )
-            .with_fact("depth_limit", value));
-        },
-    };
+            })
+        })
+        .transpose()?;
     Ok(BfsParams { depth_limit, compute_predecessors: true, do_expensive_check: false })
 }
 
@@ -194,8 +185,6 @@ pub(super) fn leiden_params(params: &GraphLeidenParams) -> Result<LeidenParams> 
             "query_engine.graph_algorithm.leiden_params",
             "invalid cuGraph Leiden resolution",
         ))?,
-        theta: PositiveF64::new(params.theta)
-            .map_err(map_cugraph_error("query_engine.graph_algorithm.leiden_params", "invalid cuGraph Leiden theta"))?,
         do_expensive_check: false,
     })
 }
@@ -210,66 +199,36 @@ pub(super) fn ecg_params(params: &GraphEcgParams) -> Result<EcgParams> {
         ))?,
         max_level: IterationCount::new(params.max_level)
             .map_err(map_cugraph_error("query_engine.graph_algorithm.ecg_params", "invalid cuGraph ECG max_level"))?,
-        threshold: NonNegativeF64::new(params.threshold)
+        threshold: FractionF64::new(params.threshold)
             .map_err(map_cugraph_error("query_engine.graph_algorithm.ecg_params", "invalid cuGraph ECG threshold"))?,
-        resolution: PositiveF64::new(params.resolution)
+        resolution: FractionF64::new(params.resolution)
             .map_err(map_cugraph_error("query_engine.graph_algorithm.ecg_params", "invalid cuGraph ECG resolution"))?,
         do_expensive_check: false,
     })
 }
 
 pub(super) fn spectral_clustering_params(params: &GraphSpectralClusteringParams) -> Result<SpectralClusteringParams> {
-    let n_clusters = std::num::NonZeroUsize::new(params.n_clusters as usize).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.graph_algorithm.spectral_clustering_params",
-            "spectral clustering n_clusters must be at least 1",
-        )
-        .with_fact("n_clusters", params.n_clusters)
-    })?;
+    const OPERATION: &str = "query_engine.graph_algorithm.spectral_clustering_params";
+    for (name, value) in [("n_clusters", params.n_clusters), ("n_eigenvectors", params.n_eigenvectors)] {
+        if value > i32::MAX as u32 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                OPERATION,
+                "cuGraph spectral clustering counts must fit the libcugraph int32 vertex type",
+            )
+            .with_fact(name, value));
+        }
+    }
     let n_eigenvectors = std::num::NonZeroUsize::new(params.n_eigenvectors as usize).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.graph_algorithm.spectral_clustering_params",
-            "spectral clustering n_eigenvectors must be at least 1",
-        )
-        .with_fact("n_eigenvectors", params.n_eigenvectors)
+        QueryError::new(QueryErrorCode::InvalidPlan, OPERATION, "spectral clustering n_eigenvectors must be at least 1")
+            .with_fact("n_eigenvectors", params.n_eigenvectors)
     })?;
-    if params.evs_max_iterations > i32::MAX as u32 {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.graph_algorithm.spectral_clustering_params",
-            "cuGraph spectral clustering evs_max_iterations must fit the libcugraph int32 iteration count",
-        )
-        .with_fact("evs_max_iterations", params.evs_max_iterations));
-    }
-    if params.k_means_max_iterations > i32::MAX as u32 {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.graph_algorithm.spectral_clustering_params",
-            "cuGraph spectral clustering k_means_max_iterations must fit the libcugraph int32 iteration count",
-        )
-        .with_fact("k_means_max_iterations", params.k_means_max_iterations));
-    }
     Ok(SpectralClusteringParams {
-        n_clusters,
+        n_clusters: ClusterCount::new(params.n_clusters as usize)
+            .map_err(map_cugraph_error(OPERATION, "invalid cuGraph spectral clustering n_clusters"))?,
         n_eigenvectors,
-        evs_tolerance: NonNegativeF64::new(params.evs_tolerance).map_err(map_cugraph_error(
-            "query_engine.graph_algorithm.spectral_clustering_params",
-            "invalid cuGraph spectral clustering evs_tolerance",
-        ))?,
-        evs_max_iterations: IterationCount::new(params.evs_max_iterations).map_err(map_cugraph_error(
-            "query_engine.graph_algorithm.spectral_clustering_params",
-            "invalid cuGraph spectral clustering evs_max_iterations",
-        ))?,
-        k_means_tolerance: NonNegativeF64::new(params.k_means_tolerance).map_err(map_cugraph_error(
-            "query_engine.graph_algorithm.spectral_clustering_params",
-            "invalid cuGraph spectral clustering k_means_tolerance",
-        ))?,
-        k_means_max_iterations: IterationCount::new(params.k_means_max_iterations).map_err(map_cugraph_error(
-            "query_engine.graph_algorithm.spectral_clustering_params",
-            "invalid cuGraph spectral clustering k_means_max_iterations",
-        ))?,
+        evs_tolerance: HalfOpenUnitF64::new(params.evs_tolerance)
+            .map_err(map_cugraph_error(OPERATION, "invalid cuGraph spectral clustering evs_tolerance"))?,
         do_expensive_check: false,
     })
 }
@@ -380,19 +339,52 @@ mod tests {
         assert_eq!(degree_type_to_cugraph(GraphKCoreDegreeType::InOut, true), KCoreDegreeType::InOut);
     }
 
+    /// `depth_limit` is the number of hops to expand: 0 reaches only the
+    /// sources, an absent limit is unlimited, and a negative limit is invalid.
     #[test]
-    fn spectral_clustering_params_reject_libcugraph_int_overflow_before_binding() {
-        let mut params =
-            GraphSpectralClusteringParams { evs_max_iterations: i32::MAX as u32 + 1, ..Default::default() };
-        let error = spectral_clustering_params(&params).expect_err("oversized evs iterations must be rejected");
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-        let oversized_value = (i32::MAX as u32 + 1).to_string();
-        assert_eq!(error.fact_value("evs_max_iterations"), Some(oversized_value.as_str()));
+    fn bfs_params_keep_zero_as_a_hop_count_and_reject_negative_limits() {
+        let limit = |depth_limit| bfs_params(&GraphBfsParams::new(0, depth_limit)).map(|params| params.depth_limit);
+        assert_eq!(limit(None).unwrap(), None);
+        assert_eq!(limit(Some(0)).unwrap(), Some(BfsDepthLimit::new(0)));
+        assert_eq!(limit(Some(3)).unwrap(), Some(BfsDepthLimit::new(3)));
+        assert_eq!(limit(Some(-1)).unwrap_err().code(), QueryErrorCode::InvalidPlan);
+    }
 
-        params.evs_max_iterations = 500;
-        params.k_means_max_iterations = i32::MAX as u32 + 1;
-        let error = spectral_clustering_params(&params).expect_err("oversized k-means iterations must be rejected");
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-        assert_eq!(error.fact_value("k_means_max_iterations"), Some(oversized_value.as_str()));
+    /// libcugraph's ECG accepts threshold and resolution only in (0, 1]
+    /// (`ecg_impl.cuh`); anything else is a masked native failure on the GPU.
+    #[test]
+    fn ecg_params_reject_threshold_and_resolution_outside_the_native_unit_interval() {
+        let at_upper_bound = GraphEcgParams { threshold: 1.0, resolution: 1.0, ..Default::default() };
+        assert!(ecg_params(&at_upper_bound).is_ok());
+
+        for (threshold, resolution) in [(0.0, 1.0), (1.5, 1.0), (1.0e-7, 0.0), (1.0e-7, 3.0)] {
+            let params = GraphEcgParams { threshold, resolution, ..Default::default() };
+            assert!(ecg_params(&params).is_err(), "threshold {threshold} resolution {resolution}");
+        }
+    }
+
+    /// libcugraph's spectral clustering requires at least two clusters and an
+    /// eigensolver tolerance in [0, 1) (`spectral_clustering.cu`), and casts the
+    /// counts to its int32 vertex type; anything else is a masked native failure or a
+    /// wrapped value on the GPU.
+    #[test]
+    fn spectral_clustering_params_reject_values_outside_the_native_ranges() {
+        let at_bounds = GraphSpectralClusteringParams {
+            n_clusters: 2,
+            n_eigenvectors: i32::MAX as u32,
+            evs_tolerance: 0.0,
+            ..Default::default()
+        };
+        assert!(spectral_clustering_params(&at_bounds).is_ok());
+
+        let rejected = [
+            GraphSpectralClusteringParams { n_clusters: 1, ..Default::default() },
+            GraphSpectralClusteringParams { n_clusters: i32::MAX as u32 + 1, ..Default::default() },
+            GraphSpectralClusteringParams { n_eigenvectors: 0, ..Default::default() },
+            GraphSpectralClusteringParams { evs_tolerance: 1.0, ..Default::default() },
+        ];
+        for params in rejected {
+            assert!(spectral_clustering_params(&params).is_err(), "{params:?}");
+        }
     }
 }

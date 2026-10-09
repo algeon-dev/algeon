@@ -108,7 +108,10 @@ async fn cugraph_named_binder_rejects_unknown_duplicate_missing_null_and_range_a
         "SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM edges), alpha => 1.1)",
     ] {
         let error = ctx.sql(sql).await.unwrap_err();
-        assert_eq!(typed_algeon_error(&error).code(), ErrorCode::InvalidExecutionPlan, "{sql}");
+        let typed = typed_algeon_error(&error);
+        assert_eq!(typed.code(), ErrorCode::InvalidRequest, "{sql}");
+        assert_eq!(typed.fact_value("reason"), Some("missing_or_invalid_option"), "{sql}");
+        assert_eq!(typed.fact_value("argument"), Some("alpha"), "{sql}");
     }
 }
 

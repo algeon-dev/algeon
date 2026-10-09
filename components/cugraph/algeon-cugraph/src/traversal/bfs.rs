@@ -36,7 +36,7 @@ use crate::{
 /// use cugraph::{params::BfsDepthLimit, traversal::BfsParams};
 ///
 /// let params = BfsParams {
-///     depth_limit: Some(BfsDepthLimit::new(3).unwrap()),
+///     depth_limit: Some(BfsDepthLimit::new(3)),
 ///     compute_predecessors: true,
 ///     ..Default::default()
 /// };
@@ -46,7 +46,8 @@ use crate::{
 #[derive(Debug, Clone, Copy, Default)]
 #[must_use]
 pub struct BfsParams {
-    /// Maximum BFS traversal depth. `None` means no depth limit.
+    /// Number of hops to expand from the sources. `Some(0)` reaches only the
+    /// sources; `None` means no depth limit.
     pub depth_limit: Option<BfsDepthLimit>,
     /// Whether predecessor vertices should be included in the result.
     pub compute_predecessors: bool,
@@ -61,7 +62,7 @@ impl BfsParams {
         self
     }
 
-    /// Set the maximum BFS traversal depth.
+    /// Set the number of hops to expand from the sources.
     pub fn with_depth_limit(mut self, limit: BfsDepthLimit) -> Self {
         self.depth_limit = Some(limit);
         self
@@ -78,7 +79,7 @@ impl BfsParams {
         self.compute_predecessors
     }
 
-    /// The maximum BFS depth, or `None` for unlimited traversal.
+    /// The number of hops to expand, or `None` for unlimited traversal.
     pub fn depth_limit(&self) -> Option<BfsDepthLimit> {
         self.depth_limit
     }
@@ -505,7 +506,7 @@ mod tests {
         let sources_arr = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
         let sources_view = sources_arr.view().expect("sources_view");
 
-        let params = BfsParams::default().with_depth_limit(BfsDepthLimit::new(2).unwrap());
+        let params = BfsParams::default().with_depth_limit(BfsDepthLimit::new(2));
         let result = graph.bfs(&entered, &sources_view, &params).expect("bfs");
 
         let dist_map = bfs_distance_map(&entered, &result);
@@ -515,6 +516,50 @@ mod tests {
         assert_eq!(dist_map[&2], 2);
         assert_eq!(dist_map[&3], i32::MAX);
         assert_eq!(dist_map[&4], i32::MAX);
+    }
+
+    #[test]
+    fn test_bfs_depth_limit_zero_reaches_only_the_sources() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_depth_limit_zero_reaches_only_the_sources").expect("entered");
+
+        // Path graph 0->1->2
+        let src = DeviceArray::from_slice(&entered, &[0i32, 1]).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &[1i32, 2]).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+        let sources_arr = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+        let sources_view = sources_arr.view().expect("sources_view");
+
+        let params = BfsParams::default().with_depth_limit(BfsDepthLimit::new(0));
+        let result = graph.bfs(&entered, &sources_view, &params).expect("bfs");
+        let dist_map = bfs_distance_map(&entered, &result);
+
+        assert_eq!(dist_map[&0], 0);
+        assert_eq!(dist_map[&1], i32::MAX);
+        assert_eq!(dist_map[&2], i32::MAX);
+    }
+
+    #[test]
+    fn test_bfs_depth_limit_beyond_the_vertex_type_is_unlimited() {
+        let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_depth_limit_beyond_the_vertex_type_is_unlimited").expect("entered");
+
+        let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 3]).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+        let sources_arr = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+        let sources_view = sources_arr.view().expect("sources_view");
+
+        // 2^32 truncates to 0 as an Int32 depth limit, which would reach no vertex but the source.
+        let params = BfsParams::default().with_depth_limit(BfsDepthLimit::new(1usize << 32));
+        let result = graph.bfs(&entered, &sources_view, &params).expect("bfs");
+        let dist_map = bfs_distance_map(&entered, &result);
+
+        assert_eq!(dist_map[&3], 3);
     }
 
     #[test]

@@ -21,24 +21,14 @@ narrows either part of this shared contract.
 
 <VertexIdSupport />
 
-## Int32 vertex mappings
+## Vertex codebook
 
 `cugraph_spectral_modularity_maximization` and `cugraph_minimum_spanning_tree`
-require Int32 vertex columns. AMiner paper IDs can exceed 2,147,483,647;
-a direct cast to Int32 can overflow. Build a dense mapping for the selected
-edge relation:
-
-```sql
-CREATE OR REPLACE TABLE my_vertex_ids AS
-SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
-FROM (SELECT src AS paper_id FROM my_edges UNION SELECT dst FROM my_edges);
-```
-
-Join this mapping to both edge endpoints before the algorithm call, and join
-returned IDs through the mapping to recover the original paper IDs. The
-[minimum spanning tree example](./udtfs/connectivity/cugraph_minimum_spanning_tree.mdx#examples)
-and [spectral clustering example](./udtfs/community/cugraph_spectral_modularity_maximization.mdx#examples)
-include the complete queries. The selected vertex count must fit in Int32.
+run their native algorithms on Int32 vertex ids. Both accept Int32, Int64 and
+string vertex columns. For Int64 and string vertices, the call maps each
+distinct vertex to a dense Int32 id before the native algorithm runs and
+decodes the returned ids to the input vertex type, so the SQL needs no mapping
+table. The distinct vertex count must fit in Int32.
 
 ## Construction options
 

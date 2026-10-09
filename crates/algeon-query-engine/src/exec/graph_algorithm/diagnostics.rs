@@ -11,6 +11,8 @@ use cugraph::ErrorStatus;
 #[cfg(feature = "cugraph")]
 use query_planning::error::AllocationSource as QueryAllocationSource;
 #[cfg(feature = "cugraph")]
+use query_planning::error::redact_uri_tokens;
+#[cfg(feature = "cugraph")]
 use query_planning::plan::GraphAlgorithmParams;
 #[cfg(feature = "cugraph")]
 use query_planning::plan::GraphBetweennessSeeds;
@@ -97,24 +99,16 @@ pub(super) fn graph_algorithm_parameters(params: &GraphAlgorithmParams) -> Strin
             format!("k={},degree_type={}", params.k, params.degree_type.as_str())
         },
         GraphAlgorithmParams::MinimumSpanningTree(_) => String::new(),
-        GraphAlgorithmParams::Leiden(params) => format!(
-            "max_level={},resolution={},theta={},seed={}",
-            params.max_level, params.resolution, params.theta, params.seed,
-        ),
+        GraphAlgorithmParams::Leiden(params) => {
+            format!("max_level={},resolution={},seed={}", params.max_level, params.resolution, params.seed)
+        },
         GraphAlgorithmParams::Ecg(params) => format!(
             "min_weight={},ensemble_size={},max_level={},threshold={},resolution={},seed={}",
             params.min_weight, params.ensemble_size, params.max_level, params.threshold, params.resolution, params.seed,
         ),
         GraphAlgorithmParams::SpectralModularityMaximization(params) => format!(
-            "n_clusters={},n_eigenvectors={},evs_tolerance={},evs_max_iterations={},\
-             k_means_tolerance={},k_means_max_iterations={},seed={}",
-            params.n_clusters,
-            params.n_eigenvectors,
-            params.evs_tolerance,
-            params.evs_max_iterations,
-            params.k_means_tolerance,
-            params.k_means_max_iterations,
-            params.seed,
+            "n_clusters={},n_eigenvectors={},evs_tolerance={},seed={}",
+            params.n_clusters, params.n_eigenvectors, params.evs_tolerance, params.seed,
         ),
         GraphAlgorithmParams::ForceAtlas2(params) => format!(
             "max_iter={},outbound_attraction_distribution={},lin_log_mode={},prevent_overlapping={},\
@@ -242,11 +236,31 @@ pub(super) fn map_cugraph_error(
     message: &'static str,
 ) -> impl FnOnce(cugraph::Error) -> QueryError {
     move |error| {
+        let cugraph_message =
+            Some(error.message().trim()).filter(|cugraph_message| !cugraph_message.is_empty()).map(redact_uri_tokens);
+        // An invalid-input or unsupported cuGraph error states what is wrong with the caller's
+        // call, and libcugraph reports precondition failures without source locations, so its
+        // text joins the message that reaches the client as `native_message`.
+        let message = match &cugraph_message {
+            Some(cugraph_message)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::InvalidInput | ErrorKind::UnsupportedType | ErrorKind::NotImplemented
+                ) =>
+            {
+                format!("{message}: {cugraph_message}")
+            },
+            _ => message.to_string(),
+        };
         let query_error = QueryError::new(code_for_cugraph_error(&error), operation, message)
             .with_fact("cugraph_kind", error.kind())
             .with_fact("cugraph_status", error.status())
             .with_fact("cugraph_operation", error.operation());
-        let query_error = ["algorithm", "iterations", "max_iterations", "epsilon"].into_iter().fold(
+        let query_error = match cugraph_message {
+            Some(cugraph_message) => query_error.with_fact("cugraph_message", cugraph_message),
+            None => query_error,
+        };
+        let query_error = ["algorithm", "iterations", "max_iterations", "epsilon", "remedy"].into_iter().fold(
             query_error,
             |query_error, key| match error.context_value(key) {
                 Some(value) => query_error.with_fact(key, value),
@@ -352,22 +366,45 @@ mod tests {
 
     #[test]
     fn cugraph_nonconvergence_mapping_preserves_actionable_facts() {
-        let source = cugraph::Error::new(cugraph::ErrorKind::NonConvergence, "eigenvector_centrality")
-            .with_context("algorithm", "eigenvector_centrality")
-            .with_context("iterations", "200")
-            .with_context("max_iterations", "200")
-            .with_context("epsilon", "0.00000001");
+        for (algorithm, remedy) in [
+            ("eigenvector_centrality", "raise max_iterations or epsilon"),
+            ("katz_centrality", "lower alpha (currently 0.5) below 1/lambda_max or raise max_iterations"),
+            ("hits", "raise max_iterations or epsilon"),
+        ] {
+            let source = cugraph::Error::new(cugraph::ErrorKind::NonConvergence, algorithm)
+                .with_context("algorithm", algorithm)
+                .with_context("iterations", "200")
+                .with_context("max_iterations", "200")
+                .with_context("epsilon", "0.00000001")
+                .with_context("remedy", remedy);
 
-        let error = map_cugraph_error(
-            "query_engine.graph_algorithm.eigenvector_centrality",
-            "cuGraph eigenvector centrality failed",
-        )(source);
+            let error =
+                map_cugraph_error("query_engine.graph_algorithm.centrality", "cuGraph centrality failed")(source);
 
-        assert_eq!(error.code(), QueryErrorCode::AlgorithmDidNotConverge);
-        assert_eq!(error.fact_value("algorithm"), Some("eigenvector_centrality"));
-        assert_eq!(error.fact_value("iterations"), Some("200"));
-        assert_eq!(error.fact_value("max_iterations"), Some("200"));
-        assert_eq!(error.fact_value("epsilon"), Some("0.00000001"));
-        assert_eq!(error.fact_value("cugraph_status"), Some("permanent"));
+            assert_eq!(error.code(), QueryErrorCode::AlgorithmDidNotConverge, "{algorithm}");
+            assert_eq!(error.fact_value("algorithm"), Some(algorithm));
+            assert_eq!(error.fact_value("iterations"), Some("200"));
+            assert_eq!(error.fact_value("max_iterations"), Some("200"));
+            assert_eq!(error.fact_value("epsilon"), Some("0.00000001"));
+            assert_eq!(error.fact_value("remedy"), Some(remedy));
+            assert_eq!(error.fact_value("cugraph_status"), Some("permanent"));
+        }
+    }
+
+    #[test]
+    fn cugraph_invalid_input_text_joins_the_message_and_internal_text_stays_a_fact() {
+        let invalid = map_cugraph_error("query_engine.graph_algorithm.sssp", "cuGraph SSSP failed")(
+            cugraph::Error::new(cugraph::ErrorKind::InvalidInput, "sssp")
+                .with_message("SSSP source vertex is not in the graph"),
+        );
+        assert_eq!(invalid.code(), QueryErrorCode::CudfInvalidInput);
+        assert_eq!(invalid.message(), "cuGraph SSSP failed: SSSP source vertex is not in the graph");
+
+        let unexpected = map_cugraph_error("query_engine.graph_algorithm.sssp", "cuGraph SSSP failed")(
+            cugraph::Error::new(cugraph::ErrorKind::Unexpected, "sssp").with_message("internal scheduler detail"),
+        );
+        assert_eq!(unexpected.code(), QueryErrorCode::CudfDependencyFailure);
+        assert_eq!(unexpected.message(), "cuGraph SSSP failed");
+        assert_eq!(unexpected.fact_value("cugraph_message"), Some("internal scheduler detail"));
     }
 }

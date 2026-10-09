@@ -7,33 +7,22 @@ This example runs on the [citation network demo dataset](../../guides/datasets/c
 A six-group view of the dense citation core can show which catalog fields
 dominate each group and where labels mix. The query first keeps papers with at
 least 30 neighbors in the undirected citation graph, then partitions that core
-and reports each group's two most common `primary_fos` labels. It renumbers
-paper IDs with a [dense mapping](../graph-options.mdx#int32-vertex-mappings)
-for the algorithm's Int32 input requirement.
+and reports each group's two most common `primary_fos` labels. The call
+passes the Int64 paper IDs directly; the
+[vertex codebook](../graph-options.mdx#vertex-codebook) maps them to Int32
+ids internally and decodes the result.
 
 ```sql
 CREATE OR REPLACE TABLE kcore30_edges AS
 SELECT src, dst
 FROM cugraph_k_core(edges => (SELECT src, dst FROM citation_edges), k => 30);
 
-CREATE OR REPLACE TABLE kcore_vertex_ids AS
-SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
-FROM (SELECT src AS paper_id FROM kcore30_edges UNION SELECT dst FROM kcore30_edges);
-
-CREATE OR REPLACE VIEW kcore30_i32 AS
-SELECT a.vid AS src, b.vid AS dst
-FROM kcore30_edges e
-JOIN kcore_vertex_ids a ON a.paper_id = e.src
-JOIN kcore_vertex_ids b ON b.paper_id = e.dst;
-
 WITH labeled AS (
-  SELECT s."partition" AS cluster, p.primary_fos
+  SELECT s.community AS cluster, p.primary_fos
   FROM cugraph_spectral_modularity_maximization(
-    edges => (SELECT src, dst FROM kcore30_i32), n_clusters => 6,
-    n_eigenvectors => 6, evs_tolerance => 0.00001,
-    evs_max_iterations => 2000, k_means_max_iterations => 1000) s
-  JOIN kcore_vertex_ids v ON v.vid = s.vertex
-  JOIN papers p ON p.paper_id = v.paper_id),
+    edges => (SELECT src, dst FROM kcore30_edges), n_clusters => 6,
+    n_eigenvectors => 6, evs_tolerance => 0.00001) s
+  JOIN papers p ON p.paper_id = s.vertex),
 counts AS (
   SELECT cluster, primary_fos, COUNT(*) AS n FROM labeled GROUP BY 1, 2),
 ranked AS (

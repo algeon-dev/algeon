@@ -1,0 +1,55 @@
+This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
+1,268,092,738 events from May through October 2023.
+
+### Is `session_id` safe to use as a per-user session key?
+
+The events table has a `session_id` column, and grouping by it looks like
+the natural way to build sessions. This query checks that assumption with
+a graph. Every October user and every session ID becomes a vertex, and an
+edge joins a user to each session ID that appears in their events. If a
+session ID belonged to one user, every connected component would hold
+exactly one user. A session's vertex ID is the smallest `event_id` among
+its events, which gives each 64-character session string a distinct
+integer.
+
+```sql
+WITH october AS (
+  SELECT user_id, session_id, MIN(event_id) AS first_event
+  FROM merrec_events
+  WHERE event_time >= TIMESTAMP '2023-10-01 00:00:00'
+  GROUP BY user_id, session_id
+), sessions AS (
+  SELECT session_id, MIN(first_event) AS session_vertex FROM october GROUP BY session_id
+), components AS (
+  SELECT vertex, component FROM cugraph_weakly_connected_components(
+    edges => (SELECT -(o.user_id + 1) AS src, s.session_vertex AS dst
+              FROM october o JOIN sessions s ON s.session_id = o.session_id),
+    directed => false)
+), user_components AS (
+  SELECT component, COUNT(*) AS users FROM components WHERE vertex < 0 GROUP BY component
+)
+SELECT CASE WHEN users = 1 THEN '1 user'
+            WHEN users <= 10 THEN '2-10 users'
+            WHEN users <= 1000 THEN '11-1,000 users'
+            ELSE 'over 1,000 users' END AS component_size,
+       COUNT(*) AS components, SUM(users) AS users, MAX(users) AS largest
+FROM user_components
+GROUP BY 1
+ORDER BY largest;
+```
+
+| Component size | Components | Users | Largest |
+|---|---:|---:|---:|
+| 1 user | 335,591 | 335,591 | 1 |
+| 2-10 users | 360 | 728 | 4 |
+| over 1,000 users | 1 | 2,649,977 | 2,649,977 |
+
+One component links 2,649,977 of October's 2,986,296 users through shared
+session IDs. Only 335,591 users have session IDs that no one else uses.
+Across all six months, 15,138,756 of the 25,864,474 distinct session IDs
+appear for more than one user, and one ID appears for 54 users. Session
+analysis on this dataset must therefore group by `(user_id, session_id)`.
+The query does not show why IDs repeat; that is a property of the source
+data.
+
+The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 5.08 s, including planning, every step of the statement, and result receipt. Each plan had 2 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 21.16 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-session-audit.json) with the executed SQL, query IDs, timings, and all result rows.

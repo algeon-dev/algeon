@@ -17,9 +17,8 @@ pub(super) fn result_schemas_json(algorithm: CugraphAlgorithm) -> String {
         )
     } else {
         let mut schema = schema_json_value(&stable_result_schema(algorithm));
-        if let Some(output_columns) = algorithm.definition().logical_string_output_columns()
-            && let Some(fields) = schema.get_mut("fields").and_then(Value::as_array_mut)
-        {
+        let output_columns = algorithm.definition().vertex_output_columns();
+        if let Some(fields) = schema.get_mut("fields").and_then(Value::as_array_mut) {
             for field in fields {
                 if output_columns.iter().any(|column| field["name"] == column.name) {
                     field["data_type"] = json!("Int64|Utf8");

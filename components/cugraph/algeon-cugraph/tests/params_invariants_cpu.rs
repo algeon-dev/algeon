@@ -90,7 +90,6 @@ fn leiden_params_default_has_expected_values() {
     let params = LeidenParams::default();
     assert_eq!(params.max_level.get(), 100);
     assert_eq!(params.resolution.get(), 1.0);
-    assert_eq!(params.theta.get(), 1.0);
     assert!(!params.do_expensive_check);
 }
 
@@ -111,9 +110,6 @@ fn spectral_clustering_params_default_has_expected_values() {
     assert_eq!(params.n_clusters.get(), 2);
     assert_eq!(params.n_eigenvectors.get(), 2);
     assert_eq!(params.evs_tolerance.get(), 0.01);
-    assert_eq!(params.evs_max_iterations.get(), 500);
-    assert_eq!(params.k_means_tolerance.get(), 0.001);
-    assert_eq!(params.k_means_max_iterations.get(), 100);
     assert!(!params.do_expensive_check);
 }
 

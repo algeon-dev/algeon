@@ -1,7 +1,7 @@
 ---
 title: Spectral Modularity Maximization
 sidebar_label: Spectral Modularity Maximization
-description: "Partition vertices by embedding the graph with leading modularity eigenvectors and clustering that embedding with k-means."
+description: "Partition vertices by running k-means on an embedding of the normalized graph Laplacian eigenvectors with the smallest eigenvalues. Modularity is not optimized directly."
 slug: /cugraph/udtfs/cugraph_spectral_modularity_maximization
 ---
 
@@ -13,7 +13,7 @@ UDTF: `cugraph_spectral_modularity_maximization`
 
 Official cuGraph reference: [C API](https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/community/#_CPPv440cugraph_spectral_modularity_maximizationPK25cugraph_resource_handle_tP19cugraph_rng_state_tP15cugraph_graph_t6size_t6size_tdidi6bool_tPP27cugraph_clustering_result_tPP15cugraph_error_t)
 
-Partition vertices by embedding the graph with leading modularity eigenvectors and clustering that embedding with k-means.
+Partition vertices by running k-means on an embedding of the normalized graph Laplacian eigenvectors with the smallest eigenvalues. Modularity is not optimized directly.
 
 ## Quickstart
 
@@ -30,7 +30,11 @@ FROM cugraph_spectral_modularity_maximization(
 
 Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
 
-Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are not supported (legacy Int32-only contract). The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from `gpu_validate_call`.
+Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int32`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The native graph indexes `Int32` vertices only, so `Int64` vertex IDs are mapped to dense `Int32` ids by a per-call codebook and decoded back to the input type in the result; the distinct vertex count must fit in `Int32`. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from `gpu_validate_call`.
+
+Logical string side-input limitations:
+
+- edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
 
 ## Arguments and options
 
@@ -38,20 +42,17 @@ Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are no
 
 | Argument | Required | Columns | Description |
 | --- | --- | --- | --- |
-| `edges` | yes | <ul><li>`src`, `dst`: `Int32`</li><li>`weight` (optional): `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`</li></ul> | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `edges` | yes | <ul><li>`src`, `dst`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`weight` (optional): `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`, `Int64`</li></ul> | edge relation with canonical src and dst columns, plus optional weight and edge_id columns; this algorithm ignores weight |
 
-Every `edge_id` column must have the integer type of `src` and `dst`.
+Every `edge_id` column must have the integer type of `src` and `dst`; string-keyed graphs accept no edge IDs.
 
 ### Named value arguments
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `evs_max_iterations` | `integer` | `500` | min 1; max 2147483647 | eigenvalue solver iteration limit |
-| `evs_tolerance` | `number` | `0.01` | min 0 | non-negative eigenvalue solver tolerance |
-| `k_means_max_iterations` | `integer` | `100` | min 1; max 2147483647 | k-means iteration limit |
-| `k_means_tolerance` | `number` | `0.001` | min 0 | non-negative k-means tolerance |
-| `n_clusters` | `integer` | `2` | min 1; max 4294967295 | number of spectral clusters |
-| `n_eigenvectors` | `integer` | `2` | min 1; max 4294967295 | number of spectral eigenvectors |
+| `evs_tolerance` | `number` | `0.01` | min 0; &lt; 1 | eigenvalue solver tolerance in [0, 1) |
+| `n_clusters` | `integer` | `2` | min 2; max 2147483647 | number of spectral clusters, at least 2 |
+| `n_eigenvectors` | `integer` | `2` | min 2; max 2147483647 | number of smallest-eigenvalue Laplacian eigenvectors in the embedding, from 2 to n_clusters; the first is constant on a connected graph |
 | `seed` | `integer` | `0` | min 0; max 18446744073709552000 | random initialization seed |
 
 ### Graph construction options
@@ -62,8 +63,8 @@ This UDTF requires `directed=false` (undirected/symmetric graph); all other grap
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `vertex` | `Int64` | no | Vertex assigned to a spectral clustering partition. |
-| `partition` | `Int64` | no | Cluster identifier assigned by spectral modularity maximization. |
+| `vertex` | `Int64\|Utf8` | no | Vertex assigned to a spectral clustering partition. |
+| `community` | `Int64` | no | Cluster identifier assigned by spectral modularity maximization. |
 
 These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.
 
@@ -75,7 +76,9 @@ import Examples from '../../_examples/cugraph_spectral_modularity_maximization.m
 
 ## Limits
 
-- cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns
+- seed sets the Lanczos start vector and the k-means initialization; the same seed can still yield a different partition because k-means centroid sums use floating-point atomics
+- the native graph type indexes Int32 vertices only; Int64 and string vertex columns run through a per-call codebook that fails when the distinct vertex count exceeds Int32::MAX
+- edge_id columns are rejected when Int64 vertices are mapped to Int32 ids
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx).

@@ -74,9 +74,10 @@ pub(crate) fn sssp<V>(
 where
     V: CugraphElement + TryInto<usize> + Copy + Debug,
 {
+    // `cugraph_sssp` takes the source as `size_t`, so a negative vertex id cannot be addressed.
     let source = source.try_into().map_err(|_| {
         Error::new(ErrorKind::InvalidInput, "sssp")
-            .with_message("source vertex must be representable as a non-negative size_t")
+            .with_message(format!("SSSP source vertex {source:?} is negative; SSSP requires a non-negative vertex id"))
             .with_context("source", format!("{source:?}"))
     })?;
     let cutoff = params.cutoff.map(f64::from).unwrap_or(f64::MAX);

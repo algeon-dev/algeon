@@ -54,8 +54,8 @@ records its comparison scope and limits.
 WITH assignments AS (
     SELECT
         r.vertex,
-        r."partition" AS community,
-        COUNT(*) OVER (PARTITION BY r."partition") AS community_size
+        r.community,
+        COUNT(*) OVER (PARTITION BY r.community) AS community_size
     FROM cugraph_leiden(
         edges => (SELECT src, dst FROM mr_undirected),
         directed => false,

@@ -256,9 +256,9 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
         },
         GraphAlgorithm::EdgeBetweennessCentrality => {
             vec![
-                Field::new("source", ArrowDataType::Int64, false),
-                Field::new("destination", ArrowDataType::Int64, false),
-                Field::new("score", ArrowDataType::Float64, false),
+                Field::new("src", ArrowDataType::Int64, false),
+                Field::new("dst", ArrowDataType::Int64, false),
+                Field::new("value", ArrowDataType::Float64, false),
             ]
         },
         GraphAlgorithm::Bfs => vec![
@@ -269,7 +269,7 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
         GraphAlgorithm::Louvain => {
             vec![
                 Field::new("vertex", ArrowDataType::Int64, false),
-                Field::new("partition", ArrowDataType::Int64, false),
+                Field::new("community", ArrowDataType::Int64, false),
             ]
         },
         GraphAlgorithm::Hits => {
@@ -305,11 +305,14 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
             Field::new("vertex", ArrowDataType::Int64, false),
             Field::new("out_degree", ArrowDataType::Int64, false),
         ],
-        // WCC and SCC both return a vertex-label assignment. Labels are
-        // component identifiers and are not semantically ordered; parity
-        // tests use partition-equivalence comparison.
+        // WCC and SCC both return a vertex-component assignment. Component
+        // ids are not semantically ordered; parity tests use
+        // partition-equivalence comparison.
         GraphAlgorithm::WeaklyConnectedComponents | GraphAlgorithm::StronglyConnectedComponents => {
-            vec![Field::new("vertex", ArrowDataType::Int64, false), Field::new("label", ArrowDataType::Int64, false)]
+            vec![
+                Field::new("vertex", ArrowDataType::Int64, false),
+                Field::new("component", ArrowDataType::Int64, false),
+            ]
         },
         GraphAlgorithm::TriangleCountAll => vec![
             Field::new("vertex", ArrowDataType::Int64, false),
@@ -325,12 +328,12 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
             vec![Field::new("src", ArrowDataType::Int64, false), Field::new("dst", ArrowDataType::Int64, false)]
         },
         // Leiden, ECG, and spectral modularity maximization return a
-        // vertex-partition assignment. Labels are
-        // partition identifiers; parity tests use partition-equivalence.
+        // vertex-community assignment. Community ids are arbitrary
+        // identifiers; parity tests use partition-equivalence.
         GraphAlgorithm::Leiden | GraphAlgorithm::Ecg | GraphAlgorithm::SpectralModularityMaximization => {
             vec![
                 Field::new("vertex", ArrowDataType::Int64, false),
-                Field::new("partition", ArrowDataType::Int64, false),
+                Field::new("community", ArrowDataType::Int64, false),
             ]
         },
         GraphAlgorithm::ForceAtlas2 => vec![

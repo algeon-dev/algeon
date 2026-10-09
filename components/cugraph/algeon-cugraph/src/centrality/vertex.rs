@@ -4,12 +4,12 @@ use std::ptr;
 
 use cugraph_sys::{
     cugraph_centrality_result_t, cugraph_eigenvector_centrality_allow_nonconvergence, cugraph_error_t,
-    cugraph_katz_centrality,
+    cugraph_katz_centrality_allow_nonconvergence,
 };
 
-use super::CentralityResult;
+use super::{CentralityResult, non_convergence_error};
 use crate::{
-    error::{Error, ErrorKind, Result, check_error, require_non_null},
+    error::{Result, check_error, require_non_null},
     graph::{Graph, Transposed},
     handle::EnteredContext,
     params::{IterationCount, NonNegativeF64},
@@ -95,15 +95,13 @@ pub(crate) fn eigenvector_centrality(
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
     let result = unsafe { CentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease())? };
     if !result.converged()? {
-        return Err(Error::new(ErrorKind::NonConvergence, "eigenvector_centrality")
-            .with_message(format!(
-                "eigenvector centrality did not converge within {} iterations",
-                result.num_iterations()
-            ))
-            .with_context("algorithm", "eigenvector_centrality")
-            .with_context("iterations", result.num_iterations().to_string())
-            .with_context("max_iterations", usize::from(params.max_iterations).to_string())
-            .with_context("epsilon", params.epsilon.get().to_string()));
+        return Err(non_convergence_error(
+            "eigenvector_centrality",
+            result.num_iterations(),
+            params.max_iterations,
+            params.epsilon,
+            "raise max_iterations or epsilon".to_string(),
+        ));
     }
     Ok(result)
 }
@@ -121,7 +119,7 @@ pub(crate) fn katz_centrality(
     // the optional beta vector pointer is null. `result`/`error` are valid
     // out-pointers.
     unsafe {
-        let code = cugraph_katz_centrality(
+        let code = cugraph_katz_centrality_allow_nonconvergence(
             handle.handle_ptr(),
             graph_ptr,
             ptr::null(),
@@ -138,5 +136,22 @@ pub(crate) fn katz_centrality(
 
     let result = require_non_null(result, "katz_centrality", "centrality_result")?;
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { CentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
+    let result = unsafe { CentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease())? };
+    if !result.converged()? {
+        // The Katz series converges only for alpha below 1/lambda_max, the reciprocal of the
+        // adjacency matrix's largest eigenvalue; above it the iteration diverges at any
+        // max_iterations.
+        return Err(non_convergence_error(
+            "katz_centrality",
+            result.num_iterations(),
+            params.max_iterations,
+            params.epsilon,
+            format!(
+                "lower alpha (currently {}) below 1/lambda_max, the reciprocal of the largest eigenvalue of the \
+                 adjacency matrix, or raise max_iterations",
+                params.alpha.get()
+            ),
+        ));
+    }
+    Ok(result)
 }

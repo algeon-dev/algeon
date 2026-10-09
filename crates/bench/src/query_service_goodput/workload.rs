@@ -169,10 +169,10 @@ fn graph_sql(name: &str, seed: i64) -> Option<String> {
             "SELECT COUNT(*) AS n, SUM(distance) AS total FROM cugraph_sssp(edges => (SELECT src, dst, weight FROM {GRAPH_EDGE_TABLE}), \
              source_vertex => {seed})"
         ),
-        // Labels are canonical minimum-vertex ids, so their sum is a stable
+        // Component ids are canonical minimum-vertex ids, so their sum is a stable
         // fingerprint of both the partition and its canonical assignment.
         "wcc" => format!(
-            "SELECT COUNT(*) AS n, SUM(label) AS total FROM \
+            "SELECT COUNT(*) AS n, SUM(component) AS total FROM \
              cugraph_weakly_connected_components(edges => (SELECT src, dst FROM {GRAPH_EDGE_TABLE}))"
         ),
         "triangles" => format!(

@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use datafusion::sql::sqlparser::ast::{
-    Expr as SqlExpr, FunctionArg, FunctionArgExpr, FunctionArgOperator, Ident, Query as SqlQuery, TableFunctionArgs,
+use datafusion::{
+    common::utils::datafusion_strsim::levenshtein,
+    sql::sqlparser::ast::{
+        Expr as SqlExpr, FunctionArg, FunctionArgExpr, FunctionArgOperator, Ident, Query as SqlQuery, TableFunctionArgs,
+    },
 };
 
 use crate::error::{Error, ErrorCode, Result};
@@ -90,7 +93,7 @@ pub(crate) fn bind_named_arguments(
             return Err(binding_error(
                 function_name,
                 "unknown_argument",
-                format!("unknown argument '{normalized}' for {function_name}"),
+                unknown_name_message("argument", &normalized, function_name, definitions.iter().map(|d| d.name)),
             ));
         };
         if !seen.insert(definition.name) {
@@ -130,6 +133,50 @@ pub(crate) fn bind_named_arguments(
         ));
     }
     Ok(BoundNamedArguments { values })
+}
+
+/// Message for a name that the function does not declare: the closest declared
+/// name when one is near enough, then every declared name.
+pub(crate) fn unknown_name_message<'a>(
+    kind: &str,
+    supplied: &str,
+    function_name: &str,
+    declared: impl IntoIterator<Item = &'a str> + Clone,
+) -> String {
+    let mut message = format!("unknown {kind} '{supplied}' for {function_name}.");
+    if let Some(closest) = closest_name(supplied, declared.clone()) {
+        message.push_str(&format!(" Did you mean '{closest}'?"));
+    }
+    message.push_str(&format!(" Valid {kind}s: {}.", declared.into_iter().collect::<Vec<_>>().join(", ")));
+    message
+}
+
+/// The declared name nearest to `supplied`, or `None` when none is near.
+///
+/// A name is near when it is within half its length in edits, the threshold
+/// DataFusion applies to its "Did you mean" column hints. The comparison runs
+/// against the whole declared name and against each leading run of its
+/// `_`-separated words, so `source` and `sources` both reach `source_vertex`.
+/// Ties go to the shorter name.
+fn closest_name<'a>(supplied: &str, declared: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let supplied = supplied.to_lowercase();
+    declared
+        .into_iter()
+        .filter_map(|name| {
+            let lowered = name.to_lowercase();
+            let prefix_ends = lowered.match_indices('_').map(|(index, _)| index).chain([lowered.len()]);
+            let distance = prefix_ends
+                .filter_map(|end| {
+                    let prefix = &lowered[..end];
+                    let distance = levenshtein(&supplied, prefix);
+                    let longest = supplied.chars().count().max(prefix.chars().count());
+                    (distance * 2 <= longest).then_some(distance)
+                })
+                .min()?;
+            Some((distance, name.len(), name))
+        })
+        .min()
+        .map(|(_, _, name)| name)
 }
 
 fn binding_error(function_name: &str, reason: &'static str, message: impl Into<String>) -> Error {

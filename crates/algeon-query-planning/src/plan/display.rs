@@ -611,24 +611,16 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             format!("k={}:degree_type={}", params.k, params.degree_type.as_str())
         },
         super::GraphAlgorithmParams::MinimumSpanningTree(_) => String::new(),
-        super::GraphAlgorithmParams::Leiden(params) => format!(
-            "max_level={}:resolution={}:theta={}:seed={}",
-            params.max_level, params.resolution, params.theta, params.seed,
-        ),
+        super::GraphAlgorithmParams::Leiden(params) => {
+            format!("max_level={}:resolution={}:seed={}", params.max_level, params.resolution, params.seed)
+        },
         super::GraphAlgorithmParams::Ecg(params) => format!(
             "min_weight={}:ensemble_size={}:max_level={}:threshold={}:resolution={}:seed={}",
             params.min_weight, params.ensemble_size, params.max_level, params.threshold, params.resolution, params.seed,
         ),
         super::GraphAlgorithmParams::SpectralModularityMaximization(params) => format!(
-            "n_clusters={}:n_eigenvectors={}:evs_tolerance={}:evs_max_iterations={}:\
-             k_means_tolerance={}:k_means_max_iterations={}:seed={}",
-            params.n_clusters,
-            params.n_eigenvectors,
-            params.evs_tolerance,
-            params.evs_max_iterations,
-            params.k_means_tolerance,
-            params.k_means_max_iterations,
-            params.seed,
+            "n_clusters={}:n_eigenvectors={}:evs_tolerance={}:seed={}",
+            params.n_clusters, params.n_eigenvectors, params.evs_tolerance, params.seed,
         ),
         super::GraphAlgorithmParams::ForceAtlas2(params) => format!(
             "max_iter={}:outbound_attraction_distribution={}:lin_log_mode={}:prevent_overlapping={}:\

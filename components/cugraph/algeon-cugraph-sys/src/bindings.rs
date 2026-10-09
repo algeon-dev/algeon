@@ -702,6 +702,21 @@ unsafe extern "C" {
     ) -> cugraph_error_code_t;
 }
 unsafe extern "C" {
+    #[doc = " @brief     Compute katz centrality, reporting non-convergence in the result\n\n Takes the arguments of cugraph_katz_centrality. Instead of failing when the iteration does not\n converge within @p max_iterations, it returns a result whose\n cugraph_centrality_result_converged is false and whose values are the last iteration without\n normalization; a diverging iteration (an @p alpha above the inverse of the largest adjacency\n eigenvalue) can leave them non-finite."]
+    pub fn cugraph_katz_centrality_allow_nonconvergence(
+        handle: *const cugraph_resource_handle_t,
+        graph: *mut cugraph_graph_t,
+        betas: *const cugraph_type_erased_device_array_view_t,
+        alpha: f64,
+        beta: f64,
+        epsilon: f64,
+        max_iterations: usize,
+        do_expensive_check: bool_t,
+        result: *mut *mut cugraph_centrality_result_t,
+        error: *mut *mut cugraph_error_t,
+    ) -> cugraph_error_code_t;
+}
+unsafe extern "C" {
     #[doc = " @brief     Compute betweenness centrality\n\n Betweenness can be computed exactly by specifying vertex_list as NULL.  This will compute\n betweenness centrality by doing a traversal from every source vertex.\n\n Approximate betweenness can be computed specifying a list of vertices that should be\n used as seeds for the traversals.  Note that the function cugraph_select_random_vertices can be\n used to create a list of seeds.\n\n @param [in]  handle             Handle for accessing resources\n @param [in]  graph              Pointer to graph\n @param [in]  vertex_list        Optionally specify a device array containing a list of vertices\n                                 to use as seeds for betweenness centrality approximation\n @param [in]  normalized         Normalize\n @param [in]  include_endpoints  The traditional formulation of betweenness centrality does not\n                                 include endpoints when considering a vertex to be on a shortest\n                                 path.  Setting this to true will consider the endpoints of a\n                                 path to be part of the path.\n @param [in]  do_expensive_check A flag to run expensive checks for input arguments (if set to\n `true`).\n @param [out] result             Opaque pointer to betweenness centrality results\n @param [out] error              Pointer to an error object storing details of any error.  Will\n                                 be populated if error code is not CUGRAPH_SUCCESS\n @return error code"]
     pub fn cugraph_betweenness_centrality(
         handle: *const cugraph_resource_handle_t,
@@ -807,12 +822,31 @@ unsafe extern "C" {
     pub fn cugraph_hits_result_get_number_of_iterations(result: *mut cugraph_hits_result_t) -> usize;
 }
 unsafe extern "C" {
+    #[doc = " @ingroup centrality\n @brief     Returns true if hits converged\n\n @param [in]   result   The result from hits\n @return True if hits converged within its maximum iterations, false otherwise"]
+    pub fn cugraph_hits_result_converged(result: *mut cugraph_hits_result_t) -> bool_t;
+}
+unsafe extern "C" {
     #[doc = " @ingroup centrality\n @brief     Free hits result\n\n @param [in]   result   The result from hits"]
     pub fn cugraph_hits_result_free(result: *mut cugraph_hits_result_t);
 }
 unsafe extern "C" {
     #[doc = " @brief     Compute hits\n\n @param [in]  handle      Handle for accessing resources\n @param [in]  graph       Pointer to graph\n @param [in]  epsilon     Error tolerance to check convergence. Convergence is assumed\n                          if the sum of the differences in Hits values between two\n                          consecutive iterations is less than the number of vertices\n                          in the graph multiplied by @p epsilon.\n @param [in]  max_iterations\n                          Maximum number of Hits iterations.\n @param [in]  initial_hubs_guess_vertices\n                          Pointer to optional type erased device array containing\n                          the vertex ids for an initial hubs guess.  If set to NULL\n                          there is no initial guess.\n @param [in]  initial_hubs_guess_values\n                          Pointer to optional type erased device array containing\n                          the values for an initial hubs guess.  If set to NULL\n                          there is no initial guess.  Note that both\n                          @p initial_hubs_guess_vertices and @p initial_hubs_guess_values\n                          have to be specified (or they both have to be NULL).  Otherwise\n                          this will be treated as an error.\n @param [in]  normalize   A flag to normalize the results (if set to `true`)\n @param [in]  do_expensive_check A flag to run expensive checks for input arguments (if set to\n `true`).\n @param [out] result      Opaque pointer to hits results\n @param [out] error       Pointer to an error object storing details of any error.  Will\n                          be populated if error code is not CUGRAPH_SUCCESS\n @return error code"]
     pub fn cugraph_hits(
+        handle: *const cugraph_resource_handle_t,
+        graph: *mut cugraph_graph_t,
+        epsilon: f64,
+        max_iterations: usize,
+        initial_hubs_guess_vertices: *const cugraph_type_erased_device_array_view_t,
+        initial_hubs_guess_values: *const cugraph_type_erased_device_array_view_t,
+        normalize: bool_t,
+        do_expensive_check: bool_t,
+        result: *mut *mut cugraph_hits_result_t,
+        error: *mut *mut cugraph_error_t,
+    ) -> cugraph_error_code_t;
+}
+unsafe extern "C" {
+    #[doc = " @brief     Compute hits, reporting non-convergence in the result\n\n Takes the arguments of cugraph_hits. Instead of failing when the iteration does not converge\n within @p max_iterations, it returns a result whose cugraph_hits_result_converged is false and\n whose scores are those of the last iteration."]
+    pub fn cugraph_hits_allow_nonconvergence(
         handle: *const cugraph_resource_handle_t,
         graph: *mut cugraph_graph_t,
         epsilon: f64,

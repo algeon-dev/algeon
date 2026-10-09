@@ -1,5 +1,6 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
+import MerRecScaleWorlds from './merrec_scale_worlds.mdx';
 import MerRecCollections from './merrec_collections.mdx';
 
 <Tabs queryString="dataset">
@@ -33,9 +34,9 @@ JOIN ai_nodes a ON a.paper_id = e.src
 JOIN ai_nodes b ON b.paper_id = e.dst;
 
 WITH lv AS (
-  SELECT vertex, "partition" AS louvain_c FROM cugraph_louvain(edges => (SELECT src, dst FROM ai_edges))),
+  SELECT vertex, community AS louvain_c FROM cugraph_louvain(edges => (SELECT src, dst FROM ai_edges))),
 ld AS (
-  SELECT vertex, "partition" AS leiden_c FROM cugraph_leiden(edges => (SELECT src, dst FROM ai_edges))),
+  SELECT vertex, community AS leiden_c FROM cugraph_leiden(edges => (SELECT src, dst FROM ai_edges))),
 joint AS (
   SELECT lv.louvain_c, ld.leiden_c, COUNT(*) AS n
   FROM lv JOIN ld ON ld.vertex = lv.vertex
@@ -67,6 +68,11 @@ from separate executions.
 </TabItem>
 
 <TabItem value="merrec" label="MerRec marketplace">
+
+<MerRecScaleWorlds />
+
+</TabItem>
+<TabItem value="merrec-shard" label="MerRec single shard">
 
 <MerRecCollections />
 

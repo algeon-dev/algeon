@@ -1,5 +1,5 @@
 use arrow::datatypes::DataType;
-use query_planning::plan::GraphAlgorithm as NativeGraphAlgorithm;
+use query_planning::plan::{GraphAlgorithm as NativeGraphAlgorithm, GraphVertexIdTypeSupport};
 
 use super::types::CugraphGraphOptions;
 
@@ -88,6 +88,16 @@ impl CugraphAlgorithm {
         self.definition().native_algorithm
     }
 
+    /// Vertex id type of the native graph this algorithm runs on. Vertex
+    /// domains the native graph cannot take are mapped to ids of this type by
+    /// the per-call codebook.
+    pub(crate) fn native_vertex_id_type(self) -> DataType {
+        match self.native_algorithm().vertex_id_type_support() {
+            GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => DataType::Int32,
+            GraphVertexIdTypeSupport::Int32OrInt64 => DataType::Int64,
+        }
+    }
+
     pub(crate) const fn is_similarity(self) -> bool {
         matches!(self, Self::Jaccard | Self::Sorensen | Self::Overlap | Self::Cosine)
     }
@@ -111,10 +121,6 @@ pub struct CugraphOperationDefinition {
     native_algorithm: NativeGraphAlgorithm,
     pub sql_function_name: &'static str,
 }
-
-/// Native vertex id type that the per-call codebook assigns to logical
-/// string vertices.
-pub(crate) const NATIVE_LOGICAL_ID_TYPE: DataType = DataType::Int64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CugraphLogicalOutputMultiplicity {
@@ -162,19 +168,6 @@ const EDGE_LOGICAL_OUTPUTS: &[CugraphLogicalOutputColumn] = &[
     },
 ];
 
-const EDGE_BETWEENNESS_LOGICAL_OUTPUTS: &[CugraphLogicalOutputColumn] = &[
-    CugraphLogicalOutputColumn {
-        name: "source",
-        nullable: false,
-        multiplicity: CugraphLogicalOutputMultiplicity::EdgeEndpointOccurrences,
-    },
-    CugraphLogicalOutputColumn {
-        name: "destination",
-        nullable: false,
-        multiplicity: CugraphLogicalOutputMultiplicity::EdgeEndpointOccurrences,
-    },
-];
-
 const PAIR_LOGICAL_OUTPUTS: &[CugraphLogicalOutputColumn] = &[
     CugraphLogicalOutputColumn {
         name: "first",
@@ -189,12 +182,8 @@ const PAIR_LOGICAL_OUTPUTS: &[CugraphLogicalOutputColumn] = &[
 ];
 
 impl CugraphOperationDefinition {
-    /// Whether this SQL function supports logical string vertex IDs through
-    /// the shared per-call codebook.
-    pub const fn supports_logical_string_vertices(&self) -> bool {
-        self.logical_string_output_columns().is_some()
-    }
-
+    /// Result columns that carry vertex ids and are decoded back to the input
+    /// vertex type when the per-call codebook mapped the call.
     pub(crate) const fn vertex_output_columns(&self) -> &'static [CugraphLogicalOutputColumn] {
         match self.algorithm {
             CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp => BFS_LOGICAL_OUTPUTS,
@@ -216,25 +205,14 @@ impl CugraphOperationDefinition {
             | CugraphAlgorithm::Ecg
             | CugraphAlgorithm::SpectralModularityMaximization
             | CugraphAlgorithm::ForceAtlas2 => ONE_VERTEX_LOGICAL_OUTPUT,
-            CugraphAlgorithm::KCore | CugraphAlgorithm::MinimumSpanningTree => EDGE_LOGICAL_OUTPUTS,
-            CugraphAlgorithm::EdgeBetweennessCentrality => EDGE_BETWEENNESS_LOGICAL_OUTPUTS,
+            CugraphAlgorithm::KCore
+            | CugraphAlgorithm::MinimumSpanningTree
+            | CugraphAlgorithm::EdgeBetweennessCentrality => EDGE_LOGICAL_OUTPUTS,
             CugraphAlgorithm::Jaccard
             | CugraphAlgorithm::Sorensen
             | CugraphAlgorithm::Overlap
             | CugraphAlgorithm::Cosine => PAIR_LOGICAL_OUTPUTS,
         }
-    }
-
-    /// Output columns decoded back to logical strings, or `None` when the
-    /// algorithm does not opt in to logical string vertex mapping.
-    pub(crate) const fn logical_string_output_columns(&self) -> Option<&'static [CugraphLogicalOutputColumn]> {
-        if matches!(
-            self.algorithm,
-            CugraphAlgorithm::MinimumSpanningTree | CugraphAlgorithm::SpectralModularityMaximization
-        ) {
-            return None;
-        }
-        Some(self.vertex_output_columns())
     }
 }
 

@@ -752,6 +752,26 @@ fn execute_rank_window(
     Ok(output)
 }
 
+/// Rejects inputs with more rows than the signed `row_number` output type can number.
+fn ensure_row_number_capacity(output_type: &ArrowDataType, rows: usize) -> Result<()> {
+    let max_rows = match output_type {
+        ArrowDataType::Int32 => usize::try_from(i32::MAX).unwrap_or(usize::MAX),
+        ArrowDataType::Int64 => usize::try_from(i64::MAX).unwrap_or(usize::MAX),
+        _ => usize::MAX,
+    };
+    if rows > max_rows {
+        return Err(QueryError::new(
+            QueryErrorCode::SizeOverflow,
+            "query_engine.window.row_number.output",
+            "row_number output type cannot represent the input row count",
+        )
+        .with_fact("output_type", format!("{output_type:?}"))
+        .with_fact("input_rows", rows)
+        .with_fact("max_rows", max_rows));
+    }
+    Ok(())
+}
+
 fn execute_row_number_window(
     context: &ExecutionContext,
     node: &WindowNode,
@@ -764,21 +784,11 @@ fn execute_row_number_window(
     let overrides = exec_runtime.exec();
     let timer = Instant::now();
     if node.spec.partition_by.is_empty() {
+        ensure_row_number_capacity(output_type, frame.num_rows())?;
         let output = match output_type {
             ArrowDataType::UInt64 => frame.on(overrides).with_sequence_column(alias, 1_u64, 1_u64),
-            ArrowDataType::Int64 => {
-                let max_rows = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
-                if frame.num_rows() > max_rows {
-                    return Err(QueryError::new(
-                        QueryErrorCode::SizeOverflow,
-                        "query_engine.window.row_number.output",
-                        "row_number Int64 output cannot represent the input row count",
-                    )
-                    .with_fact("input_rows", frame.num_rows())
-                    .with_fact("max_rows", max_rows));
-                }
-                frame.on(overrides).with_sequence_column(alias, 1_i64, 1_i64)
-            },
+            ArrowDataType::Int64 => frame.on(overrides).with_sequence_column(alias, 1_i64, 1_i64),
+            ArrowDataType::Int32 => frame.on(overrides).with_sequence_column(alias, 1_i32, 1_i32),
             _ => unreachable!("row_number output type validated before execution"),
         }
         .map_err(|error| {
@@ -805,24 +815,19 @@ fn execute_row_number_window(
         cudf_query_error("query_engine.window.row_number.columns", "failed to append row_number work column", error)
     })?;
 
+    ensure_row_number_capacity(output_type, output.num_rows())?;
     let row_number_expr = match output_type {
         ArrowDataType::UInt64 => {
             let uint64 = cudf::DataType::new(cudf::TypeId::UInt64);
             (col(partition_rank_name.as_str()).cast(uint64) + lit(1u64)).alias(alias)
         },
         ArrowDataType::Int64 => {
-            let max_rows = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
-            if output.num_rows() > max_rows {
-                return Err(QueryError::new(
-                    QueryErrorCode::SizeOverflow,
-                    "query_engine.window.row_number.output",
-                    "row_number Int64 output cannot represent the input row count",
-                )
-                .with_fact("input_rows", output.num_rows())
-                .with_fact("max_rows", max_rows));
-            }
             let int64 = cudf::DataType::new(cudf::TypeId::Int64);
             (col(partition_rank_name.as_str()).cast(int64) + lit(1i64)).alias(alias)
+        },
+        ArrowDataType::Int32 => {
+            let int32 = cudf::DataType::new(cudf::TypeId::Int32);
+            (col(partition_rank_name.as_str()).cast(int32) + lit(1i32)).alias(alias)
         },
         _ => unreachable!("row_number output type validated before execution"),
     };
@@ -1200,4 +1205,24 @@ pub(super) fn execute_limit_spec_on_frame(
 pub(super) fn limit_keeps_all_rows(row_count: usize, spec: LimitSpec) -> Result<bool> {
     let (offset, length) = limit_slice(row_count, spec)?;
     Ok(offset == 0 && length == row_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The legacy cuGraph algorithms number their vertex codebook as Int32, so
+    /// a window input with more rows than Int32 holds must fail with a typed
+    /// size error instead of wrapping to negative ids.
+    #[test]
+    fn row_number_capacity_follows_the_signed_output_type() {
+        let int32_limit = usize::try_from(i32::MAX).unwrap();
+        assert!(ensure_row_number_capacity(&ArrowDataType::Int32, int32_limit).is_ok());
+        let error = ensure_row_number_capacity(&ArrowDataType::Int32, int32_limit + 1).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::SizeOverflow);
+        assert_eq!(error.fact_value("max_rows"), Some(i32::MAX.to_string().as_str()));
+
+        assert!(ensure_row_number_capacity(&ArrowDataType::Int64, int32_limit + 1).is_ok());
+        assert!(ensure_row_number_capacity(&ArrowDataType::UInt64, usize::MAX).is_ok());
+    }
 }

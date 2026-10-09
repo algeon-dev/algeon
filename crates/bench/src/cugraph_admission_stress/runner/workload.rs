@@ -77,7 +77,7 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
         ),
         spec(
             "louvain",
-            "SELECT COUNT(DISTINCT partition) AS communities FROM cugraph_louvain(\
+            "SELECT COUNT(DISTINCT community) AS communities FROM cugraph_louvain(\
              edges => (SELECT src, dst FROM citation_edges), directed => false)"
                 .to_string(),
             false,

@@ -44,6 +44,11 @@ use cugraph::{
     types::GraphProperties,
 };
 
+// Planted-partition graph seeds and resolutions on which libcugraph's Leiden returned two
+// disconnected communities each, and a modularity off by 0.003 to 0.009, before the flat
+// partition was split into connected components and its modularity recomputed.
+const LEIDEN_CONNECTIVITY_CASES: &[(u64, f64)] = &[(2, 1.0), (8, 1.0), (14, 3.0)];
+
 fn test_handle() -> ResourceHandle {
     let runtime = std::sync::Arc::new(explicit_runtime());
     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle")
@@ -1133,6 +1138,142 @@ fn leiden_returns_vertex_partitions_and_finite_modularity() {
     assert!(result.modularity().is_finite());
 }
 
+/// Seeded planted-partition graph: communities of uneven size with sparse internal edges, and
+/// random bridging edges across communities. Weights mimic a similarity graph. Returns each
+/// undirected edge once with `src < dst`.
+fn planted_partition_graph(seed: u64, vertex_count: i32) -> Vec<(i32, i32, f32)> {
+    let mut state = seed;
+    let mut next = move || {
+        // xorshift64*
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    };
+    let mut community_starts = vec![0i32];
+    while *community_starts.last().unwrap() < vertex_count {
+        let size = 8 + (next() % 120) as i32;
+        community_starts.push((community_starts.last().unwrap() + size).min(vertex_count));
+    }
+    let mut edges = std::collections::BTreeMap::new();
+    let mut add = |a: i32, b: i32, weight: f32| {
+        if a != b {
+            edges.entry((a.min(b), a.max(b))).or_insert(weight);
+        }
+    };
+    for window in community_starts.windows(2) {
+        let (first, last) = (window[0], window[1]);
+        let size = (last - first) as u64;
+        for _ in 0..size * 3 {
+            let a = first + (next() % size) as i32;
+            let b = first + (next() % size) as i32;
+            add(a, b, 0.05 + (next() % 1000) as f32 / 1000.0);
+        }
+    }
+    for _ in 0..vertex_count as u64 {
+        let a = (next() % vertex_count as u64) as i32;
+        let b = (next() % vertex_count as u64) as i32;
+        add(a, b, 0.02 + (next() % 200) as f32 / 1000.0);
+    }
+    edges.into_iter().map(|((a, b), weight)| (a, b, weight)).collect()
+}
+
+/// Modularity of a partition of an undirected weighted graph given once per edge, in the form
+/// libcugraph uses: the intra-community weight fraction minus `resolution` times the sum of
+/// squared community degree fractions.
+fn partition_modularity(edges: &[(i32, i32, f32)], vertices: &[i32], clusters: &[i32], resolution: f64) -> f64 {
+    let cluster_of: HashMap<i32, i32> = vertices.iter().copied().zip(clusters.iter().copied()).collect();
+    let mut total_weight = 0.0;
+    let mut intra_weight = 0.0;
+    let mut cluster_degree: HashMap<i32, f64> = HashMap::new();
+    for &(a, b, weight) in edges {
+        let weight = f64::from(weight);
+        total_weight += weight;
+        if cluster_of[&a] == cluster_of[&b] {
+            intra_weight += weight;
+        }
+        *cluster_degree.entry(cluster_of[&a]).or_default() += weight;
+        *cluster_degree.entry(cluster_of[&b]).or_default() += weight;
+    }
+    let squared_degree_fractions =
+        cluster_degree.values().map(|degree| (degree / (2.0 * total_weight)).powi(2)).sum::<f64>();
+    intra_weight / total_weight - resolution * squared_degree_fractions
+}
+
+/// Number of communities whose members induce a disconnected subgraph.
+fn disconnected_community_count(edges: &[(i32, i32, f32)], vertices: &[i32], clusters: &[i32]) -> usize {
+    let cluster_of: HashMap<i32, i32> = vertices.iter().copied().zip(clusters.iter().copied()).collect();
+    let mut parent: HashMap<i32, i32> = vertices.iter().map(|&vertex| (vertex, vertex)).collect();
+    fn root(parent: &mut HashMap<i32, i32>, vertex: i32) -> i32 {
+        let mut current = vertex;
+        while parent[&current] != current {
+            let grandparent = parent[&parent[&current]];
+            parent.insert(current, grandparent);
+            current = grandparent;
+        }
+        current
+    }
+    for &(a, b, _) in edges {
+        if cluster_of[&a] == cluster_of[&b] {
+            let (root_a, root_b) = (root(&mut parent, a), root(&mut parent, b));
+            parent.insert(root_a, root_b);
+        }
+    }
+    let mut components_per_cluster: HashMap<i32, std::collections::HashSet<i32>> = HashMap::new();
+    for &vertex in vertices {
+        let component = root(&mut parent, vertex);
+        components_per_cluster.entry(cluster_of[&vertex]).or_default().insert(component);
+    }
+    components_per_cluster.values().filter(|components| components.len() > 1).count()
+}
+
+#[test]
+fn leiden_communities_induce_connected_subgraphs_and_report_their_modularity() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered =
+        handle.enter("leiden_communities_induce_connected_subgraphs_and_report_their_modularity").expect("entered");
+    for &(graph_seed, resolution) in LEIDEN_CONNECTIVITY_CASES {
+        let edges = planted_partition_graph(graph_seed, 30_000);
+        let (src, dst, weights): (Vec<i32>, Vec<i32>, Vec<f32>) = edges
+            .iter()
+            .flat_map(|&(a, b, weight)| [(a, b, weight), (b, a, weight)])
+            .fold((Vec::new(), Vec::new(), Vec::new()), |(mut src, mut dst, mut weights), (a, b, weight)| {
+                src.push(a);
+                dst.push(b);
+                weights.push(weight);
+                (src, dst, weights)
+            });
+        let src = DeviceArray::from_slice(&entered, &src).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst).expect("dst");
+        let weights = DeviceArray::from_slice(&entered, &weights).expect("weights");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let weights_view = weights.view().expect("weights_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
+            .weights(&weights_view)
+            .properties(GraphProperties::undirected())
+            .renumber()
+            .build::<Forward>(&entered)
+            .expect("graph");
+        let mut rng = RngState::new(&entered, 42).expect("rng");
+        let params = LeidenParams { resolution: PositiveF64::new(resolution).unwrap(), ..LeidenParams::default() };
+
+        let result = graph.leiden(&entered, &mut rng, &params).expect("leiden");
+
+        let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertices");
+        let clusters = result.clusters().expect("clusters").to_vec_i32(&entered).expect("clusters");
+        let case = format!("graph seed {graph_seed}, resolution {resolution}");
+        assert_eq!(disconnected_community_count(&edges, &vertices, &clusters), 0, "{case}");
+        let modularity = partition_modularity(&edges, &vertices, &clusters, resolution);
+        assert!(
+            (result.modularity() - modularity).abs() < 1e-4,
+            "{case}: reported {} for {modularity}",
+            result.modularity()
+        );
+    }
+}
+
 #[test]
 fn ecg_returns_vertex_partitions_and_finite_modularity() {
     let _guard = common::cudf::cuda_test_serial_guard();
@@ -1325,6 +1466,61 @@ fn k_core_with_and_without_precomputed_core_numbers_returns_triangle_edges() {
     let precomputed =
         graph.k_core_with_core_numbers(&entered, &params, &core_numbers).expect("k_core with core numbers");
     assert_eq!(precomputed.sources().expect("sources").len(), result.sources().expect("sources").len());
+}
+
+#[test]
+fn k_core_degree_type_selects_the_degree_that_defines_cores() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("k_core_degree_type_selects_the_degree_that_defines_cores").expect("entered");
+    // A triangle with pendant vertex 3. Core numbers require an undirected graph, where in- and
+    // out-degree coincide and in-out degree doubles them: only `InOut` lifts the pendant into
+    // the 2-core.
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2, 1, 2, 0, 2, 3]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0, 0, 1, 2, 3, 2]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let mut core_vertices = |degree_type| {
+        let params = KCoreParams { k: NonZeroUsize::new(2).expect("k"), degree_type, do_expensive_check: false };
+        let result = graph.k_core(&entered, &params).expect("k_core");
+        let mut vertices = result.sources().expect("sources").to_vec_i32(&entered).expect("sources");
+        vertices.extend(result.destinations().expect("destinations").to_vec_i32(&entered).expect("destinations"));
+        vertices.sort_unstable();
+        vertices.dedup();
+        vertices
+    };
+
+    assert_eq!(core_vertices(KCoreDegreeType::In), vec![0, 1, 2]);
+    assert_eq!(core_vertices(KCoreDegreeType::Out), vec![0, 1, 2]);
+    assert_eq!(core_vertices(KCoreDegreeType::InOut), vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn native_precondition_failure_is_invalid_input_with_the_bare_reason() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("native_precondition_failure_is_invalid_input_with_the_bare_reason").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+
+    // `CUGRAPH_EXPECTS` in libcugraph's core-number implementation rejects a directed graph.
+    let error = graph
+        .core_number(&entered, &CoreNumberParams { degree_type: KCoreDegreeType::InOut, do_expensive_check: false })
+        .expect_err("core numbers of a directed graph must be rejected");
+
+    assert_eq!(error.kind(), cugraph::ErrorKind::InvalidInput);
+    assert!(error.is_permanent());
+    // The reason crosses the C API without the source location and call stack of `what()`.
+    assert_eq!(error.message(), "Invalid input argument: core_number currently supports only undirected graphs.");
 }
 
 #[test]
@@ -1684,6 +1880,68 @@ fn eigenvector_nonconvergence_is_typed_and_permanent() {
 }
 
 #[test]
+fn katz_nonconvergence_is_typed_and_names_alpha() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("katz_nonconvergence_is_typed_and_names_alpha").expect("entered");
+    // Complete directed graph on four vertices: the largest adjacency eigenvalue is 3, so any
+    // alpha above 1/3 makes the Katz series diverge.
+    let (src, dst): (Vec<i32>, Vec<i32>) =
+        (0..4).flat_map(|from| (0..4).filter(move |&to| to != from).map(move |to| (from, to))).unzip();
+    let src = DeviceArray::from_slice(&entered, &src).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &dst).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
+    let params = KatzCentralityParams {
+        alpha: NonNegativeF64::new(0.9).unwrap(),
+        max_iterations: IterationCount::new(50).unwrap(),
+        ..KatzCentralityParams::default()
+    };
+
+    let error = graph.katz_centrality(&entered, &params).expect_err("a diverging Katz series must not converge");
+
+    assert_eq!(error.kind(), cugraph::ErrorKind::NonConvergence);
+    assert!(error.is_permanent());
+    assert_eq!(error.operation(), "katz_centrality");
+    assert_eq!(error.context_value("algorithm"), Some("katz_centrality"));
+    assert_eq!(error.context_value("iterations"), Some("50"));
+    assert_eq!(error.context_value("max_iterations"), Some("50"));
+    assert_eq!(error.context_value("epsilon"), Some("0.000001"));
+    let remedy = error.context_value("remedy").expect("Katz non-convergence names its remedy");
+    assert!(remedy.contains("alpha (currently 0.9)"), "{remedy}");
+    assert!(remedy.contains("max_iterations"), "{remedy}");
+}
+
+#[test]
+fn hits_nonconvergence_is_typed_and_names_its_remedy() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("hits_nonconvergence_is_typed_and_names_its_remedy").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 1, 2, 2, 2, 3, 4, 1, 3, 4, 0, 1, 3, 5, 5]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 3, 4, 0, 1, 3, 5, 5, 0, 1, 1, 2, 2, 2, 3, 4]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
+    let params = HitsParams {
+        epsilon: NonNegativeF64::new(1e-20).unwrap(),
+        max_iterations: IterationCount::new(1).unwrap(),
+        ..HitsParams::default()
+    };
+
+    let error = graph.hits(&entered, &params).expect_err("one HITS iteration must return typed nonconvergence");
+
+    assert_eq!(error.kind(), cugraph::ErrorKind::NonConvergence);
+    assert!(error.is_permanent());
+    assert_eq!(error.operation(), "hits");
+    assert_eq!(error.context_value("algorithm"), Some("hits"));
+    assert_eq!(error.context_value("iterations"), Some("1"));
+    assert_eq!(error.context_value("max_iterations"), Some("1"));
+    assert_eq!(error.context_value("epsilon"), Some("0.00000000000000000001"));
+    assert_eq!(error.context_value("remedy"), Some("raise max_iterations or epsilon"));
+}
+
+#[test]
 fn hits_returns_hub_authority_scores_and_metadata() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1803,38 +2061,108 @@ fn spectral_clustering_returns_partitions_and_analysis_scores() {
     let dst_view = dst.view().expect("dst_view");
     let weights_view = weights.view().expect("weights_view");
     let params = SpectralClusteringParams::default();
-    let n_clusters = params.n_clusters;
-    let mut last_error = None;
+    let n_clusters = NonZeroUsize::new(params.n_clusters.get()).expect("clusters");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+    let mut rng = RngState::new(&entered, 10).expect("rng");
 
-    for seed in 10..20 {
-        let mut graph = GraphBuilder::new(&src_view, &dst_view)
-            .weights(&weights_view)
-            .properties(GraphProperties::undirected())
-            .renumber()
-            .build::<Forward>(&entered)
-            .expect("graph");
-        let mut rng = RngState::new(&entered, seed).expect("rng");
-        match graph.spectral_modularity_maximization(&entered, &mut rng, &params) {
-            Ok(result) => {
-                assert_eq!(result.vertex_ids().expect("vertices").len(), 6);
-                assert_eq!(result.clusters().expect("clusters").len(), 6);
-                let vertices = result.vertex_ids().expect("vertices");
-                let clusters = result.clusters().expect("clusters");
-                let edge_cut = match (vertices, clusters) {
-                    (VertexIds::I32(vertices), VertexIds::I32(clusters)) => {
-                        graph.analyze_clustering_edge_cut(&entered, n_clusters, &vertices, &clusters).expect("edge cut")
-                    },
+    let result = graph.spectral_modularity_maximization(&entered, &mut rng, &params).expect("spectral clustering");
+
+    let vertices = result.vertex_ids().expect("vertices");
+    let clusters = result.clusters().expect("clusters");
+    assert_eq!(vertices.len(), 6);
+    assert_eq!(clusters.len(), 6);
+    let edge_cut = match (vertices, clusters) {
+        (VertexIds::I32(vertices), VertexIds::I32(clusters)) => {
+            graph.analyze_clustering_edge_cut(&entered, n_clusters, &vertices, &clusters).expect("edge cut")
+        },
+        _ => panic!("expected i32 spectral clustering output"),
+    };
+    assert!(edge_cut.is_finite());
+    assert!(edge_cut < 55.0, "edge cut should be bounded, got {edge_cut}");
+}
+
+/// Two `k`-cliques joined by one bridge edge have five distinct normalized-Laplacian eigenvalues,
+/// so the Lanczos Krylov space turns invariant after about five vectors while the solver asks for
+/// at least six once `k >= 4`. RAFT zeroed the basis at that breakdown and returned one community,
+/// a bridge-endpoint cluster, an uneven split, or an eigensolver failure.
+#[test]
+fn spectral_clustering_splits_bridged_cliques_exactly() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("spectral_clustering_splits_bridged_cliques_exactly").expect("entered");
+    let params = SpectralClusteringParams::default();
+    let mut failures = Vec::new();
+
+    for clique_size in [4i32, 8, 10, 15] {
+        let mut src_data = Vec::new();
+        let mut dst_data = Vec::new();
+        let mut add_edge = |a: i32, b: i32| {
+            src_data.extend([a, b]);
+            dst_data.extend([b, a]);
+        };
+        for first in [0, clique_size] {
+            for a in first..first + clique_size {
+                for b in a + 1..first + clique_size {
+                    add_edge(a, b);
+                }
+            }
+        }
+        add_edge(clique_size - 1, clique_size);
+        let weights_data = vec![1.0f32; src_data.len()];
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
+        let weights = DeviceArray::from_slice(&entered, &weights_data).expect("weights");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let weights_view = weights.view().expect("weights_view");
+
+        for seed in 0..8 {
+            let mut graph = GraphBuilder::new(&src_view, &dst_view)
+                .weights(&weights_view)
+                .properties(GraphProperties::undirected())
+                .renumber()
+                .build::<Forward>(&entered)
+                .expect("graph");
+            let mut rng = RngState::new(&entered, seed).expect("rng");
+            let result = match graph.spectral_modularity_maximization(&entered, &mut rng, &params) {
+                Ok(result) => result,
+                Err(error) => {
+                    let message = error.to_string();
+                    let first_line = message.lines().next().unwrap_or_default();
+                    failures.push(format!("k={clique_size} seed={seed}: {first_line}"));
+                    continue;
+                },
+            };
+            let (vertices, clusters) =
+                match (result.vertex_ids().expect("vertices"), result.clusters().expect("clusters")) {
+                    (VertexIds::I32(vertices), VertexIds::I32(clusters)) => (
+                        vertices.to_vec(&entered).expect("vertex copy"),
+                        clusters.to_vec(&entered).expect("cluster copy"),
+                    ),
                     _ => panic!("expected i32 spectral clustering output"),
                 };
-                assert!(edge_cut.is_finite());
-                assert!(edge_cut < 55.0, "edge cut should be bounded, got {edge_cut}");
-                return;
-            },
-            Err(err) => last_error = Some(err),
+            assert_eq!(vertices.len(), (2 * clique_size) as usize);
+            let mut clique_clusters = [Vec::new(), Vec::new()];
+            for (&vertex, &cluster) in vertices.iter().zip(&clusters) {
+                clique_clusters[usize::from(vertex >= clique_size)].push(cluster);
+            }
+            let [left, right] = clique_clusters.map(|mut ids| {
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            });
+            if !(left.len() == 1 && right.len() == 1 && left[0] != right[0]) {
+                failures.push(format!("k={clique_size} seed={seed}: clusters left={left:?} right={right:?}"));
+            }
         }
     }
 
-    panic!("spectral clustering did not converge in retry window: {last_error:?}");
+    assert!(failures.is_empty(), "expected one cluster per clique:\n{}", failures.join("\n"));
 }
 
 #[test]

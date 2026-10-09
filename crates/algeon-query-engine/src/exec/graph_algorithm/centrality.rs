@@ -14,7 +14,7 @@ use super::{
     QueryError, QueryErrorCode, Result, betweenness_centrality_params, cudf_query_error,
     edge_betweenness_centrality_params, eigenvector_centrality_params, hits_params, katz_centrality_params,
     map_cugraph_error, normalize_graph_result_schema, pagerank_params, personalized_pagerank_params, project_edge_list,
-    run_with_accounted_resident_cugraph_graph, run_with_cugraph_graph, table_graph_options,
+    rename_result_columns, run_with_accounted_resident_cugraph_graph, run_with_cugraph_graph, table_graph_options,
 };
 
 pub(super) fn execute_pagerank(
@@ -393,6 +393,11 @@ pub(super) fn execute_edge_betweenness_centrality(
                 "query_engine.graph_algorithm.edge_betweenness_centrality_result",
                 "failed to convert cuGraph edge betweenness centrality result to cudf DataFrame",
             ))?;
+            let frame = rename_result_columns(
+                frame,
+                &[("source", "src"), ("destination", "dst"), ("score", "value")],
+                "query_engine.graph_algorithm.edge_betweenness_centrality_result",
+            )?;
             let algorithm_metadata = betweenness_algorithm_metadata(seed_count, params.normalized);
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,

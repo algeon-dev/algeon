@@ -205,6 +205,7 @@ const ALGORITHMS = {
 
 const VERTEX_ID_CONTRACT_KEYS = [
   'numeric_endpoint_types',
+  'mapped_numeric_endpoint_types',
   'logical_string_endpoint_types',
   'logical_string_output_type',
   'native_logical_mapping_type',
@@ -236,7 +237,11 @@ function validateVertexIdContract(file, relationRole) {
   for (const key of VERTEX_ID_CONTRACT_KEYS) {
     if (!(key in contract)) throw new Error(`${file}: vertex_id_contract is missing required key ${key}`);
   }
-  stringArray(file, contract.numeric_endpoint_types, 'numeric_endpoint_types', { allowEmpty: false });
+  const numericEndpointTypes = stringArray(file, contract.numeric_endpoint_types, 'numeric_endpoint_types', { allowEmpty: false });
+  const mappedNumericTypes = stringArray(file, contract.mapped_numeric_endpoint_types, 'mapped_numeric_endpoint_types');
+  if (mappedNumericTypes.some(type => !numericEndpointTypes.includes(type))) {
+    throw new Error(`${file}: vertex_id_contract.mapped_numeric_endpoint_types must be a subset of numeric_endpoint_types`);
+  }
   const logicalEndpointTypes = stringArray(file, contract.logical_string_endpoint_types, 'logical_string_endpoint_types');
   const outputType = contract.logical_string_output_type;
   if (outputType !== null && typeof outputType !== 'string') {
@@ -422,7 +427,7 @@ function docsText(value) {
 const GRAPH_OPTION_NAMES = new Set(['directed', 'renumber', 'construction_policy']);
 const OPTION_DIRECT_KEYS = new Set(['type', 'default', 'description']);
 const OPTION_CONSTRAINT_KEYS = new Set([
-  'allowed_values', 'min', 'max', 'exclusive_min', 'required',
+  'allowed_values', 'min', 'max', 'exclusive_min', 'exclusive_max', 'required',
 ]);
 
 function schemaType(schema) {
@@ -455,6 +460,8 @@ function schemaConstraint(schema) {
   else if (Object.hasOwn(nonNull, 'maximum')) option.max = nonNull.maximum;
   if (Object.hasOwn(schema, 'exclusiveMinimum')) option.exclusive_min = schema.exclusiveMinimum;
   else if (Object.hasOwn(nonNull, 'exclusiveMinimum')) option.exclusive_min = nonNull.exclusiveMinimum;
+  if (Object.hasOwn(schema, 'exclusiveMaximum')) option.exclusive_max = schema.exclusiveMaximum;
+  else if (Object.hasOwn(nonNull, 'exclusiveMaximum')) option.exclusive_max = nonNull.exclusiveMaximum;
   return option;
 }
 
@@ -470,6 +477,7 @@ function optionConstraints(name, option) {
   if ('min' in option) parts.push(`min ${option.min}`);
   if ('max' in option) parts.push(`max ${option.max}`);
   if ('exclusive_min' in option) parts.push(`> ${option.exclusive_min}`);
+  if ('exclusive_max' in option) parts.push(`< ${option.exclusive_max}`);
   if (option.required_when) parts.push(`required when ${option.required_when}`);
   if (option.required_with) parts.push(`required with ${code(option.required_with)}`);
   if (option.mutually_exclusive_with) parts.push(`mutually exclusive with ${code(option.mutually_exclusive_with)}`);
@@ -520,9 +528,13 @@ function renderInputs(spec) {
   parts.push(
     `Every relation is a named parenthesized ${code('SELECT')} subquery. The required ${code('edges')} role uses canonical ${code('src')} and ${code('dst')} columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.`,
   );
+  const mappedNumericTypes = contract.mapped_numeric_endpoint_types;
+  const mappingNote = mappedNumericTypes.length > 0
+    ? ` The native graph indexes ${code(contract.native_logical_mapping_type)} vertices only, so ${renderTypeList(mappedNumericTypes)} vertex IDs are mapped to dense ${code(contract.native_logical_mapping_type)} ids by a per-call codebook and decoded back to the input type in the result; the distinct vertex count must fit in ${code(contract.native_logical_mapping_type)}.`
+    : '';
   const dtypes = supportsLogicalStrings
-    ? `Endpoint columns accept numeric ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs or logical string ${renderTypeList(logicalEndpointTypes)} vertex IDs; string vertex-identity outputs are canonicalized to ${code(contract.logical_string_output_type)} (native mapping ${code(contract.native_logical_mapping_type)}) while scores, distances, counts, coordinates, and opaque labels stay numeric.`
-    : `Endpoint columns accept ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs only; logical string endpoints are not supported${contract.numeric_endpoint_types.length === 1 && contract.numeric_endpoint_types[0] === 'Int32' ? ' (legacy Int32-only contract)' : ''}.`;
+    ? `Endpoint columns accept numeric ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs or logical string ${renderTypeList(logicalEndpointTypes)} vertex IDs; string vertex-identity outputs are canonicalized to ${code(contract.logical_string_output_type)} (native mapping ${code(contract.native_logical_mapping_type)}) while scores, distances, counts, coordinates, and opaque labels stay numeric.${mappingNote}`
+    : `Endpoint columns accept ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs only; logical string endpoints are not supported.`;
   parts.push('', `${dtypes} The shared vertex-ID contract is summarized in ${vertexIdLink}; the concrete call-specific schema comes from ${code(contract.call_specific_authority)}.`);
   if (supportsLogicalStrings) {
     const limitations = logicalStringSideInputLimitations(spec, contract);
@@ -732,16 +744,14 @@ function renderVertexIdSupport(specs) {
     const logicalEndpointTypes = contract.logical_string_endpoint_types;
     const supportsLogicalStrings = logicalEndpointTypes.length > 0;
     const sideInputLimitations = logicalStringSideInputLimitations(spec, contract);
-    const legacyInt32Only = contract.numeric_endpoint_types.length === 1
-      && contract.numeric_endpoint_types[0] === 'Int32'
-      && !supportsLogicalStrings;
     return [
       `[${cell(displayName(spec))}](./udtfs/${spec.family}/${spec.function_name}.mdx)`,
       renderTypeList(contract.numeric_endpoint_types),
+      contract.mapped_numeric_endpoint_types.length > 0 ? renderTypeList(contract.mapped_numeric_endpoint_types) : 'None',
       supportsLogicalStrings ? renderTypeList(logicalEndpointTypes) : 'Not supported',
       supportsLogicalStrings ? code(contract.logical_string_output_type) : 'None',
+      code(contract.native_logical_mapping_type),
       supportsLogicalStrings ? sideInputLimitations.map(prose).join('; ') || 'None declared' : 'Not applicable',
-      legacyInt32Only ? 'Yes' : 'No',
     ];
   });
   return [
@@ -749,11 +759,11 @@ function renderVertexIdSupport(specs) {
     '',
     '## Vertex ID support by UDTF',
     '',
-    'This matrix is generated from each UDTF descriptor’s structured `edges.vertex_id_contract`. It is the authoritative overview of numeric endpoint inputs, logical string endpoint inputs, canonical string output, side-input limitations, and legacy Int32-only dispatch.',
+    'This matrix is generated from each UDTF descriptor’s structured `edges.vertex_id_contract`. It is the authoritative overview of numeric endpoint inputs, the numeric types a per-call codebook maps to native ids, logical string endpoint inputs, canonical string output, the native vertex id type, and side-input limitations.',
     '',
-    'Logical string input means any `Utf8`, `LargeUtf8`, or `Utf8View` edge endpoint. The physical string types may be mixed within one graph call; vertex-identity outputs use the declared canonical string type. Numeric endpoint requirements remain UDTF-specific and are not widened by logical string support.',
+    'Logical string input means any `Utf8`, `LargeUtf8`, or `Utf8View` edge endpoint. The physical string types may be mixed within one graph call; vertex-identity outputs use the declared canonical string type. A per-call codebook maps string vertices, and numeric vertices the native graph cannot index, to dense native ids and decodes results back to the input vertex type.',
     '',
-    table(['UDTF', 'Numeric endpoint types', 'Logical string endpoint types', 'Canonical string output', 'Logical side-input limitation', 'Legacy Int32-only'], rows),
+    table(['UDTF', 'Numeric endpoint types', 'Numeric types mapped by codebook', 'Logical string endpoint types', 'Canonical string output', 'Native vertex id type', 'Logical side-input limitation'], rows),
     '',
     'Use `gpu_describe_function` for the full descriptor and `gpu_validate_call` for the concrete call-specific schema and side-input validation.',
   ].join('\n');

@@ -84,15 +84,17 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
             "Previous vertex on the shortest-path tree, null for the source or unreachable vertices."
         },
         (CugraphAlgorithm::Louvain, "vertex") => "Vertex assigned to a Louvain community.",
-        (CugraphAlgorithm::Louvain, "partition") => "Community identifier assigned by Louvain.",
+        (CugraphAlgorithm::Louvain, "community") => "Community identifier assigned by Louvain.",
         (CugraphAlgorithm::Leiden, "vertex") => "Vertex assigned to a Leiden community.",
-        (CugraphAlgorithm::Leiden, "partition") => "Community identifier assigned by Leiden.",
+        (CugraphAlgorithm::Leiden, "community") => {
+            "Community identifier assigned by Leiden; every community induces a connected subgraph."
+        },
         (CugraphAlgorithm::Ecg, "vertex") => "Vertex assigned to an ECG community.",
-        (CugraphAlgorithm::Ecg, "partition") => "Community identifier assigned by ECG.",
+        (CugraphAlgorithm::Ecg, "community") => "Community identifier assigned by ECG.",
         (CugraphAlgorithm::SpectralModularityMaximization, "vertex") => {
             "Vertex assigned to a spectral clustering partition."
         },
-        (CugraphAlgorithm::SpectralModularityMaximization, "partition") => {
+        (CugraphAlgorithm::SpectralModularityMaximization, "community") => {
             "Cluster identifier assigned by spectral modularity maximization."
         },
         (CugraphAlgorithm::ForceAtlas2, "vertex") => "Vertex receiving ForceAtlas2 layout coordinates.",
@@ -109,13 +111,13 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
         (CugraphAlgorithm::OutDegreesAll, "vertex") => "Vertex whose out-degree count is reported.",
         (CugraphAlgorithm::OutDegreesAll, "out_degree") => "Number of outgoing edges for the vertex.",
         (CugraphAlgorithm::WeaklyConnectedComponents, "vertex") => "Vertex assigned to a weakly connected component.",
-        (CugraphAlgorithm::WeaklyConnectedComponents, "label") => {
+        (CugraphAlgorithm::WeaklyConnectedComponents, "component") => {
             "Weakly connected component identifier for the vertex: the minimum vertex id in the component, stable across runs."
         },
         (CugraphAlgorithm::StronglyConnectedComponents, "vertex") => {
             "Vertex assigned to a strongly connected component."
         },
-        (CugraphAlgorithm::StronglyConnectedComponents, "label") => {
+        (CugraphAlgorithm::StronglyConnectedComponents, "component") => {
             "Strongly connected component identifier for the vertex: the minimum vertex id in the component, stable across runs."
         },
         (CugraphAlgorithm::TriangleCountAll, "vertex") => "Vertex whose triangle participation is reported.",
@@ -132,6 +134,9 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
         (CugraphAlgorithm::MinimumSpanningTree, "dst") => {
             "Destination vertex of an edge selected for the minimum spanning tree."
         },
+        (CugraphAlgorithm::EdgeBetweennessCentrality, "src") => "Source vertex of the scored edge.",
+        (CugraphAlgorithm::EdgeBetweennessCentrality, "dst") => "Destination vertex of the scored edge.",
+        (CugraphAlgorithm::EdgeBetweennessCentrality, "value") => "Edge betweenness centrality score for the edge.",
         (algorithm, "first") if is_similarity(algorithm) => "First vertex from the explicit candidate-pair relation.",
         (algorithm, "second") if is_similarity(algorithm) => "Second vertex from the explicit candidate-pair relation.",
         (algorithm, "similarity") if is_similarity(algorithm) => {
@@ -182,7 +187,10 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
         algorithm.native_algorithm().vertex_id_type_support(),
         GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType
     ) {
-        limitations.push("cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns");
+        limitations.extend([
+            "the native graph type indexes Int32 vertices only; Int64 and string vertex columns run through a per-call codebook that fails when the distinct vertex count exceeds Int32::MAX",
+            "edge_id columns are rejected when Int64 vertices are mapped to Int32 ids",
+        ]);
     }
     if algorithm.native_algorithm().definition().required_graph_directedness() == Some(false) {
         limitations.push("cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view");
@@ -244,13 +252,13 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
             "Select a minimum-total-weight acyclic edge set, producing a spanning tree for a connected graph or a spanning forest otherwise."
         },
         CugraphAlgorithm::Leiden => {
-            "Find modularity-based communities with refinement steps that improve the internal connectedness of the partitions."
+            "Find modularity-based communities with a refinement step, and split each community into the connected components of its internal edges, so every returned community induces a connected subgraph."
         },
         CugraphAlgorithm::Ecg => {
             "Stabilize community assignments by combining an ensemble of randomized Louvain partitions into a final consensus clustering."
         },
         CugraphAlgorithm::SpectralModularityMaximization => {
-            "Partition vertices by embedding the graph with leading modularity eigenvectors and clustering that embedding with k-means."
+            "Partition vertices by running k-means on an embedding of the normalized graph Laplacian eigenvectors with the smallest eigenvalues. Modularity is not optimized directly."
         },
         CugraphAlgorithm::ForceAtlas2 => {
             "Place vertices in two dimensions with a force-directed simulation that attracts connected vertices and repels vertices from one another."

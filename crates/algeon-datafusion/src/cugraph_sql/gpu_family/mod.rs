@@ -16,26 +16,28 @@ use datafusion::{
     execution::SessionState,
     logical_expr::{LogicalPlan, LogicalPlanBuilder},
 };
-use query_planning::plan::GraphVertexIdTypeSupport;
 use serde_json::{Value, json};
 
 use super::{
-    CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphBfsSource, CugraphBfsSourceVertex, CugraphLogicalNode,
-    CugraphRelationRole, CugraphSqlConfig,
+    CUGRAPH_EDGE_WEIGHT_COLUMN, CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphBfsSource, CugraphBfsSourceVertex,
+    CugraphLogicalNode, CugraphRelationRole, CugraphSqlConfig, CugraphVertexIdDomain,
     definitions::{
         CugraphAllowedValue, CugraphArgumentDefinition, CugraphArgumentKind, CugraphArgumentType,
         CugraphRelationColumnType, CugraphValueDefinition, CugraphValueRange, arguments_for_algorithm,
     },
-    registry::NATIVE_LOGICAL_ID_TYPE,
+    error::invalid_option,
+    options,
     relation_planner::relation_role,
 };
 use crate::{
-    error::DataFusionErrorExt,
+    error::{DataFusionErrorExt, Error},
     gpu_functions::{
         GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
         REQUIRED_FEATURE_DISABLED,
     },
 };
+
+const IGNORED_EDGE_WEIGHT_DESCRIPTION: &str = "edge weight, accepted and ignored by this algorithm";
 
 /// cuGraph's family adapter for the common GPU metadata catalog.
 #[derive(Debug, Clone, PartialEq)]
@@ -172,9 +174,13 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
             }
         }
         let mut values = request.options.as_object().cloned().unwrap_or_default();
-        let source = match take_source(algorithm, &mut values) {
+        let source = match options::require_declared_options(algorithm, &values)
+            .and_then(|()| take_source(algorithm, &mut values))
+        {
             Ok(source) => source,
-            Err(message) => return invalid_graph_call(algorithm, request, message, relation_details),
+            Err(error) => {
+                return invalid_graph_error(algorithm, request, &DataFusionError::from(error), relation_details);
+            },
         };
         match CugraphLogicalNode::try_new(algorithm, inputs, roles, values, source, &self.config) {
             Ok(node) => {
@@ -214,25 +220,38 @@ fn descriptor(
         },
         value => value,
     };
+    // The edges relation accepts a weight column for every algorithm, but the
+    // native weight policy decides whether execution passes it to cuGraph.
+    let ignores_weight = !algorithm.native_algorithm().consumes_weight();
     let relation_roles = arguments_for_algorithm(algorithm)
         .iter()
         .filter_map(|argument| {
             let CugraphArgumentKind::Relation { columns } = argument.kind else {
                 return None;
             };
+            let edges = argument.name == "edges";
+            let description = if edges && ignores_weight {
+                format!("{}; this algorithm ignores weight", argument.description)
+            } else {
+                argument.description.to_string()
+            };
             let mut role = json!({
                 "name": argument.name,
                 "required": argument.required,
-                "description": argument.description,
+                "description": description,
                 "fields": columns.iter().map(|column| json!({
                     "name": column.name,
                     "required": column.required,
                     "type": relation_column_type(column.column_type),
-                    "data_types": relation_column_data_types(algorithm, column.column_type),
-                    "description": column.description,
+                    "data_types": relation_column_data_types(column.column_type),
+                    "description": if edges && ignores_weight && column.name == CUGRAPH_EDGE_WEIGHT_COLUMN {
+                        IGNORED_EDGE_WEIGHT_DESCRIPTION
+                    } else {
+                        column.description
+                    },
                 })).collect::<Vec<_>>(),
             });
-            if argument.name == "edges" {
+            if edges {
                 role["vertex_id_contract"] = vertex_id_contract(algorithm);
             }
             Some(role)
@@ -278,47 +297,57 @@ async fn resolve_schema_input(session: &dyn Session, reference: TableReference) 
         .map_err(|error| error.to_string())
 }
 
+/// Extracts the source selector options. `values` has already been checked
+/// against the declared option names, so a present selector is declared.
 fn take_source(
     algorithm: CugraphAlgorithm,
     values: &mut serde_json::Map<String, Value>,
-) -> Result<Option<CugraphBfsSource>, String> {
+) -> Result<Option<CugraphBfsSource>, Error> {
     let scalar = values.remove("source_vertex");
     let array = values.remove("source_vertices");
     if scalar.is_some() && array.is_some() {
-        return Err("source_vertex and source_vertices are mutually exclusive".to_string());
+        return Err(invalid_argument("source_vertices", "source_vertex and source_vertices are mutually exclusive"));
     }
     let source = match scalar {
-        Some(value) => Some(CugraphBfsSource::Scalar(vertex_value(&value)?)),
+        Some(value) => Some(CugraphBfsSource::Scalar(vertex_value(&value, "source_vertex")?)),
         None => match array {
             Some(Value::Array(values)) if !values.is_empty() => {
-                if algorithm != CugraphAlgorithm::Bfs {
-                    return Err("source_vertices is supported only by cugraph_bfs".to_string());
-                }
-                let vertices = values.iter().map(vertex_value).collect::<Result<Vec<_>, _>>()?;
+                let vertices =
+                    values.iter().map(|value| vertex_value(value, "source_vertices")).collect::<Result<Vec<_>, _>>()?;
                 let string_domain = vertices[0].is_utf8();
                 if vertices.iter().any(|vertex| vertex.is_utf8() != string_domain) {
-                    return Err("source_vertices must not mix integer and string values".to_string());
+                    return Err(invalid_argument(
+                        "source_vertices",
+                        "source_vertices must not mix integer and string values",
+                    ));
                 }
                 Some(CugraphBfsSource::LiteralList(vertices))
             },
-            Some(_) => return Err("source_vertices must be a non-empty array".to_string()),
+            Some(_) => {
+                return Err(invalid_argument("source_vertices", "source_vertices must be a non-empty array"));
+            },
             None => None,
         },
     };
     if algorithm == CugraphAlgorithm::Sssp && source.is_none() {
-        return Err("cugraph_sssp requires source_vertex".to_string());
+        return Err(invalid_argument("source_vertex", "cugraph_sssp requires source_vertex"));
     }
     Ok(source)
 }
 
-fn vertex_value(value: &Value) -> Result<CugraphBfsSourceVertex, String> {
+fn vertex_value(value: &Value, argument: &'static str) -> Result<CugraphBfsSourceVertex, Error> {
     match value {
-        Value::Number(value) => {
-            value.as_i64().map(CugraphBfsSourceVertex::Int64).ok_or_else(|| "vertex value must fit Int64".to_string())
-        },
+        Value::Number(value) => value
+            .as_i64()
+            .map(CugraphBfsSourceVertex::Int64)
+            .ok_or_else(|| invalid_argument(argument, "vertex value must fit Int64")),
         Value::String(value) => Ok(CugraphBfsSourceVertex::Utf8(value.clone())),
-        _ => Err("vertex value must be an integer or string".to_string()),
+        _ => Err(invalid_argument(argument, "vertex value must be an integer or string")),
     }
+}
+
+fn invalid_argument(argument: &'static str, message: &str) -> Error {
+    invalid_option(message).with_log_safe_fact("argument", argument)
 }
 
 fn normalized_value_options(
@@ -620,6 +649,10 @@ fn value_schema(algorithm: CugraphAlgorithm, definition: CugraphValueDefinition,
                 schema["exclusiveMinimum"] = json!(min);
                 schema["maximum"] = json!(max);
             },
+            CugraphValueRange::ClosedOpenF64 { min, max } => {
+                schema["minimum"] = json!(min);
+                schema["exclusiveMaximum"] = json!(max);
+            },
             CugraphValueRange::MinInclusiveI64(value) => schema["minimum"] = json!(value),
             CugraphValueRange::MinInclusiveU64(value) => schema["minimum"] = json!(value),
             CugraphValueRange::ClosedU64 { min, max } => {
@@ -659,43 +692,40 @@ fn relation_column_type(column_type: CugraphRelationColumnType) -> &'static str 
     }
 }
 
+const NUMERIC_ENDPOINT_TYPES: [&str; 2] = ["Int32", "Int64"];
 const LOGICAL_STRING_ENDPOINT_TYPES: [&str; 3] = ["Utf8", "LargeUtf8", "Utf8View"];
 
-fn numeric_endpoint_types(algorithm: CugraphAlgorithm) -> &'static [&'static str] {
-    match algorithm.native_algorithm().vertex_id_type_support() {
-        GraphVertexIdTypeSupport::Int32OrInt64 => &["Int32", "Int64"],
-        GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => &["Int32"],
-    }
-}
-
-fn logical_string_endpoint_types(algorithm: CugraphAlgorithm) -> &'static [&'static str] {
-    if algorithm.definition().supports_logical_string_vertices() { &LOGICAL_STRING_ENDPOINT_TYPES } else { &[] }
+/// Numeric endpoint types the per-call codebook maps because the algorithm's
+/// native graph type cannot index them.
+fn mapped_numeric_endpoint_types(algorithm: CugraphAlgorithm) -> Vec<&'static str> {
+    [(CugraphVertexIdDomain::Int32, "Int32"), (CugraphVertexIdDomain::Int64, "Int64")]
+        .into_iter()
+        .filter(|(domain, _)| domain.requires_mapping(algorithm))
+        .map(|(_, label)| label)
+        .collect()
 }
 
 /// Arrow dtypes a relation column may carry. Vertex columns of side inputs must
 /// additionally share the edge endpoints' vertex domain, and edge IDs exist only
 /// in integer vertex domains; `gpu_validate_call` enforces both per call.
-fn relation_column_data_types(
-    algorithm: CugraphAlgorithm,
-    column_type: CugraphRelationColumnType,
-) -> Vec<&'static str> {
+fn relation_column_data_types(column_type: CugraphRelationColumnType) -> Vec<&'static str> {
     match column_type {
         CugraphRelationColumnType::VertexId => {
-            [numeric_endpoint_types(algorithm), logical_string_endpoint_types(algorithm)].concat()
+            [NUMERIC_ENDPOINT_TYPES.as_slice(), &LOGICAL_STRING_ENDPOINT_TYPES].concat()
         },
-        CugraphRelationColumnType::EdgeId => numeric_endpoint_types(algorithm).to_vec(),
+        CugraphRelationColumnType::EdgeId => NUMERIC_ENDPOINT_TYPES.to_vec(),
         CugraphRelationColumnType::Numeric => vec!["Float32", "Float64"],
         CugraphRelationColumnType::Float32 => vec!["Float32"],
     }
 }
 
 fn vertex_id_contract(algorithm: CugraphAlgorithm) -> Value {
-    let logical_string = algorithm.definition().supports_logical_string_vertices();
     json!({
-        "numeric_endpoint_types": numeric_endpoint_types(algorithm),
-        "logical_string_endpoint_types": logical_string_endpoint_types(algorithm),
-        "logical_string_output_type": logical_string.then_some("Utf8"),
-        "native_logical_mapping_type": logical_string.then(|| format!("{NATIVE_LOGICAL_ID_TYPE:?}")),
+        "numeric_endpoint_types": NUMERIC_ENDPOINT_TYPES,
+        "mapped_numeric_endpoint_types": mapped_numeric_endpoint_types(algorithm),
+        "logical_string_endpoint_types": LOGICAL_STRING_ENDPOINT_TYPES,
+        "logical_string_output_type": "Utf8",
+        "native_logical_mapping_type": format!("{:?}", algorithm.native_vertex_id_type()),
         "edge_id_supported_for_logical_string": false,
         "call_specific_authority": "gpu_validate_call",
     })

@@ -109,6 +109,23 @@ The [GPU table functions design](../design/gpu-table-functions.mdx#from-cudf-col
 traces cuDF edge ownership, cuGraph completion and the return to native SQL
 operators. It distinguishes device copies from host materialization.
 
+## Result column names
+
+Result columns follow one naming convention across UDTFs. The edge input
+columns (`src`, `dst`, `weight`, `edge_id`) are separate and keep their names.
+
+| Result | Columns |
+| --- | --- |
+| Vertex identity | `vertex` |
+| One score per vertex | `value` |
+| Edge | `src`, `dst`, plus `value` for an edge score |
+| Community assignment | `community` |
+| Connectivity label | `component` |
+| Vertex pair similarity | `first`, `second`, `similarity` |
+
+Each UDTF page lists its exact result schema, including algorithm-specific
+columns such as `hub_score` and `authority_score` for HITS.
+
 ## UDTFs
 
 Start with [cuGraph UDTFs](./udtfs/index.mdx) to choose an algorithm by

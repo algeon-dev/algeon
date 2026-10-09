@@ -42,7 +42,7 @@ Logical string side-input limitations:
 
 | Argument | Required | Columns | Description |
 | --- | --- | --- | --- |
-| `edges` | yes | <ul><li>`src`, `dst`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`weight` (optional): `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`, `Int64`</li></ul> | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `edges` | yes | <ul><li>`src`, `dst`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`weight` (optional): `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`, `Int64`</li></ul> | edge relation with canonical src and dst columns, plus optional weight and edge_id columns; this algorithm ignores weight |
 
 Every `edge_id` column must have the integer type of `src` and `dst`; string-keyed graphs accept no edge IDs.
 
@@ -59,7 +59,7 @@ Graph construction follows the shared defaults (`directed=true`, renumbering, `p
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
 | `vertex` | `Int64\|Utf8` | no | Vertex assigned to a strongly connected component. |
-| `label` | `Int64` | no | Strongly connected component identifier for the vertex: the minimum vertex id in the component, stable across runs. |
+| `component` | `Int64` | no | Strongly connected component identifier for the vertex: the minimum vertex id in the component, stable across runs. |
 
 These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.
 

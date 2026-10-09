@@ -30,7 +30,11 @@ FROM cugraph_minimum_spanning_tree(
 
 Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
 
-Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are not supported (legacy Int32-only contract). The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from `gpu_validate_call`.
+Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int32`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The native graph indexes `Int32` vertices only, so `Int64` vertex IDs are mapped to dense `Int32` ids by a per-call codebook and decoded back to the input type in the result; the distinct vertex count must fit in `Int32`. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from `gpu_validate_call`.
+
+Logical string side-input limitations:
+
+- edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
 
 ## Arguments and options
 
@@ -38,9 +42,9 @@ Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are no
 
 | Argument | Required | Columns | Description |
 | --- | --- | --- | --- |
-| `edges` | yes | <ul><li>`src`, `dst`: `Int32`</li><li>`weight`: `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`</li></ul> | weighted edge relation with canonical src, dst, and required weight columns |
+| `edges` | yes | <ul><li>`src`, `dst`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`weight`: `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`, `Int64`</li></ul> | weighted edge relation with canonical src, dst, and required weight columns |
 
-Every `edge_id` column must have the integer type of `src` and `dst`.
+Every `edge_id` column must have the integer type of `src` and `dst`; string-keyed graphs accept no edge IDs.
 
 ### Named value arguments
 
@@ -54,8 +58,8 @@ This UDTF requires `directed=false` (undirected/symmetric graph); all other grap
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `src` | `Int64` | no | Source vertex of an edge selected for the minimum spanning tree. |
-| `dst` | `Int64` | no | Destination vertex of an edge selected for the minimum spanning tree. |
+| `src` | `Int64\|Utf8` | no | Source vertex of an edge selected for the minimum spanning tree. |
+| `dst` | `Int64\|Utf8` | no | Destination vertex of an edge selected for the minimum spanning tree. |
 
 These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.
 
@@ -67,7 +71,8 @@ import Examples from '../../_examples/cugraph_minimum_spanning_tree.mdx';
 
 ## Limits
 
-- cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns
+- the native graph type indexes Int32 vertices only; Int64 and string vertex columns run through a per-call codebook that fails when the distinct vertex count exceeds Int32::MAX
+- edge_id columns are rejected when Int64 vertices are mapped to Int32 ids
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx).

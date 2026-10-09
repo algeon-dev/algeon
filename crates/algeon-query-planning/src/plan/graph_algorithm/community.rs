@@ -44,8 +44,6 @@ pub struct GraphLeidenParams {
     pub max_level: u32,
     /// Resolution parameter (`gamma`) in the modularity formula. Must be > 0.
     pub resolution: f64,
-    /// Modularity-gain scaling for the refinement stage. Must be > 0.
-    pub theta: f64,
     /// RNG seed for the Leiden algorithm. Default 0 gives a deterministic run.
     pub seed: u64,
 }
@@ -53,7 +51,7 @@ pub struct GraphLeidenParams {
 impl Default for GraphLeidenParams {
     fn default() -> Self {
         // Matches cugraph::community::LeidenParams::default().
-        Self { max_level: 100, resolution: 1.0, theta: 1.0, seed: 0 }
+        Self { max_level: 100, resolution: 1.0, seed: 0 }
     }
 }
 
@@ -69,9 +67,9 @@ pub struct GraphEcgParams {
     pub ensemble_size: u32,
     /// Maximum hierarchy depth for final Louvain. Must be >= 1.
     pub max_level: u32,
-    /// Convergence threshold for final Louvain. Must be >= 0.
+    /// Convergence threshold for final Louvain. Must be in (0, 1].
     pub threshold: f64,
-    /// Resolution parameter in the modularity formula. Must be > 0.
+    /// Resolution parameter in the modularity formula. Must be in (0, 1].
     pub resolution: f64,
     /// RNG seed. Default 0 gives a deterministic run.
     pub seed: u64,
@@ -88,21 +86,16 @@ impl Default for GraphEcgParams {
 ///
 /// Mirrors `cugraph::community::SpectralClusteringParams` without the `cugraph` crate's
 /// new type wrappers and without `do_expensive_check` (always false in the
-/// adapter).
+/// adapter). libcugraph ignores the eigensolver and k-means iteration limits
+/// and the k-means tolerance, so they are not part of the contract.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphSpectralClusteringParams {
-    /// Desired number of clusters. Must be >= 1.
+    /// Desired number of clusters. Must be >= 2.
     pub n_clusters: u32,
     /// Number of eigenvectors to use. Must be >= 1.
     pub n_eigenvectors: u32,
-    /// Eigenvalue-solver tolerance. Must be >= 0.
+    /// Eigenvalue-solver tolerance. Must be in `[0, 1)`.
     pub evs_tolerance: f64,
-    /// Eigenvalue-solver maximum iteration count. Must be in `[1, i32::MAX]`.
-    pub evs_max_iterations: u32,
-    /// k-means tolerance. Must be >= 0.
-    pub k_means_tolerance: f64,
-    /// k-means maximum iteration count. Must be in `[1, i32::MAX]`.
-    pub k_means_max_iterations: u32,
     /// RNG seed. Default 0.
     ///
     /// The seed only fixes the random initialization (Lanczos start vector
@@ -116,14 +109,6 @@ pub struct GraphSpectralClusteringParams {
 impl Default for GraphSpectralClusteringParams {
     fn default() -> Self {
         // Matches cugraph::community::SpectralClusteringParams::default().
-        Self {
-            n_clusters: 2,
-            n_eigenvectors: 2,
-            evs_tolerance: 0.01,
-            evs_max_iterations: 500,
-            k_means_tolerance: 0.001,
-            k_means_max_iterations: 100,
-            seed: 0,
-        }
+        Self { n_clusters: 2, n_eigenvectors: 2, evs_tolerance: 0.01, seed: 0 }
     }
 }

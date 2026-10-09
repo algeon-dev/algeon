@@ -139,6 +139,7 @@ pub fn cugraph::centrality::hits::HitsParams::default() -> Self
 pub struct cugraph::centrality::HitsResult
 impl cugraph::centrality::HitsResult
 pub fn cugraph::centrality::HitsResult::authority_scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::centrality::HitsResult::converged(&self) -> cugraph::error::Result<bool>
 pub fn cugraph::centrality::HitsResult::hub_score_differences(&self) -> f64
 pub fn cugraph::centrality::HitsResult::hub_scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
 pub fn cugraph::centrality::HitsResult::number_of_iterations(&self) -> usize
@@ -183,11 +184,8 @@ pub mod cugraph::community
 pub mod cugraph::community::clustering
 pub struct cugraph::community::clustering::SpectralClusteringParams
 pub cugraph::community::clustering::SpectralClusteringParams::do_expensive_check: bool
-pub cugraph::community::clustering::SpectralClusteringParams::evs_max_iterations: cugraph::params::IterationCount
-pub cugraph::community::clustering::SpectralClusteringParams::evs_tolerance: cugraph::params::NonNegativeF64
-pub cugraph::community::clustering::SpectralClusteringParams::k_means_max_iterations: cugraph::params::IterationCount
-pub cugraph::community::clustering::SpectralClusteringParams::k_means_tolerance: cugraph::params::NonNegativeF64
-pub cugraph::community::clustering::SpectralClusteringParams::n_clusters: core::num::nonzero::NonZeroUsize
+pub cugraph::community::clustering::SpectralClusteringParams::evs_tolerance: cugraph::params::HalfOpenUnitF64
+pub cugraph::community::clustering::SpectralClusteringParams::n_clusters: cugraph::params::ClusterCount
 pub cugraph::community::clustering::SpectralClusteringParams::n_eigenvectors: core::num::nonzero::NonZeroUsize
 impl core::default::Default for cugraph::community::clustering::SpectralClusteringParams
 pub fn cugraph::community::clustering::SpectralClusteringParams::default() -> Self
@@ -204,8 +202,8 @@ pub cugraph::community::ecg::EcgParams::do_expensive_check: bool
 pub cugraph::community::ecg::EcgParams::ensemble_size: cugraph::params::IterationCount
 pub cugraph::community::ecg::EcgParams::max_level: cugraph::params::IterationCount
 pub cugraph::community::ecg::EcgParams::min_weight: cugraph::params::NonNegativeF64
-pub cugraph::community::ecg::EcgParams::resolution: cugraph::params::PositiveF64
-pub cugraph::community::ecg::EcgParams::threshold: cugraph::params::NonNegativeF64
+pub cugraph::community::ecg::EcgParams::resolution: cugraph::params::FractionF64
+pub cugraph::community::ecg::EcgParams::threshold: cugraph::params::FractionF64
 impl core::default::Default for cugraph::community::ecg::EcgParams
 pub fn cugraph::community::ecg::EcgParams::default() -> Self
 pub mod cugraph::community::leiden
@@ -213,7 +211,6 @@ pub struct cugraph::community::leiden::LeidenParams
 pub cugraph::community::leiden::LeidenParams::do_expensive_check: bool
 pub cugraph::community::leiden::LeidenParams::max_level: cugraph::params::IterationCount
 pub cugraph::community::leiden::LeidenParams::resolution: cugraph::params::PositiveF64
-pub cugraph::community::leiden::LeidenParams::theta: cugraph::params::PositiveF64
 impl core::default::Default for cugraph::community::leiden::LeidenParams
 pub fn cugraph::community::leiden::LeidenParams::default() -> Self
 pub mod cugraph::community::louvain
@@ -274,8 +271,8 @@ pub cugraph::community::EcgParams::do_expensive_check: bool
 pub cugraph::community::EcgParams::ensemble_size: cugraph::params::IterationCount
 pub cugraph::community::EcgParams::max_level: cugraph::params::IterationCount
 pub cugraph::community::EcgParams::min_weight: cugraph::params::NonNegativeF64
-pub cugraph::community::EcgParams::resolution: cugraph::params::PositiveF64
-pub cugraph::community::EcgParams::threshold: cugraph::params::NonNegativeF64
+pub cugraph::community::EcgParams::resolution: cugraph::params::FractionF64
+pub cugraph::community::EcgParams::threshold: cugraph::params::FractionF64
 impl core::default::Default for cugraph::community::ecg::EcgParams
 pub fn cugraph::community::ecg::EcgParams::default() -> Self
 pub struct cugraph::community::EcgResult(_)
@@ -322,7 +319,6 @@ pub struct cugraph::community::LeidenParams
 pub cugraph::community::LeidenParams::do_expensive_check: bool
 pub cugraph::community::LeidenParams::max_level: cugraph::params::IterationCount
 pub cugraph::community::LeidenParams::resolution: cugraph::params::PositiveF64
-pub cugraph::community::LeidenParams::theta: cugraph::params::PositiveF64
 impl core::default::Default for cugraph::community::leiden::LeidenParams
 pub fn cugraph::community::leiden::LeidenParams::default() -> Self
 pub struct cugraph::community::LeidenResult(_)
@@ -350,11 +346,8 @@ impl core::fmt::Debug for cugraph::community::LouvainResult
 pub fn cugraph::community::LouvainResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cugraph::community::SpectralClusteringParams
 pub cugraph::community::SpectralClusteringParams::do_expensive_check: bool
-pub cugraph::community::SpectralClusteringParams::evs_max_iterations: cugraph::params::IterationCount
-pub cugraph::community::SpectralClusteringParams::evs_tolerance: cugraph::params::NonNegativeF64
-pub cugraph::community::SpectralClusteringParams::k_means_max_iterations: cugraph::params::IterationCount
-pub cugraph::community::SpectralClusteringParams::k_means_tolerance: cugraph::params::NonNegativeF64
-pub cugraph::community::SpectralClusteringParams::n_clusters: core::num::nonzero::NonZeroUsize
+pub cugraph::community::SpectralClusteringParams::evs_tolerance: cugraph::params::HalfOpenUnitF64
+pub cugraph::community::SpectralClusteringParams::n_clusters: cugraph::params::ClusterCount
 pub cugraph::community::SpectralClusteringParams::n_eigenvectors: core::num::nonzero::NonZeroUsize
 impl core::default::Default for cugraph::community::clustering::SpectralClusteringParams
 pub fn cugraph::community::clustering::SpectralClusteringParams::default() -> Self
@@ -730,21 +723,17 @@ pub fn cugraph::layout::force_atlas2::LayoutResult::drop(&mut self)
 pub mod cugraph::params
 pub struct cugraph::params::BfsDepthLimit(_)
 impl cugraph::params::BfsDepthLimit
-pub const fn cugraph::params::BfsDepthLimit::from_non_zero(core::num::nonzero::NonZeroUsize) -> Self
 pub const fn cugraph::params::BfsDepthLimit::get(self) -> usize
-pub const fn cugraph::params::BfsDepthLimit::into_inner(self) -> core::num::nonzero::NonZeroUsize
-pub fn cugraph::params::BfsDepthLimit::new(usize) -> cugraph::error::Result<Self>
+pub const fn cugraph::params::BfsDepthLimit::new(usize) -> Self
 impl core::convert::From<cugraph::params::BfsDepthLimit> for usize
 pub fn usize::from(cugraph::params::BfsDepthLimit) -> usize
+impl core::convert::From<u32> for cugraph::params::BfsDepthLimit
+pub fn cugraph::params::BfsDepthLimit::from(u32) -> Self
+impl core::convert::From<usize> for cugraph::params::BfsDepthLimit
+pub fn cugraph::params::BfsDepthLimit::from(usize) -> Self
 impl core::convert::TryFrom<i32> for cugraph::params::BfsDepthLimit
 pub type cugraph::params::BfsDepthLimit::Error = cugraph::error::Error
 pub fn cugraph::params::BfsDepthLimit::try_from(i32) -> cugraph::error::Result<Self>
-impl core::convert::TryFrom<u32> for cugraph::params::BfsDepthLimit
-pub type cugraph::params::BfsDepthLimit::Error = cugraph::error::Error
-pub fn cugraph::params::BfsDepthLimit::try_from(u32) -> cugraph::error::Result<Self>
-impl core::convert::TryFrom<usize> for cugraph::params::BfsDepthLimit
-pub type cugraph::params::BfsDepthLimit::Error = cugraph::error::Error
-pub fn cugraph::params::BfsDepthLimit::try_from(usize) -> cugraph::error::Result<Self>
 impl core::fmt::Display for cugraph::params::BfsDepthLimit
 pub fn cugraph::params::BfsDepthLimit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cugraph::params::ClosedUnitF64(_)
@@ -758,6 +747,39 @@ pub type cugraph::params::ClosedUnitF64::Error = cugraph::error::Error
 pub fn cugraph::params::ClosedUnitF64::try_from(f64) -> cugraph::error::Result<Self>
 impl core::fmt::Display for cugraph::params::ClosedUnitF64
 pub fn cugraph::params::ClosedUnitF64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::params::ClusterCount(_)
+impl cugraph::params::ClusterCount
+pub const fn cugraph::params::ClusterCount::get(self) -> usize
+pub fn cugraph::params::ClusterCount::new(usize) -> cugraph::error::Result<Self>
+impl core::convert::From<cugraph::params::ClusterCount> for usize
+pub fn usize::from(cugraph::params::ClusterCount) -> usize
+impl core::convert::TryFrom<usize> for cugraph::params::ClusterCount
+pub type cugraph::params::ClusterCount::Error = cugraph::error::Error
+pub fn cugraph::params::ClusterCount::try_from(usize) -> cugraph::error::Result<Self>
+impl core::fmt::Display for cugraph::params::ClusterCount
+pub fn cugraph::params::ClusterCount::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::params::FractionF64(_)
+impl cugraph::params::FractionF64
+pub const fn cugraph::params::FractionF64::get(self) -> f64
+pub fn cugraph::params::FractionF64::new(f64) -> cugraph::error::Result<Self>
+impl core::convert::From<cugraph::params::FractionF64> for f64
+pub fn f64::from(cugraph::params::FractionF64) -> f64
+impl core::convert::TryFrom<f64> for cugraph::params::FractionF64
+pub type cugraph::params::FractionF64::Error = cugraph::error::Error
+pub fn cugraph::params::FractionF64::try_from(f64) -> cugraph::error::Result<Self>
+impl core::fmt::Display for cugraph::params::FractionF64
+pub fn cugraph::params::FractionF64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::params::HalfOpenUnitF64(_)
+impl cugraph::params::HalfOpenUnitF64
+pub const fn cugraph::params::HalfOpenUnitF64::get(self) -> f64
+pub fn cugraph::params::HalfOpenUnitF64::new(f64) -> cugraph::error::Result<Self>
+impl core::convert::From<cugraph::params::HalfOpenUnitF64> for f64
+pub fn f64::from(cugraph::params::HalfOpenUnitF64) -> f64
+impl core::convert::TryFrom<f64> for cugraph::params::HalfOpenUnitF64
+pub type cugraph::params::HalfOpenUnitF64::Error = cugraph::error::Error
+pub fn cugraph::params::HalfOpenUnitF64::try_from(f64) -> cugraph::error::Result<Self>
+impl core::fmt::Display for cugraph::params::HalfOpenUnitF64
+pub fn cugraph::params::HalfOpenUnitF64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cugraph::params::IterationCount(_)
 impl cugraph::params::IterationCount
 pub const fn cugraph::params::IterationCount::from_non_zero(core::num::nonzero::NonZeroU32) -> Self

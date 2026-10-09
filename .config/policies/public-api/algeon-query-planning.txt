@@ -2517,6 +2517,7 @@ pub fn query_planning::plan::WindowFunction::lead(query_planning::expr::Expr, u3
 pub fn query_planning::plan::WindowFunction::output(&self) -> &arrow_schema::field::Field
 pub fn query_planning::plan::WindowFunction::rank(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::plan::WindowFunction::row_number(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::plan::WindowFunction::row_number_i32(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::plan::WindowFunction::row_number_i64(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct query_planning::plan::AdvisoryOutputBinding
 pub query_planning::plan::AdvisoryOutputBinding::frontend: alloc::string::String
@@ -2751,7 +2752,6 @@ pub struct query_planning::plan::GraphLeidenParams
 pub query_planning::plan::GraphLeidenParams::max_level: u32
 pub query_planning::plan::GraphLeidenParams::resolution: f64
 pub query_planning::plan::GraphLeidenParams::seed: u64
-pub query_planning::plan::GraphLeidenParams::theta: f64
 impl core::default::Default for query_planning::plan::GraphLeidenParams
 pub fn query_planning::plan::GraphLeidenParams::default() -> Self
 pub struct query_planning::plan::GraphLouvainParams
@@ -2823,10 +2823,7 @@ pub fn query_planning::plan::GraphSourceFingerprint::as_str(&self) -> &str
 impl core::fmt::Debug for query_planning::plan::GraphSourceFingerprint
 pub fn query_planning::plan::GraphSourceFingerprint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_planning::plan::GraphSpectralClusteringParams
-pub query_planning::plan::GraphSpectralClusteringParams::evs_max_iterations: u32
 pub query_planning::plan::GraphSpectralClusteringParams::evs_tolerance: f64
-pub query_planning::plan::GraphSpectralClusteringParams::k_means_max_iterations: u32
-pub query_planning::plan::GraphSpectralClusteringParams::k_means_tolerance: f64
 pub query_planning::plan::GraphSpectralClusteringParams::n_clusters: u32
 pub query_planning::plan::GraphSpectralClusteringParams::n_eigenvectors: u32
 pub query_planning::plan::GraphSpectralClusteringParams::seed: u64

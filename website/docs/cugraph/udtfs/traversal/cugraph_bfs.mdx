@@ -45,7 +45,7 @@ Logical string side-input limitations:
 
 | Argument | Required | Columns | Description |
 | --- | --- | --- | --- |
-| `edges` | yes | <ul><li>`src`, `dst`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`weight` (optional): `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`, `Int64`</li></ul> | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `edges` | yes | <ul><li>`src`, `dst`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`weight` (optional): `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`, `Int64`</li></ul> | edge relation with canonical src and dst columns, plus optional weight and edge_id columns; this algorithm ignores weight |
 | `sources` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li></ul> | optional BFS source relation; exactly one of sources, source_vertex, and source_vertices is required |
 | `include_vertices` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li></ul> | vertices retained by BFS predicate filtering |
 | `exclude_vertices` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li></ul> | vertices removed by BFS predicate filtering |
@@ -59,7 +59,7 @@ Vertex columns of `sources`, `include_vertices`, `exclude_vertices`, `target_ver
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `depth_limit` | `integer\|null` | `null` | min 0; max 9223372036854776000 | optional non-negative BFS depth limit |
+| `depth_limit` | `integer\|null` | `null` | min 0; max 9223372036854776000 | number of hops to expand; 0 reaches only the sources, and null or absent is unlimited; limits above the vertex type's maximum are unlimited |
 | `output_mode` | `string` | `"raw"` | one of `"raw"`, `"normalized"`, `"path"` | BFS output shape |
 | `return_target_info` | `boolean` | `false` |  | whether raw or normalized BFS output includes target information |
 | `source_vertex` | `integer\|string` | No default |  | scalar source vertex; BFS source selectors are mutually exclusive |

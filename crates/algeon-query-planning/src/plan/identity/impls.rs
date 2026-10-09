@@ -604,17 +604,9 @@ stable_hash_fields! {
     GraphLouvainParams { max_level, threshold, resolution }
     GraphWccParams {}
     GraphSccParams {}
-    GraphLeidenParams { max_level, resolution, theta, seed }
+    GraphLeidenParams { max_level, resolution, seed }
     GraphEcgParams { min_weight, ensemble_size, max_level, threshold, resolution, seed }
-    GraphSpectralClusteringParams {
-        n_clusters,
-        n_eigenvectors,
-        evs_tolerance,
-        evs_max_iterations,
-        k_means_tolerance,
-        k_means_max_iterations,
-        seed,
-    }
+    GraphSpectralClusteringParams { n_clusters, n_eigenvectors, evs_tolerance, seed }
     GraphForceAtlas2Params {
         max_iter,
         outbound_attraction_distribution,

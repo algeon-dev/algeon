@@ -29,7 +29,7 @@ use super::CugraphAlgorithm;
 use super::{
     CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN,
     CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphVertexIdDomain, PredicateSourceColumnRole, plan,
-    validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
+    validate_similarity_pair_table_schema, vertex_id_domain_for_call,
 };
 #[cfg(feature = "cugraph")]
 use super::{CugraphBfsSource, CugraphBfsSourceVertex};
@@ -214,7 +214,6 @@ pub(super) fn validate_edge_source_schema(
         )
     })?;
     let domain = vertex_id_domain_for_call(spec.algorithm, &spec.params, src.data_type(), dst.data_type())?;
-    validate_vertex_id_domain_support_for_call(spec.algorithm, &domain)?;
     // Graph admission rejects any other weight dtype; checking here keeps
     // `gpu_validate_call` in agreement with execution.
     if let Ok(weight) = schema.field_with_name(CUGRAPH_EDGE_WEIGHT_COLUMN)
@@ -242,7 +241,7 @@ pub(super) fn validate_edge_source_schema(
             return Err(plan(format!("cuGraph edge-id column 'edge_id' must have dtype {}", domain.label())));
         }
     }
-    spec.validate_logical_edge_id_capability(domain.is_string_logical())?;
+    spec.validate_logical_edge_id_capability(domain.requires_mapping(spec.algorithm))?;
     Ok(domain)
 }
 
@@ -272,7 +271,7 @@ pub(super) fn validate_predicate_source_schema(
                 }
             },
             PredicateSourceColumnRole::EdgeId => {
-                if vertex_domain.is_string_logical() || !vertex_domain.accepts(field.data_type()) {
+                if vertex_domain.requires_mapping(spec.algorithm) || !vertex_domain.accepts(field.data_type()) {
                     return Err(plan(format!(
                         "cuGraph side-input edge-id column '{name}' requires the numeric edge-id domain"
                     )));

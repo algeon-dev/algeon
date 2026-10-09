@@ -8,9 +8,9 @@ Each citation receives a weight equal to the absolute publication-year gap.
 The query finds a minimum spanning forest that minimizes the total gap within
 each connected component, then shows its five largest selected gaps. The graph
 covers 1900 to 2020 and the ten field-of-study labels below.
-`cugraph_minimum_spanning_tree` requires Int32 vertex IDs. The query
-[builds a dense mapping](../graph-options.mdx#int32-vertex-mappings) because
-AMiner IDs can exceed the Int32 range:
+The query passes the Int64 paper IDs directly; the
+[vertex codebook](../graph-options.mdx#vertex-codebook) maps them to Int32 ids
+internally and decodes the result:
 
 ```sql
 CREATE OR REPLACE VIEW ai_all_nodes AS
@@ -21,33 +21,19 @@ WHERE year BETWEEN 1900 AND 2020 AND primary_fos IN (
   'Reinforcement learning', 'Image segmentation', 'Feature extraction',
   'Object detection', 'Speech recognition');
 
-CREATE OR REPLACE TABLE ai_era_vertex_ids AS
-SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
-FROM (SELECT e.src AS paper_id FROM citation_edges e
-      JOIN ai_all_nodes a ON a.paper_id = e.src
-      JOIN ai_all_nodes b ON b.paper_id = e.dst
-      UNION
-      SELECT e.dst FROM citation_edges e
-      JOIN ai_all_nodes a ON a.paper_id = e.src
-      JOIN ai_all_nodes b ON b.paper_id = e.dst);
-
 CREATE OR REPLACE VIEW ai_era_edges AS
-SELECT va.vid AS src, vb.vid AS dst, CAST(ABS(a.year - b.year) AS DOUBLE) AS year_gap
+SELECT e.src, e.dst, CAST(ABS(a.year - b.year) AS DOUBLE) AS year_gap
 FROM citation_edges e
 JOIN ai_all_nodes a ON a.paper_id = e.src
-JOIN ai_all_nodes b ON b.paper_id = e.dst
-JOIN ai_era_vertex_ids va ON va.paper_id = e.src
-JOIN ai_era_vertex_ids vb ON vb.paper_id = e.dst;
+JOIN ai_all_nodes b ON b.paper_id = e.dst;
 
 SELECT pa.year AS year_a, substr(pa.title, 1, 38) AS paper_a,
        pb.year AS year_b, substr(pb.title, 1, 38) AS paper_b,
        ABS(pa.year - pb.year) AS gap
 FROM cugraph_minimum_spanning_tree(
   edges => (SELECT src, dst, year_gap AS weight FROM ai_era_edges)) m
-JOIN ai_era_vertex_ids va ON va.vid = m.src
-JOIN ai_era_vertex_ids vb ON vb.vid = m.dst
-JOIN papers pa ON pa.paper_id = va.paper_id
-JOIN papers pb ON pb.paper_id = vb.paper_id
+JOIN papers pa ON pa.paper_id = m.src
+JOIN papers pb ON pb.paper_id = m.dst
 WHERE m.src < m.dst
 ORDER BY gap DESC, year_a
 LIMIT 5;
@@ -66,4 +52,4 @@ recognition, radiographic imaging, and fingerprint classification. The input
 has 204,472 edges and the symmetrized forest returns 49,263 links over 50,300
 papers. These rows show one minimum forest; they do not establish that an
 individual link is unique or unavoidable. The UDTF returns `src` and
-`dst`, so SQL joins the IDs back to years and titles.
+`dst`, so SQL joins the IDs to years and titles.

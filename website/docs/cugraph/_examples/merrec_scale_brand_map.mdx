@@ -1,0 +1,80 @@
+import BrandMap from '@site/src/components/merrec/BrandMap';
+import brandMap from '@site/static/data/merrec-brand-map.json';
+
+This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
+1,268,092,738 events from May through October 2023.
+
+### What does the marketplace look like when brands sit next to the brands their fans like?
+
+One statement computes the map and its colors from the like events. Jaccard
+scores all pairs among the 5,000 brands with the most fans. Each brand then
+keeps edges to its five most similar brands, and ForceAtlas2 positions the
+resulting graph in two dimensions. Leiden colors the same brands by
+shopping world, using every pair with a Jaccard score of at least 0.02.
+The layout uses lin-log attraction and distributes attraction away from
+hub brands, so niche worlds form islands around the large mainstream core.
+
+<BrandMap data={brandMap} />
+
+Positions show neighborhoods, not distances with a unit. Dots in the
+crowded center belong to brands whose fans like many other brands, such as
+Nike, Disney and Handmade. The islands at the edge are worlds with a
+tightly shared audience, such as medical scrubs, golf, cameras and bridal
+wear. Each world's label is an editorial summary of its most-liked brands.
+ForceAtlas2 placed brands differently in each of the three captured runs
+even with `seed => 42`. After aligning the runs, only about half of each
+brand's ten nearest map neighbors stayed the same, while the world colors
+come from Leiden and did not change. The map shows the first run; read it
+for regions, not for individual brand distances.
+
+<details>
+<summary>Executed SQL</summary>
+
+```sql
+WITH fans AS (
+  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst
+  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
+  WHERE e.event_type = 'item_like' AND i.brand_id <> 0
+  GROUP BY e.user_id, i.brand_id
+), top_brands AS (
+  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst ORDER BY fans DESC, dst LIMIT 5000
+), similar AS (
+  SELECT first, second, similarity
+  FROM cugraph_jaccard(
+    edges => (SELECT src, dst FROM fans),
+    vertex_pairs => (SELECT a.brand_id AS first, b.brand_id AS second
+                     FROM top_brands a JOIN top_brands b ON a.brand_id < b.brand_id),
+    directed => false)
+  WHERE similarity >= 0.02
+), nearest AS (
+  SELECT a, b, similarity,
+         ROW_NUMBER() OVER (PARTITION BY a ORDER BY similarity DESC, b) AS rk
+  FROM (SELECT first AS a, second AS b, similarity FROM similar
+        UNION ALL SELECT second AS a, first AS b, similarity FROM similar) d
+), worlds AS (
+  SELECT vertex AS brand_id, community AS world
+  FROM cugraph_leiden(
+    edges => (SELECT first AS src, second AS dst, CAST(similarity AS DOUBLE) AS weight FROM similar),
+    directed => false, resolution => 3, seed => 42)
+), layout AS (
+  SELECT vertex AS brand_id, x, y
+  FROM cugraph_force_atlas2(
+    edges => (SELECT a AS src, b AS dst, CAST(similarity AS DOUBLE) AS weight FROM nearest WHERE rk <= 5),
+    directed => false, max_iter => 2000, barnes_hut_optimize => true,
+    outbound_attraction_distribution => true, lin_log_mode => true,
+    scaling_ratio => 5, gravity => 5, seed => 42)
+), brands AS (
+  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name
+  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id
+)
+SELECT l.brand_id, b.brand_name, t.fans, w.world, l.x, l.y
+FROM layout l
+JOIN worlds w ON w.brand_id = l.brand_id
+JOIN top_brands t ON t.brand_id = l.brand_id
+JOIN brands b ON b.brand_id = l.brand_id
+ORDER BY l.brand_id;
+```
+
+</details>
+
+The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 17.73 s, including planning, every step of the statement, and result receipt. Each plan had 7 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 54.46 GiB of the 90 GiB query limit. [Download the map data](/data/merrec-brand-map.json) with the executed SQL, query IDs, timings, and every brand's coordinates.
