@@ -108,5 +108,6 @@ import Examples from '../_examples/cuml_umap.mdx';
 - Only Float32 features are supported; L2SqrtExpanded distance, brute-force kNN, and deterministic mode are fixed.
 - Empty input returns an empty result. Other inputs require n_neighbors &lt; rows, checked at execution.
 - min_dist must not exceed spread. The fit and embedding are query-local.
+- random_state seeds the spectral initialization, the edge shuffle, and negative sampling.
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

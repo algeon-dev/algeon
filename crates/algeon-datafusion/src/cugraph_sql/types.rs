@@ -1180,7 +1180,8 @@ pub struct CugraphEcgParams {
     pub threshold: f64,
     /// Resolution parameter in the modularity formula. Must be in (0, 1].
     pub resolution: f64,
-    /// RNG seed. Default 0 gives a deterministic run.
+    /// RNG seed for the random initial community labels of each Louvain pass.
+    /// The same seed does not guarantee identical communities across runs.
     pub seed: u64,
 }
 

@@ -93,5 +93,6 @@ import Examples from '../_examples/cuvs_brute_force_knn.mdx';
 - Builds an exact query-local index over the evaluated dataset relation; it does not persist an ANN index or replace a vector database.
 - The evaluated dataset must be non-empty and k must not exceed its row count. An empty query relation may return an empty result with the stable schema.
 - Dataset and query vector dimensions must match after both relation children are evaluated.
+- Distances repeat between runs; neighbors that tie at the k-th distance can differ, because candidate merge order is not fixed.
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

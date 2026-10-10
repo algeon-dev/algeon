@@ -113,5 +113,6 @@ import Examples from '../_examples/cuml_random_forest_classifier.mdx';
 - Prediction imports the fitted forest into nvForest and scores the predict relation on the GPU; a classifier tie resolves to the lowest class index. Training and prediction inputs are limited to i32::MAX rows and the packed feature matrix to i32::MAX elements; the random forest path does not batch rows.
 - probability covers only the predicted class; per-class probabilities are not returned. Class weights are not exposed, so threshold probability to trade precision for recall.
 - Training uses one RAFT pool stream whose allocations share the query grant. The forest is query-local; an empty predict relation returns an empty result.
+- seed sets the bootstrap rows and feature subsets; with the same input row order, a refit on the same GPU grows the same forest.
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

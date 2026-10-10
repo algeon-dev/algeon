@@ -107,5 +107,6 @@ import Examples from '../_examples/cuvs_ivf_flat.mdx';
 - Results are approximate unless all lists are probed. Fewer than k neighbors may be returned for a query; missing (query, rank) rows are omitted and valid ranks remain contiguous.
 - The evaluated dataset must be non-empty, k and n_lists must not exceed its row count, and n_probes must not exceed n_lists.
 - Dataset and query dimensions and element types must match. Cosine requires at least two dimensions.
+- Neighbors and distances can differ slightly between runs, because index construction accumulates k-means centroid sums with floating-point atomics; there is no seed option.
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

@@ -135,5 +135,6 @@ import Examples from '../../_examples/cugraph_bfs.mdx';
 - string logical vertex-domain BFS rejects edges.edge_id and edge-id predicate relations
 - path output requires exactly one target row at execution time
 - descriptor option schema is typed registry metadata; validate_call remains the authoritative call-specific checker
+- distances and reachability repeat between runs; when a vertex has several shortest-path parents, the returned predecessor can differ
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx).

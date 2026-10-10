@@ -146,6 +146,36 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
     }
 }
 
+/// Run-to-run behavior on the same input, options and GPU, for algorithms whose
+/// results can differ between runs or are not fixed by `seed`. The algorithms
+/// that repeat are listed in website/docs/design/gpu-table-functions.mdx.
+fn reproducibility_limitation(algorithm: CugraphAlgorithm) -> Option<&'static str> {
+    match algorithm {
+        CugraphAlgorithm::ForceAtlas2 => Some(
+            "seed sets only the initial positions; coordinates differ between runs because force accumulation uses floating-point atomics",
+        ),
+        CugraphAlgorithm::SpectralModularityMaximization => Some(
+            "seed sets the Lanczos start vector and the k-means initialization; the same seed can still yield a different partition because k-means centroid sums use floating-point atomics",
+        ),
+        CugraphAlgorithm::Ecg => Some(
+            "seed sets the random initial community labels of each Louvain pass; the same seed does not guarantee identical communities across runs",
+        ),
+        CugraphAlgorithm::Leiden => Some(
+            "seed sets the random choices in the refinement step; the same seed does not guarantee identical communities across runs",
+        ),
+        CugraphAlgorithm::Bfs => Some(
+            "distances and reachability repeat between runs; when a vertex has several shortest-path parents, the returned predecessor can differ",
+        ),
+        CugraphAlgorithm::Hits => Some(
+            "scores can differ in the last digits between runs because the hub update accumulates with floating-point atomics",
+        ),
+        CugraphAlgorithm::PageRank | CugraphAlgorithm::PersonalizedPageRank => Some(
+            "calls without an edge weight column repeat between runs; with one, scores can differ in the last digits because out-weight sums accumulate with floating-point atomics",
+        ),
+        _ => None,
+    }
+}
+
 pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     let mut limitations = vec![
         "dry-run validates table resolution, column presence, static dtypes, and options only",
@@ -183,6 +213,7 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     if algorithm == CugraphAlgorithm::Sssp {
         limitations.push("omitting edges.weight assigns unit cost 1 to every edge");
     }
+    limitations.extend(reproducibility_limitation(algorithm));
     if matches!(
         algorithm.native_algorithm().vertex_id_type_support(),
         GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType

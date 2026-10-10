@@ -105,5 +105,6 @@ import Examples from '../_examples/cuml_logistic_regression.mdx';
 - Binary labels use logistic loss; three or more classes use softmax. Reaching max_iter is not an error.
 - probability covers only the predicted class; per-class probabilities are not returned. Class weights are not exposed, so threshold probability to trade precision for recall.
 - The model is query-local. An empty predict relation returns an empty result without a native call.
+- Coefficients and scores can differ slightly between runs, because the loss reduction accumulates with floating-point atomics; there is no seed option.
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

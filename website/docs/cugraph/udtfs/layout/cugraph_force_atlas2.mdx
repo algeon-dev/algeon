@@ -93,5 +93,6 @@ import Examples from '../../_examples/cugraph_force_atlas2.mdx';
 - duplicate, missing, and extra ForceAtlas2 side-input vertices are rejected at execution
 - radius, mobility, mass, x, and y side-input columns must be Float32
 - prevent_overlapping=true requires a radius binding
+- seed sets only the initial positions; coordinates differ between runs because force accumulation uses floating-point atomics
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx).

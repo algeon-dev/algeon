@@ -114,5 +114,6 @@ import Examples from '../_examples/cuvs_cagra.mdx';
 - The dataset must be non-empty, k and intermediate_graph_degree must be less than or equal to its row count, and graph_degree must be less than intermediate_graph_degree.
 - k must not exceed itopk_size. single_cta requires itopk_size no greater than 1024. cosine cannot use nn_descent.
 - Dataset and query dimensions and element types must match.
+- Neighbors and distances can differ slightly between runs, because graph construction orders edges by atomic arrival; there is no seed option.
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).
