@@ -531,6 +531,9 @@ pub(crate) fn binary_operation_vv_impl(
     exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
+    if let Some(arithmetic) = CheckedTemporalArithmetic::new(lhs, rhs, op, output_domain, exec_options, operation)? {
+        arithmetic.check()?;
+    }
     let guarded_divisor;
     let guarded_divisor_view;
     let rhs = match CheckedDivision::new(lhs, rhs, op, output_type, output_domain, exec_options, operation)? {
@@ -544,6 +547,23 @@ pub(crate) fn binary_operation_vv_impl(
         },
         None => rhs,
     };
+    binary_operation_vv_without_row_checks_impl(lhs, rhs, op, output_type, output_domain, exec_options, operation)
+}
+
+/// Column op column through libcudf, without the row checks Arrow applies to
+/// division and to timestamp arithmetic.
+///
+/// For callers whose operation Arrow does not check, such as a calendar offset
+/// that reaches a timestamp through a fixed duration.
+pub(crate) fn binary_operation_vv_without_row_checks_impl(
+    lhs: &ColumnView<'_>,
+    rhs: &ColumnView<'_>,
+    op: BinaryOperator,
+    output_type: &DataType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<Column> {
     let lhs_decimal_division_cast;
     let rhs_decimal_division_cast;
     let lhs_decimal_division_view;
@@ -1167,15 +1187,7 @@ impl<'a> CheckedDivision<'a> {
 
     /// Whether any valid row of a boolean mask is true.
     fn any(&self, mask: &ColumnView<'_>) -> Result<bool> {
-        let any = reduction::reduce_impl(
-            mask,
-            &ReduceAgg::Any,
-            &DataType::new(TypeId::Bool8),
-            self.domain,
-            self.exec_options,
-            self.operation,
-        )?;
-        Ok(scalar_to_optional_value::<bool>(any)?.unwrap_or(false))
+        any_valid_row_true(mask, self.domain, self.exec_options, self.operation)
     }
 
     /// Whether `mask` is true in a row where both operands are valid. A mask
@@ -1217,6 +1229,128 @@ impl<'a> CheckedDivision<'a> {
             _ => scalar!(UInt64, u64),
         };
         Scalar::from_scalar_value_in_domain(&value, self.domain)
+    }
+}
+
+/// Whether any valid row of a boolean mask is true.
+fn any_valid_row_true(
+    mask: &ColumnView<'_>,
+    domain: &Arc<ExecutionDomain>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<bool> {
+    let any =
+        reduction::reduce_impl(mask, &ReduceAgg::Any, &DataType::new(TypeId::Bool8), domain, exec_options, operation)?;
+    Ok(scalar_to_optional_value::<bool>(any)?.unwrap_or(false))
+}
+
+/// Timestamp `+` or `-` duration, and timestamp `-` timestamp, with the row
+/// semantics of arrow-arith, which DataFusion uses.
+///
+/// Arrow computes these with `add_checked` and `sub_checked`, even for the
+/// wrapping SQL operators, and only in rows valid in both operands. A result
+/// outside `Int64` fails the query. libcudf wraps. The check runs on the stored
+/// counts before the operation: it forms the wrapped `Int64` result and
+/// derives the two's complement overflow flag from the signs of the operands
+/// and the result. The flag is null wherever an operand is null, so a null row
+/// never fails.
+struct CheckedTemporalArithmetic<'a> {
+    lhs: &'a ColumnView<'a>,
+    rhs: &'a ColumnView<'a>,
+    op: BinaryOperator,
+    domain: &'a Arc<ExecutionDomain>,
+    exec_options: &'a cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+}
+
+impl<'a> CheckedTemporalArithmetic<'a> {
+    /// Whether `lhs op rhs` is one of the checked operations: a timestamp plus
+    /// or minus a duration, a duration plus a timestamp, or a timestamp minus a
+    /// timestamp, with one resolution on both sides.
+    fn applies(lhs: &DataType, rhs: &DataType, op: BinaryOperator) -> bool {
+        let (lhs, rhs) = (lhs.id(), rhs.id());
+        let resolution = |id: TypeId| id.timestamp_resolution().or_else(|| id.duration_resolution());
+        let shape = match op {
+            BinaryOperator::Add => {
+                (lhs.is_timestamp() && rhs.is_duration()) || (lhs.is_duration() && rhs.is_timestamp())
+            },
+            BinaryOperator::Sub => lhs.is_timestamp() && (rhs.is_duration() || rhs.is_timestamp()),
+            _ => false,
+        };
+        shape && resolution(lhs) == resolution(rhs)
+    }
+
+    /// Returns `None` unless the operation is a checked one over a non-empty column.
+    fn new(
+        lhs: &'a ColumnView<'a>,
+        rhs: &'a ColumnView<'a>,
+        op: BinaryOperator,
+        domain: &'a Arc<ExecutionDomain>,
+        exec_options: &'a cudf_sys::cudf_exec_options_t,
+        operation: &'static str,
+    ) -> Result<Option<Self>> {
+        if !Self::applies(&lhs.data_type()?, &rhs.data_type()?, op) || lhs.len()? == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Self { lhs, rhs, op, domain, exec_options, operation }))
+    }
+
+    /// Fails when a valid row's result does not fit `Int64`.
+    fn check(&self) -> Result<()> {
+        let int64 = DataType::new(TypeId::Int64);
+        let lhs_counts = unary::cast_impl(self.lhs, &int64, self.domain, self.exec_options, self.operation)?;
+        let rhs_counts = unary::cast_impl(self.rhs, &int64, self.domain, self.exec_options, self.operation)?;
+        let (lhs_counts, rhs_counts) = (lhs_counts.view()?, rhs_counts.view()?);
+        let wrapped = self.combine(&lhs_counts, &rhs_counts, self.op)?;
+        let wrapped = wrapped.view()?;
+        // An addition overflows when the sum's sign differs from both
+        // operands'. A subtraction overflows when the operands' signs differ and
+        // the difference's sign differs from the minuend's.
+        let (first, second) = if self.op == BinaryOperator::Add {
+            (self.combine(&lhs_counts, &wrapped, BinaryOperator::BitwiseXor)?, {
+                self.combine(&rhs_counts, &wrapped, BinaryOperator::BitwiseXor)?
+            })
+        } else {
+            (
+                self.combine(&lhs_counts, &rhs_counts, BinaryOperator::BitwiseXor)?,
+                self.combine(&lhs_counts, &wrapped, BinaryOperator::BitwiseXor)?,
+            )
+        };
+        let sign_bits = self.combine(&first.view()?, &second.view()?, BinaryOperator::BitwiseAnd)?;
+        let zero = Scalar::from_scalar_value_in_domain(&ScalarValue::Int64(0), self.domain)?;
+        let overflow = binary_operation_vs_impl(
+            &sign_bits.view()?,
+            &zero,
+            BinaryOperator::Less,
+            &DataType::new(TypeId::Bool8),
+            self.domain,
+            self.exec_options,
+            self.operation,
+        )?;
+        if any_valid_row_true(&overflow.view()?, self.domain, self.exec_options, self.operation)? {
+            return Err(Error::new_with(
+                ErrorCode::ValueOutOfRange,
+                self.operation,
+                "timestamp arithmetic overflows: the result does not fit Int64 in a row where both operands are valid",
+            )
+            .with_detail("reason", "overflow")
+            .with_detail("operator", self.op.name())
+            .with_detail("lhs_type_id", self.lhs.data_type()?.id().to_string())
+            .with_detail("rhs_type_id", self.rhs.data_type()?.id().to_string()));
+        }
+        Ok(())
+    }
+
+    fn combine(&self, lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, op: BinaryOperator) -> Result<Column> {
+        binary_operation_vv_impl(
+            lhs,
+            rhs,
+            op,
+            &DataType::new(TypeId::Int64),
+            self.domain,
+            self.exec_options,
+            self.operation,
+        )
     }
 }
 

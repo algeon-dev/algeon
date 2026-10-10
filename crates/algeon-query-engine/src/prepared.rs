@@ -19,7 +19,7 @@ use query_planning::{
 };
 
 use crate::{
-    datatypes::{UnrepresentableLiteral, cudf_scalar_value, timestamp_unit_to_cudf_resolution},
+    datatypes::{UnrepresentableLiteral, cudf_scalar_value},
     native_error::cudf_unsupported_type_error,
 };
 
@@ -47,9 +47,6 @@ pub(crate) fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
         Expr::Cast { expr, target_type } => {
             if expr_has_declared_type(expr, target_type) {
                 return lower_expr_with_expected_type(expr, Some(target_type));
-            }
-            if let Some(cast) = lower_integer_temporal_cast(expr, target_type)? {
-                return Ok(cast);
             }
             let target_dtype = cudf_dtype_from_arrow_type(target_type).map_err(|error| {
                 cudf_unsupported_type_error(
@@ -142,9 +139,6 @@ fn lower_expr_with_expected_type(expr: &Expr, expected_type: Option<&ArrowDataTy
         Expr::Cast { expr, target_type } => {
             if expr_has_declared_type(expr, target_type) {
                 return lower_expr_with_expected_type(expr, Some(target_type));
-            }
-            if let Some(cast) = lower_integer_temporal_cast(expr, target_type)? {
-                return Ok(cast);
             }
             let target_dtype = cudf_dtype_from_arrow_type(target_type).map_err(|error| {
                 cudf_unsupported_type_error(
@@ -328,32 +322,6 @@ fn expr_declared_type(expr: &Expr) -> Option<ArrowDataType> {
         Expr::Extract { .. } => Some(ArrowDataType::Int32),
         Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => Some(ArrowDataType::Boolean),
         Expr::Alias { expr, .. } => expr_declared_type(expr),
-        _ => None,
-    }
-}
-
-fn lower_integer_temporal_cast(expr: &Expr, target_type: &ArrowDataType) -> Result<Option<CudfExpr>> {
-    if expr_declared_type(expr)
-        .is_some_and(|source_type| matches!(source_type, ArrowDataType::Date32 | ArrowDataType::Timestamp(_, None)))
-    {
-        return Ok(None);
-    }
-    let Some((timestamp_resolution, duration_resolution)) = temporal_cast_resolutions(target_type) else {
-        return Ok(None);
-    };
-    let duration = lower_expr(expr)?.cast(cudf::DataType::new(duration_resolution.duration_type_id()));
-    Ok(Some(duration.cast(cudf::DataType::new(timestamp_resolution.type_id()))))
-}
-
-fn temporal_cast_resolutions(
-    target_type: &ArrowDataType,
-) -> Option<(cudf::TimestampResolution, cudf::TimestampResolution)> {
-    match target_type {
-        ArrowDataType::Date32 => Some((cudf::TimestampResolution::Days, cudf::TimestampResolution::Days)),
-        ArrowDataType::Timestamp(unit, None) => {
-            let resolution = timestamp_unit_to_cudf_resolution(unit);
-            Some((resolution, resolution))
-        },
         _ => None,
     }
 }

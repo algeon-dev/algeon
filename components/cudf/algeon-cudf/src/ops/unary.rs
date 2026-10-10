@@ -7,7 +7,7 @@ use crate::{
         column::{Column, ColumnView, copy_view_in},
         error::{self, Error, ErrorCode, Result},
         scalar::Scalar,
-        types::{DataType, TypeId},
+        types::{DataType, TimestampResolution, TypeId},
     },
     frame::series::Series,
     ops::{reduction, strings as string_ops},
@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod decimal_cast;
+mod temporal_unit_cast;
 
 pub(crate) use decimal_cast::cast_to_decimal_impl;
 
@@ -198,8 +199,104 @@ pub(crate) fn cast_impl(
     if input_type.id().is_integral() && output_type.id() == TypeId::String {
         return string_ops::from_integers_impl(input, output_domain, exec_options, operation);
     }
+    if is_temporal_count_cast(input_type.id(), output_type.id()) {
+        return temporal_count_cast(input, &input_type, output_type, output_domain, exec_options, operation);
+    }
+    if let Some(resolution) = integer_to_timestamp_resolution(input_type.id(), output_type.id()) {
+        return integer_to_timestamp_cast(
+            input,
+            &input_type,
+            output_type,
+            resolution,
+            output_domain,
+            exec_options,
+            operation,
+        );
+    }
+    if let Some(resolutions) = temporal_unit_cast::resolutions(input_type.id(), output_type.id()) {
+        return temporal_unit_cast::cast(
+            input,
+            &input_type,
+            output_type,
+            resolutions,
+            output_domain,
+            exec_options,
+            operation,
+        );
+    }
     validate_integral_target_cast_input(input, &input_type, output_type, output_domain, exec_options, operation)?;
     libcudf_cast(input, &input_type, output_type, output_domain, exec_options, operation)
+}
+
+/// The resolution of the timestamp that an integer casts to.
+fn integer_to_timestamp_resolution(from: TypeId, to: TypeId) -> Option<TimestampResolution> {
+    from.is_integral().then(|| to.timestamp_resolution()).flatten()
+}
+
+/// Casts an integer to a timestamp the way Arrow does: the integer is the
+/// count of ticks since the Unix epoch.
+///
+/// libcudf casts an integer to a duration but not to a timestamp, so the count
+/// first becomes the duration of the same resolution, which keeps it.
+fn integer_to_timestamp_cast(
+    input: &ColumnView<'_>,
+    input_type: &DataType,
+    output_type: &DataType,
+    resolution: TimestampResolution,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<Column> {
+    let duration_type = DataType::new(resolution.duration_type_id());
+    let durations = libcudf_cast(input, input_type, &duration_type, output_domain, exec_options, operation)?;
+    libcudf_cast(&durations.view()?, &duration_type, output_type, output_domain, exec_options, operation)
+}
+
+/// Whether the cast reads the stored count of a timestamp or duration as an
+/// integer.
+fn is_temporal_count_cast(from: TypeId, to: TypeId) -> bool {
+    (from.is_timestamp() || from.is_duration()) && to.is_integral()
+}
+
+/// Casts a timestamp or duration to an integer type the way Arrow does: the
+/// stored count in the type's own unit is read as `Int64`, then cast like any
+/// other `Int64`, so a narrower or unsigned target fails where the count does
+/// not fit.
+///
+/// libcudf casts a duration to a number but not a timestamp, so a timestamp
+/// first becomes the duration of the same resolution, which keeps its count.
+fn temporal_count_cast(
+    input: &ColumnView<'_>,
+    input_type: &DataType,
+    output_type: &DataType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<Column> {
+    let counts = stored_counts(input, input_type, output_domain, exec_options, operation)?;
+    if output_type.id() == TypeId::Int64 {
+        return Ok(counts);
+    }
+    cast_impl(&counts.view()?, output_type, output_domain, exec_options, operation)
+}
+
+/// The stored tick count of a timestamp or duration column as `Int64`.
+fn stored_counts(
+    input: &ColumnView<'_>,
+    input_type: &DataType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<Column> {
+    let int64 = DataType::new(TypeId::Int64);
+    match input_type.id().timestamp_resolution() {
+        Some(resolution) => {
+            let duration_type = DataType::new(resolution.duration_type_id());
+            let duration = libcudf_cast(input, input_type, &duration_type, output_domain, exec_options, operation)?;
+            libcudf_cast(&duration.view()?, &duration_type, &int64, output_domain, exec_options, operation)
+        },
+        None => libcudf_cast(input, input_type, &int64, output_domain, exec_options, operation),
+    }
 }
 
 fn libcudf_cast(
@@ -289,7 +386,15 @@ fn validate_integral_target_cast_input(
         None if !source_id.is_float() && !source_id.is_decimal() => return Ok(()),
         _ => {},
     }
-    let out_of_range = |reason: &'static str| cast_input_out_of_range_error(operation, input_type, output_type, reason);
+    let out_of_range = |reason: &'static str| {
+        cast_out_of_range_error(
+            operation,
+            input_type,
+            output_type,
+            reason,
+            "cast input cannot be represented in the target integer type",
+        )
+    };
 
     if source_id.is_float() && contains_nan(input, output_domain, exec_options, operation)? {
         return Err(out_of_range("nan"));
@@ -385,20 +490,17 @@ fn fixed_point_integral_value(raw: i128, scale: i32) -> i128 {
     value.unwrap_or(if raw < 0 { i128::MIN } else { i128::MAX })
 }
 
-fn cast_input_out_of_range_error(
+fn cast_out_of_range_error(
     operation: &'static str,
     source_type: &DataType,
     target_type: &DataType,
     reason: &'static str,
+    message: &'static str,
 ) -> Error {
-    Error::new_with(
-        ErrorCode::ValueOutOfRange,
-        operation,
-        "cast input cannot be represented in the target integer type",
-    )
-    .with_detail("reason", reason)
-    .with_detail("source_type_id", format!("{:?}", source_type.id()).to_lowercase())
-    .with_detail("target_type_id", format!("{:?}", target_type.id()).to_lowercase())
+    Error::new_with(ErrorCode::ValueOutOfRange, operation, message)
+        .with_detail("reason", reason)
+        .with_detail("source_type_id", format!("{:?}", source_type.id()).to_lowercase())
+        .with_detail("target_type_id", format!("{:?}", target_type.id()).to_lowercase())
 }
 
 /// Check whether a cast between two data types is supported.
@@ -423,7 +525,10 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
         cudf_sys::cudf_data_type_destroy(to_handle);
     }
     status_result?;
-    Ok(out != 0 || (from.id().is_integral() && to.id() == TypeId::String))
+    Ok(out != 0
+        || (from.id().is_integral() && to.id() == TypeId::String)
+        || is_temporal_count_cast(from.id(), to.id())
+        || integer_to_timestamp_resolution(from.id(), to.id()).is_some())
 }
 
 pub(crate) fn is_nan_impl(

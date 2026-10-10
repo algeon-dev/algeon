@@ -574,8 +574,10 @@ pub fn query_planning::datatypes::is_arrow_fixed_width(&arrow_schema::datatype::
 pub fn query_planning::datatypes::is_narrow_decimal_carry_type(&arrow_schema::datatype::DataType) -> bool
 pub fn query_planning::datatypes::is_supported_arrow_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, &dyn query_planning::backend::BackendCapabilities) -> bool
 pub fn query_planning::datatypes::is_supported_arrow_implicit_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, &dyn query_planning::backend::BackendCapabilities) -> bool
+pub fn query_planning::datatypes::is_supported_ast_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, &dyn query_planning::backend::BackendCapabilities) -> bool
 pub fn query_planning::datatypes::is_supported_list_carry_type(&arrow_schema::datatype::DataType) -> bool
 pub fn query_planning::datatypes::is_timestamp_with_timezone(&arrow_schema::datatype::DataType) -> bool
+pub fn query_planning::datatypes::temporal_arithmetic_can_fail_at_runtime(query_planning::expr::BinaryOp, &arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
 pub mod query_planning::dynamic_filter
 pub enum query_planning::dynamic_filter::DynamicFilter
 pub query_planning::dynamic_filter::DynamicFilter::Empty

@@ -7,11 +7,11 @@ use algeon_datafusion::{
 };
 use arrow::{
     array::{
-        Array, AsArray, BooleanArray, Decimal128Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
-        Int64Array,
+        Array, AsArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int8Array, Int16Array,
+        Int32Array, Int64Array,
     },
-    compute::concat_batches,
-    datatypes::{Float32Type, Float64Type},
+    compute::{cast, concat_batches},
+    datatypes::{Float32Type, Float64Type, TimeUnit},
 };
 use cudf::testing::arrow::{
     arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
@@ -1228,6 +1228,281 @@ async fn native_runtime_decimal_division_failures_fail_the_query_like_cpu() {
             "dividend-scaling-overflow-in-an-active-case-branch",
             "SELECT row_id, CASE WHEN row_id >= 4 THEN big_over / CAST(3 AS DECIMAL(3, 2)) END AS q FROM bench",
         ),
+    ] {
+        assert_native_fails_like_cpu(&path, name, sql).await;
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn write_event_time_input_parquet(path: &std::path::Path) {
+    let timestamp = |unit| DataType::Timestamp(unit, None);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
+        Field::new("user_id", DataType::Int32, false),
+        Field::new("event_ms", timestamp(TimeUnit::Millisecond), false),
+        Field::new("event_us", timestamp(TimeUnit::Microsecond), true),
+        Field::new("event_ns", timestamp(TimeUnit::Nanosecond), true),
+        Field::new("view_ms", timestamp(TimeUnit::Millisecond), true),
+        Field::new("view_ns", timestamp(TimeUnit::Nanosecond), true),
+    ]));
+    // Each unit holds the same instant plus a sub-unit offset, so a cast that rescaled to a common unit
+    // would change the count. Rows 2, 4, 6 and 8 carry NULLs, and row 6 views before it happens.
+    let user_ids = vec![1, 2, 1, 3, 1, 2, 2, 1, 3];
+    let events =
+        [1_700_000_000_000, -86_400_000, 1_700_000_000_250, 0, 1_700_000_090_000, 3_600_000, 7_200_000, -1, 5_000];
+    let view_offsets =
+        [Some(1_500), Some(3_000_000), None, Some(0), Some(86_400_000), Some(-250), Some(1), None, Some(60_000)];
+    let nullable_rows = |keep: [bool; 9], scale: i64| {
+        events.iter().zip(keep).map(|(event, keep)| keep.then_some(event * scale + 7)).collect::<Vec<_>>()
+    };
+    let views = |scale: i64| {
+        events
+            .iter()
+            .zip(view_offsets)
+            .map(|(event, offset)| offset.map(|offset| (event + offset) * scale))
+            .collect::<Vec<_>>()
+    };
+    let as_timestamp = |values: Vec<Option<i64>>, unit: TimeUnit| -> ArrayRef {
+        cast(&Int64Array::from(values), &timestamp(unit)).unwrap()
+    };
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from((1..=9).collect::<Vec<_>>())),
+            Arc::new(Int32Array::from(user_ids)),
+            as_timestamp(events.iter().map(|event| Some(*event)).collect(), TimeUnit::Millisecond),
+            as_timestamp(
+                nullable_rows([true, true, true, false, true, true, true, false, true], 1_000),
+                TimeUnit::Microsecond,
+            ),
+            as_timestamp(
+                nullable_rows([true, false, true, true, true, false, true, true, true], 1_000_000),
+                TimeUnit::Nanosecond,
+            ),
+            as_timestamp(views(1), TimeUnit::Millisecond),
+            as_timestamp(views(1_000_000), TimeUnit::Nanosecond),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_timestamp_and_duration_counts_cast_to_bigint_like_cpu() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-temporal-counts");
+    let path = dir.join("input.parquet");
+    write_event_time_input_parquet(&path);
+
+    for (name, sql) in [
+        (
+            "stored-counts-per-unit",
+            "SELECT row_id, CAST(event_ms AS BIGINT) AS ms, CAST(event_us AS BIGINT) AS us, \
+             CAST(event_ns AS BIGINT) AS ns FROM bench ORDER BY row_id",
+        ),
+        (
+            "elapsed-counts-per-unit",
+            "SELECT row_id, CAST(view_ms - event_ms AS BIGINT) AS elapsed_ms, \
+             CAST(view_ns - event_ns AS BIGINT) AS elapsed_ns FROM bench ORDER BY row_id",
+        ),
+        (
+            "elapsed-count-across-units",
+            "SELECT row_id, CAST(view_ns - event_ms AS BIGINT) AS elapsed_ns FROM bench ORDER BY row_id",
+        ),
+        (
+            "gap-to-the-next-event",
+            "SELECT row_id, CAST(LEAD(event_ms) OVER (PARTITION BY user_id ORDER BY event_ms) - event_ms AS BIGINT) \
+             AS gap_ms FROM bench ORDER BY row_id",
+        ),
+        ("stored-count-filter", "SELECT row_id FROM bench WHERE CAST(event_ms AS BIGINT) > 1000000 ORDER BY row_id"),
+        (
+            "elapsed-count-filter",
+            "SELECT row_id FROM bench WHERE CAST(view_ms - event_ms AS BIGINT) >= 1000 ORDER BY row_id",
+        ),
+        (
+            "elapsed-count-aggregate",
+            "SELECT user_id, SUM(CAST(view_ms - event_ms AS BIGINT)) AS total_ms FROM bench GROUP BY user_id \
+             ORDER BY user_id",
+        ),
+    ] {
+        assert_native_matches_cpu(&path, name, sql).await;
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn write_timestamp_overflow_input_parquet(path: &std::path::Path) {
+    let timestamp = DataType::Timestamp(TimeUnit::Nanosecond, None);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
+        Field::new("ok", DataType::Boolean, false),
+        Field::new("base", timestamp.clone(), false),
+        Field::new("x", timestamp.clone(), true),
+        Field::new("y", timestamp.clone(), true),
+    ]));
+    let timestamps = |values: Vec<Option<i64>>| -> ArrayRef { cast(&Int64Array::from(values), &timestamp).unwrap() };
+    // Row 2 overflows in `base + (x - y)` and row 4 in `x - y`, both where `ok` is false, so a guarded CASE never
+    // evaluates them. Row 3 would overflow in the addition under a NULL `y`. Row 5 lands exactly on the limit.
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
+            Arc::new(BooleanArray::from(vec![true, false, true, false, true])),
+            timestamps(vec![Some(10), Some(i64::MAX - 1), Some(i64::MAX - 1), Some(0), Some(i64::MAX - 1)]),
+            timestamps(vec![Some(5), Some(5), Some(5), Some(i64::MAX), Some(1)]),
+            timestamps(vec![Some(2), Some(0), None, Some(i64::MIN), Some(0)]),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_timestamp_arithmetic_fails_like_cpu_only_on_rows_cpu_evaluates() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-timestamp-overflow");
+    let path = dir.join("input.parquet");
+    write_timestamp_overflow_input_parquet(&path);
+
+    // Rows 2 and 4 overflow where `ok` is false, row 3 carries a NULL `y`, and row 5 sits on the limit.
+    assert_native_matches_cpu(
+        &path,
+        "guarded-subtraction-and-addition",
+        "SELECT row_id, CASE WHEN ok THEN CAST(x - y AS BIGINT) END AS elapsed, \
+         CASE WHEN ok THEN CAST(base + (x - y) AS BIGINT) END AS shifted FROM bench ORDER BY row_id",
+    )
+    .await;
+    for (name, sql) in [
+        (
+            "subtraction-overflow",
+            "SELECT row_id, CASE WHEN row_id <> 2 THEN CAST(x - y AS BIGINT) END AS elapsed FROM bench",
+        ),
+        (
+            "addition-overflow",
+            "SELECT row_id, CASE WHEN row_id <> 4 THEN CAST(base + (x - y) AS BIGINT) END AS shifted FROM bench",
+        ),
+    ] {
+        assert_native_fails_like_cpu(&path, name, sql).await;
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn write_temporal_unit_cast_input_parquet(path: &std::path::Path) {
+    let timestamp = |unit| DataType::Timestamp(unit, None);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
+        Field::new("ts_ms", timestamp(TimeUnit::Millisecond), true),
+        Field::new("ts_ns", timestamp(TimeUnit::Nanosecond), true),
+        Field::new("s_ms", timestamp(TimeUnit::Second), true),
+        Field::new("ms_us", timestamp(TimeUnit::Millisecond), true),
+        Field::new("ms_ns", timestamp(TimeUnit::Millisecond), true),
+        Field::new("us_ns", timestamp(TimeUnit::Microsecond), true),
+        Field::new("dur_s", DataType::Duration(TimeUnit::Second), true),
+        Field::new("base_ms", timestamp(TimeUnit::Millisecond), true),
+        Field::new("day", DataType::Date32, true),
+    ]));
+    // `ts_ms` and `ts_ns` carry negative counts that are not a multiple of the coarser unit, where truncation
+    // toward zero and flooring differ. In every other column rows 1 to 6 hold the largest and smallest counts
+    // whose product with the unit ratio fits Int64, then 0, -1, 1 and a NULL. Row 7 is the first count above
+    // that limit and row 8 the first below it.
+    let counts = |limit: i64| {
+        vec![Some(limit), Some(-limit), Some(0), Some(-1), Some(1), None, Some(limit + 1), Some(-limit - 1)]
+    };
+    let typed = |values: Vec<Option<i64>>, data_type: DataType| -> ArrayRef {
+        cast(&Int64Array::from(values), &data_type).unwrap()
+    };
+    let ts_ms = vec![Some(1_500), Some(-1_500), Some(-1), None, Some(-999), Some(0), Some(i64::MIN), Some(i64::MAX)];
+    let ts_ns = vec![
+        Some(1_500_000_001),
+        Some(-1_500_000_001),
+        Some(-1),
+        None,
+        Some(-999_999_999),
+        Some(0),
+        Some(i64::MIN),
+        Some(i64::MAX),
+    ];
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from((1..=8).collect::<Vec<_>>())),
+            typed(ts_ms, timestamp(TimeUnit::Millisecond)),
+            typed(ts_ns, timestamp(TimeUnit::Nanosecond)),
+            typed(counts(i64::MAX / 1_000), timestamp(TimeUnit::Second)),
+            typed(counts(i64::MAX / 1_000), timestamp(TimeUnit::Millisecond)),
+            typed(counts(i64::MAX / 1_000_000), timestamp(TimeUnit::Millisecond)),
+            typed(counts(i64::MAX / 1_000), timestamp(TimeUnit::Microsecond)),
+            typed(counts(i64::MAX / 1_000), DataType::Duration(TimeUnit::Second)),
+            typed(vec![Some(0); 8], timestamp(TimeUnit::Millisecond)),
+            Arc::new(Date32Array::from(vec![
+                Some(106_751),
+                Some(-106_751),
+                Some(0),
+                Some(-1),
+                Some(1),
+                None,
+                Some(106_752),
+                Some(-106_752),
+            ])),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_temporal_unit_casts_truncate_and_fail_like_cpu() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-temporal-unit-casts");
+    let path = dir.join("input.parquet");
+    write_temporal_unit_cast_input_parquet(&path);
+
+    for (name, sql) in [
+        (
+            "coarser-unit-truncates-toward-zero",
+            "SELECT row_id, CAST(CAST(ts_ms AS TIMESTAMP(0)) AS BIGINT) AS ms_s, \
+             CAST(CAST(ts_ns AS TIMESTAMP(0)) AS BIGINT) AS ns_s, CAST(CAST(ts_ns AS TIMESTAMP(3)) AS BIGINT) AS ns_ms, \
+             CAST(CAST(ts_ns AS TIMESTAMP(6)) AS BIGINT) AS ns_us FROM bench ORDER BY row_id",
+        ),
+        (
+            "date-of-a-timestamp-floors",
+            "SELECT row_id, CAST(CAST(CAST(ts_ns AS DATE) AS TIMESTAMP(3)) AS BIGINT) AS day_ms FROM bench \
+             ORDER BY row_id",
+        ),
+        (
+            "finer-unit-within-int64",
+            "SELECT row_id, CASE WHEN row_id <= 6 THEN CAST(s_ms AS BIGINT) END AS s_count, \
+             CASE WHEN row_id <= 6 THEN CAST(CAST(s_ms AS TIMESTAMP(3)) AS BIGINT) END AS s_ms, \
+             CASE WHEN row_id <= 6 THEN CAST(CAST(ms_us AS TIMESTAMP(6)) AS BIGINT) END AS ms_us, \
+             CASE WHEN row_id <= 6 THEN CAST(CAST(ms_ns AS TIMESTAMP(9)) AS BIGINT) END AS ms_ns, \
+             CASE WHEN row_id <= 6 THEN CAST(CAST(us_ns AS TIMESTAMP(9)) AS BIGINT) END AS us_ns, \
+             CASE WHEN row_id <= 6 THEN CAST(CAST(day AS TIMESTAMP(9)) AS BIGINT) END AS day_ns, \
+             CASE WHEN row_id <= 6 THEN CAST(base_ms + dur_s AS BIGINT) END AS shifted, \
+             CASE WHEN row_id <= 6 THEN CAST(us_ns - ms_ns AS BIGINT) END AS elapsed_us FROM bench ORDER BY row_id",
+        ),
+    ] {
+        assert_native_matches_cpu(&path, name, sql).await;
+    }
+
+    for (name, sql) in [
+        (
+            "timestamp-above-the-limit",
+            "SELECT row_id, CASE WHEN row_id <> 8 THEN CAST(CAST(ms_us AS TIMESTAMP(6)) AS BIGINT) END AS us FROM bench",
+        ),
+        (
+            "timestamp-below-the-limit",
+            "SELECT row_id, CASE WHEN row_id <> 7 THEN CAST(CAST(ms_us AS TIMESTAMP(6)) AS BIGINT) END AS us FROM bench",
+        ),
+        ("seconds-to-milliseconds", "SELECT row_id, CAST(CAST(s_ms AS TIMESTAMP(3)) AS BIGINT) AS ms FROM bench"),
+        ("timestamp-to-nanoseconds", "SELECT row_id, CAST(CAST(ms_ns AS TIMESTAMP(9)) AS BIGINT) AS ns FROM bench"),
+        ("coerced-timestamp-difference", "SELECT row_id, CAST(ts_ns - ms_ns AS BIGINT) AS elapsed_ns FROM bench"),
+        ("coerced-duration-addition", "SELECT row_id, CAST(base_ms + dur_s AS BIGINT) AS shifted FROM bench"),
+        ("date-to-nanoseconds", "SELECT row_id, CAST(CAST(day AS TIMESTAMP(9)) AS BIGINT) AS day_ns FROM bench"),
     ] {
         assert_native_fails_like_cpu(&path, name, sql).await;
     }

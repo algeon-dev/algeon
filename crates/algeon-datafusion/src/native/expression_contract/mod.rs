@@ -22,8 +22,9 @@ pub(crate) use rejection::{
 };
 pub(in crate::native) use validation::{
     MAX_ACTIVATION_NODES, ResolvedColumn, ValidatedPhysicalExpr, binary_operator_subject, case_expr_data_type,
-    contains_fallible_operation, declared_decimal_divide_output_type, fallible_operand, is_decimal_division,
-    oversized_activation_rejection, physical_expr_data_type, resolve_column, validate_physical_expr_contract,
+    contains_fallible_operation, declared_decimal_divide_output_type, fallible_operand, is_checked_temporal_arithmetic,
+    is_decimal_division, oversized_activation_rejection, physical_expr_data_type, resolve_column,
+    validate_physical_expr_contract,
 };
 
 #[cfg(test)]

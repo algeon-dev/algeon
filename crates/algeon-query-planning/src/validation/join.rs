@@ -6,15 +6,15 @@ use super::{
     Expr, QueryError, QueryErrorCode, Result,
     expressions::{validate_column, validate_literal, validate_unary_math_types},
     types::{
-        is_decimal_type, is_integral_type, is_numeric_type, require_arithmetic_type, require_boolean,
-        require_comparable_types, require_compatible_types, require_date_or_timestamp, require_integral_type,
-        require_remainder_type, require_scalar_operator_value, require_string, require_timezone_free_operator_key,
+        is_integral_type, require_arithmetic_type, require_boolean, require_comparable_types, require_compatible_types,
+        require_date_or_timestamp, require_integral_type, require_remainder_type, require_scalar_operator_value,
+        require_string, require_timezone_free_operator_key,
     },
 };
 use crate::{
     backend::AnalysisContext,
     capability::{JoinForm, classify_join},
-    datatypes::{cast_can_fail_at_runtime, is_supported_arrow_cast},
+    datatypes::is_supported_ast_cast,
     expr::{BinaryOp, ColumnQualifier, ColumnRef, DatePart, LiteralValue, UnaryMathOp},
     plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId},
 };
@@ -480,7 +480,7 @@ fn validate_join_residual_expr(
         Expr::Cast { expr, target_type } => {
             let source_type =
                 validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)?;
-            if !is_supported_join_residual_ast_cast(&source_type, target_type, ctx) {
+            if !is_supported_ast_cast(&source_type, target_type, ctx.backend()) {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
                     "query_engine.join.validate_residual",
@@ -1117,17 +1117,6 @@ fn validate_fixed_day_interval_literal(expr: &Expr) -> Result<()> {
         .with_fact("nanoseconds", *nanoseconds));
     }
     Ok(())
-}
-
-fn is_supported_join_residual_ast_cast(
-    source_type: &ArrowDataType,
-    target_type: &ArrowDataType,
-    ctx: AnalysisContext<'_>,
-) -> bool {
-    matches!(target_type, ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64)
-        && (is_numeric_type(source_type) || is_decimal_type(source_type))
-        && is_supported_arrow_cast(source_type, target_type, ctx.backend())
-        && !cast_can_fail_at_runtime(source_type, target_type)
 }
 
 /// The cudf AST divides without the zero-divisor and overflow checks that

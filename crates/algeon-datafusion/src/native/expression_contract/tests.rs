@@ -25,7 +25,7 @@ use query_planning::expr::{
 };
 
 use super::{
-    ExpressionCapability, ScalarFunctionKind, SupportedBinaryOperator,
+    ExpressionCapability, ExpressionRejectionSubject, ScalarFunctionKind, SupportedBinaryOperator, fallible_operand,
     join_residual::validate_join_residual_scalar_function, join_residual_cast_mode, native_aggregate_function_kind,
     validate_join_residual, validate_physical_expr_contract,
 };
@@ -240,6 +240,79 @@ fn floor_and_ceil_admit_only_floating_point_arguments() {
         assert!(validate_physical_expr_contract(&whole, &schema).is_err(), "{name} over an integer");
         let exact = scalar_function(name, function, vec![col("exact", &schema).unwrap()], DataType::Decimal128(10, 2));
         assert!(validate_physical_expr_contract(&exact, &schema).is_err(), "{name} over a decimal");
+    }
+}
+
+#[test]
+fn timestamp_and_duration_counts_cast_to_int64_but_zoned_timestamps_are_rejected_by_name() {
+    let event_time = DataType::Timestamp(TimeUnit::Millisecond, None);
+    let zoned = DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("event_time", event_time.clone(), true),
+        Field::new("next_view", event_time, true),
+        Field::new("zoned", zoned.clone(), true),
+    ]));
+    let to_int64 =
+        |expr: Arc<dyn PhysicalExpr>| Arc::new(CastExpr::new(expr, DataType::Int64, None)) as Arc<dyn PhysicalExpr>;
+
+    let stored_count = to_int64(col("event_time", &schema).unwrap());
+    assert_validation_lowering_parity("timestamp count", &stored_count, &schema);
+    assert!(matches!(
+        lower_physical_expr_for_test(&stored_count, &schema).unwrap(),
+        NativeExpr::Cast { target_type: DataType::Int64, .. }
+    ));
+
+    let elapsed =
+        binary(col("next_view", &schema).unwrap(), Operator::Minus, col("event_time", &schema).unwrap(), &schema)
+            .unwrap();
+    let elapsed_count = to_int64(elapsed);
+    assert_validation_lowering_parity("duration count", &elapsed_count, &schema);
+
+    let rejection = validate_physical_expr_contract(&to_int64(col("zoned", &schema).unwrap()), &schema).unwrap_err();
+    assert_eq!(rejection.capability(), ExpressionCapability::CastPair);
+    assert_eq!(rejection.subject(), &ExpressionRejectionSubject::Cast { source: zoned, target: DataType::Int64 });
+}
+
+#[test]
+fn timestamp_arithmetic_is_restricted_inside_case_branches() {
+    let timestamp = DataType::Timestamp(TimeUnit::Nanosecond, None);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", timestamp.clone(), true),
+        Field::new("b", timestamp, true),
+        Field::new("flag", DataType::Boolean, true),
+    ]));
+    let column = |name: &str| col(name, &schema).unwrap();
+    let elapsed = || binary(column("a"), Operator::Minus, column("b"), &schema).unwrap();
+    let shifted = binary(column("a"), Operator::Plus, elapsed(), &schema).unwrap();
+    let unchecked = binary(column("flag"), Operator::And, column("flag"), &schema).unwrap();
+    let guarded = |expr: Arc<dyn PhysicalExpr>| {
+        Arc::new(CaseExpr::try_new(None, vec![(column("flag"), expr)], None).unwrap()) as Arc<dyn PhysicalExpr>
+    };
+    let right_operand = |expr: &NativeExpr| match expr {
+        NativeExpr::Binary { right, .. } => (**right).clone(),
+        other => panic!("not a binary operation: {other:?}"),
+    };
+    let lowered_then = |expr: Arc<dyn PhysicalExpr>| {
+        assert_validation_lowering_parity("timestamp arithmetic", &expr, &schema);
+        match lower_physical_expr_for_test(&expr, &schema).unwrap() {
+            NativeExpr::Case { branches, .. } => branches[0].then.clone(),
+            other => panic!("not a CASE: {other:?}"),
+        }
+    };
+
+    for expr in [elapsed(), Arc::clone(&shifted)] {
+        assert!(fallible_operand(&expr, &schema).is_some(), "{expr}");
+    }
+    assert!(fallible_operand(&unchecked, &schema).is_none());
+
+    // Outside a CASE every row is evaluated, as DataFusion does.
+    let plain = lower_physical_expr_for_test(&elapsed(), &schema).unwrap();
+    assert!(matches!(right_operand(&plain), NativeExpr::Column(_)));
+    // DataFusion evaluates a THEN value only on the rows where the condition holds. The checked operand is NULL on
+    // the other rows, which exempts them from the overflow check.
+    for expr in [elapsed(), shifted] {
+        let then = lowered_then(guarded(expr));
+        assert!(matches!(right_operand(&then), NativeExpr::Case { .. }), "{then:?}");
     }
 }
 
@@ -570,23 +643,45 @@ fn join_residual_rejects_decimal_division_because_it_is_not_restricted_to_the_ro
 }
 
 #[test]
-fn join_residual_ast_rejects_integer_division_and_casts_that_can_fail() {
-    let left_schema = Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, false)]));
+fn join_residual_ast_rejects_integer_division_and_casts_it_cannot_evaluate_or_check() {
+    let timestamp = DataType::Timestamp(TimeUnit::Millisecond, None);
+    let left_schema =
+        Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, false), Field::new("t", timestamp.clone(), false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("r", DataType::Int64, false)]));
-    let filter_schema =
-        Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, false), Field::new("r", DataType::Int64, false)]));
+    let filter_schema = Arc::new(Schema::new(vec![
+        Field::new("l", DataType::Int32, false),
+        Field::new("r", DataType::Int64, false),
+        Field::new("t", timestamp, false),
+    ]));
     let cast = |name: &str, target: DataType| -> Arc<dyn PhysicalExpr> {
         Arc::new(CastExpr::new(col(name, &filter_schema).unwrap(), target, None))
     };
     let filter = |expr: Arc<dyn PhysicalExpr>| {
         JoinFilter::new(
             expr,
-            vec![ColumnIndex { index: 0, side: JoinSide::Left }, ColumnIndex { index: 0, side: JoinSide::Right }],
+            vec![
+                ColumnIndex { index: 0, side: JoinSide::Left },
+                ColumnIndex { index: 0, side: JoinSide::Right },
+                ColumnIndex { index: 1, side: JoinSide::Left },
+            ],
             Arc::clone(&filter_schema),
         )
     };
     let validate =
         |expr: Arc<dyn PhysicalExpr>| validate_join_residual(&filter(expr), &left_schema, &right_schema).map(|_| ());
+
+    // The AST wraps timestamp arithmetic where Arrow fails the query.
+    let elapsed =
+        binary(col("t", &filter_schema).unwrap(), Operator::Minus, col("t", &filter_schema).unwrap(), &filter_schema)
+            .unwrap();
+    let elapsed_bound =
+        binary(elapsed, Operator::Gt, lit(ScalarValue::DurationMillisecond(Some(5))), &filter_schema).unwrap();
+    assert_eq!(validate(elapsed_bound).unwrap_err().capability(), ExpressionCapability::JoinResidualShape);
+
+    // The cast cannot fail, but the AST has no cast over temporal values.
+    let temporal_cast =
+        binary(cast("t", DataType::Int64), Operator::Eq, col("r", &filter_schema).unwrap(), &filter_schema).unwrap();
+    assert_eq!(validate(temporal_cast).unwrap_err().capability(), ExpressionCapability::CastPair);
 
     let failing_cast =
         binary(cast("l", DataType::UInt64), Operator::Eq, cast("r", DataType::UInt64), &filter_schema).unwrap();

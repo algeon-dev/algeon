@@ -12,11 +12,13 @@ use datafusion::{
     },
     physical_plan::joins::utils::JoinFilter,
 };
-use query_planning::{datatypes::cast_can_fail_at_runtime, validation::is_integral_type};
+use query_engine::rapids_backend::rapids_backend;
+use query_planning::{datatypes::is_supported_ast_cast, validation::is_integral_type};
 
 use super::{
     ExpressionCapability, ExpressionRejection, ExpressionRejectionSubject, ScalarFunctionKind, ValidatedPhysicalExpr,
-    binary_operator_subject, is_decimal_division, physical_expr_data_type, validate_physical_expr_contract,
+    binary_operator_subject, is_checked_temporal_arithmetic, is_decimal_division, physical_expr_data_type,
+    validate_physical_expr_contract,
 };
 
 /// Representation selected by the join-residual-specific cast contract.
@@ -154,12 +156,14 @@ fn validate_join_residual_shape(expr: &Arc<dyn PhysicalExpr>, filter: &JoinFilte
     }
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         // The cudf AST has no zero-divisor or overflow checks and no verified
-        // floating-point remainder. A residual is also lowered without
-        // restricting a CASE branch to the rows DataFusion evaluates, so a
-        // division that native evaluation checks would fail on a guarded row.
-        // Only floating-point division is admitted.
+        // floating-point remainder, and it wraps timestamp arithmetic that
+        // Arrow checks. A residual is also lowered without restricting a CASE
+        // branch to the rows DataFusion evaluates, so a division that native
+        // evaluation checks would fail on a guarded row. Only floating-point
+        // division is admitted.
         let ast_arithmetic_is_unchecked = match binary.op() {
             Operator::Modulo => true,
+            Operator::Plus | Operator::Minus => is_checked_temporal_arithmetic(binary, filter.schema()),
             Operator::Divide => {
                 is_decimal_division(binary, filter.schema())
                     || physical_expr_data_type(binary.left(), filter.schema())
@@ -187,9 +191,10 @@ fn validate_join_residual_shape(expr: &Arc<dyn PhysicalExpr>, filter: &JoinFilte
         if matches!(join_residual_cast_mode(cast.cast_type())?, JoinResidualCastMode::Materialize) {
             join_filter_expr_single_side(expr, filter)?;
         } else {
-            // The AST cast wraps or saturates where DataFusion fails the query.
+            // The AST cast wraps or saturates where DataFusion fails the query,
+            // and it has no cast over temporal values.
             let source_type = physical_expr_data_type(cast.expr(), filter.schema())?;
-            if cast_can_fail_at_runtime(&source_type, cast.cast_type()) {
+            if !is_supported_ast_cast(&source_type, cast.cast_type(), rapids_backend()) {
                 return Err(ExpressionRejection::unsupported_type(ExpressionCapability::CastPair).with_subject(
                     ExpressionRejectionSubject::Cast { source: source_type, target: cast.cast_type().clone() },
                 ));

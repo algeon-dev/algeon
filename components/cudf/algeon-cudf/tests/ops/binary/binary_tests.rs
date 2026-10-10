@@ -1,6 +1,6 @@
 //! Tests for binary operations (numeric and string).
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, ErrorStatus, Exec, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, ErrorStatus, Exec, TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::{
         binary::{self, BinaryOperator},
@@ -746,6 +746,137 @@ fn test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics(
     assert_eq!(unsigned.on(Exec::RETAINED).div(&same).unwrap().to_vec_strict::<u32>().unwrap(), vec![1]);
 }
 
+// ---------------------------------------------------------------------------
+// Timestamp arithmetic: arrow-arith `add_checked` and `sub_checked` row semantics
+// ---------------------------------------------------------------------------
+
+const EVERY_TEMPORAL_RESOLUTION: [TimestampResolution; 4] = [
+    TimestampResolution::Seconds,
+    TimestampResolution::Milliseconds,
+    TimestampResolution::Microseconds,
+    TimestampResolution::Nanoseconds,
+];
+
+/// A duration series and a timestamp series of one resolution over the same counts.
+fn temporal_series(counts: &[i64], validity: &[bool], resolution: TimestampResolution) -> (cudf::Series, cudf::Series) {
+    let counts = nullable_series::<i64>("x", counts, validity).unwrap();
+    let durations = counts.on(Exec::RETAINED).astype(resolution.duration_type_id()).unwrap();
+    let timestamps = durations.on(Exec::RETAINED).astype(resolution.type_id()).unwrap();
+    (durations, timestamps)
+}
+
+fn all_valid(counts: &[i64], resolution: TimestampResolution) -> (cudf::Series, cudf::Series) {
+    temporal_series(counts, &vec![true; counts.len()], resolution)
+}
+
+fn temporal_counts(result: cudf::Result<cudf::Series>) -> Vec<Option<i64>> {
+    result.unwrap().on(Exec::RETAINED).astype(TypeId::Int64).unwrap().to_optional_vec::<i64>().unwrap()
+}
+
+fn assert_temporal_overflow(result: cudf::Result<cudf::Series>, operator: &str, context: &str) {
+    let error = result.expect_err(context);
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange, "{context}");
+    assert_eq!(error.kind(), ErrorKind::InvalidInput, "{context}");
+    assert_eq!(error.detail_value("reason"), Some("overflow"), "{context}");
+    assert_eq!(error.detail_value("operator"), Some(operator), "{context}");
+}
+
+fn test_timestamp_arithmetic_values_and_failures_follow_arrow_checked_arithmetic() {
+    for resolution in EVERY_TEMPORAL_RESOLUTION {
+        let context = format!("{resolution:?}");
+        // Results that land exactly on the Int64 limits are in range.
+        let (_, timestamps) = all_valid(&[i64::MAX - 5, i64::MIN + 5, 10, -3], resolution);
+        let (durations, _) = all_valid(&[5, -5, -4, 3], resolution);
+        let sum = temporal_counts(timestamps.on(Exec::RETAINED).add(&durations));
+        assert_eq!(sum, vec![Some(i64::MAX), Some(i64::MIN), Some(6), Some(0)], "ts + dur {context}");
+        assert_eq!(temporal_counts(durations.on(Exec::RETAINED).add(&timestamps)), sum, "dur + ts {context}");
+        let difference = temporal_counts(timestamps.on(Exec::RETAINED).sub(&durations));
+        assert_eq!(
+            difference,
+            vec![Some(i64::MAX - 10), Some(i64::MIN + 10), Some(14), Some(-6)],
+            "ts - dur {context}"
+        );
+
+        let (_, later) = all_valid(&[i64::MAX, i64::MIN, -1, 0], resolution);
+        let (_, earlier) = all_valid(&[0, 0, i64::MIN, i64::MIN + 1], resolution);
+        let gap = later.on(Exec::RETAINED).sub(&earlier).unwrap();
+        assert_eq!(gap.dtype().unwrap().id(), resolution.duration_type_id(), "ts - ts {context}");
+        assert_eq!(
+            temporal_counts(Ok(gap)),
+            vec![Some(i64::MAX), Some(i64::MIN), Some(i64::MAX), Some(i64::MAX)],
+            "ts - ts {context}"
+        );
+
+        // One past each limit fails, whichever operand carries the extreme value.
+        let (one, max) = (all_valid(&[1], resolution), all_valid(&[i64::MAX], resolution));
+        let (minus_one, min) = (all_valid(&[-1], resolution), all_valid(&[i64::MIN], resolution));
+        let minus_two = all_valid(&[-2], resolution);
+        let cases = [
+            ("ts + dur", max.1.on(Exec::RETAINED).add(&one.0), "add"),
+            ("dur + ts", one.0.on(Exec::RETAINED).add(&max.1), "add"),
+            ("MIN + -1", min.1.on(Exec::RETAINED).add(&minus_one.0), "add"),
+            ("ts - dur", min.1.on(Exec::RETAINED).sub(&one.0), "sub"),
+            ("MAX - -1", max.1.on(Exec::RETAINED).sub(&minus_one.0), "sub"),
+            ("MAX - MIN", max.1.on(Exec::RETAINED).sub(&min.1), "sub"),
+            ("MIN - 1", min.1.on(Exec::RETAINED).sub(&one.1), "sub"),
+            ("-2 - MAX", minus_two.1.on(Exec::RETAINED).sub(&max.1), "sub"),
+        ];
+        for (name, result, operator) in cases {
+            assert_temporal_overflow(result, operator, &format!("{name} {context}"));
+        }
+    }
+
+    // The expression evaluator reaches the same check.
+    let resolution = TimestampResolution::Milliseconds;
+    let (durations, timestamps) = all_valid(&[1, 1], resolution);
+    let (_, high) = all_valid(&[0, i64::MAX], resolution);
+    let (_, low) = all_valid(&[0, i64::MIN], resolution);
+    let df = DataFrame::from_series([("dur", durations), ("ts", timestamps), ("high", high), ("low", low)]).unwrap();
+    assert_eq!((col("ts") + col("dur")).eval(&df).unwrap().len(), 2);
+    assert_eq!((col("high") + col("dur")).eval(&df).unwrap_err().code(), ErrorCode::ValueOutOfRange);
+    assert_eq!((col("dur") + col("high")).eval(&df).unwrap_err().code(), ErrorCode::ValueOutOfRange);
+    assert_eq!((col("low") - col("dur")).eval(&df).unwrap_err().code(), ErrorCode::ValueOutOfRange);
+    assert_eq!((col("high") - col("low")).eval(&df).unwrap_err().code(), ErrorCode::ValueOutOfRange);
+}
+
+fn test_timestamp_arithmetic_never_fails_in_a_null_row() {
+    for resolution in EVERY_TEMPORAL_RESOLUTION {
+        let context = format!("{resolution:?}");
+        // Rows 0 to 2 overflow under a null timestamp, a null duration and both. Row 3 is valid and in range.
+        let (durations, _) = temporal_series(&[1, 1, 1, 7], &[true, false, false, true], resolution);
+        let (_, high) = temporal_series(&[i64::MAX, i64::MAX, i64::MAX, 3], &[false, true, false, true], resolution);
+        let expected = vec![None, None, None, Some(10)];
+        assert_eq!(temporal_counts(high.on(Exec::RETAINED).add(&durations)), expected, "{context}");
+        assert_eq!(temporal_counts(durations.on(Exec::RETAINED).add(&high)), expected, "{context}");
+
+        let (_, low) = temporal_series(&[i64::MIN, i64::MIN, i64::MIN, 3], &[false, true, false, true], resolution);
+        assert_eq!(
+            temporal_counts(low.on(Exec::RETAINED).sub(&durations)),
+            vec![None, None, None, Some(-4)],
+            "{context}"
+        );
+
+        let (_, maximum) = temporal_series(&[i64::MAX, 0], &[true, false], resolution);
+        let (_, minimum) = temporal_series(&[0, i64::MIN], &[false, true], resolution);
+        assert_eq!(maximum.on(Exec::RETAINED).sub(&minimum).unwrap().null_count(), 2, "{context}");
+
+        let (ones, _) = all_valid(&[1, 1], resolution);
+        let (_, all_null) = temporal_series(&[i64::MAX, i64::MAX], &[false, false], resolution);
+        assert_eq!(all_null.on(Exec::RETAINED).add(&ones).unwrap().null_count(), 2, "{context}");
+        let (no_durations, no_timestamps) = all_valid(&[], resolution);
+        assert_eq!(no_timestamps.on(Exec::RETAINED).add(&no_durations).unwrap().len(), 0, "{context}");
+
+        // The same overflowing rows fail once they are valid.
+        let (_, valid_high) = all_valid(&[i64::MAX, 3], resolution);
+        let (valid_durations, _) = all_valid(&[1, 7], resolution);
+        assert_temporal_overflow(
+            valid_high.on(Exec::RETAINED).add(&valid_durations),
+            "add",
+            &format!("valid rows {context}"),
+        );
+    }
+}
+
 fn assert_same_float_bits(actual: &[f64], expected: &[f64]) {
     assert_eq!(actual.len(), expected.len());
     for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
@@ -833,6 +964,11 @@ fn binary_tests_cases() {
             "test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics",
             test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics,
         ),
+        (
+            "test_timestamp_arithmetic_values_and_failures_follow_arrow_checked_arithmetic",
+            test_timestamp_arithmetic_values_and_failures_follow_arrow_checked_arithmetic,
+        ),
+        ("test_timestamp_arithmetic_never_fails_in_a_null_row", test_timestamp_arithmetic_never_fails_in_a_null_row),
         (
             "test_float_remainder_matches_the_rust_remainder_for_edge_values",
             test_float_remainder_matches_the_rust_remainder_for_edge_values,

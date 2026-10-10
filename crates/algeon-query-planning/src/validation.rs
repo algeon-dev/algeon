@@ -51,9 +51,9 @@ pub(crate) use expressions::validate_expr;
 use expressions::{comma_separated, validate_projection_output_expr};
 use join::validate_join_capability;
 pub(crate) use join::walk_join_residual_column_sides;
-pub(crate) use types::require_boolean;
 #[doc(hidden)]
 pub use types::{is_integral_type, is_string_type};
+pub(crate) use types::{require_boolean, temporal_duration_binary_output_type};
 use types::{require_scalar_operator_value, require_timezone_free_operator_key};
 
 #[doc(hidden)]

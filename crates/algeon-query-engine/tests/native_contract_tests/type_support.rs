@@ -680,6 +680,31 @@ fn range_checked_integral_cast_support_is_explicit_and_not_implicit() {
 }
 
 #[test]
+fn temporal_count_casts_to_int64_are_explicit_and_cannot_fail() {
+    use query_planning::datatypes::{cast_can_fail_at_runtime, is_supported_ast_cast};
+
+    let units = [TimeUnit::Second, TimeUnit::Millisecond, TimeUnit::Microsecond, TimeUnit::Nanosecond];
+    for unit in units {
+        for source in [DataType::Timestamp(unit, None), DataType::Duration(unit)] {
+            assert!(is_supported_arrow_cast(&source, &DataType::Int64, rapids_backend()), "{source:?}");
+            assert!(!is_supported_arrow_implicit_cast(&source, &DataType::Int64, rapids_backend()), "{source:?}");
+            assert!(!cast_can_fail_at_runtime(&source, &DataType::Int64), "{source:?}");
+            // The cuDF AST casts only numeric and decimal values.
+            assert!(!is_supported_ast_cast(&source, &DataType::Int64, rapids_backend()), "{source:?}");
+            for target in [DataType::Int32, DataType::UInt64, DataType::Float64, DataType::Utf8, DataType::Boolean] {
+                assert!(!is_supported_arrow_cast(&source, &target, rapids_backend()), "{source:?} -> {target:?}");
+            }
+        }
+        let zoned = DataType::Timestamp(unit, Some("UTC".into()));
+        assert!(!is_supported_arrow_cast(&zoned, &DataType::Int64, rapids_backend()), "{zoned:?}");
+    }
+    assert!(!is_supported_arrow_cast(&DataType::Date32, &DataType::Int64, rapids_backend()));
+    assert!(is_supported_ast_cast(&DataType::Int32, &DataType::Int64, rapids_backend()));
+    assert!(is_supported_ast_cast(&DataType::Decimal128(10, 2), &DataType::Float64, rapids_backend()));
+    assert!(!is_supported_ast_cast(&DataType::Float64, &DataType::Int64, rapids_backend()));
+}
+
+#[test]
 fn casts_that_can_fail_at_runtime_exclude_widening_and_identity() {
     use query_planning::datatypes::cast_can_fail_at_runtime;
 
@@ -697,6 +722,13 @@ fn casts_that_can_fail_at_runtime_exclude_widening_and_identity() {
         (DataType::Decimal128(38, 4), DataType::Decimal128(10, 2)),
         (DataType::Decimal128(10, 2), DataType::Decimal128(10, 4)),
         (DataType::Decimal128(10, 4), DataType::Decimal128(8, 2)),
+        // A finer unit multiplies the stored count, which can leave Int64.
+        (DataType::Timestamp(TimeUnit::Second, None), DataType::Timestamp(TimeUnit::Millisecond, None)),
+        (DataType::Timestamp(TimeUnit::Millisecond, None), DataType::Timestamp(TimeUnit::Nanosecond, None)),
+        (DataType::Duration(TimeUnit::Second), DataType::Duration(TimeUnit::Nanosecond)),
+        (DataType::Duration(TimeUnit::Microsecond), DataType::Duration(TimeUnit::Nanosecond)),
+        (DataType::Date32, DataType::Timestamp(TimeUnit::Microsecond, None)),
+        (DataType::Date32, DataType::Timestamp(TimeUnit::Nanosecond, None)),
     ] {
         assert!(cast_can_fail_at_runtime(&source, &target), "{source:?} -> {target:?}");
     }
@@ -713,6 +745,12 @@ fn casts_that_can_fail_at_runtime_exclude_widening_and_identity() {
         // Dropping two digits leaves 8, and rounding up adds at most one more.
         (DataType::Decimal128(10, 4), DataType::Decimal128(10, 2)),
         (DataType::Decimal128(10, 2), DataType::Decimal128(10, 2)),
+        // A coarser unit divides, and an Int32 day count fits every unit down to milliseconds.
+        (DataType::Timestamp(TimeUnit::Millisecond, None), DataType::Timestamp(TimeUnit::Second, None)),
+        (DataType::Timestamp(TimeUnit::Nanosecond, None), DataType::Timestamp(TimeUnit::Microsecond, None)),
+        (DataType::Duration(TimeUnit::Nanosecond), DataType::Duration(TimeUnit::Second)),
+        (DataType::Date32, DataType::Timestamp(TimeUnit::Second, None)),
+        (DataType::Date32, DataType::Timestamp(TimeUnit::Millisecond, None)),
     ] {
         assert!(!cast_can_fail_at_runtime(&source, &target), "{source:?} -> {target:?}");
     }
@@ -744,6 +782,148 @@ fn floor_and_ceil_validate_only_over_matching_floating_point_types() {
         project(op, "score", DataType::Float64).unwrap_or_else(|error| panic!("{op} over Float64: {error:?}"));
         assert_eq!(project(op, "whole", DataType::Int64).unwrap_err().code(), QueryErrorCode::UnsupportedType);
         assert_eq!(project(op, "score", DataType::Float32).unwrap_err().code(), QueryErrorCode::UnsupportedType);
+    }
+}
+
+#[test]
+fn timestamp_difference_is_a_duration_only_between_timezone_free_timestamps_of_one_unit() {
+    let timestamp = |unit| DataType::Timestamp(unit, None);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("later_ms", timestamp(TimeUnit::Millisecond), true),
+        Field::new("earlier_ms", timestamp(TimeUnit::Millisecond), true),
+        Field::new("earlier_us", timestamp(TimeUnit::Microsecond), true),
+        Field::new("zoned", DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())), true),
+        Field::new("day", DataType::Date32, true),
+    ]));
+    let subtract = |left: &str, right: &str, output: DataType| {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+        let output_schema = Arc::new(Schema::new(vec![Field::new("out", output, true)]));
+        let difference = Expr::binary(Expr::column(left), BinaryOp::Subtract, Expr::column(right));
+        let projection = builder.add_projection(source, projection_outputs(vec![difference], output_schema)).unwrap();
+        let plan = builder.finish_with_host_sink(projection).unwrap();
+        preflight_query_plan(&plan)
+    };
+
+    let milliseconds = DataType::Duration(TimeUnit::Millisecond);
+    subtract("later_ms", "earlier_ms", milliseconds.clone()).unwrap();
+    for (left, right) in [("later_ms", "earlier_us"), ("zoned", "zoned"), ("day", "day")] {
+        let error = subtract(left, right, milliseconds.clone()).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "{left} - {right}");
+    }
+}
+
+/// The output type native validation derives for `left op right`, as `Debug` text, or its rejection.
+///
+/// The projection declares `left` as its output, so a different derived type surfaces as the schema mismatch that
+/// carries it.
+fn planned_temporal_binary_type(left: &DataType, op: BinaryOp, right: &DataType) -> Result<String, QueryError> {
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("left", left.clone(), true), Field::new("right", right.clone(), true)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("out", left.clone(), true)]));
+    let result = Expr::binary(Expr::column("left"), op, Expr::column("right"));
+    let projection = builder.add_projection(source, projection_outputs(vec![result], output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+    match preflight_query_plan(&plan) {
+        Ok(_) => Ok(format!("{left:?}")),
+        Err(error) if error.fact_value("reason") == Some("projection_output_schema_mismatch") => {
+            Ok(error.fact_value("actual_type").expect("schema mismatch names the derived type").to_owned())
+        },
+        Err(error) => Err(error),
+    }
+}
+
+#[test]
+fn timestamp_plus_or_minus_duration_validates_only_for_one_unit_and_never_for_dates() {
+    let units = [TimeUnit::Second, TimeUnit::Millisecond, TimeUnit::Microsecond, TimeUnit::Nanosecond];
+    let timestamp = |unit| DataType::Timestamp(unit, None);
+    let duration = DataType::Duration;
+    for unit in units {
+        let derived = |left: DataType, op, right: DataType| planned_temporal_binary_type(&left, op, &right).unwrap();
+        let expected = format!("{:?}", timestamp(unit));
+        assert_eq!(derived(timestamp(unit), BinaryOp::Add, duration(unit)), expected);
+        assert_eq!(derived(timestamp(unit), BinaryOp::Subtract, duration(unit)), expected);
+        assert_eq!(derived(duration(unit), BinaryOp::Add, timestamp(unit)), expected);
+    }
+
+    let rejected_with = |left: DataType, op, right: DataType, reason: &str| {
+        let error = planned_temporal_binary_type(&left, op, &right).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "{left:?} {op:?} {right:?}");
+        assert_eq!(error.fact_value("reason"), Some(reason), "{left:?} {op:?} {right:?}");
+    };
+    for unit in units {
+        // Arrow has no date plus or minus a duration, and libcudf's date unit is the day.
+        rejected_with(DataType::Date32, BinaryOp::Add, duration(unit), "date_duration_arithmetic_unsupported");
+        rejected_with(DataType::Date32, BinaryOp::Subtract, duration(unit), "date_duration_arithmetic_unsupported");
+        rejected_with(duration(unit), BinaryOp::Add, DataType::Date32, "date_duration_arithmetic_unsupported");
+    }
+    let milliseconds = timestamp(TimeUnit::Millisecond);
+    for unit in [TimeUnit::Second, TimeUnit::Microsecond, TimeUnit::Nanosecond] {
+        rejected_with(milliseconds.clone(), BinaryOp::Add, duration(unit), "timestamp_duration_unit_mismatch");
+        rejected_with(milliseconds.clone(), BinaryOp::Subtract, duration(unit), "timestamp_duration_unit_mismatch");
+        rejected_with(duration(unit), BinaryOp::Add, milliseconds.clone(), "timestamp_duration_unit_mismatch");
+    }
+}
+
+#[test]
+fn temporal_arithmetic_that_validates_has_the_same_operation_in_the_cudf_backend() {
+    let temporal_types = [TimeUnit::Second, TimeUnit::Millisecond, TimeUnit::Microsecond, TimeUnit::Nanosecond]
+        .into_iter()
+        .flat_map(|unit| [DataType::Timestamp(unit, None), DataType::Duration(unit)])
+        .chain([DataType::Date32])
+        .collect::<Vec<_>>();
+    let mut accepted = 0;
+    for op in [BinaryOp::Add, BinaryOp::Subtract] {
+        for left in &temporal_types {
+            for right in &temporal_types {
+                let Ok(planned) = planned_temporal_binary_type(left, op, right) else {
+                    continue;
+                };
+                accepted += 1;
+                let executed = rapids_backend().binary_output_type(op, left, right).unwrap_or_else(|error| {
+                    panic!("planning accepts {left:?} {op:?} {right:?} but execution cannot run it: {error:?}")
+                });
+                assert_eq!(planned, format!("{executed:?}"), "{left:?} {op:?} {right:?}");
+            }
+        }
+    }
+    // Per unit: timestamp + duration, timestamp - duration, duration + timestamp, and timestamp - timestamp.
+    assert_eq!(accepted, 16);
+}
+
+#[test]
+fn only_timestamp_arithmetic_that_arrow_checks_can_fail_at_runtime() {
+    use query_planning::datatypes::temporal_arithmetic_can_fail_at_runtime;
+
+    let timestamp = DataType::Timestamp(TimeUnit::Millisecond, None);
+    let duration = DataType::Duration(TimeUnit::Millisecond);
+    for (op, left, right) in [
+        (BinaryOp::Add, &timestamp, &duration),
+        (BinaryOp::Add, &duration, &timestamp),
+        (BinaryOp::Subtract, &timestamp, &duration),
+        (BinaryOp::Subtract, &timestamp, &timestamp),
+    ] {
+        assert!(temporal_arithmetic_can_fail_at_runtime(op, left, right), "{left:?} {op:?} {right:?}");
+    }
+    let zoned = DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()));
+    let nanoseconds = DataType::Timestamp(TimeUnit::Nanosecond, None);
+    for (op, left, right) in [
+        // Unsupported combinations never run, so they have nothing to check.
+        (BinaryOp::Add, &timestamp, &timestamp),
+        (BinaryOp::Subtract, &duration, &timestamp),
+        (BinaryOp::Subtract, &timestamp, &nanoseconds),
+        (BinaryOp::Subtract, &zoned, &zoned),
+        (BinaryOp::Subtract, &DataType::Date32, &DataType::Date32),
+        (BinaryOp::Add, &DataType::Date32, &duration),
+        (BinaryOp::Add, &timestamp, &DataType::Duration(TimeUnit::Second)),
+        (BinaryOp::Subtract, &timestamp, &DataType::Duration(TimeUnit::Nanosecond)),
+        // Other operators and operand types.
+        (BinaryOp::Multiply, &duration, &DataType::Int64),
+        (BinaryOp::Add, &DataType::Int64, &DataType::Int64),
+    ] {
+        assert!(!temporal_arithmetic_can_fail_at_runtime(op, left, right), "{left:?} {op:?} {right:?}");
     }
 }
 

@@ -11,11 +11,11 @@ use std::collections::HashMap;
 
 use arrow::datatypes::{
     DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal32Type, Decimal64Type, Decimal128Type, Field, FieldRef,
-    Fields, validate_decimal_precision_and_scale,
+    Fields, TimeUnit, validate_decimal_precision_and_scale,
 };
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
-use crate::backend::BackendCapabilities;
+use crate::{backend::BackendCapabilities, expr::BinaryOp, validation::temporal_duration_binary_output_type};
 
 /// Returns whether this Arrow type is a timestamp carrying timezone metadata.
 pub fn is_timestamp_with_timezone(data_type: &ArrowDataType) -> bool {
@@ -236,7 +236,27 @@ pub fn is_supported_arrow_cast(
             || is_supported_decimal_to_integral_cast(source_type, target_type)
             || is_supported_range_checked_integral_cast(source_type, target_type)
             || is_supported_integral_to_string_cast(source_type, target_type)
+            || is_supported_temporal_count_cast(source_type, target_type)
             || is_supported_float64_to_float32_cast(source_type, target_type))
+}
+
+/// Returns whether the cuDF AST evaluates an explicit cast.
+///
+/// The AST casts integer, floating-point, and decimal values to `Int64`,
+/// `UInt64`, and `Float64` without the range, `NaN`, and precision checks
+/// DataFusion applies, and it has no cast over temporal values. A cast is
+/// therefore AST-safe only when it is supported, takes a numeric or decimal
+/// source, and cannot fail at runtime.
+pub fn is_supported_ast_cast(
+    source_type: &ArrowDataType,
+    target_type: &ArrowDataType,
+    backend: &dyn BackendCapabilities,
+) -> bool {
+    matches!(target_type, ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64)
+        && (source_type.is_integer()
+            || matches!(source_type, ArrowDataType::Float32 | ArrowDataType::Float64 | ArrowDataType::Decimal128(_, _)))
+        && is_supported_arrow_cast(source_type, target_type, backend)
+        && !cast_can_fail_at_runtime(source_type, target_type)
 }
 
 /// Returns whether native evaluation of a supported explicit cast can fail on
@@ -252,9 +272,21 @@ pub fn is_supported_arrow_cast(
 /// Floating-point sources always can, because NaN and infinity never fit. An
 /// integer or decimal source cannot fail when every value its type allows
 /// fits, the same condition under which Arrow skips the check.
+///
+/// A timestamp or duration cast to `Int64` cannot fail, because it reads the
+/// stored count unchanged.
+///
+/// A timestamp, duration, or `Date32` cast to a finer unit multiplies the
+/// stored count and fails when a valid product leaves `Int64`, which every
+/// source count can do except the `Int32` day count of a `Date32` at a unit
+/// no finer than milliseconds. A cast to a coarser unit divides and cannot
+/// fail.
 pub fn cast_can_fail_at_runtime(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     if source_type == target_type {
         return false;
+    }
+    if let Some(overflows) = temporal_unit_cast_overflows(source_type, target_type) {
+        return overflows;
     }
     if let ArrowDataType::Decimal128(target_precision, target_scale) = target_type {
         return (is_supported_numeric_to_decimal_cast(source_type, target_type)
@@ -265,6 +297,45 @@ pub fn cast_can_fail_at_runtime(source_type: &ArrowDataType, target_type: &Arrow
         && (is_supported_decimal_to_integral_cast(source_type, target_type)
             || is_supported_range_checked_integral_cast(source_type, target_type))
         && !is_supported_numeric_widening_cast(source_type, target_type)
+}
+
+/// For a cast between two timestamp units, two duration units, or from a
+/// `Date32` to a timestamp, whether the scaled stored count can leave `Int64`.
+/// `None` for any other cast.
+fn temporal_unit_cast_overflows(source_type: &ArrowDataType, target_type: &ArrowDataType) -> Option<bool> {
+    const NANOSECONDS_PER_DAY: i128 = 86_400_000_000_000;
+    let unit_nanoseconds = |unit: &TimeUnit| match unit {
+        TimeUnit::Second => 1_000_000_000,
+        TimeUnit::Millisecond => 1_000_000,
+        TimeUnit::Microsecond => 1_000,
+        TimeUnit::Nanosecond => 1,
+    };
+    let int64_counts = (i128::from(i64::MIN), i128::from(i64::MAX));
+    let (source_nanoseconds, (lowest_count, highest_count), target_nanoseconds) = match (source_type, target_type) {
+        (ArrowDataType::Timestamp(source, None), ArrowDataType::Timestamp(target, None))
+        | (ArrowDataType::Duration(source), ArrowDataType::Duration(target)) => {
+            (unit_nanoseconds(source), int64_counts, unit_nanoseconds(target))
+        },
+        (ArrowDataType::Date32, ArrowDataType::Timestamp(target, None)) => {
+            (NANOSECONDS_PER_DAY, (i128::from(i32::MIN), i128::from(i32::MAX)), unit_nanoseconds(target))
+        },
+        _ => return None,
+    };
+    let factor = source_nanoseconds / target_nanoseconds;
+    Some(factor > 1 && (lowest_count * factor < int64_counts.0 || highest_count * factor > int64_counts.1))
+}
+
+/// Returns whether native evaluation of a supported temporal `+` or `-` can
+/// fail on the values it reads.
+///
+/// Timestamp plus or minus duration, and timestamp minus timestamp, fail the
+/// query in a row where both operands are valid and the result leaves `Int64`.
+/// Arrow computes them with `add_checked` and `sub_checked` even for the
+/// wrapping SQL operators, and DataFusion inherits that.
+pub fn temporal_arithmetic_can_fail_at_runtime(op: BinaryOp, left: &ArrowDataType, right: &ArrowDataType) -> bool {
+    let is_timestamp = |data_type: &ArrowDataType| matches!(data_type, ArrowDataType::Timestamp(_, None));
+    (is_timestamp(left) || is_timestamp(right))
+        && matches!(temporal_duration_binary_output_type(op, left, right), Ok(Some(_)))
 }
 
 /// Whether every value of an integer or `Decimal128` source type fits the
@@ -405,6 +476,18 @@ fn is_supported_range_checked_integral_cast(source_type: &ArrowDataType, target_
 fn is_supported_integral_to_string_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     source_type.is_integer()
         && matches!(target_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+/// Timestamp without a time zone, or duration, to `Int64`. Arrow reinterprets
+/// the stored count in the type's own unit, so the value is not rescaled to a
+/// common unit and a null stays null. A time zone does not change the stored
+/// count, but timezone-aware timestamps are carry types and are not expression
+/// values, so they stay outside the matrix.
+fn is_supported_temporal_count_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    matches!(
+        (source_type, target_type),
+        (ArrowDataType::Timestamp(_, None) | ArrowDataType::Duration(_), ArrowDataType::Int64)
+    )
 }
 
 /// IEEE round-to-nearest narrowing; values beyond the Float32 range become
