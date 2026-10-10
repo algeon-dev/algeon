@@ -59,8 +59,11 @@ FROM lineitem GROUP BY l_returnflag;
 
 Both forms return the same Arrow schema. `VERBOSE` is accepted as the complete
 row mode. `FORMAT JSON` returns only the summary row, whose `coverage_json`
-contains all candidate evidence. `EXPLAIN GPU` is Flight SQL statement-query
-syntax; it cannot be prepared or sent to an update endpoint.
+contains all candidate evidence. Send `EXPLAIN GPU` as a Flight SQL statement
+query or as a prepared statement without parameters. A prepared `EXPLAIN GPU`
+returns the coverage schema when it is prepared and plans the explained query
+each time the handle executes, so the Python ADBC DB-API `cursor.execute()`
+works. The update endpoint rejects `EXPLAIN GPU`.
 
 A recorded Flight SQL session over the [MerRec dataset](../guides/datasets/merrec.mdx)
 ran `EXPLAIN GPU` on a statement with four cuGraph calls. Its summary and

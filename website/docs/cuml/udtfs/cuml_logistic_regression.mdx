@@ -31,18 +31,19 @@ ORDER BY row_ordinal;
 
 ## Inputs
 
-Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, Float32 feature, null, finite-value, and runtime-dimension contract.
+Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, feature element, Float64 narrowing, null, finite-value, and runtime-dimension contract.
 
 | Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
-| `training` | yes | `table` | Dense Float32 features and an Int32 label used to fit the query-local model. |
-| `predict` | yes | `table` | Independent dense Float32 rows scored with the query-local model; must omit label. |
+| `training` | yes | `table` | Dense features and an Int32 label used to fit the query-local model. |
+| `predict` | yes | `table` | Independent dense feature rows scored with the query-local model; must omit label. |
 
 ### Vector element types
 
 | Element type | Valid metrics |
 | --- | --- |
 | `Float32` | Not applicable |
+| `Float64` | Not applicable |
 
 ## Arguments and options
 
@@ -76,7 +77,7 @@ Each relation argument is a parenthesized `SELECT` subquery. Metadata validation
 
 ### Vector binding shapes
 
-Each relation subquery projects an `id` and either Float32 feature columns in dimension order or one `vector` list column of Float32 values. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
+Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
 
 The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
 
@@ -106,5 +107,6 @@ import Examples from '../_examples/cuml_logistic_regression.mdx';
 - probability covers only the predicted class; per-class probabilities are not returned. Class weights are not exposed, so threshold probability to trade precision for recall.
 - The model is query-local. An empty predict relation returns an empty result without a native call.
 - Coefficients and scores can differ slightly between runs, because the loss reduction accumulates with floating-point atomics; there is no seed option.
+- Float64 features, as wide columns or list elements, are narrowed to Float32 on the device before training or inference. Each value rounds to the nearest Float32, which keeps about seven significant digits; a value beyond the Float32 range becomes infinite and fails the query.
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

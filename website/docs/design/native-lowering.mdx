@@ -245,6 +245,14 @@ may still become GPU fragments. Explicit graph, vector and ML functions also
 form GPU fragments. Transfers at CPU/GPU boundaries are part of the cost of
 such a mixed plan.
 
+Decimal division in a keyed inner join predicate uses the native GPU
+post-join filter. Equality keys first select candidate row pairs; the GPU
+column evaluator then checks decimal division and preserves `CASE` branch
+activation through the shared expression lowering contract. Unmatched rows
+do not evaluate the residual, and inactive branches cannot trigger division
+by zero or scaling overflow. Outer, semi, anti and keyless joins retain their
+existing residual capability restrictions.
+
 Native support requires a correct kernel, supported types and correct semantics.
 An operator missing any of these is structured unsupported. `PlanningReport`
 records each candidate once as selected, unsupported with the first unmet

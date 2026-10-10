@@ -5,9 +5,8 @@
 #
 # Prerequisites: arrow_cli and jq on PATH; a server with the desired GPU
 # families installed. For example:
-#   cargo build --workspace --all-features --release --bin algeon_server
-#   ALGEON_SERVER_CUGRAPH_ENABLED=true \
-#   bash scripts/dev/run_server.sh
+#   cargo build --release -p algeon-server --features cugraph,cuvs,cuml,nvml
+#   target/release/algeon_server
 set -euo pipefail
 
 HOST="${GPU_FUNCTION_SPECS_HOST:-127.0.0.1}"

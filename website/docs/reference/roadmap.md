@@ -46,6 +46,7 @@ choice.
   follows the first adopter's platform.
 - End-to-end comparisons with GPU workloads in production use. Which
   systems to compare against, and how, is still open.
+- Potential cuOpt support, with scope guided by adopter requirements.
 
 ## Longer term
 

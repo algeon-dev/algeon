@@ -12,18 +12,10 @@ import CitationReach from '../../cugraph/_examples/citation_reach.mdx';
 
 # Citation Network: DBLP / AMiner V12 {/* #citation-network */}
 
-These analyses use citation structure to examine research communities, map a
-paper's neighborhood, compare bibliographies and build reading routes. Each
-query joins graph outputs to paper records, producing a result that can be
-checked against titles or cited references.
-
 The [DBLP / AMiner V12](https://www.kaggle.com/datasets/mathurinache/citation-network-dataset)
 snapshot contains 4,894,081 papers and 45,564,149 citation edges, dated April 2020.
 
-An edge `src` → `dst` means paper `src` cites paper `dst`. These records can
-show paths and structural groups in the captured graph. A citation path does
-not establish influence, and a community label is not a judgment about a
-paper's quality.
+An edge `src` → `dst` means paper `src` cites paper `dst`.
 
 - [Do citation communities match the catalog's research fields?](#research-communities)
 - [How are the papers around the Transformer connected?](#forceatlas2)
@@ -50,11 +42,8 @@ paper's quality.
 
 ## Data scope
 
-The source is a fixed April 2020 snapshot. `papers` includes title, year,
-reported citation count, reference count, and `primary_fos`, the source's
-primary field-of-study label. The investigations join graph results
-back to these paper records. Their SQL above defines each selected subgraph
-and candidate set.
+`papers` includes title, year, reported citation count, reference count, and
+`primary_fos`, the source's primary field-of-study label.
 
 | Table | Rows | Contents |
 |---|---:|---|

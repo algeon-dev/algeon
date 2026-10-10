@@ -59,15 +59,9 @@ so displayed positions are not a fixed plot of a single SQL result.
 
 <CitationEgoGraph />
 
-Every selected paper has a direct citation relationship with the Transformer
-by construction. Its connections in this view follow from that selection.
-The additional links, including those involving LSTM and Adam, give a
-researcher related references to inspect within the neighborhood.
-
-SQL defines the subgraph used by both algorithms and joins their outputs
-back to the paper records. A different seed or citer cutoff changes the
-question without requiring a separate graph-analysis program. The view
-covers only this selected neighborhood. Layout distance does not measure
+Every selected paper links to the Transformer by construction. The other
+links, including those involving LSTM and Adam, point to related references
+inside the neighborhood. The view covers only this selected neighborhood. Layout distance does not measure
 research influence, and the saved group names are display annotations.
 
 A fixed `seed` controls initial placement, but parallel force accumulation

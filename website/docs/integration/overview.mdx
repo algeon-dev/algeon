@@ -32,12 +32,12 @@ installs cuVS SQL and a backend is configured; see
 
 Iceberg tables are not a supported source. The earlier Algeon integration was
 removed together with its `iceberg` Cargo feature and its server catalog
-settings, and the server refuses to start when a removed setting is present
-(see [Removed Iceberg settings](./configuration.mdx#removed-iceberg-settings)).
-A future integration would start from the upstream DataFusion Iceberg table
-provider in
+settings. A future integration would start from the upstream DataFusion
+Iceberg table provider in
 [apache/datafusion-iceberg](https://github.com/apache/datafusion-iceberg).
-Local and `s3://` Parquet sources remain supported.
+The Flight SQL server reads local Parquet files. It registers no object
+store, so an `s3://` location fails there; an embedded session can still read
+`s3://` Parquet through `AlgeonNativeExecutionConfig::with_s3_storage`.
 
 ## Common flow
 

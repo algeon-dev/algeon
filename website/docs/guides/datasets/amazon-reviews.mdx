@@ -9,22 +9,12 @@ import AmazonTravelShortlist from '../../cuvs/_examples/amazon_travel_shortlist.
 import AmazonReviewShift from '../../cuvs/_examples/amazon_review_shift.mdx';
 import capture from '@site/static/data/amazon-reviews-capture.json';
 
-# Amazon Reviews 2023: Electronics Reviews and Product Metadata {/* #amazon-reviews */}
-
-These analyses ask which products meet a search request and which changes in
-reviews deserve investigation. SQL combines eligibility rules with vector
-search, or joins review groups to dates and original text. The results below
-include counterexamples that change how the scores should be interpreted.
+# Amazon Reviews 2023 <span className="heading-subtitle">Electronics Reviews and Product Metadata</span> {/* #amazon-reviews */}
 
 The Electronics snapshot from
 [Amazon Reviews 2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023)
 contains 43,886,944 reviews and 1,610,012 products.
-Products and reviews join by `product_id`. The vector examples use prepared
-1,024-dimensional BGE-M3 embeddings for a sampled million products and a
-sampled million low-rating reviews. Text embedding was performed before SQL;
-the queries shown here do not encode text during execution. Prices and product
-attributes are from the captured catalog, and review counts do not measure
-sales or product failure rates.
+Products and reviews join by `product_id`.
 
 - [Review the travel-headphone shortlist](#travel-headphones) and inspect the
   office headset counterexample.
@@ -61,7 +51,9 @@ It also encoded {capture.input_verification.reviews.rows.toLocaleString('en-US')
 reviews rated at most two stars, with at least 40 body characters, from 2021
 and 2022. BGE-M3 revision <code style={{whiteSpace: 'normal', overflowWrap: 'anywhere'}}>{capture.embedding.revision}</code> produced
 the vectors outside SQL; the stored 1,024-dimensional Float32 values were
-L2 normalized. The raw-text keyword query does not require this preparation.
+L2 normalized. The queries do not encode text during execution, and the
+raw-text keyword query does not require this preparation. Prices and product
+attributes are from the captured catalog.
 
 <div className="fineprint">
 

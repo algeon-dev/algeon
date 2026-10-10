@@ -28,7 +28,6 @@ The image build has two phases:
    `algeon_server`, stages the binary, copies the locally built
    cuDF/RMM libraries, then adds cuVS, cuGraph, and cuML libraries for the
    selected features. cuGraph always brings its cuVS runtime dependency.
-   It also bundles optional KvikIO/nvCOMP libraries when they are present.
    It strips staged artifacts with `strip --strip-unneeded` when `strip` is
    available; the Docker copies can therefore be smaller than the source
    install, while `NO_STRIP=1` preserves available symbols. It rewrites
@@ -60,18 +59,33 @@ The cuDF script also installs `libcudf_rust_rmm_interop.so` beside the shim;
 `docker/stage-docker-payload.sh` stages both automatically. Docker consumes the
 matching install prefixes under `ALGEON_NATIVE_DIR`; the cuGraph CMake
 build tree is only an intermediate used while producing `cugraph-install`.
+KvikIO and nvCOMP are linked statically into `libcudf.so`; staging copies them
+only when a cuDF build lists them as shared dependencies.
 
 The lean `FEATURES=nvml` image omits cuVS, cuML, and cuGraph, so it
 needs neither optional native artifact. Production examples keep `nvml` enabled so live
 device telemetry is available without affecting admission decisions.
 
+`readelf` and `ldd` are required for the loader-closure checks. `patchelf` and
+`strip` (binutils) are recommended; without `patchelf` the image resolves its
+libraries through `LD_LIBRARY_PATH=/app/lib`.
+
 Install Docker and configure GPU containers with the
 [NVIDIA Container Toolkit documentation](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-The runtime host must satisfy NVIDIA's documented driver and container-runtime
-requirements. The full `cugraph` image is portable only to GPU architectures
-included when `components/cugraph` was built; see
-[Building from Source](./from-source.md#3-build-the-native-stack) when you
-need to cover additional deployment GPUs.
+The image is built against the CUDA 13.2 toolkit. The harvested runtime
+libraries are minor-version compatible within CUDA 13, so the host needs an
+NVIDIA driver that supports CUDA 13 (R580 or newer).
+
+### GPU architectures
+
+The bundled cuDF, cuVS, cuGraph, and cuML libraries contain kernels only for
+the `CMAKE_CUDA_ARCHITECTURES` value they were built with. The default
+`NATIVE` value covers the build host's GPU and nothing else. To package an
+image for other GPUs, choose the architecture list before the first native
+build, as described in
+[Choosing CUDA architectures](./from-source.md#choosing-cuda-architectures),
+and inspect the recorded value with the commands in
+[The architecture contract record](./from-source.md#the-architecture-contract-record).
 
 ## Build the image
 
@@ -93,44 +107,104 @@ FEATURES=nvml bash docker/stage-docker-payload.sh
 bash docker/build-image.sh
 ```
 
-For this lean image, set `ALGEON_SERVER_CUGRAPH_ENABLED=false` when using direct
-`docker run` or before using `docker/run.sh`. A server built without the
-`cugraph` feature exposes the frontend but returns a structured
-`required_feature_disabled` error when cuGraph execution is requested.
+A server built without the `cugraph` feature still installs the cuGraph SQL
+frontend and returns a structured `required_feature_disabled` error when
+cuGraph execution is requested. Set `ALGEON_SERVER_CUGRAPH_ENABLED=false` to
+hide it.
 
-If you already have a current release binary and only need to restage the
-runtime payload:
+Staging always runs its own clean build of `algeon_server`, even when a
+release binary from the source build exists. The payload manifest records a
+verifiable artifact identity: binary hash, policy fingerprint, features,
+target triple, and codegen flags. To produce one, the packaging helper invokes
+Cargo from an isolated working directory and a clean `CARGO_HOME`, with the
+fixed target triple and `target-cpu=x86-64-v4` from
+`.config/policies/cpu-packaging.toml`, and writes a build record beside the
+binary. An ordinary `target/release` build has no such record and is not
+reused. Expect about five minutes for this build on a warm native prefix; it
+took 5 min 04 s on 2026-10-09.
+
+`SKIP_CARGO_BUILD=1` re-stages a payload from a previous packaging build only:
 
 ```bash
 SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh
 bash docker/build-image.sh
 ```
 
-Skipping compilation does not trust an arbitrary `target/release` binary. It
-requires an artifact created by the canonical packaging helper whose binary
-hash, policy fingerprint, features, target, and codegen flags still agree.
+It verifies that the recorded binary hash, policy fingerprint, features,
+target, and codegen flags still agree before reusing the artifact.
+`docker/dist/payload-manifest.json` records the staged files, checksums, and
+artifact-affecting policy fingerprint. The image build fails if its baseline,
+target, or hashes disagree with that manifest; `docker/build-image.sh`
+verifies the manifest and supplies the build arguments.
 
-Docker packaging performs a controlled clean build of the `x86-64-v4` server artifact. The helper
-invokes Cargo from an isolated working directory and clean `CARGO_HOME` with
-the fixed target triple and `target-cpu=x86-64-v4`, recording a canonical build record.
-The resulting `docker/dist/payload-manifest.json` records the staged files, checksums,
-and artifact-affecting policy fingerprint. Docker hard-fails if its baseline, target, or hashes
-disagree with that manifest. `docker/build-image.sh` verifies the manifest and supplies build arguments automatically.
+What ends up in the image:
+
+| Layer | Source | How it gets in |
+| --- | --- | --- |
+| cuDF, RMM, and cuGraph `.so` | `target/native/cudf-install`, `target/native/cugraph-install` | bundled by `stage-docker-payload.sh` |
+| cuVS `.so` | `target/native/cuvs-install` | bundled: `libcuvs.so` for any GPU SQL feature, `libcuvs_c.so` for `cuvs` |
+| cuML `.so` | `target/native/cuml-install` | bundled for `cuml`: `libcuml.so`, `libcuml_rust.so`, `libtreelite.so`, `libnvforest.so` |
+| `libcudf_rust*.so` FFI bridges | cudf-sys CMake `OUT_DIR` | bundled by `stage-docker-payload.sh` |
+| CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, and others) | `nvidia/cuda:*-runtime` | harvested in the Dockerfile through `ldd` |
+| `libgomp1`, `libbrotli1`, `tini` | Ubuntu apt | installed in the runtime stage |
+
+With the default features, `docker images` reported 3.68 GB disk usage and
+1.31 GB content size for the image on 2026-10-09.
 
 :::warning[Build machine versus target host CPU]
 This image targets x86-64-v4. Both the build machine and every target host must
 support that instruction set; otherwise the binary may terminate with `SIGILL`
-before `main`.
+before `main`. See [CPU requirement](./prerequisites.md#cpu-requirement).
 :::
 
 ## Run the server
 
-For the minimal no-catalog server, run the image directly:
+The image starts with the server defaults: GPU 0, authentication disabled,
+and a listener on port 50051 inside the container. Publish the port on host
+loopback only, and mount the directory that holds your Parquet files:
 
 ```bash
-flock /tmp/cudf-gpu.lock \
-  docker run --rm --gpus all -p 50051:50051 algeon-server:x86-64-v4
+docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
+  -v "$PWD/data:/data:ro" \
+  algeon-server:x86-64-v4
 ```
+
+The image sets `ALGEON_SERVER_BIND=0.0.0.0:50051` because a loopback listener
+inside the container is unreachable through `-p`. The `127.0.0.1:` prefix on
+`-p` keeps the unauthenticated endpoint off other host interfaces. Before
+publishing it more widely, enable
+[authentication](../integration/configuration.mdx#authentication) and
+[TLS](../integration/configuration.mdx#tls).
+
+For settings beyond the defaults, mount a TOML file and name it with
+`ALGEON_SERVER_CONFIG_FILE`:
+
+```bash
+docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
+  -v "$PWD/data:/data:ro" \
+  -v "$PWD/server.toml:/etc/algeon/server.toml:ro" \
+  -e ALGEON_SERVER_CONFIG_FILE=/etc/algeon/server.toml \
+  algeon-server:x86-64-v4
+```
+
+The [configuration reference](../integration/configuration.mdx#complete-example)
+lists every key; any scalar key can also be passed as an `ALGEON_SERVER_*`
+variable with `-e`. The image's `ALGEON_SERVER_BIND` overrides `bind` in a
+mounted file, so change the container port with
+`-e ALGEON_SERVER_BIND=0.0.0.0:<port>`; the healthcheck reads that variable. The server runs as UID 1001 in the container, so mounted
+files must be readable by that user.
+
+Table locations are paths inside the container. With the data directory
+mounted at `/data`:
+
+```sql
+CREATE OR REPLACE EXTERNAL TABLE events
+STORED AS PARQUET LOCATION '/data/events.parquet';
+```
+
+To register tables at every start, mount a SQL file of DDL statements and
+point [`init_sql`](../integration/configuration.mdx#startup-sql) at its
+container path.
 
 Startup is eager: CUDA/RMM admission initializes before the Flight SQL port is
 opened. The server is ready when logs include:
@@ -146,40 +220,14 @@ The image has a TCP healthcheck for `ALGEON_SERVER_BIND`:
 docker ps --filter ancestor=algeon-server:x86-64-v4
 ```
 
-### Local fixture launcher
-
-`docker/run.sh` is a convenience launcher for local demo runs. It uses
-host networking, enables cuGraph SQL by default, sets bounded native memory
-knobs, sets the AWS region for S3 Parquet reads (default `us-east-1`), and
-forwards host AWS credentials. It defaults to
-`algeon-server:x86-64-v4`; set `ALGEON_SERVER_IMAGE` explicitly for a
-different repository or tag:
-
-```bash
-flock /tmp/cudf-gpu.lock bash docker/run.sh
-```
-
-Print the exact command without running it:
-
-```bash
-bash docker/run.sh --dry-run
-```
-
-Use direct `docker run` when you want a minimal server with no extra
-environment. Use `docker/run.sh` when you want the cuGraph SQL surface enabled
-and the AWS settings applied. For a lean image, run:
-
-```bash
-ALGEON_SERVER_CUGRAPH_ENABLED=false flock /tmp/cudf-gpu.lock bash docker/run.sh
-```
-
 ## Smoke-test Flight SQL
 
-With the container running on `127.0.0.1:50051`, use the repo client:
+With the container running on `127.0.0.1:50051`, use the repository client.
+It needs only the default `tools` features and no native libraries:
 
 ```bash
-cargo run -p tools --all-features -- \
-  flight-sql-query http://127.0.0.1:50051 "SELECT 1 AS one"
+cargo run -p tools -- \
+  flight-sql-query grpc://127.0.0.1:50051 "SELECT 1 AS one"
 ```
 
 Expected output:
@@ -189,33 +237,31 @@ one
 1
 ```
 
-For a full image launched with `ALGEON_SERVER_CUGRAPH_ENABLED=true`:
+For a full-feature image, run PageRank over inline rows:
 
 ```bash
-cargo run -p tools --all-features -- \
-  flight-sql-query http://127.0.0.1:50051 \
-  "SELECT COUNT(*) AS algorithms FROM gpu_list_functions() WHERE provider = 'cugraph'"
+cargo run -p tools -- \
+  flight-sql-query grpc://127.0.0.1:50051 \
+  "SELECT * FROM cugraph_pagerank(edges => (SELECT * FROM (VALUES (1,2),(2,3),(3,1),(3,4)) AS t(src, dst)))"
 ```
 
-Expected output starts with:
-
-```text
-algorithms
-27
-```
+The result has a `vertex` and a `value` column with one row per vertex.
 
 ## Troubleshooting
 
 - `docker/stage-docker-payload.sh` cannot find `libcudf.so`, `librmm.so`, or
   `libcugraph.so`: finish the source build first, or set `ALGEON_NATIVE_DIR` to
   the root containing the matching install prefixes.
+- Staging fails with `ldd could not resolve libcugraph.so to a canonical
+  libcuvs.so` (or `libcuml.so`): the installed library's RUNPATH does not name
+  the cuVS prefix it was built against. `scripts/build/build_libcugraph.sh`
+  and `build_libcuml.sh` write that RUNPATH at install time; rebuild the
+  library with the current scripts, in the order on
+  [Building from Source](./from-source.md#3-build-the-native-stack).
 - The container starts but the first GPU query fails with
-  `cudaErrorNoKernelImageForDevice`: rebuild the forked native libraries with
-  CUDA architectures covering the deployment GPU.
+  `cudaErrorNoKernelImageForDevice`: the native libraries were built without
+  the deployment GPU's architecture. Rebuild them as described under
+  [GPU architectures](#gpu-architectures).
 - Startup fails with a missing CUDA library such as `libcublas.so.13`: rebuild
   the image with matching `CUDA_RUNTIME_IMAGE` and `CUDA_BASE_IMAGE` build
   args, keeping both on the same CUDA minor.
-- Startup fails with an error naming an `ALGEON_ICEBERG_*` or
-  `ALGEON_LAKEHOUSE_CACHE_*` variable and mentioning the removed Iceberg
-  integration: unset the variable. The full list is in
-  [Removed Iceberg settings](../integration/configuration.mdx#removed-iceberg-settings).

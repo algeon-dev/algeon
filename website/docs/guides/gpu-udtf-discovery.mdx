@@ -7,10 +7,21 @@ description: Find installed GPU UDTFs, inspect their contracts, validate a call,
 ---
 
 import CodeBlock from '@theme/CodeBlock';
+import Details from '@theme/Details';
 import Table from '@site/src/theme/MDXComponents/Table';
+import pagerank from '@site/gpu-function-specs/cugraph/cugraph_pagerank.json';
+import umap from '@site/gpu-function-specs/cuml/cuml_umap.json';
+import kmeans from '@site/gpu-function-specs/cuvs/cuvs_kmeans.json';
 import session from '@site/static/data/merrec-agent-session.json';
 
 export const errorOf = id => session.steps.find(item => item.step === id).error.replace(/^.*?message: /s, '');
+export const wholeMs = value => Math.round(value * 1000).toLocaleString('en-US');
+export const listExample = [pagerank, umap, kmeans].map(({function_name, provider, available, summary}) => ({function_name, provider, available, summary}));
+export const validationExample = {
+  valid: true,
+  error_code: null,
+  would_execute_gpu: true,
+};
 
 # Discover & Validate GPU UDTFs
 
@@ -32,9 +43,16 @@ provider when you already know the workload:
 ~~~sql
 SELECT function_name, provider, available, summary
 FROM gpu_list_functions()
-WHERE provider IN ('cugraph', 'cuvs')
+WHERE provider IN ('cugraph', 'cuvs', 'cuml')
 ORDER BY function_name;
 ~~~
+
+<Details summary="Example response · 3 rows shown">
+
+The example shows three rows from a build with all providers enabled.
+
+<CodeBlock language="json">{JSON.stringify(listExample, null, 2)}</CodeBlock>
+</Details>
 
 `available=true` means the UDTF can be planned for GPU execution in this
 build and session; cuVS UDTFs require the `cuvs` feature. It does not
@@ -48,8 +66,7 @@ Retrieve the canonical signature, relation roles, option schema, output schema,
 and lifecycle limits before constructing a call:
 
 ~~~sql
-SELECT signature, relation_roles_json, options_schema_json,
-       result_schemas_json, limitations_json
+SELECT signature, relation_roles_json, options_schema_json, result_schemas_json, limitations_json
 FROM gpu_describe_function('cugraph_pagerank');
 ~~~
 
@@ -72,6 +89,14 @@ FROM gpu_validate_call(
   }'
 );
 ~~~
+
+<Details summary="Example response · validation excerpt">
+
+The excerpt assumes cuGraph is enabled and `analytics.edges` is registered
+with `Int64` `src` and `dst` columns.
+
+<CodeBlock language="json">{JSON.stringify([validationExample], null, 2)}</CodeBlock>
+</Details>
 
 This is static validation: it checks the named tables' or views' schemas and
 the options, reads no data, and runs nothing on the GPU (no rows scanned, no
@@ -110,8 +135,8 @@ steps through Flight SQL, with an AI model writing the statements. It asked
 which brands moved toward Barbie's audience after the July 2023 film.
 
 <Table>
-<thead><tr><th>Step</th><th>Statement</th><th>Outcome</th></tr></thead>
-<tbody>{session.steps.map(item => <tr key={item.step}><td>{item.step}</td><td>{item.intent}</td><td>{item.status === 'ok' ? 'rows' : 'planning error'}</td></tr>)}</tbody>
+<thead><tr><th>Step</th><th>Statement</th><th>Outcome</th><th>Elapsed</th></tr></thead>
+<tbody>{session.steps.map(item => <tr key={item.step}><td>{item.step}</td><td>{item.intent}</td><td>{item.status === 'ok' ? 'rows' : 'planning error'}</td><td>{wholeMs(item.elapsed_s)} ms</td></tr>)}</tbody>
 </Table>
 
 The two failures were guesses at column names, and each returned at planning
@@ -126,6 +151,6 @@ seeds are on the [MerRec page](./datasets/merrec.mdx#barbie).
 
 <div className="fineprint">
 
-The [session capture](/data/merrec-agent-session.json) holds every statement, its query ID where one was issued, the Flight status text of the failures and the returned rows, recorded on {session.recorded_at_utc} against the scale server configuration in `native_required` mode.
+The [session capture](/data/merrec-agent-session.json) holds every statement, its query ID where one was issued, the Flight status text of the failures and the returned rows, recorded on {session.recorded_at_utc} against the scale server configuration in `native_required` mode. Elapsed times cover one statement each; they exclude model generation and the pauses between calls.
 
 </div>

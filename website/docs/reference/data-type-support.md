@@ -7,7 +7,7 @@ description: Which Arrow types the GPU relational path holds, which it only carr
 
 Algeon checks Arrow types before a relational candidate enters native
 execution. A candidate with an unsupported type keeps the DataFusion baseline,
-and a `NoDataFusionCpu` final-plan requirement rejects it instead. Operator and
+and `native_required` mode rejects it instead. Operator and
 function support is on [Native SQL Support](./native-sql-support.mdx); the
 plan for one query is checked with
 [`algeon_explain_coverage`](../integration/gpu-coverage-validation.mdx).
@@ -83,9 +83,11 @@ path. `gpu_describe_function('<udtf>')` returns the contract and
 
 ### cuML feature relations
 
-- Features are finite `Float32`, as wide columns or a `vector` column of
-  `FixedSizeList<Float32>`, or a uniform `List<Float32>` or `LargeList<Float32>`.
-  Nothing casts implicitly.
+- Features are `Float32` or `Float64`, as wide columns or one list column
+  under any name: a `FixedSizeList`, or a uniform `List` or `LargeList`. Every
+  UDTF except `cuml_forest_predict` narrows `Float64` to `Float32` on the
+  device, and the values cuML reads must be finite. `cuml_forest_predict`
+  takes `Float32` only.
 - Every relation has an `id` of type `Int32`, `Int64`, `Utf8`, `LargeUtf8` or
   `Utf8View`. Repeated IDs are allowed; `row_ordinal UInt64` identifies each
   output row, beside an `id` of the input type.

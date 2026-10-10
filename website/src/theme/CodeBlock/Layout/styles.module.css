@@ -45,3 +45,44 @@
 .toggle:hover {
   background: var(--ifm-color-emphasis-100);
 }
+
+.preview.collapsed .clip {
+  position: relative;
+  max-height: none;
+  mask-image: none;
+}
+
+.preview.collapsed .clip :global(pre) {
+  /* Bottom padding at the cut would expose the next line of the full code. */
+  max-height: calc(var(--code-preview-lines) * 1lh + var(--ifm-pre-padding));
+  overflow-y: hidden;
+}
+
+.preview.collapsed .clip::after {
+  position: absolute;
+  inset-inline: 1px;
+  bottom: 0;
+  height: 3rem;
+  background: linear-gradient(to bottom, transparent, var(--code-preview-background));
+  content: '';
+  pointer-events: none;
+}
+
+.preview .clip > :global(.theme-code-block) {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.preview .toggle {
+  margin-top: 0;
+  padding: 0.55rem 0.75rem;
+  border-top: 0;
+  border-radius: 0 0 var(--ifm-code-border-radius) var(--ifm-code-border-radius);
+  background: var(--code-preview-background);
+  color: var(--ifm-font-color-secondary);
+  font-size: 0.85rem;
+}
+
+.preview .toggle:hover {
+  color: var(--ifm-link-color);
+}

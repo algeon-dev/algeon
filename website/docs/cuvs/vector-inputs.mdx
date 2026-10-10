@@ -31,6 +31,11 @@ column:
 ## Dense-vector binding shapes
 
 Each binding chooses one vector shape. Feature order defines dimension order.
+A SQL call infers the binding from the subquery's field types. When the only
+field besides `id` is a `FixedSizeList`, `List`, or `LargeList`, that field is
+the list column, whatever its name. Otherwise every field besides `id` is a
+wide feature column. A list field next to other feature fields is rejected
+with `list_vector_with_additional_features`.
 
 ### Wide columns
 

@@ -129,8 +129,8 @@ The remaining rules:
   session that ran the statement and stays out of operational logs.
 
 Under `native_required`, `SELECT APPROX_PERCENTILE_CONT(x, 0.5) FROM t` returns
-`GPU execution does not support aggregate function approx_percentile_cont` as
-`detail`. Its `not_supported` candidate row repeats the subject in `blocking`
+`native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support aggregate function approx_percentile_cont`
+as `detail`. Its `not_supported` candidate row repeats the subject in `blocking`
 as `aggregate function approx_percentile_cont`.
 
 ## Candidate outcomes {/* #candidate-outcomes */}

@@ -30,9 +30,9 @@ slice of a Parquet file, with a separate column chunk for each field.
 When a predicate is pushed into the cuDF reader, its statistics filter can
 reduce row groups further. Supported equality predicates can also use Bloom
 filters stored in the file. The predicate and available metadata determine
-which stages apply. For native S3 footer pruning, enable
-`native.lakehouse_footer_pruning`; see the
-[Parquet source flags](../integration/configuration.mdx#parquet-source-flags).
+which stages apply. Footer pruning of `s3://` sources before admission is an
+embedded-session setting, `AlgeonNativeExecutionConfig::with_lakehouse_footer_pruning`;
+the Flight SQL server exposes no object-store configuration.
 
 The host reads metadata to identify schema, row groups and column ranges.
 Selected payload reaches GPU buffers through the cuDF datasource and KvikIO.

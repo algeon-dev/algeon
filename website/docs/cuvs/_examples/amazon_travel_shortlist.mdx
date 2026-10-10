@@ -33,9 +33,7 @@ close enough to rank second, but a reviewer still needs to check or reject it
 against the travel request. Similarity does not verify specifications or
 noise-cancellation quality.
 
-The query combines eligibility rules with vector search, keeping the returned
-candidates tied to the conditions that admitted them. A later
-[raw-table check](/data/amazon-review-followup.json) found {followup.eligible.rows[0].eligible_products} eligible products;
+A later [raw-table check](/data/amazon-review-followup.json) found {followup.eligible.rows[0].eligible_products} eligible products;
 {capture.verification.travel_shortlist.eligible_products} had vectors in the sampled corpus. The other
 {followup.eligible.rows[0].eligible_products - capture.verification.travel_shortlist.eligible_products} were outside this search.
 

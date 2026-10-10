@@ -103,8 +103,8 @@ as a temporary view first.
 | Column | Type | Meaning |
 | --- | --- | --- |
 | `valid` | `Boolean` | Whether the call is valid in this session. |
-| `error_code` | `Utf8` | Stable reason code, null when valid. |
-| `message` | `Utf8` | Validation result in prose. |
+| `error_code` | `Utf8` | Stable reason code of the first problem, null when valid. |
+| `message` | `Utf8` | `valid`, or every detected problem's message joined by `; `. |
 | `function_name` | `Utf8` | Canonical name, or the unresolved requested name. |
 | `relations_resolved` | `Boolean` | Whether every required relation resolved. |
 | `normalized_call_json` | `Utf8` | The envelope after defaults and canonicalization. |
@@ -112,7 +112,20 @@ as a temporary view first.
 | `would_execute_gpu` | `Boolean` | Whether this call would target GPU execution after static planning. |
 | `details_json` | `Utf8` | Per-relation and provider-specific validation facts. |
 
-An unknown UDTF or an invalid call returns one row with `valid=false`.
+An unknown UDTF or an invalid call returns one row with `valid=false`. An
+unavailable UDTF reports its `unavailable_reason` before anything else.
+Otherwise the row lists, from one pass, every unresolved relation, every
+option error and the relation schema errors that do not depend on a rejected
+option; `error_code` and `details_json` describe the first. A check that depends on a rejected option,
+such as a required option that failed its own check, runs once that option is
+valid. `details_json` locates the first problem with `path` and, when present,
+`argument`, `relation_role` and `field`.
+
+A table function whose name starts with `cugraph_`, `cuvs_`, `cuml_` or
+`gpu_` but names no installed function fails planning with `object_not_found`.
+The message names the closest registered name when one is near enough and
+points to `gpu_list_functions()`, for example
+`unknown GPU function cugraph_page_rank; closest registered name: cugraph_pagerank; gpu_list_functions() lists every installed function`.
 
 Validation checks that the UDTF exists, resolves every required relation,
 validates the relation bindings, columns, types, dimensions, conditional

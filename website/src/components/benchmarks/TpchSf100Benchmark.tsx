@@ -17,7 +17,7 @@ import styles from './TpchSf100Benchmark.module.css';
 
 const bytesPerGiB = 1024 ** 3;
 
-// Palette mirrors the previous Tremor chart colors.
+// Palette values match the Tremor chart colors.
 const colorCpu = '#0071C5'; // cpu-blue
 const colorGpu = '#76B900'; // gpu-green
 const colorSpeedup = '#10b981'; // emerald

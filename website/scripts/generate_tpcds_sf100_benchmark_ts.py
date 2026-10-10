@@ -137,7 +137,8 @@ def main() -> None:
         ),
         "nativeProfileName": gpu_meta.get("tpcds_benchmark_native_profile_name", "sf100_gpu_throughput"),
         "nativeProfileSource": gpu_meta.get("tpcds_benchmark_native_profile_source", "env_profile"),
-        # No device budget: the bench header prints the profile's 256 MiB placeholder, not the automatic limit the run used.
+        # No device budget: the bench header prints the profile's 256 MiB placeholder,
+        # and the run used an automatic limit.
         "nativeMaxSourceChunkBytes": int(gpu_meta.get("tpcds_benchmark_native_max_source_chunk_bytes", "0") or 0),
         "nativeMaxRowGroupsPerChunk": int(
             gpu_meta.get("tpcds_benchmark_native_max_row_groups_per_chunk", "0") or 0
@@ -207,10 +208,10 @@ def main() -> None:
   gpuFailure: string;
 };
 """
-    label = args.gpu_tsv.parent.name
     body = json.dumps(payload, indent=2)
     text = (
-        f"// Generated from target/bench/{label}/{args.cpu_tsv.name} and {args.gpu_tsv.name}.\n"
+        f"// Generated from {args.cpu_tsv.as_posix()} and {args.gpu_tsv.as_posix()}.\n"
+        f"// Environment and CPU tuning: {args.environment.as_posix()}.\n"
         f"// Do not hand-edit benchmark values; regenerate from the TSV artifacts.\n\n"
         f"{type_block}\n"
         f"export const tpcdsSf100Benchmark = {body} satisfies {{\n"

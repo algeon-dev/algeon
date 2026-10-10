@@ -2,18 +2,6 @@
   font-size: 3rem;
 }
 
-/* The subtitle is part of the heading element, so the document outline and
-   the link on the list page keep the full title; it only breaks onto its own
-   line and steps down in size and weight. */
-.subtitle {
-  display: block;
-  margin-top: 0.35rem;
-  font-size: 0.5em;
-  font-weight: 500;
-  line-height: 1.3;
-  color: var(--ifm-color-emphasis-700);
-}
-
 @media (max-width: 576px) {
   .title {
     font-size: 2rem;

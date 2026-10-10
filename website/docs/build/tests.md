@@ -22,12 +22,24 @@ Before running Cargo checks:
 
 - The [build shell](./from-source.md#2-configure-the-build-shell) is
   configured and all four native layers plus the Rust workspace are built.
-- `cargo-nextest` 0.9.144 and `cargo-hack` 0.6.45 are installed
-  ([Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner)); the
-  full gate checks both versions before any work, and `--fast` checks only
-  `cargo-nextest`.
+- The latest stable `cargo-nextest` and `cargo-hack` 0.6.45 are installed
+  ([Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner)). The
+  gate checks that nextest runs and prints its version; nextest is not pinned.
+  The full gate also checks the exact `cargo-hack` version.
 - No benchmark, running Flight SQL server, or other checkout's gate holds
   `/tmp/cudf-gpu.lock`, since GPU tests wait on that lock until it is free.
+
+Set the native loader directories once before the Cargo commands below. The
+gate exports this same value for every phase, replacing any caller value:
+
+```bash
+export LD_LIBRARY_PATH="$PWD/target/native/cudf-install/lib:$PWD/target/native/cuvs-install/lib:$PWD/target/native/cugraph-install/lib:$PWD/target/native/cuml-install/lib:$PWD/target/native/cugraph-build"
+```
+
+The installed cuGraph and cuML libraries name their cuVS and RMM prefixes in
+their RUNPATH, so Cargo-built binaries resolve them without this export. The
+gate still sets it for every phase so that doctest binaries, which carry no
+rpath, load the same libraries.
 
 ## Development checks
 
@@ -63,6 +75,17 @@ Formatting, lints, and docs match the gate's phases:
 cargo +nightly fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep-going
+bash scripts/ci/check_public_api_surface.sh check --all-features
+```
+
+The public API check enforces the
+[application documentation boundary](../design/index.mdx#api-documentation)
+alongside the signature snapshots. Updating a snapshot does not waive missing
+documentation on a reachable owner type. The isolated documentation regression
+tests run as part of the snapshot policy self-test:
+
+```bash
+bash scripts/ci/tests/check_public_api_surface_tests.sh
 ```
 
 ### Broader CPU checks
@@ -93,16 +116,23 @@ bash scripts/check_all.sh
 
 For a run that outlives a terminal or tool call, launch it with `nohup` and
 poll `target/check-all/latest/summary.tsv`. With no arguments the script
-starts all four phase groups at once:
+starts policy checks and the `test-build` phase. That phase captures fresh
+`cargo metadata --all-features --format-version 1` output and builds through
+`cargo nextest list --workspace --all-features --list-type binaries-only
+--message-format json`. The list reuses the captured Cargo metadata. The
+other groups start after that phase completes:
 
 | Group | What runs | Order |
 | --- | --- | --- |
 | policy | rustfmt, native-source verification, checked bindings, and the policy self-test scripts | Independent, in parallel |
-| tests | `cargo nt -P gate` over the full workspace, then doctests through the GPU lock wrapper | Doctests start after nextest finishes |
-| static | clippy with `-D warnings`, current-run orphan-source verification, strict rustdoc, then the public API surface snapshot | In sequence |
-| hygiene | seven feature-isolation shards and their union check, the shipped-server clippy lane, `msrv-check`, a docs.rs native-free compile check, the hidden-API consumer probe, and the component-package check | Each in its own target directory; never blocks tests |
+| tests | `cargo nextest run -P gate` reusing that run's Cargo and binaries metadata, then doctests through the GPU lock wrapper | Doctests start after nextest finishes; a failed test build skips nextest execution and still runs doctests |
+| static | clippy with `-D warnings`, current-run orphan-source verification, strict rustdoc, then the public API snapshots and application documentation check | In sequence; Cargo and API checks use `nice -n 10` |
+| hygiene | seven feature-isolation shards and their union check, the shipped-server clippy lane, `msrv-check`, a docs.rs native-free compile check, the hidden-API consumer probe, and the component-package check | Independent after the test build; compilation uses `nice -n 10` and separate target directories |
 
 - A failed phase in any group fails the gate.
+- Nextest execution uses `--cargo-metadata` and `--binaries-metadata` instead
+  of build-selection flags. Those files fix the same full-workspace,
+  all-features graph as `cargo nt`, and avoid another Cargo build-lock wait.
 - Every other Cargo phase uses `--workspace --all-features`. Feature-isolation
   and the shipped-server clippy lane are the exceptions
   ([Feature coverage](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#feature-coverage)); the feature-off
@@ -163,11 +193,28 @@ directories.
 
 ```bash
 NEXTEST_TEST_GROUP=gpu scripts/ci/nextest_gpu_lock.sh /tmp/cudf-gpu.lock \
-  env LD_LIBRARY_PATH="$PWD/target/native/cudf-install/lib:$PWD/target/native/cuvs-install/lib:$PWD/target/native/cugraph-install/lib:$PWD/target/native/cugraph-build:$PWD/target/native/cuml-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   cargo test --workspace --all-features --doc --no-fail-fast
 ```
 
 </details>
+
+## Multi-GPU tests
+
+Multi-GPU cases are ignored by default and require at least two visible
+devices. On a host with that inventory, select them explicitly:
+
+```bash
+cargo nt --run-ignored only -E '
+binary(/multi_gpu|multi_device/)
+  | (binary_id(algeon-cudf::interop_contracts_gpu) & test(/::(device_event_export_rejects_readiness_from_another_device|helper_built_exports_reject_cross_device_inputs)$/))
+  | (binary_id(algeon-cudf) & test(cross_device_secondary_is_rejected_with_public_classification))
+  | (binary_id(algeon-query-runtime) & test(/^runtime::cache::local_parquet::tests::source_copy_rejects_a_cache_domain_on_another_device$/))
+  | (binary_id(algeon-query-runtime) & test(/(multi_device_registry::|device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate|queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting|query_admission_waiter_timeout_reports_the_selected_device_requirement)/))
+'
+```
+
+These cases assert the device precondition when explicitly run. A single-GPU
+invocation fails that precondition instead of reporting a pass.
 
 ## Feature flags
 

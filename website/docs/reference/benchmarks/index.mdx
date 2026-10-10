@@ -6,6 +6,7 @@ description: Where NVIDIA publishes the benchmarks of the GPU libraries behind t
 
 import TpchSf100Benchmark from '@site/src/components/benchmarks/TpchSf100Benchmark';
 import TpcdsSf100Benchmark from '@site/src/components/benchmarks/TpcdsSf100Benchmark';
+import {tpcdsSf100Benchmark} from '@site/src/data/tpcdsSf100Benchmark';
 
 # Benchmarks
 
@@ -35,14 +36,15 @@ are planned.
 ## Relational path
 
 The TPC-H and TPC-DS suites at scale factor 100, CPU path against GPU path,
-one warm-up and one measured iteration per query, on an AWS EC2 g7e.8xlarge:
+one warm-up and one measured iteration per query, on an AWS EC2 **g7e.8xlarge**:
 
-- CPU: Intel Xeon Platinum 8559C, 16 cores / 32 threads.
+- CPU: Intel Xeon Platinum 8559C, 32 vCPU.
 - Memory: 256 GiB.
 - GPU: NVIDIA RTX PRO 6000 Blackwell Server Edition, 96 GB.
-- Parquet reads: KvikIO compatibility mode (`KVIKIO_COMPAT_MODE=ON`), without
-  GPUDirect Storage.
-- DataFusion `v55.1`.
+- Storage: local NVMe Parquet files. GPU reads use KvikIO compatibility mode
+  (`KVIKIO_COMPAT_MODE=ON`), without GPUDirect Storage. CPU reads use DataFusion's
+  Arrow Parquet reader.
+- DataFusion version `55.1`.
 
 ### TPC-H SF100
 
@@ -52,8 +54,118 @@ All 22 queries ran on the GPU path, and every output matched the CPU path.
 
 ### TPC-DS SF100
 
-All 99 queries completed on both paths with matching row counts. Q04, Q74
-and Q75 leave one decimal division inside a `CASE` to DataFusion; the other
-96 run entirely on the GPU path.
+The 2026-10-08 rerun completed all 99 queries on both paths with matching row
+counts. All 99 GPU queries used `NativeRequired`, with
+`selected=1 not_selected=0` in each planning report. Relational data operations
+ran on the GPU; SQL planning, execution coordination and result transfer still
+involve the CPU.
+
+Q04, Q74 and Q75 now include decimal division in the GPU join predicate through
+[native lowering](../../design/native-lowering.mdx#selection-fallback-and-mixed-execution).
+Separate `ordered_exact` comparisons matched all 100 result rows for each of
+these queries, with one native fragment and zero DataFusion host boundaries.
+The 99-query timing run checks output row counts; full result values were
+compared for these three queries.
 
 <TpcdsSf100Benchmark />
+
+GPU execution was faster for {tpcdsSf100Benchmark.summary.gpuFasterCount} queries;
+CPU execution was faster for {tpcdsSf100Benchmark.summary.gpuSlowerCount},
+including Q74 (1.57s CPU, 2.50s GPU). The aggregate CPU / GPU ratio uses the sum
+of measured query times, with the tuned CPU configuration below.
+
+#### DataFusion CPU configuration
+
+The TPC-DS CPU baseline uses DataFusion 55.1.0 with 32 target partitions and
+32,768 rows per batch. Scan, join, aggregate and sort repartitioning are
+enabled. Dynamic filters are enabled for joins, top-k and aggregates. These
+[DataFusion settings](https://datafusion.apache.org/user-guide/configs.html)
+were used for the complete CPU rerun:
+
+<table>
+  <thead>
+    <tr><th>DataFusion setting</th><th>Recorded value</th></tr>
+  </thead>
+  <tbody>
+    {Object.entries(tpcdsSf100Benchmark.environment.cpuSettings).map(([setting, value]) => (
+      <tr key={setting}><td><code>{setting}</code></td><td><code>{String(value)}</code></td></tr>
+    ))}
+  </tbody>
+</table>
+
+Parquet row-level filter pushdown and filter reordering are disabled.
+Statistics collection, row-group pruning and page-index pruning retain their
+enabled DataFusion defaults. The row-level pushdown comparison below retained
+dynamic filters and metadata pruning in both configurations.
+
+The TPC-H chart above retains its earlier run and uses 32 target partitions
+with an 8,192-row CPU batch. The 32,768-row setting applies to this TPC-DS rerun.
+
+#### CPU tuning comparison
+
+Five candidates were screened on Q03, Q04, Q07, Q23, Q64, Q74, Q75 and Q97, with
+zero warm-ups and one measured iteration. Profiles ran sequentially with the
+existing OS cache retained. Each produced matching output row counts.
+
+<table>
+  <thead>
+    <tr><th>Target partitions</th><th>Batch rows</th><th>Parquet row filter pushdown</th><th>Eight-query CPU total</th></tr>
+  </thead>
+  <tbody>
+    {tpcdsSf100Benchmark.environment.cpuTuning.profiles.map((profile) => (
+      <tr key={`${profile.targetPartitions}-${profile.batchSize}-${profile.parquetPushdownFilters}`}>
+        <td>{profile.targetPartitions}</td>
+        <td>{profile.batchSize.toLocaleString('en-US')}</td>
+        <td>{profile.parquetPushdownFilters ? 'Enabled' : 'Disabled'}</td>
+        <td>{(profile.totalCpuMs / 1000).toFixed(3)}s</td>
+      </tr>
+    ))}
+  </tbody>
+</table>
+
+The fastest tested candidate, 32 partitions with 32,768-row batches and
+row-level Parquet pushdown disabled, was then run across all 99 queries with
+one warm-up and one measured iteration. CPU time decreased from 243.92s at
+16 partitions and 8,192-row batches to 185.53s, a 23.94% reduction. This finite
+comparison establishes the selected configuration for this dataset and
+machine; it does not establish a universal optimum. One measured iteration
+does not quantify run-to-run variation.
+
+#### Measurement and reproduction
+
+Both paths use release builds with `target-cpu=x86-64-v4` and the same 24
+Parquet files, totalling 41,372,641,702 bytes and 959,037,905 rows. No caches
+were flushed. Each query's warm-up precedes its measured execution. `wall_ms`
+measures execution through result collection, including reads and GPU result
+transfer; successful-query SQL and physical planning time are excluded.
+
+GPU runs use the `sf100_gpu_throughput` profile with
+`local_parquet_throughput` source planning, a 32 GiB source chunk limit and
+at most 1,024 row groups per chunk. Statistical aggregates use
+[`gpu_native_tolerant`](../../integration/configuration.mdx#native-settings).
+Variance and standard deviation run on the GPU and can differ from DataFusion
+in floating-point values.
+
+The recorded source was a working tree based on commit
+<code>{tpcdsSf100Benchmark.environment.sourceRevision.slice(0, 12)}</code>,
+including the decimal join predicate fix. The existing TPC-DS environment
+variables select the CPU partition and batch settings:
+
+```bash
+source env.sh
+export KVIKIO_COMPAT_MODE=ON
+export ALGEON_TPCDS_CPU_TARGET_PARTITIONS=32
+export ALGEON_TPCDS_CPU_BATCH_SIZE=32768
+export ALGEON_TPCDS_NATIVE_PROFILE=sf100_gpu_throughput
+export ALGEON_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE=gpu_native_tolerant
+
+# Point this at the SF100 Parquet directory on local NVMe.
+export ALGEON_PARQUET_DIR=/mnt/algeon-nvme/algeon/fixture/tpcds/sf100/parquet
+
+bash scripts/dev/bench_one.sh tpcds all --engine cpu_datafusion \
+  --scale 100 --warmups 1 --iterations 1 \
+  --parquet-dir "$ALGEON_PARQUET_DIR" --out /tmp/tpcds-cpu.tsv
+bash scripts/dev/bench_one.sh tpcds all --engine native_gpu \
+  --scale 100 --warmups 1 --iterations 1 \
+  --parquet-dir "$ALGEON_PARQUET_DIR" --out /tmp/tpcds-gpu.tsv
+```

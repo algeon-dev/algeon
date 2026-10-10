@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 slug: /cuml/ml-inputs
-description: Canonical ID, Float32 features, and supervised label contracts for cuML UDTFs.
+description: Canonical ID, Float32 and narrowed Float64 features, and supervised label contracts for cuML UDTFs.
 ---
 
 # ML Inputs
@@ -37,14 +37,15 @@ row, such as `ORDER BY id` over distinct IDs.
 
 The relation projects exactly one of these dense-feature shapes:
 
-- Wide features: every column other than `id` is a `Float32` feature.
-  For `training`, the canonical `label` column is excluded from features.
+- Wide features: every column other than `id` is a `Float32` or `Float64`
+  feature. For `training`, the canonical `label` column is excluded from
+  features.
   The order of columns in the `SELECT` projection fixes the dimension order.
   At least one feature is required.
-- List features: one column named `vector` contains
-  `FixedSizeList<Float32, D>`, `List<Float32>`, or `LargeList<Float32>`. The
-  relation contains no other feature columns; supervised `training` also
-  contains `label`.
+- List features: the only column besides `id` (and the `training` label) is
+  a `FixedSizeList<T, D>`, `List<T>`, or `LargeList<T>` whose element `T` is
+  `Float32` or `Float64`, under any name. A list column next to other feature
+  columns is rejected with `list_vector_with_additional_features`.
   `FixedSizeList` requires positive `D`; variable-length lists must have the
   same positive length for every evaluated row.
 
@@ -67,8 +68,19 @@ A list vector built in SQL with `ARRAY_AGG`, `MAKE_ARRAY`, or
 because native lowering does not build lists. Its result is uploaded as the
 relation and accepted when it contains no null rows or elements.
 
-No implicit feature cast occurs. Apply `CAST` in the subquery to produce
-`Float32` features when source columns have a different numeric type:
+cuML trains and predicts on `Float32`. Every function except
+`cuml_forest_predict` narrows `Float64` features, wide columns and list
+elements alike, to `Float32` on the device before the native call, so SQL
+literals, `make_array` over `DOUBLE` values, and `DOUBLE` Parquet columns need
+no cast. Each value rounds to the nearest `Float32`, which keeps about seven
+significant digits, and a value beyond the `Float32` range becomes infinite
+and fails the finite-value check. `cuml_forest_predict` takes `Float32`
+features only, because the model's own precision decides the width on the
+device.
+Narrowing packs the `Float64` values first and then writes the `Float32` copy,
+so the pack stage briefly holds both under the query's memory cap; a `CAST`
+to `REAL` in the subquery avoids that when a query runs close to its cap.
+Apply `CAST` in the subquery for any other numeric type:
 
 ```sql
 SELECT id, pc_0
@@ -84,7 +96,7 @@ column named `label` as an ordinary feature.
 ## Supervised classification and regression
 
 For classification, `training` projects a canonical `Int32` column named `label` alongside
-its ID and Float32 features. Evaluated training labels must contain at least
+its ID and features. Evaluated training labels must contain at least
 two classes with contiguous indices `0..C-1`. Two classes use logistic loss;
 more classes use softmax for logistic regression. A fit that reaches `max_iter` remains a result.
 Random forest classification accepts the same class indices. For random forest
@@ -92,7 +104,7 @@ regression, `training.label` must be finite `Float32`; its output
 `prediction` is `Float32`.
 The query-local model is released after predicting within the statement.
 
-`predict` projects its own `id` and Float32 features, without `label`. Its
+`predict` projects its own `id` and features, without `label`. Its
 feature dimension must match `training`; known dimensions are checked at
 planning, and evaluated dimensions are checked after packing. Output `id`
 comes from `predict`, including when the training and predict ID types differ.
