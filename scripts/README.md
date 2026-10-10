@@ -5,7 +5,7 @@ remaining tooling is grouped by responsibility so developers do not need to
 search an undifferentiated script list.
 
 Read [AGENTS.md](AGENTS.md) before maintaining build, CI, or packaging tooling;
-it links to the maintenance contracts in the website's test and build guides.
+it links to [harness maintenance](test-harness.md) and the build contracts.
 
 | Directory | Responsibility |
 | --- | --- |
@@ -17,7 +17,7 @@ it links to the maintenance contracts in the website's test and build guides.
 Developer maintenance helpers under `dev/` include
 `bindings.sh` (the single checked-in cuDF/cuGraph/cuVS bindings entry) and
 `clean_target_artifacts.sh` (report / mold-temp / `cargo clean`). Cleanup is
-never an implicit side effect of a test command. Root CI checks keep native
+never an implicit side effect of a test command. Local policy checks keep native
 source registry and workspace publication-policy failures separate in the full
 gate.
 
@@ -33,7 +33,7 @@ compiler artifacts named by that run's all-feature and feature-off JSON
 streams. It reports uncovered tracked workspace Rust files and missing
 current dep-info. Its fault-injection suite is
 `python3 scripts/ci/tests/check_test_layout_tests.py`; the contract lives in
-[the test guide](../website/docs/build/test-harness.md#test-layout).
+[Test layout](test-harness.md#test-layout).
 
 Repository-owned policy data lives in `.config/policies/`; standard tool
 configuration such as `.config/nextest.toml` (the only test-lane source)

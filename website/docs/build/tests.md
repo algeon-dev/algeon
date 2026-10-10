@@ -1,17 +1,24 @@
 ---
 sidebar_position: 5
 sidebar_label: Tests
-description: The full pre-merge gate, its output and reruns, the partial edit loops, feature flags, and the acceptance runs kept outside Cargo test targets.
+description: Focused development checks, the local pre-merge gate, failure reruns, and acceptance runs.
 ---
 
 # Tests
 
-This page is for anyone validating a change before merge. It covers the
-commands, what they print, and how to rerun a failure. Lane rules, test
-placement, and the harness scripts are contracts on the
-[Test harness](./test-harness.md) page.
+Use the [targeted edit loops](#targeted-edit-loops) during development. Run
+checks for the affected behavior and finish once they pass. Broaden validation
+when failures or changes to shared contracts warrant it. Documentation-only
+changes need no Cargo or GPU checks.
 
-Before you start:
+The [full gate](#the-full-gate) is for pre-merge validation or an explicit
+request. Algeon currently runs these checks locally, without GitHub CI/CD.
+Test placement is defined in
+[Test layout](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#test-layout);
+script maintainers use the
+[harness reference](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md).
+
+Before running Cargo checks:
 
 - The [build shell](./from-source.md#2-configure-the-build-shell) is
   configured and all four native layers plus the Rust workspace are built.
@@ -21,6 +28,58 @@ Before you start:
   `cargo-nextest`.
 - No benchmark, running Flight SQL server, or other checkout's gate holds
   `/tmp/cudf-gpu.lock`, since GPU tests wait on that lock until it is free.
+
+## Development checks
+
+### Targeted edit loops
+
+Ordinary Cargo build, check, lint and test commands run from the repository
+root with `--workspace --all-features`. `cargo nt` is the alias for
+`cargo nextest run --workspace --all-features` defined in
+[`.cargo/config.toml`](https://github.com/algeon-dev/algeon/blob/main/.cargo/config.toml).
+Select tests with filtersets, never `-p`, to reuse that build configuration:
+
+```bash
+cargo nt -E 'package(<package>)'                              # what you changed
+cargo nt -E 'rdeps(<package>)'                                # everything downstream
+cargo nt -E 'binary_id(<package>::<target>) & test(<name>)'   # one test
+cargo nt -E 'not group(gpu) & not group(gpu-exclusive)'       # CPU only
+cargo nt -E 'package(bench)'                                  # the non-default bench package
+cargo nt -E '<same filterset>' -R latest                      # rerun only failures
+```
+
+A rerun must repeat the original filterset, because nextest treats binaries
+that a different or missing `-E` skipped earlier as new and reruns the whole
+suite. Plain `cargo test` is not used for the workspace's non-doc tests,
+because libtest runs a binary's cases as threads that cannot restore the
+engine's process-global allocator or backend policy fixtures, and the
+admitted test surface requires nextest's per-test-process isolation. The
+[test lanes](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#harness-internals) live in
+`.config/nextest.toml`.
+
+Formatting, lints, and docs match the gate's phases:
+
+```bash
+cargo +nightly fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep-going
+```
+
+### Broader CPU checks
+
+`--fast` runs rustfmt, the native-source check, the policy self-test scripts,
+and the CPU nextest tests (`cargo nt -E 'not group(gpu) & not
+group(gpu-exclusive)'`). It skips `msrv-check`, feature-isolation, the
+shipped-server clippy lane, all GPU tests, doctests, rustdoc, the public API
+snapshot, the hidden-API consumer probe, and clippy.
+
+```bash
+bash scripts/check_all.sh --fast
+```
+
+Any other option, or a duplicate option, exits with status 2. Feature
+selection is not a command-line option; the harness defines its workspace
+checks and [coverage exceptions](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#feature-coverage).
 
 ## The full gate
 
@@ -46,9 +105,9 @@ starts all four phase groups at once:
 - A failed phase in any group fails the gate.
 - Every other Cargo phase uses `--workspace --all-features`. Feature-isolation
   and the shipped-server clippy lane are the exceptions
-  ([Feature coverage](./test-harness.md#feature-coverage)); the feature-off
+  ([Feature coverage](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#feature-coverage)); the feature-off
   clippy supplement is described under
-  [Test layout](./test-harness.md#test-layout).
+  [Layout checks](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#layout-checks).
 
 ### Passing run
 
@@ -84,61 +143,31 @@ FAIL: full pre-merge gate reported problems.
 - A native-library or CUDA-architecture failure in the `tests` phase usually
   means a stale or mismatched prefix.
 - A single failing phase is fastest to iterate on with the
-  [targeted edit loops](#targeted-edit-loops); rerun the full gate afterwards.
+  [targeted edit loops](#targeted-edit-loops). Rerun the full gate when
+  completing pre-merge validation.
 - Exit status 2 before any phase means an argument, environment, or
   tool-version error, and the message names the fix.
 - `cargo nextest replay` replays a stored run's results for each test
   without rerunning anything.
 
-## Partial edit loop
+## Doctests
 
-`--fast` runs rustfmt, the native-source check, the policy self-test scripts,
-and the CPU nextest tests (`cargo nt -E 'not group(gpu) & not
-group(gpu-exclusive)'`). It skips `msrv-check`, feature-isolation, the
-shipped-server clippy lane, all GPU tests, doctests, rustdoc, the public API
-snapshot, the hidden-API consumer probe, and clippy.
+Doctests run as a separate command through the GPU lock wrapper, since
+rustdoc does not build through nextest. rustdoc does not pass the build
+scripts' rpath link arguments to doctest binaries, and runs them from
+temporary directories. The loader therefore needs absolute native library
+directories.
 
-```bash
-bash scripts/check_all.sh --fast
-```
-
-Any other option, or a duplicate option, exits with status 2. Feature
-selection is not a command-line option; the harness defines its workspace
-checks and [coverage exceptions](./test-harness.md#feature-coverage).
-
-### Targeted edit loops
-
-Ordinary Cargo build, check, lint and test commands run from the repository
-root with `--workspace --all-features`. `cargo nt` is the alias for
-`cargo nextest run --workspace --all-features` defined in
-[`.cargo/config.toml`](https://github.com/algeon-dev/algeon/blob/main/.cargo/config.toml).
-Select tests with filtersets, never `-p`, to reuse that build configuration:
+<details>
+<summary>Doctest command</summary>
 
 ```bash
-cargo nt -E 'package(<package>)'                              # what you changed
-cargo nt -E 'rdeps(<package>)'                                # everything downstream
-cargo nt -E 'binary_id(<package>::<target>) & test(<name>)'   # one test
-cargo nt -E 'not group(gpu) & not group(gpu-exclusive)'       # CPU only
-cargo nt -E 'package(bench)'                                  # the non-default bench package
-cargo nt -E '<same filterset>' -R latest                      # rerun only failures
+NEXTEST_TEST_GROUP=gpu scripts/ci/nextest_gpu_lock.sh /tmp/cudf-gpu.lock \
+  env LD_LIBRARY_PATH="$PWD/target/native/cudf-install/lib:$PWD/target/native/cuvs-install/lib:$PWD/target/native/cugraph-install/lib:$PWD/target/native/cugraph-build:$PWD/target/native/cuml-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  cargo test --workspace --all-features --doc --no-fail-fast
 ```
 
-A rerun must repeat the original filterset, because nextest treats binaries
-that a different or missing `-E` skipped earlier as new and reruns the whole
-suite. Plain `cargo test` is not used for the workspace's non-doc tests,
-because libtest runs a binary's cases as threads that cannot restore the
-engine's process-global allocator or backend policy fixtures, and the
-admitted test surface requires nextest's per-test-process isolation. The
-[test lanes](./test-harness.md#harness-internals) live in
-`.config/nextest.toml`.
-
-Formatting, lints, and docs match the gate's phases:
-
-```bash
-cargo +nightly fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep-going
-```
+</details>
 
 ## Feature flags
 

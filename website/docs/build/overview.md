@@ -18,12 +18,10 @@ Follow the pages in this order:
    test-runner environment.
 2. [Building from Source](./from-source.md): one recursive clone, one build
    shell, the four native builds, the Rust workspace, and the full gate.
-3. [Tests](./tests.md): the full gate in detail, partial edit loops, and
+3. [Tests](./tests.md): focused checks, the local pre-merge gate, and
    acceptance runs.
 4. [Building with Docker](./docker.md): optional packaging of the Flight SQL
    server after a source build.
-5. [Test harness](./test-harness.md): test placement, nextest lanes, and the
-   maintainer contracts behind the gate.
 
 ## The stack
 
@@ -84,7 +82,7 @@ which rejects undeclared or mismatched publication settings.
 (library `rapids_build_support`) is the shared build-dependency for packages
 whose build scripts link RAPIDS libraries. It remains std-only and cannot
 depend on crates built after it. Its validation is described in the
-[test harness reference](./test-harness.md#doctests-and-build-support).
+[harness maintenance reference](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#doctests-and-build-support).
 
 ## Build order
 

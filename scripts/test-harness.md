@@ -1,21 +1,11 @@
----
-sidebar_position: 7
-sidebar_label: Test harness
-description: Maintenance contracts for test placement, nextest lanes and the GPU lock wrapper, feature coverage, doctests, build support, compile diagnostics, and target cleanup.
----
+# Test harness maintenance
 
-# Test harness
+Use [Test layout](#test-layout) when adding or moving tests. Read the other
+sections when changing validation scripts or diagnosing the harness. Routine
+commands and validation scope are in [Tests](../website/docs/build/tests.md).
+Commands below run from the repository root.
 
-This page defines the maintenance contracts for the test harness, the nextest
-configuration and the build scripts. Routine validation commands, gate output
-and reruns are on [Tests](./tests.md). Every check below must pass inside one
-full gate run, and focused or `--fast` runs are partial validation. The only
-committed GitHub Actions workflow builds and deploys the website, and no
-workflow makes the full gate a required status check; `bash
-scripts/check_all.sh` on the developer host is therefore the pre-merge
-validation.
-
-## Test layout {/* #test-layout */}
+## Test layout
 
 Test placement follows the access the cases require. Unit tests that need
 crate-private items or `cfg(test)` seams stay under `src/`. Tests that use
@@ -57,6 +47,20 @@ that requires a feature declares Cargo `required-features`; it must not
 replace that requirement with a crate-level `#![cfg(feature = ...)]` that
 produces an empty test binary when the feature is disabled.
 
+Because every test process pays for its own CUDA context, the cudf
+contract binaries `semantic_contracts_gpu`, `execution_contracts_gpu`, and
+`interop_contracts_gpu` group small tests into one table per file. The test
+functions are plain `fn`s, and a single `#[test] fn <file_stem>_cases` passes
+them to `common::run_named_cases`, which runs each case on the thread's shared
+test runtime and fails once, naming every failing case. Add a new case to its
+file's table. Keep a test as its own `#[test]` only when it arms one-shot
+native fault injection, installs process-global or device-safety state, spawns
+threads, is `#[should_panic]`, or uses a device other than 0. A table is run
+like any test, for example
+`cargo nt -E 'binary_id(algeon-cudf::semantic_contracts_gpu) & test(expr_tests_cases)'`.
+
+## Layout checks
+
 `scripts/ci/check_test_layout.py` enforces source ownership, first-level
 roots, allowed source boundaries, generated-only `include!`, and `#[path]`
 exceptions in the policy phase. Its fault-injection suite uses temporary
@@ -80,7 +84,7 @@ workspace members are excluded; build helpers and checked-in bindings must
 appear in dep-info. The phase is skipped when clippy fails, and the gate
 still fails. `--fast` checks layout without source-coverage validation.
 
-## Harness internals {/* #harness-internals */}
+## Harness internals
 
 `scripts/check_all.sh` is the only top-level script entry point. Supporting
 files are grouped by responsibility, and the directory map is maintained in
@@ -119,18 +123,6 @@ Every test binary lands in one lane:
   the *device* to themselves.
 - GPU timeouts include lock waits.
 
-Because every test process pays for its own CUDA context, the cudf
-contract binaries `semantic_contracts_gpu`, `execution_contracts_gpu`, and
-`interop_contracts_gpu` group small tests into one table per file. The test
-functions are plain `fn`s, and a single `#[test] fn <file_stem>_cases` passes
-them to `common::run_named_cases`, which runs each case on the thread's shared
-test runtime and fails once, naming every failing case. Add a new case to its
-file's table. Keep a test as its own `#[test]` only when it arms one-shot
-native fault injection, installs process-global or device-safety state, spawns
-threads, is `#[should_panic]`, or uses a device other than 0. A table is run
-like any test, for example
-`cargo nt -E 'binary_id(algeon-cudf::semantic_contracts_gpu) & test(expr_tests_cases)'`.
-
 `scripts/ci/nextest_gpu_lock.sh` is the run-wrapper nextest invokes for every
 test (`[scripts.wrapper.gpu-lock]`, applied through
 `[[profile.default.scripts]]`); it reads `NEXTEST_TEST_GROUP` and takes
@@ -161,9 +153,9 @@ timeouts.
 - `-R latest` reruns, `cargo nextest replay`, and any other `nextest store`
   command need recording enabled once per machine in nextest's own user
   config (outside this repository); see
-  [Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner).
+  [Prerequisites](../website/docs/build/prerequisites.md#rust-toolchain-and-test-runner).
 
-## Feature coverage {/* #feature-coverage */}
+## Feature coverage
 
 The MSRV and feature-isolation phases compile without running tests, contacting
 external services or taking the GPU lock. `msrv-check` uses the workspace's
@@ -202,29 +194,14 @@ cargo clippy --manifest-path crates/algeon-server/Cargo.toml --bin algeon_server
   --target-dir target/check-all/shipped-clippy -- -D warnings
 ```
 
-## Doctests and build support {/* #doctests-and-build-support */}
+## Doctests and build support
 
-Doctests run as a separate command through the GPU lock wrapper, since
-rustdoc does not build through nextest. rustdoc does not pass the build
-scripts' rpath link arguments to doctest binaries, and runs them from
-temporary directories. The loader therefore needs absolute native library
-directories.
-
-<details>
-<summary>Doctest command</summary>
-
-```bash
-NEXTEST_TEST_GROUP=gpu scripts/ci/nextest_gpu_lock.sh /tmp/cudf-gpu.lock \
-  env LD_LIBRARY_PATH="$PWD/target/native/cudf-install/lib:$PWD/target/native/cuvs-install/lib:$PWD/target/native/cugraph-install/lib:$PWD/target/native/cugraph-build:$PWD/target/native/cuml-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-  cargo test --workspace --all-features --doc --no-fail-fast
-```
-
-</details>
+Doctest commands and loader requirements are in [Tests](../website/docs/build/tests.md#doctests).
 
 Rustdoc is always strict. The harness appends `-D warnings` after any
 caller-provided `RUSTDOCFLAGS`, and an earlier `-A warnings` cannot weaken it.
 
-The [shared build-support crate](./overview.md#workspace-and-publication-contracts)
+The [shared build-support crate](../website/docs/build/overview.md#workspace-and-publication-contracts)
 has an isolated policy suite in the full gate's self-test phase. The suite can
 also run alone, without loading or modifying RAPIDS libraries:
 

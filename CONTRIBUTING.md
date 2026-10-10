@@ -1,334 +1,100 @@
 # Contributing
 
-Contributions are very welcome. Algeon brings specialized GPU algorithms into
-composable SQL workflows. Its first integration lowers Apache DataFusion
-physical plans to native IR and executes them via cuDF, cuGraph, cuVS, and cuML. The most
-valuable contributions make physical-to-native lowering, capability admission,
-bounded resource management, and GPU execution clearer, faster, and more
-reliable.
+Algeon development targets Linux. Keep this guide under 160 lines; detailed
+contracts and commands belong in the linked owner documents.
 
-This repository is Linux-only. Concrete toolchain requirements, system
-prerequisites, build environments, and operational specifications are
-maintained on the [documentation website](website/docs/build/overview.md).
+## Getting started
 
-## SQL Function Terminology
+- Follow [Prerequisites](website/docs/build/prerequisites.md) and
+  [Building from Source](website/docs/build/from-source.md) for the recursive
+  checkout, native libraries and workspace build.
+- Use the [module ownership map](website/docs/design/index.mdx#crates-and-ownership)
+  to find the crate responsible for a change. Fix gaps in that crate.
+- Follow [AGENTS.md](AGENTS.md) and applicable component guidance for coding
+  conventions, contract sources and repository maintenance rules.
 
-Call `cugraph_*`, `cuvs_*`, and `cuml_*` SQL calls GPU UDTFs (user-defined
-table functions): each appears in `FROM` and returns rows. Call
-`gpu_list_functions`, `gpu_describe_function`, `gpu_validate_call`, and
-`algeon_explain_coverage` metadata UDTFs. Use DataFusion's `TableFunction`
-name when discussing its API and UDF for scalar, aggregate, or window APIs. Keep
-existing SQL names, Rust identifiers, and catalog URLs unchanged.
+## Proposing a change
 
-## Start With an Issue
+Every pull request starts with an issue describing the problem and affected
+behavior or API. Discuss unclear design or scope before implementing it.
+For bug reports, include the affected crate, query or plan, reproduction
+steps, sanitized configuration, and expected and observed results. Label
+unreproduced findings as hypotheses.
 
-Every pull request must start with an issue. Before opening a PR, open an issue
-that explains why the change is needed, what problem it solves, and what
-behavior or API contract it affects.
+Use a descriptive topic branch and keep changes scoped. Preserve unrelated
+edits, generated output, caches and native build trees. For non-trivial work,
+identify existing code to extend or replace before adding another path.
+Avoid speculative abstractions and configuration.
 
-This keeps design context visible and reduces review churn, especially for
-changes that touch physical-plan lowering, capability admission, native IR,
-memory ledgers, or cross-crate boundaries.
+## Code and documentation
 
-For a change whose design or scope is unclear, discuss the proposed solution in
-the issue before writing code:
+Follow the owner documents for [native lowering](website/docs/design/native-lowering.mdx),
+[memory and query lifetime](website/docs/design/admission.mdx), and
+[error handling](website/docs/design/errors.mdx). Update the owning contract,
+implementation and affected tests together when behavior changes.
 
-- Solve a demonstrated problem or concrete query pattern. Speculative
-  abstractions, unverified performance fixes, and mechanical refactors without
-  an agreed technical goal are not useful starting points.
-- Identify the owning layer early. If a capability gap belongs in `cudf` or
-  `cugraph`, open the issue and implement the fix in its component under
-  `components/` rather than introducing an adapter-level workaround.
-- For bug reports, specify the affected crate, physical plan or SQL query,
-  minimal reproduction steps, sanitized configuration or data, actual result,
-  and expected result. Source inspection alone is not confirmation of a bug; if
-  the behavior is not reproduced, describe it as a hypothesis and state what
-  remains unknown.
-- Add a regression test for every bug fix that fails when the fix is reverted.
+Prefer extending existing abstractions. Add comments for rationale or safety
+constraints that the code cannot express. Production `drop()` calls need a
+one-line explanation of why the value cannot wait until scope exit.
 
-## AI-Assisted Contributions
+### SQL function terminology
 
-AI tools may help with investigation, implementation, and review, but a human
-contributor must guide the work and remain accountable for the result.
+Call `cugraph_*`, `cuvs_*`, and `cuml_*` SQL calls GPU UDTFs: they return rows
+in `FROM`. Call `gpu_list_functions`, `gpu_describe_function`,
+`gpu_validate_call`, and `algeon_explain_coverage` metadata UDTFs. Use
+DataFusion's `TableFunction` API name; reserve UDF for scalar, aggregate and
+window APIs. Preserve SQL names, Rust identifiers and catalog URLs.
 
-- Participate meaningfully in every issue and pull request conversation. Do not
-  delegate project communication entirely to an AI tool.
-- Review, edit, and verify generated analysis, lowering rules, and IR
-  transformations before submitting them. You should understand every claim and
-  change well enough to explain it during review.
-- Disclose material AI assistance and any assumptions or unknowns that could
-  affect review.
-- Treat an AI-generated hypothesis as a lead, not as evidence. Reproduce the
-  behavior against real physical plans or native IR before calling it a
-  confirmed bug.
-- Do not include credentials, private data, sanitized cloud endpoints, or
-  unredacted logs in prompts, issues, or pull requests.
+### Lint exceptions
 
-The contributor, not the AI tool, is responsible for the correctness,
-relevance, and maintainability of the submission.
+Workspace lint levels come from `[workspace.lints]` in the root `Cargo.toml`.
+Fix the owning abstraction before suppressing a lint. When an exception is
+necessary, prefer per-item `#[expect(clippy::..., reason = "...")]` with a
+concrete justification. Do not add crate-, module-, or workspace-wide
+`#[allow]` attributes, or use `#[allow]` as a migration baseline.
 
-## Architecture & Project Boundaries
+## Testing and validation
 
-Algeon maintains strict separation of concerns across workspace
-crates:
+Use [Tests](website/docs/build/tests.md) for commands. Run the relevant
+formatting, lint and behavior checks, then finish once they pass. Broaden
+coverage when failures or affected downstream contracts warrant it.
+Documentation-only changes need no Cargo or GPU checks.
 
-```text
-                 Apache DataFusion Physical Plan
-                               │
-                               ▼
-┌───────────────────────────────────────────────────────────────┐
-│ algeon-datafusion (DataFusion Adapter)                        │
-│ - Physical optimizer rules (AlgeonNativePhysicalOptimizerRule)│
-│ - Table providers and Parquet scans                           │
-│ - NativeExecutionPlan wrappers & DataFusion metric bridges    │
-└──────────────────────────────┬────────────────────────────────┘
-                               │ uses the compatible facade
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│ crates/algeon-query-engine (Facade + Native Execution)      │
-│ - Public planning/runtime re-exports                        │
-│ - Bounded relational, graph, vector, ML, and source execution│
-│ - Host/GPU-resident result composition                      │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ depends on
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│ query-runtime -> query-planning                             │
-│ - Runtime: lifecycle, query service, ledger, grant, cache   │
-│ - Planning: IR, optimizer, capability, proof, pipeline      │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ execution uses
-                               ▼
-        components/cudf      components/cugraph
-        cuDF / RMM          cuGraph algorithms
-        components/cuvs      components/cuml
-        cuVS vector         cuML machine learning
-```
+Reserve the full gate for pre-merge validation or an explicit request.
+Focused checks, `--fast`, and failure-only reruns are partial validation.
+Algeon currently runs checks locally, without GitHub CI/CD.
 
-### Key Invariants
+- Extend existing behavior coverage when possible. A bug fix needs a
+  regression test that fails when the fix is reverted.
+- Follow [Test layout](scripts/test-harness.md#test-layout) when adding or
+  moving tests. Assert structured planning reports and diagnostics.
+- Use nextest filtersets with the shared workspace configuration described in
+  the test guide. Do not wrap nextest or the full gate in an outer GPU lock.
+- Keep external-service and dataset acceptance runs outside default Cargo
+  test targets; use the [acceptance commands](website/docs/build/tests.md#acceptance-runs-outside-the-gate).
 
-- **Fix the owning abstraction**: DataFusion-dependent lowering belongs in the
-  DataFusion adapter; IR, optimizer, capability, proof, admission contracts, and
-  pipeline belong in `crates/algeon-query-planning`; lifecycle, query service,
-  ledger, grant, cache, observation, and metrics belong in
-  `crates/algeon-query-runtime`; native execution composition belongs in
-  `crates/algeon-query-engine`. Native cuDF, cuGraph, cuVS, and cuML
-  operations belong in their respective component crates. Never paper over an owner or
-  RAPIDS limitation with an adapter workaround.
-- **One bounded admission contract**: Every native attempt is admitted against
-  a single per-device ledger, immutable grants, and transactional envelopes.
-  The reservation ledger is integer accounting, not a residency oracle.
-- **Structured planning diagnostics**: `AlgeonNativePhysicalOptimizerRule` emits
-  structured `PlanningReport`s. Assert reports and structured diagnostics in
-  tests, not printed string plans.
-- **Explicit aggregation state**: Model partial and final aggregate states
-  explicitly (e.g., `AVG` is `SUM + COUNT` followed by final `SUM / SUM`).
-- **Structured errors**: Keep `crates/algeon-datafusion/src/error.rs` errors structured and typed;
-  convert to `DataFusionError` only at the DataFusion boundary.
+Harness maintainers use [scripts/test-harness.md](scripts/test-harness.md).
+Agents selecting checks or diagnosing failures use
+[algeon-validation](.agents/skills/algeon-validation/SKILL.md).
 
-For complete architectural details and reference designs, consult the
-[Architecture Guides](website/docs/design/index.mdx).
+## Pull requests
 
-## Subtractive Development
+Use a concise conventional-commit title naming the affected area, such as
+`fix(query-engine): release memory grant on cancelled pipeline tasks`.
+Include the linked issue, changed behavior or contract, owning layer, exact
+validation commands and outcomes, and any unverified paths.
 
-- **Net line count should trend down or stay flat**: Prefer extending existing
-  abstractions over adding parallel paths. About to add a second way to do
-  something? Consolidate or remove the first.
-- **Audit before implementing**: For non-trivial changes, list related existing
-  files and functions, and state whether each should be extended, replaced, or
-  left alone.
-- **No speculative code**: Never add "just in case" configuration, fallbacks, or
-  defensive branches without a concrete, reproducible scenario in this
-  codebase.
-- **Minimal comments**: Default to no comments. Never explain what the code
-  does; rename things instead. Comment only non-obvious rationale, invariants,
-  safety constraints, external quirks, or business rules. An explicit `drop()`
-  in production code requires a one-line comment explaining why it cannot wait
-  until the end of scope.
+For native checks, report the selected native prefixes, loader paths, GPU,
+CUDA and Rust toolchains, and host OS. A compile-only check does not establish
+native or GPU correctness.
 
-## Workflow
+## AI-assisted contributions
 
-### Branches
+A human contributor remains responsible for the change and project
+communication. Review generated code and claims before submitting them;
+verify behavior before reporting an AI-generated hypothesis as a bug.
+Disclose material AI assistance and assumptions or unknowns that affect review.
+Do not delegate issue or PR conversations entirely to an AI tool.
 
-Use a descriptive topic branch for a pull request. Keep unrelated edits,
-generated files, caches, and test artifacts out of the diff. Keep changes small
-and scoped so that ownership and validation are straightforward to review.
-
-### Pull Requests
-
-Use a concise, conventional-commit-style title that makes the affected layer and
-intent clear:
-
-```text
-feat(lowering): support decimal cast expressions in native projection
-fix(query-engine): release memory grant on cancelled pipeline tasks
-test(query-planning): cover deferred candidate reasons in PlanningReport
-docs: clarify GPU test isolation and lock requirements
-```
-
-In the PR description, include:
-
-- The linked issue.
-- A concise summary of the change and its user-facing or technical value.
-- The behavior, API, or contract that changed.
-- The layer that owns the change (DataFusion adapter, `query-planning`,
-  `query-runtime`, `query-engine`, `server`, or a component crate under
-  `components/`).
-- The test environment used: CUDA driver and toolkit setup, GPU model, Rust
-  toolchain, host OS, and relevant environment variables.
-- The exact test commands or verification steps executed.
-- Any known gaps, unverified paths, or deliberate non-goals.
-
-Do not describe a compile-only check as native or GPU qualification.
-
-### Lint Exceptions
-
-Workspace lint levels are owned by `[workspace.lints]` in the root `Cargo.toml`
-and inherited by every workspace package; the canonical Clippy gate is
-`cargo clippy --workspace --all-targets --all-features -- -D warnings`.
-
-- Fix the owning abstraction before adding a lint exception. When a lint
-  fires, first ask whether the code repeats shared state across signatures or
-  is missing a real owner; suppressions must not become a substitute for that
-  repair.
-- Clippy exceptions must be narrow and justified. Prefer a per-item
-  `#[expect(clippy::..., reason = "...")]` with a concrete, verifiable
-  justification. Do not add crate-, module-, or workspace-wide
-  `#[allow]` attributes, and never use `#[allow]` as a migration baseline;
-  it silently survives the refactor it was meant to be temporary for.
-
-## Local Setup
-
-Algeon is a single recursive checkout. The root workspace owns the
-adapter, planning/runtime/engine stack, server, tests, and all four Rust
-integration components:
-
-```text
-algeon/
-├── components/cudf/             # cudf, cudf-sys, rapids-interop
-│   └── cudf/                    # pinned cuDF fork submodule
-├── components/cugraph/          # cugraph and cugraph-sys
-│   └── cugraph/                 # pinned cuGraph fork submodule
-├── components/cuvs/             # cuvs and cuvs-sys
-│   └── cuvs/                    # pinned cuVS submodule
-├── components/cuml/             # cuml and cuml-sys
-│   └── cuml/                    # pinned cuML submodule
-├── crates/algeon-datafusion/    # DataFusion adapter
-│   └── src/
-├── crates/                      # Planning, runtime, engine, and support crates
-```
-
-Clone the repository with its pinned native sources:
-
-```bash
-git clone --recurse-submodules \
-  https://github.com/algeon-dev/algeon.git
-```
-
-## Native Components
-
-`components/cudf`, `components/cuvs`, `components/cuml`, and `components/cugraph` are members of
-this workspace, not independent projects. Their crate boundaries and native
-defaults are documented in their respective READMEs. The pinned submodules and
-native build order are defined in [Building from Source](website/docs/build/from-source.md).
-
-### Toolchain & Environment Specifications
-
-All toolchain specifications (Rust compiler channels, linker setup with mold
-and clang, CMake and host compiler requirements) and environment variables are
-defined and maintained in the website documentation:
-
-- [Prerequisites](website/docs/build/prerequisites.md): System dependencies,
-  CUDA requirements, compiler pairings, and linker setup.
-- [Building from Source](website/docs/build/from-source.md): Recursive clone,
-  checkout-local native selectors (`CUDF_INSTALL_DIR`, `ALGEON_NATIVE_DIR`,
-  `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`, `CUML_INSTALL_DIR`), native build order, and Rust
-  workspace compilation.
-
-Use `--workspace --all-features` for ordinary cargo build, check, lint, and
-test commands, and select tests with nextest filtersets rather than `-p`. One
-build configuration keeps those commands warm and avoids unnecessary artifact
-rebuilds. The full gate keeps two feature-coverage exceptions, the
-feature-isolation shards and the shipped-server clippy lane, described in
-[Tests](website/docs/build/test-harness.md#harness-internals). `cargo nt` is the
-workspace alias for `cargo nextest run --workspace --all-features`.
-
-Focused component validation uses the same commands for every native wrapper:
-
-```bash
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo +nightly fmt --all --check
-cargo nt -E 'package(<component-packages...>)'
-```
-
-The package groups are `package(cudf) | package(cudf-sys) |
-package(rapids-interop)`, `package(cugraph) | package(cugraph-sys)`,
-`package(cuvs) | package(cuvs-sys)`, and
-`package(algeon-cuml) | package(algeon-cuml-sys)`.
-
-## Testing & Validation
-
-For comprehensive testing policies, execution lanes, and test harness details,
-refer to the [Tests Documentation](website/docs/build/tests.md).
-
-### Test Isolation & Runners
-
-`query-engine` tests require process isolation because allocator lifecycle
-cases install a process-global `DeviceMemoryManager`, and native execution cases
-retain backend policy per process. Broad `cargo test --all-features` runs without process
-isolation fail closed or corrupt global state. Test execution must use
-`cargo-nextest` as specified in the testing guide.
-
-### GPU Serialization Lock
-
-GPU tests take `/tmp/cudf-gpu.lock` automatically through nextest's
-run-wrapper (`.config/nextest.toml`, `scripts/ci/nextest_gpu_lock.sh`): shared
-for the `gpu` group, exclusive for `gpu-exclusive`. A bare `cargo nt` already
-serializes correctly. Non-test GPU commands (benchmarks, servers, tools) still
-take the lock themselves:
-
-```shell
-flock /tmp/cudf-gpu.lock cargo run -p algeon-server --all-features --bin algeon_server
-```
-
-> [!IMPORTANT]
-> **Never wrap `cargo nt` or `scripts/check_all.sh` in `flock /tmp/cudf-gpu.lock`**.
-> They already take the lock through the nextest run-wrapper; an outer hold
-> self-deadlocks them. Run them bare.
-
-### Targeted Edit Loops
-
-Run focused checks first, then expand validation according to the blast radius:
-
-```shell
-# Format and clippy
-cargo +nightly fmt --all
-cargo clippy --workspace --all-targets --all-features
-
-# What you changed, then everything downstream
-cargo nt -E 'package(algeon-datafusion) | package(algeon-cuml)'
-cargo nt -E 'rdeps(algeon-datafusion)'
-
-# Rerun only the failures (repeat the same -E, or skipped binaries rerun as new)
-cargo nt -E 'package(algeon-datafusion)' -R latest
-```
-
-### Full Pre-Merge Validation
-
-`scripts/check_all.sh` is the canonical pre-merge gate:
-
-```shell
-bash scripts/check_all.sh
-```
-
-- `bash scripts/check_all.sh --fast` is a partial edit-loop helper (policy,
-  rustfmt, CPU tests) and does not constitute full pre-merge validation. The
-  full gate outlives a single terminal session: start it with `nohup` and poll
-  `target/check-all/latest/summary.tsv`.
-- `.config/nextest.toml` is the sole source of test-lane admission: CPU tests
-  are opt-in by a `_cpu` target suffix or a listed binary, `_gpu_exclusive`
-  targets and tests under a `gpu_exclusive` module run alone and last, and
-  every other test runs in the `gpu` group.
-- Do not add external-service E2E tests to default Cargo test targets; run them
-  explicitly via `cargo run -p tools --all-features` or fixture scripts under
-  `fixture/`.
+Keep credentials, private data, sanitized cloud endpoints and unredacted
+logs out of prompts, issues and pull requests.
