@@ -45,6 +45,10 @@ use self::object_store::{
     FooterObjectStoreRegistry, foreign_error_diagnostic, object_error_context, object_store_file,
     object_store_pruning_error, stable_log_field,
 };
+use super::pruning::{
+    and_may_satisfy, float_range_may_satisfy, in_list_may_satisfy, is_not_null_may_satisfy, is_null_may_satisfy,
+    or_may_satisfy, ordered_range_may_satisfy, range_comparison_from_binary_op,
+};
 use crate::{
     error::{Error, Result},
     native::table_format_pruning_policy::TableFormatPruningPolicy,
@@ -480,12 +484,12 @@ fn static_row_group_may_satisfy_expr(
         StaticRowGroupPruningExpr::And(left, right) => {
             let left = static_row_group_may_satisfy_expr(row_group, schema, left);
             let right = static_row_group_may_satisfy_expr(row_group, schema, right);
-            Some(!matches!(left, Some(false)) && !matches!(right, Some(false)))
+            Some(and_may_satisfy(left, right))
         },
         StaticRowGroupPruningExpr::Or(left, right) => {
             let left = static_row_group_may_satisfy_expr(row_group, schema, left);
             let right = static_row_group_may_satisfy_expr(row_group, schema, right);
-            Some(!matches!((left, right), (Some(false), Some(false))))
+            Some(or_may_satisfy(left, right))
         },
     }
 }
@@ -506,12 +510,12 @@ fn static_row_group_may_satisfy_atom(
         },
         StaticRowGroupPruningAtom::IsNull { column_index } => {
             let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
-            Some(statistics.null_count_opt()? > 0)
+            is_null_may_satisfy(statistics)
         },
         StaticRowGroupPruningAtom::IsNotNull { column_index } => {
             let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             let row_count = u64::try_from(row_group.num_rows()).ok()?;
-            Some(statistics.null_count_opt()? < row_count)
+            is_not_null_may_satisfy(statistics, row_count)
         },
     }
 }
@@ -520,18 +524,7 @@ fn static_row_group_may_satisfy_in_list(
     column: &ColumnChunkMetaData,
     literals: &[StaticPruningLiteral],
 ) -> Option<bool> {
-    if literals.is_empty() {
-        return Some(false);
-    }
-    let mut saw_unknown = false;
-    for literal in literals {
-        match static_row_group_may_satisfy_comparison(column, BinaryOp::Eq, literal) {
-            Some(true) => return Some(true),
-            Some(false) => {},
-            None => saw_unknown = true,
-        }
-    }
-    Some(saw_unknown)
+    in_list_may_satisfy(literals, |literal| static_row_group_may_satisfy_comparison(column, BinaryOp::Eq, literal))
 }
 
 fn static_row_group_may_satisfy_comparison(
@@ -540,11 +533,12 @@ fn static_row_group_may_satisfy_comparison(
     literal: &StaticPruningLiteral,
 ) -> Option<bool> {
     let statistics = column.statistics()?;
+    let comparison = range_comparison_from_binary_op(op);
     match statistics {
         Statistics::Int32(_) | Statistics::Int64(_) => {
             let range = integer_statistics_range(column)?;
             static_integer_or_decimal_literal(literal)
-                .map(|literal| static_i128_range_may_satisfy(range.min, range.max, op, literal))
+                .map(|literal| ordered_range_may_satisfy(range.min, range.max, comparison, literal))
         },
         Statistics::Float(stats) => {
             let min = f64::from(*stats.min_opt()?);
@@ -552,7 +546,7 @@ fn static_row_group_may_satisfy_comparison(
             let StaticPruningLiteral::Float64(literal) = literal else {
                 return None;
             };
-            Some(static_float_range_may_satisfy(min, max, op, *literal))
+            Some(float_range_may_satisfy(min, max, comparison, *literal))
         },
         Statistics::Double(stats) => {
             let min = *stats.min_opt()?;
@@ -560,17 +554,19 @@ fn static_row_group_may_satisfy_comparison(
             let StaticPruningLiteral::Float64(literal) = literal else {
                 return None;
             };
-            Some(static_float_range_may_satisfy(min, max, op, *literal))
+            Some(float_range_may_satisfy(min, max, comparison, *literal))
         },
         Statistics::ByteArray(stats) => {
             let min = stats.min_opt()?.data();
             let max = stats.max_opt()?.data();
             match literal {
-                StaticPruningLiteral::Bytes(literal) => Some(static_bytes_range_may_satisfy(min, max, op, literal)),
+                StaticPruningLiteral::Bytes(literal) => {
+                    Some(ordered_range_may_satisfy(min, max, comparison, literal.as_slice()))
+                },
                 StaticPruningLiteral::Decimal128(literal) => {
                     let min = decimal_i128_from_be_bytes(min)?;
                     let max = decimal_i128_from_be_bytes(max)?;
-                    Some(static_i128_range_may_satisfy(min, max, op, *literal))
+                    Some(ordered_range_may_satisfy(min, max, comparison, *literal))
                 },
                 StaticPruningLiteral::Int64(_) | StaticPruningLiteral::Float64(_) => None,
             }
@@ -583,7 +579,7 @@ fn static_row_group_may_satisfy_comparison(
             };
             let min = decimal_i128_from_be_bytes(min)?;
             let max = decimal_i128_from_be_bytes(max)?;
-            Some(static_i128_range_may_satisfy(min, max, op, *literal))
+            Some(ordered_range_may_satisfy(min, max, comparison, *literal))
         },
         _ => None,
     }
@@ -605,42 +601,6 @@ fn decimal_i128_from_be_bytes(bytes: &[u8]) -> Option<i128> {
     let mut value = [sign_extension; mem::size_of::<i128>()];
     value[mem::size_of::<i128>() - bytes.len()..].copy_from_slice(bytes);
     Some(i128::from_be_bytes(value))
-}
-
-fn static_i128_range_may_satisfy(min: i128, max: i128, op: BinaryOp, literal: i128) -> bool {
-    match op {
-        BinaryOp::Eq => min <= literal && literal <= max,
-        BinaryOp::Lt => min < literal,
-        BinaryOp::LtEq => min <= literal,
-        BinaryOp::Gt => max > literal,
-        BinaryOp::GtEq => max >= literal,
-        _ => true,
-    }
-}
-
-fn static_float_range_may_satisfy(min: f64, max: f64, op: BinaryOp, literal: f64) -> bool {
-    if min.is_nan() || max.is_nan() || literal.is_nan() {
-        return true;
-    }
-    match op {
-        BinaryOp::Eq => min <= literal && literal <= max,
-        BinaryOp::Lt => min < literal,
-        BinaryOp::LtEq => min <= literal,
-        BinaryOp::Gt => max > literal,
-        BinaryOp::GtEq => max >= literal,
-        _ => true,
-    }
-}
-
-fn static_bytes_range_may_satisfy(min: &[u8], max: &[u8], op: BinaryOp, literal: &[u8]) -> bool {
-    match op {
-        BinaryOp::Eq => min <= literal && literal <= max,
-        BinaryOp::Lt => min < literal,
-        BinaryOp::LtEq => min <= literal,
-        BinaryOp::Gt => max > literal,
-        BinaryOp::GtEq => max >= literal,
-        _ => true,
-    }
 }
 
 async fn derive_dimension_key_filter(

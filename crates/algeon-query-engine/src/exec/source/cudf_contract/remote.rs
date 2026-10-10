@@ -19,7 +19,9 @@ use object_store::aws::AwsCredential;
 use query_planning::source::{CredentialMode, ParquetReadStrategy, ResolvedParquetInput, ResolvedParquetSource};
 use query_runtime::runtime::{S3ObjectStoreKey, S3SourceStorageCredential, SourceStorageProfile};
 
-use crate::exec::source::{cudf_query_error_without_source, *};
+use crate::exec::source::{
+    ExecutionContext, QueryError, QueryErrorCode, Result, cudf_query_error_without_source, parse_s3_source_uri,
+};
 
 /// Attaches the remote profile and read mode to `cudf_file`, and checks that this build can serve
 /// it. A file with no remote source (a local path) is returned unchanged.

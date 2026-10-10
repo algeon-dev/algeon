@@ -64,8 +64,8 @@ impl LabelingResult {
             operation,
             pointer_name,
         )?;
-        // SAFETY: `view_ptr` is a borrowed child view tied to the live result.
-        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), operation, pointer_name) }
+        // SAFETY: cuGraph allocates this view metadata; this wrapper frees it, and the result retains its backing arrays.
+        unsafe { RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), operation, pointer_name) }
     }
 
     /// Get vertex ids as a runtime-typed device array view.

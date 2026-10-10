@@ -43,11 +43,14 @@ mod reports;
 mod strategy_gate;
 mod validation;
 
-use case_runner::*;
-use config::*;
-use errors::*;
-use provenance::*;
-use reports::*;
+use case_runner::run_native_tpch_benchmark;
+use config::{
+    NativeTpchBenchmarkConfig, NativeTpchDatasetMode, NativeTpchDeviceBudget, NativeTpchMemoryPolicy,
+    NativeTpchRuntimeResources, NativeTpchScaleFactor,
+};
+use errors::{plan_error, tpch_error};
+use provenance::{DeviceProvenance, RunProvenance, run_start_line};
+use reports::{NativeTpchBenchmarkReport, NativeTpchBenchmarkRow, NativeTpchTimingMetrics};
 
 /// Run the native TPC-H benchmark end to end from environment configuration,
 /// print the TSV report to stdout, and enforce the strategy gates.

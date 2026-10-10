@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BufferBinding, ColumnLayout, InteropError, InteropTypeId, PhysicalValidity, Placement, PreparedColumnExport,
+    PreparedTableExport, SemanticColumn, TypeId, checked_invalid_view_i32_from_usize,
+};
 
 pub(super) fn map_interop_type_id(type_id: InteropTypeId) -> TypeId {
     match type_id {

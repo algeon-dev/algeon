@@ -12,7 +12,15 @@
 
 use std::{fmt, marker::PhantomData, ptr};
 
-use cugraph_sys::*;
+use cugraph_sys::{
+    cugraph_error_t, cugraph_type_erased_device_array_create, cugraph_type_erased_device_array_t,
+    cugraph_type_erased_device_array_view, cugraph_type_erased_device_array_view_copy_from_host,
+    cugraph_type_erased_device_array_view_copy_to_host, cugraph_type_erased_device_array_view_create,
+    cugraph_type_erased_device_array_view_free, cugraph_type_erased_device_array_view_pointer,
+    cugraph_type_erased_device_array_view_size, cugraph_type_erased_device_array_view_t,
+    cugraph_type_erased_device_array_view_type, cugraph_type_erased_host_array_view_create,
+    cugraph_type_erased_host_array_view_free, cugraph_type_erased_host_array_view_t,
+};
 
 use crate::{
     cuda::{DeviceResourceKind, drop_device_resource},
@@ -181,6 +189,7 @@ impl RawDeviceArrayView<'_> {
     ///   lifetime `'a`
     /// - this wrapper does not outlive the owner responsible for freeing the
     ///   C view and its backing storage
+    #[cfg(test)]
     pub(crate) unsafe fn from_borrowed(
         raw: *mut cugraph_type_erased_device_array_view_t,
         device: Option<i32>,

@@ -1,6 +1,7 @@
 use algeon_datafusion::error::ErrorCode;
 
 use super::*;
+use crate::tpch_benchmark::reports::bounded_status;
 
 #[test]
 fn accepted_row_preserves_native_not_started_failure_status() {

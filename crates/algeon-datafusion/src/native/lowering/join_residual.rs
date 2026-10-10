@@ -171,16 +171,12 @@ fn lower_join_filter_expr(
         return Ok(lower_literal(literal.value()).expect("validated join-residual literal must lower"));
     }
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
-        let left = lower_join_filter_expr(binary.left(), context, left_required, right_required, materializations)?;
-        let right = lower_join_filter_expr(binary.right(), context, left_required, right_required, materializations)?;
-        let op = lower_binary_operator(binary.op());
-        if matches!(binary.op(), Operator::Divide)
-            && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())
-                .expect("validated join-residual decimal division must have a supported output type")
-        {
-            return Ok(NativeExpr::binary_with_output_type(left, op, right, output_type));
-        }
-        return Ok(NativeExpr::binary(left, op, right));
+        return lower_join_filter_binary_expr(
+            binary,
+            context,
+            |expr| lower_join_filter_expr(expr, context, left_required, right_required, materializations),
+            "validated join-residual decimal division must have a supported output type",
+        );
     }
     if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return Ok(!lower_join_filter_expr(not.arg(), context, left_required, right_required, materializations)?);
@@ -249,6 +245,24 @@ fn lower_join_filter_expr(
         return materialize_join_residual_expr(expr, context, left_required, right_required, materializations);
     }
     unreachable!("validated join residual must have a lowering branch")
+}
+
+fn lower_join_filter_binary_expr(
+    binary: &BinaryExpr,
+    context: JoinFilterLoweringContext<'_>,
+    mut lower_child: impl FnMut(&Arc<dyn PhysicalExpr>) -> Result<NativeExpr, LoweringFailure>,
+    decimal_division_expectation: &'static str,
+) -> Result<NativeExpr, LoweringFailure> {
+    let left = lower_child(binary.left())?;
+    let right = lower_child(binary.right())?;
+    let op = lower_binary_operator(binary.op());
+    if matches!(binary.op(), Operator::Divide)
+        && let Some(output_type) =
+            declared_decimal_divide_output_type(binary, context.filter.schema()).expect(decimal_division_expectation)
+    {
+        return Ok(NativeExpr::binary_with_output_type(left, op, right, output_type));
+    }
+    Ok(NativeExpr::binary(left, op, right))
 }
 
 fn lower_join_filter_case_expr(
@@ -352,16 +366,12 @@ fn lower_join_filter_side_expr(
         return Ok(lower_literal(literal.value()).expect("validated materialized literal must lower"));
     }
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
-        let left = lower_join_filter_side_expr(binary.left(), context, side_schema, side, required)?;
-        let right = lower_join_filter_side_expr(binary.right(), context, side_schema, side, required)?;
-        let op = lower_binary_operator(binary.op());
-        if matches!(binary.op(), Operator::Divide)
-            && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())
-                .expect("validated materialized decimal division must have a supported output type")
-        {
-            return Ok(NativeExpr::binary_with_output_type(left, op, right, output_type));
-        }
-        return Ok(NativeExpr::binary(left, op, right));
+        return lower_join_filter_binary_expr(
+            binary,
+            context,
+            |expr| lower_join_filter_side_expr(expr, context, side_schema, side, required),
+            "validated materialized decimal division must have a supported output type",
+        );
     }
     if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return Ok(!lower_join_filter_side_expr(not.arg(), context, side_schema, side, required)?);

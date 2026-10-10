@@ -31,10 +31,95 @@ use datafusion::{
     },
     physical_plan::filter::FilterExec,
 };
-use query_planning::source::PredicateDisposition as NativePredicateDisposition;
+use query_planning::{expr::BinaryOp, source::PredicateDisposition as NativePredicateDisposition};
 
 use super::{expression_contract::validate_physical_expr_contract, footers::parquet_footer};
 use crate::capability::CapabilityReason;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum RangeComparison {
+    Eq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    /// Keeps the row group when min/max cannot safely evaluate the operator.
+    Unhandled,
+}
+
+pub(super) fn range_comparison_from_binary_op(op: BinaryOp) -> RangeComparison {
+    match op {
+        BinaryOp::Eq => RangeComparison::Eq,
+        BinaryOp::Lt => RangeComparison::Lt,
+        BinaryOp::LtEq => RangeComparison::LtEq,
+        BinaryOp::Gt => RangeComparison::Gt,
+        BinaryOp::GtEq => RangeComparison::GtEq,
+        _ => RangeComparison::Unhandled,
+    }
+}
+
+pub(super) fn range_comparison_from_operator(op: Operator) -> RangeComparison {
+    match op {
+        Operator::Eq => RangeComparison::Eq,
+        Operator::Lt => RangeComparison::Lt,
+        Operator::LtEq => RangeComparison::LtEq,
+        Operator::Gt => RangeComparison::Gt,
+        Operator::GtEq => RangeComparison::GtEq,
+        _ => RangeComparison::Unhandled,
+    }
+}
+
+pub(super) fn ordered_range_may_satisfy<T: PartialOrd>(min: T, max: T, op: RangeComparison, literal: T) -> bool {
+    match op {
+        RangeComparison::Eq => min <= literal && literal <= max,
+        RangeComparison::Lt => min < literal,
+        RangeComparison::LtEq => min <= literal,
+        RangeComparison::Gt => max > literal,
+        RangeComparison::GtEq => max >= literal,
+        RangeComparison::Unhandled => true,
+    }
+}
+
+pub(super) fn float_range_may_satisfy(min: f64, max: f64, op: RangeComparison, literal: f64) -> bool {
+    if min.is_nan() || max.is_nan() || literal.is_nan() {
+        return true;
+    }
+    ordered_range_may_satisfy(min, max, op, literal)
+}
+
+pub(super) fn and_may_satisfy(left: Option<bool>, right: Option<bool>) -> bool {
+    !matches!(left, Some(false)) && !matches!(right, Some(false))
+}
+
+pub(super) fn or_may_satisfy(left: Option<bool>, right: Option<bool>) -> bool {
+    !matches!((left, right), (Some(false), Some(false)))
+}
+
+pub(super) fn in_list_may_satisfy<T>(
+    literals: &[T],
+    mut comparison_may_satisfy: impl FnMut(&T) -> Option<bool>,
+) -> Option<bool> {
+    if literals.is_empty() {
+        return Some(false);
+    }
+    let mut saw_unknown = false;
+    for literal in literals {
+        match comparison_may_satisfy(literal) {
+            Some(true) => return Some(true),
+            Some(false) => {},
+            None => saw_unknown = true,
+        }
+    }
+    Some(saw_unknown)
+}
+
+pub(super) fn is_null_may_satisfy(statistics: &Statistics) -> Option<bool> {
+    Some(statistics.null_count_opt()? > 0)
+}
+
+pub(super) fn is_not_null_may_satisfy(statistics: &Statistics, row_count: u64) -> Option<bool> {
+    Some(statistics.null_count_opt()? < row_count)
+}
 
 mod row_groups;
 

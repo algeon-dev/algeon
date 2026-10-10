@@ -9,7 +9,15 @@ use arrow::datatypes::SchemaRef;
 use futures::TryStreamExt;
 use query_runtime::observability::SealedRuntimeObservationSnapshot;
 
-use super::*;
+use super::{
+    AdapterError, AlgeonNativeOptimizerConfig, AlgeonSessionStateBuilderExt, CandidateOutcomeKind, DataFusionError,
+    DataFusionErrorExt, DataFusionResult, ExecutionPlan, FinalPlanDisposition, MetricsSet,
+    NativeDataFusionExecutionMetrics, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
+    NativeDataFusionPlanningWorkloadItem, NativeTpchBenchmarkConfig, NativeTpchRuntimeResources,
+    NativeTpchTimingMetrics, RecordBatch, SessionConfig, SessionContext, SessionStateBuilder, TaskContext,
+    TpchDatasetMetadata, TpchQuery, collect, dataset, get_record_batch_memory_size, plan_error,
+    plan_with_native_diagnostics, tpch_report_session_config, validation,
+};
 use crate::report_workload::tpch::tpch_tuned_cpu_session_config;
 
 pub(super) type ObservationCapture = Arc<Mutex<Option<SealedRuntimeObservationSnapshot>>>;

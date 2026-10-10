@@ -5,8 +5,8 @@ use query_planning::{
 use query_runtime::runtime::{CacheFillBytePermit, S3ObjectStoreKey};
 
 use super::{
+    ExecutionContext,
     s3::{CacheMaintenanceLocation, cache_maintenance_location, object_store_bucket_fact},
-    *,
 };
 
 /// Handle to one object fetch running on the object-store control runtime. `finish` blocks the

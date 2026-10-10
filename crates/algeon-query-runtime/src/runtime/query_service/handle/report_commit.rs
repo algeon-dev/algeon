@@ -30,11 +30,13 @@ use crate::{
         attempt_domain::AttemptAllocationDomain,
         gpu::DeviceAdmissionHealth,
         query_service::{
+            AdmissionLifecycleState, AdmissionRequestId, AttemptCapabilityEvidence, MemoryGrant, QueryCompletion,
+            QueryServiceInner, RuntimeObservationHandle, RuntimeTerminalOutcome,
             admission::QueryCompletionActivityTail,
+            record_admission_lifecycle,
             service::disposition::{
                 CapacityCommitDecision, CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit,
             },
-            *,
         },
     },
 };

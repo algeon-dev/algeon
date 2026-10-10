@@ -3,7 +3,10 @@
 use std::{ffi::c_void, ptr, sync::Arc};
 
 use arrow::{
-    array::*,
+    array::{
+        Array, AsArray, BooleanArray, FixedSizeListArray, LargeListArray, LargeStringArray, ListArray, PrimitiveArray,
+        StringArray, new_null_array,
+    },
     buffer::NullBuffer,
     datatypes::{
         ArrowNativeType, ArrowPrimitiveType, DataType as ArrowDataType, Date32Type, Date64Type, Decimal32Type,

@@ -1,11 +1,12 @@
 mod pca;
 mod tsvd;
 
+use cudf::runtime::ExecutionBindingId;
 pub use pca::{PcaModel, PcaParams, PcaSolver};
 pub use tsvd::{TsvdModel, TsvdParams};
 
 use crate::{
-    ErrorCode, FailurePhase, MatrixLayout, Result,
+    DeviceMatrix, ErrorCode, FailurePhase, MatrixLayout, Result,
     error::{check_status, error, invalid_input},
     resources::CumlResources,
 };
@@ -126,6 +127,7 @@ fn dimensions(rows: usize, columns: usize, components: usize, op: &'static str) 
     }
     Ok(())
 }
+
 fn column_major(layout: MatrixLayout, op: &'static str) -> Result<()> {
     if layout != MatrixLayout::ColumnMajor {
         return Err(error(
@@ -137,6 +139,29 @@ fn column_major(layout: MatrixLayout, op: &'static str) -> Result<()> {
     }
     Ok(())
 }
+
+fn validate_model_input(
+    resources: &CumlResources,
+    input: &DeviceMatrix<'_>,
+    binding_id: ExecutionBindingId,
+    n_features: usize,
+    n_components: usize,
+    expected_columns: usize,
+    op: &'static str,
+) -> Result<()> {
+    dimensions(input.rows(), n_features, n_components, op)?;
+    column_major(input.layout(), op)?;
+    if input.columns() != expected_columns || input.binding_id() != binding_id || resources.binding_id() != binding_id {
+        return Err(error(
+            ErrorCode::RuntimeBindingMismatch,
+            FailurePhase::Preflight,
+            op,
+            "model, input, and resources must share a binding and expected feature shape",
+        ));
+    }
+    resources.validate_exact_binding(op)
+}
+
 fn native(
     resources: &CumlResources,
     op: &'static str,

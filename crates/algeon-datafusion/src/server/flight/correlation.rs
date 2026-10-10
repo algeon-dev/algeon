@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CORRELATION_ID_METADATA_ALIASES, CORRELATION_ID_METADATA_KEY, DatafusionAlgeonFlightSqlService,
+    MAX_CORRELATION_ID_LEN, MetadataValue, QUERY_ID_METADATA_KEY, Request, Response, Status,
+};
 
 pub(super) fn tracing_correlation_id(correlation_id: Option<&str>) -> Option<&str> {
     correlation_id.filter(|value| !value.is_empty())
@@ -80,6 +83,7 @@ mod correlation_tests {
         time::{Duration, Instant},
     };
 
+    use futures::{StreamExt, TryStreamExt};
     use query_planning::correlation::QueryId;
     use query_runtime::observability::{
         QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationConfig, RuntimeObservationOwner,
@@ -100,6 +104,11 @@ mod correlation_tests {
             ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
         },
         flight::{
+            ActionCreatePreparedStatementRequest, CapturedError, Code, CommandStatementQuery,
+            CoordinatorExecutionTerminal, CoordinatorReportHandoffTerminal, DataFusionError, FlightDescriptor,
+            FlightSqlService, GET_ADMISSION_STATS_ACTION, GET_QUERY_RUNTIME_ARTIFACT_ACTION, GET_QUERY_STATS_ACTION,
+            GET_QUERY_STATS_SUMMARY_ACTION, Message, Owner, QueryAdmission, SessionContext,
+            datafusion_error_to_flight_error,
             frame_limiter::MAX_FLIGHT_FRAME_BYTES,
             service::{BoundedTestFlightSqlService, bounded_test_service},
         },

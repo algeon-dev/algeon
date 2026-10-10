@@ -32,6 +32,7 @@ use datafusion::{
 use query_runtime::runtime::GpuDeviceMemoryLimit;
 use workloads::tpch::{TPCH_QUERIES, WorkloadResult, register_tpch_tables};
 
+use super::{datafusion_planning_workload_item, fallback_pressure_workload_item};
 use crate::gpu_backend::{build_report_gpu_backend, close_report_gpu_backend};
 
 mod analytical_olap;
@@ -115,24 +116,7 @@ pub async fn tpch_fallback_pressure_workload_items(
 
     let mut items = Vec::with_capacity(TPCH_QUERIES.len());
     for query in TPCH_QUERIES {
-        let item = match ctx.sql(query.sql).await {
-            Ok(df) => match df.create_physical_plan().await {
-                Ok(plan) => NativeFallbackPressureWorkloadItem::new(query.id, plan),
-                Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
-                    query.id,
-                    "physical_planning",
-                    "physical_planning_failed",
-                    error.to_string(),
-                ),
-            },
-            Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
-                query.id,
-                "sql_to_logical_plan",
-                "sql_planning_failed",
-                error.to_string(),
-            ),
-        };
-        items.push(item);
+        items.push(fallback_pressure_workload_item(&ctx, query.id, query.sql).await);
     }
     Ok(items)
 }
@@ -169,24 +153,7 @@ pub async fn tpch_scalar_fallback_pressure_workload_items(
     ));
 
     for query in TPCH_SCALAR_FALLBACK_PRESSURE_QUERIES {
-        let item = match ctx.sql(query.sql).await {
-            Ok(df) => match df.create_physical_plan().await {
-                Ok(plan) => NativeFallbackPressureWorkloadItem::new(query.id, plan),
-                Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
-                    query.id,
-                    "physical_planning",
-                    "physical_planning_failed",
-                    error.to_string(),
-                ),
-            },
-            Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
-                query.id,
-                "sql_to_logical_plan",
-                "sql_planning_failed",
-                error.to_string(),
-            ),
-        };
-        items.push(item);
+        items.push(fallback_pressure_workload_item(&ctx, query.id, query.sql).await);
     }
     Ok(items)
 }
@@ -233,27 +200,7 @@ pub async fn tpch_datafusion_planning_workload_items_with_optimizer_config(
 
     let mut items = Vec::with_capacity(TPCH_QUERIES.len());
     for query in TPCH_QUERIES {
-        let item = match ctx.sql(query.sql).await {
-            Ok(df) => {
-                let (state, logical) = df.into_parts();
-                match plan_with_native_diagnostics(&state, &logical).await {
-                    Ok((plan, diagnostics)) => NativeDataFusionPlanningWorkloadItem::new(query.id, plan, diagnostics),
-                    Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
-                        query.id,
-                        "physical_planning",
-                        "physical_planning_failed",
-                        error.to_string(),
-                    ),
-                }
-            },
-            Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
-                query.id,
-                "sql_to_logical_plan",
-                "sql_planning_failed",
-                error.to_string(),
-            ),
-        };
-        items.push(item);
+        items.push(datafusion_planning_workload_item(&ctx, query.id, query.sql).await);
     }
     Ok(items)
 }

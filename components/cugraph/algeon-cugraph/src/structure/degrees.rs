@@ -18,7 +18,7 @@ use crate::{
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
     handle::{EnteredContext, ResourceHandleLease},
-    structure::typed_results::VertexIds,
+    structure::typed_results::{VertexIds, widen_values},
     types::{CugraphElement, DataType, to_bool_t},
 };
 
@@ -173,10 +173,7 @@ impl<'a> DegreeValues<'a> {
     /// Copy to host as `Vec<i64>`, widening `i32` values if needed.
     pub fn to_vec_i64(&self, handle: &EnteredContext<'_>) -> Result<Vec<i64>> {
         match self {
-            Self::I32(v) => {
-                let vals = v.to_vec(handle)?;
-                Ok(vals.into_iter().map(|x| x as i64).collect())
-            },
+            Self::I32(v) => v.to_vec(handle).map(widen_values),
             Self::I64(v) => v.to_vec(handle),
         }
     }
@@ -223,9 +220,8 @@ impl DegreeResultInner {
         operation: &'static str,
         pointer_name: &'static str,
     ) -> Result<RawDeviceArrayView<'_>> {
-        // SAFETY: `self.raw` is a live cuGraph degrees result and `getter`
-        // returns a borrowed child view tied to that result object.
-        unsafe { RawDeviceArrayView::from_borrowed(getter(self.raw), Some(self.device), operation, pointer_name) }
+        // SAFETY: cuGraph allocates view metadata; this wrapper frees it while the degree result retains the backing arrays.
+        unsafe { RawDeviceArrayView::from_owned_view(getter(self.raw), Some(self.device), operation, pointer_name) }
     }
 
     fn vertex_ids(&self, operation: &'static str) -> Result<VertexIds<'_>> {

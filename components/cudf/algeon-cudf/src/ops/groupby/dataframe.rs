@@ -7,8 +7,8 @@ use typed_builder::TypedBuilder;
 
 use super::{
     agg::{
-        AggregationRequest, GroupByAgg, NullPolicy, PreparedGroupBy, PreparedGroupByFacts, groupby_aggregate_impl,
-        groupby_aggregate_impl_with_prepared, prepared_groupby_facts_raw,
+        AggregationRequest, GroupByAgg, GroupByAggregationOutput, NullPolicy, PreparedGroupBy, PreparedGroupByFacts,
+        groupby_aggregate_impl, groupby_aggregate_impl_with_prepared, prepared_groupby_facts_raw,
     },
     errors::unsupported_groupby_validation_error,
     output::take_groupby_result_columns_for_output,
@@ -36,6 +36,90 @@ const GROUPBY_RESULT_NAME_INLINE_CAPACITY: usize = 8;
 const GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY: usize = 8;
 const GROUPBY_AGG_SLICE_INLINE_CAPACITY: usize = 8;
 const GROUPBY_REQUEST_INLINE_CAPACITY: usize = 8;
+
+struct GroupByAggregationPlan<'a> {
+    value_views: SmallVec<[ColumnView<'a>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]>,
+    aggregations: SmallVec<[Vec<GroupByAgg>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]>,
+    output_order: SmallVec<[(usize, usize); GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY]>,
+    result_names: SmallVec<[String; GROUPBY_RESULT_NAME_INLINE_CAPACITY]>,
+}
+
+impl<'a> GroupByAggregationPlan<'a> {
+    fn requests<'request>(&'request self) -> SmallVec<[AggregationRequest<'request>; GROUPBY_REQUEST_INLINE_CAPACITY]>
+    where 'a: 'request {
+        self.aggregations
+            .iter()
+            .enumerate()
+            .map(|(index, aggregations)| AggregationRequest { values: &self.value_views[index], aggregations })
+            .collect()
+    }
+}
+
+fn validate_groupby_aggregation_columns(df: &DataFrame, specs: &[AggSpec], operation: &'static str) -> Result<()> {
+    let columns = df.columns_map();
+    for spec in specs {
+        if !columns.contains_key(spec.column.as_str()) {
+            return Err(missing_column_error(operation, &spec.column));
+        }
+    }
+    Ok(())
+}
+
+fn prepare_groupby_aggregation_plan<'a>(
+    df: &'a DataFrame,
+    specs: &[AggSpec],
+    operation: &'static str,
+) -> Result<GroupByAggregationPlan<'a>> {
+    let columns = df.columns_map();
+    let mut value_views: SmallVec<[ColumnView<'a>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> = SmallVec::new();
+    let mut column_name_to_index: FastHashMap<String, usize> = fast_hash_map_with_capacity(specs.len());
+    let mut aggregations: SmallVec<[Vec<GroupByAgg>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> = SmallVec::new();
+    let mut output_order: SmallVec<[(usize, usize); GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY]> = SmallVec::new();
+    let mut result_names: SmallVec<[String; GROUPBY_RESULT_NAME_INLINE_CAPACITY]> = SmallVec::new();
+
+    for spec in specs {
+        let index = if let Some(&index) = column_name_to_index.get(spec.column.as_str()) {
+            index
+        } else {
+            let column =
+                columns.get(spec.column.as_str()).ok_or_else(|| missing_column_error(operation, &spec.column))?;
+            let index = value_views.len();
+            value_views.push(column.view()?);
+            column_name_to_index.insert(spec.column.clone(), index);
+            aggregations.push(Vec::new());
+            index
+        };
+
+        let aggregation_index = aggregations[index].len();
+        aggregations[index].push(spec.agg.clone());
+        output_order.push((index, aggregation_index));
+        result_names.push(spec.resolved_output_name());
+    }
+
+    Ok(GroupByAggregationPlan { value_views, aggregations, output_order, result_names })
+}
+
+fn groupby_aggregation_output_frame(
+    result: GroupByAggregationOutput,
+    key_names: &[String],
+    plan: GroupByAggregationPlan<'_>,
+    operation: &'static str,
+) -> Result<DataFrame> {
+    let grouped_results: Vec<Vec<Option<Column>>> =
+        result.results.into_iter().map(|columns| columns.into_iter().map(Some).collect()).collect();
+    let result_columns = take_groupby_result_columns_for_output(grouped_results, &plan.output_order, operation)?;
+    let key_columns = result.keys.into_columns()?;
+
+    let mut columns: Vec<Column> = Vec::with_capacity(key_columns.len() + result_columns.len());
+    columns.extend(key_columns);
+    columns.extend(result_columns);
+
+    let mut names: Vec<String> = Vec::with_capacity(key_names.len() + plan.result_names.len());
+    names.extend(key_names.iter().cloned());
+    names.extend(plan.result_names);
+
+    DataFrame::new(names, columns)
+}
 
 macro_rules! groupby_shortcuts {
     ($(#[$meta:meta])* fn $method:ident($columns:ident) => $agg:expr;) => {
@@ -268,96 +352,31 @@ impl PreparedDataFrameGroupBy {
         let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
             self.keys.iter().map(|s| s.as_str()).collect();
         let _key_indices = resolve_column_names(columns, &key_refs, operation)?;
+        validate_groupby_aggregation_columns(&self.df, specs, operation)?;
+        let plan = prepare_groupby_aggregation_plan(&self.df, specs, operation)?;
+        let gb_result = {
+            let requests = plan.requests();
+            let execution = ResolvedExecution::many(
+                &self.keys_domain,
+                requests.iter().map(|request| request.values.execution_domain()),
+                ctx,
+                operation,
+            )?;
+            let output_domain = Arc::clone(execution.output_domain());
 
-        for spec in specs {
-            if !columns.contains_key(spec.column.as_str()) {
-                return Err(missing_column_error(operation, &spec.column));
-            }
-        }
+            groupby_aggregate_impl_with_prepared(
+                self.handle.as_ptr(),
+                &requests,
+                self.options.null_policy(),
+                self.options.keys_are_sorted(),
+                &output_domain,
+                execution.exec_options(),
+                operation,
+            )
+            .map_err(map_groupby_error)?
+        };
 
-        let mut value_views: SmallVec<[ColumnView<'_>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> = SmallVec::new();
-        let mut request_meta: SmallVec<[(usize, Vec<GroupByAgg>); GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
-            SmallVec::new();
-        let mut result_names: SmallVec<[String; GROUPBY_RESULT_NAME_INLINE_CAPACITY]> = SmallVec::new();
-
-        let mut col_name_to_view_idx: FastHashMap<String, usize> = fast_hash_map_with_capacity(specs.len());
-        let mut view_idx_to_group_idx: FastHashMap<usize, usize> = fast_hash_map_with_capacity(specs.len());
-        let mut output_order: SmallVec<[(usize, usize); GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY]> = SmallVec::new();
-
-        for spec in specs {
-            let view_idx = if let Some(&idx) = col_name_to_view_idx.get(spec.column.as_str()) {
-                idx
-            } else {
-                let arc_col =
-                    columns.get(spec.column.as_str()).ok_or_else(|| missing_column_error(operation, &spec.column))?;
-                let idx = value_views.len();
-                value_views.push(arc_col.view()?);
-                col_name_to_view_idx.insert(spec.column.clone(), idx);
-                idx
-            };
-
-            let group_idx = if let Some(&idx) = view_idx_to_group_idx.get(&view_idx) {
-                idx
-            } else {
-                let idx = request_meta.len();
-                request_meta.push((view_idx, Vec::new()));
-                view_idx_to_group_idx.insert(view_idx, idx);
-                idx
-            };
-
-            let agg_idx_within_group = request_meta[group_idx].1.len();
-            request_meta[group_idx].1.push(spec.agg.clone());
-            output_order.push((group_idx, agg_idx_within_group));
-
-            result_names.push(spec.resolved_output_name());
-        }
-
-        let agg_slices: SmallVec<[Vec<GroupByAgg>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> =
-            request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
-
-        let requests: SmallVec<[AggregationRequest<'_>; GROUPBY_REQUEST_INLINE_CAPACITY]> = request_meta
-            .iter()
-            .enumerate()
-            .map(|(i, (view_idx, _))| AggregationRequest {
-                values: &value_views[*view_idx],
-                aggregations: &agg_slices[i],
-            })
-            .collect();
-
-        let execution = ResolvedExecution::many(
-            &self.keys_domain,
-            requests.iter().map(|request| request.values.execution_domain()),
-            ctx,
-            operation,
-        )?;
-        let output_domain = Arc::clone(execution.output_domain());
-
-        let gb_result = groupby_aggregate_impl_with_prepared(
-            self.handle.as_ptr(),
-            &requests,
-            self.options.null_policy(),
-            self.options.keys_are_sorted(),
-            &output_domain,
-            execution.exec_options(),
-            operation,
-        )
-        .map_err(map_groupby_error)?;
-
-        let grouped_results: Vec<Vec<Option<Column>>> =
-            gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
-        let all_result_cols = take_groupby_result_columns_for_output(grouped_results, &output_order, operation)?;
-
-        let result_keys_cols = gb_result.keys.into_columns()?;
-
-        let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
-        final_cols.extend(result_keys_cols);
-        final_cols.extend(all_result_cols);
-
-        let mut schema_names: Vec<String> = Vec::with_capacity(self.keys.len() + result_names.len());
-        schema_names.extend(self.keys.iter().cloned());
-        schema_names.extend(result_names);
-
-        DataFrame::new(schema_names, final_cols)
+        groupby_aggregation_output_frame(gb_result, &self.keys, plan, operation)
     }
 }
 
@@ -545,90 +564,25 @@ impl<'a> GroupBy<'a> {
         let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
             self.keys.iter().map(|s| s.as_str()).collect();
         let key_indices = resolve_column_names(columns, &key_refs, operation)?;
-
-        for spec in specs {
-            if !columns.contains_key(spec.column.as_str()) {
-                return Err(missing_column_error(operation, &spec.column));
-            }
-        }
+        validate_groupby_aggregation_columns(self.df, specs, operation)?;
 
         let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
+        let plan = prepare_groupby_aggregation_plan(self.df, specs, operation)?;
+        let gb_result = {
+            let requests = plan.requests();
+            groupby_aggregate_impl(
+                &keys_table,
+                &requests,
+                self.options.null_policy(),
+                self.options.keys_are_sorted(),
+                &output_domain,
+                execution.exec_options(),
+                operation,
+            )
+            .map_err(map_groupby_error)?
+        };
 
-        let mut value_views: SmallVec<[ColumnView<'_>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> = SmallVec::new();
-        let mut request_meta: SmallVec<[(usize, Vec<GroupByAgg>); GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
-            SmallVec::new();
-        let mut result_names: SmallVec<[String; GROUPBY_RESULT_NAME_INLINE_CAPACITY]> = SmallVec::new();
-
-        let mut col_name_to_view_idx: FastHashMap<String, usize> = fast_hash_map_with_capacity(specs.len());
-        let mut view_idx_to_group_idx: FastHashMap<usize, usize> = fast_hash_map_with_capacity(specs.len());
-        let mut output_order: SmallVec<[(usize, usize); GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY]> = SmallVec::new();
-
-        for spec in specs {
-            let view_idx = if let Some(&idx) = col_name_to_view_idx.get(spec.column.as_str()) {
-                idx
-            } else {
-                let arc_col =
-                    columns.get(spec.column.as_str()).ok_or_else(|| missing_column_error(operation, &spec.column))?;
-                let idx = value_views.len();
-                value_views.push(arc_col.view()?);
-                col_name_to_view_idx.insert(spec.column.clone(), idx);
-                idx
-            };
-
-            let group_idx = if let Some(&idx) = view_idx_to_group_idx.get(&view_idx) {
-                idx
-            } else {
-                let idx = request_meta.len();
-                request_meta.push((view_idx, Vec::new()));
-                view_idx_to_group_idx.insert(view_idx, idx);
-                idx
-            };
-
-            let agg_idx_within_group = request_meta[group_idx].1.len();
-            request_meta[group_idx].1.push(spec.agg.clone());
-            output_order.push((group_idx, agg_idx_within_group));
-
-            result_names.push(spec.resolved_output_name());
-        }
-
-        let agg_slices: SmallVec<[Vec<GroupByAgg>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> =
-            request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
-
-        let requests: SmallVec<[AggregationRequest<'_>; GROUPBY_REQUEST_INLINE_CAPACITY]> = request_meta
-            .iter()
-            .enumerate()
-            .map(|(i, (view_idx, _))| AggregationRequest {
-                values: &value_views[*view_idx],
-                aggregations: &agg_slices[i],
-            })
-            .collect();
-
-        let gb_result = groupby_aggregate_impl(
-            &keys_table,
-            &requests,
-            self.options.null_policy(),
-            self.options.keys_are_sorted(),
-            &output_domain,
-            execution.exec_options(),
-            operation,
-        )
-        .map_err(map_groupby_error)?;
-
-        let grouped_results: Vec<Vec<Option<Column>>> =
-            gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
-        let all_result_cols = take_groupby_result_columns_for_output(grouped_results, &output_order, operation)?;
-
-        let result_keys_cols = gb_result.keys.into_columns()?;
-
-        let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
-        final_cols.extend(result_keys_cols);
-        final_cols.extend(all_result_cols);
-
-        let mut schema_names: Vec<String> = Vec::with_capacity(self.keys.len() + result_names.len());
-        schema_names.extend(self.keys.iter().cloned());
-        schema_names.extend(result_names);
-
-        DataFrame::new(schema_names, final_cols)
+        groupby_aggregation_output_frame(gb_result, &self.keys, plan, operation)
     }
 
     pub(crate) fn shift_in_context(&self, specs: &[ShiftSpec], ctx: Exec<'_>) -> Result<DataFrame> {

@@ -5,7 +5,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use super::*;
+use super::{NativeTpchBenchmarkConfig, NativeTpchDeviceBudget, NativeTpchRuntimeResources};
 use crate::clickbench_benchmark::KVIKIO_COMPAT_MODE_ENV;
 
 /// Facts recorded once per benchmark run so an artifact can be attributed to

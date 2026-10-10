@@ -64,7 +64,10 @@ pub(crate) use dataframe::{
 };
 mod options;
 
-use domain::*;
+use domain::{
+    compatible_conditional_join_domain, compatible_filter_join_indices_domain, compatible_join_indices_domain,
+    compatible_mixed_join_domain,
+};
 pub(crate) use options::{FilteredJoinOptions, HashJoinOptions};
 pub use options::{JoinType, MergeOptions, NullEquality, NullableJoin};
 

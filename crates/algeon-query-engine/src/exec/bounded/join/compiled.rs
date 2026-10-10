@@ -28,11 +28,30 @@ use query_planning::{
 use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
 
 use super::{
+    BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, BoundedPartitionRowPolicy,
+    BoundedPartitionTargetPolicy, BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, DataFrame,
+    DropDuplicatesOptions, DuplicateKeepOption, Exec, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame,
+    GpuFilteredJoinBuildHandle, JoinNode, JoinOutputColumn, JoinSide, JoinType, MemoryControlPolicy, NodeId,
+    NullAwareAntiProbe, QueryError, QueryErrorCode, ResidentGpuFrame, Result, RetryFacts,
+    attach_budget_token_failure_facts, bounded_invariant_violation,
+    bounded_join_leaf_local_parquet_source_frame_stream,
     common::{
         BoundedJoinSideFrame, join_side_output_upper_bound_bytes, prepare_bounded_join_side_input_from_resident_frame,
         projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, sum_bounds,
     },
-    cudf_query_error, *,
+    cudf_query_error, dataframe_cross_join_options, dataframe_mixed_join_options, dataframe_predicate_join_options,
+    datafusion_order_columns, execute_bounded_root_hash_join_build_from_resident_frame,
+    execute_bounded_root_hash_join_materialize, execute_bounded_root_hash_join_materialize_preserving_stream,
+    execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame,
+    execute_bounded_root_hash_join_probe_from_resident_frame, execution_budget_token_for_boundary,
+    hash_parallel_probe_supported, join_index_error, lower_expr, lower_join_residual_predicate, lower_null_equality,
+    materialize_bounded_join_leaf_local_parquet_source_stream, materialize_join_output_projection,
+    materialize_left_only_join_output_projection, materialize_mark_join_output_projection, null_aware_anti_probe,
+    null_aware_anti_probe_input, observe_device_memory_bytes, parallel_hash_probe_frame_stream, probe_side,
+    projected_input_columns, projected_output_columns, release_bounded_root_hash_join_build_state,
+    release_bounded_root_hash_join_probe_state, reorder_projected_cross_join_output, residual_input_columns,
+    serial_probe_reason, side_metric, stream_bounded_join_leaf_local_parquet_source,
+    stream_bounded_join_leaf_local_parquet_source_serial, validate_executable_join_subset,
 };
 use crate::exec::bounded::compiled::{
     ResidentFrameStreamPayload, ResidentFrameStreamSource, lanes::AggregateLaneDispatch,
@@ -48,19 +67,47 @@ mod prepared;
 mod residual;
 mod streamed;
 pub(in crate::exec) mod transaction;
-use cross::*;
-use filtered::*;
-use keyless::*;
-use mixed::*;
-use one_shot::*;
-use partitioned::*;
+use cross::{execute_compiled_keyless_outer_cross_join_materialize, execute_compiled_projected_cross_join_materialize};
+use filtered::{
+    execute_compiled_filtered_join_build_from_resident_frame, execute_compiled_filtered_join_materialize,
+    execute_compiled_filtered_join_probe_chunk_from_resident_frame,
+    execute_compiled_filtered_join_probe_from_resident_frame, filtered_parallel_probe_supported,
+    parallel_filtered_probe_frames, release_compiled_filtered_join_build_state,
+    release_compiled_filtered_join_probe_state,
+};
+use keyless::execute_compiled_keyless_join_materialize;
+use mixed::{
+    execute_compiled_mixed_join_materialize, execute_compiled_mixed_join_probe_from_stream,
+    execute_compiled_mixed_left_join_materialize, execute_compiled_mixed_left_join_probe_from_frame_stream,
+    release_compiled_mixed_left_join_probe_state,
+};
+use one_shot::{
+    OneShotEquiJoinFrameStreamProbeState, execute_compiled_one_shot_equi_join_materialize,
+    execute_compiled_one_shot_equi_join_probe_from_frame_stream, execute_compiled_one_shot_equi_join_probe_from_stream,
+    one_shot_equi_join_frame_stream_probe_to_payload,
+};
 pub(in crate::exec::bounded) use partitioned::{
     BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
     PartitionedJoinBuildCommitment, consume_bounded_join_build_input_stream, partitioned_join_build_commitment,
 };
-use prepared::*;
-use residual::*;
-use streamed::*;
+use partitioned::{
+    execute_compiled_partitioned_hash_equi_join_materialize,
+    execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream,
+    execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream,
+    execute_compiled_partitioned_hash_equi_join_probe_from_split_build_frame_stream,
+    execute_compiled_partitioned_hash_equi_join_probe_from_stream,
+    execute_compiled_partitioned_mixed_keyed_residual_join_materialize,
+    execute_compiled_partitioned_mixed_keyed_residual_join_materialize_preserving_stream,
+    parallel_partitioned_lazy_drain, partitioned_hash_equi_join_frame_stream_probe_to_payload,
+    partitioned_parallel_probe_supported, partitioned_streaming_probe_supported, release_partitioned_join_side,
+};
+use prepared::execute_compiled_prepared_join_materialize;
+use residual::materialize_compiled_one_shot_residual_output;
+use streamed::{
+    execute_compiled_streamed_one_shot_join_materialize, execute_compiled_streamed_partitioned_hash_join_materialize,
+    record_one_shot_join_chunk_metrics, record_streamed_one_shot_join_metrics,
+    record_streamed_partitioned_hash_join_metrics,
+};
 pub(in crate::exec) use transaction::JoinMaterializationTxn;
 
 /// Output of the build task, retained across every probe of the same join.

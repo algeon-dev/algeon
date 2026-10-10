@@ -50,7 +50,12 @@ pub(in crate::exec::bounded) use build::{
     BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
     PartitionedJoinBuildCommitment, consume_bounded_join_build_input_stream, partitioned_join_build_commitment,
 };
-use driver::*;
+use driver::{
+    PARTITIONED_HASH_EQUI_STRATEGY, PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY, PartitionedJoinDriverPlan,
+    PartitionedJoinInputStats, PartitionedJoinOutputSummary, PartitionedJoinProbeChunk, PartitionedJoinSides,
+    materialize_partitioned_join_partition_with_retry, partition_join_sides, record_partitioned_join_operator_metrics,
+    record_partitioned_join_selection, record_partitioned_join_sides, run_partitioned_join_driver,
+};
 pub(super) use hash_equi::{
     execute_compiled_partitioned_hash_equi_join_materialize,
     execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream,

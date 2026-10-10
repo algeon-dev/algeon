@@ -5,7 +5,11 @@ use query_planning::{
     source::LocalParquetSource,
 };
 
-use super::fingerprint::*;
+use super::fingerprint::{
+    push_optional_u64, push_optional_u64_vec, push_optional_usize_vec, push_reader_decimal_types,
+    push_resolved_source_contract, push_source_scan_contract, push_string_vec, push_token, push_usize_vec,
+    redact_source_cache_fingerprint,
+};
 
 /// Stable identity for one GPU-local Parquet source scan or chunk.
 ///

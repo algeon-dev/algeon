@@ -5,7 +5,16 @@ use std::{
     sync::Arc,
 };
 
-use super::*;
+use super::{
+    AstExpression, DataType, Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_COLUMN_INDEX, FACT_EXPECTED_COUNT,
+    OP_FILE_METADATA, OP_FILE_NEW, OP_FILE_REMOTE_CONTRACT, OP_SOURCE_COUNT, OP_SOURCE_DATA, PartitionColumn,
+    PartitionValue, RejectedSourceFeature, Result, SourceChunk, SourceColumn, SourceColumnRef, SourceDiagnostics,
+    SourceOutputColumn, SourceRequiredColumn, SourceSchema, TypeId, ZERO_COLUMN_COUNT_COLUMN, checked_name,
+    dtype_label, is_supported_missing_null_column, is_supported_partition_dtype, partition_value_matches_dtype,
+    schema_missing_error, source_chunk_mismatch_error, validate_chunk_row_groups_for_source_file,
+    validate_chunk_source_file_contract, validate_local_path, validate_matching_row_group_metadata_lengths,
+    validate_object_store_uri, validate_read_partition_name_collisions, validate_unique_named, validate_unique_strings,
+};
 use crate::io::parquet::{RemoteParquetProfile, RemoteParquetSource, RemoteReadMode};
 
 /// Explicit Parquet source location represented by the checked source

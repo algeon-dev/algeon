@@ -1,8 +1,16 @@
 use std::{sync::Arc, time::Duration};
 
 use arrow::record_batch::RecordBatch;
+#[cfg(test)]
+use datafusion::execution::SessionStateBuilder;
 
-use super::*;
+use super::{
+    AuthInterceptor, CancellationToken, CommandGetTables, DataFusionError, DataFusionErrorExt, ErrorLogDiagnostics,
+    FailedStatement, GetTablesBuilder, GetTablesPrefilters, Owner, PreparedStatementStore, QueryAdmission,
+    QueryCancellation, QueryCoordinator, QueryCoordinatorConfig, QueryOwnership, QueryPlanningLease, Request,
+    RuntimeObservationConfig, Schema, SessionContext, Status, adapter_error_status,
+    arrow_flight_error_to_status_for_operation, datafusion_error_to_status_for_operation, table_type_to_flight_sql,
+};
 #[cfg(test)]
 use crate::server::{
     auth::{AuthMode, TokenStore},

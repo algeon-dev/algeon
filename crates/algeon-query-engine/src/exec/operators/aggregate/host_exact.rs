@@ -40,11 +40,15 @@ use arrow::{
 use cudf::hash::{FastHashMap, fast_hash_map_with_capacity};
 
 use super::{
-    add_floating_statistical_aggregate_contract_facts, cudf_query_error,
+    AggregateExecutionStage, AggregateExpr, AggregateFunction, AggregateSpec, AggregateStrategyExecutionOptions,
+    ArrowDataType, DataFrame, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame, GpuResultHandle, LiteralValue,
+    NodeId, QueryError, QueryErrorCode, RecordBatch, Result, StatisticalAggregateExecutionMode,
+    add_floating_statistical_aggregate_contract_facts, cudf_query_error, global_count_star_expr,
+    lower_named_column_expr,
     partial_strategy::{
         add_aggregate_strategy_execution_option_facts, add_partial_aggregate_input_evidence_facts, reduction_ratio_ppm,
     },
-    *,
+    schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present,
 };
 use crate::prepared::{
     DataFusionExactHostAccumulator, DataFusionExactHostAccumulator as Accumulator, datafusion_exact_host_accumulator,
@@ -696,6 +700,7 @@ fn add_filtered_materialization_facts(
 
 #[cfg(test)]
 mod tests {
+    use arrow::datatypes::{Field, Schema};
     use query_runtime::runtime::StandaloneConfig;
 
     use super::*;

@@ -1,6 +1,6 @@
 use cudf::runtime::ExecutionBindingId;
 
-use super::{column_major, dimensions, native, pca::PcaSolver};
+use super::{column_major, dimensions, native, pca::PcaSolver, validate_model_input};
 use crate::{
     DeviceBuffer, DeviceMatrix, ErrorCode, FailurePhase, OwnedFloat32Matrix, Result,
     error::{error, invalid_input},
@@ -137,7 +137,15 @@ impl TsvdModel {
     }
     pub fn transform(&self, resources: &CumlResources, input: &DeviceMatrix<'_>) -> Result<DeviceBuffer<f32>> {
         const OP: &str = "TsvdModel::transform";
-        self.validate_input(resources, input, self.n_features, OP)?;
+        validate_model_input(
+            resources,
+            input,
+            self.binding_id,
+            self.n_features,
+            self.n_components,
+            self.n_features,
+            OP,
+        )?;
         let mut output = DeviceBuffer::new(
             resources,
             input
@@ -161,7 +169,15 @@ impl TsvdModel {
     }
     pub fn inverse_transform(&self, resources: &CumlResources, input: &DeviceMatrix<'_>) -> Result<DeviceBuffer<f32>> {
         const OP: &str = "TsvdModel::inverse_transform";
-        self.validate_input(resources, input, self.n_components, OP)?;
+        validate_model_input(
+            resources,
+            input,
+            self.binding_id,
+            self.n_features,
+            self.n_components,
+            self.n_components,
+            OP,
+        )?;
         let mut output = DeviceBuffer::new(
             resources,
             input
@@ -182,27 +198,5 @@ impl TsvdModel {
         })?;
         output.validate_finite(OP)?;
         Ok(output)
-    }
-    fn validate_input(
-        &self,
-        resources: &CumlResources,
-        input: &DeviceMatrix<'_>,
-        columns: usize,
-        op: &'static str,
-    ) -> Result<()> {
-        dimensions(input.rows(), self.n_features, self.n_components, op)?;
-        column_major(input.layout(), op)?;
-        if input.columns() != columns
-            || input.binding_id() != self.binding_id
-            || resources.binding_id() != self.binding_id
-        {
-            return Err(error(
-                ErrorCode::RuntimeBindingMismatch,
-                FailurePhase::Preflight,
-                op,
-                "model, input, and resources must share a binding and expected feature shape",
-            ));
-        }
-        resources.validate_exact_binding(op)
     }
 }

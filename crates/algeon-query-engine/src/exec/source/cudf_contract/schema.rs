@@ -20,7 +20,13 @@ use query_planning::source::{
 };
 
 use super::error::cudf_error_for_location;
-use crate::{datatypes::arrow_decimal_scale_to_cudf_scale, exec::source::*};
+use crate::{
+    datatypes::arrow_decimal_scale_to_cudf_scale,
+    exec::source::{
+        LiteralValue, LocalParquetSource, QueryError, QueryErrorCode, Result, cudf_dtype_from_arrow_type,
+        cudf_query_error, cudf_unsupported_type_error, timestamp_unit_to_cudf_resolution,
+    },
+};
 
 /// Attaches per-column decimal storage types to a cuDF file. An empty slice leaves the file
 /// unchanged.

@@ -5,7 +5,62 @@ pub mod tpcds;
 /// TPC-H adapter-specific report item builders.
 pub mod tpch;
 
-use algeon_datafusion::planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig};
+use algeon_datafusion::{
+    native_report::{NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
+};
+use datafusion::prelude::SessionContext;
+
+async fn fallback_pressure_workload_item(
+    ctx: &SessionContext,
+    query_id: &str,
+    sql: &str,
+) -> NativeFallbackPressureWorkloadItem {
+    match ctx.sql(sql).await {
+        Ok(df) => match df.create_physical_plan().await {
+            Ok(plan) => NativeFallbackPressureWorkloadItem::new(query_id, plan),
+            Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
+                query_id,
+                "physical_planning",
+                "physical_planning_failed",
+                error.to_string(),
+            ),
+        },
+        Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
+            query_id,
+            "sql_to_logical_plan",
+            "sql_planning_failed",
+            error.to_string(),
+        ),
+    }
+}
+
+async fn datafusion_planning_workload_item(
+    ctx: &SessionContext,
+    query_id: &str,
+    sql: &str,
+) -> NativeDataFusionPlanningWorkloadItem {
+    match ctx.sql(sql).await {
+        Ok(df) => {
+            let (state, logical) = df.into_parts();
+            match plan_with_native_diagnostics(&state, &logical).await {
+                Ok((plan, diagnostics)) => NativeDataFusionPlanningWorkloadItem::new(query_id, plan, diagnostics),
+                Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
+                    query_id,
+                    "physical_planning",
+                    "physical_planning_failed",
+                    error.to_string(),
+                ),
+            }
+        },
+        Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
+            query_id,
+            "sql_to_logical_plan",
+            "sql_planning_failed",
+            error.to_string(),
+        ),
+    }
+}
 
 /// Session-level selection for relational benchmark execution.
 ///

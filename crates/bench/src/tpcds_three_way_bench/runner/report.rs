@@ -6,7 +6,11 @@ use algeon_datafusion::native_report::{
     format_native_task_runtime_metric_rows,
 };
 
-use super::*;
+use super::{
+    ALGEON_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, BenchConfig, Engine, IterOutcome, MetricsSet,
+    NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+    StatisticalAggregateExecutionMode, TpcdsQuery, Write, io,
+};
 
 pub(super) const TSV_HEADER: &str = concat!(
     "engine\tquery_id\titeration\twarmup\twall_ms\toutcome\tplanning_outcome\toutput_batches\toutput_rows\toutput_bytes",
@@ -569,6 +573,8 @@ fn optional_f64_text(value: Option<f64>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use workloads::tpcds::TPCDS_QUERIES;
+
     use super::*;
     use crate::tpcds_three_way_bench::runner::config::bench_queries_from_csv;
 

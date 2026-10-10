@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::*,
+    array::{Array, BooleanArray, Decimal128Array, ListArray, PrimitiveArray, StringBuilder},
     buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{
         ArrowNativeType, ArrowPrimitiveType, DataType as ArrowDataType, Date32Type, Decimal32Type, Decimal64Type,

@@ -14,7 +14,18 @@ use datafusion::{
     },
 };
 
-use super::*;
+use super::{
+    ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+    CommandPreparedStatementQuery, CoordinatorReportHandoffTerminal, CoordinatorTicketPayload, DataFusionError,
+    DatafusionAlgeonFlightSqlService, Error, ErrorCode, ExplainGpuOutputMode, FailedStatement, FlightDescriptor,
+    FlightEndpoint, FlightInfo, Instrument, Invocation, InvocationExecution, LogicalPlan, Message, MlForestModelDigest,
+    ProstMessageExt, QueryCoordinatorError, QueryCoordinatorErrorKind, QueryPlanningLease, SessionContext,
+    SessionStateBuilder, StatementExecutionDomain, StatementTicketKind, Status, Ticket, TicketStatementQuery,
+    adapter_error_status, adapter_error_to_status_and_capture, arrow_error_to_status_and_capture, coverage_schema,
+    datafusion_error_to_status_and_capture, flight_result_schema, forest_model_digests,
+    reject_drop_object_type_mismatch, server_shutdown_error, status_with_query_id_and_correlation_id,
+    verify_flight_info_plan,
+};
 use crate::{
     build_info::{ALGEON_VERSION_FUNCTION, is_algeon_version_table_source},
     error::Result as AdapterResult,

@@ -63,12 +63,21 @@ mod scheduler;
 mod schema;
 mod zero_column_count;
 
-use cache_runtime::*;
+use cache_runtime::{
+    read_optimized_local_cache_chunk_batch, record_background_cache_chunk_fill_enqueue,
+    record_background_cache_file_fill_enqueue,
+};
 use cudf_contract::{
     cudf_local_parquet_source_chunk, cudf_local_parquet_source_chunk_batch, cudf_local_parquet_source_file_selection,
 };
 pub(in crate::exec) use gpu_resident::read_gpu_resident_source;
-use lakehouse_cache::*;
+use lakehouse_cache::{
+    BackgroundLakehouseCacheFillEnqueue, LakehouseOptimizedBatchCacheEntry, acquire_lakehouse_cache_chunk_read_pin,
+    acquire_lakehouse_cache_file_read_pin, acquire_lakehouse_optimized_batch_read_pin,
+    enqueue_background_lakehouse_cache_chunk_fill, enqueue_background_lakehouse_cache_file_fill,
+    ensure_local_cache_parquet_chunk, ensure_local_cache_parquet_file, local_cache_optimized_batch_entry,
+    parse_s3_source_uri, publish_lakehouse_optimized_batch_frame,
+};
 pub(in crate::exec) use metrics::admitted_source_read_scope;
 pub(super) use metrics::{
     attach_row_group_facts, attach_row_group_facts_if_absent, format_row_groups, record_bounded_parquet_source_metrics,
@@ -81,9 +90,12 @@ pub(in crate::exec) use query_planning::source::{
 use query_runtime::{metrics::SourceReadParquetEvidenceMetrics, observability::SourceReadFact};
 use read::read_local_parquet_file;
 pub(in crate::exec) use read_runtime_metrics::observed_chunk_row_group_count;
-use read_runtime_metrics::*;
+use read_runtime_metrics::{
+    record_background_cache_chunk_fill_enqueue_runtime, record_background_cache_file_fill_enqueue_runtime,
+    record_source_chunk_batch_read_runtime, record_source_chunk_read_runtime, record_source_file_read_runtime,
+};
 pub(in crate::exec) use scan_limit::apply_source_scan_limit_to_frame;
-use scan_limit::*;
+use scan_limit::{apply_source_chunk_scan_limit, empty_local_parquet_execution_frame};
 pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
 use schema::{coerce_local_parquet_source_schema, materialize_missing_columns};
 use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_frame_with_budget};
@@ -973,7 +985,7 @@ mod tests {
         runtime::{LakehouseCacheFillConfig, StandaloneConfig},
     };
 
-    use super::*;
+    use super::{read_runtime_metrics::source_read_parquet_evidence_metrics, *};
     use crate::{chunk::plan_local_parquet_source_chunks, rapids_backend::rapids_analysis_context};
 
     fn test_source(files: Vec<LocalParquetFile>, read_columns: Vec<String>) -> LocalParquetSource {

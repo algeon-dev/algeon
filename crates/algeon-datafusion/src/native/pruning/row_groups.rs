@@ -8,8 +8,9 @@ use query_planning::parquet_stats::{integer_statistics_range, leaf_column_chunk,
 use super::{
     BinaryExpr, CastExpr, Column, FileScanConfig, FileSource, FilterExec, InListExpr, IsNotNullExpr, IsNullExpr,
     Literal, Operator, ParquetSource, PartitionedFile, PhysicalExpr, ScalarValue, SchemaRef, Statistics,
-    coalesced_local_parquet_scan_files, local_object_path_to_filesystem, parquet_footer,
-    validate_pruning_only_parquet_predicate,
+    and_may_satisfy, coalesced_local_parquet_scan_files, float_range_may_satisfy, in_list_may_satisfy,
+    is_not_null_may_satisfy, is_null_may_satisfy, local_object_path_to_filesystem, or_may_satisfy,
+    ordered_range_may_satisfy, parquet_footer, range_comparison_from_operator, validate_pruning_only_parquet_predicate,
 };
 
 pub(in crate::native) fn metadata_row_group_selections(
@@ -269,12 +270,12 @@ fn row_group_may_satisfy_expr(
         RowGroupPruningExpr::And(left, right) => {
             let left = row_group_may_satisfy_expr(row_group, schema, left);
             let right = row_group_may_satisfy_expr(row_group, schema, right);
-            Some(!matches!(left, Some(false)) && !matches!(right, Some(false)))
+            Some(and_may_satisfy(left, right))
         },
         RowGroupPruningExpr::Or(left, right) => {
             let left = row_group_may_satisfy_expr(row_group, schema, left);
             let right = row_group_may_satisfy_expr(row_group, schema, right);
-            Some(!matches!((left, right), (Some(false), Some(false))))
+            Some(or_may_satisfy(left, right))
         },
     }
 }
@@ -295,29 +296,18 @@ fn row_group_may_satisfy_atom(
         },
         RowGroupPruningAtom::IsNull { column_index } => {
             let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
-            Some(statistics.null_count_opt()? > 0)
+            is_null_may_satisfy(statistics)
         },
         RowGroupPruningAtom::IsNotNull { column_index } => {
             let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             let row_count = u64::try_from(row_group.num_rows()).ok()?;
-            Some(statistics.null_count_opt()? < row_count)
+            is_not_null_may_satisfy(statistics, row_count)
         },
     }
 }
 
 fn row_group_may_satisfy_in_list(column: &ColumnChunkMetaData, literals: &[PruningLiteral]) -> Option<bool> {
-    if literals.is_empty() {
-        return Some(false);
-    }
-    let mut saw_unknown = false;
-    for literal in literals {
-        match row_group_may_satisfy_comparison(column, Operator::Eq, literal) {
-            Some(true) => return Some(true),
-            Some(false) => {},
-            None => saw_unknown = true,
-        }
-    }
-    Some(saw_unknown)
+    in_list_may_satisfy(literals, |literal| row_group_may_satisfy_comparison(column, Operator::Eq, literal))
 }
 
 fn row_group_may_satisfy_comparison(
@@ -326,6 +316,7 @@ fn row_group_may_satisfy_comparison(
     literal: &PruningLiteral,
 ) -> Option<bool> {
     let statistics = column.statistics()?;
+    let comparison = range_comparison_from_operator(op);
     match statistics {
         // A UInt64 range above `i64::MAX` does not fit the i64 comparison, so the row group is unknown.
         Statistics::Int32(_) | Statistics::Int64(_) => {
@@ -335,7 +326,7 @@ fn row_group_may_satisfy_comparison(
             let PruningLiteral::Int64(literal) = literal else {
                 return None;
             };
-            Some(int_range_may_satisfy(min, max, op, *literal))
+            Some(ordered_range_may_satisfy(min, max, comparison, *literal))
         },
         Statistics::Float(stats) => {
             let min = f64::from(*stats.min_opt()?);
@@ -343,7 +334,7 @@ fn row_group_may_satisfy_comparison(
             let PruningLiteral::Float64(literal) = literal else {
                 return None;
             };
-            Some(float_range_may_satisfy(min, max, op, *literal))
+            Some(float_range_may_satisfy(min, max, comparison, *literal))
         },
         Statistics::Double(stats) => {
             let min = *stats.min_opt()?;
@@ -351,7 +342,7 @@ fn row_group_may_satisfy_comparison(
             let PruningLiteral::Float64(literal) = literal else {
                 return None;
             };
-            Some(float_range_may_satisfy(min, max, op, *literal))
+            Some(float_range_may_satisfy(min, max, comparison, *literal))
         },
         Statistics::ByteArray(stats) => {
             let min = stats.min_opt()?.data();
@@ -359,44 +350,8 @@ fn row_group_may_satisfy_comparison(
             let PruningLiteral::Bytes(literal) = literal else {
                 return None;
             };
-            Some(bytes_range_may_satisfy(min, max, op, literal))
+            Some(ordered_range_may_satisfy(min, max, comparison, literal.as_slice()))
         },
         _ => None,
-    }
-}
-
-fn int_range_may_satisfy(min: i64, max: i64, op: Operator, literal: i64) -> bool {
-    match op {
-        Operator::Eq => min <= literal && literal <= max,
-        Operator::Lt => min < literal,
-        Operator::LtEq => min <= literal,
-        Operator::Gt => max > literal,
-        Operator::GtEq => max >= literal,
-        _ => true,
-    }
-}
-
-fn bytes_range_may_satisfy(min: &[u8], max: &[u8], op: Operator, literal: &[u8]) -> bool {
-    match op {
-        Operator::Eq => min <= literal && literal <= max,
-        Operator::Lt => min < literal,
-        Operator::LtEq => min <= literal,
-        Operator::Gt => max > literal,
-        Operator::GtEq => max >= literal,
-        _ => true,
-    }
-}
-
-fn float_range_may_satisfy(min: f64, max: f64, op: Operator, literal: f64) -> bool {
-    if min.is_nan() || max.is_nan() || literal.is_nan() {
-        return true;
-    }
-    match op {
-        Operator::Eq => min <= literal && literal <= max,
-        Operator::Lt => min < literal,
-        Operator::LtEq => min <= literal,
-        Operator::Gt => max > literal,
-        Operator::GtEq => max >= literal,
-        _ => true,
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::report_workload::RelationalExecutionSelection;
+use crate::{report_workload::RelationalExecutionSelection, tpch_benchmark::reports::NATIVE_TPCH_BENCHMARK_TSV_HEADER};
 
 #[test]
 fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resource_metrics() {

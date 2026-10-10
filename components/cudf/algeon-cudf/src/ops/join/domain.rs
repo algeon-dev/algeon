@@ -1,4 +1,4 @@
-use super::*;
+use super::{AstExpression, Exec, FilterJoinInputs, MixedJoinTables, ResolvedExecution, Result, TableView};
 
 pub(super) fn compatible_join_indices_domain(
     left_keys: &TableView<'_>,

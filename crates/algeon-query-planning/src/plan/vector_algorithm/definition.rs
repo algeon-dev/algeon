@@ -348,13 +348,14 @@ const TOP_K_OPTIONS: &[GpuOptionDefinition] = &[
         description: "Select the minimum or maximum values.",
     },
 ];
+const DENSE_INPUT_OPTION: GpuOptionDefinition = GpuOptionDefinition {
+    name: "input",
+    required: true,
+    kind: GpuOptionKind::RelationBinding,
+    description: "Names the input ID column and one dense-vector binding shape.",
+};
 const KMEANS_OPTIONS: &[GpuOptionDefinition] = &[
-    GpuOptionDefinition {
-        name: "input",
-        required: true,
-        kind: GpuOptionKind::RelationBinding,
-        description: "Names the input ID column and one dense-vector binding shape.",
-    },
+    DENSE_INPUT_OPTION,
     GpuOptionDefinition {
         name: "n_clusters",
         required: true,
@@ -393,12 +394,7 @@ const KMEANS_OPTIONS: &[GpuOptionDefinition] = &[
     },
 ];
 const PCA_OPTIONS: &[GpuOptionDefinition] = &[
-    GpuOptionDefinition {
-        name: "input",
-        required: true,
-        kind: GpuOptionKind::RelationBinding,
-        description: "Names the input ID column and one dense-vector binding shape.",
-    },
+    DENSE_INPUT_OPTION,
     GpuOptionDefinition {
         name: "n_components",
         required: true,

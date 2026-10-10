@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::*;
+use super::{LocalParquetSource, LocalParquetSourceKind, SourceColumnRef, SourceColumnRole};
 
 /// Derived diagnostics for a local Parquet source.
 #[derive(Debug, Clone, PartialEq, Eq)]

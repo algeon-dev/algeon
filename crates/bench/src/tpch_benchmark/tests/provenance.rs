@@ -1,6 +1,10 @@
 use query_planning::execution_contracts::SourceChunkPlanningMode;
 
 use super::*;
+use crate::tpch_benchmark::{
+    config::{DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS},
+    provenance::{parse_cpu_model, parse_driver_version, parse_fd_soft_limit},
+};
 
 #[test]
 fn run_start_line_renders_unobservable_facts_as_unknown_not_defaults() {

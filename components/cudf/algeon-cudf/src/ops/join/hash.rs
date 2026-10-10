@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use super::*;
+use super::{
+    Column, Error, ErrorCode, Exec, ExecutionDomain, HashJoin, HashJoinHandle, HashJoinOptions, JoinCallContext,
+    JoinIndices, JoinSides, JoinType, NullEquality, ResolvedExecution, Result, SingleSideJoinIndices, SplitJoinTables,
+    Table, TableView, TypeId, check_join_indices_status, compatible_join_indices_domain, error, ptr,
+};
 
 pub(crate) fn join_impl(
     tables: SplitJoinTables<'_, '_>,

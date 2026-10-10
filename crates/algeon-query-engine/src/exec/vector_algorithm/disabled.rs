@@ -1,6 +1,6 @@
 use query_planning::plan::VectorAlgorithmNode;
 
-use crate::exec::*;
+use crate::exec::{NodeId, QueryError, QueryErrorCode};
 
 pub(in crate::exec) fn vector_algorithm_execution_unavailable(
     node_id: NodeId,

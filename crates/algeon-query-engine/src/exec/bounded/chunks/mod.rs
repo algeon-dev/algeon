@@ -9,7 +9,16 @@
 //! `SourceReadFact::ChunkCommitted` is recorded only by the function that
 //! owns that commit.
 
-use super::*;
+use super::{
+    BoundedExecutionAttempt, BoundedPlan, BoundedSourceBatchingPolicy, CommittedPartial, ExecutionBudgetToken,
+    ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, MemoryControlPolicy, NodeId,
+    PartialAggregateInputEvidence, ProjectionNode, QueryError, ResidentGpuFrame, Result, RetryFacts, SourceChunk,
+    SourceChunkBatch, attach_chunk_resource_facts, attach_source_batch_resource_facts, cudf_query_error,
+    execute_filter_with_budget, execute_partial_aggregate_with_budget, execute_projection_with_budget,
+    execute_projection_with_budget_and_prepared, execution_budget_token_for_boundary,
+    is_source_adjacent_grouped_aggregate, observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint,
+    plan_source_chunk_batches, projection_regexp_replace_prepare,
+};
 use crate::exec::source::{ScheduledLocalParquetReadOutput, read_local_parquet_chunk, read_local_parquet_chunk_batch};
 
 mod execution;

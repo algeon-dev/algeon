@@ -2,7 +2,7 @@ use std::path::Path;
 
 use algeon_datafusion::{
     native_report::{NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem},
-    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
+    planner::AlgeonNativeOptimizerConfig,
     session::AlgeonSessionStateBuilderExt,
 };
 use datafusion::{
@@ -11,6 +11,7 @@ use datafusion::{
 };
 
 use super::{WorkloadResult, register_tpch_tables, tpch_native_optimizer_config};
+use crate::report_workload::{datafusion_planning_workload_item, fallback_pressure_workload_item};
 
 /// Number of curated analytical OLAP TPC-H-shaped queries.
 pub const ANALYTICAL_OLAP_QUERY_COUNT: usize = ANALYTICAL_OLAP_QUERIES.len();
@@ -231,24 +232,7 @@ pub async fn analytical_olap_fallback_pressure_workload_items(
     register_tpch_tables(&ctx, root).await?;
     let mut items = Vec::with_capacity(ANALYTICAL_OLAP_QUERIES.len());
     for query in ANALYTICAL_OLAP_QUERIES {
-        let item = match ctx.sql(query.sql).await {
-            Ok(df) => match df.create_physical_plan().await {
-                Ok(plan) => NativeFallbackPressureWorkloadItem::new(query.id, plan),
-                Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
-                    query.id,
-                    "physical_planning",
-                    "physical_planning_failed",
-                    error.to_string(),
-                ),
-            },
-            Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
-                query.id,
-                "sql_to_logical_plan",
-                "sql_planning_failed",
-                error.to_string(),
-            ),
-        };
-        items.push(item);
+        items.push(fallback_pressure_workload_item(&ctx, query.id, query.sql).await);
     }
     Ok(items)
 }
@@ -279,27 +263,7 @@ pub async fn analytical_olap_datafusion_planning_workload_items_with_optimizer_c
 
     let mut items = Vec::with_capacity(ANALYTICAL_OLAP_QUERIES.len());
     for query in ANALYTICAL_OLAP_QUERIES {
-        let item = match ctx.sql(query.sql).await {
-            Ok(df) => {
-                let (state, logical) = df.into_parts();
-                match plan_with_native_diagnostics(&state, &logical).await {
-                    Ok((plan, diagnostics)) => NativeDataFusionPlanningWorkloadItem::new(query.id, plan, diagnostics),
-                    Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
-                        query.id,
-                        "physical_planning",
-                        "physical_planning_failed",
-                        error.to_string(),
-                    ),
-                }
-            },
-            Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
-                query.id,
-                "sql_to_logical_plan",
-                "sql_planning_failed",
-                error.to_string(),
-            ),
-        };
-        items.push(item);
+        items.push(datafusion_planning_workload_item(&ctx, query.id, query.sql).await);
     }
     Ok(items)
 }

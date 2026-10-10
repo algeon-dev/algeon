@@ -1,4 +1,4 @@
-use super::{file::ServerModelsFileConfig, *};
+use super::{ConfigSources, CumlModelStoreConfig, Result, file::ServerModelsFileConfig};
 
 /// Validates the `[models]` table. The root must exist and be a directory at
 /// startup, so a misconfigured root fails the server before it accepts

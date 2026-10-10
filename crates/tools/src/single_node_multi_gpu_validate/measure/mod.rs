@@ -35,7 +35,6 @@ use datafusion::{
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
 };
-use futures::StreamExt as _;
 use query_runtime::{
     metrics::{BackendMetric, backend_metric_descriptors},
     observability::{
@@ -91,14 +90,26 @@ mod otlp;
 mod probes;
 mod sampler;
 
-use arrival::*;
-use barriers::*;
-use evidence::*;
+use arrival::{
+    DrivenRun, drive, drive_close_under_load, drive_concurrent_quarantine, drive_deadline_after_admission,
+    drive_overload_fairness, drive_quarantine_cycles, is_typed_backend_closing,
+};
+use barriers::{
+    CloseUnderLoadBarrier, PendingCancellationBarrier, PhysicalAllocatorPressureBarrier, QuarantineBarrier, StormKnobs,
+};
+use evidence::{
+    close_backend, device_configurations, observe, project_graph_claim_calibration_snapshot, run_deadline_evidence,
+};
 pub(super) use otlp::OtlpExportConfig;
 use otlp::OtlpExportWorker;
 pub(super) use probes::validate_cugraph_runner_mode;
-use probes::*;
-use sampler::*;
+use probes::{
+    FeatureOffCugraphProbeSchedule, OutputCapture, append_feature_off_cugraph_probe, drain,
+    drain_with_feature_off_cugraph_capture, drive_domain_exhaustion_probe, drive_physical_allocator_pressure,
+    finish_cancellation_barrier, spawn_attempt_task, spawn_attempt_task_with_query_id,
+    spawn_feature_off_cugraph_probes,
+};
+use sampler::{Sampler, cugraph_bfs_singleflight_snapshot};
 
 /// How often the sampler polls the backend snapshot accessors at minimum.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
@@ -1128,7 +1139,12 @@ mod tests {
     use query_planning::util::StableFnv1a64;
     use query_runtime::observability::AttemptId;
 
-    use super::*;
+    use super::{
+        evidence::project_composed_schedule_projection,
+        probes::attempt_options,
+        sampler::{CalibrationClaimSnapshot, calibration_claim_stable_across_telemetry, reserve_snapshot_slot},
+        *,
+    };
     use crate::single_node_multi_gpu_validate::aggregate::scenario_clauses_pass;
 
     #[test]

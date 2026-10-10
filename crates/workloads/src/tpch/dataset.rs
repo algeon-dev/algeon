@@ -1,19 +1,13 @@
 use std::{
-    fs::{self, File},
-    io::Read,
+    fs,
     path::{Path, PathBuf},
-};
-
-use arrow::datatypes::Schema;
-use parquet::{
-    arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    file::reader::{FileReader, SerializedFileReader},
 };
 
 use super::{WorkloadError, WorkloadResult, fixture::write_tiny_tpch_parquet_dataset};
 use crate::{
     ALGEON_PARQUET_DIR_ENV,
     metadata::{DatasetFingerprint, WorkloadDatasetMetadata},
+    parquet_metadata,
 };
 
 /// Canonical TPC-H table names in fixture discovery order.
@@ -301,8 +295,22 @@ pub fn describe_tpch_dataset_with_content_fingerprint(
     let total_bytes = tables.iter().map(|table| table.byte_size).sum();
     let metadata_fingerprint =
         tpch_dataset_metadata_fingerprint(root, &scale_factor, &provenance, &generation_command, &tables);
-    let content_fingerprint =
-        include_content_fingerprint.then(|| tpch_dataset_content_fingerprint(&tables)).transpose()?;
+    let content_fingerprint = include_content_fingerprint
+        .then(|| {
+            parquet_metadata::dataset_content_fingerprint(
+                "algeon-datafusion-tpch-dataset-content-v1",
+                tables.iter().map(|table| {
+                    (
+                        table.table.as_str(),
+                        table
+                            .files
+                            .iter()
+                            .map(|file| (file.relative_path.as_str(), file.byte_size, file.path.as_path())),
+                    )
+                }),
+            )
+        })
+        .transpose()?;
     Ok(TpchDatasetMetadata {
         root: root.to_path_buf(),
         scale_factor,
@@ -345,7 +353,7 @@ pub fn discover_tpch_table_layout(root: &Path, table: &str) -> WorkloadResult<Tp
     let directory_path = root.join(table);
     if directory_path.is_dir() {
         let mut files = Vec::new();
-        collect_parquet_files(&directory_path, &mut files)?;
+        parquet_metadata::collect_parquet_files(&directory_path, &mut files)?;
         files.sort();
         if files.is_empty() {
             return Err(WorkloadError::InvalidDataset(format!(
@@ -437,58 +445,17 @@ fn read_tpch_table_metadata(root: &Path, table: &str) -> WorkloadResult<TpchTabl
     })
 }
 
-fn collect_parquet_files(path: &Path, files: &mut Vec<PathBuf>) -> WorkloadResult<()> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let entry_path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            collect_parquet_files(&entry_path, files)?;
-        } else if file_type.is_file() && entry_path.extension().is_some_and(|extension| extension == "parquet") {
-            files.push(entry_path);
-        }
-    }
-    Ok(())
-}
-
 fn read_tpch_table_file_metadata(root: &Path, path: &Path) -> WorkloadResult<TpchTableFileMetadata> {
-    let metadata = fs::metadata(path)?;
-    if !metadata.is_file() {
-        return Err(WorkloadError::InvalidDataset(format!("expected {} to be a Parquet file", path.display())));
-    }
-
-    let byte_size = metadata.len();
-    let reader_builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
-    let schema = canonical_schema(reader_builder.schema().as_ref());
-    let file = File::open(path)?;
-    let reader = SerializedFileReader::new(file)?;
-    let parquet_metadata = reader.metadata();
-    let row_group_count = parquet_metadata.num_row_groups();
-    let mut row_group_rows = Vec::with_capacity(row_group_count);
-    let mut row_group_bytes = Vec::with_capacity(row_group_count);
-    for row_group in parquet_metadata.row_groups() {
-        let rows = u64::try_from(row_group.num_rows()).map_err(|_| {
-            WorkloadError::InvalidDataset(format!("negative row count in Parquet metadata for {}", path.display()))
-        })?;
-        let bytes = u64::try_from(row_group.compressed_size()).map_err(|_| {
-            WorkloadError::InvalidDataset(format!(
-                "negative compressed byte size in Parquet metadata for {}",
-                path.display()
-            ))
-        })?;
-        row_group_rows.push(rows);
-        row_group_bytes.push(bytes);
-    }
-    let row_count = row_group_rows.iter().sum();
+    let metadata = parquet_metadata::read_file_metadata(root, path)?;
     Ok(TpchTableFileMetadata {
-        path: path.to_path_buf(),
-        relative_path: relative_dataset_path(root, path),
-        schema,
-        byte_size,
-        row_count,
-        row_group_count,
-        row_group_rows,
-        row_group_bytes,
+        path: metadata.path,
+        relative_path: metadata.relative_path,
+        schema: metadata.schema,
+        byte_size: metadata.byte_size,
+        row_count: metadata.row_count,
+        row_group_count: metadata.row_group_count,
+        row_group_rows: metadata.row_group_rows,
+        row_group_bytes: metadata.row_group_bytes,
     })
 }
 
@@ -510,7 +477,7 @@ fn tpch_dataset_metadata_fingerprint(
     hasher.update_field(generation_command);
     for table in tables {
         hasher.update_field(&table.table);
-        hasher.update_field(&relative_dataset_path(root, &table.path));
+        hasher.update_field(&parquet_metadata::relative_dataset_path(root, &table.path));
         hasher.update_field(&table.schema);
         hasher.update_field(&table.file_count.to_string());
         hasher.update_field(&table.byte_size.to_string());
@@ -531,51 +498,6 @@ fn tpch_dataset_metadata_fingerprint(
         }
     }
     format!("metadata-fnv1a64:{:016x}", hasher.finish())
-}
-
-fn tpch_dataset_content_fingerprint(tables: &[TpchTableMetadata]) -> WorkloadResult<String> {
-    let mut hasher = DatasetFingerprint::new();
-    hasher.update_field("algeon-datafusion-tpch-dataset-content-v1");
-    let mut buffer = vec![0_u8; 1024 * 1024];
-    for table in tables {
-        hasher.update_field(&table.table);
-        for file in &table.files {
-            hasher.update_field(&file.relative_path);
-            hasher.update_field(&file.byte_size.to_string());
-            let mut reader = File::open(&file.path)?;
-            loop {
-                let bytes_read = reader.read(&mut buffer)?;
-                if bytes_read == 0 {
-                    break;
-                }
-                hasher.update_bytes(&buffer[..bytes_read]);
-            }
-            hasher.update_bytes(&[0]);
-        }
-    }
-    Ok(format!("content-fnv1a64:{:016x}", hasher.finish()))
-}
-
-fn canonical_schema(schema: &Schema) -> String {
-    schema
-        .fields()
-        .iter()
-        .map(|field| {
-            format!(
-                "{}:{:?}:nullable={}:metadata={:?}",
-                field.name(),
-                field.data_type(),
-                field.is_nullable(),
-                field.metadata()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-fn relative_dataset_path(root: &Path, path: &Path) -> String {
-    let relative = path.strip_prefix(root).expect("discovered dataset path must be under root");
-    relative.iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
 fn env_truthy(value: &str) -> bool {

@@ -2,7 +2,7 @@ use cugraph::{
     community::TriangleCountParams, labeling::ConnectedComponentsParams, structure::CoreNumberParams,
     tree::MinimumSpanningTreeParams,
 };
-use query_planning::plan::{GraphAlgorithmParams, GraphAlgorithmSpec};
+use query_planning::plan::{GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec};
 
 use super::{
     DataFrame, ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, QueryError,
@@ -154,7 +154,6 @@ pub(super) fn execute_weakly_connected_components(
     spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let input = inputs.edge_list;
     let GraphAlgorithmParams::WeaklyConnectedComponents(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -164,37 +163,7 @@ pub(super) fn execute_weakly_connected_components(
         .with_fact("algorithm", spec.algorithm.as_str()));
     };
 
-    let input = input.into_frame();
-    let (edges, _) = project_edge_list(input, spec)?;
-    let options = table_graph_options(spec);
-
-    run_with_cugraph_graph::<cugraph::Forward, _>(
-        context,
-        edges,
-        options,
-        "algeon_datafusion_cugraph_weakly_connected_components",
-        |runtime, entered, graph| {
-            let wcc_params = ConnectedComponentsParams::default();
-            let result = graph.weakly_connected_components(entered, &wcc_params).map_err(map_cugraph_error(
-                "query_engine.graph_algorithm.weakly_connected_components",
-                "cuGraph weakly_connected_components failed",
-            ))?;
-            let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
-                "query_engine.graph_algorithm.weakly_connected_components_result",
-                "failed to convert cuGraph WCC result to cudf DataFrame",
-            ))?;
-            let frame = rename_result_columns(
-                frame,
-                &[("label", "component")],
-                "query_engine.graph_algorithm.weakly_connected_components_result",
-            )?;
-            Ok(GraphAlgorithmExecutionResult {
-                frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
-                algorithm_metadata: String::new(),
-                cache_scope_peak_bytes: None,
-            })
-        },
-    )
+    execute_connected_components(context, spec, inputs, GraphAlgorithm::WeaklyConnectedComponents)
 }
 
 pub(super) fn execute_strongly_connected_components(
@@ -202,7 +171,6 @@ pub(super) fn execute_strongly_connected_components(
     spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let input = inputs.edge_list;
     let GraphAlgorithmParams::StronglyConnectedComponents(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -212,7 +180,34 @@ pub(super) fn execute_strongly_connected_components(
         .with_fact("algorithm", spec.algorithm.as_str()));
     };
 
-    let input = input.into_frame();
+    execute_connected_components(context, spec, inputs, GraphAlgorithm::StronglyConnectedComponents)
+}
+
+fn execute_connected_components(
+    context: &ExecutionContext,
+    spec: &GraphAlgorithmSpec,
+    inputs: GraphAlgorithmExecutionInputs,
+    algorithm: GraphAlgorithm,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let (graph_operation, algorithm_operation, algorithm_error, result_operation, result_error) = match algorithm {
+        GraphAlgorithm::WeaklyConnectedComponents => (
+            "algeon_datafusion_cugraph_weakly_connected_components",
+            "query_engine.graph_algorithm.weakly_connected_components",
+            "cuGraph weakly_connected_components failed",
+            "query_engine.graph_algorithm.weakly_connected_components_result",
+            "failed to convert cuGraph WCC result to cudf DataFrame",
+        ),
+        GraphAlgorithm::StronglyConnectedComponents => (
+            "algeon_datafusion_cugraph_strongly_connected_components",
+            "query_engine.graph_algorithm.strongly_connected_components",
+            "cuGraph strongly_connected_components failed",
+            "query_engine.graph_algorithm.strongly_connected_components_result",
+            "failed to convert cuGraph SCC result to cudf DataFrame",
+        ),
+        _ => unreachable!("only connected-components algorithms use this executor"),
+    };
+
+    let input = inputs.edge_list.into_frame();
     let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
 
@@ -220,22 +215,17 @@ pub(super) fn execute_strongly_connected_components(
         context,
         edges,
         options,
-        "algeon_datafusion_cugraph_strongly_connected_components",
+        graph_operation,
         |runtime, entered, graph| {
-            let scc_params = ConnectedComponentsParams::default();
-            let result = graph.strongly_connected_components(entered, &scc_params).map_err(map_cugraph_error(
-                "query_engine.graph_algorithm.strongly_connected_components",
-                "cuGraph strongly_connected_components failed",
-            ))?;
-            let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
-                "query_engine.graph_algorithm.strongly_connected_components_result",
-                "failed to convert cuGraph SCC result to cudf DataFrame",
-            ))?;
-            let frame = rename_result_columns(
-                frame,
-                &[("label", "component")],
-                "query_engine.graph_algorithm.strongly_connected_components_result",
-            )?;
+            let params = ConnectedComponentsParams::default();
+            let result = match algorithm {
+                GraphAlgorithm::WeaklyConnectedComponents => graph.weakly_connected_components(entered, &params),
+                GraphAlgorithm::StronglyConnectedComponents => graph.strongly_connected_components(entered, &params),
+                _ => unreachable!("only connected-components algorithms use this executor"),
+            }
+            .map_err(map_cugraph_error(algorithm_operation, algorithm_error))?;
+            let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(result_operation, result_error))?;
+            let frame = rename_result_columns(frame, &[("label", "component")], result_operation)?;
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),

@@ -61,10 +61,8 @@ impl PathsResult {
             pointer_name,
         )?;
 
-        // SAFETY: the returned view borrows data owned by `self.raw`, which
-        // outlives the returned wrapper. This preserves the existing BFS
-        // result-accessor behavior.
-        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), operation, pointer_name) }
+        // SAFETY: cuGraph allocates view metadata; this wrapper frees it while `self.raw` retains the backing arrays.
+        unsafe { RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), operation, pointer_name) }
     }
 
     fn optional_raw_view(
@@ -80,8 +78,8 @@ impl PathsResult {
             return Ok(None);
         }
 
-        // SAFETY: same borrowing contract as `raw_view`.
-        let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), operation, pointer_name)? };
+        // SAFETY: cuGraph allocates view metadata; this wrapper frees it while `self.raw` retains the backing arrays.
+        let raw = unsafe { RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), operation, pointer_name)? };
         if raw.is_empty() { Ok(None) } else { Ok(Some(raw)) }
     }
 
