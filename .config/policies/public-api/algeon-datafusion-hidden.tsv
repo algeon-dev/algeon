@@ -28,3 +28,4 @@ algeon_datafusion::cugraph_sql::parity::RefCsvError	bench-support	root adapter c
 algeon_datafusion::native_exec::fragment::AlgeonNativeExec::admitted_plan_for_internal_consumer	bench-support	root adapter native execution	tools: bench, tools	bench and tools stop reading the admitted artifact of host native units
 algeon_datafusion::native_report::bench_support	bench-support	root adapter native reports	tools: bench; tests: algeon-datafusion, bench	benchmark report package stops consuming parity comparison rows
 algeon_datafusion::session::apply_algeon_option_overrides	cross-crate	root adapter session	tools: bench; tests: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
+algeon_datafusion::cugraph_sql::bench_support	bench-support	adapter cuGraph acceptance fixtures	tools: tools; tests: algeon-datafusion	Python-cuGraph acceptance commands and shared SQL fixture consumers are deleted

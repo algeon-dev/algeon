@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn filtered_global_strategy_keeps_small_single_pass_materialization() {
     let (schema, spec) = filtered_global_q09_like_spec(3);

@@ -106,9 +106,9 @@ mod fixtures_parquet;
 mod fixtures_plans;
 mod gpu_execution;
 mod lane_execution;
-#[path = "../../../../tests/native_contract_tests/bounded_join_admission/plans/remaining_topologies.rs"]
+#[path = "../../../../tests/support/remaining_topologies.rs"]
 // Shared with the CPU contract target; these cases call three constructors.
-#[expect(dead_code, reason = "shared fixture file partially exercised by these cases")]
+#[expect(dead_code, reason = "compiled scheduler cases use three constructors from the shared topology fixtures")]
 mod remaining_topologies;
 mod source_read_lease;
 

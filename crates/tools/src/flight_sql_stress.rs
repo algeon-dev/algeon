@@ -1516,10 +1516,16 @@ mod tests {
         ] {
             FlightStressProfile::parse_bytes(profile).expect("shipped S8 profile");
         }
-        ensure_redacted_server_config(include_bytes!("../fixtures/stress/server-s8-s2-scan-sf1.toml"))
-            .expect("S2 SF1 server companion");
-        ensure_redacted_server_config(include_bytes!("../fixtures/stress/server-s8-s2-knee-sf10.toml"))
-            .expect("S2 server companion");
+        ensure_redacted_server_config(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixture/stress/server-s8-s2-scan-sf1.toml"
+        )))
+        .expect("S2 SF1 server companion");
+        ensure_redacted_server_config(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixture/stress/server-s8-s2-knee-sf10.toml"
+        )))
+        .expect("S2 server companion");
     }
 
     #[test]

@@ -387,5 +387,4 @@ fn split_on_distinct_column(
 }
 
 #[cfg(test)]
-#[path = "single_distinct_aggregate_split_tests.rs"]
 mod tests;

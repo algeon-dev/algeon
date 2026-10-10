@@ -1,0 +1,11 @@
+mod binary;
+mod copying;
+mod datetime;
+mod filter;
+mod groupby;
+mod join;
+mod misc;
+mod reduction;
+mod sorting;
+mod strings;
+mod unary;

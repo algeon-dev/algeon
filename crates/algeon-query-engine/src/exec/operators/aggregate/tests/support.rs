@@ -1,4 +1,6 @@
-fn multi_key_sum_spec() -> (Schema, AggregateSpec) {
+use super::*;
+
+pub(super) fn multi_key_sum_spec() -> (Schema, AggregateSpec) {
     let schema = Schema::new(vec![
         Field::new("county", DataType::Utf8View, true),
         Field::new("quarter", DataType::Int32, false),
@@ -12,7 +14,7 @@ fn multi_key_sum_spec() -> (Schema, AggregateSpec) {
     (schema, spec)
 }
 
-fn fixed_width_sum_spec() -> (Schema, AggregateSpec) {
+pub(super) fn fixed_width_sum_spec() -> (Schema, AggregateSpec) {
     let schema = Schema::new(vec![
         Field::new("quarter", DataType::Int32, false),
         Field::new("year", DataType::Int32, false),
@@ -25,7 +27,7 @@ fn fixed_width_sum_spec() -> (Schema, AggregateSpec) {
     (schema, spec)
 }
 
-fn simple_string_sum_spec() -> (Schema, AggregateSpec) {
+pub(super) fn simple_string_sum_spec() -> (Schema, AggregateSpec) {
     let schema =
         Schema::new(vec![Field::new("county", DataType::Utf8View, true), Field::new("sales", DataType::Int64, true)]);
     let spec = AggregateSpec::new(
@@ -35,7 +37,7 @@ fn simple_string_sum_spec() -> (Schema, AggregateSpec) {
     (schema, spec)
 }
 
-fn simple_string_avg_spec() -> (Schema, AggregateSpec) {
+pub(super) fn simple_string_avg_spec() -> (Schema, AggregateSpec) {
     let schema =
         Schema::new(vec![Field::new("category", DataType::Utf8, true), Field::new("price", DataType::Float64, true)]);
     let spec = AggregateSpec::new(
@@ -45,7 +47,7 @@ fn simple_string_avg_spec() -> (Schema, AggregateSpec) {
     (schema, spec)
 }
 
-fn simple_string_avg_sum_spec() -> (Schema, AggregateSpec) {
+pub(super) fn simple_string_avg_sum_spec() -> (Schema, AggregateSpec) {
     let schema =
         Schema::new(vec![Field::new("category", DataType::Utf8, true), Field::new("price", DataType::Float64, true)]);
     let spec = AggregateSpec::new(
@@ -58,7 +60,7 @@ fn simple_string_avg_sum_spec() -> (Schema, AggregateSpec) {
     (schema, spec)
 }
 
-fn filtered_global_q09_like_spec(filter_count: usize) -> (Arc<Schema>, AggregateSpec) {
+pub(super) fn filtered_global_q09_like_spec(filter_count: usize) -> (Arc<Schema>, AggregateSpec) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("quantity", DataType::Int64, true),
         Field::new("discount", DataType::Decimal128(7, 2), true),
@@ -87,7 +89,7 @@ fn filtered_global_q09_like_spec(filter_count: usize) -> (Arc<Schema>, Aggregate
     (schema, AggregateSpec::new(Vec::new(), aggr_exprs))
 }
 
-fn filtered_global_tpcds_q09_sf100_spec() -> (Arc<Schema>, AggregateSpec) {
+pub(super) fn filtered_global_tpcds_q09_sf100_spec() -> (Arc<Schema>, AggregateSpec) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("ss_quantity", DataType::Int32, false),
         Field::new("ss_ext_discount_amt", DataType::Decimal128(7, 2), true),
@@ -129,7 +131,7 @@ fn quantity_between(lower: i32, upper: i32) -> Expr {
     )
 }
 
-fn filtered_grouped_q09_like_spec(filter_count: usize) -> (Arc<Schema>, AggregateSpec) {
+pub(super) fn filtered_grouped_q09_like_spec(filter_count: usize) -> (Arc<Schema>, AggregateSpec) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("quantity", DataType::Int64, true),
@@ -159,7 +161,7 @@ fn filtered_grouped_q09_like_spec(filter_count: usize) -> (Arc<Schema>, Aggregat
     (schema, AggregateSpec::new(vec![Expr::column("key")], aggr_exprs))
 }
 
-fn partial_strategy_for_multi_key_sum(input_rows: u64) -> AggregateStrategyCapabilityDecision {
+pub(super) fn partial_strategy_for_multi_key_sum(input_rows: u64) -> AggregateStrategyCapabilityDecision {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     select_partial_aggregate_strategy_decision(
@@ -173,7 +175,7 @@ fn partial_strategy_for_multi_key_sum(input_rows: u64) -> AggregateStrategyCapab
     )
 }
 
-fn partial_strategy_for_simple_string_sum(
+pub(super) fn partial_strategy_for_simple_string_sum(
     input_rows: u64,
 ) -> (Schema, AggregateSpec, AggregateStrategyCapabilityDecision) {
     let (schema, spec) = simple_string_sum_spec();
@@ -190,7 +192,7 @@ fn partial_strategy_for_simple_string_sum(
     (schema, spec, decision)
 }
 
-fn metrics_with_prior_partial_decision(
+pub(super) fn metrics_with_prior_partial_decision(
     node_id: NodeId,
     spec: &AggregateSpec,
     schema: &Schema,
@@ -212,7 +214,7 @@ fn metrics_with_prior_partial_decision(
     metrics
 }
 
-fn metrics_with_prior_partial_structural_decision(
+pub(super) fn metrics_with_prior_partial_structural_decision(
     node_id: NodeId,
     spec: &AggregateSpec,
     schema: &Schema,
@@ -233,14 +235,14 @@ fn metrics_with_prior_partial_structural_decision(
     metrics
 }
 
-fn source_adjacent_group_key_evidence(
+pub(super) fn source_adjacent_group_key_evidence(
     row_group_count: u64,
     max_partition_fan_in: u64,
 ) -> PartialAggregateInputEvidence {
     source_adjacent_evidence("group_key", row_group_count, Some(max_partition_fan_in))
 }
 
-fn source_adjacent_unpartitioned_evidence(row_group_count: u64) -> PartialAggregateInputEvidence {
+pub(super) fn source_adjacent_unpartitioned_evidence(row_group_count: u64) -> PartialAggregateInputEvidence {
     source_adjacent_evidence("none", row_group_count, None)
 }
 

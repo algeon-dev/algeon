@@ -2,14 +2,8 @@
 # Fail closed if any tracked crate's public API surface drifts from its
 # checked-in snapshot without an explicit, reviewed snapshot update.
 #
-# This replaces three `trybuild`-based compile_fail/pass fixture suites
-# (crates/algeon-datafusion/tests/datafusion_public_api_boundary.rs,
-# crates/algeon-query-engine/tests/public_api_boundary.rs,
-# crates/bench/tests/bench_public_api_boundary.rs), which built a
-# complete second copy of the dependency graph per binary (trybuild 1.0.118
-# hardcodes its own CARGO_TARGET_DIR; see its src/cargo.rs). `cargo public-api`
-# instead runs `cargo doc --output-format=json` in the workspace's ordinary
-# target directory, reusing already-built dependency metadata.
+# `cargo public-api` uses the ordinary target directory and reuses dependency
+# metadata instead of building a second graph through trybuild fixtures.
 #
 # This check is strictly stronger than the fixtures it replaces in one
 # respect: it fails on *any* unreviewed public API change, including

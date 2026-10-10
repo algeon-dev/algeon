@@ -5,8 +5,10 @@
 //! query planner. Native graph IR and device execution remain owned below this
 //! DataFusion boundary.
 
+#[cfg(all(feature = "bench-support", feature = "cugraph"))]
+#[doc(hidden)]
+pub mod bench_support;
 #[cfg(all(test, feature = "cugraph"))]
-#[path = "composed_planning_tests.rs"]
 mod composed_planning_tests;
 mod definitions;
 mod error;

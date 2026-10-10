@@ -14,7 +14,6 @@ readme = "../README.md"
 categories = ["api-bindings", "external-ffi-bindings"]
 keywords = ["cuml", "cuda", "ffi", "gpu", "rapids"]
 build = "build.rs"
-autotests = false
 
 [package.metadata.bindgen-cli]
 version = "0.73.2"
@@ -38,13 +37,5 @@ cmake.workspace = true
 rapids-build-support.workspace = true
 
 [[test]]
-name = "abi_contract_cpu"
-path = "tests/abi_contract_cpu.rs"
-
-[[test]]
-name = "build_script_contract_cpu"
-path = "tests/build_script_contract_cpu.rs"
-
-[[test]]
 name = "native_abi_contract_gpu"
-path = "tests/native_abi_contract_gpu.rs"
+required-features = ["test-hooks"]

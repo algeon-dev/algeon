@@ -41,7 +41,7 @@ impl CompiledGpuTaskExecutor<'_> {
         #[cfg(not(feature = "cuvs"))]
         {
             let _ = (output, state);
-            return Err(vector_algorithm_execution_unavailable(node_id, vector));
+            Err(vector_algorithm_execution_unavailable(node_id, vector))
         }
 
         #[cfg(feature = "cuvs")]

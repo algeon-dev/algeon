@@ -1,3 +1,14 @@
+use super::{
+    diagnostics::SharedSubplanMaterializationDiagnostics,
+    discovery::discover_shared_subplan_materialization_candidates, rewrite::SharedSubplanMaterializationRewriter,
+    scalar_derivation::optimize_scalar_aggregate_from_grouped_aggregate,
+};
+use crate::{
+    error::QueryError,
+    optimizer::NativeOptimizerChange,
+    plan::{QueryPlan, RewrittenNodes},
+};
+
 pub const SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME: &str = "shared_subplan_materialization";
 
 /// Configuration for shared-subplan materialization.
@@ -23,7 +34,7 @@ impl Default for SharedSubplanMaterializationOptions {
 /// Diagnostics for shared-subplan materialization.
 pub(crate) struct SharedSubplanMaterializationResult {
     pub(crate) plan: QueryPlan,
-    pub(crate) change: super::NativeOptimizerChange,
+    pub(crate) change: NativeOptimizerChange,
     pub(crate) diagnostics: SharedSubplanMaterializationDiagnostics,
 }
 
@@ -36,7 +47,7 @@ pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
     } else {
         Ok(SharedSubplanMaterializationResult {
             plan,
-            change: super::NativeOptimizerChange::Unchanged,
+            change: NativeOptimizerChange::Unchanged,
             diagnostics: SharedSubplanMaterializationDiagnostics::default(),
         })
     }
@@ -49,14 +60,14 @@ pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     if !options.enabled {
         return Ok(SharedSubplanMaterializationResult {
             plan,
-            change: super::NativeOptimizerChange::Unchanged,
+            change: NativeOptimizerChange::Unchanged,
             diagnostics: SharedSubplanMaterializationDiagnostics::default(),
         });
     }
 
     let scalar_derivation = SharedSubplanMaterializationResult {
         plan,
-        change: super::NativeOptimizerChange::Unchanged,
+        change: NativeOptimizerChange::Unchanged,
         diagnostics: SharedSubplanMaterializationDiagnostics::default(),
     };
     let discovery = discover_shared_subplan_materialization_candidates(&scalar_derivation.plan);
@@ -66,7 +77,7 @@ pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
         }
         return Ok(SharedSubplanMaterializationResult {
             plan: scalar_derivation.plan,
-            change: super::NativeOptimizerChange::Unchanged,
+            change: NativeOptimizerChange::Unchanged,
             diagnostics: discovery.diagnostics,
         });
     }
@@ -81,9 +92,9 @@ pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     let rewritten_plan =
         scalar_derivation.plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo))?;
     let change = if changed || scalar_derivation.change.changed() {
-        super::NativeOptimizerChange::Changed
+        NativeOptimizerChange::Changed
     } else {
-        super::NativeOptimizerChange::Unchanged
+        NativeOptimizerChange::Unchanged
     };
     diagnostics.applied_count = diagnostics.candidates.iter().filter(|candidate| candidate.applied).count();
     Ok(SharedSubplanMaterializationResult { plan: rewritten_plan, change, diagnostics })

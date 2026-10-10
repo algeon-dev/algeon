@@ -2,11 +2,7 @@
 // order; cleanup complete → disposition/health commit → seal/report_ready →
 // capacity release; plus health disposition coverage.
 
-use cudf::Exec;
-use super::service::disposition::{
-    CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit, decide_capacity_disposition,
-};
-use crate::native_error::cudf_query_error;
+use super::*;
 
 fn wait_until(deadline: Instant, mut condition: impl FnMut() -> bool, what: &str) {
     while !condition() {
@@ -15,17 +11,9 @@ fn wait_until(deadline: Instant, mut condition: impl FnMut() -> bool, what: &str
     }
 }
 
-fn assert_legal_resident_output(
-    case: &str,
-    build: impl FnOnce(
-        &Arc<CudfRuntime>,
-    ) -> (GpuDataFrame, SchemaRef),
-) {
+fn assert_legal_resident_output(case: &str, build: impl FnOnce(&Arc<CudfRuntime>) -> (GpuDataFrame, SchemaRef)) {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for resident output");
-    let device = service.inner.resources
-        .devices
-        .context_by_ordinal(0)
-        .expect("device context");
+    let device = service.inner.resources.devices.context_by_ordinal(0).expect("device context");
     let backend_lifecycle = BackendLifecycle::new();
     let attempt = AttemptOwner::begin(
         BeginAttemptRequest {
@@ -51,8 +39,7 @@ fn assert_legal_resident_output(
     let bytes = frame.device_allocated_size_bytes().expect("resident output bytes");
     let owner = context.context().retain_resident_output_owner(bytes).expect("resident owner");
     let result =
-        GpuResultHandle::new_with_resident_owner(context.context(), frame, schema, owner)
-            .expect("resident result");
+        GpuResultHandle::new_with_resident_owner(context.context(), frame, schema, owner).expect("resident result");
     drop(runtime);
     drop(context);
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
@@ -63,14 +50,8 @@ fn assert_legal_resident_output(
     wait_until(Instant::now() + Duration::from_secs(10), || completion.is_ready(), case);
     let report = completion.try_report().expect("published attempt report");
     assert_eq!(report.cleanup_failure_count, 0, "{case}");
-    assert!(!matches!(
-        report.capacity_disposition,
-        AttemptCapacityDisposition::RetainedQuarantine
-    ));
-    assert!(matches!(
-        device.ledger().snapshot().expect("ledger snapshot").health,
-        DeviceAdmissionHealth::Open
-    ));
+    assert!(!matches!(report.capacity_disposition, AttemptCapacityDisposition::RetainedQuarantine));
+    assert!(matches!(device.ledger().snapshot().expect("ledger snapshot").health, DeviceAdmissionHealth::Open));
     drop(result);
 }
 
@@ -83,33 +64,19 @@ fn shared_sliced_nested_and_empty_resident_outputs_pass_owner_attestation() {
         ]));
         let source_batch = RecordBatch::try_new(
             source_schema,
-            vec![
-                Arc::new(Int32Array::from(vec![1, 2, 3])),
-                Arc::new(Int32Array::from(vec![4, 5, 6])),
-            ],
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(Int32Array::from(vec![4, 5, 6]))],
         )
         .unwrap();
         let source = DataFrame::from_record_batch(runtime.as_ref(), &source_batch).unwrap();
         let selected = source.select(["kept"]).unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "kept",
-            DataType::Int32,
-            false,
-        )]));
+        let schema = Arc::new(Schema::new(vec![Field::new("kept", DataType::Int32, false)]));
         (GpuDataFrame::new(selected), schema)
     });
 
     assert_legal_resident_output("sliced resident output", |runtime| {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "value",
-            DataType::Int32,
-            false,
-        )]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4]))],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4]))]).unwrap();
         let source = DataFrame::from_record_batch(runtime.as_ref(), &batch).unwrap();
         let sliced = source.on(Exec::RETAINED).slice(1, 2).unwrap();
         (GpuDataFrame::new(sliced), schema)
@@ -127,25 +94,14 @@ fn shared_sliced_nested_and_empty_resident_outputs_pass_owner_attestation() {
             Arc::new(Int32Array::from(vec![1, 2, 3])),
             None,
         );
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "items",
-            DataType::List(item),
-            false,
-        )]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(list) as ArrayRef],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("items", DataType::List(item), false)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(list) as ArrayRef]).unwrap();
         let frame = DataFrame::from_record_batch(runtime.as_ref(), &batch).unwrap();
         (GpuDataFrame::new(frame), schema)
     });
 
     assert_legal_resident_output("empty resident output", |runtime| {
-        (
-            GpuDataFrame::new(runtime.empty_dataframe()),
-            Arc::new(Schema::empty()),
-        )
+        (GpuDataFrame::new(runtime.empty_dataframe()), Arc::new(Schema::empty()))
     });
 }
 
@@ -176,23 +132,14 @@ fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescen
         .expect("admission");
     let context = admitted.acquire_context().expect("attempt context");
     let runtime = context.context().shared_runtime().expect("attempt runtime");
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int32,
-        false,
-    )]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-    )
-    .unwrap();
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
     let frame = DataFrame::from_record_batch(runtime.as_ref(), &batch).unwrap();
     let frame = GpuDataFrame::new(frame);
     let bytes = frame.device_allocated_size_bytes().expect("resident output bytes");
     let owner = context.context().retain_resident_output_owner(bytes).expect("resident owner");
     let result =
-        GpuResultHandle::new_with_resident_owner(context.context(), frame, schema, owner)
-            .expect("resident result");
+        GpuResultHandle::new_with_resident_owner(context.context(), frame, schema, owner).expect("resident result");
     drop(runtime);
     drop(context);
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
@@ -478,7 +425,9 @@ async fn terminal_commit_releases_and_publishes_after_gpu_cleanup() {
         .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission succeeds");
 
-    let pool = service.inner.resources
+    let pool = service
+        .inner
+        .resources
         .gpu_execution_pool_for_device(handle.device_ordinal())
         .expect("device GPU execution pool");
     let release_blocker = Arc::new(Semaphore::new(0));
@@ -514,9 +463,7 @@ async fn abandoned_attempt_keeps_report_before_reuse_order() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for abandoned release ordering");
     let attempt_owner = observed_attempt("abandoned-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let binding = attempt_owner.admission_binding();
-    let first = service
-        .admit_query_with_request(QueryAdmissionRequest::new(binding.clone()))
-        .expect("first admission");
+    let first = service.admit_query_with_request(QueryAdmissionRequest::new(binding.clone())).expect("first admission");
     drop(first.acquire_context().expect("first context"));
 
     let queued_service = service.clone();
@@ -636,9 +583,7 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
             }
         },
     ));
-    timeout(Duration::from_secs(10), entered.wait())
-        .await
-        .expect("both different-cap GPU jobs overlap at the barrier");
+    timeout(Duration::from_secs(10), entered.wait()).await.expect("both different-cap GPU jobs overlap at the barrier");
 
     let overlapping = service.device_ledger_reports().expect("overlap ledger report");
     let [overlapping] = overlapping.as_slice() else {
@@ -816,9 +761,7 @@ async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_
             }
         },
     ));
-    timeout(Duration::from_secs(10), entered.wait())
-        .await
-        .expect("both different-cap GPU jobs overlap at the barrier");
+    timeout(Duration::from_secs(10), entered.wait()).await.expect("both different-cap GPU jobs overlap at the barrier");
 
     let overlapping = service.device_ledger_reports().expect("overlap ledger report");
     let [overlapping] = overlapping.as_slice() else {
@@ -1050,11 +993,7 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
     let leaked_context = admitted.acquire_context().expect("attempt context for leaked allocation");
     let leaked_runtime = leaked_context.context().shared_runtime().expect("attempt runtime");
     let leaked_batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "leaked",
-            DataType::Int32,
-            false,
-        )])),
+        Arc::new(Schema::new(vec![Field::new("leaked", DataType::Int32, false)])),
         vec![Arc::new(Int32Array::from(vec![7; 4096]))],
     )
     .expect("leaked host batch");
@@ -1122,10 +1061,7 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
-    assert!(matches!(
-        attempt_owner.admission_binding().claim(),
-        Err(AttemptLifecycleError::AdmissionAlreadyClaimed)
-    ));
+    assert!(matches!(attempt_owner.admission_binding().claim(), Err(AttemptLifecycleError::AdmissionAlreadyClaimed)));
 
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("primary outcome commits first");
     drop(handle);
@@ -1134,7 +1070,8 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     assert!(report.timestamps.report_ready_ns.is_some());
     // The caller recorded no admission facts; publication records them.
     assert!(report.admission.is_some(), "publication recorded the admission fact");
-    let health = service.inner.admission.devices.ledger(0).expect("device ledger").health().expect("ledger health readable");
+    let health =
+        service.inner.admission.devices.ledger(0).expect("device ledger").health().expect("ledger health readable");
     assert!(matches!(health, DeviceAdmissionHealth::Open), "{health:?}");
 }
 
@@ -1163,10 +1100,7 @@ fn begin_native_attempt() -> (AttemptOwner, AttemptCompletion) {
 #[test]
 fn second_admission_claim_is_rejected_before_queue_or_ledger_changes() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
-    let device = service.inner.resources
-        .devices
-        .context_by_ordinal(0)
-        .expect("device context");
+    let device = service.inner.resources.devices.context_by_ordinal(0).expect("device context");
     let (attempt_owner, completion) = begin_native_attempt();
     let first = service
         .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
@@ -1209,10 +1143,7 @@ fn second_admission_claim_is_rejected_before_queue_or_ledger_changes() {
 #[test]
 fn owner_terminal_during_admission_publishes_one_report_and_keeps_ledgers_open() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
-    let device = service.inner.resources
-        .devices
-        .context_by_ordinal(0)
-        .expect("device context");
+    let device = service.inner.resources.devices.context_by_ordinal(0).expect("device context");
     let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterWorkerScope);
     let (attempt_owner, completion) = begin_native_attempt();
     let binding = attempt_owner.admission_binding();
@@ -1444,15 +1375,9 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
         "unknown isolation is sealed as backend-recovery advice rather than a device retry"
     );
     let resource_evidence = report.resource_evidence.expect("admitted attempt retains its immutable resource evidence");
-    assert_eq!(
-        resource_evidence.grant_cap_bytes.provenance,
-        AttemptEvidenceProvenance::AttemptExact
-    );
+    assert_eq!(resource_evidence.grant_cap_bytes.provenance, AttemptEvidenceProvenance::AttemptExact);
     assert!(resource_evidence.grant_cap_bytes.value.is_some());
-    assert_eq!(
-        resource_evidence.domain_cap_bytes.provenance,
-        AttemptEvidenceProvenance::AttemptExact
-    );
+    assert_eq!(resource_evidence.domain_cap_bytes.provenance, AttemptEvidenceProvenance::AttemptExact);
     assert!(resource_evidence.domain_cap_bytes.value.is_some());
     for (name, provenance) in [
         ("ledger sequence", resource_evidence.ledger_sequence.provenance),
@@ -1461,20 +1386,11 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
         ("allocator event", resource_evidence.allocator_event.provenance),
         ("unattributed allocator event", resource_evidence.unattributed_device_allocator_event.provenance),
     ] {
-        assert_eq!(
-            provenance,
-            AttemptEvidenceProvenance::Unavailable,
-            "unknown isolation must not project a {name}"
-        );
+        assert_eq!(provenance, AttemptEvidenceProvenance::Unavailable, "unknown isolation must not project a {name}");
     }
     assert!(
         matches!(
-            service.inner.resources
-                .devices
-                .context_by_ordinal(0)
-                .expect("device zero")
-                .ledger()
-                .health(),
+            service.inner.resources.devices.context_by_ordinal(0).expect("device zero").ledger().health(),
             Ok(DeviceAdmissionHealth::Closed { .. })
         ),
         "duplicate cleanup handoff closes the scheduler ledger"
@@ -1512,10 +1428,7 @@ async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
         "capacity returns after report-ready",
     );
     assert!(
-        matches!(
-            device.ledger().snapshot().map(|snapshot| snapshot.health),
-            Ok(DeviceAdmissionHealth::Open)
-        ),
+        matches!(device.ledger().snapshot().map(|snapshot| snapshot.health), Ok(DeviceAdmissionHealth::Open)),
         "OOM alone never quarantines the device"
     );
 
@@ -1581,10 +1494,7 @@ fn oom_release_projects_truthful_resource_evidence() {
     let evidence = report.resource_evidence.expect("device-backed OOM has resource evidence");
     assert_eq!(evidence.ledger_sequence.provenance, AttemptEvidenceProvenance::DeviceSnapshot);
     assert!(evidence.ledger_sequence.value.is_some(), "one atomic ledger sequence is retained");
-    assert_eq!(
-        evidence.configured_limit_bytes.provenance,
-        AttemptEvidenceProvenance::AttemptExact
-    );
+    assert_eq!(evidence.configured_limit_bytes.provenance, AttemptEvidenceProvenance::AttemptExact);
     assert_eq!(evidence.grant_cap_bytes.value, Some(grant_bytes));
     assert_eq!(evidence.grant_cap_bytes.provenance, AttemptEvidenceProvenance::AttemptExact);
     assert_eq!(evidence.domain_cap_bytes.provenance, AttemptEvidenceProvenance::AttemptExact);
@@ -1599,14 +1509,8 @@ fn oom_release_projects_truthful_resource_evidence() {
         assert!(pool.used_current_bytes <= pool.reserved_current_bytes);
         assert!(pool.used_high_bytes <= pool.reserved_high_bytes);
     }
-    assert_eq!(
-        evidence.outcome_terminal_usage.provenance,
-        AttemptEvidenceProvenance::SampledAtTerminalBoundary
-    );
-    assert_eq!(
-        evidence.post_cleanup_usage.provenance,
-        AttemptEvidenceProvenance::SampledAtTerminalBoundary
-    );
+    assert_eq!(evidence.outcome_terminal_usage.provenance, AttemptEvidenceProvenance::SampledAtTerminalBoundary);
+    assert_eq!(evidence.post_cleanup_usage.provenance, AttemptEvidenceProvenance::SampledAtTerminalBoundary);
     assert_eq!(
         evidence.allocator_event.provenance,
         AttemptEvidenceProvenance::AttemptExact,
@@ -1615,12 +1519,7 @@ fn oom_release_projects_truthful_resource_evidence() {
     let allocator_event = evidence.allocator_event.value.expect("exact callback record is retained");
     assert_eq!(allocator_event.requested_bytes, u64::try_from(requested_bytes).expect("usize fits u64"));
     assert_eq!(allocator_event.source, AttemptAllocatorEventSource::ReservationLimit);
-    assert_eq!(
-        allocator_event.action,
-        AttemptEvidenceField::attempt_exact(
-            AttemptAllocatorEventAction::Decline
-        )
-    );
+    assert_eq!(allocator_event.action, AttemptEvidenceField::attempt_exact(AttemptAllocatorEventAction::Decline));
     assert_eq!(
         evidence.unattributed_device_allocator_event.provenance,
         AttemptEvidenceProvenance::Unavailable,
@@ -1729,10 +1628,7 @@ fn disposition_mapping_matches_isolation_rules() {
         .native_fault_evidence
         .expect("device-local synchronization failure has terminal evidence");
     assert_eq!(synchronization_evidence.isolation, AttemptFaultIsolation::DeviceLocal);
-    assert_eq!(
-        synchronization_evidence.teardown_health,
-        AttemptTeardownHealth::StreamSynchronizationFailed
-    );
+    assert_eq!(synchronization_evidence.teardown_health, AttemptTeardownHealth::StreamSynchronizationFailed);
 
     // cuDF's same-thread test registry makes the sibling-owned health
     // snapshot deterministic without poisoning the process-wide registry
@@ -1743,21 +1639,14 @@ fn disposition_mapping_matches_isolation_rules() {
         (
             DeviceFaultNativeStatus::CUDF_FATAL_CUDA,
             match DeviceFaultNativeStatus::CUDF_FATAL_CUDA {
-                DeviceFaultNativeStatus::Cudf(status) => {
-                    AttemptNativeStatus::Cudf(status)
-                },
+                DeviceFaultNativeStatus::Cudf(status) => AttemptNativeStatus::Cudf(status),
                 _ => unreachable!(),
             },
         ),
         (DeviceFaultNativeStatus::Cuda(700), AttemptNativeStatus::Cuda(700)),
     ] {
         let _device_safety = DeviceSafetyTestScope::install([]);
-        report_device_fault(
-            device,
-            DeviceFaultKind::FatalDeviceOperation,
-            "test_native_fault",
-            Some(native_status),
-        );
+        report_device_fault(device, DeviceFaultKind::FatalDeviceOperation, "test_native_fault", Some(native_status));
         let native_fault_decision =
             decide_capacity_commit(0, Some(&domain), CleanupEvidence::Completed, Some(cleared_usage));
         assert!(
@@ -1826,16 +1715,10 @@ fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
     let grant = producer.lifetime.memory_grant().expect("producer memory grant");
     let producer_context = producer.acquire_context().expect("producer context");
     let producer_runtime = producer_context.context().shared_runtime().expect("producer runtime");
-    let resident_schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int32,
-        false,
-    )]));
-    let resident_batch = RecordBatch::try_new(
-        Arc::clone(&resident_schema),
-        vec![Arc::new(Int32Array::from(vec![11; 1024]))],
-    )
-    .expect("resident host batch");
+    let resident_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let resident_batch =
+        RecordBatch::try_new(Arc::clone(&resident_schema), vec![Arc::new(Int32Array::from(vec![11; 1024]))])
+            .expect("resident host batch");
     let resident_frame = GpuDataFrame::new(
         DataFrame::from_record_batch(producer_runtime.as_ref(), &resident_batch).expect("resident upload"),
     );

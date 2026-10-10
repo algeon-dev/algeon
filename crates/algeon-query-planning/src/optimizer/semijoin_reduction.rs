@@ -1043,5 +1043,4 @@ fn reject_applied_candidates(diagnostics: &mut SemijoinReductionDiagnostics, rea
 }
 
 #[cfg(test)]
-#[path = "semijoin_reduction_tests.rs"]
 mod tests;

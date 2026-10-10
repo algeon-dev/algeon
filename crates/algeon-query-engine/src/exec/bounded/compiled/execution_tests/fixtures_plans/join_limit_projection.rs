@@ -1,11 +1,12 @@
-use query_planning::{pipeline::AcceptedInputForm, pipeline::PipelineTaskKind};
+use query_planning::pipeline::{AcceptedInputForm, PipelineTaskKind};
+
+use super::*;
 
 /// Join → Limit → Projection over throwaway paths.
-///
 // The retired projection/global-limit recognizer no longer decides this
 // shape: the composed pipeline admits it, and the compiled `Limit` task
 // contract takes one complete frame.
-pub(super) fn join_limit_projection_plan() -> QueryPlan {
+fn join_limit_projection_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("d", DataType::Int32, false),
@@ -28,25 +29,29 @@ pub(super) fn join_limit_projection_plan() -> QueryPlan {
         right_schema,
         vec!["d".into()],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    ).unwrap();
+        .unwrap();
     let limit = builder.add_limit(join, LimitSpec::fetch(10)).unwrap();
-    let projection = builder.add_projection(
-        limit,
-        projection_outputs(vec![Expr::column("v"), Expr::column("k")], Arc::clone(&join_projection_schema)),
-    ).unwrap();
+    let projection = builder
+        .add_projection(
+            limit,
+            projection_outputs(vec![Expr::column("v"), Expr::column("k")], Arc::clone(&join_projection_schema)),
+        )
+        .unwrap();
     builder.finish_with_host_sink(projection).unwrap()
 }
 
@@ -57,19 +62,18 @@ pub(super) fn join_limit_projection_plan() -> QueryPlan {
 /// read hands the filter a source stream and the filter re-stages it; the
 /// joins share the filter's output, so the filter reads the scan once into
 /// the frame both joins build from.
-pub(super) fn shared_filtered_dimension_fan_out_plan(dimension_path: &Path, fact_paths: [&Path; 2]) -> QueryPlan {
-    let fact_schema = Arc::new(Schema::new(vec![
-        Field::new("d", DataType::Int32, false),
-        Field::new("v", DataType::Int32, true),
-    ]));
+pub(in crate::exec::bounded::compiled::execution_tests) fn shared_filtered_dimension_fan_out_plan(
+    dimension_path: &Path,
+    fact_paths: [&Path; 2],
+) -> QueryPlan {
+    let fact_schema =
+        Arc::new(Schema::new(vec![Field::new("d", DataType::Int32, false), Field::new("v", DataType::Int32, true)]));
     let dim_schema = Arc::new(Schema::new(vec![
         Field::new("d", DataType::Int32, false),
         Field::new("year", DataType::Int32, false),
     ]));
-    let joined_schema = Arc::new(Schema::new(vec![
-        Field::new("d", DataType::Int32, false),
-        Field::new("v", DataType::Int32, true),
-    ]));
+    let joined_schema =
+        Arc::new(Schema::new(vec![Field::new("d", DataType::Int32, false), Field::new("v", DataType::Int32, true)]));
     let grouped_schema = Arc::new(Schema::new(vec![
         Field::new("d", DataType::Int32, false),
         Field::new("total", DataType::Int64, true),
@@ -81,18 +85,41 @@ pub(super) fn shared_filtered_dimension_fan_out_plan(dimension_path: &Path, fact
         Arc::clone(&dim_schema),
         vec!["d".into(), "year".into()],
     )));
-    let filtered_dimension = builder.add_filter(
-        dimension,
-        Expr::binary(Expr::column("year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000)))).unwrap();
+    let filtered_dimension = builder
+        .add_filter(
+            dimension,
+            Expr::binary(Expr::column("year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000))),
+        )
+        .unwrap();
     let join_against_dimension = |builder: &mut QueryPlanBuilder, path: &Path| {
         let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
             path,
             Arc::clone(&fact_schema),
             vec!["d".into(), "v".into()],
         )));
-        builder.add_join(
-            fact,
-            filtered_dimension,
+        builder
+            .add_join(
+                fact,
+                filtered_dimension,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "d", "d"), "d"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+                Arc::clone(&joined_schema),
+            )
+            .unwrap()
+    };
+    let store_sales = join_against_dimension(&mut builder, fact_paths[0]);
+    let web_sales = join_against_dimension(&mut builder, fact_paths[1]);
+    let combined = builder
+        .add_join(
+            store_sales,
+            web_sales,
             JoinSpec::new(
                 JoinType::Inner,
                 vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
@@ -103,29 +130,18 @@ pub(super) fn shared_filtered_dimension_fan_out_plan(dimension_path: &Path, fact
             ])
             .with_build_side(JoinSide::Right),
             Arc::clone(&joined_schema),
-        ).unwrap()
-    };
-    let store_sales = join_against_dimension(&mut builder, fact_paths[0]);
-    let web_sales = join_against_dimension(&mut builder, fact_paths[1]);
-    let combined = builder.add_join(
-        store_sales,
-        web_sales,
-        JoinSpec::new(JoinType::Inner, vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "d", "d"), "d"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&joined_schema),
-    ).unwrap();
-    let grouped = builder.add_aggregate(
-        combined,
-        AggregateSpec::new(
-            vec![Expr::column("d")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
-        ),
-        Arc::clone(&grouped_schema),
-    ).unwrap();
+        )
+        .unwrap();
+    let grouped = builder
+        .add_aggregate(
+            combined,
+            AggregateSpec::new(
+                vec![Expr::column("d")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
+            ),
+            Arc::clone(&grouped_schema),
+        )
+        .unwrap();
     let limit = builder.add_limit(grouped, LimitSpec::fetch(100)).unwrap();
     builder.finish_with_host_sink(limit).unwrap()
 }

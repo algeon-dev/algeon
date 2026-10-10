@@ -41,15 +41,12 @@ cc.workspace = true
 
 [[test]]
 name = "cudf_allocator_routing_gpu"
-path = "tests/cudf_allocator_routing_gpu.rs"
 required-features = ["test-hooks"]
 
 [[test]]
 name = "cudf_prepared_gpu"
-path = "tests/cudf_prepared_gpu.rs"
 required-features = ["test-hooks"]
 
 [[test]]
 name = "allocation_failure_sweep_gpu"
-path = "tests/allocation_failure_sweep_gpu.rs"
 required-features = ["test-hooks"]

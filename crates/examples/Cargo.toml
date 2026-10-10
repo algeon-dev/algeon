@@ -80,5 +80,4 @@ rapids-build-support = { workspace = true }
 
 [[test]]
 name = "otlp_metrics_exporter_cpu"
-path = "tests/otlp_metrics_exporter_cpu.rs"
 required-features = ["otlp-metrics"]

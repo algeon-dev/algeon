@@ -1208,5 +1208,4 @@ fn resident_graph_cache_poisoned(action: &'static str) -> QueryError {
 }
 
 #[cfg(test)]
-#[path = "resident_graph_tests.rs"]
 mod tests;

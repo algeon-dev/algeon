@@ -82,7 +82,7 @@ name = "multi_gpu_contracts_gpu_exclusive"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "public_api_smoke_cpu"
+name = "public_api_smoke_gpu"
 required-features = ["test-hooks"]
 
 [[test]]

@@ -1,4 +1,4 @@
-use query_planning::error::{QueryErrorKind, QueryErrorStatus};
+use super::*;
 
 #[test]
 fn query_service_reports_overload_when_queue_is_full() {
@@ -235,10 +235,9 @@ fn blocking_admission_returns_its_cancelled_terminal_result_after_queue_sweep() 
     let queued_cancellation = cancellation.clone();
     let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
     let admission = std::thread::spawn(move || {
-        let result = queued_service
-            .admit_query_with_request(
-                QueryAdmissionRequest::test_attempt().with_execution_cancellation(queued_cancellation),
-            );
+        let result = queued_service.admit_query_with_request(
+            QueryAdmissionRequest::test_attempt().with_execution_cancellation(queued_cancellation),
+        );
         result_sender.send(result.map(|_| ())).expect("test receives blocking admission result");
     });
 
@@ -260,7 +259,8 @@ fn blocking_admission_returns_its_cancelled_terminal_result_after_queue_sweep() 
 fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
     let capacity_bytes = 12 * 1024 * 1024;
     let max_active_attempts_per_device = 4;
-    let service = AdmissionTestController::new_with_ledger(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = AdmissionTestController::new_with_ledger(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         test_ledger(capacity_bytes, max_active_attempts_per_device, Default::default()),
     )
     .unwrap();
@@ -277,7 +277,8 @@ fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
 }
 #[test]
 fn query_service_uses_fixed_default_query_caps() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         10,
         4,
@@ -309,7 +310,8 @@ fn query_service_uses_fixed_default_query_caps() {
 fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
     // Two explicit caps whose sum exceeds capacity serialize until the first
     // immutable grant returns to the ledger.
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         250,
         1,
         2,
@@ -337,7 +339,8 @@ fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
 }
 #[test]
 fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         250,
         1,
         2,
@@ -367,7 +370,8 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
 fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
     // Two explicit caps whose sum exceeds capacity keep the second waiter
     // selected but memory-blocked until its deadline.
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(20) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(20) },
         250,
         1,
         2,
@@ -396,7 +400,8 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
 
 #[test]
 fn a_queue_timeout_ends_only_its_own_waiter_and_reports_the_members_left() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         1,
         1,
@@ -423,11 +428,8 @@ fn a_queue_timeout_ends_only_its_own_waiter_and_reports_the_members_left() {
 
 #[test]
 fn a_max_wait_past_the_clock_range_sets_no_queue_deadline() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::MAX },
-        100,
-        1,
-        1,
-    );
+    let service =
+        admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::MAX }, 100, 1, 1);
     let _active = service.admit_query().unwrap();
     let mut waiter = service.enqueue_admission().expect("the waiter queues");
 
@@ -445,7 +447,9 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     )
     .expect("two-device runtime-backed service");
     service
-        .inner.admission.close_device_admission_for_test(0, "selected-device-timeout-test")
+        .inner
+        .admission
+        .close_device_admission_for_test(0, "selected-device-timeout-test")
         .expect("ordinal zero closes while ordinal one remains eligible");
     let active = service.admit_query().expect("ordinal one admits the active attempt");
     assert_eq!(active.device_ordinal(), 1);
@@ -485,7 +489,8 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
 
 #[test]
 fn query_service_fifo_keeps_younger_work_behind_memory_blocked_head() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         300,
         10,
         2,
@@ -509,7 +514,8 @@ fn query_service_fifo_keeps_younger_work_behind_memory_blocked_head() {
 
 #[test]
 fn frozen_resident_growth_revalidates_and_rejects_an_impossible_waiter() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         10,
         2,
@@ -533,7 +539,8 @@ fn frozen_resident_growth_revalidates_and_rejects_an_impossible_waiter() {
 
 #[test]
 fn frozen_resident_release_revalidates_and_wakes_a_capacity_waiter() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         10,
         2,
@@ -571,7 +578,8 @@ fn query_service_enqueued_waiter_counts_against_queue_limit_until_drop() {
 }
 #[test]
 fn query_service_sweeps_expired_unpolled_waiter_before_queue_and_try_admit_gates() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(10) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(10) },
         100,
         1,
         1,
@@ -612,7 +620,8 @@ fn query_service_close_wakes_waiting_admission() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn closing_the_only_device_rejects_a_waiting_admission_without_other_admission_activity() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         64 * 1024 * 1024,
         1024,
         1,
@@ -713,7 +722,11 @@ fn full_queue_rejects_before_owner_resolution_or_lifecycle_ticket() {
     assert_eq!(error.fact_value("reason"), Some("admission_queue_full"));
     assert_eq!(error.fact_value("queued_queries"), Some("1"));
     assert_eq!(error.fact_value("pending_preflight"), Some("0"));
-    assert_eq!(service.lifecycle_snapshot(), lifecycle_before, "queue-full rejection creates no provisional lifecycle ticket");
+    assert_eq!(
+        service.lifecycle_snapshot(),
+        lifecycle_before,
+        "queue-full rejection creates no provisional lifecycle ticket"
+    );
 
     drop(queued);
     drop(active);
@@ -724,7 +737,9 @@ fn queued_and_pending_reservations_share_one_bound() {
     let service = test_service(1, 2);
     let active = service.admit_query().expect("first admission occupies the only slot");
     let queued = service.enqueue_admission().expect("first waiter enters the queue");
-    let pending = service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("second request reserves a pending slot");
+    let pending = service
+        .begin_submission(QueryAdmissionRequest::test_attempt())
+        .expect("second request reserves a pending slot");
 
     assert_eq!(service.queued_len(), 1);
     assert_eq!(service.pending_preflight_len(), 1);
@@ -743,7 +758,8 @@ fn queued_and_pending_reservations_share_one_bound() {
 #[test]
 fn pending_reservation_is_a_fifo_barrier_for_younger_queue_work() {
     let service = test_service(1, 2);
-    let older = service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("older request reserves a pending slot");
+    let older =
+        service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("older request reserves a pending slot");
 
     let mut younger = service.enqueue_admission().expect("younger request enters the queue");
     let younger_id = younger.admission_request_id();
@@ -770,7 +786,8 @@ fn pending_reservation_is_a_fifo_barrier_for_younger_queue_work() {
 #[test]
 fn owner_resolution_failure_releases_pending_reservation() {
     let service = test_service(1, 1);
-    let submission = service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("submission reserves a pending slot");
+    let submission =
+        service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("submission reserves a pending slot");
     assert_eq!(service.pending_preflight_len(), 1);
 
     let error = service
@@ -857,7 +874,8 @@ async fn pending_guard_releases_when_task_is_dropped() {
 #[test]
 fn close_waits_for_pending_owner_resolution_release() {
     let service = test_service(1, 1);
-    let pending = service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("the request reserves a pending slot");
+    let pending =
+        service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("the request reserves a pending slot");
 
     let close_service = service.clone();
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -884,7 +902,8 @@ fn close_waits_for_pending_owner_resolution_release() {
 /// reported as a budget rejection.
 #[test]
 fn closed_devices_leave_the_impossible_cap_decision_to_the_fleet_health_error() {
-    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         10,
         2,

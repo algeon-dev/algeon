@@ -1,4 +1,43 @@
-fn scalar_materialization_input_shape(
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+use arrow::datatypes::{Field, Schema};
+
+use super::{
+    diagnostics::{SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationRejectedReason},
+    expr_helpers::{
+        collect_expr_column_names, collect_join_expr_columns, conjunction, disjunction, field_with_name,
+        predicate_references_only_source_filterable_columns, scalar_count_star_aggregate_expr, scalar_count_star_expr,
+        scalar_filtered_aggregate_streaming_supported, scalar_filtered_aggregate_supported,
+        source_reader_predicate_filter_is_elidable,
+    },
+    lineage::{
+        join_output_schema, projection_output_preserves_column, propagatable_materialized_field,
+        scalar_input_expr_lineage_signature, scalar_input_expr_name_collides_with_unresolved_output,
+        subtree_can_propagate_materialized_column, unique_join_input_that_can_propagate_column,
+        unique_join_input_that_can_propagate_materialized_column,
+    },
+    signature::{
+        AggregateMaterializationSignature, SourceColumnMaterialization, local_source_materialization_signature,
+    },
+    source_widening::{
+        matching_source_entry, merge_source_columns, source_column_names_are_unique_across_sources,
+        source_materialization_sources_are_unique, widen_local_parquet_source,
+    },
+};
+use crate::{
+    expr::{AggregateExpr, AggregateSpec, BinaryOp, ColumnRef, Expr, LiteralValue},
+    optimizer::rewrite as optimizer_rewrite,
+    plan::{
+        AggregateNode, FilterNode, JoinOutputColumn, JoinSide, NodeId, PlanFacts, PlanNode, ProjectionNode,
+        ProjectionOutput, QueryNode, QueryPlan,
+    },
+    source::SourceNode,
+};
+
+pub(super) fn scalar_materialization_input_shape(
     plan: &QueryPlan,
     node_id: NodeId,
     allow_column_projection_elision: bool,
@@ -96,7 +135,9 @@ fn scalar_materialization_input_shape_inner(
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 
@@ -113,7 +154,7 @@ fn count_star_projection_is_elidable(projection: &ProjectionNode) -> bool {
 }
 
 #[derive(Debug, Clone)]
-struct SharedAggregateFamilyRewrite {
+pub(super) struct SharedAggregateFamilyRewrite {
     family_key: String,
     representative_aggregate_node_id: NodeId,
     widened_source_predicates: BTreeMap<String, Expr>,
@@ -156,7 +197,7 @@ fn widened_source_fingerprints(family: &[AggregateMaterializationSignature]) -> 
         .collect()
 }
 
-fn shared_aggregate_family_rewrite_plan(
+pub(super) fn shared_aggregate_family_rewrite_plan(
     plan: &QueryPlan,
     family: &[AggregateMaterializationSignature],
 ) -> Result<SharedAggregateFamilyRewrite, SharedSubplanMaterializationRejectedReason> {
@@ -498,20 +539,20 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
     })
 }
 
-struct SharedSubplanMaterializationRewriter<'a> {
+pub(super) struct SharedSubplanMaterializationRewriter<'a> {
     original: &'a QueryPlan,
     families_by_key: BTreeMap<String, SharedAggregateFamilyRewrite>,
     replacements: BTreeMap<NodeId, String>,
     materialized_nodes: BTreeMap<String, NodeId>,
     branch_nodes: BTreeMap<NodeId, NodeId>,
-    nodes: Vec<QueryNode>,
-    memo: BTreeMap<NodeId, NodeId>,
-    diagnostics: SharedSubplanMaterializationDiagnostics,
-    changed: bool,
+    pub(super) nodes: Vec<QueryNode>,
+    pub(super) memo: BTreeMap<NodeId, NodeId>,
+    pub(super) diagnostics: SharedSubplanMaterializationDiagnostics,
+    pub(super) changed: bool,
 }
 
 impl<'a> SharedSubplanMaterializationRewriter<'a> {
-    fn new(
+    pub(super) fn new(
         original: &'a QueryPlan,
         families: Vec<SharedAggregateFamilyRewrite>,
         diagnostics: SharedSubplanMaterializationDiagnostics,
@@ -546,7 +587,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
         }
     }
 
-    fn rewrite_subtree(&mut self, old_id: NodeId) -> NodeId {
+    pub(super) fn rewrite_subtree(&mut self, old_id: NodeId) -> NodeId {
         if self.replacements.contains_key(&old_id) {
             self.changed = true;
             return self.branch_node(old_id);
@@ -651,10 +692,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                     })
                     .collect::<Vec<_>>(),
             ));
-            return self.push_node(
-                PlanNode::Aggregate(AggregateNode { input, spec }),
-                PlanFacts::new(output_schema),
-            );
+            return self.push_node(PlanNode::Aggregate(AggregateNode { input, spec }), PlanFacts::new(output_schema));
         }
         let new_facts = old_node.facts.clone();
         let new_kind = match &old_node.kind {
@@ -728,10 +766,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 let mut filter = filter.clone();
                 filter.input = input;
                 let input_schema = Arc::clone(self.nodes[input.index()].output_schema());
-                self.push_node(
-                    PlanNode::Filter(filter),
-                    PlanFacts::new(input_schema),
-                )
+                self.push_node(PlanNode::Filter(filter), PlanFacts::new(input_schema))
             },
             PlanNode::Projection(projection) => {
                 let mut outputs = projection.outputs.clone();
@@ -779,7 +814,9 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 {
                     // An unattributable residual column must not be pruned from
                     // either input; plan validation rejects the residual later.
-                    for (input, required) in [(join.inputs[0], &mut left_required), (join.inputs[1], &mut right_required)] {
+                    for (input, required) in
+                        [(join.inputs[0], &mut left_required), (join.inputs[1], &mut right_required)]
+                    {
                         let schema = self.original.node(input).expect("join input must exist").output_schema();
                         required.extend(schema.fields().iter().map(|field| field.name().clone()));
                     }
@@ -880,7 +917,9 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
             | PlanNode::Window(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => {
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => {
                 panic!("unsupported scalar filtered materialization subtree")
             },
         }
@@ -895,7 +934,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
         kind: &PlanNode,
         mut rewrite_input: impl FnMut(&mut Self, NodeId) -> NodeId,
     ) -> PlanNode {
-        rewrite::clone_plan_node_with_inputs(kind, |input| rewrite_input(self, input))
+        optimizer_rewrite::clone_plan_node_with_inputs(kind, |input| rewrite_input(self, input))
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {

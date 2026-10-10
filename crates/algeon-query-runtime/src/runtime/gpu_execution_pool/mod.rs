@@ -962,6 +962,4 @@ impl std::fmt::Debug for GpuExecutionPool {
 }
 
 #[cfg(test)]
-mod job_class_tests;
-#[cfg(test)]
 mod tests;

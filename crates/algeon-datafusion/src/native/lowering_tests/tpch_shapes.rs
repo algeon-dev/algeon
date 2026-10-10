@@ -13,7 +13,6 @@ use query_planning::{
 use super::*;
 use crate::native::ParquetReadStrategyConfig;
 
-#[path = "tpch_shapes/q22.rs"]
 mod q22;
 
 /// The native optimizer's rule rows for every lowered TPC-H fixture plan. A

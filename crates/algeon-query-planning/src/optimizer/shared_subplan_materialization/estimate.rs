@@ -1,9 +1,15 @@
-use crate::datatypes::arrow_fixed_width_byte_size;
+use std::collections::BTreeSet;
+
+use super::signature::AggregateMaterializationSignature;
+use crate::{
+    datatypes::arrow_fixed_width_byte_size,
+    expr::{AggregateExpr, Expr, LiteralValue},
+};
 
 #[derive(Debug, Clone, Copy)]
-struct SharedScalarFilteredMaterializationEstimate {
-    input_rows: u64,
-    estimated_materialization_bytes: u64,
+pub(super) struct SharedScalarFilteredMaterializationEstimate {
+    pub(super) input_rows: u64,
+    pub(super) estimated_materialization_bytes: u64,
 }
 
 /// Internal sizing policy for shared scalar filtered-aggregate materialization estimates.
@@ -66,7 +72,7 @@ impl Default for SharedScalarFilteredMaterializationEstimatePolicy {
     }
 }
 
-fn estimate_shared_scalar_filtered_materialization(
+pub(super) fn estimate_shared_scalar_filtered_materialization(
     family: &[AggregateMaterializationSignature],
 ) -> Option<SharedScalarFilteredMaterializationEstimate> {
     let policy = SharedScalarFilteredMaterializationEstimatePolicy::default();

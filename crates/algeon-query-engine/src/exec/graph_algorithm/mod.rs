@@ -4,10 +4,9 @@
 //! enabled. A build without it rejects graph tasks in the compiled executor.
 
 #[cfg(feature = "cugraph")]
-#[path = "cugraph.rs"]
-mod implementation;
+mod enabled;
 
 #[cfg(feature = "cugraph")]
-pub(in crate::exec) use implementation::{
+pub(in crate::exec) use enabled::{
     bounded_betweenness, execute_graph_algorithm_sanitized, graph_empty_input_prevalidated, statistics,
 };

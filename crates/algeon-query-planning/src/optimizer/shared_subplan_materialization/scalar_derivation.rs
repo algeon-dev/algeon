@@ -1,3 +1,21 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use arrow::datatypes::DataType;
+
+use super::{
+    api::{SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, SharedSubplanMaterializationResult},
+    diagnostics::{SharedSubplanMaterializationCandidateDiagnostics, SharedSubplanMaterializationDiagnostics},
+    signature::{aggregate_expr_signature, collect_local_parquet_sources, resolved_source_contract_signature},
+};
+use crate::{
+    error::QueryError,
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr},
+    optimizer::{NativeOptimizerChange, rewrite as optimizer_rewrite},
+    plan::{AggregateNode, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan, RewrittenNodes},
+    source::{LocalParquetFile, LocalParquetSource, SourceNode},
+    util::{fnv1a64, sum_optional_u64},
+};
+
 #[derive(Debug, Clone)]
 struct ScalarAggregateDerivationRewrite {
     scalar_aggregate_node_id: NodeId,
@@ -5,12 +23,14 @@ struct ScalarAggregateDerivationRewrite {
     derived_spec: AggregateSpec,
 }
 
-pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) -> Result<SharedSubplanMaterializationResult, QueryError> {
+pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate(
+    plan: QueryPlan,
+) -> Result<SharedSubplanMaterializationResult, QueryError> {
     let discovery = discover_scalar_aggregate_from_grouped_aggregate_candidates(&plan);
     if discovery.rewrites.is_empty() {
         return Ok(SharedSubplanMaterializationResult {
             plan,
-            change: super::NativeOptimizerChange::Unchanged,
+            change: NativeOptimizerChange::Unchanged,
             diagnostics: discovery.diagnostics,
         });
     }
@@ -21,7 +41,7 @@ pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) 
     let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo))?;
     Ok(SharedSubplanMaterializationResult {
         plan: rewritten_plan,
-        change: super::NativeOptimizerChange::Changed,
+        change: NativeOptimizerChange::Changed,
         diagnostics: discovery.diagnostics,
     })
 }
@@ -334,7 +354,7 @@ impl<'a> ScalarAggregateDerivationRewriter<'a> {
     }
 
     fn clone_kind_with_rewritten_inputs(&mut self, kind: &PlanNode) -> PlanNode {
-        rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
+        optimizer_rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {

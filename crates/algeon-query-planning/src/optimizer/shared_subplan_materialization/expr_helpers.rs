@@ -1,4 +1,17 @@
-fn scalar_filtered_aggregate_supported(spec: &AggregateSpec) -> bool {
+use std::{collections::BTreeSet, sync::Arc};
+
+use arrow::datatypes::{Field, Schema};
+
+use super::signature::AggregateMaterializationSignature;
+use crate::{
+    error::QueryError,
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LiteralValue},
+    plan::{FilterNode, NodeId, PlanNode, QueryPlan},
+    source::SourceNode,
+    validation::walk_join_residual_column_sides,
+};
+
+pub(super) fn scalar_filtered_aggregate_supported(spec: &AggregateSpec) -> bool {
     spec.group_exprs.is_empty()
         && spec.grouping_sets.is_none()
         && !spec.aggr_exprs.is_empty()
@@ -28,7 +41,7 @@ fn scalar_filtered_aggregate_expr_supported(expr: &AggregateExpr) -> bool {
     }
 }
 
-fn scalar_filtered_aggregate_streaming_supported(spec: &AggregateSpec) -> bool {
+pub(super) fn scalar_filtered_aggregate_streaming_supported(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().all(|expr| {
         !expr.distinct
             && matches!(
@@ -42,12 +55,12 @@ fn scalar_filtered_aggregate_streaming_supported(spec: &AggregateSpec) -> bool {
     })
 }
 
-fn scalar_count_star_expr(expr: &Expr) -> bool {
+pub(super) fn scalar_count_star_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Literal(value) if !matches!(value, LiteralValue::Null(_)))
         || matches!(expr, Expr::Alias { expr, .. } if scalar_count_star_expr(expr))
 }
 
-fn scalar_count_star_aggregate_expr(plan: &QueryPlan, input: NodeId, expr: &Expr) -> bool {
+pub(super) fn scalar_count_star_aggregate_expr(plan: &QueryPlan, input: NodeId, expr: &Expr) -> bool {
     if scalar_count_star_expr(expr) {
         return true;
     }
@@ -84,7 +97,7 @@ fn projected_count_preserving_column(plan: &QueryPlan, node_id: NodeId, column: 
     }
 }
 
-fn source_reader_predicate_filter_is_elidable(plan: &QueryPlan, filter: &FilterNode) -> bool {
+pub(super) fn source_reader_predicate_filter_is_elidable(plan: &QueryPlan, filter: &FilterNode) -> bool {
     let Some(node) = plan.node(filter.input) else {
         return false;
     };
@@ -105,7 +118,7 @@ fn scalar_aggregate_value_expr_supported(expr: &Expr) -> bool {
     }
 }
 
-fn materialization_family_aggregate_exprs(family: &[AggregateMaterializationSignature]) -> Vec<String> {
+pub(super) fn materialization_family_aggregate_exprs(family: &[AggregateMaterializationSignature]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut aggregate_exprs = Vec::new();
     for signature in family {
@@ -118,12 +131,12 @@ fn materialization_family_aggregate_exprs(family: &[AggregateMaterializationSign
     aggregate_exprs
 }
 
-fn conjunction(mut predicates: Vec<Expr>) -> Option<Expr> {
+pub(super) fn conjunction(mut predicates: Vec<Expr>) -> Option<Expr> {
     let first = predicates.pop()?;
     Some(predicates.into_iter().fold(first, |right, left| Expr::binary(left, BinaryOp::And, right)))
 }
 
-fn disjunction(mut predicates: Vec<Expr>) -> Option<Expr> {
+pub(super) fn disjunction(mut predicates: Vec<Expr>) -> Option<Expr> {
     let first = predicates.pop()?;
     Some(predicates.into_iter().fold(first, |right, left| Expr::binary(left, BinaryOp::Or, right)))
 }
@@ -134,7 +147,7 @@ fn predicate_references_only_columns(predicate: &Expr, allowed_columns: &BTreeSe
     columns.iter().all(|column| allowed_columns.contains(column))
 }
 
-fn predicate_references_only_source_filterable_columns(
+pub(super) fn predicate_references_only_source_filterable_columns(
     predicate: &Expr,
     signature: &AggregateMaterializationSignature,
     source_fingerprint: &str,
@@ -201,7 +214,7 @@ fn collect_expr_columns(expr: &Expr, columns: &mut BTreeSet<String>) {
     }
 }
 
-fn collect_expr_column_names(expr: &Expr, columns: &mut BTreeSet<String>) {
+pub(super) fn collect_expr_column_names(expr: &Expr, columns: &mut BTreeSet<String>) {
     collect_expr_columns(expr, columns);
 }
 
@@ -209,7 +222,7 @@ fn collect_expr_column_names(expr: &Expr, columns: &mut BTreeSet<String>) {
 ///
 /// Fails with the validation walker's `UnsupportedExpression` when a column
 /// has no input qualifier and so cannot be attributed to one side.
-fn collect_join_expr_columns(
+pub(super) fn collect_join_expr_columns(
     expr: &Expr,
     left: &mut BTreeSet<String>,
     right: &mut BTreeSet<String>,
@@ -228,6 +241,6 @@ fn collect_join_expr_columns(
     )
 }
 
-fn field_with_name<'a>(schema: &'a Arc<Schema>, name: &str) -> Option<&'a Field> {
+pub(super) fn field_with_name<'a>(schema: &'a Arc<Schema>, name: &str) -> Option<&'a Field> {
     schema.fields().iter().find(|field| field.name() == name).map(|field| field.as_ref())
 }

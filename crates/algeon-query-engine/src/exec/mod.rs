@@ -349,20 +349,18 @@ fn execute_query_plan_output(
     }
     // A build without the backend rejects before any source work.
     #[cfg(not(feature = "cuml"))]
-    if plan.contains_ml_algorithm() {
-        if let Some(node) = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::MlAlgorithm(_)))
-            && let PlanNode::MlAlgorithm(ml) = &node.kind
-        {
-            return Err(ml_algorithm_execution_unavailable(node.id, ml));
-        }
+    if plan.contains_ml_algorithm()
+        && let Some(node) = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::MlAlgorithm(_)))
+        && let PlanNode::MlAlgorithm(ml) = &node.kind
+    {
+        return Err(ml_algorithm_execution_unavailable(node.id, ml));
     }
     #[cfg(not(feature = "cuvs"))]
-    if plan.contains_vector_algorithm() {
-        if let Some(node) = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::VectorAlgorithm(_)))
-            && let PlanNode::VectorAlgorithm(vector) = &node.kind
-        {
-            return Err(vector_algorithm_execution_unavailable(node.id, vector));
-        }
+    if plan.contains_vector_algorithm()
+        && let Some(node) = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::VectorAlgorithm(_)))
+        && let PlanNode::VectorAlgorithm(vector) = &node.kind
+    {
+        return Err(vector_algorithm_execution_unavailable(node.id, vector));
     }
     let context = context.with_admitted_gpu_inputs(plan, &gpu_inputs)?;
     // Derive the per-query exact-order scope here so every context clone,

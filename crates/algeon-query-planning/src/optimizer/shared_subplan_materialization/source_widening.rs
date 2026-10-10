@@ -1,11 +1,30 @@
-fn matching_source_entry<'a, T>(
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+use arrow::datatypes::Schema;
+
+use super::{
+    diagnostics::SharedSubplanMaterializationRejectedReason,
+    signature::{
+        AggregateMaterializationSignature, LocalSourceMaterializationSignature, SourceColumnMaterialization,
+        local_source_materialization_signature,
+    },
+};
+use crate::{
+    plan::{NodeId, PlanNode, QueryPlan},
+    source::{LocalParquetSource, SourceColumnRef, SourceNode},
+};
+
+pub(super) fn matching_source_entry<'a, T>(
     entries: &'a BTreeMap<String, T>,
     signature: &LocalSourceMaterializationSignature,
 ) -> Option<&'a T> {
     entries.get(&signature.abstract_fingerprint).or_else(|| entries.get(&signature.rowset_fingerprint))
 }
 
-fn merge_source_columns(
+pub(super) fn merge_source_columns(
     target: &mut BTreeMap<String, SourceColumnMaterialization>,
     source: &BTreeMap<String, SourceColumnMaterialization>,
 ) -> Result<(), SharedSubplanMaterializationRejectedReason> {
@@ -26,7 +45,7 @@ fn merge_source_columns(
     Ok(())
 }
 
-fn source_column_names_are_unique_across_sources(
+pub(super) fn source_column_names_are_unique_across_sources(
     sources: &BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
 ) -> bool {
     let mut owners = BTreeMap::<&str, &str>::new();
@@ -42,7 +61,7 @@ fn source_column_names_are_unique_across_sources(
     true
 }
 
-fn source_materialization_sources_are_unique(signature: &AggregateMaterializationSignature) -> bool {
+pub(super) fn source_materialization_sources_are_unique(signature: &AggregateMaterializationSignature) -> bool {
     signature.source_occurrences_unique && source_fingerprints_are_unique(signature)
 }
 
@@ -51,7 +70,7 @@ fn source_fingerprints_are_unique(signature: &AggregateMaterializationSignature)
     signature.source_fingerprints.iter().all(|fingerprint| seen.insert(fingerprint))
 }
 
-fn local_parquet_source_node_occurrences_are_unique(plan: &QueryPlan, node_id: NodeId) -> Option<bool> {
+pub(super) fn local_parquet_source_node_occurrences_are_unique(plan: &QueryPlan, node_id: NodeId) -> Option<bool> {
     let mut source_nodes = BTreeSet::new();
     let mut active = BTreeSet::new();
     local_parquet_source_node_occurrences_are_unique_inner(plan, node_id, &mut active, &mut source_nodes)
@@ -84,7 +103,7 @@ fn local_parquet_source_node_occurrences_are_unique_inner(
     Some(unique)
 }
 
-fn scalar_source_occurrences_are_unique(plan: &QueryPlan, node_id: NodeId) -> Option<bool> {
+pub(super) fn scalar_source_occurrences_are_unique(plan: &QueryPlan, node_id: NodeId) -> Option<bool> {
     let mut source_nodes = BTreeSet::new();
     let mut rowsets = BTreeSet::new();
     let mut active = BTreeSet::new();
@@ -122,7 +141,7 @@ fn scalar_source_occurrences_are_unique_inner(
     Some(unique)
 }
 
-fn widen_local_parquet_source(
+pub(super) fn widen_local_parquet_source(
     source: &mut LocalParquetSource,
     columns: &BTreeMap<String, SourceColumnMaterialization>,
 ) -> bool {
@@ -160,17 +179,21 @@ fn widen_local_parquet_source(
 }
 
 #[cfg(test)]
-mod source_widening_tests {
+mod tests {
+    use arrow::datatypes::{DataType, Field};
+
     use super::*;
+    use crate::source::LocalParquetFile;
 
     #[test]
     fn widened_source_emits_the_columns_it_adds() {
         let read_schema = Arc::new(Schema::new(vec![Field::new("q", DataType::Int32, false)]));
-        let mut source =
-            LocalParquetSource::from_files(vec![LocalParquetFile::new("/tmp/widen.parquet")], read_schema, vec![
-                "q".to_string(),
-            ])
-            .with_column_roles(vec!["q".to_string()], Vec::new());
+        let mut source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("/tmp/widen.parquet")],
+            read_schema,
+            vec!["q".to_string()],
+        )
+        .with_column_roles(vec!["q".to_string()], Vec::new());
         let added = Field::new("x", DataType::Int64, true);
         let columns = BTreeMap::from([(
             "x".to_string(),

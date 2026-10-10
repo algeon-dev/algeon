@@ -93,45 +93,26 @@ use self::{
     tpch_session::tpch_report_session_config,
 };
 
-#[path = "lowering_tests/analytical_olap.rs"]
 mod analytical_olap;
-#[path = "lowering_tests/demand_plans.rs"]
 mod demand_plans;
-#[path = "lowering_tests/fixtures.rs"]
 mod fixtures;
-#[path = "lowering_tests/full_gpu_gap_analysis.rs"]
 mod full_gpu_gap_analysis;
-#[path = "lowering_tests/join_plan_builders.rs"]
 mod join_plan_builders;
-#[path = "lowering_tests/join_shapes.rs"]
 mod join_shapes;
-#[path = "lowering_tests/plan_shape_remedies.rs"]
 mod plan_shape_remedies;
-#[path = "lowering_tests/semijoin_reduction.rs"]
 mod semijoin_reduction;
-#[path = "lowering_tests/source_contracts.rs"]
 mod source_contracts;
-#[path = "lowering_tests/source_fixtures.rs"]
 mod source_fixtures;
-#[path = "lowering_tests/sql.rs"]
 mod sql;
-#[path = "lowering_tests/tpch_shapes.rs"]
 mod tpch_shapes;
-#[path = "lowering_tests/union_inputs.rs"]
 mod union_inputs;
-#[path = "lowering_tests/window_input_ordering.rs"]
 mod window_input_ordering;
 
-#[path = "lowering_tests/aggregate_plan_builders.rs"]
 mod aggregate_plan_builders;
-#[path = "lowering_tests/sql_aggregate_shapes.rs"]
 mod sql_aggregate_shapes;
 
-#[path = "lowering_tests/core_shapes.rs"]
 mod core_shapes;
-#[path = "lowering_tests/expression_validation.rs"]
 mod expression_validation;
-#[path = "lowering_tests/source_column_pruning.rs"]
 mod source_column_pruning;
 
 use aggregate_plan_builders::*;

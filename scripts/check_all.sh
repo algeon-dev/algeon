@@ -120,7 +120,20 @@ policy_scripts() {
     echo "==> ${script}"
     bash "${script}" || { echo "FAIL: ${script}"; status=1; }
   done
+  test_layout_policy || status=1
   return "${status}"
+}
+
+test_layout_policy() {
+  python3 scripts/ci/tests/check_test_layout_tests.py && python3 scripts/ci/check_test_layout.py "${ROOT}"
+}
+
+clippy() {
+  cargo clippy --workspace --all-targets --all-features --message-format=json-render-diagnostics -- -D warnings \
+    >"${LOG_DIR}/clippy-all-features.jsonl" || return $?
+  # These owners have source files selected only when native features are off.
+  cargo clippy -p algeon-query-engine -p algeon-datafusion --all-targets --no-default-features \
+    --message-format=json-render-diagnostics -- -D warnings >"${LOG_DIR}/clippy-feature-off.jsonl"
 }
 
 checked_bindings() {
@@ -207,7 +220,7 @@ shipped_clippy() {
 }
 
 if [[ "${mode}" == full ]]; then
-  PHASES=(gate rustfmt native-sources checked-bindings policy-scripts tests doctests clippy rustdoc
+  PHASES=(gate rustfmt native-sources checked-bindings policy-scripts tests doctests clippy orphan-sources rustdoc
     public-api-surface feature-isolation shipped-clippy msrv native-free public-api-consumers publication-policy)
 else
   PHASES=(gate rustfmt native-sources policy-scripts cpu-tests)
@@ -256,7 +269,14 @@ run policy-scripts policy_scripts &
 if [[ "${mode}" == full ]]; then
   run checked-bindings checked_bindings &
   { run tests cargo nt -P gate; run doctests doctests; } &
-  { run clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
+  { if run clippy clippy; then
+      run orphan-sources python3 scripts/ci/check_test_layout.py "${ROOT}" \
+        --clippy-artifacts "${LOG_DIR}/clippy-all-features.jsonl" \
+        --clippy-artifacts "${LOG_DIR}/clippy-feature-off.jsonl"
+    else
+      printf '%s\n' 'SKIP: orphan-source verification requires successful clippy streams.' >"${LOG_DIR}/orphan-sources.log"
+      record orphan-sources 'SKIP(clippy-failed)' - -
+    fi
     RUSTDOCFLAGS="${RUSTDOCFLAGS:+${RUSTDOCFLAGS} }-D warnings" run rustdoc cargo doc --workspace --all-features --no-deps --keep-going
     run public-api-surface bash scripts/ci/check_public_api_surface.sh check --all-features; } &
   run feature-isolation feature_isolation &

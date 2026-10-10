@@ -1,4 +1,22 @@
-fn unique_join_input_that_can_propagate_column(
+use std::{collections::BTreeMap, sync::Arc};
+
+use arrow::datatypes::{Field, Schema};
+
+use super::{
+    expr_helpers::field_with_name,
+    signature::{
+        MaterializedColumnLineage, SourceColumnMaterialization, local_source_materialization_signature,
+        source_column_ref_signature,
+    },
+    source_widening::matching_source_entry,
+};
+use crate::{
+    expr::Expr,
+    plan::{JoinOutputColumn, JoinSide, NodeId, PlanNode, ProjectionOutput, QueryPlan},
+    source::SourceNode,
+};
+
+pub(super) fn unique_join_input_that_can_propagate_column(
     plan: &QueryPlan,
     left: NodeId,
     right: NodeId,
@@ -11,7 +29,7 @@ fn unique_join_input_that_can_propagate_column(
     }
 }
 
-fn unique_join_input_that_can_propagate_materialized_column(
+pub(super) fn unique_join_input_that_can_propagate_materialized_column(
     plan: &QueryPlan,
     left: NodeId,
     right: NodeId,
@@ -48,11 +66,13 @@ fn subtree_can_propagate_column(plan: &QueryPlan, node_id: NodeId, column: &str)
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => false,
     }
 }
 
-fn subtree_can_propagate_materialized_column(
+pub(super) fn subtree_can_propagate_materialized_column(
     plan: &QueryPlan,
     node_id: NodeId,
     column: &str,
@@ -100,11 +120,13 @@ fn subtree_can_propagate_materialized_column(
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => false,
     }
 }
 
-fn scalar_input_expr_lineage_signature(plan: &QueryPlan, node_id: NodeId, expr: &Expr) -> Option<String> {
+pub(super) fn scalar_input_expr_lineage_signature(plan: &QueryPlan, node_id: NodeId, expr: &Expr) -> Option<String> {
     match expr {
         Expr::Column(column) => scalar_input_column_lineage_signature(plan, node_id, column.name()),
         Expr::Alias { expr, .. } => scalar_input_expr_lineage_signature(plan, node_id, expr),
@@ -112,7 +134,11 @@ fn scalar_input_expr_lineage_signature(plan: &QueryPlan, node_id: NodeId, expr: 
     }
 }
 
-fn materialized_column_lineage(plan: &QueryPlan, node_id: NodeId, column: &str) -> Option<MaterializedColumnLineage> {
+pub(super) fn materialized_column_lineage(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    column: &str,
+) -> Option<MaterializedColumnLineage> {
     let node = plan.node(node_id)?;
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
@@ -145,7 +171,9 @@ fn materialized_column_lineage(plan: &QueryPlan, node_id: NodeId, column: &str) 
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 
@@ -157,7 +185,11 @@ fn materialized_expr_lineage(plan: &QueryPlan, node_id: NodeId, expr: &Expr) -> 
     }
 }
 
-fn scalar_input_expr_name_collides_with_unresolved_output(plan: &QueryPlan, node_id: NodeId, expr: &Expr) -> bool {
+pub(super) fn scalar_input_expr_name_collides_with_unresolved_output(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    expr: &Expr,
+) -> bool {
     match expr {
         Expr::Column(column) => {
             let Some(node) = plan.node(node_id) else {
@@ -201,11 +233,13 @@ fn scalar_input_column_lineage_signature(plan: &QueryPlan, node_id: NodeId, colu
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 
-fn propagatable_materialized_field(
+pub(super) fn propagatable_materialized_field(
     plan: &QueryPlan,
     node_id: NodeId,
     column: &str,
@@ -259,11 +293,13 @@ fn propagatable_materialized_field(
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 
-fn projection_output_preserves_column(output: &ProjectionOutput, column: &str) -> bool {
+pub(super) fn projection_output_preserves_column(output: &ProjectionOutput, column: &str) -> bool {
     output.field.name() == column && expr_is_identity_column(&output.expr, column)
 }
 
@@ -275,7 +311,7 @@ fn expr_is_identity_column(expr: &Expr, column: &str) -> bool {
     }
 }
 
-fn join_output_schema(
+pub(super) fn join_output_schema(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     outputs: &[JoinOutputColumn],

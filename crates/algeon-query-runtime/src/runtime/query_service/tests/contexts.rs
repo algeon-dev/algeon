@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
     let config = QueryExecutionConfig { ..QueryExecutionConfig::default() };
@@ -27,8 +29,11 @@ fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
     // One member per stream for the attempt: sequential stage tokens share
     // it instead of attaching a second member, and their outputs stay valid
     // after the producing token drops.
-    let outcome =
-        token.run("runtime::series_from_value", |exec| admitted_context.context().runtime().unwrap().on(exec)?.series_from_value(7i32, 1024)).unwrap();
+    let outcome = token
+        .run("runtime::series_from_value", |exec| {
+            admitted_context.context().runtime().unwrap().on(exec)?.series_from_value(7i32, 1024)
+        })
+        .unwrap();
     let usage_after_alloc = admitted_context.context().attempt_allocation_domain_usage().unwrap().unwrap();
     assert!(usage_after_alloc.peak_bytes > 0);
     assert!(usage_after_alloc.active_members >= 1);
@@ -39,10 +44,10 @@ fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
             cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_admission_policy_second_stage"),
         )
         .expect("the shared member accepts the next stage token on the same stream");
-    let second = shared_member_token.run("runtime::series_from_value", |exec| admitted_context
-        .context()
-        .runtime()
-        .unwrap().on(exec)?.series_from_value(9i32, 1024))
+    let second = shared_member_token
+        .run("runtime::series_from_value", |exec| {
+            admitted_context.context().runtime().unwrap().on(exec)?.series_from_value(9i32, 1024)
+        })
         .unwrap();
     drop(second);
     drop(outcome);
@@ -847,9 +852,8 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
     // from admission time, so a handle that never acquired a context still
     // releases through the device executor.
     let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
-    let pool = service.inner.resources
-        .gpu_execution_pool_for_device(0)
-        .expect("service owns the device GPU execution pool");
+    let pool =
+        service.inner.resources.gpu_execution_pool_for_device(0).expect("service owns the device GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 2);
     // The admission builds its envelope on the pool's lifecycle worker, so it
     // completes before the blocker occupies that worker.
@@ -907,9 +911,8 @@ async fn placed_admission_builds_its_envelope_while_execution_workers_are_busy()
         vec![runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 2, 6, 3, 2)],
     )
     .expect("runtime-backed service with three workers");
-    let pool = service.inner.resources
-        .gpu_execution_pool_for_device(0)
-        .expect("service owns the device GPU execution pool");
+    let pool =
+        service.inner.resources.gpu_execution_pool_for_device(0).expect("service owns the device GPU execution pool");
     let release_blockers = Arc::new(Semaphore::new(0));
     let (started_tx, mut started_rx) = unbounded_channel();
     for _ in 0..3 {
@@ -941,9 +944,8 @@ async fn root_context_release_waits_for_busy_gpu_worker() {
     let context = handle.acquire_context().expect("root context acquisition");
     drop(context);
 
-    let pool = service.inner.resources
-        .gpu_execution_pool_for_device(0)
-        .expect("service owns the device GPU execution pool");
+    let pool =
+        service.inner.resources.gpu_execution_pool_for_device(0).expect("service owns the device GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 2);
     let release_blocker = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release_blocker);

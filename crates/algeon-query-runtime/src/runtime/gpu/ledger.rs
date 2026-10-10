@@ -1557,5 +1557,4 @@ impl fmt::Debug for DeviceLedger {
 }
 
 #[cfg(test)]
-#[path = "ledger_tests.rs"]
 mod tests;

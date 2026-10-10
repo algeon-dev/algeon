@@ -7,13 +7,12 @@ use workloads::tpch::TpchTableMetadata;
 use super::*;
 
 mod config_dataset;
+mod large_keyed_join_gate;
 mod output_fingerprint;
 mod provenance;
 mod rejected_rows;
 mod report_rows;
 mod runtime_failures;
-#[path = "tests/strategy_gate.rs"]
-mod strategy_gate_tests;
 
 #[test]
 fn benchmark_metric_aggregation_delegates_to_the_report_metric_owner() {

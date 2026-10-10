@@ -220,5 +220,4 @@ pub struct QueryMetricsCheckpoint {
 }
 
 #[cfg(test)]
-#[path = "metrics_summary_tests.rs"]
 mod tests;

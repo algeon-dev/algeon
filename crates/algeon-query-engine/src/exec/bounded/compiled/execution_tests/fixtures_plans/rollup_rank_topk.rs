@@ -1,4 +1,6 @@
-pub(super) fn union_of_ranked_join_branches_plan() -> QueryPlan {
+use super::*;
+
+fn union_of_ranked_join_branches_plan() -> QueryPlan {
     let branch_input_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("item", DataType::Int32, false),
@@ -44,29 +46,31 @@ pub(super) fn union_of_ranked_join_branches_plan() -> QueryPlan {
         Arc::clone(&union_schema),
     );
     let union = builder.add_union(vec![first, second], Arc::clone(&union_schema)).unwrap();
-    let aggregate = builder.add_aggregate(
-        union,
-        AggregateSpec::new(
-            vec![Expr::column("item")],
-            vec![AggregateExpr::new(AggregateFunction::Min, Expr::column("amount_rank"), "best_rank")],
-        ),
-        Arc::clone(&final_schema),
-    ).unwrap();
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("best_rank"), false, false)])).unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            union,
+            AggregateSpec::new(
+                vec![Expr::column("item")],
+                vec![AggregateExpr::new(AggregateFunction::Min, Expr::column("amount_rank"), "best_rank")],
+            ),
+            Arc::clone(&final_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("best_rank"), false, false)]))
+        .unwrap();
     let limit = builder.add_limit(sort, LimitSpec::fetch(10)).unwrap();
     builder.finish_with_host_sink(limit).unwrap()
 }
 
-pub(super) fn large_full_scan_rollup_rank_topk_plan() -> QueryPlan {
+fn large_full_scan_rollup_rank_topk_plan() -> QueryPlan {
     rollup_rank_topk_plan_with_fact_file(
         LocalParquetFile::new("/tmp/compiled-large-rollup-rank-topk-fact.parquet").with_file_size_bytes(2_u64 << 30),
         true,
     )
 }
 
-pub(super) fn large_full_scan_rollup_rank_native_fragment_plan() -> QueryPlan {
+fn large_full_scan_rollup_rank_native_fragment_plan() -> QueryPlan {
     rollup_rank_topk_plan_with_fact_file(
         LocalParquetFile::new("/tmp/compiled-large-rollup-rank-native-fragment-fact.parquet")
             .with_file_size_bytes(2_u64 << 30),
@@ -74,7 +78,7 @@ pub(super) fn large_full_scan_rollup_rank_native_fragment_plan() -> QueryPlan {
     )
 }
 
-pub(super) fn selected_large_rollup_rank_topk_plan() -> QueryPlan {
+fn selected_large_rollup_rank_topk_plan() -> QueryPlan {
     rollup_rank_topk_plan_with_fact_file(
         LocalParquetFile::new("/tmp/compiled-selected-large-rollup-rank-topk-fact.parquet")
             .with_file_size_bytes(4_u64 << 30)
@@ -88,7 +92,7 @@ pub(super) fn selected_large_rollup_rank_topk_plan() -> QueryPlan {
     )
 }
 
-pub(super) fn selected_q86_class_rollup_rank_topk_plan() -> QueryPlan {
+fn selected_q86_class_rollup_rank_topk_plan() -> QueryPlan {
     let row_group_bytes = vec![2 << 20; 448];
     rollup_rank_topk_plan_with_fact_file(
         LocalParquetFile::new("/tmp/compiled-selected-q86-class-rollup-rank-topk-fact.parquet")
@@ -100,7 +104,7 @@ pub(super) fn selected_q86_class_rollup_rank_topk_plan() -> QueryPlan {
     )
 }
 
-pub(super) fn selected_q70_class_left_semi_rollup_rank_topk_plan() -> QueryPlan {
+fn selected_q70_class_left_semi_rollup_rank_topk_plan() -> QueryPlan {
     let row_group_bytes = vec![2 << 20; 448];
     rollup_rank_topk_plan_with_fact_file_and_join_type(
         LocalParquetFile::new("/tmp/compiled-selected-q70-class-rollup-rank-topk-fact.parquet")
@@ -113,7 +117,7 @@ pub(super) fn selected_q70_class_left_semi_rollup_rank_topk_plan() -> QueryPlan 
     )
 }
 
-pub(super) fn selected_q67_class_rollup_rank_topk_projection_chain_plan() -> QueryPlan {
+fn selected_q67_class_rollup_rank_topk_projection_chain_plan() -> QueryPlan {
     let row_group_bytes = vec![2 << 20; 448];
     rollup_rank_topk_plan_with_projection_chain(
         LocalParquetFile::new("/tmp/compiled-selected-q67-class-rollup-rank-topk-fact.parquet")
@@ -124,7 +128,7 @@ pub(super) fn selected_q67_class_rollup_rank_topk_projection_chain_plan() -> Que
     )
 }
 
-pub(super) fn selected_wide_q67_class_rollup_rank_topk_plan() -> QueryPlan {
+fn selected_wide_q67_class_rollup_rank_topk_plan() -> QueryPlan {
     let row_group_bytes = vec![2 << 20; 448];
     wide_rollup_rank_topk_plan_with_fact_file(
         LocalParquetFile::new("/tmp/compiled-selected-wide-q67-class-rollup-rank-topk-fact.parquet")
@@ -137,7 +141,7 @@ pub(super) fn selected_wide_q67_class_rollup_rank_topk_plan() -> QueryPlan {
     )
 }
 
-pub(super) fn selected_too_wide_rollup_rank_topk_plan() -> QueryPlan {
+fn selected_too_wide_rollup_rank_topk_plan() -> QueryPlan {
     let row_group_bytes = vec![2 << 20; 448];
     wide_rollup_rank_topk_plan_with_fact_file(
         LocalParquetFile::new("/tmp/compiled-selected-too-wide-rollup-rank-topk-fact.parquet")
@@ -150,7 +154,7 @@ pub(super) fn selected_too_wide_rollup_rank_topk_plan() -> QueryPlan {
     )
 }
 
-pub(super) fn selected_wide_non_rollup_grouping_sets_rank_topk_plan() -> QueryPlan {
+fn selected_wide_non_rollup_grouping_sets_rank_topk_plan() -> QueryPlan {
     let row_group_bytes = vec![2 << 20; 448];
     wide_rollup_rank_topk_plan_with_fact_file(
         LocalParquetFile::new("/tmp/compiled-selected-wide-non-rollup-rank-topk-fact.parquet")
@@ -163,7 +167,7 @@ pub(super) fn selected_wide_non_rollup_grouping_sets_rank_topk_plan() -> QueryPl
     )
 }
 
-pub(super) fn selected_small_rollup_rank_topk_plan() -> QueryPlan {
+fn selected_small_rollup_rank_topk_plan() -> QueryPlan {
     rollup_rank_topk_plan_with_fact_file(
         LocalParquetFile::new("/tmp/compiled-selected-small-rollup-rank-topk-fact.parquet")
             .with_file_size_bytes(4_u64 << 30)
@@ -177,7 +181,7 @@ pub(super) fn selected_small_rollup_rank_topk_plan() -> QueryPlan {
     )
 }
 
-pub(super) fn selected_q22_class_rollup_topk_after_pushdown_plan() -> QueryPlan {
+fn selected_q22_class_rollup_topk_after_pushdown_plan() -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("date_sk", DataType::Int32, false),
         Field::new("item_sk", DataType::Int32, false),
@@ -239,84 +243,106 @@ pub(super) fn selected_q22_class_rollup_topk_after_pushdown_plan() -> QueryPlan 
         date_schema,
         vec!["date_sk".into()],
     )));
-    let fact_date_join = builder.add_join(
-        fact,
-        date,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "date_sk", "date_sk"), ColumnRef::input(1, "date_sk", "date_sk"))],
+    let fact_date_join = builder
+        .add_join(
+            fact,
+            date,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "date_sk", "date_sk"),
+                    ColumnRef::input(1, "date_sk", "date_sk"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
+                JoinOutputColumn::left(ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"), "quantity_on_hand"),
+            ])
+            .with_build_side(JoinSide::Right),
+            fact_date_join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
-            JoinOutputColumn::left(ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"), "quantity_on_hand"),
-        ])
-        .with_build_side(JoinSide::Right),
-        fact_date_join_schema,
-    ).unwrap();
+        .unwrap();
     let item = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![item_file],
         item_schema,
         vec!["item_sk".into(), "product_name".into(), "brand".into(), "class".into(), "category".into()],
     )));
-    let item_join = builder.add_join(
-        fact_date_join,
-        item,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "item_sk", "item_sk"), ColumnRef::input(1, "item_sk", "item_sk"))],
+    let item_join = builder
+        .add_join(
+            fact_date_join,
+            item,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "item_sk", "item_sk"),
+                    ColumnRef::input(1, "item_sk", "item_sk"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "product_name", "product_name"), "product_name"),
+                JoinOutputColumn::right(ColumnRef::input(1, "brand", "brand"), "brand"),
+                JoinOutputColumn::right(ColumnRef::input(1, "class", "class"), "class"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"), "quantity_on_hand"),
+            ])
+            .with_build_side(JoinSide::Right),
+            item_join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "product_name", "product_name"), "product_name"),
-            JoinOutputColumn::right(ColumnRef::input(1, "brand", "brand"), "brand"),
-            JoinOutputColumn::right(ColumnRef::input(1, "class", "class"), "class"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"), "quantity_on_hand"),
-        ])
-        .with_build_side(JoinSide::Right),
-        item_join_schema,
-    ).unwrap();
-    let aggregate = builder.add_aggregate(
-        item_join,
-        AggregateSpec::new(
-            vec![Expr::column("product_name"), Expr::column("brand"), Expr::column("class"), Expr::column("category")],
-            vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("quantity_on_hand"), "avg_qoh")],
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            item_join,
+            AggregateSpec::new(
+                vec![
+                    Expr::column("product_name"),
+                    Expr::column("brand"),
+                    Expr::column("class"),
+                    Expr::column("category"),
+                ],
+                vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("quantity_on_hand"), "avg_qoh")],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(
+                vec![
+                    vec![true, true, true, true],
+                    vec![false, true, true, true],
+                    vec![false, false, true, true],
+                    vec![false, false, false, true],
+                    vec![false, false, false, false],
+                ],
+                "__grouping_id",
+            )),
+            aggregate_schema,
         )
-        .with_grouping_sets(GroupingSetsSpec::new(
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            aggregate,
             vec![
-                vec![true, true, true, true],
-                vec![false, true, true, true],
-                vec![false, false, true, true],
-                vec![false, false, false, true],
-                vec![false, false, false, false],
+                ProjectionOutput::new(Expr::column("product_name"), output_schema.field(0).as_ref().clone()),
+                ProjectionOutput::new(Expr::column("brand"), output_schema.field(1).as_ref().clone()),
+                ProjectionOutput::new(Expr::column("class"), output_schema.field(2).as_ref().clone()),
+                ProjectionOutput::new(Expr::column("category"), output_schema.field(3).as_ref().clone()),
+                ProjectionOutput::new(Expr::column("avg_qoh").alias("qoh"), output_schema.field(4).as_ref().clone()),
             ],
-            "__grouping_id",
-        )),
-        aggregate_schema,
-    ).unwrap();
-    let projection = builder.add_projection(
-        aggregate,
-        vec![
-            ProjectionOutput::new(Expr::column("product_name"), output_schema.field(0).as_ref().clone()),
-            ProjectionOutput::new(Expr::column("brand"), output_schema.field(1).as_ref().clone()),
-            ProjectionOutput::new(Expr::column("class"), output_schema.field(2).as_ref().clone()),
-            ProjectionOutput::new(Expr::column("category"), output_schema.field(3).as_ref().clone()),
-            ProjectionOutput::new(Expr::column("avg_qoh").alias("qoh"), output_schema.field(4).as_ref().clone()),
-        ],
-    ).unwrap();
-    let sort = builder.add_sort(
-        projection,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("qoh"), false, false),
-            SortExpr::new(Expr::column("product_name"), false, false),
-            SortExpr::new(Expr::column("brand"), false, false),
-            SortExpr::new(Expr::column("class"), false, false),
-            SortExpr::new(Expr::column("category"), false, false),
-        ])).unwrap();
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            projection,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("qoh"), false, false),
+                SortExpr::new(Expr::column("product_name"), false, false),
+                SortExpr::new(Expr::column("brand"), false, false),
+                SortExpr::new(Expr::column("class"), false, false),
+                SortExpr::new(Expr::column("category"), false, false),
+            ]),
+        )
+        .unwrap();
     let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
     builder.finish_with_host_sink(limit).unwrap()
 }
 
-pub(super) fn statistical_join_final_full_sort_plan() -> QueryPlan {
+fn statistical_join_final_full_sort_plan() -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("date_sk", DataType::Int32, false),
         Field::new("item_sk", DataType::Int32, false),
@@ -387,44 +413,49 @@ pub(super) fn statistical_join_final_full_sort_plan() -> QueryPlan {
         joined_schema,
         aggregate_schema,
     );
-    let joined = builder.add_join(
-        first_branch,
-        second_branch,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![
-                JoinKey::new(
-                    ColumnRef::input(0, "warehouse_sk", "warehouse_sk"),
-                    ColumnRef::input(1, "warehouse_sk", "warehouse_sk"),
-                ),
-                JoinKey::new(ColumnRef::input(0, "item_sk", "item_sk"), ColumnRef::input(1, "item_sk", "item_sk")),
-            ],
+    let joined = builder
+        .add_join(
+            first_branch,
+            second_branch,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![
+                    JoinKey::new(
+                        ColumnRef::input(0, "warehouse_sk", "warehouse_sk"),
+                        ColumnRef::input(1, "warehouse_sk", "warehouse_sk"),
+                    ),
+                    JoinKey::new(ColumnRef::input(0, "item_sk", "item_sk"), ColumnRef::input(1, "item_sk", "item_sk")),
+                ],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "warehouse_sk", "warehouse_sk"), "wsk1"),
+                JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "isk1"),
+                JoinOutputColumn::left(ColumnRef::input(0, "month", "month"), "month1"),
+                JoinOutputColumn::left(ColumnRef::input(0, "mean", "mean"), "mean1"),
+                JoinOutputColumn::left(ColumnRef::input(0, "cov", "cov"), "cov1"),
+                JoinOutputColumn::right(ColumnRef::input(1, "warehouse_sk", "warehouse_sk"), "warehouse_sk"),
+                JoinOutputColumn::right(ColumnRef::input(1, "item_sk", "item_sk"), "item_sk"),
+                JoinOutputColumn::right(ColumnRef::input(1, "month", "month"), "month"),
+                JoinOutputColumn::right(ColumnRef::input(1, "mean", "mean"), "mean"),
+                JoinOutputColumn::right(ColumnRef::input(1, "cov", "cov"), "cov"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&final_join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "warehouse_sk", "warehouse_sk"), "wsk1"),
-            JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "isk1"),
-            JoinOutputColumn::left(ColumnRef::input(0, "month", "month"), "month1"),
-            JoinOutputColumn::left(ColumnRef::input(0, "mean", "mean"), "mean1"),
-            JoinOutputColumn::left(ColumnRef::input(0, "cov", "cov"), "cov1"),
-            JoinOutputColumn::right(ColumnRef::input(1, "warehouse_sk", "warehouse_sk"), "warehouse_sk"),
-            JoinOutputColumn::right(ColumnRef::input(1, "item_sk", "item_sk"), "item_sk"),
-            JoinOutputColumn::right(ColumnRef::input(1, "month", "month"), "month"),
-            JoinOutputColumn::right(ColumnRef::input(1, "mean", "mean"), "mean"),
-            JoinOutputColumn::right(ColumnRef::input(1, "cov", "cov"), "cov"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&final_join_schema),
-    ).unwrap();
-    let sort = builder.add_sort(
-        joined,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("wsk1"), false, true),
-            SortExpr::new(Expr::column("isk1"), false, true),
-            SortExpr::new(Expr::column("mean1"), false, true),
-            SortExpr::new(Expr::column("cov1"), false, true),
-            SortExpr::new(Expr::column("mean"), false, true),
-            SortExpr::new(Expr::column("cov"), false, true),
-        ])).unwrap();
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            joined,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("wsk1"), false, true),
+                SortExpr::new(Expr::column("isk1"), false, true),
+                SortExpr::new(Expr::column("mean1"), false, true),
+                SortExpr::new(Expr::column("cov1"), false, true),
+                SortExpr::new(Expr::column("mean"), false, true),
+                SortExpr::new(Expr::column("cov"), false, true),
+            ]),
+        )
+        .unwrap();
     builder.finish_with_host_sink(sort).unwrap()
 }
 
@@ -467,106 +498,125 @@ fn statistical_inventory_branch(
         vec!["date_sk".into(), "month".into()],
     )));
 
-    let item_join = builder.add_join(
-        fact,
-        item,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "item_sk", "item_sk"), ColumnRef::input(1, "item_sk", "item_sk"))],
+    let item_join = builder
+        .add_join(
+            fact,
+            item,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "item_sk", "item_sk"),
+                    ColumnRef::input(1, "item_sk", "item_sk"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk"),
+                JoinOutputColumn::left(ColumnRef::input(0, "warehouse_sk", "warehouse_sk"), "warehouse_sk"),
+                JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::new(Schema::new(vec![
+                Field::new("date_sk", DataType::Int32, false),
+                Field::new("warehouse_sk", DataType::Int32, false),
+                Field::new("item_sk", DataType::Int32, false),
+                Field::new("qty", DataType::Float64, true),
+            ])),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk"),
-            JoinOutputColumn::left(ColumnRef::input(0, "warehouse_sk", "warehouse_sk"), "warehouse_sk"),
-            JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::new(Schema::new(vec![
-            Field::new("date_sk", DataType::Int32, false),
-            Field::new("warehouse_sk", DataType::Int32, false),
-            Field::new("item_sk", DataType::Int32, false),
-            Field::new("qty", DataType::Float64, true),
-        ])),
-    ).unwrap();
-    let warehouse_join = builder.add_join(
-        item_join,
-        warehouse,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "warehouse_sk", "warehouse_sk"),
-                ColumnRef::input(1, "warehouse_sk", "warehouse_sk"),
-            )],
+        .unwrap();
+    let warehouse_join = builder
+        .add_join(
+            item_join,
+            warehouse,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "warehouse_sk", "warehouse_sk"),
+                    ColumnRef::input(1, "warehouse_sk", "warehouse_sk"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk"),
+                JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
+                JoinOutputColumn::left(ColumnRef::input(0, "warehouse_sk", "warehouse_sk"), "warehouse_sk"),
+                JoinOutputColumn::right(ColumnRef::input(1, "warehouse_name", "warehouse_name"), "warehouse_name"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::new(Schema::new(vec![
+                Field::new("date_sk", DataType::Int32, false),
+                Field::new("item_sk", DataType::Int32, false),
+                Field::new("warehouse_sk", DataType::Int32, false),
+                Field::new("warehouse_name", DataType::Utf8, true),
+                Field::new("qty", DataType::Float64, true),
+            ])),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk"),
-            JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
-            JoinOutputColumn::left(ColumnRef::input(0, "warehouse_sk", "warehouse_sk"), "warehouse_sk"),
-            JoinOutputColumn::right(ColumnRef::input(1, "warehouse_name", "warehouse_name"), "warehouse_name"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::new(Schema::new(vec![
-            Field::new("date_sk", DataType::Int32, false),
-            Field::new("item_sk", DataType::Int32, false),
-            Field::new("warehouse_sk", DataType::Int32, false),
-            Field::new("warehouse_name", DataType::Utf8, true),
-            Field::new("qty", DataType::Float64, true),
-        ])),
-    ).unwrap();
-    let date_join = builder.add_join(
-        warehouse_join,
-        date,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "date_sk", "date_sk"), ColumnRef::input(1, "date_sk", "date_sk"))],
+        .unwrap();
+    let date_join = builder
+        .add_join(
+            warehouse_join,
+            date,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "date_sk", "date_sk"),
+                    ColumnRef::input(1, "date_sk", "date_sk"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
+                JoinOutputColumn::left(ColumnRef::input(0, "warehouse_sk", "warehouse_sk"), "warehouse_sk"),
+                JoinOutputColumn::left(ColumnRef::input(0, "warehouse_name", "warehouse_name"), "warehouse_name"),
+                JoinOutputColumn::right(ColumnRef::input(1, "month", "month"), "month"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&joined_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
-            JoinOutputColumn::left(ColumnRef::input(0, "warehouse_sk", "warehouse_sk"), "warehouse_sk"),
-            JoinOutputColumn::left(ColumnRef::input(0, "warehouse_name", "warehouse_name"), "warehouse_name"),
-            JoinOutputColumn::right(ColumnRef::input(1, "month", "month"), "month"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&joined_schema),
-    ).unwrap();
-    let aggregate = builder.add_aggregate(
-        date_join,
-        AggregateSpec::new(
-            vec![
-                Expr::column("warehouse_name"),
-                Expr::column("warehouse_sk"),
-                Expr::column("item_sk"),
-                Expr::column("month"),
-            ],
-            vec![
-                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("qty"), "stdev"),
-                AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "mean"),
-            ],
-        ),
-        aggregate_schema,
-    ).unwrap();
-    let filter = builder.add_filter(
-        aggregate,
-        Expr::binary(
-            Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("mean")),
-            BinaryOp::Gt,
-            Expr::literal(LiteralValue::Float64(1.0)),
-        )).unwrap();
-    builder.add_projection(
-        filter,
-        vec![
-            ProjectionOutput::new(Expr::column("warehouse_sk"), Field::new("warehouse_sk", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("item_sk"), Field::new("item_sk", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("month"), Field::new("month", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("mean"), Field::new("mean", DataType::Float64, true)),
-            ProjectionOutput::new(
-                Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("mean")).alias("cov"),
-                Field::new("cov", DataType::Float64, true),
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            date_join,
+            AggregateSpec::new(
+                vec![
+                    Expr::column("warehouse_name"),
+                    Expr::column("warehouse_sk"),
+                    Expr::column("item_sk"),
+                    Expr::column("month"),
+                ],
+                vec![
+                    AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("qty"), "stdev"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "mean"),
+                ],
             ),
-        ],
-    ).unwrap()
+            aggregate_schema,
+        )
+        .unwrap();
+    let filter = builder
+        .add_filter(
+            aggregate,
+            Expr::binary(
+                Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("mean")),
+                BinaryOp::Gt,
+                Expr::literal(LiteralValue::Float64(1.0)),
+            ),
+        )
+        .unwrap();
+    builder
+        .add_projection(
+            filter,
+            vec![
+                ProjectionOutput::new(Expr::column("warehouse_sk"), Field::new("warehouse_sk", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("item_sk"), Field::new("item_sk", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("month"), Field::new("month", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("mean"), Field::new("mean", DataType::Float64, true)),
+                ProjectionOutput::new(
+                    Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("mean")).alias("cov"),
+                    Field::new("cov", DataType::Float64, true),
+                ),
+            ],
+        )
+        .unwrap()
 }
 
 fn wide_rollup_rank_topk_plan_with_fact_file(
@@ -648,17 +698,19 @@ fn wide_rollup_rank_topk_plan_with_fact_file(
         join_outputs.push(JoinOutputColumn::left(ColumnRef::input(0, "channel_id", "channel_id"), "channel_id"));
     }
     join_outputs.push(JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"));
-    let join = builder.add_join(
-        fact,
-        dim,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+    let join = builder
+        .add_join(
+            fact,
+            dim,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+            )
+            .with_output_projection(join_outputs)
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(join_outputs)
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    ).unwrap();
+        .unwrap();
     let mut group_exprs = vec![
         Expr::column("category"),
         Expr::column("class"),
@@ -687,41 +739,48 @@ fn wide_rollup_rank_topk_plan_with_fact_file(
             })
             .collect::<Vec<_>>()
     };
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            group_exprs,
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sumsales")],
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                group_exprs,
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sumsales")],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(grouping_sets, "__grouping_id")),
+            Arc::clone(&aggregate_schema),
         )
-        .with_grouping_sets(GroupingSetsSpec::new(grouping_sets, "__grouping_id")),
-        Arc::clone(&aggregate_schema),
-    ).unwrap();
-    let window_input_sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("sumsales"), true, false)])).unwrap();
-    let window = builder.add_window(
-        window_input_sort,
-        WindowSpec::new(
-            vec![Expr::column("category")],
-            vec![SortExpr::new(Expr::column("sumsales"), true, false)],
-            vec![WindowFunction::rank("rk")],
-        )).unwrap();
-    let filter = builder.add_filter(
-        window,
-        Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100)))).unwrap();
-    let final_sort = builder.add_sort(
-        filter,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("category"), false, true),
-            SortExpr::new(Expr::column("class"), false, true),
-            SortExpr::new(Expr::column("brand"), false, true),
-            SortExpr::new(Expr::column("product"), false, true),
-            SortExpr::new(Expr::column("d_year"), false, true),
-            SortExpr::new(Expr::column("d_qoy"), false, true),
-            SortExpr::new(Expr::column("d_moy"), false, true),
-            SortExpr::new(Expr::column("s_store_id"), false, true),
-            SortExpr::new(Expr::column("sumsales"), true, false),
-        ])).unwrap();
+        .unwrap();
+    let window_input_sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("sumsales"), true, false)])).unwrap();
+    let window = builder
+        .add_window(
+            window_input_sort,
+            WindowSpec::new(
+                vec![Expr::column("category")],
+                vec![SortExpr::new(Expr::column("sumsales"), true, false)],
+                vec![WindowFunction::rank("rk")],
+            ),
+        )
+        .unwrap();
+    let filter = builder
+        .add_filter(window, Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100))))
+        .unwrap();
+    let final_sort = builder
+        .add_sort(
+            filter,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("category"), false, true),
+                SortExpr::new(Expr::column("class"), false, true),
+                SortExpr::new(Expr::column("brand"), false, true),
+                SortExpr::new(Expr::column("product"), false, true),
+                SortExpr::new(Expr::column("d_year"), false, true),
+                SortExpr::new(Expr::column("d_qoy"), false, true),
+                SortExpr::new(Expr::column("d_moy"), false, true),
+                SortExpr::new(Expr::column("s_store_id"), false, true),
+                SortExpr::new(Expr::column("sumsales"), true, false),
+            ]),
+        )
+        .unwrap();
     let limit = builder.add_limit(final_sort, LimitSpec::fetch(100)).unwrap();
     builder.finish_with_host_sink(limit).unwrap()
 }
@@ -767,92 +826,105 @@ fn rollup_rank_topk_plan_with_projection_chain(fact_file: LocalParquetFile) -> Q
         dim_schema,
         vec!["id".into(), "right_group".into()],
     )));
-    let join = builder.add_join(
-        fact,
-        dim,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+    let join = builder
+        .add_join(
+            fact,
+            dim,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "left_group", "left_group"), "left_group"),
+                JoinOutputColumn::left(ColumnRef::input(0, "quantity", "quantity"), "quantity"),
+                JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+                JoinOutputColumn::right(ColumnRef::input(1, "right_group", "right_group"), "right_group"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "left_group", "left_group"), "left_group"),
-            JoinOutputColumn::left(ColumnRef::input(0, "quantity", "quantity"), "quantity"),
-            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
-            JoinOutputColumn::right(ColumnRef::input(1, "right_group", "right_group"), "right_group"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    ).unwrap();
-    let common_projection = builder.add_projection(
-        join,
-        vec![
-            ProjectionOutput::new(Expr::column("left_group"), Field::new("left_group", DataType::Utf8, true)),
-            ProjectionOutput::new(Expr::column("right_group"), Field::new("right_group", DataType::Utf8, true)),
-            ProjectionOutput::new(
-                Expr::binary(Expr::column("amount"), BinaryOp::Multiply, Expr::column("quantity"))
-                    .alias("__common_expr_1"),
-                Field::new("__common_expr_1", DataType::Int64, true),
-            ),
-        ],
-    ).unwrap();
-    let coalesce_projection = builder.add_projection(
-        common_projection,
-        vec![
-            ProjectionOutput::new(Expr::column("left_group"), Field::new("left_group", DataType::Utf8, true)),
-            ProjectionOutput::new(Expr::column("right_group"), Field::new("right_group", DataType::Utf8, true)),
-            ProjectionOutput::new(
-                Expr::column("__common_expr_1"),
-                Field::new("__common_expr_1", DataType::Int64, true),
-            ),
-            ProjectionOutput::new(
-                Expr::Case {
-                    branches: vec![CaseWhen::new(
-                        Expr::IsNotNull(Box::new(Expr::column("__common_expr_1"))),
-                        Expr::column("__common_expr_1"),
-                    )],
-                    else_expr: Box::new(Expr::literal(LiteralValue::Int64(0))),
-                }
-                .alias("__algeon_native_aggregate_arg_0"),
-                Field::new("__algeon_native_aggregate_arg_0", DataType::Int64, false),
-            ),
-        ],
-    ).unwrap();
-    let aggregate = builder.add_aggregate(
-        coalesce_projection,
-        AggregateSpec::new(
-            vec![Expr::column("left_group"), Expr::column("right_group")],
-            vec![AggregateExpr::new(
-                AggregateFunction::Sum,
-                Expr::column("__algeon_native_aggregate_arg_0"),
-                "sumsales",
-            )],
+        .unwrap();
+    let common_projection = builder
+        .add_projection(
+            join,
+            vec![
+                ProjectionOutput::new(Expr::column("left_group"), Field::new("left_group", DataType::Utf8, true)),
+                ProjectionOutput::new(Expr::column("right_group"), Field::new("right_group", DataType::Utf8, true)),
+                ProjectionOutput::new(
+                    Expr::binary(Expr::column("amount"), BinaryOp::Multiply, Expr::column("quantity"))
+                        .alias("__common_expr_1"),
+                    Field::new("__common_expr_1", DataType::Int64, true),
+                ),
+            ],
         )
-        .with_grouping_sets(GroupingSetsSpec::new(
-            vec![vec![false, false], vec![false, true], vec![true, true]],
-            "__grouping_id",
-        )),
-        Arc::clone(&aggregate_schema),
-    ).unwrap();
-    let window_input_sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("sumsales"), true, false)])).unwrap();
-    let window = builder.add_window(
-        window_input_sort,
-        WindowSpec::new(
-            vec![Expr::column("left_group")],
-            vec![SortExpr::new(Expr::column("sumsales"), true, false)],
-            vec![WindowFunction::rank("rk")],
-        )).unwrap();
-    let filter = builder.add_filter(
-        window,
-        Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100)))).unwrap();
-    let final_sort = builder.add_sort(
-        filter,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("left_group"), false, true),
-            SortExpr::new(Expr::column("right_group"), false, true),
-            SortExpr::new(Expr::column("sumsales"), true, false),
-        ])).unwrap();
+        .unwrap();
+    let coalesce_projection = builder
+        .add_projection(
+            common_projection,
+            vec![
+                ProjectionOutput::new(Expr::column("left_group"), Field::new("left_group", DataType::Utf8, true)),
+                ProjectionOutput::new(Expr::column("right_group"), Field::new("right_group", DataType::Utf8, true)),
+                ProjectionOutput::new(
+                    Expr::column("__common_expr_1"),
+                    Field::new("__common_expr_1", DataType::Int64, true),
+                ),
+                ProjectionOutput::new(
+                    Expr::Case {
+                        branches: vec![CaseWhen::new(
+                            Expr::IsNotNull(Box::new(Expr::column("__common_expr_1"))),
+                            Expr::column("__common_expr_1"),
+                        )],
+                        else_expr: Box::new(Expr::literal(LiteralValue::Int64(0))),
+                    }
+                    .alias("__algeon_native_aggregate_arg_0"),
+                    Field::new("__algeon_native_aggregate_arg_0", DataType::Int64, false),
+                ),
+            ],
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            coalesce_projection,
+            AggregateSpec::new(
+                vec![Expr::column("left_group"), Expr::column("right_group")],
+                vec![AggregateExpr::new(
+                    AggregateFunction::Sum,
+                    Expr::column("__algeon_native_aggregate_arg_0"),
+                    "sumsales",
+                )],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(
+                vec![vec![false, false], vec![false, true], vec![true, true]],
+                "__grouping_id",
+            )),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let window_input_sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("sumsales"), true, false)])).unwrap();
+    let window = builder
+        .add_window(
+            window_input_sort,
+            WindowSpec::new(
+                vec![Expr::column("left_group")],
+                vec![SortExpr::new(Expr::column("sumsales"), true, false)],
+                vec![WindowFunction::rank("rk")],
+            ),
+        )
+        .unwrap();
+    let filter = builder
+        .add_filter(window, Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100))))
+        .unwrap();
+    let final_sort = builder
+        .add_sort(
+            filter,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("left_group"), false, true),
+                SortExpr::new(Expr::column("right_group"), false, true),
+                SortExpr::new(Expr::column("sumsales"), true, false),
+            ]),
+        )
+        .unwrap();
     let limit = builder.add_limit(final_sort, LimitSpec::fetch(100)).unwrap();
     builder.finish_with_host_sink(limit).unwrap()
 }
@@ -895,10 +967,14 @@ fn rollup_rank_topk_plan_with_fact_file_and_join_type(
         dim_schema,
         vec!["id".into()],
     )));
-    let join = builder.add_join(
-        fact,
-        dim,
-        JoinSpec::new(join_type, vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))])
+    let join = builder
+        .add_join(
+            fact,
+            dim,
+            JoinSpec::new(
+                join_type,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+            )
             .with_output_projection(vec![
                 JoinOutputColumn::left(ColumnRef::input(0, "category", "category"), "category"),
                 JoinOutputColumn::left(ColumnRef::input(0, "class", "class"), "class"),
@@ -906,44 +982,57 @@ fn rollup_rank_topk_plan_with_fact_file_and_join_type(
                 JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
             ])
             .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    ).unwrap();
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("category"), Expr::column("class"), Expr::column("brand")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sumsales")],
+            Arc::clone(&join_schema),
         )
-        .with_grouping_sets(GroupingSetsSpec::new(
-            vec![vec![false, false, false], vec![false, false, true], vec![false, true, true], vec![true, true, true]],
-            "__grouping_id",
-        )),
-        Arc::clone(&aggregate_schema),
-    ).unwrap();
-    let window_input_sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("sumsales"), true, false)])).unwrap();
-    let window = builder.add_window(
-        window_input_sort,
-        WindowSpec::new(
-            vec![Expr::column("category")],
-            vec![SortExpr::new(Expr::column("sumsales"), true, false)],
-            vec![WindowFunction::rank("rk")],
-        )).unwrap();
-    let filter = builder.add_filter(
-        window,
-        Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100)))).unwrap();
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("category"), Expr::column("class"), Expr::column("brand")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sumsales")],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(
+                vec![
+                    vec![false, false, false],
+                    vec![false, false, true],
+                    vec![false, true, true],
+                    vec![true, true, true],
+                ],
+                "__grouping_id",
+            )),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let window_input_sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("sumsales"), true, false)])).unwrap();
+    let window = builder
+        .add_window(
+            window_input_sort,
+            WindowSpec::new(
+                vec![Expr::column("category")],
+                vec![SortExpr::new(Expr::column("sumsales"), true, false)],
+                vec![WindowFunction::rank("rk")],
+            ),
+        )
+        .unwrap();
+    let filter = builder
+        .add_filter(window, Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100))))
+        .unwrap();
     if !include_final_topk {
         return builder.finish_with_host_sink(filter).unwrap();
     }
-    let final_sort = builder.add_sort(
-        filter,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("category"), false, true),
-            SortExpr::new(Expr::column("class"), false, true),
-            SortExpr::new(Expr::column("brand"), false, true),
-            SortExpr::new(Expr::column("sumsales"), true, false),
-        ])).unwrap();
+    let final_sort = builder
+        .add_sort(
+            filter,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("category"), false, true),
+                SortExpr::new(Expr::column("class"), false, true),
+                SortExpr::new(Expr::column("brand"), false, true),
+                SortExpr::new(Expr::column("sumsales"), true, false),
+            ]),
+        )
+        .unwrap();
     let limit = builder.add_limit(final_sort, LimitSpec::fetch(100)).unwrap();
     builder.finish_with_host_sink(limit).unwrap()
 }
@@ -966,47 +1055,59 @@ fn ranked_join_branch(
     )));
     let dim =
         builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(dim_path, dim_schema, vec!["id".into()])));
-    let join = builder.add_join(
-        fact,
-        dim,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+    let join = builder
+        .add_join(
+            fact,
+            dim,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "item", "item"), "item"),
+                JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+            ])
+            .with_build_side(JoinSide::Right),
+            join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "item", "item"), "item"),
-            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
-        ])
-        .with_build_side(JoinSide::Right),
-        join_schema,
-    ).unwrap();
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("item")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
-        ),
-        Arc::clone(&aggregate_schema),
-    ).unwrap();
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), false, false)])).unwrap();
-    let window = builder.add_window(
-        sort,
-        WindowSpec::new(
-            vec![],
-            vec![SortExpr::new(Expr::column("amount_sum"), false, false)],
-            vec![WindowFunction::rank("amount_rank")],
-        )).unwrap();
-    let filter = builder.add_filter(
-        window,
-        Expr::binary(Expr::column("amount_rank"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(10)))).unwrap();
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("item")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), false, false)]))
+        .unwrap();
+    let window = builder
+        .add_window(
+            sort,
+            WindowSpec::new(
+                vec![],
+                vec![SortExpr::new(Expr::column("amount_sum"), false, false)],
+                vec![WindowFunction::rank("amount_rank")],
+            ),
+        )
+        .unwrap();
+    let filter = builder
+        .add_filter(
+            window,
+            Expr::binary(Expr::column("amount_rank"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(10))),
+        )
+        .unwrap();
     let output_fields = output_schema.fields();
-    builder.add_projection(
-        filter,
-        vec![
-            ProjectionOutput::new(Expr::column("item"), output_fields[0].as_ref().clone()),
-            ProjectionOutput::new(Expr::column("amount_rank"), output_fields[1].as_ref().clone()),
-        ],
-    ).unwrap()
+    builder
+        .add_projection(
+            filter,
+            vec![
+                ProjectionOutput::new(Expr::column("item"), output_fields[0].as_ref().clone()),
+                ProjectionOutput::new(Expr::column("amount_rank"), output_fields[1].as_ref().clone()),
+            ],
+        )
+        .unwrap()
 }

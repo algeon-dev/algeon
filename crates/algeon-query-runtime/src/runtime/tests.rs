@@ -170,7 +170,7 @@ fn snapshot_json_shape(value: &Value) -> Value {
 }
 
 fn p6_snapshot_json_golden(name: &str) -> Value {
-    let path = format!("{}/tests/fixtures/backend_snapshot_json/{name}.json", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/src/runtime/tests/fixtures/backend_snapshot_json/{name}.json", env!("CARGO_MANIFEST_DIR"));
     let fixture = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("missing backend snapshot JSON golden {path}: {error}"));
     serde_json::from_str(&fixture).expect("backend snapshot JSON golden is valid")

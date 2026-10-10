@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn fixed_width_low_cardinality_prior_selects_prepared_sort_groupby() {
     let (schema, spec) = fixed_width_sum_spec();
@@ -24,17 +26,9 @@ fn fixed_width_low_cardinality_prior_selects_prepared_sort_groupby() {
 fn prior_partial_evidence_selects_the_same_strategy_when_no_decision_row_is_retained() {
     let (schema, spec) = fixed_width_sum_spec();
     let node_id = NodeId::from_index_for_test(7);
-    let session = RuntimeObservationSession::new(
-        "zero-retention",
-        None,
-        RuntimeObservationConfig::bounded(0, 0),
-    );
-    let metrics = ExecutionMetrics::bind(
-        &session.handle(),
-        PlanExecutionId::new("zero-retention-plan"),
-        "zero-retention",
-        None,
-    );
+    let session = RuntimeObservationSession::new("zero-retention", None, RuntimeObservationConfig::bounded(0, 0));
+    let metrics =
+        ExecutionMetrics::bind(&session.handle(), PlanExecutionId::new("zero-retention-plan"), "zero-retention", None);
     let facts = BTreeMap::from([
         ("execution_stage", "partial".to_string()),
         ("aggregate_structural_key", aggregate_structural_key(&spec, &schema, None)),

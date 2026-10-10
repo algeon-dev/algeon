@@ -1,5 +1,3 @@
-#![cfg(feature = "test-hooks")]
-
 use std::{
     fs,
     path::PathBuf,

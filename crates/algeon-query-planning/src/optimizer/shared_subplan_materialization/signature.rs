@@ -1,21 +1,44 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+use arrow::datatypes::{Field, Schema};
+
+use super::{
+    expr_helpers::{scalar_count_star_aggregate_expr, scalar_count_star_expr, scalar_filtered_aggregate_supported},
+    lineage::materialized_column_lineage,
+    rewrite::scalar_materialization_input_shape,
+    source_widening::{local_parquet_source_node_occurrences_are_unique, scalar_source_occurrences_are_unique},
+};
+use crate::{
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, Expr},
+    plan::{NodeId, PlanNode, QueryPlan},
+    source::{
+        LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ParquetSourceLocation, ResolvedParquetSource,
+        SourceColumnRef, SourceNode,
+    },
+    util::{fnv1a64, sum_optional_u64},
+};
+
 #[derive(Debug, Clone)]
-struct AggregateMaterializationSignature {
-    aggregate_node_id: NodeId,
-    post_aggregate_filter_columns_by_source: BTreeMap<String, BTreeSet<String>>,
-    family_key: String,
-    group_exprs: Vec<String>,
-    aggregate_exprs: Vec<String>,
-    aggregate_expr_specs: Vec<AggregateExpr>,
-    source_fingerprints: Vec<String>,
-    source_occurrences_unique: bool,
-    source_predicates: Vec<SourcePredicateSignature>,
-    source_columns: BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
-    exact_source_signature: String,
-    source_bytes: Option<u64>,
-    source_rows: Option<u64>,
+pub(super) struct AggregateMaterializationSignature {
+    pub(super) aggregate_node_id: NodeId,
+    pub(super) post_aggregate_filter_columns_by_source: BTreeMap<String, BTreeSet<String>>,
+    pub(super) family_key: String,
+    pub(super) group_exprs: Vec<String>,
+    pub(super) aggregate_exprs: Vec<String>,
+    pub(super) aggregate_expr_specs: Vec<AggregateExpr>,
+    pub(super) source_fingerprints: Vec<String>,
+    pub(super) source_occurrences_unique: bool,
+    pub(super) source_predicates: Vec<SourcePredicateSignature>,
+    pub(super) source_columns: BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
+    pub(super) exact_source_signature: String,
+    pub(super) source_bytes: Option<u64>,
+    pub(super) source_rows: Option<u64>,
 }
 
-fn aggregate_materialization_signature(
+pub(super) fn aggregate_materialization_signature(
     plan: &QueryPlan,
     aggregate_node_id: NodeId,
     input: NodeId,
@@ -166,38 +189,38 @@ fn simple_group_column_name(expr: &Expr) -> Option<&str> {
 }
 
 #[derive(Debug, Clone)]
-struct MaterializedColumnLineage {
-    source_fingerprint: String,
-    source_column: String,
+pub(super) struct MaterializedColumnLineage {
+    pub(super) source_fingerprint: String,
+    pub(super) source_column: String,
 }
 
 #[derive(Debug, Clone)]
-struct LocalSourceMaterializationSignature {
-    rowset_fingerprint: String,
-    exact_rowset_fingerprint: String,
-    abstract_fingerprint: String,
-    exact_fingerprint: String,
-    predicate: Option<Expr>,
-    selected_source_bytes: Option<u64>,
-    selected_rows: Option<u64>,
-    columns: BTreeMap<String, SourceColumnMaterialization>,
+pub(super) struct LocalSourceMaterializationSignature {
+    pub(super) rowset_fingerprint: String,
+    pub(super) exact_rowset_fingerprint: String,
+    pub(super) abstract_fingerprint: String,
+    pub(super) exact_fingerprint: String,
+    pub(super) predicate: Option<Expr>,
+    pub(super) selected_source_bytes: Option<u64>,
+    pub(super) selected_rows: Option<u64>,
+    pub(super) columns: BTreeMap<String, SourceColumnMaterialization>,
 }
 
 #[derive(Debug, Clone)]
-struct SourcePredicateSignature {
-    abstract_fingerprint: String,
-    predicate: Option<Expr>,
+pub(super) struct SourcePredicateSignature {
+    pub(super) abstract_fingerprint: String,
+    pub(super) predicate: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
-struct SourceColumnMaterialization {
-    name: String,
-    file_index: usize,
-    source_ref: SourceColumnRef,
-    field: Field,
+pub(super) struct SourceColumnMaterialization {
+    pub(super) name: String,
+    pub(super) file_index: usize,
+    pub(super) source_ref: SourceColumnRef,
+    pub(super) field: Field,
 }
 
-fn collect_local_parquet_sources(
+pub(super) fn collect_local_parquet_sources(
     plan: &QueryPlan,
     node_id: NodeId,
     visited: &mut BTreeSet<NodeId>,
@@ -223,7 +246,9 @@ fn collect_local_parquet_sources(
     }
 }
 
-fn local_source_materialization_signature(source: &LocalParquetSource) -> LocalSourceMaterializationSignature {
+pub(super) fn local_source_materialization_signature(
+    source: &LocalParquetSource,
+) -> LocalSourceMaterializationSignature {
     let mut file_signatures = source.files.iter().map(file_signature).collect::<Vec<_>>();
     file_signatures.sort();
     let files = file_signatures.join("+");
@@ -286,7 +311,7 @@ fn local_source_materialization_signature(source: &LocalParquetSource) -> LocalS
     }
 }
 
-fn source_column_ref_signature(source_ref: SourceColumnRef) -> String {
+pub(super) fn source_column_ref_signature(source_ref: SourceColumnRef) -> String {
     match source_ref {
         SourceColumnRef::File(index) => format!("file:{index}"),
         SourceColumnRef::Partition(index) => format!("partition:{index}"),
@@ -340,7 +365,7 @@ fn reader_decimal_contract_signature(reader_decimal_types: &[ParquetReaderDecima
     output
 }
 
-fn resolved_source_contract_signature(resolved_source: &ResolvedParquetSource) -> String {
+pub(super) fn resolved_source_contract_signature(resolved_source: &ResolvedParquetSource) -> String {
     let mut output = String::new();
     push_contract_hash(&mut output, "original_location", Some(resolved_source.original_location.as_str()));
     push_contract_hash(&mut output, "reader_location", Some(resolved_source.reader_location()));
@@ -383,7 +408,7 @@ fn push_contract_value(output: &mut String, key: &str, value: &str) {
     output.push(';');
 }
 
-fn aggregate_expr_signature(plan: &QueryPlan, input: NodeId, expr: &AggregateExpr) -> String {
+pub(super) fn aggregate_expr_signature(plan: &QueryPlan, input: NodeId, expr: &AggregateExpr) -> String {
     format!(
         "fn={};distinct={};arg={};filter={};alias={}",
         aggregate_function_signature(expr.function),
