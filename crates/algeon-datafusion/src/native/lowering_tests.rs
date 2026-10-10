@@ -68,6 +68,7 @@ use workloads::tpch::write_tiny_tpch_parquet_dataset;
 
 use crate::{
     capability::CapabilityReason,
+    gpu_coverage::QueryGpuRemedy,
     native::{FooterScope, NativeLoweringResult, lower_physical_plan_to_native},
     native_exec::{AlgeonNativeExec, below_native_admission},
     native_report::{
@@ -116,6 +117,8 @@ mod source_fixtures;
 mod sql;
 #[path = "lowering_tests/tpch_shapes.rs"]
 mod tpch_shapes;
+#[path = "lowering_tests/union_inputs.rs"]
+mod union_inputs;
 #[path = "lowering_tests/window_input_ordering.rs"]
 mod window_input_ordering;
 
@@ -208,6 +211,15 @@ fn assert_native_rejection(result: &NativeLoweringResult, expected_reason: Capab
         panic!("expected rejected native candidate");
     };
     assert_eq!(capability_reason, expected_reason);
+}
+
+/// The remedy that the coverage report attaches to the one rejected candidate
+/// of `result`.
+fn rejected_candidate_remedy(result: &NativeLoweringResult) -> QueryGpuRemedy {
+    let [CandidateOutcome::NotSupported { capability_reason, detail, .. }] = result.report.outcomes() else {
+        panic!("expected one rejected native candidate: {:?}", result.report.outcomes());
+    };
+    capability_reason.remedy(detail)
 }
 
 /// Runs the native optimizer rule, which lowers the plan, optimizes the

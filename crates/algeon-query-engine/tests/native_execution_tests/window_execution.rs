@@ -717,6 +717,65 @@ fn native_whole_partition_aggregate_window_returns_wide_payload_columns_unchange
     );
 }
 
+/// An empty partition list makes the whole input one partition: every row
+/// carries the aggregate of all rows, and a null value does not count.
+#[test]
+fn native_whole_input_aggregate_window_broadcasts_global_aggregates_in_input_order() {
+    let input = wide_window_batch();
+    let run = run_resident_window(
+        &input,
+        &[],
+        WindowSpec::new(
+            Vec::new(),
+            Vec::new(),
+            vec![
+                WindowFunction::aggregate(
+                    AggregateFunction::Sum,
+                    Expr::column("value"),
+                    Field::new("total", DataType::Int64, true),
+                ),
+                WindowFunction::aggregate(
+                    AggregateFunction::Max,
+                    Expr::column("value"),
+                    Field::new("peak", DataType::Int64, true),
+                ),
+                WindowFunction::aggregate(
+                    AggregateFunction::Count,
+                    Expr::column("value"),
+                    Field::new("present", DataType::Int64, false),
+                ),
+            ],
+        ),
+    );
+    let output = &run.output;
+
+    assert_payload_columns_follow_rows(output, &input, &[0, 1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(int64_array(output, 8).iter().collect::<Vec<_>>(), vec![Some(400); 8]);
+    assert_eq!(int64_array(output, 9).iter().collect::<Vec<_>>(), vec![Some(200); 8]);
+    assert_eq!(int64_array(output, 10).iter().collect::<Vec<_>>(), vec![Some(6); 8]);
+}
+
+#[test]
+fn native_whole_input_aggregate_window_over_no_rows_returns_no_rows() {
+    let input = wide_window_batch().slice(0, 0);
+    let run = run_resident_window(
+        &input,
+        &[],
+        WindowSpec::new(
+            Vec::new(),
+            Vec::new(),
+            vec![WindowFunction::aggregate(
+                AggregateFunction::Count,
+                Expr::column("value"),
+                Field::new("present", DataType::Int64, false),
+            )],
+        ),
+    );
+
+    assert_eq!(run.output.num_rows(), 0);
+    assert_eq!(run.output.num_columns(), input.num_columns() + 1);
+}
+
 #[test]
 fn native_rank_and_row_number_windows_return_wide_payload_columns_unchanged_in_input_order() {
     let input = wide_window_batch();

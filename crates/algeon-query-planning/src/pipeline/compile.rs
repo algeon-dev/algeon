@@ -621,8 +621,11 @@ fn build_resources(
         {
             consumers.push(sink_task);
         }
+        // A consumer is listed once per input that reads the resource, so a task
+        // that feeds two inputs from one producer (UNION ALL of identical
+        // branches) makes the resource shared instead of moving its payload
+        // into the first read.
         consumers.sort_unstable();
-        consumers.dedup();
         let lifetime = if consumers.is_empty()
             && matches!(plan.sink(), ResultSink::GpuResident { input } | ResultSink::DeferredHostArrow { input, .. } if *input == *node_id)
         {

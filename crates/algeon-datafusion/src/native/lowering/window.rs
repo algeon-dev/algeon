@@ -20,8 +20,8 @@ use datafusion::{
 use query_planning::{
     datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
     expr::{
-        Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
-        SortExpr as NativeSortExpr, SortSpec as NativeSortSpec,
+        AggregateFunction as NativeAggregateFunction, Expr as NativeExpr, LimitSpec as NativeLimitSpec,
+        LiteralValue as NativeLiteralValue, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec,
     },
     plan::{
         QueryPlanBuilder as NativeQueryPlanBuilder, ShiftDirection as NativeShiftDirection,
@@ -292,7 +292,16 @@ fn validate_plain_aggregate_window(
     if !aggregate.order_bys().is_empty() {
         return Err(aggregate_blocked(CapabilityReason::UnsupportedOperator, function, AggregateDefect::OrderBy).into());
     }
-    lower_native_aggregate_function(aggregate.fun())?;
+    // The cumulative kernel is a grouped scan, which exists for these three.
+    let native_function = lower_native_aggregate_function(aggregate.fun())?;
+    if cumulative
+        && !matches!(
+            native_function,
+            NativeAggregateFunction::Sum | NativeAggregateFunction::Min | NativeAggregateFunction::Max
+        )
+    {
+        return Err(unsupported_frame());
+    }
     let expressions = aggregate.expressions();
     let [arg] = expressions.as_slice() else {
         return Err(aggregate_blocked(

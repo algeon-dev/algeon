@@ -7,22 +7,24 @@ use datafusion::{
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode},
+        sorts::sort_preserving_merge::SortPreservingMergeExec,
     },
 };
 use query_planning::expr::AggregateFunction as NativeAggregateFunction;
 
-use super::{NativePlanRejection, peel_repartition};
+use super::{NativePlanRejection, peel_repartition, reads_union_branches};
 use crate::{
     capability::CapabilityReason,
-    native::expression_contract::native_aggregate_function_kind,
-    report::{AggregateDefect, GpuCandidate, PlanBlocker},
+    native::{expression_contract::native_aggregate_function_kind, validate::validate_aggregate_for_native_lowering},
+    report::{AggregateDefect, GpuCandidate, PlanBlocker, SinglePartitionOutcome},
 };
 
 #[derive(Debug, Clone)]
 pub(in crate::native) struct DistributedAggregatePeel<'a> {
     pub(in crate::native) aggregate: &'a AggregateExec,
     pub(in crate::native) aggregate_allows_partial: bool,
-    /// The repartition or coalesce between the final and partial aggregate.
+    /// The repartition, coalesce or merge of sorted partitions between the
+    /// final and partial aggregate.
     pub(in crate::native) exchange: Option<&'a str>,
     pub(in crate::native) aggregate_output_schema: SchemaRef,
 }
@@ -32,8 +34,9 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
     candidate: GpuCandidate,
 ) -> Result<DistributedAggregatePeel<'_>, NativePlanRejection> {
     // DataFusion distributed aggregates appear as final aggregate over a
-    // repartition/coalesce boundary over a partial aggregate. Lowering keeps the
-    // partial node as the executable aggregate but preserves the final schema.
+    // repartition/coalesce/merge boundary over a partial aggregate. Lowering
+    // keeps the partial node as the executable aggregate but preserves the
+    // final schema.
     if !matches!(aggregate.mode(), AggregateMode::Final | AggregateMode::FinalPartitioned) {
         return Ok(DistributedAggregatePeel {
             aggregate,
@@ -43,16 +46,26 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
         });
     }
 
-    let rejection = |candidate, blocker| NativePlanRejection {
+    let below_exchange = peel_aggregate_exchange(aggregate.input().as_ref());
+    let rejection = |candidate, blocker, single_stage: SinglePartitionOutcome| NativePlanRejection {
         candidate,
         reason: CapabilityReason::NativeDistributedAggregateUnsupported,
         blocker: Box::new(blocker),
+        single_partition: if reads_union_branches(below_exchange) {
+            SinglePartitionOutcome::StillRejected
+        } else {
+            single_stage
+        },
     };
-    let partial = peel_repartition(aggregate.input().as_ref()).downcast_ref::<AggregateExec>().ok_or_else(|| {
-        rejection(candidate.clone(), PlanBlocker::DistributedAggregate("the final stage has no partial stage below it"))
-    })?;
+    let Some(partial) = below_exchange.downcast_ref::<AggregateExec>() else {
+        let blocker = PlanBlocker::DistributedAggregate(format!(
+            "the final stage reads {} instead of a partial stage",
+            below_exchange.name()
+        ));
+        return Err(rejection(candidate, blocker, SinglePartitionOutcome::Lowers));
+    };
     if let Some(blocker) = distributed_aggregate_pair_defect(aggregate, partial) {
-        return Err(rejection(candidate, blocker));
+        return Err(rejection(candidate, blocker, single_stage_outcome(partial)));
     }
 
     Ok(DistributedAggregatePeel {
@@ -61,6 +74,40 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
         exchange: aggregate.input().downcast_ref::<AggregateExec>().is_none().then(|| aggregate.input().name()),
         aggregate_output_schema: aggregate.schema(),
     })
+}
+
+/// The plan below the exchange that feeds a final aggregate. A merge of sorted
+/// partitions is an exchange here: DataFusion places it below a final
+/// aggregate that streams over sorted groups, and the merge only interleaves
+/// the rows of its inputs. With a fetch it would drop rows, so it stays.
+fn peel_aggregate_exchange(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
+    match plan.downcast_ref::<SortPreservingMergeExec>() {
+        Some(merge) if merge.fetch().is_none() => merge.input().as_ref(),
+        _ => peel_repartition(plan),
+    }
+}
+
+/// What one partition does to a pair whose partial stage is `partial`: it
+/// lowers when DataFusion's single-stage aggregate over the same input passes
+/// native validation. An aggregate expression that no native kernel serves is
+/// rejected there as well.
+///
+/// DataFusion keeps both stages of a grouping set aggregate at any partition
+/// count, because the final stage groups on the grouping id the partial stage
+/// adds and `CombinePartialFinalAggregate` merges only stages with equal
+/// groups.
+fn single_stage_outcome(partial: &AggregateExec) -> SinglePartitionOutcome {
+    let single_stage_lowers = !partial.group_expr().has_grouping_set()
+        && AggregateExec::try_new(
+            AggregateMode::Single,
+            partial.group_expr().clone(),
+            partial.aggr_expr().to_vec(),
+            partial.filter_expr().to_vec(),
+            Arc::clone(partial.input()),
+            partial.input_schema(),
+        )
+        .is_ok_and(|single| validate_aggregate_for_native_lowering(&single, false).is_ok());
+    if single_stage_lowers { SinglePartitionOutcome::Lowers } else { SinglePartitionOutcome::StillRejected }
 }
 
 /// What keeps a final aggregate and the partial aggregate below it from
@@ -74,7 +121,7 @@ fn distributed_aggregate_pair_defect(
     final_aggregate: &AggregateExec,
     partial_aggregate: &AggregateExec,
 ) -> Option<PlanBlocker> {
-    let stages = |detail| Some(PlanBlocker::DistributedAggregate(detail));
+    let stages = |detail: &str| Some(PlanBlocker::DistributedAggregate(detail.to_string()));
     if !matches!(partial_aggregate.mode(), AggregateMode::Partial) {
         return stages("the lower stage is not a partial aggregate");
     }
@@ -98,7 +145,7 @@ fn distributed_aggregate_pair_defect(
             Some(expr) => {
                 PlanBlocker::Aggregate { function: expr.fun().name().to_string(), defect: AggregateDefect::Filter }
             },
-            None => PlanBlocker::DistributedAggregate("the stages differ in aggregate filters"),
+            None => PlanBlocker::DistributedAggregate("the stages differ in aggregate filters".to_string()),
         });
     }
     if !distributed_group_exprs_are_native_safe(final_aggregate, partial_aggregate) {

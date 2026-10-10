@@ -1202,13 +1202,6 @@ fn validate_window_capability(window: &WindowNode) -> Result<()> {
             WindowFunction::Aggregate { function, frame, .. } => {
                 match frame {
                     WindowFrame::WholePartition => {
-                        if window.spec.partition_by.is_empty() {
-                            return Err(QueryError::new(
-                                QueryErrorCode::UnsupportedOperator,
-                                "query_engine.window.validate",
-                                "native whole-partition aggregate windows require at least one partition key",
-                            ));
-                        }
                         if !window.spec.order_by.is_empty() {
                             return Err(QueryError::new(
                                 QueryErrorCode::UnsupportedOperator,

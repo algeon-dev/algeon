@@ -22,7 +22,7 @@ pub(crate) enum PlanBlocker {
     },
     /// Partial and final aggregate stages that native lowering cannot lower as
     /// one aggregate; the clause says what differs between them.
-    DistributedAggregate(&'static str),
+    DistributedAggregate(String),
     Window {
         function: String,
         defect: WindowDefect,
@@ -33,6 +33,20 @@ pub(crate) enum PlanBlocker {
         required_by: &'static str,
         ordering: Option<String>,
     },
+}
+
+/// What planning the query for one partition (`SET
+/// datafusion.execution.target_partitions = 1`) does to a candidate that
+/// DataFusion shaped for several partitions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SinglePartitionOutcome {
+    /// DataFusion plans a shape that native lowering handles.
+    #[default]
+    Lowers,
+    /// The blocker remains at one partition: the plan fixes its partitions
+    /// itself, or the rejected expression has no native form in a single
+    /// stage either.
+    StillRejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,7 +305,7 @@ fn plan_blocking(blocker: &PlanBlocker) -> Blocking {
         PlanBlocker::DistributedAggregate(difference) => Blocking::new(
             "distributed_aggregate",
             format!("distributed aggregate where {difference}"),
-            vec![("difference", (*difference).to_string())],
+            vec![("difference", difference.clone())],
         ),
         PlanBlocker::Window { function, defect } => {
             let mut fields = vec![("function", function.clone()), ("defect", defect.code().to_string())];

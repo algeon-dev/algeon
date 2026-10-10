@@ -568,7 +568,8 @@ impl ResidentResource {
         self.producer
     }
 
-    /// Tasks that consume the resource.
+    /// Tasks that consume the resource, listed once for each of their inputs
+    /// that reads it.
     pub fn consumers(&self) -> &[PipelineTaskId] {
         &self.consumers
     }

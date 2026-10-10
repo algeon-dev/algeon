@@ -29,7 +29,7 @@ fn validate_filter_uses_filter_lowering_for_large_left_deep_boolean_predicates()
 }
 
 #[test]
-fn validate_rejects_global_whole_partition_aggregate_window() {
+fn validate_accepts_whole_input_aggregate_window_without_partition_keys() {
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("k", ArrowDataType::Int32, false),
         Field::new("v", ArrowDataType::Int64, true),
@@ -52,10 +52,8 @@ fn validate_rejects_global_whole_partition_aggregate_window() {
         .unwrap();
     let plan = builder.finish_with_host_sink(window).unwrap();
 
-    let error = validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
-        .expect_err("global whole-partition aggregate windows are unsupported");
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
-    assert_eq!(error.operation(), "query_engine.window.validate");
+    validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
+        .expect("an empty partition list makes the whole input one partition");
 }
 
 #[test]

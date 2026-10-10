@@ -30,7 +30,7 @@ use serde_json::{Value, json};
 mod blocking;
 
 pub use blocking::Blocking;
-pub(crate) use blocking::{AggregateDefect, PlanBlocker, WindowDefect};
+pub(crate) use blocking::{AggregateDefect, PlanBlocker, SinglePartitionOutcome, WindowDefect};
 
 use crate::{capability::CapabilityReason, native::ExpressionRejection};
 
@@ -53,13 +53,16 @@ impl UnsupportedColumnDetail {
 /// unsupported column, the expression-contract rejection, the plan element
 /// (operator, aggregate or window function, or declared ordering), or the
 /// admission rejection (with the validator's code, operation, and facts) that
-/// caused it. [`Self::blocking`] is the one description of it.
+/// caused it. [`Self::blocking`] is the one description of it. The detail
+/// also says whether planning for one partition would lower the candidate,
+/// which the remedy of a reason that prescribes one partition reads.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotSupportedDetail {
     pub(crate) column: Option<UnsupportedColumnDetail>,
     pub(crate) expression: Option<Box<ExpressionRejection>>,
     pub(crate) blocker: Option<Box<PlanBlocker>>,
     pub(crate) admission: Option<Rejection>,
+    pub(crate) single_partition: SinglePartitionOutcome,
 }
 
 impl NotSupportedDetail {

@@ -5,7 +5,7 @@ use datafusion::{
     datasource::{memory::MemorySourceConfig, source::DataSourceExec},
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
     physical_plan::{
-        ExecutionPlan, ExecutionPlanProperties,
+        ExecutionPlan, ExecutionPlanProperties, Partitioning,
         aggregates::AggregateExec,
         coalesce_partitions::CoalescePartitionsExec,
         coop::CooperativeExec,
@@ -25,11 +25,12 @@ use query_planning::expr::LimitSpec as NativeLimitSpec;
 
 use crate::{
     capability::CapabilityReason,
+    native::validate::validate_sort_ordering,
     native_exec::{
         gpu_resident_producer_hard_output_row_upper_bound, gpu_resident_producer_input_name,
         gpu_resident_producer_unique_output_key,
     },
-    report::{GpuCandidate, PlanBlocker, UNSUPPORTED_NATIVE_PLAN_OPERATOR},
+    report::{GpuCandidate, PlanBlocker, SinglePartitionOutcome, UNSUPPORTED_NATIVE_PLAN_OPERATOR},
 };
 
 mod distributed_aggregate;
@@ -117,6 +118,7 @@ fn normalize_sort_preserving_merge<'a>(
         candidate: candidate.clone(),
         reason: CapabilityReason::NativeSortPreservingMergeUnsupported,
         blocker: Box::new(PlanBlocker::Operator(merge.name().to_string())),
+        single_partition: merge_single_partition_outcome(merge),
     };
     if !sort_ordering_is_column_keyed(merge.expr())
         || !plan_partitions_match_ordering(merge.input().as_ref(), merge.expr())
@@ -143,6 +145,20 @@ fn normalize_sort_preserving_merge<'a>(
         fetch: merge_fetch,
         input: Box::new(input),
     }))
+}
+
+/// What one partition does to a merge that normalization rejected. The merge
+/// stays when the partitions it reads are union branches. Otherwise DataFusion
+/// plans one sort over one partition, which lowers when native sort validation
+/// accepts the merge's keys.
+fn merge_single_partition_outcome(merge: &SortPreservingMergeExec) -> SinglePartitionOutcome {
+    if reads_union_branches(merge.input().as_ref())
+        || validate_sort_ordering(merge.expr(), &merge.input().schema()).is_err()
+    {
+        SinglePartitionOutcome::StillRejected
+    } else {
+        SinglePartitionOutcome::Lowers
+    }
 }
 
 /// The merge over its child sort becomes that sort. The child sort keeps at
@@ -257,6 +273,7 @@ fn normalize_native_input(
                 candidate,
                 reason: CapabilityReason::NativeLocalLimitPartitionUnsupported,
                 blocker: Box::new(PlanBlocker::Operator(limit.name().to_string())),
+                single_partition: SinglePartitionOutcome::Lowers,
             });
         }
         let input = normalize_native_input(limit.input().as_ref(), candidate, false)?;
@@ -299,6 +316,7 @@ fn normalize_native_input(
                     candidate,
                     reason: CapabilityReason::NativeOrderedOutputUnsupported,
                     blocker: Box::new(PlanBlocker::Operator(source_exec.name().to_string())),
+                    single_partition: SinglePartitionOutcome::Lowers,
                 });
             }
             return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::Memory(source_exec)));
@@ -360,6 +378,7 @@ fn normalize_native_input(
                 candidate,
                 reason: CapabilityReason::NativePartitionPreservingSortUnsupported,
                 blocker: Box::new(PlanBlocker::Operator(sort.name().to_string())),
+                single_partition: SinglePartitionOutcome::Lowers,
             });
         }
         let input = normalize_native_input(sort.input().as_ref(), candidate, true)?;
@@ -441,6 +460,7 @@ fn normalize_native_input(
         candidate,
         reason: CapabilityReason::UnsupportedOperator,
         blocker: Box::new(PlanBlocker::Operator(plan.name().to_string())),
+        single_partition: SinglePartitionOutcome::Lowers,
     })
 }
 
@@ -456,6 +476,29 @@ fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
     } else {
         plan
     }
+}
+
+/// Whether `stage` delivers the branches of a `UnionExec` as separate
+/// partitions to the operator above it. Each branch stays a partition at any
+/// `datafusion.execution.target_partitions`. An aggregate over a union keeps
+/// its partial and final stages at one partition, and a sort over a union keeps
+/// the merge of its sorted partitions.
+///
+/// The search follows the inputs of `stage` down to a union. A merge of
+/// partitions or a hash repartition on the way ends that path: the partitions
+/// below no longer reach the operator above. DataFusion also merges the
+/// collected side of a join, so a union there ends at the merge and only a
+/// union on the probe side counts.
+fn reads_union_branches(stage: &dyn ExecutionPlan) -> bool {
+    stage.is::<UnionExec>()
+        || stage.children().into_iter().any(|input| {
+            let ends_partitions = input.is::<CoalescePartitionsExec>()
+                || input.is::<SortPreservingMergeExec>()
+                || input
+                    .downcast_ref::<RepartitionExec>()
+                    .is_some_and(|repartition| matches!(repartition.partitioning(), Partitioning::Hash(..)));
+            !ends_partitions && reads_union_branches(input.as_ref())
+        })
 }
 
 fn data_source_is_memory(source_exec: &DataSourceExec) -> bool {

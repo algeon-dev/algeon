@@ -68,6 +68,15 @@ Sink: deferred_host_arrow (materialization by the wrapper)
         LocalParquetSource: read_columns=[customer_id, amount, status]
 ```
 
+A final aggregate reaches its partial stage through a repartition, a coalesce,
+or a merge of sorted partitions without a fetch. Each only moves or interleaves
+rows, so lowering peels it and keeps the partial aggregate as the executable
+aggregate under the final schema. DataFusion places the merge below a final
+aggregate that streams over sorted groups, which happens when a Parquet source
+declares its sort order. A merge with a fetch drops rows and stays unsupported,
+as does any other operator below the final stage. The rejection names that
+operator.
+
 Once this whole-query candidate is selected, the completed DataFusion tree
 contains the attempt's admission wrapper and the native execution wrapper:
 
