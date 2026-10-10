@@ -27,6 +27,7 @@ use super::{
         accepted_plan_contract_diagnostics, native_admission_decision, rejected_plan_contract_diagnostics,
     },
     fragment::FragmentSearch,
+    shared_resident::share_island_subplans,
 };
 use crate::{
     capability::CapabilityReason,
@@ -125,6 +126,19 @@ pub(super) fn optimize_final_native_plan(
         root_sink,
         optimizer_options,
     )?;
+    if let Some(island) = share_island_subplans(&attempt.plan, native_execution_config)? {
+        attempt.plan = island.root;
+        attempt.native_optimizer.merge(island.native_optimizer);
+        if let Some(root_admission) = island.root_admission
+            && let [accepted] = attempt.capability_contract.accepted_candidates.as_slice()
+        {
+            attempt.capability_contract = accepted_plan_contract_diagnostics(
+                accepted.candidate.clone(),
+                native_execution_config,
+                &root_admission,
+            )?;
+        }
+    }
     // Each lowering selects at most one candidate, so relation input outcomes
     // are appended only after the root and fragment lowerings consumed their
     // own reports.

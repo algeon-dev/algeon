@@ -97,6 +97,8 @@ pub use shared_resident_extraction::{
     SHARED_RESIDENT_EXTRACTION_RULE_NAME, SharedResidentExtractionCandidateDiagnostics,
     SharedResidentExtractionDecision, SharedResidentExtractionDiagnostics, SharedResidentExtractionReason,
 };
+#[doc(hidden)]
+pub use shared_resident_extraction::{SharedResidentFragments, extract_shared_resident_fragments};
 pub use shared_subplan_materialization::{
     SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, SharedSubplanMaterializationCandidateDiagnostics,
     SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions,

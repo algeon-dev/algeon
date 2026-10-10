@@ -49,12 +49,44 @@ fn column_expr_lineage(
     }
 }
 
-pub(super) fn expression_lineage_for_input(
+fn expression_lineage_for_input(
     plan: &QueryPlan,
     input_id: NodeId,
     expr: &Expr,
 ) -> Result<OutputLineage, CapabilityDecision> {
     column_expr_lineage(plan, input_id, expr, Reason::ExpressionLineageRequiresResolvedInputColumn)
+}
+
+/// Lineages of the fields that `expr`, evaluated over the output of
+/// `input_id`, reads.
+///
+/// A projection output is a row-wise function of the fields its expression
+/// reads, so reading it reads those fields. The walk descends through every
+/// projection and resolves the remaining columns with [`output_lineage`]; a
+/// literal reads no field.
+pub(super) fn expression_read_lineages(
+    plan: &QueryPlan,
+    input_id: NodeId,
+    expr: &Expr,
+) -> Result<Vec<OutputLineage>, CapabilityDecision> {
+    let mut lineages = Vec::new();
+    for column in expr.columns() {
+        let field_index =
+            resolve_column_field_index(plan, input_id, column, Reason::ExpressionLineageRequiresResolvedInputColumn)?;
+        match plan.node(input_id).map(|node| &node.kind) {
+            Some(PlanNode::Projection(projection)) => {
+                let Some(output) = projection.outputs.get(field_index) else {
+                    return Err(CapabilityDecision::rejected(
+                        Reason::OutputLineageProjectionFieldIndexOutOfRange,
+                        [("node_id", input_id.to_string()), ("field_index", field_index.to_string())],
+                    ));
+                };
+                lineages.extend(expression_read_lineages(plan, projection.input, &output.expr)?);
+            },
+            _ => lineages.push(output_lineage(plan, input_id, field_index)?),
+        }
+    }
+    Ok(lineages)
 }
 
 /// Resolves the identity of one output field of `node_id`.

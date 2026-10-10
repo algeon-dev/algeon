@@ -126,7 +126,9 @@ query_planning::naming::first_available_numeric_suffix_from	cross-crate	query-pl
 query_planning::naming::is_datafusion_order_column_name	cross-crate	query-planning naming	prod: algeon-query-engine, algeon-query-runtime	narrow to pub(crate) once no other workspace crate names it
 query_planning::optimizer::NativeOptimizerResult.shared_resident_producers	cross-crate	query-planning optimizer	prod: algeon-datafusion; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::optimizer::SharedResidentPlan	test-hooks	query-planning optimizer	tests: algeon-query-engine	delete once no test or tool names it
+query_planning::optimizer::SharedResidentFragments	cross-crate	query-planning optimizer	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
 query_planning::optimizer::SharedResidentProducerPlan	cross-crate	query-planning optimizer	prod: algeon-datafusion; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::optimizer::extract_shared_resident_fragments	cross-crate	query-planning optimizer	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
 query_planning::pipeline::model::CompiledPipeline::from_parts_unvalidated	test-hooks	query-planning pipeline::model	tests: algeon-query-engine	no test needs a pipeline that compilation does not produce
 query_planning::pipeline::physical::JoinPlan::allowed	cross-crate	query-planning pipeline	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::pipeline::physical::JoinPlan::form	cross-crate	query-planning pipeline	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it

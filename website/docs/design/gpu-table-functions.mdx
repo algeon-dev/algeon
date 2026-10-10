@@ -193,6 +193,19 @@ columns, graph or index state and output buffers can coexist in VRAM, and an
 allocation can fail at its domain's cap. The
 [memory and query lifetime page](./admission.mdx) describes that enforcement.
 
+DataFusion inlines a CTE at each reference, and projection pruning keeps in
+each copy only the columns its reader uses. When two or more native units of
+one attempt contain an identical subplan whose root reduces rows, an
+aggregate or a limit with a fetch, one producer computes it and the reading
+units list that producer as a GPU-resident input. The first reading unit to
+run computes the result. It stays resident under the attempt's grant until
+the last reading unit has read it. A chain of scans, filters, projections and
+joins streams chunk by chunk and is computed again by each reader. Copies
+that read different columns of a CTE differ after pruning, and each computes
+its own result. In `EXPLAIN` output the producer reports `shared_consumers`,
+and the `shared_resident_extraction` planning diagnostics record the decision
+for each node of each unit.
+
 ## Observe the boundaries
 
 Use the [plan and runtime artifacts](./native-lowering.mdx#connect-the-plan-to-an-execution)

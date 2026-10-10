@@ -46,6 +46,7 @@ use super::{
         AlgeonNativeMetrics, GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, SealedAttemptMetricsTarget,
     },
     producer::{GpuResidentProducer, gpu_resident_producer_input_name},
+    shared_resident::shared_resident_results,
 };
 use crate::error::{Error, ErrorCode, Result};
 
@@ -127,6 +128,9 @@ pub struct AlgeonNativeExec {
     /// Whether a composed GPU-resident unit resolved its plan and producers
     /// before the composed root acquired the native context.
     pub(super) prepared: bool,
+    /// Units of the composed island that read this GPU-resident output. Above
+    /// one, the island computes the output once and shares it.
+    shared_consumer_count: usize,
     pub(super) metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -228,9 +232,44 @@ impl AlgeonNativeExec {
             metrics_capture,
             graph_claim_calibration_capture: GraphClaimCalibrationCapture::default(),
             prepared: false,
+            shared_consumer_count: 1,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         })
+    }
+
+    /// A GPU-resident producer for `admitted` whose output `consumer_count`
+    /// units of one composed island read. The island computes it once, when
+    /// its first reading unit runs, and releases it after the last one.
+    pub(crate) fn try_new_shared_producer(
+        admitted: Arc<AdmittedPlan>,
+        input_name: String,
+        consumer_count: usize,
+        execution_config: AlgeonNativeExecutionConfig,
+    ) -> Result<Self> {
+        let mut producer =
+            Self::try_new(admitted, Vec::new(), NativeOutput::GpuResident { input_name }, execution_config, None)?;
+        producer.shared_consumer_count = consumer_count;
+        Ok(producer)
+    }
+
+    /// This unit running `admitted` over `gpu_inputs`, with its output,
+    /// configuration, metrics capture and declared properties.
+    pub(crate) fn with_rebound_plan(
+        &self,
+        admitted: Arc<AdmittedPlan>,
+        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Self> {
+        let mut unit = Self::try_new_with_metrics_capture(
+            admitted,
+            gpu_inputs,
+            self.output.clone(),
+            self.execution_config.clone(),
+            Some(self.cache.equivalence_properties().clone()),
+            self.metrics_capture.clone(),
+        )?;
+        unit.shared_consumer_count = self.shared_consumer_count;
+        Ok(unit)
     }
 
     /// A host unit for `plan` admitted as planning would.
@@ -690,13 +729,34 @@ impl GpuResidentProducer for AlgeonNativeExec {
             if !self.gpu_inputs.is_empty() {
                 return self.execute_composed_gpu_result(native_context, partition, task_context).await;
             }
+            let shared_results = if self.shared_consumer_count > 1 {
+                let results = shared_resident_results(&task_context).ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        "algeon_datafusion.native_gpu_producer.execute_gpu",
+                        "a shared GPU-resident producer ran outside the composed island of its consumers",
+                    )
+                    .with_log_safe_fact("reason", "shared_resident_scope_missing")
+                    .with_fact("input_name", self.gpu_result_input_name())
+                })?;
+                if let Some(handle) = results.take(self.gpu_result_input_name()) {
+                    return Ok((self.gpu_result_input_name().to_string(), handle));
+                }
+                Some(results)
+            } else {
+                None
+            };
             let admitted = super::lakehouse::resolve_admitted_plan(
                 self.execution_config.lakehouse_footer_pruning(),
                 &self.admitted,
                 task_context.as_ref(),
             )
             .await?;
-            self.execute_leaf_gpu_result(native_context, partition, &admitted)
+            let (input_name, handle) = self.execute_leaf_gpu_result(native_context, partition, &admitted)?;
+            if let Some(results) = shared_results {
+                results.retain(&input_name, &handle, self.shared_consumer_count - 1);
+            }
+            Ok((input_name, handle))
         })
     }
 }
@@ -715,6 +775,12 @@ impl DisplayAs for AlgeonNativeExec {
             ),
             Shape::Composed => format!(
                 "native_nodes={}, gpu_input_count={gpu_input_count}, sink=host_arrow, native_pipeline_execution_mode=bounded, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}",
+                plan.node_count(),
+                plan.contains_edge_normalize(),
+            ),
+            Shape::Producer if self.shared_consumer_count > 1 => format!(
+                "input_name={input_name}, shared_consumers={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}",
+                self.shared_consumer_count,
                 plan.node_count(),
                 plan.contains_edge_normalize(),
             ),
@@ -785,16 +851,9 @@ impl ExecutionPlan for AlgeonNativeExec {
             }
             return Ok(self);
         }
-        Self::try_new_with_metrics_capture(
-            Arc::clone(&self.admitted),
-            children,
-            self.output.clone(),
-            self.execution_config.clone(),
-            Some(self.cache.equivalence_properties().clone()),
-            self.metrics_capture.clone(),
-        )
-        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-        .map_err(DataFusionError::from)
+        self.with_rebound_plan(Arc::clone(&self.admitted), children)
+            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+            .map_err(DataFusionError::from)
     }
 
     fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {

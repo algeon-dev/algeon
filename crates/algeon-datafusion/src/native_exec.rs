@@ -61,6 +61,7 @@ mod native_node;
 mod occurrence;
 mod producer;
 pub(crate) mod relation_function;
+mod shared_resident;
 
 pub(crate) use common::{NativeHostOutputCursor, native_host_output_stream, run_gpu_execution_task};
 
