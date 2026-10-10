@@ -1,6 +1,11 @@
 import React, {type ComponentProps, type ReactNode} from 'react';
 import clsx from 'clsx';
 
+type Props = ComponentProps<'table'> & {
+  /** Smaller type and tighter cells, for a short reference table beside prose. */
+  dense?: boolean;
+};
+
 function getColumnCount(children: ReactNode): number {
   let count = 0;
   React.Children.forEach(children, (child) => {
@@ -20,7 +25,7 @@ function getColumnCount(children: ReactNode): number {
   return count;
 }
 
-export default function MDXTable(props: ComponentProps<'table'>) {
+export default function MDXTable({dense = false, ...props}: Props) {
   const colCount = getColumnCount(props.children);
   const isCompact = colCount > 0 && colCount <= 2;
   const isWide = colCount >= 5;
@@ -32,6 +37,7 @@ export default function MDXTable(props: ComponentProps<'table'>) {
         'thin-scrollbar',
         isCompact && 'table-responsive-wrapper--compact',
         isWide && 'table-responsive-wrapper--wide',
+        dense && 'table-responsive-wrapper--dense',
       )}
       data-col-count={colCount || undefined}
     >

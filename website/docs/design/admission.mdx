@@ -20,8 +20,27 @@ configured byte cap, and the query's allocator enforces it.
 An **attempt** is one execution lifecycle. Its first native work claims one
 compatible device and one immutable **grant**. A process-scoped backend shares
 admission across sessions, including embedded and server use. The bounded
-queue preserves request order; capacity pressure waits within configured
-deadlines, while missing device capabilities produce a structured error.
+queue preserves request order. A waiting attempt holds a task on the caller's
+runtime until a grant is placed, the attempt is cancelled or the
+[queue deadline](../integration/configuration.mdx#admission) passes; missing
+device capabilities produce a structured error.
+
+Below, `A_d` is the device's `max_active_attempts` and `S_d` its
+`source_work_per_attempt`.
+
+| Step | Runs on | Waits on | Bounded by |
+| --- | --- | --- | --- |
+| Plan and admission | The task polling the result stream on the [host runtime](./index.mdx#runtimes-and-threads). | The admission queue. | `max_queued_attempts` waiters and `max_queue_wait_ms`. |
+| Envelope | A `ContextSetup` job on the [GPU execution pool](./index.mdx#runtimes-and-threads). | A lifecycle job permit; cancellation ends the wait. | `A_d` lifecycle job permits. |
+| Execute the schedule | A `QueryExecution` job on one pool worker, plus [blocking-lane jobs](./gpu-execution.mdx#cuda-streams-and-dependencies) for chunk work. | Joins on lane jobs and source reads. | `A_d` lifecycle permits, and `S_d` auxiliary permits for lanes and reads. |
+| Each result chunk | One pool job per poll ([result egress](./gpu-execution.mdx#result-egress)). | `cudaStreamSynchronize` for the device-to-host copy. | 4 MiB per chunk and one `MemoryPool` reservation per stream. |
+| Terminal and release | A `Cleanup` job on the pool, then the stream cleanup thread. | `cudaStreamSynchronize` on each leased stream. | `A_d` release cleanup permits. |
+
+The first poll of a fragment's DataFusion stream obtains the attempt's grant
+and runs the fragment's whole GPU schedule. The result stays on the device;
+each later poll submits one job that moves at most 4 MiB to host memory. The
+device result and the grant are held until the stream reaches EOF, errors or is
+dropped.
 
 Every production query-engine execution belongs to an attempt. Plain
 DataFusion execution creates an internal attempt at its execution boundary;
@@ -62,6 +81,20 @@ current allocations total only 3 GiB. Other service limits can reduce that
 concurrency. These numbers are illustrative; deployments configure their own
 limits.
 
+Unless a profile sets `worker_count`, `stream_pool_size` and `lane_count`,
+each device derives these counts from `A_d` and `S_d`.
+
+| Resource | Count | Scope | Purpose |
+| --- | --- | --- | --- |
+| Worker threads | `A_d + 1` | Device | Pool workers, one kept free for lifecycle jobs. |
+| Lifecycle job permits | `A_d` | Device | Context setup and query execution jobs; release cleanup has its own `A_d`. |
+| Execution job permits | `A_d * S_d` | Device | Lane and source-read jobs. |
+| Stream pool | `A_d * (1 + S_d)` | Device | `A_d` root and `A_d * S_d` auxiliary streams, each created on first use. |
+| Attempt lanes | `A_d` | Device | One index per admitted attempt (`lane_count`). |
+| Auxiliary slots | `S_d` | Attempt | Permits behind each [execution lane](./gpu-execution.mdx#cuda-streams-and-dependencies) and source read. |
+| Native fork streams | `S_d + 1` | Attempt | Streams for libcudf's `fork_streams`, one reserved for the root stream. |
+| Source reads | `max_source_reads_in_flight`, default 2 | Attempt | A value above 1 enables source-read prefetch. |
+
 ### The allocation path {/* #allocation-enforcement */}
 
 <AllocationPath />
@@ -91,6 +124,17 @@ device-ledger charges; cache use does not make those bytes unaccounted for.
 Output and resident facts carry scope, occurrence, schema and provenance.
 
 Cancellation stops further submission while already submitted work is settled.
+`ExecutionCancellation` is a token with an optional deadline. The engine checks
+it at native boundaries (the next source chunk, task, operator or
+materialization step) and does not interrupt a CUDA call already running.
+Dropping the result stream cancels the attempt without blocking the caller's
+runtime, and the terminal outcome records `Dropped`, `Cancelled` or `Panicked`.
+The chunk coordinator joins its lane jobs and synchronizes their readiness
+events before the lane leases return. A stream lease returns to the pool only
+after the cleanup thread synchronizes it. Flight
+[connection loss](../integration/flight-sql-server.mdx#connection-loss) takes
+the same path through a per-statement token.
+
 The attempt releases its grant once its outcome is terminal and no fragment is
 running; ending one fragment's stream does not release the grant. Retained
 outputs and pending GPU work must settle before their resources can be reused.

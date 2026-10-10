@@ -1,11 +1,11 @@
 {
  "name": "merrec-agent-session",
- "recorded_at_utc": "2026-10-07",
+ "recorded_at_utc": "2026-10-08",
  "method": "Statements submitted over Arrow Flight SQL by an agent session against the MerRec scale server; responses are reproduced verbatim from the Flight status or the returned rows.",
  "server": {
   "config": "fixture/demo/merrec/scripts/scale/server.toml",
   "execution_mode": "native_required",
-  "binary_sha256": "63ecfba9699bd95c403955557c1c19012feb5f721585700bb72da954b1375063"
+  "binary_sha256": "d056bb09189db05e0b1ced0463aae97b12abdc0787b12cd41b1658ab6d622565"
  },
  "dataset": "MerRec, 1,268,092,738 events, May through October 2023",
  "steps": [
@@ -14,8 +14,8 @@
    "intent": "Which graph functions can rank brands around a seed?",
    "sql": "SELECT function_name, summary FROM gpu_list_functions() WHERE provider = 'cugraph' AND (function_name LIKE '%pagerank%' OR function_name LIKE '%jaccard%') ORDER BY function_name",
    "status": "ok",
-   "elapsed_s": 0.00593366683460772,
-   "query_id": "a50b39ca-36d7-450a-b0d2-b36cd04ddf35",
+   "elapsed_s": 0.006083660991862416,
+   "query_id": "8e470d08-69aa-400b-9e44-f6046927baa0",
    "rows": [
     {
      "function_name": "cugraph_jaccard",
@@ -36,8 +36,8 @@
    "intent": "What does personalized PageRank need?",
    "sql": "SELECT signature, relation_roles_json FROM gpu_describe_function('cugraph_personalized_pagerank')",
    "status": "ok",
-   "elapsed_s": 0.007838601944968104,
-   "query_id": "69eec630-cdc6-4d58-a489-62174c0257e6",
+   "elapsed_s": 0.006598253035917878,
+   "query_id": "6c2c95ee-d2c9-4cc7-a11c-3799c8d1fce0",
    "rows": [
     {
      "signature": "cugraph_personalized_pagerank(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, personalization => (relation subquery), alpha => value, epsilon => value, max_iterations => value)",
@@ -120,7 +120,7 @@
    "intent": "First attempt: personalization columns named by guess",
    "sql": "SELECT vertex, value\nFROM cugraph_personalized_pagerank(\n  edges => (SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n            FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n            WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n              AND e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'),\n  personalization => (SELECT 2595 AS brand_id, 1.0 AS weight),\n  directed => false)\nORDER BY value DESC LIMIT 5",
    "status": "error",
-   "elapsed_s": 0.0036388379521667957,
+   "elapsed_s": 0.0029144289437681437,
    "error": "Flight returned invalid argument error, with message: cuGraph side-input child is missing canonical column 'vertex'"
   },
   {
@@ -128,7 +128,7 @@
    "intent": "Second attempt: output column named by guess",
    "sql": "SELECT vertex, score\nFROM cugraph_personalized_pagerank(\n  edges => (SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n            FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n            WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n              AND e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'),\n  personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n  directed => false)\nORDER BY score DESC LIMIT 5",
    "status": "error",
-   "elapsed_s": 0.007797866128385067,
+   "elapsed_s": 0.005400744033977389,
    "error": "Flight returned invalid argument error, with message: No field named score. Valid fields are vertex, value."
   },
   {
@@ -136,11 +136,11 @@
    "intent": "Before spending GPU time: will the whole statement run on the GPU?",
    "sql": "EXPLAIN GPU\nWITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 2595\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25",
    "status": "ok",
-   "elapsed_s": 0.07577515114098787,
-   "query_id": "9d73b694-2822-4748-bba1-6e7ac4e47ed1",
+   "elapsed_s": 0.08640352194197476,
+   "query_id": "47cc45ae-ef3b-4f63-9980-00d9591b5db1",
    "summary": {
     "gpu_path": "native",
-    "gpu_fragments": 11,
+    "gpu_fragments": 15,
     "cpu_boundaries": 0,
     "outcome": "accepted_replaced"
    },
@@ -180,14 +180,14 @@
    "intent": "Run it: which brands moved toward Barbie's audience after the July release?",
    "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 2595\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;",
    "status": "ok",
-   "elapsed_s": 5.311978664947674,
-   "query_id": "acb594ca-f0e1-4809-b8ff-482ea80b4510",
+   "elapsed_s": 3.6859720500651747,
+   "query_id": "4daa4414-09db-4697-a049-afca8e160547",
    "execution": {
     "post_native_execution_path": "native",
-    "native_plan_fragment_count": "7",
+    "native_plan_fragment_count": "11",
     "host_datafusion_boundary_count": "0",
     "peak_gib": 13.18,
-    "elapsed_ms": "5288"
+    "elapsed_ms": "3663"
    },
    "rows": [
     {

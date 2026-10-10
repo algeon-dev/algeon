@@ -22,7 +22,9 @@ scores.
 <tbody>{capture.records.slice(0, 14).map(row => <tr key={`${row.brand_a}|${row.brand_b}`}><td>{row.brand_a}</td><td>{row.brand_b}</td><td>{n(row.fans_a)}</td><td>{n(row.fans_b)}</td><td>{row.jaccard.toFixed(3)}</td></tr>)}</tbody>
 </Table>
 
-The table shows the first 14 of {capture.rows} rows.
+The table shows the first 14 of {capture.rows} rows. The complete statement
+took **{capture.median_elapsed_s_after_first.toFixed(2)} s** over Flight SQL,
+including planning, execution and result receipt.
 
 Most of the highest-scoring pairs are one brand entered twice: TXT and
 Tomorrow X Together, Air Jordan and Jordan, Mugler and Thierry Mugler, Yves
@@ -42,10 +44,7 @@ window is one filter away.
 
 <div className="fineprint">
 
-{capture.runs.length > 1
-  ? `The statement ran ${capture.runs.length} times on the scale server configuration in native_required mode. The median Flight latency of runs 2 to ${capture.runs.length} was ${capture.median_elapsed_s_after_first.toFixed(2)} s, including planning, every step of the statement and result receipt.`
-  : `The statement ran once on the scale server configuration in native_required mode, with a Flight latency of ${capture.runs[0].elapsed_s.toFixed(2)} s.`}
-{' '}Each plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
+The plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
 The [capture](/data/merrec-scale-brand-twins.json) contains the executed SQL, query IDs, timings and every result row.
 
 </div>

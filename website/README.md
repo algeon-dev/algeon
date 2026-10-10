@@ -30,7 +30,10 @@ npm run build
 ```
 
 Generates static content into the `build/` directory, servable by any static
-host.
+host. The build first runs `npm run check:readme`, which compares the numbers
+in the root `README.md` that carry a `<!-- capture:… -->` marker against the
+demo captures in `static/data/`; a recapture that changes a result has to
+update the README as well.
 
 ```bash
 npm run serve   # preview the production build locally

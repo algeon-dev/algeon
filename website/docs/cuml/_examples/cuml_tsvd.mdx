@@ -7,16 +7,19 @@ This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.m
 
 The query projects all 3,225 Win32 challenge histograms from 512 dimensions to
 two components. The CPU geometry check measured 62.853% uncentered energy in
-those components. An independent CPU comparison of the transformed Gram matrix
-passed with relative Frobenius error `9.668349094726904e-07` against a
-`0.0001` tolerance.
+those components.
+
+<div className="fineprint">
+
+An independent CPU comparison of the transformed Gram matrix passed with
+relative Frobenius error `9.668349094726904e-07` against a `0.0001` tolerance.
+
+</div>
 
 The saved projections share all 3,225 rows. Switch among their coordinates
 while filtering by SHA-256, family, or the capture-local cluster IDs assigned
 by HDBSCAN after PCA-16. Family metadata is joined after the fit and does not
 enter the TSVD input.
-
-<EmberMap data={emberMap} initialProjection="tsvd" />
 
 ```sql
 -- Project all Win32 challenge histograms to two truncated-SVD components for
@@ -42,3 +45,5 @@ JOIN ember_research_vectors_challenge v ON v.id = p.id AND v.split = 'challenge'
 JOIN ember_metadata_challenge m ON m.id = v.id
 ORDER BY p.row_ordinal;
 ```
+
+<EmberMap data={emberMap} initialProjection="tsvd" />

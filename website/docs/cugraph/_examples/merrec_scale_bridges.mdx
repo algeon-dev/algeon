@@ -28,6 +28,9 @@ worlds the brand touches directly.
 <tbody>{capture.records.map(row => <tr key={row.brand_name}><td>{row.brand_name}</td><td>{n(row.fans)}</td><td>{n(row.neighbors)}</td><td>{row.worlds_reached}</td><td>{row.betweenness.toFixed(4)}</td></tr>)}</tbody>
 </Table>
 
+The complete statement took **{capture.median_elapsed_s_after_first.toFixed(2)} s**
+over Flight SQL, including planning, execution and result receipt.
+
 The connectors are mostly sellers and generic labels that the catalog
 stores in its brand field. Department stores and retailers (Walmart,
 JCPenney, Macy's, Claire's), house brands (Mainstays, Better Homes &
@@ -48,10 +51,7 @@ graph calls and the neighbor join without leaving the GPU.
 
 <div className="fineprint">
 
-{capture.runs.length > 1
-  ? `The statement ran ${capture.runs.length} times on the scale server configuration in native_required mode. The median Flight latency of runs 2 to ${capture.runs.length} was ${capture.median_elapsed_s_after_first.toFixed(2)} s, including planning, every step of the statement and result receipt.`
-  : `The statement ran once on the scale server configuration in native_required mode, with a Flight latency of ${capture.runs[0].elapsed_s.toFixed(2)} s.`}
-{' '}Each plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
+The plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
 The [capture](/data/merrec-scale-world-bridges.json) contains the executed SQL, query IDs, timings and every result row.
 
 </div>

@@ -1,5 +1,6 @@
 import CodeBlock from '@theme/CodeBlock';
 import capture from '@site/static/data/citation-investigation-capture.json';
+import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
 A catalog editor wants to compare citation-based groups with existing research
@@ -16,6 +17,8 @@ cover only part of each community.
 <thead><tr><th>Papers in group</th><th>Three most common catalog fields, with paper counts</th></tr></thead>
 <tbody>{capture.communities.rows.filter(row => row.rn === 1).map(row => <tr key={row.members}><td>{row.members.toLocaleString('en-US')}</td><td>{capture.communities.rows.filter(field => field.members === row.members).map(field => `${field.primary_fos} (${field.n.toLocaleString('en-US')})`).join('; ')}</td></tr>)}</tbody>
 </Table>
+
+<p className="fineprint">The query took {timings.queries.citation.communities.elapsed_s.toFixed(2)} s.</p>
 
 The 7,172-paper community combines convolutional neural network and deep
 learning labels in similar numbers. The 3,859-paper community is dominated

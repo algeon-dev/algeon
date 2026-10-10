@@ -1,5 +1,6 @@
 import CodeBlock from '@theme/CodeBlock';
 import capture from '@site/static/data/citation-investigation-capture.json';
+import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
 ### How does BERT connect to the original LSTM paper?
@@ -12,6 +13,8 @@ by title and year, follows those edges with BFS, and joins the path to titles.
 
 <ol>{capture.path.rows.map(row => <li key={row.path_index}>{row.title} ({row.year})</li>)}</ol>
 
+<p className="fineprint">The query took {timings.queries.citation.path.elapsed_s.toFixed(2)} s.</p>
+
 BFS returns one shortest path, with two citation steps. Its paper IDs can be
 joined to catalog records in the same statement, making the graph result a
 reading list. A citation path does not establish a causal history of ideas.
@@ -20,6 +23,8 @@ reading list. A citation path does not establish a causal history of ideas.
 which papers BERT cites that also cite LSTM.
 
 <CodeBlock language="sql">{capture.path_check.sql}</CodeBlock>
+
+<p className="fineprint">The query took {timings.queries.citation.path_check.elapsed_s.toFixed(2)} s.</p>
 
 It returns ten intermediate papers, including *Attention is all you need*.
 The BERT → Transformer → LSTM route is therefore another reading option.
@@ -43,6 +48,8 @@ AlexNet and then papers that cite those papers.
 <thead><tr><th>Shortest distance from AlexNet</th><th>Papers</th><th>Mean publication year</th></tr></thead>
 <tbody>{capture.reach.rows.slice(1).map(row => <tr key={row.distance}><td>{row.distance} {row.distance === 1 ? 'step' : 'steps'}</td><td>{row.papers.toLocaleString('en-US')}</td><td>{row.avg_year.toFixed(1)}</td></tr>)}</tbody>
 </Table>
+
+<p className="fineprint">The query took {timings.queries.citation.reach.elapsed_s.toFixed(2)} s.</p>
 
 The three layers contain 151,243 papers, excluding AlexNet itself. Each paper
 appears at its shortest distance. SQL defines the edge direction before BFS

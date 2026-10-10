@@ -1,0 +1,392 @@
+{
+  "captured_at_utc": "2026-10-08T07:25:30.360582+00:00",
+  "server": {
+    "binary_sha256": "d056bb09189db05e0b1ced0463aae97b12abdc0787b12cd41b1658ab6d622565",
+    "configuration": "fixture/demo/ember2024/scripts/scale/server.toml",
+    "execution_mode": "native_preferred",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "driver_version": "595.91.07",
+    "cuda_version": "13.2"
+  },
+  "timing_scope": "Flight SQL planning, execution and complete result receipt; excludes view registration, input preparation and result file writes.",
+  "summary": "Median of the retained observations after the initial execution; source files may be in the operating-system cache.",
+  "queries": {
+    "citation": {
+      "communities": {
+        "elapsed_s": 0.1724662920460105,
+        "sql_source": {
+          "file": "citation-investigation-capture.json",
+          "field": "communities.sql"
+        },
+        "sql_sha256": "69f4bf7c26f8d7a34b29401b548a3c9af119e208ec1f58d33997e456f1954987",
+        "observations": [
+          {
+            "elapsed_s": 0.17293554707430303,
+            "query_id": "6132a0e4-169a-4d0c-a4bf-690876d402d5",
+            "recorded_at_utc": "2026-10-08T06:01:51.092370+00:00",
+            "rows": 15,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "2",
+              "host_datafusion_boundary_count": "0"
+            }
+          },
+          {
+            "elapsed_s": 0.17199703701771796,
+            "query_id": "f67e49b4-5c23-4aae-b797-6c18e8cc028f",
+            "recorded_at_utc": "2026-10-08T06:01:51.268020+00:00",
+            "rows": 15,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "2",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "bibliography": {
+        "elapsed_s": 0.23826670448761433,
+        "sql_source": {
+          "file": "citation-investigation-capture.json",
+          "field": "bibliography.sql"
+        },
+        "sql_sha256": "157b503abb8471d9b114a5c4335228f16c9493859acc3a30714294b0928410ba",
+        "observations": [
+          {
+            "elapsed_s": 0.24378118407912552,
+            "query_id": "06a76b8d-9981-490e-8158-a7ba1629f79a",
+            "recorded_at_utc": "2026-10-08T06:01:52.047891+00:00",
+            "rows": 5,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "3",
+              "host_datafusion_boundary_count": "0"
+            }
+          },
+          {
+            "elapsed_s": 0.23275222489610314,
+            "query_id": "8ca8b5af-abb7-450f-86c8-b293e8f46a41",
+            "recorded_at_utc": "2026-10-08T06:01:52.284802+00:00",
+            "rows": 5,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "3",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "shared_references": {
+        "elapsed_s": 0.32675894850399345,
+        "sql_source": {
+          "file": "citation-investigation-capture.json",
+          "field": "shared_references.sql"
+        },
+        "sql_sha256": "75bcf07400e59ed7a843c075609d80834ea18c934fa66b50c6f8d0255e9cb6c1",
+        "observations": [
+          {
+            "elapsed_s": 0.3149465420283377,
+            "query_id": "e63bceab-4297-4389-9b3c-70012e68b676",
+            "recorded_at_utc": "2026-10-08T06:01:52.959155+00:00",
+            "rows": 8,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "1",
+              "host_datafusion_boundary_count": "0"
+            }
+          },
+          {
+            "elapsed_s": 0.3385713549796492,
+            "query_id": "7bfab7d1-4870-4e3a-9bfd-b44f5c9eb906",
+            "recorded_at_utc": "2026-10-08T06:01:53.300001+00:00",
+            "rows": 8,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "1",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "path": {
+        "elapsed_s": 0.18953896244056523,
+        "sql_source": {
+          "file": "citation-investigation-capture.json",
+          "field": "path.sql"
+        },
+        "sql_sha256": "5727ba60724278c6446059c751c168be37d211eda5ad8c5a8309eaf5cbf6f381",
+        "observations": [
+          {
+            "elapsed_s": 0.19092961307615042,
+            "query_id": "bc609312-b886-482f-82ea-f8483d02b23e",
+            "recorded_at_utc": "2026-10-08T06:01:53.719152+00:00",
+            "rows": 3,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "4",
+              "host_datafusion_boundary_count": "0"
+            }
+          },
+          {
+            "elapsed_s": 0.18814831180498004,
+            "query_id": "c836ee75-3854-4832-91bf-80a7448c4697",
+            "recorded_at_utc": "2026-10-08T06:01:53.910180+00:00",
+            "rows": 3,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "4",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "path_check": {
+        "elapsed_s": 0.518695461913012,
+        "sql_source": {
+          "file": "citation-investigation-capture.json",
+          "field": "path_check.sql"
+        },
+        "sql_sha256": "f5cd1fe6f247266d737f42908964b683d9753ffa921b40deb8d71425a9f9058d",
+        "observations": [
+          {
+            "elapsed_s": 0.5227985929232091,
+            "query_id": "e52a6fac-404e-48a5-87fe-c39891cc510d",
+            "recorded_at_utc": "2026-10-08T06:01:54.961808+00:00",
+            "rows": 10,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "1",
+              "host_datafusion_boundary_count": "0"
+            }
+          },
+          {
+            "elapsed_s": 0.5145923309028149,
+            "query_id": "a1e3c62e-f8e7-4ea7-bf49-fbedbeb68179",
+            "recorded_at_utc": "2026-10-08T06:01:55.479126+00:00",
+            "rows": 10,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "1",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "reach": {
+        "elapsed_s": 0.16850604652427137,
+        "sql_source": {
+          "file": "citation-investigation-capture.json",
+          "field": "reach.sql"
+        },
+        "sql_sha256": "3ba1c66d15bb65a5e3710b727b5e2ef9d6ab8a2560804a88f50d82ee66565061",
+        "observations": [
+          {
+            "elapsed_s": 0.16909847897477448,
+            "query_id": "e8c6a2d7-88f0-4360-8ad7-77f4e72cb6d4",
+            "recorded_at_utc": "2026-10-08T06:01:56.081635+00:00",
+            "rows": 4,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "3",
+              "host_datafusion_boundary_count": "0"
+            }
+          },
+          {
+            "elapsed_s": 0.16791361407376826,
+            "query_id": "fdc43719-42df-4db0-9a19-b0b5f8de82a0",
+            "recorded_at_utc": "2026-10-08T06:01:56.252466+00:00",
+            "rows": 4,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "3",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "elapsed_s": 0.9287267260951921,
+        "sql_source": {
+          "file": "website/docs/cugraph/_examples/citation_layout.mdx",
+          "field": "CodeBlock"
+        },
+        "sql_sha256": "28b01552fca54f299faea70e0312767302e8dbec25fa1a74f063dfe8d1a0e267",
+        "observations": [
+          {
+            "elapsed_s": 0.9228720110841095,
+            "query_id": "65a5c37e-7964-4d34-bb71-7900d727c71d",
+            "recorded_at_utc": "2026-10-08T06:01:58.150480+00:00",
+            "rows": 133,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "3",
+              "host_datafusion_boundary_count": "0"
+            }
+          },
+          {
+            "elapsed_s": 0.9345814411062747,
+            "query_id": "988f2e97-dfd4-4053-a4ab-de5a4b614a70",
+            "recorded_at_utc": "2026-10-08T06:01:59.090222+00:00",
+            "rows": 133,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "3",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      }
+    },
+    "ember": {
+      "temporal": {
+        "elapsed_s": 1256.1101570019964,
+        "sql_source": {
+          "file": "ember2024-full-temporal-capture.json",
+          "field": "sql"
+        },
+        "sql_sha256": "abf28334a0d0c2b352cb0ab3f0d43ee2932739d55230439c586032aad73191bc",
+        "observations": [
+          {
+            "elapsed_s": 1256.1101570019964,
+            "query_id": "d488102a-aa55-4ffb-8e76-8cda2c4078b3",
+            "recorded_at_utc": "2026-10-08T06:44:53.382205+00:00",
+            "rows": 2,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "7",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "forest_review": {
+        "elapsed_s": 0.23759446991607547,
+        "sql_source": {
+          "file": "ember2024-capture.json",
+          "field": "forest_review.sql"
+        },
+        "sql_sha256": "368f7641a880cb9924de4ce9f3b58a1fdb9154e6326e04c1bb5015dc21860c9d",
+        "observations": [
+          {
+            "elapsed_s": 0.23759446991607547,
+            "query_id": "60d9e740-69d1-48b0-ae2e-85264a3197ee",
+            "recorded_at_utc": "2026-10-08T06:45:00.217928+00:00",
+            "rows": 30,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "5",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "import_review": {
+        "elapsed_s": 0.1017925648484379,
+        "sql_source": {
+          "file": "ember2024-graph-capture.json",
+          "field": "result.sql"
+        },
+        "sql_sha256": "87fea854f3aa0d5b07f6af7aee973fcac35cb35a7b4f5e18af84bdb1daed4135",
+        "observations": [
+          {
+            "elapsed_s": 0.1017925648484379,
+            "query_id": "1d556de1-cf60-4229-bbcc-9e5c7556513c",
+            "recorded_at_utc": "2026-10-08T06:45:00.593696+00:00",
+            "rows": 15,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "5",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      }
+    },
+    "amazon": {
+      "travel_shortlist": {
+        "elapsed_s": 1.9827736669685692,
+        "sql_source": {
+          "file": "amazon-reviews-capture.json",
+          "field": "queries.travel_shortlist.sql"
+        },
+        "sql_sha256": "1a910d84cf7f4e888da69618a84fe6eeb8af990f089c5f11605fc85f802f0c38",
+        "observations": [
+          {
+            "elapsed_s": 1.9827736669685692,
+            "query_id": "99572c8c-fcfa-41d8-9747-219fa3a9f8fe",
+            "recorded_at_utc": "2026-10-08T07:24:23.303798+00:00",
+            "rows": 10,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "6",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "catalog_batch": {
+        "elapsed_s": 2.3899828870780766,
+        "sql_source": {
+          "file": "amazon-reviews-capture.json",
+          "field": "queries.catalog_batch.sql"
+        },
+        "sql_sha256": "6bd4db00ba705b0bcb2bfa6c8c91e465e1e4546148472df571cef28d7ba9d36c",
+        "observations": [
+          {
+            "elapsed_s": 2.3899828870780766,
+            "query_id": "4a2f6e50-4072-4da3-a857-df6b48d1cfb9",
+            "recorded_at_utc": "2026-10-08T07:24:28.857785+00:00",
+            "rows": 100000,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "4",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "headphone_emerging": {
+        "elapsed_s": 30.45946854702197,
+        "sql_source": {
+          "file": "amazon-reviews-capture.json",
+          "field": "queries.headphone_emerging.sql"
+        },
+        "sql_sha256": "3f52ce07e96032f17366425687e3daa6d866b86d8dc321489190a7cbd844f2f4",
+        "observations": [
+          {
+            "elapsed_s": 30.45946854702197,
+            "query_id": "802bdf0a-eff3-46c3-83c9-27da2003f066",
+            "recorded_at_utc": "2026-10-08T07:25:28.888841+00:00",
+            "rows": 10,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "3",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      },
+      "charging": {
+        "elapsed_s": 0.11928509920835495,
+        "sql_source": {
+          "file": "amazon-review-followup.json",
+          "field": "charging.sql"
+        },
+        "sql_sha256": "cb409d45cb37d96230f0a8431b2fbff51d619d786c0fec7bc4fa090e5dea9c85",
+        "observations": [
+          {
+            "elapsed_s": 0.11928509920835495,
+            "query_id": "b8b47e00-1198-4517-b92f-1fa16fb0645e",
+            "recorded_at_utc": "2026-10-08T07:25:30.300318+00:00",
+            "rows": 2,
+            "execution": {
+              "post_native_execution_path": "native",
+              "native_plan_fragment_count": "1",
+              "host_datafusion_boundary_count": "0"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

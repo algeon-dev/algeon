@@ -42,6 +42,9 @@ seed and the evaluation relations expand in place.
 <tbody>{capture.records.map(row => <tr key={row.stage}><td>{row.audience}</td><td>{n(row.shoppers)}</td><td>{n(row.pokemon_buyers_sep_oct)}</td><td>{pct(row, 3)}</td></tr>)}</tbody>
 </Table>
 
+The complete statement took **{capture.median_elapsed_s_after_first.toFixed(2)} s**
+over Flight SQL, including planning, execution and result receipt.
+
 The purchase rate rises at every stage. Previous viewers buy at {pct(byStage[2])},
 seven times the {pct(byStage[1], 3)} rate of all eligible shoppers. The graph
 audience reaches {pct(byStage[3])} and the taste lookalikes {pct(byStage[4])};
@@ -69,10 +72,7 @@ or two shoppers between runs.
 
 <div className="fineprint">
 
-{capture.runs.length > 1
-  ? `The statement ran ${capture.runs.length} times on the scale server configuration in native_required mode. The median Flight latency of runs 2 to ${capture.runs.length} was ${capture.median_elapsed_s_after_first.toFixed(2)} s, including planning, every stage and result receipt.`
-  : `The statement ran once on the scale server configuration in native_required mode, with a Flight latency of ${capture.runs[0].elapsed_s.toFixed(2)} s.`}
-{' '}Each plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
+The plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
 The [capture](/data/merrec-scale-audience-funnel.json) contains the executed SQL, query IDs, timings and every result row.
 
 </div>

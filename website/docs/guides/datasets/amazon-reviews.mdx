@@ -1,6 +1,7 @@
 ---
 sidebar_position: 4
-title: Amazon Reviews
+title: "Amazon Reviews 2023: Electronics Reviews and Product Metadata"
+sidebar_label: Amazon Reviews
 description: Follow catalog search and changing review groups back to saved product and review records.
 ---
 
@@ -8,14 +9,16 @@ import AmazonTravelShortlist from '../../cuvs/_examples/amazon_travel_shortlist.
 import AmazonReviewShift from '../../cuvs/_examples/amazon_review_shift.mdx';
 import capture from '@site/static/data/amazon-reviews-capture.json';
 
-# Amazon Reviews
+# Amazon Reviews 2023: Electronics Reviews and Product Metadata {/* #amazon-reviews */}
 
 These analyses ask which products meet a search request and which changes in
 reviews deserve investigation. SQL combines eligibility rules with vector
 search, or joins review groups to dates and original text. The results below
 include counterexamples that change how the scores should be interpreted.
 
-The Electronics snapshot contains 43,886,944 reviews and 1,610,012 products.
+The Electronics snapshot from
+[Amazon Reviews 2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023)
+contains 43,886,944 reviews and 1,610,012 products.
 Products and reviews join by `product_id`. The vector examples use prepared
 1,024-dimensional BGE-M3 embeddings for a sampled million products and a
 sampled million low-rating reviews. Text embedding was performed before SQL;
@@ -67,5 +70,8 @@ vector-query SQL, query IDs, result rows, and preparation metadata. The
 [follow-up capture](/data/amazon-review-followup.json) holds the later
 raw-table checks and original reviews. Both are historical records of the
 executed queries.
+
+The [query timings](/data/demo-query-timings.json) include planning, execution
+and result receipt.
 
 </div>

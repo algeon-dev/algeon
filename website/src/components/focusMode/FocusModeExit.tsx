@@ -39,11 +39,11 @@ export default function FocusModeExit(): ReactNode {
         aria-keyshortcuts="Escape"
         onClick={() => setActive(false)}
       >
-        <span className={styles.exitDetail}>
+        <span className={styles.controlDetail}>
           Focus mode
-          <kbd className={styles.exitKey}>Esc</kbd>
+          <kbd className={styles.controlKey}>Esc</kbd>
         </span>
-        <span className={styles.exitIcon}>
+        <span className={styles.controlIcon}>
           <IconClose />
         </span>
       </button>

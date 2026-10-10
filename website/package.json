@@ -5,7 +5,7 @@
   "scripts": {
     "docusaurus": "docusaurus",
     "start": "docusaurus start",
-    "build": "docusaurus build",
+    "build": "npm run check:readme && docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "wrangler pages deploy build --project-name=algeon --branch=main",
     "clear": "docusaurus clear",
@@ -13,7 +13,8 @@
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
     "typecheck": "tsc",
-    "sloplint": "node ../scripts/ci/sloplint/bin/sloplint.js"
+    "sloplint": "node ../scripts/ci/sloplint/bin/sloplint.js",
+    "check:readme": "node scripts/check-readme-numbers.mjs"
   },
   "dependencies": {
     "@docusaurus/core": "^3.10.2",

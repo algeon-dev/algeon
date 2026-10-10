@@ -623,8 +623,8 @@ export function StreamSchedule() {
       width={800}
       minWidth={680}
       height={640}
-      label="Asynchronous chunked aggregation across CUDA streams in one query attempt. Host workers in GpuExecutionPool asynchronously enqueue chunk operations into independent CUDA streams and record readiness events before recycling. Stream A and Stream B execute decode, filter, and partial aggregation concurrently in shared VRAM. A GPU-side completion fence (cudaStreamWaitEvent) synchronizes both streams into the root stream for the final grouped merge without CPU blocking."
-      caption="CPU workers enqueue operations and return immediately to the pool. Streams A and B execute concurrently on the GPU, sharing VRAM and memory bandwidth under one query cap. The root stream waits on GPU events before merging partial results.">
+      label="Asynchronous chunked aggregation across CUDA streams in one query attempt. Two blocking-lane jobs on the device's algeon-gpu-{d} runtime each enqueue one chunk into an independent CUDA stream, record a readiness event and return their permit. Stream A and Stream B execute decode, filter, and partial aggregation concurrently in shared VRAM. A GPU-side completion fence (cudaStreamWaitEvent) synchronizes both streams into the root stream for the final grouped merge without CPU blocking."
+      caption="Each blocking-lane job on the device runtime enqueues its chunk, records an event and returns its permit. Streams A and B execute concurrently on the GPU, sharing VRAM and memory bandwidth under one query cap. The root stream waits on GPU events before merging partial results.">
       {/* 1. Background Regions with native container labels */}
       {/* Top Tier: Host CPU Worker Pool */}
       <Region
@@ -632,7 +632,7 @@ export function StreamSchedule() {
         y={6}
         w={768}
         h={110}
-        label="Host CPU · GpuExecutionPool (OS worker threads)"
+        label="Host CPU · algeon-gpu-{d} runtime, blocking lane"
         labelOffset={16}
         tone="plain"
       />
@@ -740,8 +740,8 @@ export function StreamSchedule() {
         y={40}
         w={cardW}
         h={68}
-        name="Worker 1 (OS Thread · Lane 1)"
-        note={['Async enqueues Chunk 1 to Stream A', 'Records Event A, then thread recycles']}
+        name="Lane 1 · blocking-lane job"
+        note={['Enqueues Chunk 1 to Stream A', 'Records Event A, returns its permit']}
         tone="plain"
       />
       <Card
@@ -749,8 +749,8 @@ export function StreamSchedule() {
         y={40}
         w={cardW}
         h={68}
-        name="Worker 2 (OS Thread · Lane 2)"
-        note={['Async enqueues Chunk 2 to Stream B', 'Records Event B, then thread recycles']}
+        name="Lane 2 · blocking-lane job"
+        note={['Enqueues Chunk 2 to Stream B', 'Records Event B, returns its permit']}
         tone="plain"
       />
 
@@ -1010,21 +1010,32 @@ export function GpuUdtfFlow() {
 }
 
 export function AttemptLifetime() {
-  return <GuideFigure height={276}
-    label="Attempt lifecycle: planning proves required capabilities, execution joins admission, the runtime commits one device and grant, all fragments run, terminal work and retained owners are settled, then resources return to the ledger."
-    caption="Planning alone acquires no grant. Release follows terminal execution and successful cleanup, including retained outputs and pending GPU work.">
-    <Arrow id="attempt:queue" points={[[214, 48], [258, 48]]} />
-    <Arrow id="attempt:grant" points={[[462, 48], [506, 48]]} />
-    <Arrow id="attempt:run" points={[[608, 84], [608, 192]]} />
-    <BackedLabel x={492} y={140} text="one attempt across fragments" />
-    <Arrow id="attempt:settle" points={[[506, 228], [462, 228]]} />
-    <Arrow id="attempt:release" points={[[258, 228], [214, 228]]} />
-    <Card x={10} y={12} w={204} name="Capability proof" note="Before execution" tone="plan" />
-    <Card x={258} y={12} w={204} name="Admission queue" note="Wait for capacity" tone="engine" />
-    <Card x={506} y={12} w={204} name="Device + grant" note="Fixed for the attempt" tone="engine" />
-    <Card x={506} y={192} w={204} name="Execute" note="Shared allocation cap" tone="gpu" />
-    <Card x={258} y={192} w={204} name="Settle resources" note="Wait; release owners" tone="bridge" />
-    <Card x={10} y={192} w={204} name="Return capacity" note="After safe cleanup" tone="engine" />
+  return <GuideFigure height={460} minWidth={650}
+    label="Attempt lifecycle across three thread contexts. On the host runtime, the capability proof precedes execution and the attempt waits in the admission queue on the caller's task. On the device's algeon-gpu-{d} runtime, an envelope lifecycle job takes the lane, root stream and allocation domain, one QueryExecution job runs the whole GPU schedule on one worker, and each poll submits one job that materializes a chunk of at most 4 MiB, which the host runtime receives as an Arrow batch. The next poll loops back to the materialize job. When the stream reaches EOF, is dropped or is cancelled, the cleanup thread synchronizes the attempt's streams and returns capacity."
+    caption="The first poll waits for admission on the caller's task, then runs the whole GPU schedule as one pool job. Each later poll submits one job that moves at most 4 MiB to the host. Release follows the terminal outcome and the cleanup thread's synchronize.">
+    <Region x={8} y={8} w={704} h={116} label="host runtime" tone="plan" labelOffset={16} />
+    <Region x={8} y={172} w={704} h={116} label="algeon-gpu-{d} runtime" tone="gpu" labelOffset={16} />
+    <Region x={8} y={336} w={704} h={116} label="cleanup thread" tone="engine" labelOffset={16} />
+    <Arrow id="attempt:proof-queue" points={[[188, 78], [236, 78]]} />
+    <Arrow id="attempt:queue-envelope" points={[[318, 112], [318, 148], [208, 148], [208, 208]]} />
+    <Arrow id="attempt:envelope-execute" points={[[229, 242], [273, 242]]} />
+    <Arrow id="attempt:execute-materialize" points={[[433, 242], [477, 242]]} />
+    <Arrow id="attempt:materialize-batch" points={[[545, 208], [545, 112]]} />
+    <Arrow id="attempt:next-poll" points={[[620, 112], [620, 208]]} dashed />
+    <BackedLabel x={620} y={152} text="next poll" />
+    <Arrow id="attempt:release" points={[[674, 112], [674, 372]]} />
+    <BackedLabel x={600} y={316} text="EOF · drop · cancel" />
+    <Card x={24} y={44} w={164} h={68} name="Capability proof" note="Before execution" tone="plan" />
+    <Card x={236} y={44} w={164} h={68} name="Admission queue"
+      note={['Wait for capacity', "on the caller's task"]} tone="plan" />
+    <Card x={520} y={44} w={176} h={68} name="Arrow batch" note="≤ 4 MiB per poll" tone="bridge" />
+    <Card x={24} y={208} w={205} h={68} name="Envelope"
+      note={['Lifecycle job', 'Lane, root stream, domain']} tone="gpu" />
+    <Card x={273} y={208} w={160} h={68} name="Execute"
+      note={['QueryExecution job', 'One worker']} tone="gpu" />
+    <Card x={477} y={208} w={174} h={68} name="Materialize chunk" note="One job per poll" tone="gpu" />
+    <Card x={406} y={372} w={290} h={68} name="Synchronize, return capacity"
+      note="After the attempt's terminal outcome" tone="engine" />
   </GuideFigure>;
 }
 

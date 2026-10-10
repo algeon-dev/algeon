@@ -1,5 +1,6 @@
 import CodeBlock from '@theme/CodeBlock';
 import forestCapture from '@site/static/data/ember2024-capture.json';
+import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
 A review queue should retain both the model score and the feature contributions
@@ -22,6 +23,8 @@ Its three returned contributions are:
 <thead><tr><th>Feature block</th><th>Positive log-odds contribution</th></tr></thead>
 <tbody>{forestCapture.forest_review.rows.slice(0, 3).map(row => <tr key={row.rank}><td>{row.group_name}</td><td>+{row.positive_log_odds_contribution.toFixed(3)}</td></tr>)}</tbody>
 </Table>
+
+<p className="fineprint">The query took {timings.queries.ember.forest_review.elapsed_s.toFixed(2)} s.</p>
 
 The histogram and strings blocks contribute most among this file's returned
 positive blocks. They identify model inputs for further inspection. Negative

@@ -5,13 +5,47 @@
 
 .figure {
   margin: 2.4rem 0;
+  /* A figure with a narrow drawing switches to it by its own width. */
+  container: figure / inline-size;
 }
 
 /* Wide diagrams scale down to the SVG's minWidth, then scroll here instead of
-   overflowing the page. */
+   overflowing the page. Figure marks the edges the drawing runs past, and
+   those edges fade so the cut reads as scrollable. */
 .scroll {
   overflow-x: auto;
   padding-bottom: 2px;
+}
+
+.scroll[data-overflow='right'] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 3rem), transparent);
+}
+
+.scroll[data-overflow='left'] {
+  mask-image: linear-gradient(to right, transparent, #000 3rem);
+}
+
+.scroll[data-overflow='both'] {
+  mask-image: linear-gradient(to right, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
+}
+
+.canvas {
+  display: block;
+}
+
+.narrowCanvas {
+  display: none;
+}
+
+/* The threshold is FLOW_STACK_BELOW in Diagram.tsx. */
+@container figure (max-width: 719.98px) {
+  .wideCanvas {
+    display: none;
+  }
+
+  .narrowCanvas {
+    display: block;
+  }
 }
 
 .caption {

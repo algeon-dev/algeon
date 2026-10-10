@@ -13,18 +13,16 @@ import styles from '@site/src/css/homepage.module.css';
 
 <div className={styles.hero}>
 
-<p className={styles.tagline}>One Query. Any Data. Any Algorithm.</p>
-
-# GPU algorithms, composed through SQL.
+# Compose GPU algorithms with SQL.
 
 <p className={styles.lead}>Run graph, vector, and machine-learning algorithms on SQL subqueries, then join and filter their results in the same statement.</p>
 
 <div className={styles.actions}>
-  <Link className="button button--primary" to="/build">Build &amp; run</Link>
-  <Link className="button button--outline button--secondary" to="#available-building-blocks">Explore SQL APIs</Link>
+  <Link className="button button--primary" to="/guides/datasets/merrec#barbie">See a SQL example</Link>
+  <Link className="button button--outline button--secondary" to="/build">Build &amp; run</Link>
 </div>
 
-<p className={styles.heroNote}>What it can do: <Link to="/guides/datasets">see the demo datasets</Link>, each question answered by one SQL statement with its captured result.<br />How it works: <Link to="/design">read the design</Link>, which follows a query from SQL to GPU columns and back.</p>
+<p className={styles.heroNote}>A Rust library for Apache DataFusion sessions, also served as an Arrow Flight SQL server. <br />How it works: <Link to="/design">read the design</Link>, which follows a query from SQL to GPU columns and back.</p>
 
 </div>
 
@@ -35,10 +33,11 @@ and gets rows back. SQL groups those rows, joins them to names or labels, or
 passes them to another UDTF. The
 [MerRec campaign statement](./guides/datasets/merrec.mdx#audience-funnel)
 ranks a graph's output, searches vectors among the result, scores the union
-with a trained model and counts the outcome, inside one physical plan.
+with a trained model and counts the outcome, inside one physical plan. The
+other [demo datasets](./guides/datasets/index.mdx) apply the same pattern to
+a citation graph, a product catalog and a malware benchmark.
 
 <FlowDiagram
-  minWidth={680}
   ariaLabel="SQL subquery to GPU UDTF to result rows in the same statement."
   nodes={[
     {

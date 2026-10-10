@@ -34,9 +34,6 @@ preserves the full SHA values.
 | `0` | 59 | 59 | `snackarcin` | 46 |
 | `2` | 35 | 3 | `fragtor` | 2 |
 
-The [saved capture](/data/ember2024-capture.json) retains the SQL, all eight
-result rows, query ID and execution conditions.
-
 ```sql
 WITH reduced AS (
   SELECT id, pc_0, pc_1, pc_2, pc_3, pc_4, pc_5, pc_6, pc_7,
@@ -86,7 +83,14 @@ ORDER BY cluster_files DESC, cluster_id;
 
 The query orders the input by `id`, which fixes the input sequence represented
 by this capture. It does not guarantee identical fitted memberships or label
-numbers across hardware and software environments. The observed execution
+numbers across hardware and software environments.
+
+<div className="fineprint">
+
+The [saved capture](/data/ember2024-capture.json) retains the SQL, all eight
+result rows, query ID and execution conditions. The observed execution
 used a dedicated EMBER server and had `partial_native` disposition: PCA and
 HDBSCAN ran on the GPU; the statement also included CPU window processing.
 The saved runtime observation identifies this execution path.
+
+</div>

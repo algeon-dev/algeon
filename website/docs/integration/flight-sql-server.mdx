@@ -121,19 +121,24 @@ with dbapi.connect(uri="grpc://127.0.0.1:50051") as conn:
 The same endpoint works with other ADBC language bindings. Keep pooling,
 timeouts, authentication, and result conversion in the client service.
 
-## Connection loss and result backpressure
+## Connection loss and result backpressure {/* #connection-loss */}
 
 The server sends an HTTP/2 keepalive ping after 30 seconds without inbound
 traffic. An acknowledgement must arrive within 10 seconds; otherwise the
 connection closes. The same settings apply when the server binds its address
 and when an embedded caller supplies a prebound listener. Connection loss
 drops the Flight result stream, cancels its attempt, and releases the GPU grant
-after native cleanup completes.
+after native cleanup completes. Each statement registers a cancellation token
+derived from the server's shutdown token; when it fires, the next poll of the
+result body cancels the attempt and drops the inner stream (see [Completion and
+resident data](../design/admission.mdx#resident-handoff-and-release)).
 
 A client that acknowledges pings but stops reading results keeps its query
 under output backpressure and retains its grant until the stream ends or is
-canceled. Keepalive sets no query idle deadline. Clients should consume or
-cancel result streams before returning a connection to their pool.
+canceled. Result chunks are at most 4 MiB, and an unread result probably
+holds back further polls through HTTP/2 flow control. Keepalive sets no query
+idle deadline. Clients should consume or cancel result streams before
+returning a connection to their pool.
 
 ## Use an interactive client
 

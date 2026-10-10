@@ -31,10 +31,9 @@ const WORLD_CLASSES = [
   styles.world10, styles.world11, styles.world12, styles.world13,
 ];
 
-const WIDTH = 900;
-const PADDING = 14;
-const MIN_HEIGHT = 520;
-const MAX_HEIGHT = 680;
+// ForceAtlas2 with gravity yields a roughly round cloud, so a square plot wastes the least space.
+const SIZE = 600;
+const PADDING = 12;
 const HIT_SLACK = 5;
 const TOP_COUNT = 10;
 const UNLABELLED = 'Unlabelled world';
@@ -47,9 +46,12 @@ function circles(dots: Dot[]): React.ReactElement[] {
   return dots.map(dot => <circle key={dot.brand.id} cx={dot.cx} cy={dot.cy} r={dot.r} />);
 }
 
+const worldClass = (index: number) => WORLD_CLASSES[index % WORLD_CLASSES.length];
+
 export default function BrandMap({data}: {data: BrandMapCapture}): React.ReactElement {
   const id = useId();
-  const [selected, setSelected] = useState('all');
+  // Indexes into data.worlds; an empty set shows every world at full strength.
+  const [selected, setSelected] = useState<ReadonlySet<number>>(() => new Set());
   const [hoverId, setHoverId] = useState<number | null>(null);
 
   const layout = useMemo(() => {
@@ -65,11 +67,10 @@ export default function BrandMap({data}: {data: BrandMapCapture}): React.ReactEl
     }
     const dx = x1 - x0 || 1;
     const dy = y1 - y0 || 1;
-    const height = Math.round(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, WIDTH * dy / dx)));
     // One scale for both axes keeps ForceAtlas2 distances comparable in x and y.
-    const scale = Math.min((WIDTH - 2 * PADDING) / dx, (height - 2 * PADDING) / dy);
-    const left = (WIDTH - dx * scale) / 2;
-    const top = (height - dy * scale) / 2;
+    const scale = (SIZE - 2 * PADDING) / Math.max(dx, dy);
+    const left = (SIZE - dx * scale) / 2;
+    const top = (SIZE - dy * scale) / 2;
 
     const worldIndex = new Map(data.worlds.map((world, index) => [world.world, index]));
     const dots: Dot[] = data.brands
@@ -88,7 +89,6 @@ export default function BrandMap({data}: {data: BrandMapCapture}): React.ReactEl
       (index === undefined ? unlabelled : byWorld[index]).push(dot);
     }
     return {
-      height,
       dots,
       byWorld,
       unlabelled,
@@ -99,7 +99,7 @@ export default function BrandMap({data}: {data: BrandMapCapture}): React.ReactEl
           <g className={`${styles.dots} ${styles.unlabelled}`}>{circles(unlabelled)}</g>
           {byWorld.map((group, index) => (
             <g key={data.worlds[index].world}
-              className={`${styles.dots} ${styles.labelled} ${WORLD_CLASSES[index % WORLD_CLASSES.length]}`}>
+              className={`${styles.dots} ${styles.labelled} ${worldClass(index)}`}>
               {circles(group)}
             </g>
           ))}
@@ -108,13 +108,19 @@ export default function BrandMap({data}: {data: BrandMapCapture}): React.ReactEl
     };
   }, [data.brands, data.worlds]);
 
-  const selectedIndex = selected === 'all'
-    ? -1
-    : data.worlds.findIndex(world => String(world.world) === selected);
-  const selectedWorld = selectedIndex >= 0 ? data.worlds[selectedIndex] : null;
-  const selectedClass = selectedIndex >= 0 ? WORLD_CLASSES[selectedIndex % WORLD_CLASSES.length] : '';
-  const selectedDots = selectedIndex >= 0 ? layout.byWorld[selectedIndex] : [];
+  // Legend order, so highlight layers and swatches do not depend on click order.
+  const selection = useMemo(
+    () => data.worlds.flatMap((_, index) => (selected.has(index) ? [index] : [])),
+    [data.worlds, selected],
+  );
+  const filtering = selection.length > 0;
+  const selectedDots = useMemo(
+    () => selection.flatMap(index => layout.byWorld[index]).sort((a, b) => b.brand.fans - a.brand.fans),
+    [selection, layout.byWorld],
+  );
   const topBrands = selectedDots.slice(0, TOP_COUNT);
+  const selectedBrands = selection.reduce((sum, index) => sum + data.worlds[index].brands, 0);
+  const selectedLinks = selection.reduce((sum, index) => sum + data.worlds[index].fans, 0);
   const hovered = hoverId === null ? undefined : layout.byId.get(hoverId);
   const hoveredIndex = hovered ? layout.worldIndex.get(hovered.brand.world) : undefined;
   const hoveredWorld = hoveredIndex === undefined ? null : data.worlds[hoveredIndex];
@@ -122,12 +128,12 @@ export default function BrandMap({data}: {data: BrandMapCapture}): React.ReactEl
   const locate = (event: React.PointerEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width === 0) return;
-    const ratio = WIDTH / rect.width;
+    const ratio = SIZE / rect.width;
     const px = (event.clientX - rect.left) * ratio;
     const py = (event.clientY - rect.top) * ratio;
     let nearest: number | null = null;
     let nearestGap = HIT_SLACK;
-    for (const dot of selectedIndex >= 0 ? selectedDots : layout.dots) {
+    for (const dot of filtering ? selectedDots : layout.dots) {
       const gap = Math.hypot(dot.cx - px, dot.cy - py) - dot.r;
       if (gap < nearestGap) {
         nearestGap = gap;
@@ -136,94 +142,120 @@ export default function BrandMap({data}: {data: BrandMapCapture}): React.ReactEl
     }
     setHoverId(nearest);
   };
-  const selectWorld = (value: string) => {
-    setSelected(value);
+  const toggleWorld = (index: number) => {
+    setSelected(current => {
+      const next = new Set(current);
+      if (!next.delete(index)) next.add(index);
+      return next;
+    });
+    setHoverId(null);
+  };
+  const clearWorlds = () => {
+    setSelected(new Set());
     setHoverId(null);
   };
   const brandCount = integer.format(data.brands.length);
+  const panelTitle = selection.length === 1
+    ? data.worlds[selection[0]].label
+    : `${selection.length} worlds`;
 
   return (
     <figure className={styles.figure}>
-      <div className={styles.controls}>
-        <label htmlFor={`${id}-world`}>
-          Shopping world
-          <select id={`${id}-world`} value={selected} onChange={event => selectWorld(event.target.value)}>
-            <option value="all">All worlds</option>
-            {data.worlds.map(world => (
-              <option key={world.world} value={String(world.world)}>
-                {`${world.label} (${integer.format(world.brands)} brands)`}
-              </option>
+      <div className={styles.stage}>
+        <div className={styles.mapBox}>
+          <svg className={styles.plot} viewBox={`0 0 ${SIZE} ${SIZE}`} role="img"
+            aria-label={`Scatter plot of ${brandCount} brands. Each dot is a brand, sized by fans and colored by shopping world. Use the world buttons and the brand list for the same information as text.`}
+            onPointerMove={locate}
+            onPointerDown={locate}
+            onPointerLeave={event => { if (event.pointerType !== 'touch') setHoverId(null); }}>
+            <g className={filtering ? `${styles.layer} ${styles.faded}` : styles.layer}>{layout.base}</g>
+            {selection.map(index => (
+              <g key={data.worlds[index].world}
+                className={`${styles.dots} ${styles.labelled} ${styles.highlight} ${worldClass(index)}`}>
+                {circles(layout.byWorld[index])}
+              </g>
             ))}
-          </select>
-        </label>
+            {hovered ? <circle className={styles.ring} cx={hovered.cx} cy={hovered.cy} r={hovered.r + 2.5} /> : null}
+          </svg>
+          <p className={hovered ? styles.readout : `${styles.readout} ${styles.hint}`} aria-live="polite">
+            {hovered
+              ? `${hovered.brand.name}, ${hoveredWorld?.label ?? UNLABELLED}, ${integer.format(hovered.brand.fans)} fans`
+              : 'Hover or tap a dot for its brand, world and fans.'}
+          </p>
+        </div>
+
+        <div className={styles.side}>
+          <div className={styles.sideInner}>
+            <div className={styles.legendBar}>
+              <span id={`${id}-worlds`} className={styles.legendTitle}>Shopping worlds</span>
+              <span className={styles.legendStatus} aria-live="polite">
+                {filtering ? `${selection.length} of ${data.worlds.length} selected` : 'Select to compare'}
+              </span>
+              <button type="button" className={styles.clear} onClick={clearWorlds} disabled={!filtering}>
+                Clear
+              </button>
+            </div>
+            <ul className={filtering ? `${styles.legend} ${styles.filtering}` : styles.legend}
+              role="group" aria-labelledby={`${id}-worlds`}>
+              {data.worlds.map((world, index) => (
+                <li key={world.world}>
+                  <button type="button" className={worldClass(index)} aria-pressed={selected.has(index)}
+                    title={world.label} onClick={() => toggleWorld(index)}>
+                    <i className={styles.swatch} />
+                    <span>{world.label}</span>
+                    <small>{integer.format(world.brands)}</small>
+                  </button>
+                </li>
+              ))}
+              {layout.unlabelled.length > 0 ? (
+                <li className={styles.otherWorlds}>
+                  <i className={`${styles.swatch} ${styles.unlabelled}`} />
+                  <span>Unlabelled worlds</span>
+                  <small>{integer.format(layout.unlabelled.length)}</small>
+                </li>
+              ) : null}
+            </ul>
+          </div>
+        </div>
       </div>
 
-      <svg className={styles.plot} viewBox={`0 0 ${WIDTH} ${layout.height}`} role="img"
-        aria-label={`Scatter plot of ${brandCount} brands. Each dot is a brand, sized by fans and colored by shopping world. Use the world selector and the brand list below for the same information as text.`}
-        onPointerMove={locate}
-        onPointerDown={locate}
-        onPointerLeave={event => { if (event.pointerType !== 'touch') setHoverId(null); }}>
-        <g className={selectedWorld ? `${styles.layer} ${styles.faded}` : styles.layer}>{layout.base}</g>
-        {selectedWorld ? (
-          <g className={`${styles.dots} ${styles.labelled} ${styles.highlight} ${selectedClass}`}>
-            {circles(selectedDots)}
-          </g>
-        ) : null}
-        {hovered ? <circle className={styles.ring} cx={hovered.cx} cy={hovered.cy} r={hovered.r + 2.5} /> : null}
-      </svg>
-
-      <p className={styles.tooltip} aria-live="polite">
-        {hovered
-          ? `${hovered.brand.name}, ${hoveredWorld?.label ?? UNLABELLED}, ${integer.format(hovered.brand.fans)} fans`
-          : 'Hover a dot to see its brand, world and fans.'}
-      </p>
-
-      {selectedWorld ? (
-        <div className={`${styles.panel} ${selectedClass}`}>
+      {filtering ? (
+        <div className={styles.panel}>
           <div className={styles.panelHeading}>
-            <i className={styles.swatch} />
-            <h4>{`${selectedWorld.label}: top ${topBrands.length} brands by fans`}</h4>
-            <span>{`${integer.format(selectedWorld.brands)} brands, ${integer.format(selectedWorld.fans)} brand–fan links in this world`}</span>
+            <span className={styles.swatches}>
+              {selection.map(index => (
+                <i key={data.worlds[index].world} className={`${styles.swatch} ${worldClass(index)}`} />
+              ))}
+            </span>
+            <h4>{`${panelTitle}: top ${topBrands.length} brands by fans`}</h4>
+            <span>{`${integer.format(selectedBrands)} brands, ${integer.format(selectedLinks)} brand–fan links selected`}</span>
           </div>
           <ol className={styles.topList}>
-            {topBrands.map(dot => (
-              <li key={dot.brand.id}>
-                <button type="button"
-                  onMouseEnter={() => setHoverId(dot.brand.id)}
-                  onMouseLeave={() => setHoverId(null)}
-                  onFocus={() => setHoverId(dot.brand.id)}
-                  onBlur={() => setHoverId(null)}
-                  onClick={() => setHoverId(dot.brand.id)}>
-                  <span>{dot.brand.name}</span>
-                  <strong>{integer.format(dot.brand.fans)}</strong>
-                </button>
-              </li>
-            ))}
+            {topBrands.map(dot => {
+              const index = layout.worldIndex.get(dot.brand.world);
+              return (
+                <li key={dot.brand.id}>
+                  <button type="button" className={index === undefined ? undefined : worldClass(index)}
+                    onMouseEnter={() => setHoverId(dot.brand.id)}
+                    onMouseLeave={() => setHoverId(null)}
+                    onFocus={() => setHoverId(dot.brand.id)}
+                    onBlur={() => setHoverId(null)}
+                    onClick={() => setHoverId(dot.brand.id)}>
+                    <i className={styles.swatch} />
+                    <span>{dot.brand.name}</span>
+                    {/* Some world hues are close, so a multi-world ranking names each brand's world. */}
+                    {selection.length > 1 && index !== undefined ? <small>{data.worlds[index].label}</small> : null}
+                    <strong>{integer.format(dot.brand.fans)}</strong>
+                  </button>
+                </li>
+              );
+            })}
           </ol>
         </div>
-      ) : (
-        <ul className={styles.legend}>
-          {data.worlds.map((world, index) => (
-            <li key={world.world}>
-              <button type="button" onClick={() => selectWorld(String(world.world))}>
-                <i className={`${styles.swatch} ${WORLD_CLASSES[index % WORLD_CLASSES.length]}`} />
-                <span>{world.label}</span>
-                <small>{integer.format(world.brands)}</small>
-              </button>
-            </li>
-          ))}
-          {layout.unlabelled.length > 0 ? (
-            <li className={styles.otherWorlds}>
-              <i className={`${styles.swatch} ${styles.unlabelled}`} />
-              <span>Unlabelled worlds</span>
-              <small>{integer.format(layout.unlabelled.length)}</small>
-            </li>
-          ) : null}
-        </ul>
-      )}
+      ) : null}
 
       <figcaption>
-        {`${brandCount} brands placed by ForceAtlas2 from shared fans; colors are Leiden shopping worlds. Dot area grows with fans. Gray dots belong to worlds without a label. Select a world to highlight it and list its most-liked brands.`}
+        {`${brandCount} brands placed by ForceAtlas2 from shared fans; colors are Leiden shopping worlds. Dot area grows with fans. Gray dots belong to worlds without a label. Select one or more worlds to highlight them and rank their most-liked brands together.`}
       </figcaption>
     </figure>
   );

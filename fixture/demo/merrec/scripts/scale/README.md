@@ -111,7 +111,7 @@ normalization, and does not measure the complete exploration latency.
 
 The complete six-month input produces 1,682,503,472 normalized directed edges
 for the undirected graph and 87,055,073 vertices. All five runs of the unchanged
-statement completed within the 90 GiB grant. The first run took 19.24 s;
+statement completed within the 90 GiB grant.
 the median of the remaining four was 19.31 s. Each run had a query allocator
 peak of 89.07 GiB, two native fragments, zero host boundaries, and zero retries.
 PageRank converged after 75 iterations. No additional time or cohort filter
@@ -245,13 +245,18 @@ plus uncommitted engine fixes (whole-input `OVER ()` windows, temporal casts
 and checked timestamp arithmetic, union inputs that read one producer twice,
 and rejection and memory-failure diagnostics), the configuration above, and
 cached source files. Single-run statements report that run's latency.
+Statements `10`, `32` and `33` were recaptured on 2026-10-08 with a release
+server built from commit `275aac60c` plus the uncommitted shared edge-input
+fix. Each period's DISTINCT edge relation is computed once and read by both
+graph calls, and the fragment count includes those two producers. The result
+rows are identical to the 2026-10-07 captures.
 
 | File | Runs | Median after first (s) | Native fragments | Host boundaries | Allocator peak (GiB) |
 |---|---:|---:|---:|---:|---:|
 | `07_brand_overlap.sql` | 3 | 6.12 | 3 | 0 | 17.20 |
 | `08_brand_twins.sql` | 3 | 6.68 | 3 | 0 | 74.74 |
 | `09_shopping_worlds.sql` | 3 | 9.11 | 4 | 0 | 54.46 |
-| `10_barbie_tie_ins.sql` | 3 | 4.87 | 7 | 0 | 13.18 |
+| `10_barbie_tie_ins.sql` | 3 | 3.82 | 11 | 0 | 13.18 |
 | `11_brand_map.sql` | 3 | 17.74 | 7 | 0 | 54.46 |
 | `12_session_audit.sql` | 3 | 2.30 | 2 | 0 | 20.04 |
 | `13_pokemon_lookalikes.sql` | 3 | 21.88 | 7 | 0 | 25.06 |
@@ -271,8 +276,8 @@ cached source files. Single-run statements report that run's latency.
 | `29_ann_cagra_10k.sql` | 3 | 8.03 | 4 | 0 | 2.12 |
 | `30_audience_funnel.sql` | 3 | 20.80 | 9 | 0 | 18.19 |
 | `31_world_bridges.sql` | 3 | 23.80 | 9 | 0 | 54.74 |
-| `32_barbie_control_hot_wheels.sql` | 3 | 5.02 | 7 | 0 | 13.18 |
-| `33_barbie_control_nike.sql` | 3 | 4.98 | 7 | 0 | 13.15 |
+| `32_barbie_control_hot_wheels.sql` | 3 | 3.85 | 11 | 0 | 13.18 |
+| `33_barbie_control_nike.sql` | 3 | 3.79 | 11 | 0 | 13.15 |
 
 Files `30` to `33` were captured later the same day on a release build of
 `016e6972f` (the same configuration and cached source files); each website

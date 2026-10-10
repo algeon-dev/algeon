@@ -74,7 +74,11 @@ Buffered POSIX reads can pass through the operating system's page cache.
 Where enabled and supported, `O_DIRECT` bypasses that cache; the host staging
 and GPU copy still belong to this compatibility path. Larger range reads
 amortize syscall and submission overhead, while concurrent reads require
-more staging space.
+more staging space. Source reads run as `SupervisedWorker` jobs on the blocking
+lane of the GPU execution runtime, each backed by an attempt auxiliary
+permit; a read issued from an execution lane runs inline on that
+lane. None runs on the host runtime. A `max_source_reads_in_flight` above 1
+enables prefetch.
 
 ### GPUDirect Storage
 
@@ -96,7 +100,10 @@ and the [GDS overview](https://docs.nvidia.com/gpudirect-storage/overview-guide/
 Algeon's native S3 datasource uses KvikIO HTTP range reads. libcurl receives
 chunks into host buffers; KvikIO accumulates them in pinned staging memory
 and copies them to the GPU. The network receive buffer and pinned bounce
-buffer have different roles, even though both occupy host memory.
+buffer have different roles, even though both occupy host memory. Footer reads
+and cache fills for `s3://` sources run on a process-wide
+`algeon-object-store-control` Tokio runtime, separate from the host and device
+runtimes ([Runtimes and threads](./index.mdx#runtimes-and-threads)).
 
 **RDMA**, remote direct memory access, requires a compatible network and
 storage stack. It is distinct from local NVMe DMA. Algeon's HTTP/libcurl

@@ -736,7 +736,8 @@ html[data-focus-mode='on'] :is(
 }
 
 /* Blog: drop the recent-posts rail and the outline column; the post centers
-   at the blog list's reading width. */
+   at the blog list's reading width, and the swizzled BlogPostPage renders
+   the outline drawer in their place. */
 html[data-focus-mode='on'].blog-wrapper .theme-layout-main > .container > .row > :is(aside.col, .col--2) {
   display: none;
 }
@@ -883,6 +884,7 @@ html[data-focus-mode='on'] .theme-layout-main {
    readers skip. Smaller and muted so the finding stays in front; links keep
    the muted tone until hovered. */
 .markdown .fineprint {
+  margin-bottom: var(--ifm-paragraph-margin-bottom);
   color: var(--ifm-color-emphasis-600);
   font-size: 0.82rem;
   line-height: 1.6;
@@ -1036,6 +1038,20 @@ html[data-focus-mode='on'] .theme-layout-main {
   border-bottom: 1px solid var(--ifm-table-border-color);
   padding: 0.75rem 1.15rem;
   vertical-align: top;
+}
+
+/* Dense tables (`<Table dense>` in MDX): smaller type and tighter cells, so a
+   short reference table such as a recorded session does not outweigh the
+   prose around it. */
+.markdown .table-responsive-wrapper--dense th,
+.markdown .table-responsive-wrapper--dense td {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.markdown .table-responsive-wrapper--dense th {
+  font-size: 0.76rem;
 }
 
 /* Infima gives every row a top border and zebra stripes; inside the wrapper

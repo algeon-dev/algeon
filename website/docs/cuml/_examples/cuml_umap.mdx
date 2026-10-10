@@ -27,8 +27,6 @@ projection. Its HDBSCAN filter uses the separate PCA-16 cluster assignments.
 Changing a projection or filter only selects saved output rows. It does not
 rerun UMAP or HDBSCAN.
 
-<EmberMap data={emberMap} initialProjection="umap" />
-
 ```sql
 SELECT u.id,
        u.dim_0,
@@ -53,5 +51,7 @@ JOIN ember_research_vectors_challenge v ON v.id = u.id AND v.split = 'challenge'
 JOIN ember_metadata_challenge m ON m.id = v.id
 ORDER BY u.row_ordinal;
 ```
+
+<EmberMap data={emberMap} initialProjection="umap" />
   </TabItem>
 </Tabs>
