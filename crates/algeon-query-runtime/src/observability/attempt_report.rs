@@ -26,11 +26,17 @@ pub const MAX_ATTEMPT_QUERY_ID_BYTES: usize = 256;
 pub const MAX_ATTEMPT_TRACE_CONTEXT_BYTES: usize = 1024;
 
 macro_rules! attempt_correlation {
-    ($name:ident, $limit:ident, $field:literal) => {
+    ($name:ident, $limit:ident, $field:literal, $doc:literal) => {
+        #[doc = $doc]
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
         #[serde(transparent)]
         pub struct $name(String);
         impl $name {
+            /// Preserves the supplied UTF-8 correlation after validation.
+            ///
+            /// Returns `InvalidAttemptCorrelation` for blank text or text
+            /// exceeding this correlation type's byte limit. Whitespace is
+            /// used to detect blank values and is otherwise preserved.
             pub fn new(value: impl Into<String>) -> Result<Self> {
                 let value = value.into();
                 if value.trim().is_empty() || value.len() > $limit {
@@ -45,6 +51,7 @@ macro_rules! attempt_correlation {
                 }
                 Ok(Self(value))
             }
+            /// Returns the original validated correlation text.
             pub fn as_str(&self) -> &str {
                 &self.0
             }
@@ -65,32 +72,56 @@ macro_rules! attempt_correlation {
         }
     };
 }
-attempt_correlation!(AttemptQueryId, MAX_ATTEMPT_QUERY_ID_BYTES, "query_id");
-attempt_correlation!(AttemptTraceContext, MAX_ATTEMPT_TRACE_CONTEXT_BYTES, "trace_context");
+attempt_correlation!(
+    AttemptQueryId,
+    MAX_ATTEMPT_QUERY_ID_BYTES,
+    "query_id",
+    "Opaque caller query correlation, limited to 256 UTF-8 bytes and required to be non-blank."
+);
+attempt_correlation!(
+    AttemptTraceContext,
+    MAX_ATTEMPT_TRACE_CONTEXT_BYTES,
+    "trace_context",
+    "Opaque caller trace correlation, limited to 1024 UTF-8 bytes and required to be non-blank."
+);
 
+/// Execution coverage assigned after planning, independently of terminal outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptDisposition {
+    /// The attempt did not obtain a classified physical plan.
     Unplanned,
+    /// The physical plan executes through DataFusion without native operators.
     CpuFallback,
+    /// The physical plan contains native and DataFusion execution.
     PartialNative,
+    /// The physical plan has native execution coverage.
     Native,
 }
 
+/// Cleanup result fixed before the terminal report is published.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptCleanupDisposition {
+    /// No admitted GPU cleanup was required.
     NotRequired,
+    /// Required cleanup finished without recorded failures.
     Completed,
+    /// Cleanup finished with at least one recorded failure.
     CompletedWithFailures,
 }
 
+/// Ownership of admitted capacity after the terminal release commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptCapacityDisposition {
+    /// The attempt acquired no GPU admission grant.
     NotAdmitted,
+    /// Capacity returned to the device ledger after cleanup.
     Released,
+    /// Capacity remains owned by a resident result after attempt cleanup.
     FrozenResident,
+    /// Capacity remains reserved because cleanup or device health prevents reuse.
     RetainedQuarantine,
 }
 
@@ -103,8 +134,11 @@ pub enum AttemptCapacityDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptHealthTransition {
+    /// Cleanup and health evidence permit capacity reuse on the selected device.
     HealthyReuse,
+    /// A fault isolated to the selected device closed its admission ledger.
     DeviceQuarantined,
+    /// Fault isolation was unavailable and admission closed across the backend.
     BackendUnhealthy,
 }
 
@@ -121,8 +155,11 @@ const MAX_ATTEMPT_FAILURE_FACTS: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptFailureOrigin {
+    /// Classified by the native planning, runtime or execution layer.
     Native,
+    /// Classified by a DataFusion boundary.
     Datafusion,
+    /// Classified by attempt lifecycle control, such as backend closure.
     AttemptControl,
 }
 
@@ -130,9 +167,13 @@ pub enum AttemptFailureOrigin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptFailureStatus {
+    /// The owning failure taxonomy provides no native recovery status.
     NotApplicable,
+    /// The condition requires changed input, configuration or code.
     Permanent,
+    /// The condition may clear; retry still requires sealed evidence.
     Temporary,
+    /// A dependency condition is known or observed to persist.
     Persistent,
 }
 
@@ -150,11 +191,17 @@ impl AttemptFailureStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptFailureOperation {
+    /// Logical or physical plan construction.
     Planning,
+    /// Capacity placement, queuing or grant acquisition.
     Admission,
+    /// Execution after planning or admission.
     Execution,
+    /// Release of resources after a terminal outcome.
     Cleanup,
+    /// A DataFusion-owned failure without a more specific native operation.
     Datafusion,
+    /// Attempt lifecycle control outside a native operation.
     AttemptControl,
 }
 
@@ -162,7 +209,9 @@ pub enum AttemptFailureOperation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptFailureFactKey {
+    /// Closed classification of the condition that ended the attempt.
     Reason,
+    /// Native allocator family that reported allocation failure.
     AllocationSource,
 }
 
@@ -170,19 +219,30 @@ pub enum AttemptFailureFactKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptFailureFactValue {
+    /// Admission or attempt creation encountered a closing backend.
     BackendClosing,
+    /// The invocation's absolute monotonic deadline elapsed.
     DeadlineExpired,
+    /// The caller requested cooperative cancellation.
     CallerCancelled,
+    /// The shared admission queue had reached its waiter bound.
     AdmissionQueueFull,
+    /// A queued request exceeded the configured maximum queue wait.
     QueueWaitElapsed,
+    /// The admission wait ended before a memory grant was available.
     MemoryGrantWaitTimeout,
+    /// The required plan memory exceeds the eligible device capacity.
     RequiredFloorExceedsDeviceCapacity,
     /// The requested query cap does not fit any eligible device once resident
     /// ownership is deducted. Retrying the same request cannot succeed.
     QueryCapExceedsResidentCapacity,
+    /// Device or backend health prevents new admission.
     BackendUnhealthy,
+    /// cuGraph reported an RMM out-of-memory failure.
     CugraphRmmOutOfMemory,
+    /// cuGraph reported an RMM allocation exception.
     CugraphRmmBadAlloc,
+    /// cuGraph reported a standard allocation exception.
     CugraphStdBadAlloc,
 }
 
@@ -194,10 +254,12 @@ pub struct AttemptFailureFact {
 }
 
 impl AttemptFailureFact {
+    /// Returns the allowlisted classification represented by this fact.
     pub const fn key(&self) -> AttemptFailureFactKey {
         self.key
     }
 
+    /// Returns the closed value retained by the failure projection.
     pub const fn value(&self) -> AttemptFailureFactValue {
         self.value
     }
@@ -491,6 +553,7 @@ impl AttemptFailureSummary {
         }
     }
 
+    /// Returns a text-free admission failure for a closing backend.
     pub const fn backend_closing() -> Self {
         Self {
             origin: AttemptFailureOrigin::AttemptControl,
@@ -513,18 +576,22 @@ impl AttemptFailureSummary {
         }
     }
 
+    /// Returns the layer that classified this failure.
     pub const fn origin(&self) -> AttemptFailureOrigin {
         self.origin
     }
 
+    /// Returns the closed machine identity retained from the primary failure.
     pub const fn code(&self) -> AttemptFailureCode {
         self.code
     }
 
+    /// Returns the source condition classification, without granting retry permission.
     pub const fn status(&self) -> AttemptFailureStatus {
         self.status
     }
 
+    /// Returns the lifecycle operation in which the failure was recorded.
     pub const fn operation(&self) -> AttemptFailureOperation {
         self.operation
     }
@@ -533,6 +600,8 @@ impl AttemptFailureSummary {
         self.text.as_ref()
     }
 
+    /// Returns allowlisted facts in unique deterministic key order.
+    /// Arbitrary error facts and source text are excluded.
     pub fn facts(&self) -> &[AttemptFailureFact] {
         &self.facts
     }
@@ -542,16 +611,27 @@ impl AttemptFailureSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CleanupFailurePhase {
+    /// Scheduler cycle cleanup.
     SchedulingCycle,
+    /// Cleanup after runnable-task selection.
     RunnableTaskSelection,
+    /// Cleanup after task input and resource preparation.
     TaskPreparation,
+    /// Cleanup after native task execution returned an error.
     TaskExecution,
+    /// Cleanup after a task panic was caught.
     TaskPanic,
+    /// Cleanup during task result completion.
     TaskCompletion,
+    /// Release of resources retained by a completed task.
     CompletedResourceRelease,
+    /// Final scheduler validation before release.
     FinalValidation,
+    /// Synchronization of the admitted query stream failed.
     QueryServiceStreamSynchronization,
+    /// An admitted query cleanup callback was abandoned.
     QueryServiceCallbackAbandoned,
+    /// Cleanup owned by the admission service.
     QueryServiceCleanup,
 }
 
@@ -567,6 +647,9 @@ pub struct CleanupFailureSummary {
 }
 
 impl CleanupFailureSummary {
+    /// Projects one native cleanup failure without copying its message or source.
+    /// The summary is initially complete; subsequent cleanup failures can make
+    /// the retained first summary incomplete.
     pub fn from_native_error(phase: CleanupFailurePhase, error: &QueryError) -> Self {
         Self {
             phase,
@@ -591,14 +674,18 @@ impl CleanupFailureSummary {
         }
     }
 
+    /// Returns the cleanup boundary that recorded the failure.
     pub const fn phase(&self) -> CleanupFailurePhase {
         self.phase
     }
 
+    /// Returns the bounded failure identity and allowlisted facts.
     pub const fn failure(&self) -> &AttemptFailureSummary {
         &self.failure
     }
 
+    /// Returns whether this first summary accounts for all recorded cleanup failures.
+    /// The enclosing report carries the count and its separate completeness flag.
     pub const fn complete(&self) -> bool {
         self.complete
     }
@@ -617,15 +704,19 @@ impl CleanupFailureSummary {
 /// failed final samples, and unknown-isolation cleanup paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptFinalDomainUsage {
+    /// Identity of the admitted allocation domain.
     pub domain_id: u64,
     pub(crate) active: bool,
     pub(crate) active_members: u64,
     pub(crate) ceiling_bytes: u64,
     pub(crate) allocation_limit_bytes: u64,
+    /// Logical live allocation bytes at the final sample.
     pub current_bytes: u64,
+    /// Highest logical live allocation bytes observed over the domain lifetime.
     pub peak_bytes: u64,
     pub(crate) total_bytes: u64,
     pub(crate) current_aligned_bytes: u64,
+    /// Highest allocator-aligned live allocation bytes over the domain lifetime.
     pub peak_aligned_bytes: u64,
     pub(crate) total_allocations: u64,
     pub(crate) current_allocations: u64,
@@ -778,7 +869,9 @@ pub enum AttemptEvidenceProvenance {
 /// provenance. An absent value is neither an ordinal zero nor an exact sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptEvidenceField<T> {
+    /// Scope and sampling classification that consumers must retain with the value.
     pub provenance: AttemptEvidenceProvenance,
+    /// Observed value, or `None` when provenance is `Unavailable`.
     pub value: Option<T>,
 }
 
@@ -822,9 +915,13 @@ pub struct AttemptTimedDomainUsage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptAllocatorEventSource {
+    /// The underlying allocator could not satisfy the request.
     Physical,
+    /// The request exceeded the allocation domain reservation ceiling.
     ReservationLimit,
+    /// The request exceeded a logical allocation limit.
     AllocationLimit,
+    /// The native source category is unavailable or unrecognized.
     Unknown,
 }
 
@@ -843,8 +940,10 @@ pub(crate) enum AttemptAllocatorEventAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptAllocatorPoolUsage {
     pub(crate) reserved_current_bytes: u64,
+    /// Highest bytes reserved by the CUDA async allocation pool.
     pub reserved_high_bytes: u64,
     pub(crate) used_current_bytes: u64,
+    /// Highest bytes used within the CUDA async allocation pool.
     pub used_high_bytes: u64,
 }
 
@@ -856,9 +955,12 @@ pub struct AttemptAllocatorPoolUsage {
 /// or pool sample is never replaced with a zero value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptAllocatorEvent {
+    /// Monotonic identity in the device allocator event ring.
     pub sequence: u64,
     pub(crate) monotonic_time_ns: AttemptEvidenceField<u64>,
+    /// Size in bytes of the allocation request associated with this event.
     pub requested_bytes: u64,
+    /// Closed allocator failure source retained from the native record.
     pub source: AttemptAllocatorEventSource,
     pub(crate) action: AttemptEvidenceField<AttemptAllocatorEventAction>,
     pub(crate) callback_attempt: u32,
@@ -885,6 +987,7 @@ pub struct AttemptUnattributedAllocatorEvent {
 /// immutable attempt facts; and both usage samples retain their own times.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptResourceEvidence {
+    /// Device ledger transition sequence from the terminal release snapshot.
     pub ledger_sequence: AttemptEvidenceField<u64>,
     pub(crate) ledger_sample_ns: AttemptEvidenceField<u64>,
     pub(crate) configured_limit_bytes: AttemptEvidenceField<u64>,
@@ -893,16 +996,23 @@ pub struct AttemptResourceEvidence {
     pub(crate) managed_capacity_bytes: AttemptEvidenceField<u64>,
     pub(crate) live_grants_bytes: AttemptEvidenceField<u64>,
     pub(crate) resident_owner_bytes: AttemptEvidenceField<u64>,
+    /// Cached resident bytes eligible for eviction in the device snapshot.
     pub cache_evictable_resident_bytes: AttemptEvidenceField<u64>,
+    /// Cached resident bytes pinned by active use in the device snapshot.
     pub cache_pinned_in_use_bytes: AttemptEvidenceField<u64>,
     pub(crate) active_attempt_count: AttemptEvidenceField<u64>,
+    /// Immutable identity of this attempt's admission grant.
     pub grant_id: AttemptEvidenceField<u64>,
     pub(crate) grant_cap_bytes: AttemptEvidenceField<u64>,
+    /// Immutable identity of this attempt's allocation domain.
     pub domain_id: AttemptEvidenceField<u64>,
     pub(crate) domain_cap_bytes: AttemptEvidenceField<u64>,
+    /// Domain sample taken at the outcome terminal boundary, before cleanup.
     pub outcome_terminal_usage: AttemptEvidenceField<AttemptTimedDomainUsage>,
     pub(crate) post_cleanup_usage: AttemptEvidenceField<AttemptTimedDomainUsage>,
+    /// Allocator event attributed to this attempt by a bounded domain-generation join.
     pub allocator_event: AttemptEvidenceField<AttemptAllocatorEvent>,
+    /// Device allocator context whose ownership could not be attributed to the attempt.
     pub unattributed_device_allocator_event: AttemptEvidenceField<AttemptUnattributedAllocatorEvent>,
 }
 
@@ -1089,11 +1199,17 @@ impl AttemptRetryRecovery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptRetryPrerequisite {
+    /// No prerequisite accompanies success or a do-not-retry recommendation.
     None,
+    /// Capacity evidence permits a new admission after waiting.
     CapacityAvailable,
+    /// The query, capability selection or configured limit has changed.
     ConfigurationChanged,
+    /// The failed device remains quarantined and another device is eligible.
     QuarantinedDeviceAndEligibleAlternate,
+    /// Backend recovery completed before a new attempt.
     BackendRecovered,
+    /// The sealed evidence cannot establish a recovery prerequisite.
     EvidenceUnavailable,
 }
 
@@ -1114,7 +1230,9 @@ impl AttemptRetryPrerequisite {
 /// One bounded retry/recovery recommendation sealed with an attempt report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct AttemptRetryAdvice {
+    /// Recovery action supported by the terminal evidence.
     pub recovery: AttemptRetryRecovery,
+    /// Condition required before submitting a new attempt for that action.
     pub prerequisite: AttemptRetryPrerequisite,
 }
 
@@ -1153,14 +1271,17 @@ impl AttemptRetryAdvice {
         valid.then_some(Self { recovery, prerequisite }).ok_or("retry recovery and prerequisite are inconsistent")
     }
 
+    /// Returns the success recommendation with no recovery prerequisite.
     pub const fn no_retry_needed() -> Self {
         Self { recovery: AttemptRetryRecovery::NoRetryNeeded, prerequisite: AttemptRetryPrerequisite::None }
     }
 
+    /// Returns the terminal control recommendation with no recovery prerequisite.
     pub const fn do_not_retry() -> Self {
         Self { recovery: AttemptRetryRecovery::DoNotRetry, prerequisite: AttemptRetryPrerequisite::None }
     }
 
+    /// Returns an indeterminate recommendation because recovery evidence is unavailable.
     pub const fn indeterminate() -> Self {
         Self {
             recovery: AttemptRetryRecovery::Indeterminate,
@@ -1334,10 +1455,15 @@ fn exact_allocator_event_source(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Immutable device grant and wait duration committed by admission.
 pub struct AttemptAdmissionFact {
+    /// Grant publication sequence, independent of FIFO submission identity.
     pub admission_sequence: u64,
+    /// Elapsed nanoseconds from admission submission to the grant.
     pub admission_wait_ns: u64,
+    /// CUDA device selected for the immutable grant.
     pub device_ordinal: usize,
+    /// Immutable admitted query capacity in bytes.
     pub grant_bytes: u64,
 }
 
@@ -1349,21 +1475,34 @@ pub struct AttemptAdmissionFact {
 /// admission sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptAdmissionWaitFact {
+    /// FIFO admission queue identity fixed at submission.
     pub submission_sequence: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Attempt lifecycle times in nanoseconds from one monotonic attempt clock.
+/// Optional boundaries are absent when they were not recorded. These values
+/// are elapsed times, without a wall-clock epoch.
 pub struct AttemptTimestamps {
+    /// Time at attempt creation.
     pub submitted_ns: u64,
+    /// Time planning began, or `None` when planning never started.
     pub planning_started_ns: Option<u64>,
+    /// Time planning finished, or `None` when no finish was recorded.
     pub planning_finished_ns: Option<u64>,
     /// Sampled when the attempt claims its one admission, the first step of
     /// the query-service admission request.
     pub admission_requested_ns: Option<u64>,
+    /// Time the immutable grant was published, or `None` when unadmitted.
     pub admitted_ns: Option<u64>,
+    /// Time physical execution began, or `None` when it never began.
     pub physical_execution_started_ns: Option<u64>,
+    /// Time first GPU dispatch began, or `None` when there was no dispatch.
     pub gpu_execution_started_ns: Option<u64>,
+    /// Time the first terminal execution outcome was committed.
     pub outcome_terminal_ns: u64,
+    /// Time cleanup completed, or `None` when that boundary was not recorded.
     pub cleanup_complete_ns: Option<u64>,
+    /// Time the terminal report was fixed for publication, or `None` when absent.
     pub report_ready_ns: Option<u64>,
 }
 fn deserialize_query_attempt_report_schema<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
@@ -1378,13 +1517,25 @@ where D: serde::Deserializer<'de> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Immutable terminal attempt record published after cleanup and sealing.
+///
+/// The report preserves the execution outcome separately from cleanup, health
+/// and capacity disposition. Retry advice is derived from those committed
+/// facts; delivery failures do not change the report. Duration helpers
+/// return `None` for missing boundaries and saturate reversed intervals at zero.
 pub struct QueryAttemptReport {
     #[serde(deserialize_with = "deserialize_query_attempt_report_schema")]
+    /// Schema identity accepted by report decoding.
     pub schema: String,
+    /// Runtime identity shared by the attempt and its observations.
     pub attempt_id: AttemptId,
+    /// Validated caller query correlation, or `None` when none was supplied.
     pub query_id: Option<AttemptQueryId>,
+    /// Validated opaque caller trace correlation, or `None` when none was supplied.
     pub trace_context: Option<AttemptTraceContext>,
+    /// Planning coverage of this attempt, independent of execution success.
     pub disposition: AttemptDisposition,
+    /// First terminal execution outcome committed by the attempt owner.
     pub outcome: RuntimeTerminalOutcome,
     /// Bounded primary terminal-failure facts retained by the attempt
     /// lifecycle. Successful attempts have no primary summary.
@@ -1393,7 +1544,9 @@ pub struct QueryAttemptReport {
     /// report is sealed. It is required and never inferred from an error
     /// status at read time.
     pub retry_advice: AttemptRetryAdvice,
+    /// Selected CUDA device, or `None` when no device-backed admission occurred.
     pub device_ordinal: Option<usize>,
+    /// Immutable grant facts, or `None` when the attempt was unadmitted.
     pub admission: Option<AttemptAdmissionFact>,
     /// Final queue facts for an admitted request. `None` means the
     /// execution path did not retain a queue-backed admission handle; it is
@@ -1404,7 +1557,9 @@ pub struct QueryAttemptReport {
     /// absent; it is never reconstructed from runtime observations.
     #[serde(default)]
     pub composed_schedule: Option<AttemptComposedScheduleProjection>,
+    /// Monotonic lifecycle boundary times for duration calculations.
     pub timestamps: AttemptTimestamps,
+    /// Cleanup completion classification committed before publication.
     pub cleanup_disposition: AttemptCleanupDisposition,
     /// Exact when `cleanup_failure_count_complete` is true. The lifecycle
     /// never publishes a saturated arithmetic result as exact.
@@ -1414,6 +1569,7 @@ pub struct QueryAttemptReport {
     /// First bounded cleanup failure. Further failures affect only the exact
     /// count; timeline retention is intentionally not authoritative.
     pub first_cleanup_failure: Option<CleanupFailureSummary>,
+    /// Disposition of the immutable grant after terminal cleanup.
     pub capacity_disposition: AttemptCapacityDisposition,
     /// Exact final domain usage after admitted cleanup, when sampling
     /// succeeded. `None` is an unavailable sample, never a zero sample.
@@ -1430,11 +1586,17 @@ pub struct QueryAttemptReport {
     /// from the sole terminal release commit. `None` means the attempt did
     /// not own a device-backed admission domain.
     pub resource_evidence: Option<AttemptResourceEvidence>,
+    /// Observation records lost because retention or recording failed.
     pub observation_lost_records: u64,
+    /// Records retained in the sealed bounded observation.
     pub observation_retained_records: u64,
+    /// Deterministic logical bytes retained in the sealed observation.
     pub observation_retained_bytes: u64,
+    /// Whether retention limits prevented complete observation capture.
     pub observation_truncated: bool,
+    /// Whether recording degraded for reasons other than configured retention limits.
     pub observation_degraded: bool,
+    /// Optional wall-clock nanosecond anchor associated with the observation clock.
     pub unix_epoch_ns: Option<u64>,
 }
 
@@ -1457,19 +1619,33 @@ impl QueryAttemptReport {
 /// a label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SealedAttemptProjection {
+    /// Schema label for this bounded projection.
     pub schema: &'static str,
+    /// Attempt identity for individual delivery; excluded from metric labels.
     pub attempt_id: AttemptId,
+    /// Planning coverage copied from the report.
     pub disposition: AttemptDisposition,
+    /// Terminal execution outcome copied from the report.
     pub outcome: RuntimeTerminalOutcome,
+    /// Cleanup result copied from the report.
     pub cleanup_disposition: AttemptCleanupDisposition,
+    /// Recorded cleanup failure count; consult its completeness flag.
     pub cleanup_failure_count: u64,
+    /// Whether the cleanup failure count is exact.
     pub cleanup_failure_count_complete: bool,
+    /// Grant ownership after cleanup.
     pub capacity_disposition: AttemptCapacityDisposition,
+    /// Committed admitted-device health result, or `None` when unavailable.
     pub health_transition: Option<AttemptHealthTransition>,
+    /// Recovery recommendation derived at report seal.
     pub retry_advice: AttemptRetryAdvice,
+    /// Whether configured retention bounds truncated observation capture.
     pub observation_truncated: bool,
+    /// Whether recording encountered degradation beyond retention limits.
     pub observation_degraded: bool,
+    /// Whether the full report contains native-fault evidence.
     pub native_fault_evidence_present: bool,
+    /// Whether the full report contains terminal resource evidence.
     pub resource_evidence_present: bool,
 }
 
@@ -1480,17 +1656,29 @@ pub struct SealedAttemptProjection {
 /// and must not duplicate enum-to-string mappings at its own boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SealedAttemptLabels {
+    /// Stable planning coverage label.
     pub disposition: &'static str,
+    /// Stable terminal outcome label.
     pub outcome: &'static str,
+    /// Stable cleanup result label.
     pub cleanup_disposition: &'static str,
+    /// `true` or `false` for cleanup count exactness.
     pub cleanup_failure_count_complete: &'static str,
+    /// Stable post-cleanup grant ownership label.
     pub capacity_disposition: &'static str,
+    /// Stable health label, including `none` for unavailable evidence.
     pub health_transition: &'static str,
+    /// Stable advised recovery label.
     pub retry_recovery: &'static str,
+    /// Stable recovery prerequisite label.
     pub retry_prerequisite: &'static str,
+    /// `true` or `false` for retention truncation.
     pub observation_truncated: &'static str,
+    /// `true` or `false` for recording degradation.
     pub observation_degraded: &'static str,
+    /// `present` or `absent` for native-fault evidence.
     pub native_fault_evidence: &'static str,
+    /// `present` or `absent` for resource evidence.
     pub resource_evidence: &'static str,
 }
 
@@ -1554,56 +1742,78 @@ impl From<&QueryAttemptReport> for SealedAttemptProjection {
     }
 }
 impl QueryAttemptReport {
+    /// Returns submission-to-report-ready duration in nanoseconds.
+    /// Returns `None` when report readiness was not recorded.
     pub fn total_ns(&self) -> Option<u64> {
         self.timestamps.report_ready_ns.map(|ready| ready.saturating_sub(self.timestamps.submitted_ns))
     }
+    /// Returns planning-start-to-planning-finish duration in nanoseconds.
+    /// Returns `None` when either boundary is absent.
     pub fn planning_ns(&self) -> Option<u64> {
         self.timestamps
             .planning_started_ns
             .zip(self.timestamps.planning_finished_ns)
             .map(|(start, end)| end.saturating_sub(start))
     }
+    /// Returns admission-request-to-grant duration in nanoseconds.
+    /// Returns `None` when either boundary is absent.
     pub fn queue_wait_ns(&self) -> Option<u64> {
         self.timestamps
             .admission_requested_ns
             .zip(self.timestamps.admitted_ns)
             .map(|(start, end)| end.saturating_sub(start))
     }
+    /// Returns planning-finish-to-admission-request duration in nanoseconds.
+    /// Returns `None` when either boundary is absent.
     pub fn post_planning_pre_admission_ns(&self) -> Option<u64> {
         self.timestamps
             .planning_finished_ns
             .zip(self.timestamps.admission_requested_ns)
             .map(|(start, end)| end.saturating_sub(start))
     }
+    /// Returns grant-to-physical-execution-start duration in nanoseconds.
+    /// Returns `None` when either boundary is absent.
     pub fn admitted_to_physical_execution_ns(&self) -> Option<u64> {
         self.timestamps
             .admitted_ns
             .zip(self.timestamps.physical_execution_started_ns)
             .map(|(start, end)| end.saturating_sub(start))
     }
+    /// Returns physical-execution-start-to-GPU-dispatch duration in nanoseconds.
+    /// Returns `None` when either boundary is absent.
     pub fn physical_to_gpu_dispatch_ns(&self) -> Option<u64> {
         self.timestamps
             .physical_execution_started_ns
             .zip(self.timestamps.gpu_execution_started_ns)
             .map(|(start, end)| end.saturating_sub(start))
     }
+    /// Returns grant-to-first-GPU-dispatch duration in nanoseconds.
+    /// Returns `None` when either boundary is absent.
     pub fn admitted_to_gpu_dispatch_ns(&self) -> Option<u64> {
         self.timestamps
             .admitted_ns
             .zip(self.timestamps.gpu_execution_started_ns)
             .map(|(start, end)| end.saturating_sub(start))
     }
+    /// Returns submission-to-first-GPU-dispatch duration in nanoseconds.
+    /// Returns `None` when GPU dispatch was not recorded.
     pub fn submitted_to_gpu_dispatch_ns(&self) -> Option<u64> {
         self.timestamps.gpu_execution_started_ns.map(|end| end.saturating_sub(self.timestamps.submitted_ns))
     }
+    /// Returns first-GPU-dispatch-to-terminal-outcome duration in nanoseconds.
+    /// Returns `None` when GPU dispatch was not recorded.
     pub fn gpu_dispatch_to_terminal_ns(&self) -> Option<u64> {
         self.timestamps.gpu_execution_started_ns.map(|start| self.timestamps.outcome_terminal_ns.saturating_sub(start))
     }
+    /// Returns physical-execution-start-to-terminal-outcome duration in nanoseconds.
+    /// Returns `None` when physical execution did not start.
     pub fn physical_execution_ns(&self) -> Option<u64> {
         self.timestamps
             .physical_execution_started_ns
             .map(|start| self.timestamps.outcome_terminal_ns.saturating_sub(start))
     }
+    /// Returns terminal-outcome-to-cleanup-complete duration in nanoseconds.
+    /// Returns `None` when cleanup completion was not recorded.
     pub fn cleanup_ns(&self) -> Option<u64> {
         self.timestamps.cleanup_complete_ns.map(|end| end.saturating_sub(self.timestamps.outcome_terminal_ns))
     }
@@ -1612,14 +1822,20 @@ impl QueryAttemptReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeTerminalOutcome {
+    /// Execution reached successful completion.
     Succeeded,
     /// A terminal error classified from the terminal structured error itself.
     Failed {
+        /// Stable machine identity of the terminal error.
         error_code: AttemptFailureCode,
+        /// Source condition classification; recovery requires the sealed retry advice.
         error_status: AttemptFailureStatus,
     },
+    /// Caller cancellation or deadline expiry ended execution.
     Cancelled,
+    /// The attempt or result stream was dropped before another terminal outcome.
     Dropped,
+    /// An unwind ended the attempt.
     Panicked,
 }
 
@@ -1635,6 +1851,7 @@ impl RuntimeTerminalOutcome {
         }
     }
 
+    /// Copies the stable code and status from a primary failure summary.
     pub const fn failed(summary: &AttemptFailureSummary) -> Self {
         Self::Failed { error_code: summary.code(), error_status: summary.status() }
     }

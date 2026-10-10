@@ -381,14 +381,9 @@ fn validation_and_capability_reject_bad_ml_contracts() {
             None,
         ),
         (
-            plan_with_schema(schema("id", DataType::Float64, 2), "id", 1, vector_pca_output_schema(DataType::Int64, 1)),
-            "unsupported_feature_type",
-            Some("Float32"),
-        ),
-        (
             plan_with_schema(schema("id", DataType::Int16, 2), "id", 1, vector_pca_output_schema(DataType::Int64, 1)),
             "unsupported_feature_type",
-            Some("Float32"),
+            Some("Float32, Float64"),
         ),
         (
             plan_with_schema(schema("id", DataType::Float32, 2), "id", 3, vector_pca_output_schema(DataType::Int64, 3)),
@@ -417,6 +412,14 @@ fn validation_and_capability_reject_bad_ml_contracts() {
         assert_eq!(rejection, Reason::UnsupportedMlAlgorithmNodeCapability(UnsupportedPart::from_code(error.code())));
         assert_eq!(facts.get("reason").map(String::as_str), Some(reason));
     }
+    // Execution narrows Float64 features to Float32, so preflight admits them.
+    preflight_query_plan(&plan_with_schema(
+        schema("id", DataType::Float64, 2),
+        "id",
+        1,
+        vector_pca_output_schema(DataType::Int64, 1),
+    ))
+    .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(

@@ -48,6 +48,10 @@ use crate::{
 
 const EXECUTE: &str = "query_engine.ml_algorithm.execute";
 const NATIVE: &str = "query_engine.ml_algorithm.native";
+/// Element type every cuML fit and prediction reads. Packing narrows a
+/// Float64 relation to it; forest prediction instead requires it at the input
+/// and widens on the device when the model has double-precision thresholds.
+const FEATURE_ELEMENT: TypeId = TypeId::Float32;
 
 fn invalid(node_id: NodeId, reason: &'static str, message: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::CudfInvalidInput, EXECUTE, message)
@@ -228,23 +232,6 @@ fn execute_tsvd_ml(
         return Err(invalid(node_id, "insufficient_input_rows", "ML input requires at least two rows")
             .with_fact("input_rows", rows));
     }
-    let element = relation_element_type_for(
-        &ML_OPERATIONS,
-        plan,
-        inputs,
-        binding.input,
-        &binding.features,
-        node_id,
-        algorithm.as_str(),
-        "input",
-    )?;
-    if element != TypeId::Float32 {
-        return Err(QueryError::new(QueryErrorCode::UnsupportedType, EXECUTE, "cuML requires Float32 features")
-            .with_fact("node_id", node_id)
-            .with_fact("reason", "unsupported_feature_type")
-            .with_fact("element", element.name())
-            .with_fact("supported_types", "Float32"));
-    }
     let identity = RuntimeOperatorStageIdentity::new()
         .with_node_id(node_id.to_string())
         .with_ml_algorithm(algorithm.as_str())
@@ -262,7 +249,7 @@ fn execute_tsvd_ml(
         inputs.node_id(binding.input),
         &binding.features,
         input,
-        TypeId::Float32,
+        FEATURE_ELEMENT,
         DenseMatrixLayout::ColumnMajor,
         identity.clone(),
         RuntimeOperatorStageKind::MlPack,
@@ -845,21 +832,6 @@ fn pack_supervised_relation(
 ) -> Result<(cudf::PackedMatrix, usize)> {
     let (resources, identity) = native;
     let (input, binding, role) = relation;
-    let element = relation_element_type_for(
-        &ML_OPERATIONS,
-        plan,
-        inputs,
-        binding.input,
-        &binding.features,
-        node_id,
-        algorithm,
-        role,
-    )?;
-    if element != TypeId::Float32 {
-        return Err(QueryError::new(QueryErrorCode::UnsupportedType, EXECUTE, "cuML requires Float32 features")
-            .with_fact("reason", "unsupported_feature_type")
-            .with_fact("relation_role", role));
-    }
     pack_dense_relation_for(
         &ML_OPERATIONS,
         context,
@@ -871,7 +843,7 @@ fn pack_supervised_relation(
         inputs.node_id(binding.input),
         &binding.features,
         input,
-        TypeId::Float32,
+        FEATURE_ELEMENT,
         DenseMatrixLayout::RowMajor,
         identity.clone().with_vector_relation_role(role).with_input_rows(input.num_rows() as u64),
         RuntimeOperatorStageKind::MlPack,
@@ -927,21 +899,6 @@ fn execute_row_major_ml(
         },
         _ => {},
     }
-    let element = relation_element_type_for(
-        &ML_OPERATIONS,
-        plan,
-        inputs,
-        binding.input,
-        &binding.features,
-        node_id,
-        ml.spec.algorithm.as_str(),
-        "input",
-    )?;
-    if element != TypeId::Float32 {
-        return Err(QueryError::new(QueryErrorCode::UnsupportedType, EXECUTE, "cuML requires Float32 features")
-            .with_fact("reason", "unsupported_feature_type")
-            .with_fact("supported_types", "Float32"));
-    }
     let identity = RuntimeOperatorStageIdentity::new()
         .with_node_id(node_id.to_string())
         .with_ml_algorithm(ml.spec.algorithm.as_str())
@@ -962,7 +919,7 @@ fn execute_row_major_ml(
         inputs.node_id(binding.input),
         &binding.features,
         input,
-        TypeId::Float32,
+        FEATURE_ELEMENT,
         DenseMatrixLayout::RowMajor,
         identity.clone(),
         RuntimeOperatorStageKind::MlPack,
@@ -1237,7 +1194,7 @@ fn execute_forest_predict(
         algorithm,
         "input",
     )?;
-    if element != TypeId::Float32 {
+    if element != FEATURE_ELEMENT {
         return Err(QueryError::new(QueryErrorCode::UnsupportedType, EXECUTE, "cuML requires Float32 features")
             .with_fact("node_id", node_id)
             .with_fact("reason", "unsupported_feature_type")
@@ -1310,7 +1267,7 @@ fn execute_forest_predict(
             inputs.node_id(binding.input),
             &binding.features,
             batch,
-            TypeId::Float32,
+            FEATURE_ELEMENT,
             DenseMatrixLayout::RowMajor,
             identity.clone().with_chunk_index(batch_index).with_input_rows(len as u64),
             RuntimeOperatorStageKind::MlPack,

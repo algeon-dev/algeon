@@ -353,6 +353,36 @@ fn widen_packed_matrix_to_float64_is_exact_on_target_runtime() {
     assert_eq!(error.code(), ErrorCode::TypeMismatch);
 }
 
+fn narrow_packed_matrix_to_float32_rounds_on_target_runtime() {
+    let input_runtime = Runtime::new().unwrap();
+    let output_runtime = Runtime::new().unwrap();
+    let values = [0.1f64, -3.5, 16_777_217.0, 1.0e300, 7.25, -0.0];
+    let first = input_runtime.column_from_slice(&values[..3]).unwrap();
+    let second = input_runtime.column_from_slice(&values[3..]).unwrap();
+    for layout in [DenseMatrixLayout::RowMajor, DenseMatrixLayout::ColumnMajor] {
+        let wide = input_runtime.pack_columns(&[&first, &second], layout).unwrap();
+        let narrow = output_runtime.narrow_packed_matrix_to_float32(&wide).unwrap();
+
+        assert_eq!(narrow.shape(), [3, 2]);
+        assert_eq!(narrow.layout(), layout);
+        assert_eq!(narrow.element(), TypeId::Float32);
+        assert_eq!(narrow.binding_id(), output_runtime.binding_id());
+        let source = wide.as_column().to_vec::<f64>().unwrap();
+        let narrowed = narrow.as_column().to_vec::<f32>().unwrap();
+        assert_eq!(narrowed, source.iter().map(|value| *value as f32).collect::<Vec<_>>());
+        // 16_777_217 lies halfway between two Float32 values and rounds to even.
+        assert!(narrowed.contains(&16_777_216.0));
+        assert!(narrowed.contains(&f32::INFINITY));
+        assert_eq!(narrow.validate().unwrap_err().detail_value("non_finite_count"), Some("1"));
+        assert_eq!(wide.element(), TypeId::Float64);
+        assert_eq!(wide.as_column().to_vec::<f64>().unwrap().len(), 6);
+    }
+    let single = input_runtime.column_from_slice(&[1.5f32, -2.0]).unwrap();
+    let single = input_runtime.pack_columns(&[&single], DenseMatrixLayout::RowMajor).unwrap();
+    let error = output_runtime.narrow_packed_matrix_to_float32(&single).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::TypeMismatch);
+}
+
 pub(super) const CASES: &[(&str, fn())] = &[
     (
         "matrix_tests::row_major_pack_interleaves_columns_on_target_runtime",
@@ -362,6 +392,10 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "matrix_tests::widen_packed_matrix_to_float64_is_exact_on_target_runtime",
         widen_packed_matrix_to_float64_is_exact_on_target_runtime,
+    ),
+    (
+        "matrix_tests::narrow_packed_matrix_to_float32_rounds_on_target_runtime",
+        narrow_packed_matrix_to_float32_rounds_on_target_runtime,
     ),
     ("matrix_tests::unpack_dense_matrix_recovers_columns_on_device", unpack_dense_matrix_recovers_columns_on_device),
     (

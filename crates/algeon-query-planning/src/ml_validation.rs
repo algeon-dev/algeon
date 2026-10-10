@@ -7,11 +7,11 @@ use arrow::datatypes::DataType;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     plan::{
-        CumlOperation, GpuOptionKind, MlAlgorithmNode, MlAlgorithmParams, NodeId, QueryPlan, VectorElementType,
+        CumlOperation, GpuOptionKind, MlAlgorithmNode, MlAlgorithmParams, NodeId, QueryPlan,
         ml_classification_output_schema, ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema,
         ml_regression_output_schema, vector_pca_output_schema,
     },
-    vector_validation::validate_dense_relation_binding,
+    vector_validation::{DenseRelationValidation, validate_dense_relation_binding},
 };
 
 fn invalid(message: &'static str, reason: &'static str, node_id: NodeId) -> QueryError {
@@ -153,6 +153,24 @@ pub(crate) fn validate_ml_algorithm_node(
     if !supervised && input.label.is_some() {
         return Err(invalid("unsupervised ML input must not bind a label", "unexpected_label_binding", node_id));
     }
+    // Execution narrows Float64 features to the Float32 cuML reads, so the
+    // registry's element list is the accepted set for both shapes.
+    let elements = operation.descriptor().vector_element_support;
+    let supported_types = elements.iter().map(|element| element.as_str()).collect::<Vec<_>>().join(", ");
+    let require_supported_element = |relation: &DenseRelationValidation| {
+        if !elements.contains(&relation.element_type) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "query_engine.ml_algorithm.validate",
+                "cuML feature element type is not supported by this operation",
+            )
+            .with_fact("reason", "unsupported_feature_type")
+            .with_fact("node_id", node_id)
+            .with_fact("data_type", relation.element_type.as_str())
+            .with_fact("supported_types", supported_types.as_str()));
+        }
+        Ok(())
+    };
     let relation = validate_dense_relation_binding(
         (&input.features, &input.row_id),
         ml.inputs[input.input],
@@ -160,21 +178,8 @@ pub(crate) fn validate_ml_algorithm_node(
         if supervised { "training" } else { "input" },
         plan,
         available_columns_by_node,
-        Some("Float32"),
-        |relation| {
-            if relation.element_type != VectorElementType::Float32 {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedType,
-                    "query_engine.ml_algorithm.validate",
-                    "cuML requires Float32 features",
-                )
-                .with_fact("reason", "unsupported_feature_type")
-                .with_fact("node_id", node_id)
-                .with_fact("data_type", relation.element_type.as_str())
-                .with_fact("supported_types", "Float32"));
-            }
-            Ok(())
-        },
+        Some(&supported_types),
+        require_supported_element,
     )?;
     if let Some(dimension) = relation.dimension {
         if dimension < 2 && operation == CumlOperation::Tsvd {
@@ -251,13 +256,8 @@ pub(crate) fn validate_ml_algorithm_node(
             "predict",
             plan,
             available_columns_by_node,
-            Some("Float32"),
-            |relation| {
-                if relation.element_type != VectorElementType::Float32 {
-                    return Err(invalid("cuML requires Float32 features", "unsupported_feature_type", node_id));
-                }
-                Ok(())
-            },
+            Some(&supported_types),
+            require_supported_element,
         )?;
         if let (Some(training), Some(predict_dimension)) = (relation.dimension, predict.dimension)
             && training != predict_dimension

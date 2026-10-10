@@ -43,9 +43,15 @@ pub(in crate::exec::source) use s3::parse_s3_source_uri;
 mod tests {
     use std::{
         fs,
+        io::{Read, Result as IoResult, Write},
+        net::{SocketAddr, TcpListener, TcpStream},
         path::{Path, PathBuf},
-        sync::{Arc, atomic::Ordering},
-        thread,
+        sync::{
+            Arc,
+            atomic::Ordering,
+            mpsc::{self, Receiver, Sender},
+        },
+        thread::{self, JoinHandle},
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
@@ -60,7 +66,9 @@ mod tests {
             SourceColumnRef, parquet_file_path_fact, parquet_file_stable_id_fact,
         },
     };
-    use query_runtime::runtime::{LakehouseCacheFillConfig, StandaloneConfig};
+    use query_runtime::runtime::{
+        LakehouseCacheFillConfig, S3SourceStorageProfile, SourceStorageProfile, StandaloneConfig,
+    };
 
     use super::{
         cache::{
@@ -348,6 +356,179 @@ mod tests {
         assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
         assert!(!lakehouse_cache_lock_path(&cache_path).exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    struct BlockedCacheFillServer {
+        address: SocketAddr,
+        requests: Receiver<String>,
+        release: Option<Sender<()>>,
+        worker: Option<JoinHandle<IoResult<()>>>,
+    }
+
+    impl BlockedCacheFillServer {
+        const TIMEOUT: Duration = Duration::from_secs(10);
+        const PAYLOAD: &[u8] = b"cache-object";
+
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (requests_tx, requests) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                for _ in 0..2 {
+                    let (mut stream, _) = listener.accept()?;
+                    stream.set_read_timeout(Some(Self::TIMEOUT))?;
+                    stream.set_write_timeout(Some(Self::TIMEOUT))?;
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let count = stream.read(&mut buffer)?;
+                        if count == 0 {
+                            return Ok(());
+                        }
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nLast-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\nETag: \"test-etag\"\r\nConnection: close\r\n\r\n",
+                        Self::PAYLOAD.len()
+                    )?;
+                    stream.write_all(&Self::PAYLOAD[..1])?;
+                    if requests_tx.send(String::from_utf8_lossy(&request).into_owned()).is_err()
+                        || release_rx.recv().is_err()
+                    {
+                        return Ok(());
+                    }
+                    stream.write_all(&Self::PAYLOAD[1..])?;
+                }
+                Ok(())
+            });
+            Self { address, requests, release: Some(release), worker: Some(worker) }
+        }
+
+        fn wait_for_request(&self, index: usize) {
+            let request = self.requests.recv_timeout(Self::TIMEOUT).expect("cache fill should request its object");
+            assert!(request.starts_with(&format!("GET /bucket/table/part-{index}.parquet HTTP/1.1\r\n")));
+        }
+
+        fn release_body(&self) {
+            self.release.as_ref().unwrap().send(()).unwrap();
+        }
+
+        fn finish(&mut self) {
+            self.worker.take().unwrap().join().unwrap().unwrap();
+        }
+    }
+
+    impl Drop for BlockedCacheFillServer {
+        fn drop(&mut self) {
+            let _ = self.release.take();
+            if let Some(worker) = self.worker.take() {
+                // Wake an unused accept and release a blocked body when the test unwinds.
+                let _ = TcpStream::connect_timeout(&self.address, Self::TIMEOUT);
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn background_fill_retains_operation_permit(fail_first_fill: bool) {
+        let root = unique_temp_cache_root("background-fill-operation-lifetime");
+        let mut server = BlockedCacheFillServer::start();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            lakehouse_cache_fill: LakehouseCacheFillConfig {
+                budget_bytes: Some(64),
+                max_concurrent_ops: 1,
+                ..LakehouseCacheFillConfig::default()
+            },
+            source_storage_profiles: vec![SourceStorageProfile::s3(
+                "controlled-fill",
+                S3SourceStorageProfile::default_chain()
+                    .with_region("us-east-1")
+                    .with_endpoint(format!("http://{}", server.address))
+                    .with_unsigned_requests()
+                    .with_path_style_access(true),
+            )],
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
+        let cache_file = |index: usize, expected_bytes: u64| {
+            let uri = format!("s3://bucket/table/part-{index}.parquet");
+            let cache_path = root.join(format!("part-{index}.parquet"));
+            let resolved_source = ResolvedParquetSource::remote_kvikio(&uri, CredentialMode::SharedProcessEnv)
+                .with_storage_profile_id("controlled-fill")
+                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+                .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_content_identity("test-content-identity")
+                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
+            LocalParquetFile::object_store_uri(uri)
+                .unwrap()
+                .with_resolved_parquet_source(resolved_source)
+                .unwrap()
+                .with_stable_id(format!("part-{index}"))
+                .with_file_size_bytes(expected_bytes)
+        };
+        let payload_bytes = u64::try_from(BlockedCacheFillServer::PAYLOAD.len()).unwrap();
+        let first = cache_file(0, payload_bytes + u64::from(fail_first_fill));
+        let second = cache_file(1, payload_bytes);
+        assert_eq!(
+            enqueue_background_lakehouse_cache_file_fill(&context, &first).unwrap(),
+            BackgroundLakehouseCacheFillEnqueue::Enqueued
+        );
+        server.wait_for_request(0);
+
+        assert_eq!(
+            enqueue_background_lakehouse_cache_file_fill(&context, &second).unwrap(),
+            BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated")
+        );
+        let first_path = root.join("part-0.parquet");
+        let second_path = root.join("part-1.parquet");
+        assert!(lakehouse_cache_lock_path(&first_path).is_file());
+        assert!(!lakehouse_cache_lock_path(&second_path).exists());
+        assert!(!first_path.exists());
+
+        server.release_body();
+        let returned_permit = context
+            .acquire_lakehouse_cache_fill_operation_with_timeout(
+                BlockedCacheFillServer::TIMEOUT,
+                "query_engine.test.background_fill_completion",
+            )
+            .unwrap()
+            .expect("completed or failed fill should return its operation permit");
+        assert!(!lakehouse_cache_lock_path(&first_path).exists());
+        if fail_first_fill {
+            assert!(!first_path.exists());
+        } else {
+            assert_eq!(fs::read(&first_path).unwrap(), BlockedCacheFillServer::PAYLOAD);
+        }
+        drop(returned_permit);
+
+        assert_eq!(
+            enqueue_background_lakehouse_cache_file_fill(&context, &second).unwrap(),
+            BackgroundLakehouseCacheFillEnqueue::Enqueued
+        );
+        server.wait_for_request(1);
+        server.release_body();
+        let _returned_permit = context
+            .acquire_lakehouse_cache_fill_operation_with_timeout(
+                BlockedCacheFillServer::TIMEOUT,
+                "query_engine.test.background_fill_completion",
+            )
+            .unwrap()
+            .expect("subsequent fill should complete and return its operation permit");
+        assert_eq!(fs::read(&second_path).unwrap(), BlockedCacheFillServer::PAYLOAD);
+        assert!(!lakehouse_cache_lock_path(&second_path).exists());
+        server.finish();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn background_fill_retains_operation_permit_until_publish() {
+        background_fill_retains_operation_permit(false);
+    }
+
+    #[test]
+    fn background_fill_retains_operation_permit_until_failure() {
+        background_fill_retains_operation_permit(true);
     }
 
     #[test]
