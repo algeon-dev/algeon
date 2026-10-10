@@ -135,12 +135,9 @@ static_runtime_symbol="$(nm --defined-only "${canonical_cuvs}" 2>/dev/null | awk
     exit 1
 }
 
-command -v patchelf >/dev/null || {
-    echo "error: patchelf is required to bind the canonical cuVS install to its selected RMM runtime" >&2
-    exit 1
-}
+cudf_lib_dir="$(realpath -e -- "${cudf_lib_dir}")"
 for library in "${lib_dir}/libcuvs.so" "${lib_dir}/libcuvs_c.so"; do
-    patchelf --set-rpath "\$ORIGIN:${cudf_lib_dir}" "${library}"
+    algeon_bind_install_runpath "${library}" "\$ORIGIN:${cudf_lib_dir}"
 done
 
 marker_dir="${install_dir}/share/algeon-cuvs"

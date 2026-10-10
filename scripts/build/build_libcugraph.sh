@@ -278,6 +278,14 @@ algeon_cuda_require_matching_contracts \
     "bash scripts/build/build_libcudf.sh && bash scripts/build/build_libcuvs.sh && bash scripts/build/build_libcugraph.sh"
 
 cmake --install "${build_dir}" --prefix "${install_dir}"
+# The installed libraries carry only $ORIGIN, and RUNPATH is not transitive,
+# so a consumer that links libcugraph without its own cuVS or RMM edge could
+# not resolve them. Bind the install to the selected prefixes, as the cuVS
+# install binds to its RMM prefix.
+algeon_bind_install_runpath "${install_dir}/lib/libcugraph.so" "\$ORIGIN:${cuvs_runtime_lib_dir}:${cudf_install_dir}/lib"
+for library in libcugraph_c.so libcugraph_common.so libcugraph_mg.so; do
+    algeon_bind_install_runpath "${install_dir}/lib/${library}" "\$ORIGIN:${cudf_install_dir}/lib"
+done
 for dependency_include in \
     "${build_dir}/_deps/raft-src/cpp/include" \
     "${build_dir}/_deps/raft-build/include" \
