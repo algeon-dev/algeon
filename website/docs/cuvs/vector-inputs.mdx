@@ -16,7 +16,8 @@ evaluate rows.
 Every `dataset`, `queries`, `x`, `y`, or `input` binding names a logical ID
 column:
 
-- The ID must be non-null `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`.
+- The ID must be `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`, and no
+  ID may be null.
 - IDs may repeat. Result ordinals disambiguate physical rows with equal IDs.
 - A subquery's top-level `ORDER BY` fixes the order its rows are numbered in.
   Sort keys must be output columns of the subquery, by name or 1-based
@@ -38,8 +39,8 @@ Each binding chooses one vector shape. Feature order defines dimension order.
 ```
 
 - `columns` contains at least one unique, non-empty column name.
-- Each selected feature column is non-null. All columns in the binding share
-  one supported element type.
+- Each selected feature column holds no null values. All columns in the
+  binding share one supported element type.
 - The listed order defines the vector dimensions.
 
 ### One list column
@@ -48,16 +49,31 @@ Each binding chooses one vector shape. Feature order defines dimension order.
 {"id":"paper_id","vector":{"column":"embedding"}}
 ```
 
-- `embedding` is non-null `FixedSizeList<T, D>`, `List<T>`, or `LargeList<T>`
-  with a supported element type `T`.
-- List elements are non-null. `FixedSizeList` has a positive dimension `D`.
+- `embedding` is `FixedSizeList<T, D>`, `List<T>`, or `LargeList<T>` with a
+  supported element type `T`, and no row of it is null.
+- List elements hold no null values. `FixedSizeList` has a positive dimension
+  `D`.
 - Variable-width `List` and `LargeList` rows must have one uniform, positive
   dimension after evaluation.
 
-`WHERE column IS NOT NULL` filters rows but does not make a column
-non-nullable in the schema, so it cannot satisfy the non-null feature
-requirements above. Use `COALESCE(column, CAST(0 AS REAL))` or another
-null-free expression in the subquery projection instead.
+## Null values
+
+Schema nullability does not matter. A nullable field type is accepted for the
+ID, for every feature column, and for a list column and its elements. Results
+of aggregates, Parquet columns, and lists built in SQL therefore need no
+rewrite. The contract applies to values. A null ID, a null feature value, a
+null list row, or a null list element fails the query with an invalid-input
+error (`cudf_invalid_input`) that names the function, the relation role, and
+the column. `gpu_validate_call` reads no values and cannot find nulls.
+
+Add `COALESCE(column, CAST(0 AS REAL))` only when the data contains nulls and a
+fallback value is correct, or drop the offending rows with
+`WHERE column IS NOT NULL`.
+
+A list vector built in SQL with `ARRAY_AGG`, `MAKE_ARRAY`, or
+`COALESCE(..., ARRAY_REPEAT(...))` is computed by DataFusion on the CPU,
+because native lowering does not build lists. Its result is uploaded as the
+relation and accepted when it contains no null rows or elements.
 
 ## Element types
 

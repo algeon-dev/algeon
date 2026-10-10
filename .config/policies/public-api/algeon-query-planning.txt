@@ -288,6 +288,9 @@ pub query_planning::capability::VectorInputRole::Input
 pub query_planning::capability::VectorInputRole::Queries
 pub query_planning::capability::VectorInputRole::X
 pub query_planning::capability::VectorInputRole::Y
+impl query_planning::capability::VectorInputRole
+pub const fn query_planning::capability::VectorInputRole::as_str(self) -> &'static str
+pub fn query_planning::capability::VectorInputRole::for_vector_input(&query_planning::plan::VectorAlgorithmNode, usize) -> Self
 pub struct query_planning::capability::AggregateStrategyCandidateRejection
 pub query_planning::capability::AggregateStrategyCandidateRejection::reason: &'static str
 pub query_planning::capability::AggregateStrategyCandidateRejection::strategy: query_planning::capability::AggregateExecutionStrategy
@@ -2306,6 +2309,7 @@ pub query_planning::plan::MlAlgorithmParams::Tsvd(query_planning::plan::MlTsvdPa
 pub query_planning::plan::MlAlgorithmParams::Umap(query_planning::plan::MlUmapParams)
 impl query_planning::plan::MlAlgorithmParams
 pub fn query_planning::plan::MlAlgorithmParams::relation_bindings(&self) -> impl core::iter::traits::iterator::Iterator<Item = &query_planning::plan::MlRelationBinding>
+pub const fn query_planning::plan::MlAlgorithmParams::relation_role(&self, usize) -> query_planning::plan::MlRelationRole
 pub const fn query_planning::plan::MlAlgorithmParams::supports_algorithm(&self, query_planning::plan::MlAlgorithm) -> bool
 pub enum query_planning::plan::MlClusterSelectionMethod
 pub query_planning::plan::MlClusterSelectionMethod::Eom
@@ -3261,10 +3265,11 @@ pub fn query_planning::plan::graph_residency_descriptor_for_edge_plan(&query_pla
 pub fn query_planning::plan::graph_residency_descriptor_for_local_parquet_source(&query_planning::source::LocalParquetSource, &query_planning::plan::GraphAlgorithmSpec) -> query_planning::plan::GraphResidencyPlanAnalysis
 pub fn query_planning::plan::graph_result_schema_for_params(query_planning::plan::GraphAlgorithm, &query_planning::plan::GraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::graph_result_schema_for_vertex_type(query_planning::plan::GraphAlgorithm, &query_planning::plan::GraphAlgorithmParams, &arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
+pub fn query_planning::plan::ml_classification_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_embedding_output_schema(arrow_schema::datatype::DataType, usize) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_forest_output_schema(arrow_schema::datatype::DataType, query_planning::plan::MlForestOutputContract) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_hdbscan_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
-pub fn query_planning::plan::ml_predictions_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
+pub fn query_planning::plan::ml_regression_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::native_plan_cost_decision(&query_planning::plan::QueryPlan, &query_planning::plan::NativePlanCostOptions, bool) -> query_planning::plan::NativePlanCostDecision
 pub fn query_planning::plan::planned_resident_graph_key(&query_planning::plan::GraphResidencyDescriptor, &query_planning::plan::GraphAlgorithmSpec) -> core::option::Option<query_planning::plan::ResidentGraphKey>
 pub fn query_planning::plan::stable_graph_result_schema(query_planning::plan::GraphAlgorithm) -> arrow_schema::schema::SchemaRef

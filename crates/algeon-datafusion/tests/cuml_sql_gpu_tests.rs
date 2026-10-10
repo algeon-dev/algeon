@@ -11,6 +11,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
     cuml_sql::{CumlAlgoExec, CumlModelStoreConfig, CumlSqlConfig},
+    error::{DataFusionErrorExt, ErrorCode},
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     native_report::NativeDataFusionExecutionMetrics,
     planner::{AlgeonGpuExecutionMode, FinalPlanDisposition, classify_final_plan},
@@ -24,6 +25,7 @@ use arrow::{
 };
 use datafusion::{
     datasource::MemTable,
+    error::DataFusionError,
     execution::SessionStateBuilder,
     physical_plan::{ExecutionPlan, collect, execute_stream, metrics::MetricsSet},
     prelude::{ParquetReadOptions, SessionContext},
@@ -135,6 +137,98 @@ async fn tsvd_wide_sql_matches_host_oracle_with_gpu_resident_input() {
     assert_eq!(classify_final_plan(physical.as_ref()), FinalPlanDisposition::Native);
     check_oracle(&collect(physical, ctx.task_ctx()).await.unwrap());
     close(backend, ctx);
+}
+
+/// Relations whose fields are nullable by schema but hold no null value:
+/// nullable-typed wide columns, and a list built in SQL, which DataFusion
+/// computes on the CPU with always-nullable fields.
+const NULLABLE_TYPED_INPUTS: [&str; 2] = [
+    "SELECT CASE WHEN id < 0 THEN NULL ELSE id END AS id, CASE WHEN id < 0 THEN NULL ELSE d0 END AS d0, d1, d2 FROM t",
+    "SELECT id, make_array(d0, d1, d2) AS vector FROM t",
+];
+
+#[tokio::test]
+async fn nullable_typed_null_free_relations_match_the_non_null_results() {
+    let (backend, ctx) = context();
+    for input in NULLABLE_TYPED_INPUTS {
+        let sql = format!("SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => ({input}), n_components => 2)");
+        check_oracle(&collect(plan(&ctx, &sql).await, ctx.task_ctx()).await.unwrap_or_else(|error| panic!("{error}")));
+    }
+    let logistic = |label: &str| {
+        format!(
+            "SELECT id, prediction FROM cuml_logistic_regression(\
+                 training => (SELECT id, d0, d1, {label} AS label FROM t), \
+                 predict => (SELECT id, d0, d1 FROM t)) ORDER BY row_ordinal"
+        )
+    };
+    let oracle = collect(plan(&ctx, &logistic("CAST(id >= 4 AS INT)")).await, ctx.task_ctx()).await.unwrap();
+    let nullable = logistic("CASE WHEN id < 0 THEN NULL ELSE CAST(id >= 4 AS INT) END");
+    let actual = collect(plan(&ctx, &nullable).await, ctx.task_ctx()).await.unwrap();
+    assert_eq!(format!("{actual:?}"), format!("{oracle:?}"));
+    close(backend, ctx);
+}
+
+#[tokio::test]
+async fn null_ids_features_list_values_and_labels_fail_naming_the_function_role_and_column() {
+    let (backend, ctx) = context();
+    let tsvd = [
+        ("id", "null_id_value", "SELECT CASE WHEN id = 3 THEN NULL ELSE id END AS id, d0, d1, d2 FROM t"),
+        ("d1", "null_feature_value", "SELECT id, d0, CASE WHEN id = 3 THEN NULL ELSE d1 END AS d1, d2 FROM t"),
+        (
+            "vector",
+            "null_vector_row",
+            "SELECT id, CASE WHEN id = 3 THEN NULL ELSE make_array(d0, d1, d2) END AS vector FROM t",
+        ),
+        (
+            "vector",
+            "null_vector_value",
+            "SELECT id, make_array(d0, CASE WHEN id = 3 THEN NULL ELSE d1 END, d2) AS vector FROM t",
+        ),
+    ];
+    for (column, reason, input) in tsvd {
+        let sql = format!("SELECT * FROM cuml_tsvd(input => ({input}), n_components => 2)");
+        let error = collect(plan(&ctx, &sql).await, ctx.task_ctx()).await.expect_err(&sql);
+        assert_null_input_error(&error, "cuml_tsvd", "input", column, reason);
+    }
+    let logistic = [
+        (
+            "training",
+            "label",
+            "null_label_value",
+            "SELECT id, d0, d1, CASE WHEN id = 3 THEN NULL ELSE CAST(id >= 4 AS INT) END AS label FROM t",
+            "SELECT id, d0, d1 FROM t",
+        ),
+        (
+            "training",
+            "id",
+            "null_id_value",
+            "SELECT CASE WHEN id = 3 THEN NULL ELSE id END AS id, d0, d1, CAST(id >= 4 AS INT) AS label FROM t",
+            "SELECT id, d0, d1 FROM t",
+        ),
+        (
+            "predict",
+            "d0",
+            "null_feature_value",
+            "SELECT id, d0, d1, CAST(id >= 4 AS INT) AS label FROM t",
+            "SELECT id, CASE WHEN id = 3 THEN NULL ELSE d0 END AS d0, d1 FROM t",
+        ),
+    ];
+    for (role, column, reason, training, predict) in logistic {
+        let sql = format!("SELECT * FROM cuml_logistic_regression(training => ({training}), predict => ({predict}))");
+        let error = collect(plan(&ctx, &sql).await, ctx.task_ctx()).await.expect_err(&sql);
+        assert_null_input_error(&error, "cuml_logistic_regression", role, column, reason);
+    }
+    close(backend, ctx);
+}
+
+fn assert_null_input_error(error: &DataFusionError, function: &str, role: &str, column: &str, reason: &str) {
+    let typed = error.find_algeon_error().unwrap_or_else(|| panic!("typed error expected: {error:?}"));
+    assert_eq!(typed.code(), ErrorCode::CudfInvalidInput, "{error}");
+    assert!(typed.message().contains(function), "{}", typed.message());
+    assert_eq!(typed.fact_value("relation_role"), Some(role), "{error}");
+    assert_eq!(typed.fact_value("reason"), Some(reason), "{error}");
+    let detail = typed.client_detail().expect("the null column travels as client detail");
+    assert_eq!(detail.value("column"), Some(column), "{error}");
 }
 
 #[tokio::test]
@@ -290,13 +384,17 @@ async fn logistic_sql_scores_independent_predict_relation_for_binary_and_three_c
             let output = collect(plan(&ctx, &sql).await, ctx.task_ctx()).await.unwrap();
             assert_eq!(output[0].schema().field(1).data_type(), &DataType::Utf8);
             assert_eq!(output[0].schema().field(2).data_type(), &DataType::Int32);
+            assert_eq!(output[0].schema().field(3).name(), "probability");
+            assert_eq!(output[0].schema().field(3).data_type(), &DataType::Float32);
             assert_eq!(output.iter().map(RecordBatch::num_rows).sum::<usize>(), if empty { 0 } else { classes });
             if !empty {
                 let ids = output[0].column(1).as_any().downcast_ref::<StringArray>().unwrap();
                 let labels = output[0].column(2).as_any().downcast_ref::<Int32Array>().unwrap();
+                let probabilities = output[0].column(3).as_any().downcast_ref::<Float32Array>().unwrap();
                 for index in 0..classes {
                     assert_eq!(ids.value(index), format!("p{index}"));
                     assert_eq!(labels.value(index), index as i32);
+                    assert!((1.0 / classes as f32..=1.0).contains(&probabilities.value(index)));
                 }
             }
         }
@@ -352,6 +450,12 @@ async fn random_forest_sql_classifies_and_regresses_independent_relations() {
             let total = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
             assert_eq!(total, if empty { 0 } else { 48 });
             assert_eq!(batches[0].schema().field(2).data_type(), &target_type);
+            if target_type == DataType::Int32 {
+                assert_eq!(batches[0].schema().field(3).name(), "probability");
+                assert_eq!(batches[0].schema().field(3).data_type(), &DataType::Float32);
+            } else {
+                assert_eq!(batches[0].num_columns(), 3);
+            }
             if !empty {
                 let ids = batches[0].column(1).as_any().downcast_ref::<Int64Array>().unwrap();
                 assert_eq!(ids.value(0), 100);
@@ -360,6 +464,8 @@ async fn random_forest_sql_classifies_and_regresses_independent_relations() {
                     let accuracy =
                         (0..48).filter(|&i| predictions.value(i) == i32::from(i >= 24)).count() as f32 / 48.0;
                     assert!(accuracy >= 0.95, "RF SQL accuracy {accuracy}");
+                    let probabilities = batches[0].column(3).as_any().downcast_ref::<Float32Array>().unwrap();
+                    assert!((0..48).all(|i| (0.5..=1.0).contains(&probabilities.value(i))));
                 } else {
                     let predictions = batches[0].column(2).as_any().downcast_ref::<Float32Array>().unwrap();
                     let mse = (0..48).map(|i| (predictions.value(i) - (2.0 * x[i] + 1.0)).powi(2)).sum::<f32>() / 48.0;

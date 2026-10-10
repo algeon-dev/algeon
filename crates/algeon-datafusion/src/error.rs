@@ -69,10 +69,10 @@ pub enum ClientDetail {
     UnsupportedColumn { name: String, data_type: String, role: &'static str },
     /// A relation field whose Arrow type a GPU function rejects.
     RelationField { field: String, data_type: String },
-    /// A field a rejection names: absent from its relation, nullable where
-    /// the function requires non-null values, or named by native validation.
+    /// A field a rejection names: absent from its relation or named by
+    /// native validation.
     Field { name: String },
-    /// A column native validation names.
+    /// A column native validation or execution names.
     Column { name: String },
     /// An input ORDER BY key that is not an output column of its input.
     OrderingKey { name: String },
@@ -826,6 +826,7 @@ impl Error {
             "relation_role",
             "training_rows",
             "non_finite_count",
+            "null_count",
             "remedy",
             "occurrence_id",
             "node_id",

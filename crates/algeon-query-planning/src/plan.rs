@@ -80,8 +80,8 @@ pub use ml_algorithm::{
     CUML_UMAP_FUNCTION, CumlOperation, CumlOperationDescriptor, CumlOutputContract, MlAlgorithm, MlAlgorithmNode,
     MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlDecompositionSolver, MlForestPredictParams,
     MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlRelationRole,
-    MlSplitCriterion, MlTsvdParams, MlUmapInit, MlUmapParams, canonicalize_cuml_options, ml_embedding_output_schema,
-    ml_hdbscan_output_schema, ml_predictions_output_schema,
+    MlSplitCriterion, MlTsvdParams, MlUmapInit, MlUmapParams, canonicalize_cuml_options,
+    ml_classification_output_schema, ml_embedding_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema,
 };
 pub use ml_forest::{
     MlForestModelDigest, MlForestModelFacts, MlForestModelFormat, MlForestModelSnapshot, MlForestOutputContract,

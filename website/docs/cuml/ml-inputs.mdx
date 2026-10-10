@@ -18,10 +18,10 @@ rows.
 
 ## Identity and feature projection
 
-Each input must project a non-null column named `id`. Its Arrow type must be
-`Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`. Duplicate IDs are allowed;
-the output `row_ordinal` distinguishes rows with the same ID and records their
-position in the evaluated relation.
+Each input must project a column named `id`. Its Arrow type must be `Int32`,
+`Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`, and no ID may be null. Duplicate
+IDs are allowed; the output `row_ordinal` distinguishes rows with the same ID
+and records their position in the evaluated relation.
 
 ## Input order
 
@@ -37,21 +37,35 @@ row, such as `ORDER BY id` over distinct IDs.
 
 The relation projects exactly one of these dense-feature shapes:
 
-- Wide features: every column other than `id` is a non-null `Float32` feature.
+- Wide features: every column other than `id` is a `Float32` feature.
   For `training`, the canonical `label` column is excluded from features.
   The order of columns in the `SELECT` projection fixes the dimension order.
   At least one feature is required.
-- List features: one non-null column named `vector` contains
-  `FixedSizeList<Float32, D>`, `List<Float32>`, or `LargeList<Float32>` with
-  non-null elements. The relation contains no other feature columns; supervised
-  `training` also contains `label`.
+- List features: one column named `vector` contains
+  `FixedSizeList<Float32, D>`, `List<Float32>`, or `LargeList<Float32>`. The
+  relation contains no other feature columns; supervised `training` also
+  contains `label`.
   `FixedSizeList` requires positive `D`; variable-length lists must have the
   same positive length for every evaluated row.
 
-`WHERE column IS NOT NULL` filters rows but does not make a column
-non-nullable in the schema, so it cannot satisfy the feature contract above.
-Use `COALESCE(column, CAST(0 AS REAL))` or another null-free expression in
-the subquery projection instead.
+### Null values
+
+Schema nullability does not matter. A nullable field type is accepted for the
+ID, for every feature column, for a list column and its elements, and for the
+`training` label. Results of aggregates, Parquet columns, and lists built in
+SQL therefore need no rewrite. The contract applies to values. A null ID,
+feature value, list row, list element, or label fails the query with an
+invalid-input error (`cudf_invalid_input`) that names the function, the
+relation role, and the column.
+
+Add `COALESCE(column, CAST(0 AS REAL))` only when the data contains nulls and a
+fallback value is correct, or drop the offending rows with
+`WHERE column IS NOT NULL`.
+
+A list vector built in SQL with `ARRAY_AGG`, `MAKE_ARRAY`, or
+`COALESCE(..., ARRAY_REPEAT(...))` is computed by DataFusion on the CPU,
+because native lowering does not build lists. Its result is uploaded as the
+relation and accepted when it contains no null rows or elements.
 
 No implicit feature cast occurs. Apply `CAST` in the subquery to produce
 `Float32` features when source columns have a different numeric type:
@@ -64,18 +78,17 @@ FROM cuml_tsvd(
 );
 ```
 
-Float32 feature values must be finite. Null IDs, feature columns, list values,
-and list elements are invalid for this input contract. The unsupervised `input`
-role treats a column named `label` as an ordinary feature.
+Float32 feature values must be finite. The unsupervised `input` role treats a
+column named `label` as an ordinary feature.
 
 ## Supervised classification and regression
 
-For classification, `training` projects a canonical non-null `Int32` column named `label` alongside
+For classification, `training` projects a canonical `Int32` column named `label` alongside
 its ID and Float32 features. Evaluated training labels must contain at least
 two classes with contiguous indices `0..C-1`. Two classes use logistic loss;
 more classes use softmax for logistic regression. A fit that reaches `max_iter` remains a result.
 Random forest classification accepts the same class indices. For random forest
-regression, `training.label` must be non-null finite `Float32`; its output
+regression, `training.label` must be finite `Float32`; its output
 `prediction` is `Float32`.
 The query-local model is released after predicting within the statement.
 
@@ -84,23 +97,49 @@ feature dimension must match `training`; known dimensions are checked at
 planning, and evaluated dimensions are checked after packing. Output `id`
 comes from `predict`, including when the training and predict ID types differ.
 An empty evaluated `predict` relation produces zero rows with the stable
-`prediction Int32` schema for classification or `prediction Float32` for
-regression without calling the native model.
+`prediction Int32` and `probability Float32` schema for classification or
+`prediction Float32` for regression without calling the native model.
+
+### Classifier probabilities
+
+`cuml_logistic_regression` and `cuml_random_forest_classifier` return
+`prediction`, the most probable class (a tie takes the lowest index), and
+`probability Float32`, the probability of that class. The number of classes is
+learned from the labels, so the output has no per-class columns.
+
+- Logistic regression follows cuML's `predict_proba`. Two classes apply the
+  sigmoid to the decision score of class 1, which makes `probability` at
+  least 0.5. Three or more classes apply softmax to the per-class decision
+  scores, which makes it at least `1 / C`.
+- The random forest averages each tree's leaf probabilities for the class
+  and reports the largest average.
+
+For two classes, rank rows by the probability of class 1:
+
+```sql
+SELECT id,
+       CASE WHEN prediction = 1 THEN probability ELSE 1 - probability END AS score
+FROM cuml_logistic_regression(training => (...), predict => (...))
+ORDER BY score DESC;
+```
+
+Class weights are not exposed. To trade precision for recall, threshold this
+score instead of `prediction`, which cuts at 0.5.
 
 ## Validation boundary
 
-SQL planning and `gpu_validate_call` check names, static Arrow types,
-nullability, list shape, option ranges, and known dimensions. A known dimension
-smaller than `n_components` is rejected before execution. Metadata validation
-reads no feature values.
+SQL planning and `gpu_validate_call` check names, static Arrow types, list
+shape, option ranges, and known dimensions. A known dimension smaller than
+`n_components` is rejected before execution. Metadata validation reads no
+values, so it cannot find nulls.
 
-Execution checks evaluated row count and feature values, including finiteness
-and uniform positive list length. An empty evaluated input produces zero rows
-with the UDTF's stable output schema without calling cuML. For a nonempty
-input, TSVD requires at least two rows and two feature dimensions;
-`n_components` cannot exceed the evaluated dimension. HDBSCAN requires at
-least two rows, `min_samples < rows`, `min_cluster_size <= rows`, and
-`max_cluster_size <= rows` when the latter is nonzero. UMAP requires at least
-two rows and `n_neighbors < rows`. When an exact row count is known, SQL
+Execution checks evaluated row count and values: no nulls in IDs, features, or
+labels, finite features, and uniform positive list length. An empty evaluated
+input produces zero rows with the UDTF's stable output schema without calling
+cuML. For a nonempty input, TSVD requires at least two rows and two feature
+dimensions; `n_components` cannot exceed the evaluated dimension. HDBSCAN
+requires at least two rows, `min_samples < rows`, `min_cluster_size <= rows`,
+and `max_cluster_size <= rows` when the latter is nonzero. UMAP requires at
+least two rows and `n_neighbors < rows`. When an exact row count is known, SQL
 planning can reject invalid counts. Otherwise the execution error carries a
 specific reason for the violated row-dependent condition.

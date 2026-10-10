@@ -78,6 +78,22 @@ async fn flight_sql_lists_and_executes_all_cuml_functions() {
     assert!((1..names.len()).all(|row| available.value(row)));
     assert!(!available.value(0));
     assert_eq!(reasons.value(0), "model_root_unconfigured");
+    let status = execute_error_status(
+        &mut client,
+        "SELECT id, prediction FROM cuml_forest_predict(\
+         input => (SELECT id, d0, d1, d2, d2 AS d3 FROM input_vectors), \
+         model => 'scorer.json', model_format => 'xgboost_json')",
+    )
+    .await;
+    assert_eq!(status.code(), tonic::Code::InvalidArgument, "{status:?}");
+    assert_eq!(
+        status.metadata().get("x-algeon-required-option").and_then(|option| option.to_str().ok()),
+        Some("models.root"),
+        "{status:?}"
+    );
+    for expected in ["`[models]`", "server configuration file", "CumlSqlConfig::model_store"] {
+        assert!(status.message().contains(expected), "{expected}: {status:?}");
+    }
     for function in [
         "cuml_tsvd",
         "cuml_hdbscan",
@@ -143,6 +159,21 @@ async fn flight_sql_lists_and_executes_all_cuml_functions() {
     .await;
     for reason in ["training requires at least two rows", "reason=insufficient_training_rows", "training_rows=0"] {
         assert!(status.message().contains(reason), "{status:?}");
+    }
+    // A null label fails with an invalid-input status naming the function, role, and column.
+    let status = execute_error_status(
+        &mut client,
+        "SELECT id, prediction FROM cuml_logistic_regression(\
+         training => (SELECT id, d0, d1, CASE WHEN id = 1 THEN NULL ELSE CAST(id / 2 AS INT) END AS label \
+                      FROM input_vectors), \
+         predict => (SELECT id, d0, d1 FROM input_vectors))",
+    )
+    .await;
+    assert_eq!(status.code(), tonic::Code::InvalidArgument, "{status:?}");
+    for expected in
+        ["cuml_logistic_regression", "relation_role=training", "reason=null_label_value", "(column 'label')"]
+    {
+        assert!(status.message().contains(expected), "{expected}: {status:?}");
     }
     drop(client);
     drop(server);

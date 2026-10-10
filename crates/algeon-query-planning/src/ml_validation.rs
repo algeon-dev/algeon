@@ -8,8 +8,8 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     plan::{
         CumlOperation, GpuOptionKind, MlAlgorithmNode, MlAlgorithmParams, NodeId, QueryPlan, VectorElementType,
-        ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema,
-        vector_pca_output_schema,
+        ml_classification_output_schema, ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema,
+        ml_regression_output_schema, vector_pca_output_schema,
     },
     vector_validation::validate_dense_relation_binding,
 };
@@ -234,9 +234,6 @@ pub(crate) fn validate_ml_algorithm_node(
                 .with_fact("field", label)
                 .with_fact("actual_type", format!("{:?}", field.data_type())));
         }
-        if field.is_nullable() {
-            return Err(invalid("training label must not be nullable", "nullable_label", node_id));
-        }
         if predict_binding.label.is_some()
             || plan
                 .node(ml.inputs[predict_binding.input])
@@ -269,10 +266,11 @@ pub(crate) fn validate_ml_algorithm_node(
                 .with_fact("training_dimension", training)
                 .with_fact("predict_dimension", predict_dimension));
         }
-        ml_predictions_output_schema(
-            predict.id_type,
-            if operation == CumlOperation::RandomForestRegressor { DataType::Float32 } else { DataType::Int32 },
-        )
+        if operation == CumlOperation::RandomForestRegressor {
+            ml_regression_output_schema(predict.id_type)
+        } else {
+            ml_classification_output_schema(predict.id_type)
+        }
     } else if let MlAlgorithmParams::ForestPredict(p) = &ml.spec.params {
         ml_forest_output_schema(relation.id_type, p.model.output())
     } else {

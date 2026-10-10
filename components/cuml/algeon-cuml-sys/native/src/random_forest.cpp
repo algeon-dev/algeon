@@ -237,7 +237,8 @@ extern "C" cuml_status_t cuml_rf_regressor_fit(
 }
 
 extern "C" cuml_status_t cuml_rf_forest_import(cuml_handle_t handle, cuml_rf_forest_t forest,
-                                               cuml_forest_model_t* out_model, cuml_forest_metadata_t* out_metadata)
+                                               cuml_forest_output_t output, cuml_forest_model_t* out_model,
+                                               cuml_forest_metadata_t* out_metadata)
 {
   cuml_clear_error();
   if (out_model == nullptr || out_metadata == nullptr) {
@@ -249,8 +250,6 @@ extern "C" cuml_status_t cuml_rf_forest_import(cuml_handle_t handle, cuml_rf_for
   }
   CUML_RUST_TRY {
     auto const model = cuml_rf_build_treelite(*forest);
-    auto const output = forest->type == cuml_rf_forest::kind::classifier ? CUML_FOREST_OUTPUT_CLASS_INDEX
-                                                                          : CUML_FOREST_OUTPUT_SCORES;
     *out_model = cuml_forest_import_treelite(handle, model.get(), output, out_metadata);
     return CUML_SUCCESS;
   } CUML_RUST_CATCH

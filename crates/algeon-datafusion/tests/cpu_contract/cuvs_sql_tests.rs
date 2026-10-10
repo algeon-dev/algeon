@@ -382,8 +382,76 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
     }
 }
 
+/// The relation field contract and the limitations carry the null-value
+/// contract; capturing them from a server must reproduce the live descriptor.
+#[tokio::test]
+async fn captured_relation_roles_and_limitations_equal_the_catalog_descriptors() {
+    let ctx = cuvs_context();
+    let spec_directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../website/gpu-function-specs/cuvs");
+    for descriptor in CUVS_OPERATION_REGISTRY {
+        let name = descriptor.sql_function_name;
+        let captured: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(spec_directory.join(format!("{name}.json"))).unwrap()).unwrap();
+        let described = ctx
+            .sql(&format!(
+                "SELECT relation_roles_json, limitations_json FROM {GPU_DESCRIBE_FUNCTION_FUNCTION}('{name}')"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        for (column, key) in ["relation_roles_json", "limitations_json"].into_iter().enumerate() {
+            let live = described[0].column(column).as_any().downcast_ref::<StringArray>().unwrap().value(0);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(captured[key].as_str().unwrap()).unwrap(),
+                serde_json::from_str::<serde_json::Value>(live).unwrap(),
+                "{name}.{key} drifted from its captured spec; run website/scripts/capture-gpu-function-specs.sh"
+            );
+        }
+    }
+}
+
 fn mdx_table_text(value: &str) -> String {
     value.replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Schema nullability is not part of the input contract: null values fail at
+/// execution, so nullable-typed IDs, wide features and list vectors plan, and
+/// the result keeps its non-null schema with the input ID type.
+#[tokio::test]
+async fn nullable_typed_relations_plan_with_the_canonical_non_null_output_schema() {
+    let ctx = cuvs_context();
+    for (table, projection) in [
+        ("nullable_vectors", "item_id AS id, d0, d1"),
+        ("nullable_list_vectors", "item_id AS id, vector"),
+        ("nullable_fixed_vectors", "item_id AS id, vector"),
+    ] {
+        let kmeans = logical_plan(
+            &ctx,
+            &format!(
+                "SELECT * FROM {CUVS_KMEANS_FUNCTION}(\
+                     input => (SELECT {projection} FROM {table}), n_clusters => 1)"
+            ),
+        )
+        .await;
+        let expected = DFSchema::try_from(vector_kmeans_output_schema(DataType::Int64).as_ref().clone()).unwrap();
+        assert_eq!(find_cuvs_node(&kmeans).unwrap().schema().as_ref(), &expected, "{table}");
+
+        let knn = logical_plan(
+            &ctx,
+            &format!(
+                "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+                     dataset => (SELECT {projection} FROM {table}), \
+                     queries => (SELECT {projection} FROM {table}), \
+                     k => 1, metric => 'l2_expanded')"
+            ),
+        )
+        .await;
+        let expected =
+            DFSchema::try_from(vector_knn_output_schema(DataType::Int64, DataType::Int64).as_ref().clone()).unwrap();
+        assert_eq!(find_cuvs_node(&knn).unwrap().schema().as_ref(), &expected, "{table}");
+    }
 }
 
 #[tokio::test]
@@ -1087,15 +1155,6 @@ async fn local_validation_rejects_schema_dimension_option_and_empty_input_contra
         ),
         (
             format!(
-                "SELECT * FROM {CUVS_KMEANS_FUNCTION}(\
-                     input => (SELECT item_id AS id, d0, d1 FROM nullable_vectors), \
-                     n_clusters => 1)"
-            ),
-            ErrorCode::InvalidRequest,
-            Some("nullable_feature_field"),
-        ),
-        (
-            format!(
                 "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
                     dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
                     queries => (SELECT query_id AS id, d0 FROM one_dim_queries), \
@@ -1167,11 +1226,6 @@ async fn local_validation_rejects_schema_dimension_option_and_empty_input_contra
         assert_eq!(typed.code(), expected_code, "{sql}");
         if let Some(reason) = expected_reason {
             assert_eq!(typed.facts().get("reason"), Some(reason), "{sql}");
-            if reason == "nullable_feature_field" {
-                let remedy = typed.fact_value("remedy").unwrap_or_else(|| panic!("missing remedy fact for {sql}"));
-                assert!(remedy.contains("COALESCE"), "{sql}: {remedy}");
-                assert!(remedy.contains("IS NOT NULL"), "{sql}: {remedy}");
-            }
         }
     }
 }

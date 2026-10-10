@@ -5,7 +5,6 @@ use std::sync::{
 };
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
-use arrow::datatypes::DataType;
 use cudf::{
     DenseMatrixLayout, Exec, ExecutionBudgetRequest, PackedMatrix, Runtime, Series, TypeId,
     interop::arrow_host::cudf_dtype_from_arrow_type,
@@ -22,8 +21,9 @@ use query_planning::{
         MlAlgorithm, MlAlgorithmNode, MlAlgorithmParams, MlClusterSelectionMethod, MlDecompositionSolver,
         MlForestModelFacts, MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision, MlForestPredictParams,
         MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlSplitCriterion,
-        MlTsvdParams, MlUmapInit, MlUmapParams, NodeId, QueryPlan, VectorRowIdBinding, ml_embedding_output_schema,
-        ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
+        MlTsvdParams, MlUmapInit, MlUmapParams, NodeId, QueryPlan, VectorRowIdBinding, ml_classification_output_schema,
+        ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema,
+        vector_pca_output_schema,
     },
 };
 use query_runtime::{
@@ -39,8 +39,8 @@ use crate::{
     exec::{
         GpuDataFrame,
         dense_relation::{
-            DenseRelationInputs, ML_OPERATIONS, matrix_bytes_for, pack_dense_relation_for, relation_element_type_for,
-            relation_input_for,
+            DenseRelationInputs, ML_OPERATIONS, RelationColumns, matrix_bytes_for, pack_dense_relation_for,
+            relation_element_type_for, relation_input_for, require_null_free_relation,
         },
     },
     native_error::{cudf_unsupported_type_error, cuml_query_error},
@@ -96,9 +96,9 @@ pub(in crate::exec) fn validate_ml_algorithm_execution(
     let id_type = id_field.data_type().clone();
     let expected = match &ml.spec.params {
         MlAlgorithmParams::LogisticRegression(_) | MlAlgorithmParams::RandomForestClassifier(_) => {
-            ml_predictions_output_schema(id_type, DataType::Int32)
+            ml_classification_output_schema(id_type)
         },
-        MlAlgorithmParams::RandomForestRegressor(_) => ml_predictions_output_schema(id_type, DataType::Float32),
+        MlAlgorithmParams::RandomForestRegressor(_) => ml_regression_output_schema(id_type),
         MlAlgorithmParams::ForestPredict(params) => ml_forest_output_schema(id_type, params.model.output()),
         MlAlgorithmParams::Hdbscan(_) => ml_hdbscan_output_schema(id_type),
         MlAlgorithmParams::Umap(_) => ml_embedding_output_schema(id_type, components.expect("UMAP dimension")),
@@ -135,6 +135,21 @@ pub(in crate::exec) fn execute_ml_algorithm(
     };
     if relation_input_for(&ML_OPERATIONS, inputs, binding.input, node_id, "input")?.num_rows() == 0 {
         return empty_ml_output(context, ml);
+    }
+    for binding in ml.spec.params.relation_bindings() {
+        require_null_free_relation(
+            &ML_OPERATIONS,
+            inputs,
+            node_id,
+            ml.spec.algorithm.as_str(),
+            RelationColumns {
+                role: ml.spec.params.relation_role(binding.input).as_str(),
+                input: binding.input,
+                row_id: &binding.row_id,
+                vector: &binding.features,
+                label: binding.label.as_deref(),
+            },
+        )?;
     }
     let bytes = context.device_budget_bytes();
     let bytes = usize::try_from(bytes).map_err(|_| {
@@ -515,9 +530,10 @@ fn execute_logistic_regression(
     })();
     let predicted = match predicted {
         Ok(predicted) => {
+            // Int32 prediction and Float32 probability.
             guard.finish(
                 Some(predict.num_rows() as u64),
-                Some(matrix_bytes_for::<i32>(&ML_OPERATIONS, predict.num_rows(), 1, node_id, "prediction")?),
+                Some(matrix_bytes_for::<i32>(&ML_OPERATIONS, predict.num_rows(), 2, node_id, "prediction")?),
             );
             predicted
         },
@@ -540,7 +556,7 @@ fn execute_logistic_regression(
             context,
             predict,
             &params.predict,
-            vec![("prediction".to_owned(), predicted)],
+            vec![("prediction".to_owned(), predicted.class), ("probability".to_owned(), predicted.probability)],
             TypeId::Int32,
         )?;
         context.check_cancellation(ML_OPERATIONS.assemble)?;
@@ -725,29 +741,48 @@ fn execute_random_forest(
         }
         .map_err(|error| cuml_query_error(NATIVE, "failed to import cuML RF into nvForest", error))?;
         context.check_cancellation(NATIVE)?;
-        // into_series validates the output on the host, so the nvForest model
-        // and predict matrix outlive the kernel that reads them.
-        let series = forest
+        let prediction = forest
             .predict(resources, &predict_matrix)
-            .and_then(|prediction| prediction.into_series())
             .map_err(|error| cuml_query_error(NATIVE, "failed to predict cuML RF", error))?;
+        // Reducing the output validates it on the host, so the nvForest model
+        // and predict matrix outlive the kernel that reads them.
+        let columns = match &model {
+            ForestModel::Classifier(_) => prediction
+                .into_class_prediction()
+                .map_err(|error| cuml_query_error(NATIVE, "failed to predict cuML RF", error))
+                .map(|predicted| {
+                    vec![("prediction".to_owned(), predicted.class), ("probability".to_owned(), predicted.probability)]
+                })?,
+            ForestModel::Regressor(_) => {
+                let series = prediction
+                    .into_series()
+                    .map_err(|error| cuml_query_error(NATIVE, "failed to predict cuML RF", error))?;
+                let [result]: [Series; 1] = series.try_into().map_err(|_| {
+                    QueryError::new(
+                        QueryErrorCode::CudfInvariantViolation,
+                        NATIVE,
+                        "nvForest prediction series count differs from one",
+                    )
+                    .with_fact("reason", "invalid_native_output_contract")
+                })?;
+                vec![("prediction".to_owned(), result)]
+            },
+        };
         forest.close().map_err(|error| cuml_query_error(NATIVE, "failed to close nvForest model", error))?;
-        let [result]: [Series; 1] = series.try_into().map_err(|_| {
-            QueryError::new(
-                QueryErrorCode::CudfInvariantViolation,
-                NATIVE,
-                "nvForest prediction series count differs from one",
-            )
-            .with_fact("reason", "invalid_native_output_contract")
-        })?;
         context.check_cancellation(NATIVE)?;
-        Ok(result)
+        Ok(columns)
     })();
     let predicted = match predicted {
         Ok(predicted) => {
             guard.finish(
                 Some(predict.num_rows() as u64),
-                Some(matrix_bytes_for::<f32>(&ML_OPERATIONS, predict.num_rows(), 1, node_id, "prediction")?),
+                Some(matrix_bytes_for::<f32>(
+                    &ML_OPERATIONS,
+                    predict.num_rows(),
+                    predicted.len(),
+                    node_id,
+                    "prediction",
+                )?),
             );
             predicted
         },
@@ -775,7 +810,7 @@ fn execute_random_forest(
             context,
             predict,
             &params.predict,
-            vec![("prediction".to_owned(), predicted)],
+            predicted,
             if algorithm == MlAlgorithm::RandomForestRegressor { TypeId::Float32 } else { TypeId::Int32 },
         )?;
         context.check_cancellation(ML_OPERATIONS.assemble)?;

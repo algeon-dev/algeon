@@ -5,7 +5,7 @@ use cudf::{
     testing::device_copy,
 };
 use cuml::{
-    CumlResources, DeviceMatrix, ForestInferenceModel, RandomForestClassifier, RandomForestParams,
+    ClassPrediction, CumlResources, DeviceMatrix, ForestInferenceModel, RandomForestClassifier, RandomForestParams,
     RandomForestRegressor, SplitCriterion,
 };
 
@@ -19,6 +19,17 @@ fn predict(
     forest.close()?;
     let [series]: [Series; 1] = series.try_into().expect("one prediction series");
     Ok(series)
+}
+
+fn classify(
+    forest: cuml::Result<ForestInferenceModel>,
+    resources: &CumlResources,
+    input: &DeviceMatrix<'_>,
+) -> cuml::Result<ClassPrediction> {
+    let mut forest = forest?;
+    let prediction = forest.predict(resources, input)?.into_class_prediction()?;
+    forest.close()?;
+    Ok(prediction)
 }
 
 fn device_copies_during<T>(operation: impl FnOnce() -> T) -> (T, usize) {
@@ -54,8 +65,8 @@ fn random_forest_adopts_labels_and_targets_from_another_runtime() {
     });
     assert_eq!(copies, 1, "foreign labels require a device copy");
     assert_eq!(
-        predict(adopted.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
-        predict(baseline.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
+        classify(adopted.forest_model(&resources), &resources, &input).unwrap().class.to_vec_strict::<i32>().unwrap(),
+        classify(baseline.forest_model(&resources), &resources, &input).unwrap().class.to_vec_strict::<i32>().unwrap(),
     );
 
     let targets = features.iter().map(|value| value * 2.0 + 1.0).collect::<Vec<_>>();
@@ -104,7 +115,10 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
     )
     .expect("fit on unreserved runtime");
     assert_eq!(
-        predict(standalone.forest_model(&resources), &resources, &input).expect("predict without reservation").len(),
+        classify(standalone.forest_model(&resources), &resources, &input)
+            .expect("predict without reservation")
+            .class
+            .len(),
         rows
     );
     drop(standalone);
@@ -131,9 +145,13 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
     let pool_usage = stream_lease.usage().expect("pool stream usage");
     assert!(pool_usage[0].total_allocations > 0, "forest training must allocate on the reserved pool stream");
     assert_eq!(pool_usage[0].current_bytes, 0, "native training must release pool allocations before returning");
-    let prediction = predict(classifier.forest_model(&resources), &resources, &input).expect("classifier prediction");
-    assert_eq!(prediction.dtype().expect("dtype").id(), TypeId::Int32);
-    assert_eq!(prediction.to_vec_strict::<i32>().expect("class predictions"), labels);
+    let prediction = classify(classifier.forest_model(&resources), &resources, &input).expect("classifier prediction");
+    assert_eq!(prediction.class.dtype().expect("dtype").id(), TypeId::Int32);
+    assert_eq!(prediction.class.to_vec_strict::<i32>().expect("class predictions"), labels);
+    assert_eq!(prediction.probability.dtype().expect("dtype").id(), TypeId::Float32);
+    for probability in prediction.probability.to_vec_strict::<f32>().expect("class probabilities") {
+        assert!((0.5..=1.0).contains(&probability), "two-class probability {probability}");
+    }
     for (values, reason) in [
         (vec![0_i32; rows], "single_class"),
         ((0..rows).map(|i| if i < rows / 2 { 0 } else { 2 }).collect(), "labels_not_contiguous"),
@@ -161,10 +179,11 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
         RandomForestParams { n_trees: 4, max_depth: 8, ..Default::default() },
     )
     .expect("three-class RF fit");
-    assert_eq!(
-        predict(multi.forest_model(&resources), &resources, &input).expect("three-class prediction").len(),
-        rows
-    );
+    let three_class = classify(multi.forest_model(&resources), &resources, &input).expect("three-class prediction");
+    assert_eq!(three_class.class.len(), rows);
+    for probability in three_class.probability.to_vec_strict::<f32>().expect("class probabilities") {
+        assert!((1.0 / 3.0..=1.0).contains(&probability), "three-class probability {probability}");
+    }
     let nullable = runtime.nullable_series(&labels, &(0..rows).map(|i| i != 3).collect::<Vec<_>>()).unwrap();
     assert_eq!(
         RandomForestClassifier::fit(&resources, &stream_lease, &input, &nullable, RandomForestParams::default())

@@ -193,7 +193,10 @@ impl Forest {
         resources.with_native(op, |handle| {
             // SAFETY: the forest is live and bound to this handle; import copies its
             // trees to the handle's device before returning.
-            check_status(unsafe { cuml_sys::cuml_rf_forest_import(handle, raw, &mut model, &mut metadata) }, op)
+            check_status(
+                unsafe { cuml_sys::cuml_rf_forest_import(handle, raw, output.native(), &mut model, &mut metadata) },
+                op,
+            )
         })?;
         let model = ForestInferenceModel::from_native(resources, model, metadata, output, op)?;
         if model.info().num_features != self.n_features || model.output_kind() != expected {
@@ -298,16 +301,17 @@ impl RandomForestClassifier {
 
     /// Imports the fitted forest into nvForest on the resources' device,
     /// allocating through their query-domain route. The model predicts
-    /// row-major Float32 features into one Int32 series whose value is the
-    /// training label with the highest averaged class probability; ties
-    /// resolve to the lowest label. Close the model before releasing the
-    /// execution grant.
+    /// row-major Float32 features into one averaged class probability per
+    /// training label. Reduce a prediction with
+    /// [`ForestPrediction::into_class_prediction`](crate::ForestPrediction::into_class_prediction)
+    /// for the most probable label, which resolves ties to the lowest label.
+    /// Close the model before releasing the execution grant.
     pub fn forest_model(&self, resources: &CumlResources) -> Result<ForestInferenceModel> {
         let classes = self.0.n_classes.expect("classifier class count");
         self.0.forest_model(
             resources,
-            ForestOutput::ClassIndex,
-            ForestOutputKind::ClassIndex { classes },
+            ForestOutput::Scores,
+            ForestOutputKind::Vector(classes),
             "RandomForestClassifier::forest_model",
         )
     }
@@ -455,7 +459,7 @@ mod tests {
 
     use super::{Forest, RandomForestClassifier, RandomForestParams, RandomForestRegressor, SplitCriterion};
     use crate::{
-        DeviceMatrix, ForestInferenceModel, ForestOutputKind, ForestPrecision,
+        ClassPrediction, DeviceMatrix, ForestInferenceModel, ForestOutputKind, ForestPrecision,
         resources::{CumlResources, TrainingStreams},
     };
 
@@ -473,6 +477,15 @@ mod tests {
         forest.close().unwrap();
         let [series]: [Series; 1] = series.try_into().unwrap();
         series
+    }
+
+    fn classify(resources: &CumlResources, mut forest: ForestInferenceModel, rows: &[Vec<f32>]) -> ClassPrediction {
+        let packed = pack(resources.runtime(), rows);
+        let validated = packed.validate().unwrap();
+        let input = DeviceMatrix::from_validated(&validated).unwrap();
+        let prediction = forest.predict(resources, &input).unwrap().into_class_prediction().unwrap();
+        forest.close().unwrap();
+        prediction
     }
 
     /// Host GTIL over the Treelite model that nvForest imports.
@@ -500,8 +513,12 @@ mod tests {
         output[..written].chunks(written / rows.len()).map(<[f64]>::to_vec).collect()
     }
 
+    fn max_score(scores: &[f64]) -> f64 {
+        scores.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+    }
+
     fn lowest_argmax(scores: &[f64]) -> i32 {
-        let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let max = max_score(scores);
         scores.iter().position(|score| *score == max).unwrap() as i32
     }
 
@@ -531,10 +548,15 @@ mod tests {
             let forest = classifier.forest_model(&resources).unwrap();
             let info = forest.info();
             assert_eq!((info.precision, info.num_features, info.num_trees), (ForestPrecision::Single, 2, 8));
-            assert_eq!(forest.output_kind(), ForestOutputKind::ClassIndex { classes });
-            let predicted = predict(&resources, forest, &held_out).to_vec_strict::<i32>().unwrap();
-            let expected = gtil(&classifier.0, &held_out).iter().map(|row| lowest_argmax(row)).collect::<Vec<_>>();
-            assert_eq!(predicted, expected, "{classes} classes");
+            assert_eq!(forest.output_kind(), ForestOutputKind::Vector(classes));
+            let predicted = classify(&resources, forest, &held_out);
+            let oracle = gtil(&classifier.0, &held_out);
+            let expected = oracle.iter().map(|row| lowest_argmax(row)).collect::<Vec<_>>();
+            assert_eq!(predicted.class.to_vec_strict::<i32>().unwrap(), expected, "{classes} classes");
+            for (actual, row) in predicted.probability.to_vec_strict::<f32>().unwrap().iter().zip(&oracle) {
+                let expected = max_score(row);
+                assert!((f64::from(*actual) - expected).abs() <= 1e-5, "{classes} classes: {actual} vs {expected}");
+            }
         }
 
         let targets = runtime.series(&training.iter().map(|x| 2.0 * x[0] + x[1]).collect::<Vec<f32>>()).unwrap();
@@ -574,7 +596,9 @@ mod tests {
         let scores = gtil(&classifier.0, &rows);
         assert_eq!(scores[0][0], scores[0][1]);
         assert!(scores[0][0] > scores[0][2]);
-        let predicted = predict(&resources, classifier.forest_model(&resources).unwrap(), &rows);
-        assert_eq!(predicted.to_vec_strict::<i32>().unwrap(), [0, 2]);
+        let predicted = classify(&resources, classifier.forest_model(&resources).unwrap(), &rows);
+        assert_eq!(predicted.class.to_vec_strict::<i32>().unwrap(), [0, 2]);
+        // The x = 0 leaf splits its votes between classes 0 and 1; x = 1 is pure.
+        assert_eq!(predicted.probability.to_vec_strict::<f32>().unwrap(), [0.5, 1.0]);
     }
 }

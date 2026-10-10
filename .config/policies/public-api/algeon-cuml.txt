@@ -98,6 +98,9 @@ pub cuml::SplitCriterion::Mse
 pub enum cuml::UmapInit
 pub cuml::UmapInit::Random
 pub cuml::UmapInit::Spectral
+pub struct cuml::ClassPrediction
+pub cuml::ClassPrediction::class: cudf::frame::series::owned::Series
+pub cuml::ClassPrediction::probability: cudf::frame::series::owned::Series
 pub struct cuml::CumlErrorDetail
 pub cuml::CumlErrorDetail::alignment: u64
 pub cuml::CumlErrorDetail::cuda_error: i32
@@ -175,6 +178,7 @@ impl cuml::ForestModelInfo
 pub fn cuml::ForestModelInfo::output_kind(&self, cuml::ForestOutput) -> cuml::Result<cuml::ForestOutputKind>
 pub struct cuml::ForestPrediction
 impl cuml::ForestPrediction
+pub fn cuml::ForestPrediction::into_class_prediction(self) -> cuml::Result<cuml::ClassPrediction>
 pub fn cuml::ForestPrediction::into_series(self) -> cuml::Result<alloc::vec::Vec<cudf::frame::series::owned::Series>>
 pub fn cuml::ForestPrediction::output_kind(&self) -> cuml::ForestOutputKind
 pub fn cuml::ForestPrediction::rows(&self) -> usize
@@ -216,7 +220,7 @@ pub fn cuml::LogisticRegressionModel::coefficients(&self) -> &cuml::DeviceBuffer
 pub fn cuml::LogisticRegressionModel::fit(&cuml::CumlResources, &cuml::DeviceMatrix<'_>, &cudf::frame::series::owned::Series, cuml::LogisticRegressionParams) -> cuml::Result<(Self, cuml::LogisticRegressionFit)>
 pub fn cuml::LogisticRegressionModel::n_classes(&self) -> usize
 pub fn cuml::LogisticRegressionModel::n_features(&self) -> usize
-pub fn cuml::LogisticRegressionModel::predict(&self, &cuml::CumlResources, &cuml::DeviceMatrix<'_>) -> cuml::Result<cudf::frame::series::owned::Series>
+pub fn cuml::LogisticRegressionModel::predict(&self, &cuml::CumlResources, &cuml::DeviceMatrix<'_>) -> cuml::Result<cuml::ClassPrediction>
 pub struct cuml::LogisticRegressionParams
 pub cuml::LogisticRegressionParams::change_tol: f64
 pub cuml::LogisticRegressionParams::fit_intercept: bool

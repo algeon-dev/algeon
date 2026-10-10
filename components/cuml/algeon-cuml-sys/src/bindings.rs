@@ -239,7 +239,7 @@ unsafe extern "C" {
         objective: *mut f64,
         iterations: *mut i32,
     ) -> cuml_status_t;
-    pub fn cuml_glm_qn_predict(
+    pub fn cuml_glm_qn_decision_function(
         handle: cuml_handle_t,
         input: *const f32,
         rows: i32,
@@ -249,7 +249,7 @@ unsafe extern "C" {
         coefficients: *const f32,
         loss: i32,
         fit_intercept: i32,
-        predictions: *mut f32,
+        scores: *mut f32,
     ) -> cuml_status_t;
     pub fn cuml_hdbscan_fit(
         handle: cuml_handle_t,
@@ -382,6 +382,7 @@ unsafe extern "C" {
     pub fn cuml_rf_forest_import(
         handle: cuml_handle_t,
         forest: cuml_rf_forest_t,
+        output: cuml_forest_output_t,
         out_model: *mut cuml_forest_model_t,
         out_metadata: *mut cuml_forest_metadata_t,
     ) -> cuml_status_t;

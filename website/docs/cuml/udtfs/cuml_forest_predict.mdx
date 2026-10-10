@@ -64,7 +64,7 @@ Each relation argument is a parenthesized `SELECT` subquery. Metadata validation
 
 ### Vector binding shapes
 
-Each relation subquery projects a non-null `id` and either non-null Float32 feature columns in dimension order or one non-null `vector` list column of non-null Float32 values. For classification, `training` also projects non-null Int32 `label`; regression requires non-null finite Float32 `label`. The `predict` relation omits it.
+Each relation subquery projects an `id` and either Float32 feature columns in dimension order or one `vector` list column of Float32 values. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
 
 The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
 
@@ -90,7 +90,7 @@ import Examples from '../_examples/cuml_forest_predict.mdx';
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
 - Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
 - Scores pretrained XGBoost (JSON, UBJSON, legacy binary), LightGBM text, and Treelite checkpoint forests with nvForest. Multi-target models are rejected at planning.
-- Features must be non-null Float32 and match the model feature count. Forests with double-precision thresholds widen the features to Float64 on the device.
+- Features must be Float32 without null values and match the model feature count. Forests with double-precision thresholds widen the features to Float64 on the device.
 - output =&gt; 'class_index' requires a model with at least two outputs and resolves ties to the lowest class index.
 - model resolves under the server-configured models root, and files above max_model_bytes are rejected. Each statement reads and imports the model once; there is no cross-statement model cache.
 

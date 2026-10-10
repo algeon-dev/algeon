@@ -351,7 +351,20 @@ pub enum VectorInputRole {
 }
 
 impl VectorInputRole {
-    pub(crate) fn for_vector_input(vector: &VectorAlgorithmNode, input_index: usize) -> Self {
+    /// Name of the relation role in SQL and diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dataset => "dataset",
+            Self::Queries => "queries",
+            Self::Input => "input",
+            Self::X => "x",
+            Self::Y => "y",
+            Self::InitialCentroids => "initial_centroids",
+        }
+    }
+
+    /// Role of the relation at `input_index` among the node's inputs.
+    pub fn for_vector_input(vector: &VectorAlgorithmNode, input_index: usize) -> Self {
         match (&vector.spec.params, input_index) {
             (
                 VectorAlgorithmParams::BruteForceKnn(_)

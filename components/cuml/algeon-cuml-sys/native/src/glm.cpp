@@ -44,13 +44,13 @@ ML::GLM::qn_params make_params(int32_t loss, double penalty_l1, double penalty_l
   return p;
 }
 void validate(cuml_handle_t handle, const void* const* pointers, size_t count,
-              int32_t rows, int32_t columns, int32_t classes)
+              int32_t min_rows, int32_t rows, int32_t columns, int32_t classes)
 {
   if (handle == nullptr) throw std::invalid_argument("handle is null");
   for (size_t i = 0; i < count; ++i) {
     if (pointers[i] == nullptr) throw std::invalid_argument("required buffer is null");
   }
-  if (rows < 2 || columns < 1 || classes < 1) {
+  if (rows < min_rows || columns < 1 || classes < 1) {
     throw std::invalid_argument("QN dimensions are out of range");
   }
 }
@@ -69,7 +69,7 @@ extern "C" cuml_status_t cuml_glm_qn_fit(
   if (handle == nullptr) return cuml_record_error(CUML_ERROR_NULL, "QN handle is null");
   for (auto buffer : buffers) if (buffer == nullptr) return cuml_record_error(CUML_ERROR_NULL, "QN input or output buffer is null");
   CUML_RUST_TRY {
-    validate(handle, buffers, 5, rows, columns, classes);
+    validate(handle, buffers, 5, 2, rows, columns, classes);
     if (column_major != 0 && column_major != 1) throw std::invalid_argument("matrix layout is invalid");
     auto p = make_params(loss, penalty_l1, penalty_l2, max_iter,
                          linesearch_max_iter, lbfgs_memory, fit_intercept,
@@ -90,23 +90,25 @@ extern "C" cuml_status_t cuml_glm_qn_fit(
   } CUML_RUST_CATCH
 }
 
-extern "C" cuml_status_t cuml_glm_qn_predict(
+// Writes the linear scores in sample-major order: `rows` entries for binary
+// logistic loss (one coefficient vector), `rows * classes` for softmax.
+extern "C" cuml_status_t cuml_glm_qn_decision_function(
     cuml_handle_t handle, const float* input, int32_t rows, int32_t columns,
     int32_t classes, int32_t column_major, const float* coefficients,
-    int32_t loss, int32_t fit_intercept, float* predictions)
+    int32_t loss, int32_t fit_intercept, float* scores)
 {
-  const void* buffers[]{input, coefficients, predictions};
+  const void* buffers[]{input, coefficients, scores};
   cuml_clear_error();
   if (handle == nullptr) return cuml_record_error(CUML_ERROR_NULL, "QN handle is null");
   for (auto buffer : buffers) if (buffer == nullptr) return cuml_record_error(CUML_ERROR_NULL, "QN input or output buffer is null");
   CUML_RUST_TRY {
-    validate(handle, buffers, 3, rows, columns, classes);
+    validate(handle, buffers, 3, 1, rows, columns, classes);
     if (column_major != 0 && column_major != 1) throw std::invalid_argument("matrix layout is invalid");
     auto p = make_params(loss, 0, 0, 1, 1, 1, fit_intercept, 0, 0, 0);
-    ML::GLM::qnPredict<float, int>(cuml_handle_raft(handle), p,
-                                   const_cast<float*>(input), column_major != 0,
-                                   rows, columns, classes,
-                                   const_cast<float*>(coefficients), predictions);
+    ML::GLM::qnDecisionFunction<float, int>(cuml_handle_raft(handle), p,
+                                            const_cast<float*>(input), column_major != 0,
+                                            rows, columns, classes,
+                                            const_cast<float*>(coefficients), scores);
     return CUML_SUCCESS;
   } CUML_RUST_CATCH
 }

@@ -1,5 +1,6 @@
 //! Safe Rust integration with NVIDIA cuML.
 
+mod class_prediction;
 mod decomposition;
 mod device;
 mod error;
@@ -12,6 +13,7 @@ mod random_forest;
 mod resources;
 mod umap;
 
+pub use class_prediction::ClassPrediction;
 pub use decomposition::{PcaModel, PcaParams, PcaSolver, TsvdModel, TsvdParams};
 pub use device::{DeviceBuffer, DeviceElement, DeviceMatrix, MatrixLayout, OwnedFloat32Matrix};
 pub use error::{

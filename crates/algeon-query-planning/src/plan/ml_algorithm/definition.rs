@@ -66,7 +66,7 @@ impl MlRelationRole {
     pub const fn description(self) -> &'static str {
         match self {
             Self::Input => "Dense Float32 rows fitted and transformed in this statement.",
-            Self::Training => "Dense Float32 features and non-null Int32 label used to fit the query-local model.",
+            Self::Training => "Dense Float32 features and an Int32 label used to fit the query-local model.",
             Self::Predict => "Independent dense Float32 rows scored with the query-local model; must omit label.",
         }
     }
@@ -106,7 +106,7 @@ const COMMON_OPTIONS: &[GpuOptionDefinition] = &[
         name: "input",
         required: true,
         kind: GpuOptionKind::RelationBinding,
-        description: "Non-null ID and ordered Float32 features from the input subquery.",
+        description: "ID and ordered Float32 features from the input subquery.",
     },
     GpuOptionDefinition {
         name: "n_components",
@@ -269,7 +269,19 @@ const PREDICTION_FIELDS: &[GpuOutputFieldDefinition] = &[
         data_type: "Int32",
         nullable: false,
         repeats: None,
-        description: "Predicted zero-based class index.",
+        description: "Predicted zero-based class index; a tie between classes takes the lowest index.",
+    },
+];
+const LOGISTIC_FIELDS: &[GpuOutputFieldDefinition] = &[
+    PREDICTION_FIELDS[0],
+    PREDICTION_FIELDS[1],
+    PREDICTION_FIELDS[2],
+    GpuOutputFieldDefinition {
+        name: "probability",
+        data_type: "Float32",
+        nullable: false,
+        repeats: None,
+        description: "Probability of the predicted class, as cuML's predict_proba defines it: the sigmoid of the decision score for two classes, the softmax over the decision scores for three or more.",
     },
 ];
 const LOGISTIC_OPTIONS: &[GpuOptionDefinition] = &[
@@ -277,13 +289,13 @@ const LOGISTIC_OPTIONS: &[GpuOptionDefinition] = &[
         name: "training",
         required: true,
         kind: GpuOptionKind::RelationBinding,
-        description: "Non-null ID, Float32 features, and a non-null Int32 label.",
+        description: "ID, Float32 features, and an Int32 label.",
     },
     GpuOptionDefinition {
         name: "predict",
         required: true,
         kind: GpuOptionKind::RelationBinding,
-        description: "Non-null ID and Float32 features without a label.",
+        description: "ID and Float32 features without a label.",
     },
     GpuOptionDefinition {
         name: "penalty_l1",
@@ -340,7 +352,18 @@ const LOGISTIC_OPTIONS: &[GpuOptionDefinition] = &[
         description: "QN objective change tolerance.",
     },
 ];
-const RF_CLASSIFIER_FIELDS: &[GpuOutputFieldDefinition] = PREDICTION_FIELDS;
+const RF_CLASSIFIER_FIELDS: &[GpuOutputFieldDefinition] = &[
+    PREDICTION_FIELDS[0],
+    PREDICTION_FIELDS[1],
+    PREDICTION_FIELDS[2],
+    GpuOutputFieldDefinition {
+        name: "probability",
+        data_type: "Float32",
+        nullable: false,
+        repeats: None,
+        description: "Probability of the predicted class: its leaf probability averaged over the trees.",
+    },
+];
 const RF_REGRESSOR_FIELDS: &[GpuOutputFieldDefinition] = &[
     PREDICTION_FIELDS[0],
     PREDICTION_FIELDS[1],
@@ -452,14 +475,23 @@ const RF_CLASSIFIER_OPTIONS: &[GpuOptionDefinition] = &[
     },
 ];
 const RF_LIMITATIONS: &[&str] = &[
-    "Classifier labels must be non-null Int32 contiguous classes 0..C-1; regressor labels must be non-null finite Float32. Predict must omit label and match the training feature dimension.",
+    "Classifier labels must be Int32 contiguous classes 0..C-1; regressor labels must be finite Float32. Null labels fail the query. Predict must omit label and match the training feature dimension.",
     "Prediction imports the fitted forest into nvForest and scores the predict relation on the GPU; a classifier tie resolves to the lowest class index. Training and prediction inputs are limited to i32::MAX rows and the packed feature matrix to i32::MAX elements; the random forest path does not batch rows.",
     "Training uses one RAFT pool stream whose allocations share the query grant. The forest is query-local; an empty predict relation returns an empty result.",
 ];
 const LOGISTIC_LIMITATIONS: &[&str] = &[
-    "Training labels must be non-null Int32 contiguous classes 0..C-1; predict must omit label and match the feature dimension.",
+    "Training labels must be Int32 contiguous classes 0..C-1 and must not be null; predict must omit label and match the feature dimension.",
     "Binary labels use logistic loss; three or more classes use softmax. Reaching max_iter is not an error.",
+    "probability covers only the predicted class; per-class probabilities are not returned. Class weights are not exposed, so threshold probability to trade precision for recall.",
     "The model is query-local. An empty predict relation returns an empty result without a native call.",
+    "Coefficients and scores can differ slightly between runs, because the loss reduction accumulates with floating-point atomics; there is no seed option.",
+];
+const RF_CLASSIFIER_LIMITATIONS: &[&str] = &[
+    RF_LIMITATIONS[0],
+    RF_LIMITATIONS[1],
+    "probability covers only the predicted class; per-class probabilities are not returned. Class weights are not exposed, so threshold probability to trade precision for recall.",
+    RF_LIMITATIONS[2],
+    "seed sets the bootstrap rows and feature subsets; with the same input row order, a refit on the same GPU grows the same forest.",
 ];
 const HDBSCAN_FIELDS: &[GpuOutputFieldDefinition] = &[
     OUTPUT_FIELDS[0],
@@ -566,7 +598,7 @@ const FOREST_FIELDS: &[GpuOutputFieldDefinition] = &[
 ];
 const FOREST_LIMITATIONS: &[&str] = &[
     "Scores pretrained XGBoost (JSON, UBJSON, legacy binary), LightGBM text, and Treelite checkpoint forests with nvForest. Multi-target models are rejected at planning.",
-    "Features must be non-null Float32 and match the model feature count. Forests with double-precision thresholds widen the features to Float64 on the device.",
+    "Features must be Float32 without null values and match the model feature count. Forests with double-precision thresholds widen the features to Float64 on the device.",
     "output => 'class_index' requires a model with at least two outputs and resolves ties to the lowest class index.",
     "model resolves under the server-configured models root, and files above max_model_bytes are rejected. Each statement reads and imports the model once; there is no cross-statement model cache.",
 ];
@@ -630,8 +662,8 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
         vector_element_support: ELEMENTS,
         output_contract: CumlOutputContract::Predictions,
         options: LOGISTIC_OPTIONS,
-        output_fields: PREDICTION_FIELDS,
-        quickstart_sql: "SELECT id, prediction FROM cuml_logistic_regression(training => (SELECT id, d0, label FROM train), predict => (SELECT id, d0 FROM test)) ORDER BY row_ordinal;",
+        output_fields: LOGISTIC_FIELDS,
+        quickstart_sql: "SELECT id, prediction, probability FROM cuml_logistic_regression(training => (SELECT id, d0, label FROM train), predict => (SELECT id, d0 FROM test)) ORDER BY row_ordinal;",
         limitations: LOGISTIC_LIMITATIONS,
     },
     CumlOperationDescriptor {
@@ -645,8 +677,8 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
         output_contract: CumlOutputContract::Predictions,
         options: RF_CLASSIFIER_OPTIONS,
         output_fields: RF_CLASSIFIER_FIELDS,
-        quickstart_sql: "SELECT id, prediction FROM cuml_random_forest_classifier(training => (SELECT id, d0, label FROM train), predict => (SELECT id, d0 FROM test)) ORDER BY row_ordinal;",
-        limitations: RF_LIMITATIONS,
+        quickstart_sql: "SELECT id, prediction, probability FROM cuml_random_forest_classifier(training => (SELECT id, d0, label FROM train), predict => (SELECT id, d0 FROM test)) ORDER BY row_ordinal;",
+        limitations: RF_CLASSIFIER_LIMITATIONS,
     },
     CumlOperationDescriptor {
         operation: CumlOperation::RandomForestRegressor,
@@ -696,7 +728,7 @@ impl CumlOperationDescriptor {
             ) && option.name == "training"
             {
                 let mut schema = relation_schema.clone();
-                schema["properties"]["label"] = json!({"type": "string", "const": "label", "description": if self.operation == CumlOperation::RandomForestRegressor { "Canonical non-null Float32 target column." } else { "Canonical non-null Int32 class column." }});
+                schema["properties"]["label"] = json!({"type": "string", "const": "label", "description": if self.operation == CumlOperation::RandomForestRegressor { "Canonical Float32 target column; null or non-finite targets fail the query." } else { "Canonical Int32 class column; null labels fail the query." }});
                 schema["required"].as_array_mut().expect("binding required fields").push(json!("label"));
                 schema
             } else {

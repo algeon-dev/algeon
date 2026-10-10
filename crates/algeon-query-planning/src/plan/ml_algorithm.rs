@@ -20,7 +20,9 @@ pub use definition::{
     canonicalize_cuml_options,
 };
 pub use forest::MlForestPredictParams;
-pub use output::{ml_embedding_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema};
+pub use output::{
+    ml_classification_output_schema, ml_embedding_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema,
+};
 pub use supervised::{MlLogisticRegressionParams, MlRandomForestParams, MlSplitCriterion};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,7 +64,8 @@ impl MlAlgorithmParams {
         std::iter::once(first).chain(second)
     }
 
-    pub(crate) const fn relation_role(&self, index: usize) -> MlRelationRole {
+    /// Role of the relation at `index` among the node's inputs.
+    pub const fn relation_role(&self, index: usize) -> MlRelationRole {
         match self {
             Self::LogisticRegression(_) | Self::RandomForestClassifier(_) | Self::RandomForestRegressor(_)
                 if index == 0 =>
