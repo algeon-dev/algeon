@@ -9,8 +9,8 @@ use std::{
 use algeon_datafusion::{
     backend::GpuMemoryOwnership,
     server::{
-        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_CUGRAPH_ENABLED_ENV, PREDICATE_ROLE_METADATA_KEY,
-        REASON_METADATA_KEY, Result as ServerResult, ServerConfig, init_cuda_device, serve_with_listener,
+        ALGEON_SERVER_CONFIG_FILE_ENV, PREDICATE_ROLE_METADATA_KEY, REASON_METADATA_KEY, Result as ServerResult,
+        ServerConfig, init_cuda_device, serve_with_listener,
     },
 };
 use arrow::{
@@ -28,7 +28,7 @@ use crate::server_gpu_fixture::lock_async;
 
 fn declare_test_gpu_ownership(config: &mut ServerConfig) {
     config.gpu_memory_ownership =
-        config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
+        config.gpu_devices().into_iter().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
 }
 
 fn test_server_config(mut env: BTreeMap<&'static str, String>) -> ServerConfig {
@@ -36,14 +36,14 @@ fn test_server_config(mut env: BTreeMap<&'static str, String>) -> ServerConfig {
     let path = dir.path().join("server.toml");
     fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
     env.insert(ALGEON_SERVER_CONFIG_FILE_ENV, path.to_string_lossy().into_owned());
-    ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("explicit test device profile")
+    ServerConfig::from_vars(env).expect("explicit test device profile")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     let _guard = lock_async().await;
     let (listener, addr) = free_local_addr();
-    let env = BTreeMap::from([(ALGEON_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let env = BTreeMap::from([("ALGEON_SERVER_CUGRAPH_ENABLED", "true".to_string())]);
     let mut config = test_server_config(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
@@ -163,7 +163,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
     let _guard = lock_async().await;
     let (listener, addr) = free_local_addr();
-    let env = BTreeMap::from([(ALGEON_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let env = BTreeMap::from([("ALGEON_SERVER_CUGRAPH_ENABLED", "true".to_string())]);
     let mut config = test_server_config(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
@@ -211,7 +211,7 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
 async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
     let _guard = lock_async().await;
     let (listener, addr) = free_local_addr();
-    let env = BTreeMap::from([(ALGEON_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let env = BTreeMap::from([("ALGEON_SERVER_CUGRAPH_ENABLED", "true".to_string())]);
     let mut config = test_server_config(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;

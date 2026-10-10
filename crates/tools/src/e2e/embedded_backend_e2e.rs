@@ -200,13 +200,9 @@ fn spawn_example(params: &RunParams) -> E2eResult<Child> {
     println!("starting embedded_backend rest={} flight={}", params.rest_bind, params.flight_bind);
     let mut command = Command::new(params.example_binary());
     command.current_dir(&params.repo_root).stdout(Stdio::inherit()).stderr(Stdio::inherit());
-    // Inherited server settings would change the topology under test, and the server rejects
-    // settings of the removed Iceberg integration.
+    // Inherited server settings would change the topology under test.
     for (name, _) in env::vars() {
-        if name.starts_with("ALGEON_SERVER_")
-            || name.starts_with("ALGEON_ICEBERG_")
-            || name.starts_with("ALGEON_LAKEHOUSE_")
-        {
+        if name.starts_with("ALGEON_SERVER_") {
             command.env_remove(name);
         }
     }

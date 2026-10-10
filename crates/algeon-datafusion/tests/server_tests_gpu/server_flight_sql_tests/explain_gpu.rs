@@ -158,19 +158,82 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
     let regular_schema = regular_explain.try_decode_schema().unwrap();
     assert!(regular_schema.field_with_name("row_kind").is_err(), "regular EXPLAIN must keep its DataFusion schema");
 
-    let prepare_error = client.prepare("EXPLAIN GPU SELECT 1".to_string(), None).await.unwrap_err();
-    let prepare_status = unwrap_flight_status(prepare_error);
-    assert_eq!(prepare_status.code(), Code::InvalidArgument);
-    assert_query_id_metadata(&prepare_status);
-    assert_error_metadata(&prepare_status, "invalid_request", "invalid_input", "permanent");
-    assert!(prepare_status.message().contains("cannot be prepared"));
-
     let update_error = client.execute_update("EXPLAIN GPU SELECT 1".to_string(), None).await.unwrap_err();
     let update_status = unwrap_flight_status(update_error);
     assert_eq!(update_status.code(), Code::InvalidArgument);
     assert_query_id_metadata(&update_status);
     assert_error_metadata(&update_status, "invalid_request", "invalid_input", "permanent");
     assert!(update_status.message().contains("statement-query operation"));
+
+    server.abort();
+}
+
+/// ADBC's DB-API `cursor.execute()` prepares every statement, then runs
+/// GetFlightInfo on the handle and DoGet on its ticket. A prepared `EXPLAIN GPU`
+/// plans the explained query at that execution, so it can name a table that is
+/// registered only after the prepare.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_prepared_explain_gpu_plans_at_execution() {
+    let (listener, addr) = free_local_addr();
+    let mut config = test_server_config();
+    declare_test_gpu_ownership(&mut config);
+    config.bind_addr = addr;
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let sql = "EXPLAIN GPU SELECT a, b FROM prepared_explain_pairs WHERE a > 0";
+    let mut prepared = client.prepare(sql.to_string(), None).await.unwrap();
+    let dataset_schema = prepared.dataset_schema().unwrap().clone();
+    let leading_columns = dataset_schema.fields().iter().take(3).map(|field| field.name().as_str()).collect::<Vec<_>>();
+    assert_eq!(leading_columns, ["query_id", "row_kind", "gpu_path"]);
+
+    let dir = tempfile::Builder::new().prefix("algeon-datafusion-flight-sql-prepared-explain-gpu-").tempdir().unwrap();
+    let path = dir.path().join("pairs.parquet");
+    write_int64_pairs_parquet(&path, ["a", "b"], [0, 1], [1, 2]);
+    execute_batches(
+        &mut client,
+        &format!(
+            "CREATE EXTERNAL TABLE prepared_explain_pairs STORED AS PARQUET LOCATION '{}'",
+            path.to_string_lossy()
+        ),
+    )
+    .await;
+
+    // The handle stays reusable, as for any prepared query.
+    for _ in 0..2 {
+        let flight_info = prepared.execute().await.unwrap();
+        assert_eq!(flight_info.clone().try_decode_schema().unwrap(), dataset_schema);
+        let (schema, batches) = execute_flight_info_with_stream_schema(&mut client, flight_info).await;
+        assert_eq!(schema, dataset_schema);
+        let batch = &batches[0];
+        assert_eq!(coverage_string(batch, &schema, "row_kind", 0), "summary");
+        assert_ne!(
+            coverage_string(batch, &schema, "gpu_path", 0),
+            "rejected",
+            "the table registered after the prepare must be visible to the execution"
+        );
+        let query_id = coverage_string(batch, &schema, "query_id", 0).to_string();
+        let stats = get_query_stats_raw(&mut client, &query_id).await;
+        assert!(stats.contains("# outcome=succeeded"), "{stats}");
+    }
+
+    let update_status = unwrap_flight_status(prepared.execute_update().await.unwrap_err());
+    assert_eq!(update_status.code(), Code::InvalidArgument);
+    assert!(update_status.message().contains("cannot be executed through a prepared update"), "{update_status:?}");
+    prepared.close().await.unwrap();
+
+    let parameter_status = unwrap_flight_status(
+        client
+            .prepare("EXPLAIN GPU SELECT a FROM prepared_explain_pairs WHERE a = $1".to_string(), None)
+            .await
+            .unwrap_err(),
+    );
+    assert_eq!(parameter_status.code(), Code::InvalidArgument);
+    assert_query_id_metadata(&parameter_status);
+    assert!(
+        parameter_status.message().contains("Flight SQL parameter binding is not supported"),
+        "{parameter_status:?}"
+    );
 
     server.abort();
 }

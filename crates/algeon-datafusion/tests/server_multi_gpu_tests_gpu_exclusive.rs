@@ -4,7 +4,6 @@
 //! per-device ledgers observed here are not perturbed by another process.
 
 use std::{
-    collections::BTreeMap,
     fs::File,
     net::{SocketAddr, TcpListener},
     path::Path,
@@ -17,8 +16,8 @@ use algeon_datafusion::{
     backend::{AlgeonGpuBackend, GpuDeviceMemoryLimit, GpuMemoryOwnership},
     native_exec::AlgeonNativeExecutionConfig,
     server::{
-        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_GPU_DEVICES_ENV, FlightSqlServer, Result as ServerResult,
-        ServerConfig, ServerShutdown, backend_from_server_config, init_cuda_device,
+        ALGEON_SERVER_CONFIG_FILE_ENV, FlightSqlServer, Result as ServerResult, ServerConfig, ServerShutdown,
+        backend_from_server_config, init_cuda_device,
     },
 };
 use arrow::{
@@ -68,11 +67,9 @@ fn two_device_server_config() -> ServerConfig {
     )
     .expect("write server config");
     let path = path.to_string_lossy().into_owned();
-    let env =
-        BTreeMap::from([(ALGEON_SERVER_CONFIG_FILE_ENV, path), (ALGEON_SERVER_GPU_DEVICES_ENV, "0,1".to_string())]);
-    let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("two-device test profile");
+    let mut config = ServerConfig::from_vars([(ALGEON_SERVER_CONFIG_FILE_ENV, path)]).expect("two-device test profile");
     config.gpu_memory_ownership =
-        config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
+        config.gpu_devices().into_iter().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
     config.gpu_device_profiles = config
         .gpu_device_profiles
         .iter()

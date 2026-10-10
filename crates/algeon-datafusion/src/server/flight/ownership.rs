@@ -73,6 +73,13 @@ impl QueryOwnership {
         }
     }
 
+    /// Whether `id` is registered to `caller`. Unlike [`Self::authorize`],
+    /// an unregistered id is not owned by anyone: callers use this to pick
+    /// among ids the client did not name directly.
+    pub(super) fn is_owned_by(&self, id: &str, caller: &Owner) -> bool {
+        self.owners.get(id).is_some_and(|owner| owner.value() == caller)
+    }
+
     /// Forget `id`. Called when the id can no longer be redeemed, so the
     /// registry does not outlive the resources it guards.
     pub(super) fn remove(&self, id: &str) {

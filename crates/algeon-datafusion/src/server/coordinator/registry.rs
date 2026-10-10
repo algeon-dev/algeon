@@ -1,6 +1,7 @@
 //! Query record and registry lookup/registration helpers.
 
 use std::{
+    cmp::Reverse,
     collections::{BTreeMap, HashMap},
     sync::Arc,
     time::Instant,
@@ -44,6 +45,10 @@ pub(crate) struct QueryRecord {
     /// native backend) has no runtime observation and retains only its
     /// captured stats.
     pub(crate) attempt_owned: bool,
+    /// Client correlation id. Kept on the record because finalization
+    /// releases `captured`, and `GetQueryStats` resolves correlation ids for
+    /// as long as the record is retained.
+    pub(crate) correlation_id: Option<Arc<str>>,
     /// Flight attempt reports are immutable handoffs from the actual attempt
     /// owner. `None` remains valid when an attempt never begins, but records
     /// with an attempt cannot finalize until this arrives.
@@ -219,6 +224,7 @@ impl QueryCoordinator {
         })?;
         state.next_generation = generation;
         let key = QueryKey { query_id: Arc::from(query_id.as_str()), generation };
+        let record_correlation_id = normalized_correlation_id(correlation_id.as_deref());
         let (observation_config, captured, unavailable) = match logical_capture_bytes {
             Some(_) => {
                 let captured = CapturedQuery::new(
@@ -249,6 +255,7 @@ impl QueryCoordinator {
                 terminal_outcome: None,
                 active_leases: 1,
                 attempt_owned,
+                correlation_id: record_correlation_id,
                 attempt_report: None,
                 attempt_outcome: None,
                 attempt_snapshot: None,
@@ -284,6 +291,29 @@ impl QueryCoordinator {
     /// it on the same schedule the coordinator releases the query itself.
     pub(crate) fn knows_query(&self, query_id: &str) -> bool {
         self.lock_state().current.contains_key(query_id)
+    }
+
+    pub(crate) fn correlation_id(&self, query_id: &str) -> Option<Arc<str>> {
+        let state = self.lock_state();
+        let key = state.current.get(query_id)?;
+        state.records.get(key)?.correlation_id.clone()
+    }
+
+    /// Query ids whose records carry `correlation_id`, most recent
+    /// registration first. The caller filters by ownership after this
+    /// returns: the ownership registry calls into the coordinator while
+    /// holding its own lock, so it must not be consulted under `state`.
+    pub(crate) fn query_ids_with_correlation_id(&self, correlation_id: &str) -> Vec<String> {
+        let state = self.lock_state();
+        let mut matches = state
+            .current
+            .values()
+            .filter_map(|key| state.records.get(key))
+            .filter(|record| record.correlation_id.as_deref() == Some(correlation_id))
+            .map(|record| (record.key.generation, record.key.query_id().to_string()))
+            .collect::<Vec<_>>();
+        matches.sort_unstable_by_key(|(generation, _)| Reverse(*generation));
+        matches.into_iter().map(|(_, query_id)| query_id).collect()
     }
 
     pub(crate) fn live_count_locked(state: &QueryRegistryState) -> usize {
@@ -548,4 +578,9 @@ impl QueryCoordinator {
         let key = state.current.get(query_id)?;
         state.records.get(key)?.terminal_outcome
     }
+}
+
+/// The stored form of a client correlation id: trimmed, and absent when blank.
+pub(crate) fn normalized_correlation_id(correlation_id: Option<&str>) -> Option<Arc<str>> {
+    correlation_id.map(str::trim).filter(|value| !value.is_empty()).map(Arc::from)
 }

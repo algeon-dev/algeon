@@ -102,6 +102,29 @@ impl CumlModelStore {
     }
 }
 
+/// Availability reason of `cuml_forest_predict` in a session without a models
+/// root.
+pub(super) const MODEL_ROOT_UNCONFIGURED: &str = "model_root_unconfigured";
+
+/// Rejects an operation that reads a model file when this build or session
+/// cannot load one: without the cuml feature, or without a models root.
+/// Operations without a model pass. The relation planner checks this before it
+/// binds arguments, so the reason `gpu_list_functions` reports is the first
+/// error such a call returns.
+pub(super) fn require_model_store(operation: CumlOperation, store: Option<&CumlModelStore>) -> Result<()> {
+    if operation != CumlOperation::ForestPredict {
+        return Ok(());
+    }
+    if !cfg!(feature = "cuml") {
+        return Err(feature_disabled(operation));
+    }
+    if store.is_none() {
+        return Err(invalid_call(operation, MODEL_ROOT_UNCONFIGURED, MODEL_ROOT_UNCONFIGURED_MESSAGE)
+            .with_log_safe_fact("required_option", MODELS_ROOT_OPTION));
+    }
+    Ok(())
+}
+
 /// Binds the model a validated call names, or `None` for operations without
 /// one. The feature and root checks run before any file access.
 pub(super) fn bind_operation_model(
@@ -112,13 +135,8 @@ pub(super) fn bind_operation_model(
     let Some(reference) = options.forest_model_reference() else {
         return Ok(None);
     };
-    if !cfg!(feature = "cuml") {
-        return Err(feature_disabled(operation));
-    }
-    let Some(store) = store else {
-        return Err(invalid_call(operation, "model_root_unconfigured", MODEL_ROOT_UNCONFIGURED_MESSAGE)
-            .with_log_safe_fact("required_option", MODELS_ROOT_OPTION));
-    };
+    require_model_store(operation, store)?;
+    let store = store.expect("require_model_store rejects a model operation without a store");
     load_snapshot(operation, store, reference).map(|snapshot| Some(Arc::new(snapshot)))
 }
 

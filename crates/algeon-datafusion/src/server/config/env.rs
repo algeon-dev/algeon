@@ -1,103 +1,171 @@
-use std::{collections::BTreeMap, net::SocketAddr};
+use std::{collections::BTreeMap, sync::OnceLock};
 
-use super::*;
+use super::{file::ServerFile, *};
+use crate::name_suggestion::closest_name;
 
-/// Socket address the Flight SQL server listens on. Defaults to `0.0.0.0:50051`.
-pub const ALGEON_SERVER_BIND_ENV: &str = "ALGEON_SERVER_BIND";
-/// Tracing log filter for the server process. Defaults to `info`.
-pub const ALGEON_SERVER_LOG_ENV: &str = "ALGEON_SERVER_LOG";
-/// Seconds an unconsumed Flight SQL statement ticket may wait for `DoGet`
-/// before it expires. Defaults to `300`.
-pub const ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str = "ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS";
-/// Path to a TOML server config file. The file supplies durable server config
-/// such as `[auth]`, `[admission]`, `[native]`, and `[observability]`; scalar
-/// env vars remain bootstrap overrides.
+/// Path to the TOML server config file; `--config` on the `algeon_server`
+/// command line takes precedence. This and [`ALGEON_SERVER_LOG_ENV`] are the
+/// two `ALGEON_SERVER_*` variables without a TOML location.
 pub const ALGEON_SERVER_CONFIG_FILE_ENV: &str = "ALGEON_SERVER_CONFIG_FILE";
-/// Seconds without inbound traffic before an HTTP/2 keepalive ping. Defaults to `30`.
-pub const ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV: &str = "ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS";
-/// Seconds a keepalive ping waits for acknowledgement. Defaults to `10`.
-pub const ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV: &str = "ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS";
-pub(super) const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
-pub(super) const DEFAULT_STATEMENT_TICKET_TTL_SECS: u64 = 300;
+/// Tracing log filter for the `algeon_server` process, defaulting to `info`.
+/// `--log` takes precedence. Logging starts before the configuration loads,
+/// so this variable has no TOML location.
+pub const ALGEON_SERVER_LOG_ENV: &str = "ALGEON_SERVER_LOG";
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct NativeConfigValue<T> {
-    pub(super) value: T,
-    pub(super) field: &'static str,
+const ENV_PREFIX: &str = "ALGEON_SERVER_";
+const PROCESS_LEVEL_NAMES: [&str; 2] = [ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_LOG_ENV];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LeafKind {
+    String,
+    Integer,
+    Boolean,
 }
 
-impl<T> NativeConfigValue<T> {
-    pub(super) const fn new(value: T, field: &'static str) -> Self {
-        Self { value, field }
+#[derive(Debug, Clone)]
+pub(super) struct ScalarLeaf {
+    pub(super) path: String,
+    pub(super) env_name: String,
+    pub(super) kind: LeafKind,
+}
+
+/// Arrays, including `admission.device_profiles` and `auth.mode.users`,
+/// have no environment override form.
+pub(super) fn scalar_leaves() -> &'static [ScalarLeaf] {
+    static LEAVES: OnceLock<Vec<ScalarLeaf>> = OnceLock::new();
+    LEAVES.get_or_init(|| {
+        let template = toml::Table::try_from(ServerFile::leaf_type_template())
+            .expect("the server file schema serializes to a TOML table");
+        let mut leaves = Vec::new();
+        collect_scalar_leaves(&template, "", &mut leaves);
+        leaves
+    })
+}
+
+fn collect_scalar_leaves(table: &toml::Table, prefix: &str, leaves: &mut Vec<ScalarLeaf>) {
+    for (key, value) in table {
+        let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+        let kind = match value {
+            toml::Value::Table(nested) => {
+                collect_scalar_leaves(nested, &path, leaves);
+                continue;
+            },
+            toml::Value::Array(_) => continue,
+            toml::Value::String(_) => LeafKind::String,
+            toml::Value::Integer(_) => LeafKind::Integer,
+            toml::Value::Boolean(_) => LeafKind::Boolean,
+            toml::Value::Float(_) | toml::Value::Datetime(_) => {
+                unreachable!("the server file schema has no float or datetime leaf at {path}")
+            },
+        };
+        leaves.push(ScalarLeaf { env_name: env_name_for_path(&path), path, kind });
     }
 }
 
-pub(super) struct EnvValues<'a> {
-    get: &'a mut dyn FnMut(&str) -> Option<String>,
-    cache: BTreeMap<&'static str, Option<String>>,
+pub(super) fn env_name_for_path(path: &str) -> String {
+    format!("{ENV_PREFIX}{}", path.replace('.', "_").to_ascii_uppercase())
 }
 
-impl<'a> EnvValues<'a> {
-    pub(super) fn new(get: &'a mut dyn FnMut(&str) -> Option<String>) -> Self {
-        Self { get, cache: BTreeMap::new() }
-    }
+#[derive(Debug, Default)]
+pub(super) struct ServerEnvironment {
+    pub(super) config_file: Option<PathBuf>,
+    pub(super) overrides: BTreeMap<String, EnvOverride>,
+}
 
-    pub(super) fn any_present<const N: usize>(&mut self, names: [&'static str; N]) -> bool {
-        names.into_iter().any(|name| self.string(name).is_some())
-    }
+#[derive(Debug, Clone)]
+pub(super) struct EnvOverride {
+    pub(super) env_name: String,
+    pub(super) value: toml::Value,
+}
 
-    pub(super) fn string(&mut self, name: &'static str) -> Option<String> {
-        if let Some(cached) = self.cache.get(name) {
-            return cached.clone();
+impl ServerEnvironment {
+    /// Reads every `ALGEON_SERVER_*` variable. A name that is neither a
+    /// derived leaf name nor a process-level name fails, like an unknown TOML
+    /// field. Blank values count as unset.
+    pub(super) fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Result<Self> {
+        let leaves = scalar_leaves();
+        let mut environment = Self::default();
+        for (name, value) in vars {
+            if !name.starts_with(ENV_PREFIX) {
+                continue;
+            }
+            let value = value.trim();
+            if name == ALGEON_SERVER_CONFIG_FILE_ENV {
+                environment.config_file = (!value.is_empty()).then(|| PathBuf::from(value));
+                continue;
+            }
+            if name == ALGEON_SERVER_LOG_ENV {
+                continue;
+            }
+            let Some(leaf) = leaves.iter().find(|leaf| leaf.env_name == name) else {
+                return Err(unknown_variable_error(&name));
+            };
+            if value.is_empty() {
+                continue;
+            }
+            let value = parse_env_value(leaf, value)?;
+            environment.overrides.insert(leaf.path.clone(), EnvOverride { env_name: name, value });
         }
-        let value = (self.get)(name).and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        });
-        self.cache.insert(name, value.clone());
-        value
+        Ok(environment)
     }
 
-    pub(super) fn socket_addr(&mut self, name: &'static str, default: &str) -> Result<SocketAddr> {
-        let raw = self.string(name).unwrap_or_else(|| default.to_string());
-        raw.parse().map_err(|error| ServerError::invalid_config_with_source(name, "must be a socket address", error))
-    }
-
-    pub(super) fn positive_u64(&mut self, name: &'static str, default: u64) -> Result<u64> {
-        let value = self.optional_u64(name)?.unwrap_or(default);
-        if value == 0 {
-            return Err(ServerError::invalid_config(name, "must be greater than zero"));
+    pub(super) fn apply_to(&self, table: &mut toml::Table) {
+        for (path, value) in &self.overrides {
+            let mut segments = path.split('.').peekable();
+            let mut current = &mut *table;
+            while let Some(segment) = segments.next() {
+                if segments.peek().is_none() {
+                    current.insert(segment.to_string(), value.value.clone());
+                    break;
+                }
+                let entry =
+                    current.entry(segment.to_string()).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+                if !entry.is_table() {
+                    *entry = toml::Value::Table(toml::Table::new());
+                }
+                current = entry.as_table_mut().expect("entry was just made a table");
+            }
         }
-        Ok(value)
     }
+}
 
-    pub(super) fn optional_usize(&mut self, name: &'static str) -> Result<Option<usize>> {
-        self.string(name)
-            .map(|raw| {
-                raw.parse::<usize>()
-                    .map_err(|error| ServerError::invalid_config_with_source(name, "must be an integer", error))
-            })
-            .transpose()
+fn parse_env_value(leaf: &ScalarLeaf, raw: &str) -> Result<toml::Value> {
+    let invalid = |expected: &str| {
+        ServerError::configuration(format!(
+            "{} {expected}, got `{raw}` (set by environment variable {})",
+            leaf.path, leaf.env_name
+        ))
+        .with_fact("config_field", &leaf.path)
+        .with_fact("config_env", &leaf.env_name)
+    };
+    match leaf.kind {
+        LeafKind::String => Ok(toml::Value::String(raw.to_string())),
+        LeafKind::Integer => raw
+            .parse::<u64>()
+            .ok()
+            .and_then(|value| i64::try_from(value).ok())
+            .map(toml::Value::Integer)
+            .ok_or_else(|| invalid("must be a non-negative integer no larger than 9223372036854775807")),
+        LeafKind::Boolean => match raw.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(toml::Value::Boolean(true)),
+            "false" | "0" | "no" | "off" => Ok(toml::Value::Boolean(false)),
+            _ => Err(invalid("must be a boolean (`true` or `false`)")),
+        },
     }
+}
 
-    pub(super) fn optional_u64(&mut self, name: &'static str) -> Result<Option<u64>> {
-        self.string(name)
-            .map(|raw| {
-                raw.parse::<u64>()
-                    .map_err(|error| ServerError::invalid_config_with_source(name, "must be an integer", error))
-            })
-            .transpose()
-    }
-
-    pub(super) fn optional_bool(&mut self, name: &'static str) -> Result<Option<bool>> {
-        self.string(name)
-            .map(|raw| match raw.trim().to_ascii_lowercase().as_str() {
-                "1" | "true" | "yes" | "on" => Ok(true),
-                "0" | "false" | "no" | "off" => Ok(false),
-                other => {
-                    Err(ServerError::invalid_config(name, format!("must be a boolean (`true`/`false`), got `{other}`")))
-                },
-            })
-            .transpose()
-    }
+fn unknown_variable_error(name: &str) -> ServerError {
+    let known = scalar_leaves().iter().map(|leaf| leaf.env_name.as_str()).chain(PROCESS_LEVEL_NAMES);
+    let rule = "Overrides are ALGEON_SERVER_ followed by a TOML path in upper case with `.` written as `_`; \
+                https://algeon.dev/integration/configuration#complete-example lists every one";
+    let error = match closest_name(name, ENV_PREFIX, known) {
+        Some(suggestion) => ServerError::configuration(format!(
+            "unknown environment variable {name}; the closest known name is {suggestion}. {rule}"
+        ))
+        .with_fact("suggestion", suggestion),
+        None => ServerError::configuration(format!(
+            "unknown environment variable {name}; no known setting has a similar name. {rule}"
+        )),
+    };
+    error.with_fact("reason", "unknown_environment_variable").with_fact("config_env", name)
 }

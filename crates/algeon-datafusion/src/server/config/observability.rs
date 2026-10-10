@@ -2,20 +2,8 @@ use std::time::Duration;
 
 use query_runtime::observability::RuntimeObservationConfig;
 
-use super::{EnvValues, Result, ServerError, checked_config_duration, file::ServerObservabilityFileConfig};
+use super::{ConfigSources, Result, ServerError, checked_config_duration, file::ServerObservabilityFileConfig};
 use crate::server::coordinator::logical_capture_reservation_bytes;
-
-pub const ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV: &str =
-    "ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS";
-pub const ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV: &str = "ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES";
-pub const ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV: &str =
-    "ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES";
-pub const ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV: &str =
-    "ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT";
-pub const ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV: &str =
-    "ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES";
-pub const ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV: &str = "ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS";
-pub const ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV: &str = "ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS";
 
 const DEFAULT_GLOBAL_SEALED_MAX_COUNT: usize = 1_024;
 const DEFAULT_GLOBAL_SEALED_MAX_BYTES: u64 = 1024 * 1024 * 1024;
@@ -25,7 +13,9 @@ const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 30;
 /// Validated server policy for native runtime artifacts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerObservabilityConfig {
+    /// Maximum runtime observation records retained for one query.
     pub per_query_max_records: u64,
+    /// Maximum runtime observation payload bytes retained for one query.
     pub per_query_max_bytes: u64,
     /// Logical capture bytes all live queries may reserve together. `None`
     /// covers every attempt the admission bounds can hold at once plus 1 GiB
@@ -33,9 +23,13 @@ pub struct ServerObservabilityConfig {
     /// admitted). A query the budget cannot hold runs without capture, and
     /// its stats report `active_capture_budget`.
     pub active_logical_capture_max_bytes: Option<u64>,
+    /// Maximum number of completed query artifacts retained across the server.
     pub global_sealed_max_count: usize,
+    /// Maximum logical bytes retained by completed query artifacts across the server.
     pub global_sealed_max_bytes: u64,
+    /// Maximum retention duration for a sealed query artifact.
     pub sealed_ttl: Duration,
+    /// Time allowed for runtime-artifact finalization during server shutdown.
     pub shutdown_grace: Duration,
 }
 
@@ -89,7 +83,7 @@ impl ServerObservabilityConfig {
                 .checked_add(Self::DEFAULT_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES)
                 .ok_or_else(|| {
                     ServerError::invalid_config(
-                        ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV,
+                        "observability.per_query_max_bytes",
                         "overflows the logical capture budget of the admission bounds",
                     )
                     .with_fact("admission_live_attempts", admission_live_attempts)
@@ -99,91 +93,57 @@ impl ServerObservabilityConfig {
 }
 
 pub(super) fn server_observability_config(
-    values: &mut EnvValues<'_>,
-    overlay: &ServerObservabilityFileConfig,
+    file: &ServerObservabilityFileConfig,
+    sources: &ConfigSources,
 ) -> Result<ServerObservabilityConfig> {
     let defaults = ServerObservabilityConfig::default();
-    let per_query_max_records = select_u64(
-        values,
-        ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
-        overlay.per_query_max_records,
-        defaults.per_query_max_records,
-    )?;
-    let per_query_max_bytes = select_u64(
-        values,
-        ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV,
-        overlay.per_query_max_bytes,
-        defaults.per_query_max_bytes,
-    )?;
-    let active_logical_capture_max_bytes = optional_positive_u64(
-        values,
-        ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
-        overlay.active_logical_capture_max_bytes,
-    )?;
-    let global_sealed_max_count = select_usize(
-        values,
-        ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
-        overlay.global_sealed_max_count,
-        defaults.global_sealed_max_count,
-    )?;
-    let global_sealed_max_bytes = select_u64(
-        values,
-        ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV,
-        overlay.global_sealed_max_bytes,
-        defaults.global_sealed_max_bytes,
-    )?;
-    let sealed_ttl_secs = select_u64(
-        values,
-        ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV,
-        overlay.sealed_ttl_secs,
-        defaults.sealed_ttl.as_secs(),
-    )?;
-    let shutdown_grace_secs = select_u64(
-        values,
-        ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
-        overlay.shutdown_grace_secs,
-        defaults.shutdown_grace.as_secs(),
-    )?;
-
+    let positive = |path: &'static str, value: Option<u64>, default: u64| -> Result<u64> {
+        match value.unwrap_or(default) {
+            0 => Err(sources.invalid(path, "must be greater than zero")),
+            value => Ok(value),
+        }
+    };
+    let active_logical_capture_max_bytes = match file.active_logical_capture_max_bytes {
+        Some(0) => {
+            return Err(sources.invalid("observability.active_logical_capture_max_bytes", "must be greater than zero"));
+        },
+        value => value,
+    };
+    let global_sealed_max_count = match file.global_sealed_max_count.unwrap_or(defaults.global_sealed_max_count) {
+        0 => return Err(sources.invalid("observability.global_sealed_max_count", "must be greater than zero")),
+        value => value,
+    };
+    let sealed_ttl_secs =
+        positive("observability.sealed_ttl_secs", file.sealed_ttl_secs, defaults.sealed_ttl.as_secs())?;
+    let shutdown_grace_secs =
+        positive("observability.shutdown_grace_secs", file.shutdown_grace_secs, defaults.shutdown_grace.as_secs())?;
     Ok(ServerObservabilityConfig {
-        per_query_max_records,
-        per_query_max_bytes,
+        per_query_max_records: positive(
+            "observability.per_query_max_records",
+            file.per_query_max_records,
+            defaults.per_query_max_records,
+        )?,
+        per_query_max_bytes: positive(
+            "observability.per_query_max_bytes",
+            file.per_query_max_bytes,
+            defaults.per_query_max_bytes,
+        )?,
         active_logical_capture_max_bytes,
         global_sealed_max_count,
-        global_sealed_max_bytes,
-        sealed_ttl: checked_config_duration(ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, sealed_ttl_secs)?,
+        global_sealed_max_bytes: positive(
+            "observability.global_sealed_max_bytes",
+            file.global_sealed_max_bytes,
+            defaults.global_sealed_max_bytes,
+        )?,
+        sealed_ttl: checked_config_duration(
+            sources,
+            "observability.sealed_ttl_secs",
+            Duration::from_secs(sealed_ttl_secs),
+        )?,
         shutdown_grace: checked_config_duration(
-            ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
-            shutdown_grace_secs,
+            sources,
+            "observability.shutdown_grace_secs",
+            Duration::from_secs(shutdown_grace_secs),
         )?,
     })
-}
-
-fn select_u64(values: &mut EnvValues<'_>, field: &'static str, file_value: Option<u64>, default: u64) -> Result<u64> {
-    Ok(optional_positive_u64(values, field, file_value)?.unwrap_or(default))
-}
-
-fn optional_positive_u64(
-    values: &mut EnvValues<'_>,
-    field: &'static str,
-    file_value: Option<u64>,
-) -> Result<Option<u64>> {
-    let value = values.optional_u64(field)?.or(file_value);
-    if value == Some(0) {
-        return Err(ServerError::invalid_config(field, "must be greater than zero"));
-    }
-    Ok(value)
-}
-
-fn select_usize(
-    values: &mut EnvValues<'_>,
-    field: &'static str,
-    file_value: Option<usize>,
-    default: usize,
-) -> Result<usize> {
-    let value = values.optional_usize(field)?.or(file_value).unwrap_or(default);
-    if value == 0 {
-        return Err(ServerError::invalid_config(field, "must be greater than zero"));
-    }
-    Ok(value)
 }

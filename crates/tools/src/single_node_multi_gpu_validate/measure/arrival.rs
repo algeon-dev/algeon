@@ -111,6 +111,7 @@ pub(super) async fn drive_duration_paced_concurrency(
     let mut storm_cancellers = Vec::new();
     let storm = StormKnobs::of(plan);
     let mut sequence = 0_usize;
+    let mut workload_sequence = 0_usize;
     let mut warmup_feature_off_probes_submitted = false;
     let mut measurement_feature_off_probes_submitted = false;
     let mut submissions_open = true;
@@ -125,7 +126,15 @@ pub(super) async fn drive_duration_paced_concurrency(
                 if Instant::now() >= step_deadline || Instant::now() >= timing.submission_deadline {
                     break;
                 }
-                let arrival = duration_paced_arrival(sequence, round, step.step_index, queries, sessions);
+                let arrival = duration_paced_workload_arrival(
+                    sequence,
+                    &mut workload_sequence,
+                    round,
+                    step.step_index,
+                    queries,
+                    sessions,
+                    feature_off_cugraph_probe,
+                );
                 sequence = sequence.saturating_add(1);
                 match spawn_attempt_task(
                     backend,
@@ -233,6 +242,25 @@ pub(super) async fn drive_duration_paced_concurrency(
     })
 }
 
+/// Dedicated probes consume report sequences; query and session rotation
+/// advances only with ordinary workload arrivals.
+fn duration_paced_workload_arrival(
+    sequence: usize,
+    workload_sequence: &mut usize,
+    round: usize,
+    step_index: usize,
+    queries: &[SelectedQuery],
+    sessions: &SessionPool,
+    feature_off_cugraph_probe: Option<FeatureOffCugraphProbeSchedule>,
+) -> ScheduledArrival {
+    let workload_query_count = feature_off_cugraph_probe.map_or(queries.len(), |probe| probe.query_index);
+    let mut arrival =
+        duration_paced_arrival(*workload_sequence, round, step_index, &queries[..workload_query_count], sessions);
+    *workload_sequence = workload_sequence.saturating_add(1);
+    arrival.sequence = sequence;
+    arrival
+}
+
 pub(super) fn duration_paced_arrival(
     sequence: usize,
     round: usize,
@@ -257,6 +285,9 @@ pub(super) fn duration_paced_arrival(
         session_index,
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[expect(clippy::too_many_arguments, reason = "validation harness parameters are independent measurement axes")]
 pub(super) async fn drive_with_queue_observation(

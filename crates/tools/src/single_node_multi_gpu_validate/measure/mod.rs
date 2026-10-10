@@ -234,10 +234,10 @@ async fn run_measured(
     probes: ProbeSelection,
 ) -> ToolResult<MeasuredRunArtifact> {
     let mut queries = select_queries(&profile.workloads)?;
-    let relational_query_count = queries.len();
+    let workload_query_count = queries.len();
     let feature_off_cugraph_probe = append_feature_off_cugraph_probe(profile, &mut queries)?;
     validate_cugraph_runner_mode(profile, &queries)?;
-    let plan = ArrivalPlan::plan(&profile.scheduling, relational_query_count, profile.session.shared_session_count)?;
+    let plan = ArrivalPlan::plan(&profile.scheduling, workload_query_count, profile.session.shared_session_count)?;
     let feature_off_cugraph_schedule =
         profile.feature_off_cugraph_probe.zip(feature_off_cugraph_probe).map(|(profile, query_index)| {
             FeatureOffCugraphProbeSchedule {

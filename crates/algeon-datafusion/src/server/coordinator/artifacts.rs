@@ -14,7 +14,7 @@ use query_runtime::observability::{QueryAttemptReport, SealedAttemptProjection};
 use serde::Serialize;
 
 use super::{
-    super::observability::{QUERY_STATS_HEADER_LINE, QueryStatsPayload, StableValue},
+    super::observability::{QUERY_STATS_HEADER_LINE, QueryStatsPayload, QueryStatsView, StableValue},
     QueryCoordinator,
     types::{
         QueryCoordinatorError, QueryCoordinatorErrorKind, QueryHotCounterSnapshot, QueryPhase, RetainedQueryBundle,
@@ -841,6 +841,7 @@ impl QueryCoordinator {
     pub(crate) fn lease_query_stats(
         &self,
         query_id: &str,
+        view: QueryStatsView,
     ) -> Result<Option<LeasedArtifactResponse>, QueryCoordinatorError> {
         self.finalize_ready();
         let provisional_bytes = {
@@ -853,6 +854,7 @@ impl QueryCoordinator {
         let Some(stats) = self.query_stats_result(query_id)? else {
             return Ok(None);
         };
+        let stats = view.project(stats);
         let actual_bytes = stats.len() as u64;
         lease.reconcile(actual_bytes)?;
         let frames = std::iter::once(stats).map(Bytes::from_owner).collect();

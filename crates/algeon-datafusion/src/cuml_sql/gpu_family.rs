@@ -5,13 +5,17 @@ use serde_json::{Map, Value, json};
 
 use super::{
     CUML_OPERATION_REGISTRY, CumlLogicalNode, CumlOperation, GpuOptionKind, MlRelationRole,
-    model_store::{CumlModelStore, MODEL_ROOT_UNCONFIGURED_MESSAGE, MODELS_ROOT_OPTION, bind_operation_model},
+    model_store::{
+        CumlModelStore, MODEL_ROOT_UNCONFIGURED, MODEL_ROOT_UNCONFIGURED_MESSAGE, MODELS_ROOT_OPTION,
+        bind_operation_model, require_model_store,
+    },
     options::{dense_relation_function, validate_options},
 };
 use crate::gpu_functions::{
-    GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
+    GpuCallProblem, GpuCallProblems, GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor,
+    GpuFunctionFamily,
     dense_relation::{
-        NULL_VALUES_CONTRACT, resolve_schema_only_input, schema_json, validation_error, validation_request_schema,
+        NULL_VALUES_CONTRACT, resolve_schema_only_input, schema_json, validation_problem, validation_request_schema,
     },
 };
 
@@ -26,8 +30,8 @@ impl CumlGpuFunctionFamily {
     }
 
     fn operation_availability(&self, operation: CumlOperation) -> GpuFunctionAvailability {
-        if self.availability.is_available() && operation == CumlOperation::ForestPredict && self.model_store.is_none() {
-            return GpuFunctionAvailability::Unavailable { reason: "model_root_unconfigured".to_string() };
+        if self.availability.is_available() && require_model_store(operation, self.model_store.as_deref()).is_err() {
+            return GpuFunctionAvailability::Unavailable { reason: MODEL_ROOT_UNCONFIGURED.to_string() };
         }
         self.availability.clone()
     }
@@ -67,7 +71,7 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
         let availability = self.operation_availability(operation);
         if !availability.is_available() {
             let reason = availability.unavailable_reason().expect("unavailable cuML functions have a reason");
-            let model_root_unconfigured = reason == "model_root_unconfigured";
+            let model_root_unconfigured = reason == MODEL_ROOT_UNCONFIGURED;
             let mut details = json!({"provider": "cuml", "operation": operation.as_name(), "availability": {"available": false, "reason": reason}});
             if model_root_unconfigured {
                 details["required_option"] = json!(MODELS_ROOT_OPTION);
@@ -89,6 +93,8 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
                 details,
             };
         }
+        let function = dense_relation_function(operation);
+        let mut problems = GpuCallProblems::default();
         let mut inputs = Vec::new();
         let mut relation_details = Map::new();
         for role in operation.descriptor().relation_roles {
@@ -104,61 +110,79 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
                 },
                 Err(message) => {
                     relation_details.insert(role_name.to_string(), json!({"table": relation.table, "resolved": false}));
-                    return GpuCallValidation {
-                        valid: false,
-                        error_code: Some("table_not_found".to_string()),
+                    problems.push(GpuCallProblem {
+                        code: "table_not_found".to_string(),
                         message,
-                        function_name: function_name.to_string(),
-                        relations_resolved: false,
-                        normalized_call: request.normalized_json(),
-                        output_schema: json!({}),
-                        would_execute_gpu: false,
-                        details: json!({"provider": "cuml", "operation": operation.as_name(), "relations": relation_details, "path": format!("relations.{role_name}"), "relation_role": role_name}),
-                    };
+                        details: json!({"provider": "cuml", "operation": operation.as_name(), "relations": relation_details.clone(), "path": format!("relations.{role_name}"), "relation_role": role_name}),
+                    });
                 },
             }
         }
-        let values = request.options.as_object().cloned().unwrap_or_default();
-        let result = dense_relation_function(operation)
-            .options_json(&inputs, values)
-            .map_err(DataFusionError::from)
-            .and_then(|json| {
-                let model =
-                    bind_operation_model(operation, self.model_store.as_deref(), &validate_options(operation, &json)?)?;
-                CumlLogicalNode::try_new_with_model(operation, inputs, &json, model)
-            });
-        match result {
-            Ok(node) => {
-                let mut normalized = request.clone();
-                normalized.options = Value::Object(node.validated_options().value_options().clone());
-                GpuCallValidation {
-                    valid: true,
-                    error_code: None,
-                    message: "valid".to_string(),
-                    function_name: function_name.to_string(),
-                    relations_resolved: true,
-                    normalized_call: normalized.normalized_json(),
-                    output_schema: schema_json(&node.output_schema()),
-                    would_execute_gpu: true,
-                    details: json!({"provider": "cuml", "operation": operation.as_name(), "relations": relation_details, "output_contract": output_contract(operation), "validated_options": normalized.options}),
+        let relations_resolved = problems.is_empty();
+        let base = json!({"provider": "cuml", "operation": operation.as_name(), "relations": relation_details});
+        let bindings = if relations_resolved {
+            function.relation_bindings(&inputs).map_err(|errors| {
+                for error in errors {
+                    problems.push(validation_problem(&error.into(), &base, "cuml_validation_failed"));
                 }
+            })
+        } else {
+            Err(())
+        };
+        let mut values = request.options.as_object().cloned().unwrap_or_default();
+        let failing_option =
+            |error: &DataFusionError, values: &Map<String, Value>| function.failing_option(error, values);
+        let project = |error: &DataFusionError| validation_problem(error, &base, "cuml_validation_failed");
+        let node = match &bindings {
+            Ok(bindings) => problems.check_options(
+                &mut values,
+                |values| {
+                    let options_json = function.options_json_with_bindings(bindings, values.clone())?;
+                    let model = bind_operation_model(
+                        operation,
+                        self.model_store.as_deref(),
+                        &validate_options(operation, &options_json)?,
+                    )?;
+                    CumlLogicalNode::try_new_with_model(operation, inputs.clone(), &options_json, model)
+                },
+                failing_option,
+                project,
+            ),
+            // Without every relation's binding, the value options are still
+            // checked, against bindings of the declared shape.
+            Err(()) => {
+                let bindings = function.stand_in_bindings();
+                problems.check_options(
+                    &mut values,
+                    |values| {
+                        let options_json = function.options_json_with_bindings(&bindings, values.clone())?;
+                        Ok(validate_options(operation, &options_json)?)
+                    },
+                    failing_option,
+                    project,
+                );
+                None
             },
-            Err(error) => {
-                let mut details =
-                    json!({"provider": "cuml", "operation": operation.as_name(), "relations": relation_details});
-                let (code, message) = validation_error(&error, &mut details, "cuml_validation_failed");
-                GpuCallValidation {
-                    valid: false,
-                    error_code: Some(code),
-                    message,
-                    function_name: function_name.to_string(),
-                    relations_resolved: true,
-                    normalized_call: request.normalized_json(),
-                    output_schema: json!({}),
-                    would_execute_gpu: false,
-                    details,
-                }
-            },
+        };
+        if let Some(invalid) = problems.into_invalid(function_name, relations_resolved, request.normalized_json()) {
+            return invalid;
+        }
+        let node = node.expect("a call without problems has a validated node");
+        let mut normalized = request.clone();
+        normalized.options = Value::Object(node.validated_options().value_options().clone());
+        let mut details = base;
+        details["output_contract"] = json!(output_contract(operation));
+        details["validated_options"] = normalized.options.clone();
+        GpuCallValidation {
+            valid: true,
+            error_code: None,
+            message: "valid".to_string(),
+            function_name: function_name.to_string(),
+            relations_resolved: true,
+            normalized_call: normalized.normalized_json(),
+            output_schema: schema_json(&node.output_schema()),
+            would_execute_gpu: true,
+            details,
         }
     }
 }
@@ -167,12 +191,16 @@ fn descriptor_for_operation(operation: CumlOperation, availability: GpuFunctionA
     let descriptor = operation.descriptor();
     let relation_roles = descriptor.relation_roles.iter().map(|role| {
         let supervised = matches!(descriptor.operation, CumlOperation::LogisticRegression | CumlOperation::RandomForestClassifier | CumlOperation::RandomForestRegressor);
+        let elements = descriptor.vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>();
+        let element_types = elements.join(" or ");
+        let features = if supervised { "Every non-id, non-label field" } else { "Every non-id field" };
+        let list_field = if supervised { "The only non-id, non-label field" } else { "The only non-id field" };
         let mut fields = json!({
             "id": {"required": true, "null_values": NULL_VALUES_CONTRACT, "data_types": ["Int32", "Int64", "Utf8", "LargeUtf8", "Utf8View"]},
-            "features": {"null_values": NULL_VALUES_CONTRACT, "element_types": descriptor.vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>(),
+            "features": {"null_values": NULL_VALUES_CONTRACT, "element_types": elements,
                 "one_of": [
-                    {"shape": "wide", "rule": if supervised { "Every non-id, non-label field is a Float32 feature; projection order defines vector dimension order. A nullable field type is accepted and a null value fails the query." } else { "Every non-id field is a Float32 feature; projection order defines vector dimension order. A nullable field type is accepted and a null value fails the query." }},
-                    {"shape": "list", "field": "vector", "rule": if supervised { "The vector field is FixedSizeList, List, or LargeList of Float32 elements; training also contains label. Nullable field and element types are accepted and a null row or element fails the query." } else { "The vector field is FixedSizeList, List, or LargeList of Float32 elements, with no other non-id fields. Nullable field and element types are accepted and a null row or element fails the query." }}
+                    {"shape": "wide", "rule": format!("{features} is a {element_types} feature; projection order defines vector dimension order. A nullable field type is accepted and a null value fails the query.")},
+                    {"shape": "list", "rule": format!("{list_field} is a FixedSizeList, List, or LargeList of {element_types} elements, under any name. Nullable field and element types are accepted and a null row or element fails the query.")}
                 ]},
         });
         if supervised {

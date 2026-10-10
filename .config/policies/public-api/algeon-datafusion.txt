@@ -119,6 +119,14 @@ pub fn algeon_datafusion::backend::AlgeonGpuQueuePolicy::with_max_queue_wait(sel
 pub fn algeon_datafusion::backend::AlgeonGpuQueuePolicy::with_max_queued_attempts(self, usize) -> Self
 impl core::default::Default for algeon_datafusion::backend::AlgeonGpuQueuePolicy
 pub fn algeon_datafusion::backend::AlgeonGpuQueuePolicy::default() -> Self
+pub mod algeon_datafusion::build_info
+#[non_exhaustive] pub struct algeon_datafusion::build_info::BuildInfo
+pub algeon_datafusion::build_info::BuildInfo::datafusion_version: &'static str
+pub algeon_datafusion::build_info::BuildInfo::features: &'static [&'static str]
+pub algeon_datafusion::build_info::BuildInfo::git_commit: core::option::Option<&'static str>
+pub algeon_datafusion::build_info::BuildInfo::version: &'static str
+pub const algeon_datafusion::build_info::ALGEON_VERSION_FUNCTION: &str
+pub const fn algeon_datafusion::build_info::build_info() -> algeon_datafusion::build_info::BuildInfo
 pub mod algeon_datafusion::capability
 pub use algeon_datafusion::capability::TriageCode
 pub enum algeon_datafusion::capability::CapabilityReason
@@ -1041,6 +1049,7 @@ pub const algeon_datafusion::native_exec::SourceChunking::DEFAULT_MAX_RETRY_ATTE
 pub const algeon_datafusion::native_exec::SourceChunking::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK: core::num::nonzero::NonZeroUsize
 pub const algeon_datafusion::native_exec::SourceChunking::DEFAULT_MAX_SOURCE_CHUNK_BYTES: core::num::nonzero::NonZeroU64
 pub const algeon_datafusion::native_exec::SourceChunking::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: core::num::nonzero::NonZeroUsize
+pub fn algeon_datafusion::native_exec::SourceChunking::explicit_max_source_chunk_bytes(&self) -> core::option::Option<core::num::nonzero::NonZeroU64>
 pub fn algeon_datafusion::native_exec::SourceChunking::try_new(u64, usize, usize, usize) -> algeon_datafusion::error::Result<Self>
 impl core::default::Default for algeon_datafusion::native_exec::SourceChunking
 pub fn algeon_datafusion::native_exec::SourceChunking::default() -> Self
@@ -1780,8 +1789,11 @@ pub algeon_datafusion::planner::AlgeonGpuExecutionMode::FunctionsOnly
 pub algeon_datafusion::planner::AlgeonGpuExecutionMode::NativePreferred
 pub algeon_datafusion::planner::AlgeonGpuExecutionMode::NativeRequired
 impl algeon_datafusion::planner::AlgeonGpuExecutionMode
+pub const fn algeon_datafusion::planner::AlgeonGpuExecutionMode::as_str(self) -> &'static str
 pub const fn algeon_datafusion::planner::AlgeonGpuExecutionMode::rejects_datafusion_cpu(self) -> bool
 pub const fn algeon_datafusion::planner::AlgeonGpuExecutionMode::rewrites_relational_plans(self) -> bool
+impl core::fmt::Display for algeon_datafusion::planner::AlgeonGpuExecutionMode
+pub fn algeon_datafusion::planner::AlgeonGpuExecutionMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum algeon_datafusion::planner::FinalPlanDisposition
 pub algeon_datafusion::planner::FinalPlanDisposition::DataFusion
 pub algeon_datafusion::planner::FinalPlanDisposition::Mixed
@@ -1969,27 +1981,21 @@ pub algeon_datafusion::server::AuthMode::Disabled
 impl algeon_datafusion::server::AuthMode
 pub fn algeon_datafusion::server::AuthMode::token_ttl(&self) -> core::option::Option<core::time::Duration>
 pub fn algeon_datafusion::server::AuthMode::validate(&self) -> algeon_datafusion::server::Result<()>
+#[non_exhaustive] pub enum algeon_datafusion::server::ConfigValueSource
+pub algeon_datafusion::server::ConfigValueSource::Default
+pub algeon_datafusion::server::ConfigValueSource::Env(alloc::string::String)
+pub algeon_datafusion::server::ConfigValueSource::File
+impl core::fmt::Display for algeon_datafusion::server::ConfigValueSource
+pub fn algeon_datafusion::server::ConfigValueSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum algeon_datafusion::server::PasswordHashError
 pub algeon_datafusion::server::PasswordHashError::HashFailure(alloc::string::String)
 pub algeon_datafusion::server::PasswordHashError::InvalidHash(alloc::string::String)
 impl core::error::Error for algeon_datafusion::server::PasswordHashError
 impl core::fmt::Display for algeon_datafusion::server::PasswordHashError
 pub fn algeon_datafusion::server::PasswordHashError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-#[non_exhaustive] pub enum algeon_datafusion::server::ServerNativeConfigScope
-pub algeon_datafusion::server::ServerNativeConfigScope::BoundedExecution
-pub algeon_datafusion::server::ServerNativeConfigScope::NativeExecution
-pub algeon_datafusion::server::ServerNativeConfigScope::SourceIoResource
-impl algeon_datafusion::server::ServerNativeConfigScope
-pub const fn algeon_datafusion::server::ServerNativeConfigScope::is_bounded_only(self) -> bool
 pub enum algeon_datafusion::server::ServerShutdown
 pub algeon_datafusion::server::ServerShutdown::OsSignals
 pub algeon_datafusion::server::ServerShutdown::Token(tokio_util::sync::cancellation_token::CancellationToken)
-#[non_exhaustive] pub struct algeon_datafusion::server::AlgeonServerNativeConfigOption
-pub algeon_datafusion::server::AlgeonServerNativeConfigOption::description: &'static str
-pub algeon_datafusion::server::AlgeonServerNativeConfigOption::env_var: &'static str
-pub algeon_datafusion::server::AlgeonServerNativeConfigOption::scope: algeon_datafusion::server::ServerNativeConfigScope
-pub algeon_datafusion::server::AlgeonServerNativeConfigOption::toml_field: &'static str
-pub algeon_datafusion::server::AlgeonServerNativeConfigOption::value_type: &'static str
 pub struct algeon_datafusion::server::AuthConfig
 pub algeon_datafusion::server::AuthConfig::mode: algeon_datafusion::server::AuthMode
 pub struct algeon_datafusion::server::CugraphServerConfig
@@ -2008,6 +2014,7 @@ pub fn algeon_datafusion::server::FlightSqlServerBuilder::backend(self, algeon_d
 pub async fn algeon_datafusion::server::FlightSqlServerBuilder::build(self) -> algeon_datafusion::server::Result<algeon_datafusion::server::FlightSqlServer>
 pub fn algeon_datafusion::server::FlightSqlServerBuilder::config(self, algeon_datafusion::server::ServerConfig) -> Self
 pub fn algeon_datafusion::server::FlightSqlServerBuilder::listener(self, std::net::tcp::TcpListener) -> Self
+pub fn algeon_datafusion::server::FlightSqlServerBuilder::loaded_config(self, algeon_datafusion::server::LoadedServerConfig) -> Self
 pub fn algeon_datafusion::server::FlightSqlServerBuilder::session_context(self, alloc::sync::Arc<datafusion::execution::context::SessionContext>) -> Self
 pub fn algeon_datafusion::server::FlightSqlServerBuilder::shutdown(self, algeon_datafusion::server::ServerShutdown) -> Self
 pub struct algeon_datafusion::server::Http2Keepalive
@@ -2015,23 +2022,35 @@ pub algeon_datafusion::server::Http2Keepalive::interval: core::time::Duration
 pub algeon_datafusion::server::Http2Keepalive::timeout: core::time::Duration
 impl core::default::Default for algeon_datafusion::server::Http2Keepalive
 pub fn algeon_datafusion::server::Http2Keepalive::default() -> Self
+pub struct algeon_datafusion::server::LoadedServerConfig
+pub algeon_datafusion::server::LoadedServerConfig::config: algeon_datafusion::server::ServerConfig
+impl algeon_datafusion::server::LoadedServerConfig
+pub fn algeon_datafusion::server::LoadedServerConfig::config_file(&self) -> core::option::Option<&std::path::Path>
+pub fn algeon_datafusion::server::LoadedServerConfig::device_profiles_defaulted(&self) -> bool
+pub fn algeon_datafusion::server::LoadedServerConfig::effective_toml(&self) -> alloc::string::String
+pub fn algeon_datafusion::server::LoadedServerConfig::from_env() -> algeon_datafusion::server::Result<Self>
+pub fn algeon_datafusion::server::LoadedServerConfig::from_vars<K, V>(impl core::iter::traits::collect::IntoIterator<Item = (K, V)>) -> algeon_datafusion::server::Result<Self> where K: core::convert::Into<alloc::string::String>, V: core::convert::Into<alloc::string::String>
+pub fn algeon_datafusion::server::LoadedServerConfig::source(&self, &str) -> algeon_datafusion::server::ConfigValueSource
 pub struct algeon_datafusion::server::ServerConfig
 pub algeon_datafusion::server::ServerConfig::auth: algeon_datafusion::server::AuthConfig
 pub algeon_datafusion::server::ServerConfig::bind_addr: core::net::socket_addr::SocketAddr
 pub algeon_datafusion::server::ServerConfig::cugraph: core::option::Option<algeon_datafusion::server::CugraphServerConfig>
 pub algeon_datafusion::server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<query_runtime::runtime::backend_core::GpuBackendDeviceProfile>
-pub algeon_datafusion::server::ServerConfig::gpu_devices: alloc::vec::Vec<usize>
 pub algeon_datafusion::server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, query_runtime::runtime::backend_core::GpuMemoryOwnership)>
 pub algeon_datafusion::server::ServerConfig::http2_keepalive: algeon_datafusion::server::Http2Keepalive
+pub algeon_datafusion::server::ServerConfig::init_sql: core::option::Option<std::path::PathBuf>
 pub algeon_datafusion::server::ServerConfig::models: core::option::Option<algeon_datafusion::cuml_sql::CumlModelStoreConfig>
 pub algeon_datafusion::server::ServerConfig::native_optimizer_config: algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub algeon_datafusion::server::ServerConfig::observability: algeon_datafusion::server::ServerObservabilityConfig
 pub algeon_datafusion::server::ServerConfig::queue_policy: algeon_datafusion::backend::AlgeonGpuQueuePolicy
 pub algeon_datafusion::server::ServerConfig::statement_ticket_ttl: core::time::Duration
-pub algeon_datafusion::server::ServerConfig::workspace: core::option::Option<algeon_datafusion::server::WorkspaceOverlayConfig>
+pub algeon_datafusion::server::ServerConfig::tls: core::option::Option<tonic::transport::server::tls::ServerTlsConfig>
+impl algeon_datafusion::server::ServerConfig
+pub fn algeon_datafusion::server::ServerConfig::check_tls_material(&self) -> algeon_datafusion::server::Result<()>
 impl algeon_datafusion::server::ServerConfig
 pub fn algeon_datafusion::server::ServerConfig::from_env() -> algeon_datafusion::server::Result<Self>
-pub fn algeon_datafusion::server::ServerConfig::from_env_get(impl core::ops::function::FnMut(&str) -> core::option::Option<alloc::string::String>) -> algeon_datafusion::server::Result<Self>
+pub fn algeon_datafusion::server::ServerConfig::from_vars<K, V>(impl core::iter::traits::collect::IntoIterator<Item = (K, V)>) -> algeon_datafusion::server::Result<Self> where K: core::convert::Into<alloc::string::String>, V: core::convert::Into<alloc::string::String>
+pub fn algeon_datafusion::server::ServerConfig::gpu_devices(&self) -> alloc::vec::Vec<usize>
 pub fn algeon_datafusion::server::ServerConfig::with_gpu_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, query_runtime::runtime::backend_core::GpuMemoryOwnership)>) -> Self
 pub struct algeon_datafusion::server::ServerError
 impl algeon_datafusion::server::ServerError
@@ -2067,48 +2086,8 @@ pub fn algeon_datafusion::server::ServerObservabilityConfig::default() -> Self
 pub struct algeon_datafusion::server::StaticUserConfig
 pub algeon_datafusion::server::StaticUserConfig::password_hash: alloc::string::String
 pub algeon_datafusion::server::StaticUserConfig::username: alloc::string::String
-pub struct algeon_datafusion::server::WorkspaceOverlayConfig
-pub algeon_datafusion::server::WorkspaceOverlayConfig::backing_aliases: core::option::Option<alloc::vec::Vec<alloc::string::String>>
-pub algeon_datafusion::server::WorkspaceOverlayConfig::backing_catalog: alloc::string::String
-pub algeon_datafusion::server::WorkspaceOverlayConfig::backing_schema: alloc::string::String
-pub algeon_datafusion::server::WorkspaceOverlayConfig::catalog: alloc::string::String
-pub algeon_datafusion::server::WorkspaceOverlayConfig::schema: alloc::string::String
-pub const algeon_datafusion::server::ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_BIND_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_CONFIG_FILE_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_CUGRAPH_ENABLED_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_EXECUTION_MODE_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_GPU_DEVICES_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_LOG_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_CONFIG_OPTIONS: &[algeon_datafusion::server::AlgeonServerNativeConfigOption]
-pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_S3_ENDPOINT_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_S3_PATH_STYLE_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_S3_REGION_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_S3_UNSIGNED_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_BACKING_ALIASES_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_CATALOG_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_SCHEMA_ENV: &str
 pub const algeon_datafusion::server::BLOCKING_KIND_METADATA_KEY: &str
 pub const algeon_datafusion::server::BLOCKING_SUBJECT_METADATA_KEY: &str
 pub const algeon_datafusion::server::ERROR_CODE_METADATA_KEY: &str

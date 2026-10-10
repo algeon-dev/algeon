@@ -1,12 +1,14 @@
 //! Common `gpu_validate_call` request and result models.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use datafusion::{
-    common::TableReference,
+    common::{DataFusionError, Result as DataFusionResult, TableReference},
     sql::sqlparser::{dialect::GenericDialect, parser::Parser, tokenizer::Token},
 };
 use serde_json::{Map, Value};
+
+use crate::error::DataFusionErrorExt;
 
 /// A named table or view reference supplied for a descriptor-defined role.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +121,91 @@ impl GpuCallValidation {
             details: Value::Object(Map::new()),
         }
     }
+}
+
+/// One problem a family found in a `gpu_validate_call` request.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GpuCallProblem {
+    /// Stable reason code.
+    pub(crate) code: String,
+    /// Algeon error message, without a DataFusion wrapper prefix.
+    pub(crate) message: String,
+    /// Locator and facts of this problem.
+    pub(crate) details: Value,
+}
+
+/// Collected `gpu_validate_call` problems in detection order.
+///
+/// The single result row carries the first problem's code and details, and
+/// its message joins every problem's message with `; `.
+#[derive(Debug, Default)]
+pub(crate) struct GpuCallProblems {
+    problems: Vec<GpuCallProblem>,
+    /// Options removed after a reported error, so a later error that only
+    /// restates their absence is not reported again.
+    removed_options: BTreeSet<String>,
+}
+
+impl GpuCallProblems {
+    pub(crate) fn push(&mut self, problem: GpuCallProblem) {
+        self.problems.push(problem);
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.problems.is_empty()
+    }
+
+    /// Collects independent option errors by retrying validation after removing each
+    /// rejected option.
+    ///
+    /// Validation stops at the first error that cannot be attributed to a remaining
+    /// option. Errors about an already removed option are omitted to avoid reporting
+    /// its removal as another problem.
+    pub(crate) fn check_options<T>(
+        &mut self,
+        options: &mut Map<String, Value>,
+        mut check: impl FnMut(&Map<String, Value>) -> DataFusionResult<T>,
+        failing_option: impl Fn(&DataFusionError, &Map<String, Value>) -> Option<String>,
+        project: impl Fn(&DataFusionError) -> GpuCallProblem,
+    ) -> Option<T> {
+        loop {
+            let error = match check(options) {
+                Ok(value) => return Some(value),
+                Err(error) => error,
+            };
+            match failing_option(&error, options) {
+                Some(option) if options.contains_key(&option) => {
+                    self.push(project(&error));
+                    options.remove(&option);
+                    self.removed_options.insert(option);
+                },
+                Some(option) if self.removed_options.contains(&option) => return None,
+                _ => {
+                    self.push(project(&error));
+                    return None;
+                },
+            }
+        }
+    }
+
+    pub(crate) fn into_invalid(
+        self,
+        function_name: impl Into<String>,
+        relations_resolved: bool,
+        normalized_call: Value,
+    ) -> Option<GpuCallValidation> {
+        let message = self.problems.iter().map(|problem| problem.message.as_str()).collect::<Vec<_>>().join("; ");
+        let first = self.problems.into_iter().next()?;
+        Some(GpuCallValidation {
+            details: first.details,
+            relations_resolved,
+            ..GpuCallValidation::invalid(first.code, message, function_name, normalized_call)
+        })
+    }
+}
+
+pub(crate) fn argument_of(error: &DataFusionError) -> Option<String> {
+    error.find_algeon_error().and_then(|error| error.fact_value("argument")).map(str::to_string)
 }
 
 fn parse_relation(role: &str, relation: &Value) -> Result<GpuRelationReference, GpuCallRequestError> {

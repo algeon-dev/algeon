@@ -439,10 +439,10 @@ async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
         .unwrap_err()
         .to_string();
     assert!(!ctx.state().table_functions().contains_key("cugraph_bfs_path"));
-    assert!(!error.is_empty());
+    assert!(error.contains("unknown GPU function cugraph_bfs_path; closest registered name: cugraph_bfs;"), "{error}");
 
     let error = ctx.sql("SELECT * FROM gpu_describe_function('cugraph_bfs_path')").await.unwrap_err().to_string();
-    assert!(error.contains("unknown GPU function 'cugraph_bfs_path'"));
+    assert!(error.contains("unknown GPU function cugraph_bfs_path;"), "{error}");
 
     let batches = ctx
         .sql(

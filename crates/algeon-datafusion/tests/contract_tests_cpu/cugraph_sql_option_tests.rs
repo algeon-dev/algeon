@@ -518,3 +518,43 @@ async fn captured_cugraph_specs_match_the_descriptors() {
         assert_eq!(captured.as_object().unwrap().len(), batch.num_columns(), "{function} spec field set drifted");
     }
 }
+
+/// One `gpu_validate_call` row reports every option error and the relation
+/// schema error together, in Algeon's own words.
+#[tokio::test]
+async fn cugraph_validation_reports_option_and_schema_problems_in_one_row() {
+    let ctx = cugraph_context();
+    let call =
+        json!({"relations": {"edges": {"table": "candidate_pairs"}}, "options": {"alpha": 2.0, "epsilon": -1.0}})
+            .to_string();
+    let batch = collect(
+        &ctx,
+        &format!("SELECT valid, error_code, message FROM {GPU_VALIDATE_CALL_FUNCTION}('{CUGRAPH_PAGERANK_FUNCTION}', '{call}')"),
+    )
+    .await;
+    assert!(!batch.column(0).as_any().downcast_ref::<BooleanArray>().unwrap().value(0));
+    assert_eq!(text(&batch, "error_code", 0).as_deref(), Some(INVALID_VALUE));
+    let message = text(&batch, "message", 0).unwrap();
+    assert!(!message.contains("External error"), "{message}");
+    for problem in ["'alpha'", "'epsilon'", "missing canonical source column 'src'"] {
+        assert!(message.contains(problem), "{problem}: {message}");
+    }
+    assert_eq!(message.matches("; ").count(), 2, "{message}");
+}
+
+#[tokio::test]
+async fn cugraph_vertex_dtype_rejection_lists_the_supported_vertex_types() {
+    let ctx = cugraph_context();
+    register_table(&ctx, "float_edges", &[("src", DataType::Float64), ("dst", DataType::Float64)]);
+    let error = ctx
+        .state()
+        .create_logical_plan("SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM float_edges))")
+        .await
+        .unwrap_err();
+    let typed = error.find_algeon_error().expect("typed vertex dtype rejection");
+    assert_eq!(typed.code(), ErrorCode::UnsupportedType);
+    assert_eq!(
+        typed.message(),
+        "cuGraph cugraph_pagerank source column has unsupported dtype Float64; supported vertex types: Int32, Int64, Utf8, LargeUtf8, Utf8View"
+    );
+}

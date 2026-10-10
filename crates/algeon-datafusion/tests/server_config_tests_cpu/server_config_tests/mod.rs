@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use algeon_datafusion::{
     backend::GpuDeviceMemoryLimit,
@@ -7,44 +7,21 @@ use algeon_datafusion::{
     native_exec::SourceChunking,
     planner::AlgeonGpuExecutionMode,
     server::{
-        ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
-        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-        ALGEON_SERVER_CUGRAPH_ENABLED_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_GPU_DEVICES_ENV,
-        ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV, ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV,
-        ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV, ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-        ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-        ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-        ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, ALGEON_SERVER_S3_ENDPOINT_ENV,
-        ALGEON_SERVER_S3_REGION_ENV, ALGEON_SERVER_S3_UNSIGNED_ENV, ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
-        ALGEON_SERVER_WORKSPACE_BACKING_ALIASES_ENV, ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
-        ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, ALGEON_SERVER_WORKSPACE_CATALOG_ENV,
-        ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, AuthMode, Result as ServerResult, ServerConfig, hash_password,
+        ALGEON_SERVER_CONFIG_FILE_ENV, AuthMode, ConfigValueSource, LoadedServerConfig, Result as ServerResult,
+        ServerConfig, hash_password,
     },
 };
-use arrow::{
-    array::Int64Array,
-    datatypes::{DataType, Field, Schema},
-    record_batch::RecordBatch,
-};
-use datafusion::{
-    catalog::{CatalogProvider, SchemaProvider},
-    common::Result as DataFusionResult,
-    datasource::{MemTable, TableProvider, TableType},
-};
 use query_planning::{execution_contracts::SourceChunkPlanningMode, mode::StatisticalAggregateExecutionMode};
-use query_runtime::runtime::S3SourceStorageCredential;
-use support::{
-    ReadOnlyCatalog, batch_i64_value, edge_table, env_with_default_device_profile, env_with_server_toml,
-    server_config_with_default_device_profile,
-};
+use support::{env_with_server_toml, load, load_toml};
 
 mod admission;
 mod cugraph;
 mod feature_gates;
 mod models;
 mod native_profile;
+mod startup;
 mod support;
-mod workspace;
+mod tls;
 
 #[test]
 fn auth_toml_overlay_loads_static_basic_bearer_user() {
@@ -61,7 +38,7 @@ password_hash = "{alice_hash}"
 "#,
     );
     let (_dir, env) = env_with_server_toml(&toml_body);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("load auth TOML overlay");
+    let config = ServerConfig::from_vars(env.clone()).expect("load auth TOML overlay");
 
     let AuthMode::BasicBearer { users, token_ttl_secs } = &config.auth.mode else {
         panic!("expected basic bearer auth mode, got {:?}", config.auth.mode);
@@ -85,7 +62,7 @@ password_hash = "{alice_hash}"
 "#,
     );
     let (_dir, env) = env_with_server_toml(&missing_ttl);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("missing TTL must reject");
+    let error = ServerConfig::from_vars(env.clone()).expect_err("missing TTL must reject");
     assert!(error.to_string().contains("token_ttl_secs"), "unexpected error: {error}");
 
     let zero_ttl = format!(
@@ -100,7 +77,7 @@ password_hash = "{alice_hash}"
 "#,
     );
     let (_dir, env) = env_with_server_toml(&zero_ttl);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("zero TTL must reject");
+    let error = ServerConfig::from_vars(env.clone()).expect_err("zero TTL must reject");
     assert!(error.to_string().contains("token_ttl_secs must be greater than zero"), "unexpected error: {error}");
 }
 
@@ -120,7 +97,7 @@ password_hash = "{alice_hash}"
         i64::MAX,
     );
     let (_dir, env) = env_with_server_toml(&toml_body);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("oversized TTL must reject");
+    let error = ServerConfig::from_vars(env.clone()).expect_err("oversized TTL must reject");
     assert!(error.to_string().contains("token_ttl_secs is too large"), "unexpected error: {error}");
 }
 
@@ -140,7 +117,7 @@ roles = ["reader"]
 "#,
     );
     let (_dir, env) = env_with_server_toml(&toml_body);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("removed roles field must reject");
+    let error = ServerConfig::from_vars(env.clone()).expect_err("removed roles field must reject");
     assert!(error.to_string().contains("roles"), "unexpected error: {error}");
 }
 
@@ -156,7 +133,7 @@ username = "alice"
 password_hash = "plaintext-not-allowed"
 "#;
     let (_dir, env) = env_with_server_toml(toml_body);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("plaintext password must reject");
+    let error = ServerConfig::from_vars(env.clone()).expect_err("plaintext password must reject");
     assert!(error.to_string().contains("Argon2"), "unexpected error: {error}");
 }
 
@@ -172,7 +149,18 @@ username = "alice"
 password_hash = "$argon2id$v=19$m=19456,t=2,p=1$not-a-complete-phc"
 "#;
     let (_dir, env) = env_with_server_toml(toml_body);
-    let error =
-        ServerConfig::from_env_get(|name| env.get(name).cloned()).expect_err("malformed Argon2 PHC must reject");
+    let error = ServerConfig::from_vars(env.clone()).expect_err("malformed Argon2 PHC must reject");
     assert!(error.to_string().contains("valid Argon2 PHC string"), "unexpected error: {error}");
+}
+
+#[test]
+fn server_config_binds_loopback_but_accepts_an_explicit_remote_address() {
+    let config = load(BTreeMap::new()).unwrap();
+    assert!(config.bind_addr.ip().is_loopback(), "{}", config.bind_addr);
+
+    // Container port mappings and TLS-terminating proxies need a remote bind,
+    // so no TLS or auth check may refuse it.
+    let env = BTreeMap::from([("ALGEON_SERVER_BIND", "0.0.0.0:50051".to_string())]);
+    let config = load(env).unwrap();
+    assert_eq!(config.bind_addr.to_string(), "0.0.0.0:50051");
 }

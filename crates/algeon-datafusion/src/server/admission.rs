@@ -163,17 +163,15 @@ impl QueryAdmission {
                 let ordinals = backend.devices().iter().map(AlgeonGpuDeviceConfig::device_ordinal).collect::<Vec<_>>();
                 let _ = writeln!(output, "# device_ordinals={}", payload_value(&join_usize(&ordinals)));
                 let _ = writeln!(output, "# device_profile_count={}", backend.devices().len());
-                for device in backend.devices() {
-                    let profile = device.profile();
-                    let ordinal = device.device_ordinal();
-                    let _ =
-                        writeln!(output, "# device_{ordinal}_max_active_attempts={}", profile.max_active_attempts());
+                // The startup records hold the limit the backend resolved, also
+                // for a profile that leaves it to the capacity derivation.
+                for record in backend.device_startup_records() {
+                    let ordinal = record.device_ordinal;
+                    let _ = writeln!(output, "# device_{ordinal}_max_active_attempts={}", record.max_active_attempts);
                     let _ = writeln!(
                         output,
                         "# device_{ordinal}_default_query_limit_bytes={}",
-                        profile
-                            .default_query_limit_bytes()
-                            .map_or_else(|| "none".to_string(), |value| value.to_string())
+                        record.resource_profile.default_query_limit_bytes
                     );
                 }
                 let _ = writeln!(output, "# max_queued_attempts={}", queue_policy.max_queued_attempts());
@@ -255,10 +253,7 @@ mod tests {
     use crate::server::{
         backend::{AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership},
         backend_from_server_config,
-        config::{
-            ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-            ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-        },
+        config::ALGEON_SERVER_CONFIG_FILE_ENV,
     };
 
     fn write_holder_parquet(path: &std::path::Path) {
@@ -293,14 +288,13 @@ mod tests {
         };
         std::fs::write(config_file.path(), profile).expect("write server config fixture");
         env.insert(ALGEON_SERVER_CONFIG_FILE_ENV, config_file.path().to_string_lossy().into_owned());
-        ServerConfig::from_env_get(|name| env.get(name).cloned())
+        ServerConfig::from_vars(env)
     }
 
     fn declare_test_gpu_ownership(mut config: ServerConfig) -> ServerConfig {
         config.gpu_memory_ownership = config
-            .gpu_devices
-            .iter()
-            .copied()
+            .gpu_devices()
+            .into_iter()
             .map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive))
             .collect();
         config
@@ -309,11 +303,10 @@ mod tests {
     #[test]
     fn server_backend_preserves_multi_gpu_device_subset() {
         let env = std::collections::BTreeMap::from([
-            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
-            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+            ("ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES", "1024".to_string()),
+            ("ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK", "1".to_string()),
         ]);
         let mut config = server_config_with_test_device_profile(env, Some(2048)).unwrap();
-        config.gpu_devices = vec![0, 1];
         config.gpu_device_profiles = vec![
             AlgeonGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 2048 }),
             AlgeonGpuDeviceProfile::new(1).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
@@ -330,8 +323,8 @@ mod tests {
         const HOLDER_QUERY_CAP_BYTES: u64 = 512 * 1024 * 1024;
 
         let env = std::collections::BTreeMap::from([
-            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
-            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+            ("ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES", "512".to_string()),
+            ("ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK", "1".to_string()),
         ]);
         let mut config = declare_test_gpu_ownership(
             server_config_with_test_device_profile(env, Some(HOLDER_DEVICE_CAP_BYTES)).unwrap(),
@@ -397,5 +390,21 @@ mod tests {
             !payload.contains("[device_ledger_grants]") && !payload.contains("[gpu_execution]"),
             "diagnostics must not combine the backend snapshot with separate service reads: {payload}"
         );
+
+        // A profile without an explicit query limit reports the derived one.
+        drop(_held);
+        drop(admission);
+        backend.close_and_wait(std::time::Duration::from_secs(10)).expect("first backend closes");
+        drop(backend);
+        let derived = declare_test_gpu_ownership(
+            server_config_with_test_device_profile(std::collections::BTreeMap::new(), Some(HOLDER_DEVICE_CAP_BYTES))
+                .unwrap(),
+        );
+        let backend = backend_from_server_config(&derived).unwrap();
+        let derived_limit = backend.device_startup_records()[0].resource_profile.default_query_limit_bytes;
+        assert!(derived_limit > 0 && derived_limit <= HOLDER_DEVICE_CAP_BYTES);
+        let payload = QueryAdmission::from_backend(&backend).diagnostics_payload().unwrap();
+        assert!(payload.contains(&format!("# device_0_default_query_limit_bytes={derived_limit}\n")), "{payload}");
+        backend.close_and_wait(std::time::Duration::from_secs(10)).expect("second backend closes");
     }
 }

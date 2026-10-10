@@ -207,9 +207,7 @@ impl DatafusionAlgeonFlightSqlService {
                     correlation_id_for_encode.as_deref(),
                 )
             });
-        let mut response = Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream);
-        attach_query_response_metadata(&mut response, query_id, correlation_id);
-        response
+        Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream)
     }
 
     pub(super) fn expire_stale_tickets(&self, now: Instant) {
@@ -220,6 +218,11 @@ impl DatafusionAlgeonFlightSqlService {
         self.ownership.retain_live(|id| self.coordinator.knows_query(id) || self.prepared_statements.get(id).is_some());
     }
 
+    /// DoGet response headers carry no query metadata. The ticket already
+    /// names the query, and a failed stream repeats the query and correlation
+    /// ids in its trailing status. The ADBC Flight SQL driver merges headers
+    /// and trailers into one error-detail list, so header copies would list
+    /// each id twice.
     pub(super) async fn execute_ticket(
         &self,
         query_id: String,
@@ -416,9 +419,7 @@ impl DatafusionAlgeonFlightSqlService {
                 terminal_for_encode.finish_captured("flight_encode", &status, captured);
                 status
             });
-            let mut response = Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream);
-            attach_query_response_metadata(&mut response, &query_id, correlation_id.as_deref());
-            return Ok(response);
+            return Ok(Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream));
         }
 
         // DataGrip-class clients re-run held prepared-statement handles. A
@@ -479,7 +480,6 @@ impl DatafusionAlgeonFlightSqlService {
                     }
                     let (status, captured) =
                         datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation(), FailedStatement::Other);
-                    let status = status_with_query_id(status, &query_id);
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("planning", &status, captured);
@@ -550,7 +550,6 @@ impl DatafusionAlgeonFlightSqlService {
                     }
                     let (status, captured) =
                         datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation(), failed_statement);
-                    let status = status_with_query_id(status, &query_id);
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("planning", &status, captured);
@@ -631,7 +630,6 @@ impl DatafusionAlgeonFlightSqlService {
                     );
                     let (status, captured) =
                         datafusion_error_to_status_and_capture(error, ticket_kind.execute_stream_operation(), FailedStatement::Other);
-                    let status = status_with_query_id(status, &query_id);
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("execute_stream", &status, captured);
@@ -684,7 +682,6 @@ impl DatafusionAlgeonFlightSqlService {
                     ticket_kind.execute_stream_operation(),
                     FailedStatement::Other,
                 );
-                let status = status_with_query_id(status, &query_id);
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                 coordinator_terminal.finish_captured("execute_stream", &status, captured);
                 return Err(status);
@@ -727,7 +724,13 @@ impl DatafusionAlgeonFlightSqlService {
                         "result_streaming",
                     )
                     .entered();
-                    datafusion_error_to_flight_error(error, &query_id_for_body, &terminal_for_body, stream_operation)
+                    datafusion_error_to_flight_error(
+                        error,
+                        &query_id_for_body,
+                        correlation_id_for_body.as_deref(),
+                        &terminal_for_body,
+                        stream_operation,
+                    )
                 }),
         );
         let terminal_for_tail = Arc::clone(&coordinator_terminal);
@@ -779,9 +782,7 @@ impl DatafusionAlgeonFlightSqlService {
             status
         });
 
-        let mut response = Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream);
-        attach_query_response_metadata(&mut response, &query_id, correlation_id.as_deref());
-        Ok(response)
+        Ok(Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream))
     }
 
     pub(super) fn cancel_from_flight_info(&self, raw_info: &[u8], caller: &Owner) -> Result<bool, Status> {

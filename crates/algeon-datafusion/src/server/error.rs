@@ -19,17 +19,53 @@ use crate::server::{
 
 /// Flight SQL response metadata keys
 pub const ERROR_CODE_METADATA_KEY: &str = "x-algeon-error-code";
+/// Flight status metadata key for the error category derived from the canonical code.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const ERROR_KIND_METADATA_KEY: &str = "x-algeon-error-kind";
+/// Flight status metadata key for the error stability classification derived from the canonical code.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const ERROR_STATUS_METADATA_KEY: &str = "x-algeon-error-status";
+/// Flight status metadata key for the dotted operation identifier at the failure boundary.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const ERROR_OPERATION_METADATA_KEY: &str = "x-algeon-error-operation";
+/// Flight status metadata key for the caller column named by an unsupported-type rejection.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const UNSUPPORTED_COLUMN_METADATA_KEY: &str = "x-algeon-unsupported-column";
+/// Flight status metadata key for the Arrow type of the rejected caller column.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str = "x-algeon-unsupported-column-type";
+/// Flight status metadata key for the semantic role of the rejected caller column.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str = "x-algeon-unsupported-column-role";
+/// Flight status metadata key for the kind of plan element preventing required GPU coverage.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const BLOCKING_KIND_METADATA_KEY: &str = "x-algeon-blocking-kind";
+/// Flight status metadata key for the client-visible description of the blocking plan element.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const BLOCKING_SUBJECT_METADATA_KEY: &str = "x-algeon-blocking-subject";
+/// Flight status metadata key for the graph predicate role associated with a capability rejection.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const PREDICATE_ROLE_METADATA_KEY: &str = "x-algeon-predicate-role";
+/// Flight status metadata key for the stable detailed reason code when the failure supplies one.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const REASON_METADATA_KEY: &str = "x-algeon-reason";
+/// Flight status metadata key for the SQL option needed to satisfy the failed capability contract.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const REQUIRED_OPTION_METADATA_KEY: &str = "x-algeon-required-option";
+/// Flight status metadata key for the client-actionable native detail permitted by the disclosure policy.
+///
+/// Included only when the corresponding client-safe error projection provides it.
 pub const NATIVE_MESSAGE_METADATA_KEY: &str = "x-algeon-native-message";
 pub const ALGORITHM_METADATA_KEY: &str = "x-algeon-algorithm";
 pub const ITERATIONS_METADATA_KEY: &str = "x-algeon-iterations";
@@ -51,14 +87,20 @@ pub const OMITTED_FACTS_METADATA_KEY: &str = "x-algeon-omitted-facts";
 /// this per-value bound is also a fixed total bound by construction.
 const MAX_CLIENT_FACT_METADATA_VALUE_BYTES: usize = 256;
 
+/// Server lifecycle result type carrying [`ServerError`].
 pub type Result<T> = std::result::Result<T, ServerError>;
 
 #[derive(Debug)]
+/// Server lifecycle failure using the adapter's canonical error taxonomy.
+///
+/// Typed session causes retain their identity; raw facts and source chains are
+/// trusted diagnostics. Protocol disclosure uses the server's client-safe projections.
 pub struct ServerError {
     inner: Error,
 }
 
 impl ServerError {
+    /// Creates `invalid_configuration` with a named field and a `config_field` fact.
     pub fn invalid_config(field: &'static str, reason: impl Into<String>) -> Self {
         Self::new(
             ErrorCode::InvalidConfiguration,
@@ -68,6 +110,7 @@ impl ServerError {
         .with_fact("config_field", field)
     }
 
+    /// Creates a named-field configuration error while retaining the underlying cause.
     pub fn invalid_config_with_source(
         field: &'static str,
         reason: impl Into<String>,
@@ -76,6 +119,7 @@ impl ServerError {
         Self::invalid_config(field, reason).with_source(source)
     }
 
+    /// Creates `invalid_configuration` for a configuration-wide validation failure.
     pub fn configuration(message: impl Into<String>) -> Self {
         Self::new(
             ErrorCode::InvalidConfiguration,
@@ -84,6 +128,7 @@ impl ServerError {
         )
     }
 
+    /// Creates a configuration-wide validation error while retaining the underlying cause.
     pub fn configuration_with_source(
         message: impl Into<String>,
         source: impl StdError + Send + Sync + 'static,
@@ -96,6 +141,7 @@ impl ServerError {
         .with_source(source)
     }
 
+    /// Creates an internal startup failure at `algeon_datafusion.server.startup`.
     pub fn startup(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Internal, "algeon_datafusion.server.startup", message)
     }
@@ -148,6 +194,10 @@ impl ServerError {
         .with_fact("backend_value", backend_value)
     }
 
+    /// Wraps a session-construction failure while preserving typed adapter or native identity.
+    ///
+    /// DataFusion causes retain embedded Algeon identity when present; other sources
+    /// produce an internal server-session error with the original cause attached.
     pub fn session(message: impl Into<String>, source: impl StdError + Send + Sync + 'static) -> Self {
         let message = message.into();
         let source: Box<dyn StdError + Send + Sync> = Box::new(source);
@@ -173,6 +223,7 @@ impl ServerError {
         }
     }
 
+    /// Wraps a tonic transport failure as `server_transport_failure` with its original cause.
     pub fn transport(source: TonicTransportError) -> Self {
         Self::new(
             ErrorCode::ServerTransportFailure,
@@ -209,34 +260,44 @@ impl ServerError {
         self
     }
 
+    /// Returns the canonical adapter error code preserved or assigned at this boundary.
     pub fn code(&self) -> ErrorCode {
         self.inner.code()
     }
 
+    /// Returns the error category derived from the canonical code.
     pub fn kind(&self) -> ErrorKind {
         self.inner.kind()
     }
 
+    /// Returns the stability classification derived from the canonical code.
+    ///
+    /// Attempt retry policy requires the terminal report's recovery evidence.
     pub fn status(&self) -> ErrorStatus {
         self.inner.status()
     }
 
+    /// Returns the dotted operation identifier attached to this failure.
     pub fn operation(&self) -> &'static str {
         self.inner.operation()
     }
 
+    /// Borrows the trusted diagnostic message; protocol clients receive a separate safe projection.
     pub fn message(&self) -> &str {
         self.inner.message()
     }
 
+    /// Borrows raw diagnostic facts, which may contain identifiers or other trusted context.
     pub fn facts(&self) -> &Facts {
         self.inner.facts()
     }
 
+    /// Borrows a raw fact value by key, or returns `None` when the fact is absent.
     pub fn fact_value(&self, key: &str) -> Option<&str> {
         self.inner.fact_value(key)
     }
 
+    /// Borrows the canonical adapter error underlying this server failure.
     pub fn as_adapter_error(&self) -> &Error {
         &self.inner
     }
@@ -1287,7 +1348,7 @@ mod tests {
         assert_eq!(status.code(), Code::ResourceExhausted);
         assert_eq!(
             status.message(),
-            "query memory cap exceeded in query_engine.exec.sort: it requested 4294967296 bytes (4.00 GiB), the allocation peak was 3221225472 bytes (3.00 GiB), and the query grant is 4294967296 bytes (4.00 GiB). Reduce what the failing operation holds (filter or project earlier, split the query) or raise the query memory cap; resubmitting the request unchanged fails again"
+            "query memory cap exceeded in query_engine.exec.sort: it requested 4294967296 bytes (4.00 GiB), the allocation peak was 3221225472 bytes (3.00 GiB), and the query grant is 4294967296 bytes (4.00 GiB). Reduce what the failing operation holds (filter or project earlier, split the query) or raise `admission.device_profiles.default_query_limit_bytes` for the device; resubmitting the request unchanged fails again"
         );
         assert_error_metadata(&status, "query_memory_limit_exceeded", "resource_exhausted", "permanent");
         assert_metadata_value(&status, NATIVE_OPERATION_METADATA_KEY, "query_engine.exec.sort");
@@ -1552,7 +1613,7 @@ mod tests {
         assert_error_metadata(&status, "final_plan_requirement_unsatisfied", "planning", "permanent");
         assert_eq!(
             status.message(),
-            "GPU execution does not support projected column `countDetail` with Arrow type `List(Decimal128(10, 2))`"
+            "native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support projected column `countDetail` with Arrow type `List(Decimal128(10, 2))`"
         );
         assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "countDetail");
         assert_metadata_value(&status, UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, "List(Decimal128(10, 2))");
@@ -1832,7 +1893,9 @@ mod tests {
         assert!(!logs.contains(COLUMN_TYPE), "{logs}");
         assert_eq!(
             status.message(),
-            format!("GPU execution does not support projected column `{COLUMN}` with Arrow type `{COLUMN_TYPE}`")
+            format!(
+                "native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support projected column `{COLUMN}` with Arrow type `{COLUMN_TYPE}`"
+            )
         );
     }
 
@@ -1866,7 +1929,9 @@ mod tests {
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_eq!(
             status.message(),
-            format!("GPU execution does not support {subject}; EXPLAIN GPU lists every blocking candidate")
+            format!(
+                "native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support {subject}; EXPLAIN GPU lists every blocking candidate"
+            )
         );
         assert_metadata_value(&status, BLOCKING_KIND_METADATA_KEY, "cast");
         assert_metadata_value(&status, BLOCKING_SUBJECT_METADATA_KEY, subject);

@@ -16,7 +16,10 @@ use datafusion::{
 };
 use serde_json::{Map, Value};
 
-use super::{GpuCallRequest, GpuCallValidation, GpuFunctionCatalog, GpuFunctionDescriptor};
+use super::{
+    GpuCallRequest, GpuCallValidation, GpuFunctionCatalog, GpuFunctionDescriptor,
+    unknown_function::{unknown_gpu_function_error, unknown_gpu_function_message},
+};
 use crate::{
     error::{Error, ErrorCode, Result},
     physical_plan::cpu_physical_boundary,
@@ -70,7 +73,7 @@ impl TableFunctionImpl for GpuDescribeFunction {
         }
         let function_name = literal_string(args, 0, "function_name")?;
         if self.catalog.get(&function_name).is_none() {
-            return Err(plan_error(format!("unknown GPU function '{function_name}'")).into());
+            return Err(unknown_gpu_function_error(&self.catalog, &function_name).into());
         }
         Ok(Arc::new(GpuMetadataProvider {
             catalog: Arc::clone(&self.catalog),
@@ -251,7 +254,7 @@ async fn validate_batch(
     let row = match catalog.get(function_name) {
         None => GpuCallValidation::invalid(
             "unknown_function",
-            format!("unknown GPU function '{function_name}'"),
+            unknown_gpu_function_message(catalog, function_name),
             function_name,
             Value::Object(Map::new()),
         ),
@@ -262,20 +265,16 @@ async fn validate_batch(
                 entry.descriptor.function_name.clone(),
                 Value::Object(Map::new()),
             ),
+            // Each family reports an unavailable function before it reads the
+            // request, so availability is the first problem a caller sees.
             Ok(request) => match common_request_error(&entry.descriptor, &request) {
-                Some((code, message)) => GpuCallValidation::invalid(
+                Some((code, message)) if entry.descriptor.availability.is_available() => GpuCallValidation::invalid(
                     code,
                     message,
                     entry.descriptor.function_name.clone(),
                     request.normalized_json(),
                 ),
-                None if !entry.descriptor.availability.is_available() => GpuCallValidation::invalid(
-                    entry.descriptor.availability.unavailable_reason().expect("unavailable variant has a reason"),
-                    "GPU function is unavailable in this session/build",
-                    entry.descriptor.function_name.clone(),
-                    request.normalized_json(),
-                ),
-                None => entry.family.validate(state, &entry.descriptor.function_name, &request).await,
+                _ => entry.family.validate(state, &entry.descriptor.function_name, &request).await,
             },
         },
     };

@@ -50,7 +50,7 @@ use super::{
     },
     diagnostics::log_native_planning_report_for_tables,
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
-    observability::CapturedError,
+    observability::{CapturedError, QueryStatsView},
 };
 use crate::server::{
     adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorLogDiagnostics},
@@ -79,13 +79,15 @@ mod tickets;
 
 use correlation::tracing_correlation_id;
 pub(super) use correlation::{attach_query_response_metadata, request_correlation_id};
-use ddl::{referenced_table_names, reject_drop_object_type_mismatch};
+use ddl::referenced_table_names;
+pub(in crate::server) use ddl::reject_drop_object_type_mismatch;
 use frame_limiter::encode_flight_data_stream;
 use metadata::*;
 use ownership::{Owner, QueryOwnership};
 use prepared::{PreparedStatementEntry, PreparedStatementStore};
 pub use service::DatafusionAlgeonFlightSqlService;
 use statement::verify_forest_model_identity;
+pub(in crate::server) use status::verify_update_ddl;
 use status::*;
 use tickets::*;
 
@@ -93,6 +95,7 @@ const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
 const GET_ADMISSION_STATS_ACTION: &str = "GetAdmissionStats";
 const GET_QUERY_STATS_ACTION: &str = "GetQueryStats";
+const GET_QUERY_STATS_SUMMARY_ACTION: &str = "GetQueryStatsSummary";
 const GET_QUERY_RUNTIME_ARTIFACT_ACTION: &str = "GetQueryRuntimeArtifact";
 const NO_UPDATED_RECORDS_COUNT: i64 = 0;
 const SQL_ANSI92_ENTRY_SQL_BIT_INDEX: i32 = 0;

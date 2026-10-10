@@ -39,6 +39,7 @@ pub use query_runtime::{
 #[cfg(feature = "cugraph")]
 use crate::cugraph_sql::GraphBfsSingleflightSnapshot;
 use crate::{
+    build_info::algeon_version_table_function,
     error::{Error, Result},
     native_exec::{AlgeonNativeExecutionConfig, QueryAdmissionSource, SourceChunking},
     observability::{
@@ -108,11 +109,17 @@ impl AlgeonGpuQueuePolicy {
         self.max_queue_wait
     }
 
+    /// Sets the number of admission waiters permitted across the backend.
+    ///
+    /// Validation at backend construction rejects zero.
     pub fn with_max_queued_attempts(mut self, max_queued_attempts: usize) -> Self {
         self.max_queued_attempts = max_queued_attempts;
         self
     }
 
+    /// Sets the maximum admission queue wait before a timeout.
+    ///
+    /// Validation at backend construction rejects a zero duration.
     pub fn with_max_queue_wait(mut self, max_queue_wait: Duration) -> Self {
         self.max_queue_wait = max_queue_wait;
         self
@@ -136,6 +143,9 @@ pub struct AlgeonGpuBackendBuilder {
 }
 
 impl AlgeonGpuBackend {
+    /// Starts a backend declaration with default optimizer and queue policies.
+    ///
+    /// Supply device declarations before calling [`AlgeonGpuBackendBuilder::build`].
     pub fn builder() -> AlgeonGpuBackendBuilder {
         AlgeonGpuBackendBuilder::default()
     }
@@ -143,7 +153,9 @@ impl AlgeonGpuBackend {
     /// Installs the backend-managed DataFusion integration on `builder`.
     ///
     /// The installation binds the native optimizer to this backend's admission
-    /// authority, and installs the GPU coverage UDTF. The resulting session
+    /// authority, and installs the GPU coverage UDTF and `algeon_version()`,
+    /// which returns [`crate::build_info::build_info`] and this backend's
+    /// execution mode as one row. The resulting session
     /// plans and admits native execution through this backend's ledger. With
     /// [`AlgeonNativeExecutionConfig::with_s3_storage`], the session also
     /// resolves `s3://` URLs that have no registered object store from that
@@ -274,6 +286,7 @@ impl AlgeonGpuBackend {
         })
     }
 
+    /// Returns the immutable queue bounds shared by sessions installed from this backend.
     pub fn queue_policy(&self) -> &AlgeonGpuQueuePolicy {
         &self.queue_policy
     }
@@ -289,6 +302,9 @@ impl AlgeonGpuBackend {
         })
     }
 
+    /// Tests whether both handles refer to the same backend generation.
+    ///
+    /// Cloned handles compare equal; matching device declarations alone do not.
     pub fn same_backend(&self, other: &Self) -> bool {
         self.core.identity() == other.core.identity()
     }
@@ -314,6 +330,7 @@ impl AlgeonGpuBackend {
         config.query_admission_source_matches(&self.session)
     }
 
+    /// Returns the planning template bound to this backend's admission authority.
     pub fn optimizer_config(&self) -> &AlgeonNativeOptimizerConfig {
         &self.optimizer_config
     }
@@ -324,6 +341,7 @@ impl AlgeonGpuBackend {
         self.optimizer_config.native_execution_config().bfs_singleflight().snapshot()
     }
 
+    /// Returns the validated device declarations retained at backend construction.
     pub fn devices(&self) -> &[AlgeonGpuDeviceConfig] {
         &self.devices
     }
@@ -375,7 +393,7 @@ fn backend_core_build_error(message: &'static str, source: QueryError) -> Error 
     Error::from_native_with_blocking_diagnostics("algeon_datafusion.backend.gpu_core", message, source)
 }
 
-fn install_backend_optimizer_config(
+pub(crate) fn install_backend_optimizer_config(
     builder: SessionStateBuilder,
     optimizer_config: &AlgeonNativeOptimizerConfig,
 ) -> Result<SessionStateBuilder> {
@@ -383,7 +401,10 @@ fn install_backend_optimizer_config(
         Some(storage) => install_s3_storage(builder, storage)?,
         None => builder,
     };
-    Ok(builder.with_algeon_native(optimizer_config.clone()))
+    let mut builder = builder.with_algeon_native(optimizer_config.clone());
+    let version = algeon_version_table_function(optimizer_config.execution_mode());
+    builder.table_functions().get_or_insert_with(Default::default).insert(version.name().to_string(), version);
+    Ok(builder)
 }
 
 /// Validated backend-builder input shared by production construction and root
@@ -524,6 +545,9 @@ impl Drop for InstalledTestGpuBackend {
 }
 
 impl AlgeonGpuBackendBuilder {
+    /// Replaces the optimizer template used by installed sessions.
+    ///
+    /// Backend construction binds its execution settings to this backend's admission authority.
     pub fn with_optimizer_config(mut self, optimizer_config: AlgeonNativeOptimizerConfig) -> Self {
         self.optimizer_config = optimizer_config;
         self
@@ -535,6 +559,7 @@ impl AlgeonGpuBackendBuilder {
         self
     }
 
+    /// Selects relational rewriting and final-plan CPU coverage policy for installed sessions.
     pub fn with_execution_mode(mut self, mode: AlgeonGpuExecutionMode) -> Self {
         self.optimizer_config = self.optimizer_config.with_execution_mode(mode);
         self
@@ -562,6 +587,11 @@ impl AlgeonGpuBackendBuilder {
         self
     }
 
+    /// Validates the declaration, claims process GPU ownership, and initializes the backend.
+    ///
+    /// Returns a typed configuration, discovery, ownership, or resource-initialization
+    /// error if construction cannot publish a usable backend. Use [`Self::validate`]
+    /// for checks that do not acquire GPU resources.
     pub fn build(self) -> Result<AlgeonGpuBackend> {
         AlgeonGpuBackend::build_bounded(
             self.optimizer_config,

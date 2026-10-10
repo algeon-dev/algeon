@@ -91,7 +91,6 @@ cargo build --workspace --all-features --release --bin algeon_server
 
 ```bash
 ALGEON_SERVER_CONFIG_FILE="$PWD/fixture/demo/amazon_reviews_2023/scripts/scale/server.toml" \
-ALGEON_SERVER_EXECUTION_MODE=native_required \
 ALGEON_SERVER_BIND=127.0.0.1:50062 \
 flock -x /tmp/cudf-gpu.lock target/release/algeon_server
 ```

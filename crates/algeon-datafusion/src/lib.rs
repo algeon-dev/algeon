@@ -49,7 +49,8 @@
 //! ```
 //!
 //! Applications start from [`backend`], install sessions through [`session`],
-//! and execute through [`attempt`]. Planning-only diagnosis lives in
+//! and execute through [`attempt`]. [`build_info`] reports the version,
+//! commit and enabled engines of this build. Planning-only diagnosis lives in
 //! [`gpu_coverage`]; runtime exporter projection lives in [`observability`].
 //!
 //! Optional engines change plan classification only while enabled: with the
@@ -63,11 +64,14 @@
 //! on one live device ledger for the multi-GPU validation tool. Enable `server`
 //! to embed the Algeon Flight SQL server alongside the adapter.
 
+#![deny(missing_docs)]
+
 #[cfg(test)]
 extern crate self as algeon_datafusion;
 
 pub mod attempt;
 pub mod backend;
+pub mod build_info;
 pub mod capability;
 #[cfg(all(test, any(feature = "cugraph", feature = "server")))]
 #[path = "../tests/support/closing_backend.rs"]
@@ -80,6 +84,7 @@ mod final_plan_observation;
 pub mod gpu_coverage;
 pub mod gpu_functions;
 mod gpu_query_planner;
+mod name_suggestion;
 mod native;
 pub mod native_exec;
 pub mod native_report;

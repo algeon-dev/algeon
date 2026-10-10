@@ -168,13 +168,12 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 return Err(record_non_attempt_failure(self, &correlation_id, error)?);
             },
         };
-        if let Some(error) = explain_gpu_endpoint_error(
-            &sql,
-            "algeon_datafusion.server.flight.get_flight_info_prepared_statement.explain_gpu",
-            "EXPLAIN GPU cannot be executed through a prepared statement; use the statement query endpoint",
-        ) {
-            return Err(record_non_attempt_failure(self, &correlation_id, error)?);
-        }
+        // CreatePreparedStatement accepted this SQL, so a parse failure here is
+        // only possible if the extension grammar changed underneath the handle.
+        let explain_gpu = match parse_explain_gpu(&sql) {
+            Ok(explain_gpu) => explain_gpu,
+            Err(error) => return Err(record_non_attempt_failure(self, &correlation_id, error)?),
+        };
         let registration = match execution_domain {
             StatementExecutionDomain::Metadata => self.register_new_query(sql.clone(), correlation_id.clone()),
             StatementExecutionDomain::Data => self.register_new_attempt_query(sql.clone(), correlation_id.clone()),
@@ -183,7 +182,6 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
         })?;
         self.ownership.insert(query_id.clone(), caller);
-        let parsed_statement = self.parse_flight_statement(&sql);
         let query_span = DatafusionAlgeonFlightSqlService::query_span(
             &query_id,
             correlation_id.as_deref(),
@@ -196,29 +194,41 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         tracing::info!(
             query_id,
             correlation_id = tracing_correlation_id(correlation_id.as_deref()),
-            sql,
+            sql = %RedactedSql(&sql),
             prepared_statement_handle = handle.as_str(),
             "planning Flight SQL prepared statement"
         );
         // An entered span must not stay active across an await; `.instrument` carries it.
         drop(_query_enter);
-        let info = match self
-            .statement_flight_info(
+        let descriptor = request.into_inner();
+        let info_result = if let Some(explain_gpu) = explain_gpu {
+            self.explain_gpu_flight_info(
+                planning_lease,
+                query_id.clone(),
+                explain_gpu.inner_sql,
+                explain_gpu.output_mode,
+                correlation_id.clone(),
+                descriptor,
+                planning_started_at,
+            )
+        } else {
+            self.statement_flight_info(
                 planning_lease,
                 query_id.clone(),
                 sql.clone(),
                 correlation_id.clone(),
-                request.into_inner(),
+                descriptor,
                 planning_started_at,
                 StatementTicketKind::PreparedStatement,
                 Some(handle.clone()),
-                parsed_statement,
+                self.parse_flight_statement(&sql),
                 execution_domain,
                 Some(planned_forest_model_digests),
             )
             .instrument(query_span.clone())
             .await
-        {
+        };
+        let info = match info_result {
             Ok(info) => info,
             Err(status) => {
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
@@ -703,15 +713,24 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             planning_lease.finish_captured("planning", &status, captured);
             return Err(status);
         }
-        if let Some(error) = explain_gpu_endpoint_error(
-            &sql,
-            "algeon_datafusion.server.flight.do_action_create_prepared_statement.explain_gpu",
-            "EXPLAIN GPU cannot be prepared; use the Flight SQL statement query endpoint",
-        ) {
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            planning_lease.finish_captured("planning", &status, captured);
-            return Err(status);
+        match parse_explain_gpu(&sql) {
+            Ok(None) => {},
+            Ok(Some(explain_gpu)) => {
+                return self.create_explain_gpu_prepared_statement(
+                    planning_lease,
+                    query_id,
+                    sql,
+                    &explain_gpu.inner_sql,
+                    caller,
+                    correlation_id,
+                );
+            },
+            Err(error) => {
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                planning_lease.finish_captured("planning", &status, captured);
+                return Err(status);
+            },
         }
         // Plan logically to derive the result-set schema the client needs
         // up-front. This does *not* run the physical optimizer rule and does
@@ -829,37 +848,9 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         // neither execution channel re-plans to decide whether a re-run of the
         // held handle should be deduplicated into a no-op.
         let no_result_ddl = matches!(logical_plan, LogicalPlan::Ddl(_));
-        // Flight SQL's CreatePreparedStatement response has no query_id field.
-        // Reuse the returned opaque handle as this action's query_id so the
-        // successful create action remains addressable through GetQueryStats.
-        let handle = query_id.clone();
-        // The cap check and the insert that consumes it are one operation in
-        // the store, so concurrent creates cannot both pass the check.
-        if let Err(limit) = self.prepared_statements.insert(
-            handle.clone(),
-            caller.clone(),
-            PreparedStatementEntry::new(sql, no_result_ddl, execution_domain, forest_model_digests(&logical_plan)),
-        ) {
-            let error = Error::new(
-                ErrorCode::ServiceOverloaded,
-                "algeon_datafusion.server.flight.do_action_create_prepared_statement.admission",
-                format!("{} (limit {})", limit.message(), limit.limit()),
-            )
-            .with_log_safe_fact("limit", limit.limit());
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            planning_lease.finish_captured("admission", &status, captured);
-            return Err(status);
-        }
-        self.ownership.insert(handle.clone(), caller);
-        tracing::info!(prepared_statement_handle = handle.as_str(), "created Flight SQL prepared statement");
-        planning_lease.succeed();
-
-        Ok(ActionCreatePreparedStatementResult {
-            prepared_statement_handle: handle.into_bytes().into(),
-            dataset_schema: dataset_schema_ipc,
-            parameter_schema: Bytes::new(),
-        })
+        let entry =
+            PreparedStatementEntry::new(sql, no_result_ddl, execution_domain, forest_model_digests(&logical_plan));
+        self.store_prepared_statement(planning_lease, query_id, caller, correlation_id, entry, dataset_schema_ipc)
     }
 
     async fn do_action_close_prepared_statement(
@@ -904,8 +895,15 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         Some(vec![
             Ok(arrow_flight::ActionType {
                 r#type: GET_QUERY_STATS_ACTION.to_string(),
-                description: "Returns retained algeon-datafusion query diagnostics for a UTF-8 query_id body"
-                    .to_string(),
+                description:
+                    "Returns retained algeon-datafusion query diagnostics for a UTF-8 query_id or correlation_id body"
+                        .to_string(),
+            }),
+            Ok(arrow_flight::ActionType {
+                r#type: GET_QUERY_STATS_SUMMARY_ACTION.to_string(),
+                description:
+                    "Returns the header and trailer lines of GetQueryStats, without planning and execution records"
+                        .to_string(),
             }),
             Ok(arrow_flight::ActionType {
                 r#type: GET_QUERY_RUNTIME_ARTIFACT_ACTION.to_string(),
@@ -957,39 +955,144 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             });
             return Ok(Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream));
         }
-        if action_type != GET_QUERY_STATS_ACTION {
-            return Err(Status::invalid_argument(format!(
-                "do_action: The defined request is invalid: {action_type:?}"
-            )));
-        }
+        let view = match action_type {
+            GET_QUERY_STATS_ACTION => QueryStatsView::Full,
+            GET_QUERY_STATS_SUMMARY_ACTION => QueryStatsView::Summary,
+            _ => {
+                return Err(Status::invalid_argument(format!(
+                    "unknown action `{action_type}`; ListActions returns the supported actions"
+                )));
+            },
+        };
         self.expire_stale_tickets(Instant::now());
-        let query_id = std::str::from_utf8(&request.get_ref().body)
-            .map_err(|error| Status::invalid_argument(format!("GetQueryStats query_id body is not UTF-8: {error}")))?
+        let id = std::str::from_utf8(&request.get_ref().body)
+            .map_err(|error| Status::invalid_argument(format!("{action_type} body is not UTF-8: {error}")))?
             .trim();
-        if query_id.is_empty() {
-            return Err(Status::invalid_argument("GetQueryStats query_id body is empty"));
+        if id.is_empty() {
+            return Err(Status::invalid_argument(format!("{action_type} body is empty")));
         }
-        self.ownership.authorize(query_id, &caller)?;
+        let not_found = || {
+            Status::not_found(format!(
+                "no retained query has query_id or correlation_id `{id}` for this caller; stats expire observability.sealed_ttl_secs after the query ends"
+            ))
+        };
+        let query_id = self.resolve_query_stats_id(id, &caller)?.ok_or_else(not_found)?;
         // `lease_query_stats` waits on a `std` Condvar while another query
         // renders its stats. Run it on the blocking pool so this handler
         // never parks a tokio worker on another query's render.
         let coordinator = Arc::clone(&self.coordinator);
-        let owned_query_id = query_id.to_string();
-        let leased = spawn_blocking(move || coordinator.lease_query_stats(&owned_query_id))
+        let owned_query_id = query_id.clone();
+        let leased = spawn_blocking(move || coordinator.lease_query_stats(&owned_query_id, view))
             .await
-            .map_err(|error| Status::internal(format!("GetQueryStats blocking task failed: {error}")))?;
+            .map_err(|error| Status::internal(format!("{action_type} blocking task failed: {error}")))?;
         let response = leased
             .map_err(|error| {
                 adapter_error_to_status(&error.adapter_error("algeon_datafusion.server.flight.get_query_stats.egress"))
             })?
-            .ok_or_else(|| Status::not_found(format!("unknown or expired query_id: {query_id}")))?;
+            .ok_or_else(not_found)?;
+        let correlation_id = self.coordinator.correlation_id(&query_id);
         let output = unfold(response, |mut response| async move {
             response.next_frame().map(|body| (Ok(FlightResult { body }), response))
         });
-        Ok(Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream))
+        let mut response = Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream);
+        attach_query_response_metadata(&mut response, &query_id, correlation_id.as_deref());
+        Ok(response)
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
+}
+
+impl DatafusionAlgeonFlightSqlService {
+    /// Query-id lookup takes precedence over correlation-id lookup.
+    /// Client-chosen correlation ids can collide across principals;
+    /// their lookup considers only the caller's own queries.
+    fn resolve_query_stats_id(&self, id: &str, caller: &Owner) -> Result<Option<String>, Status> {
+        self.ownership.authorize(id, caller)?;
+        if self.coordinator.knows_query(id) {
+            return Ok(Some(id.to_string()));
+        }
+        Ok(self
+            .coordinator
+            .query_ids_with_correlation_id(id)
+            .into_iter()
+            .find(|query_id| self.ownership.is_owned_by(query_id, caller)))
+    }
+
+    /// Prepare `EXPLAIN GPU` without planning the explained query. Its result
+    /// set always has the coverage schema, and the query is planned when the
+    /// handle executes, through the same ticket path as the statement query.
+    fn create_explain_gpu_prepared_statement(
+        &self,
+        mut planning_lease: QueryPlanningLease,
+        query_id: String,
+        sql: String,
+        inner_sql: &str,
+        caller: Owner,
+        correlation_id: Option<String>,
+    ) -> Result<ActionCreatePreparedStatementResult, Status> {
+        let mut fail = |(status, captured): (Status, CapturedError)| {
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            status
+        };
+        // An inner statement that does not parse is reported by the execution
+        // that plans it, exactly as for the statement query endpoint.
+        if let Ok(statement) = self.parse_flight_statement(inner_sql)
+            && let Err(error) = reject_parameterized_statement(
+                &statement,
+                "algeon_datafusion.server.flight.do_action_create_prepared_statement.parameter_binding",
+            )
+        {
+            return Err(fail(adapter_error_to_status_and_capture(error)));
+        }
+        let dataset_schema_ipc = schema_to_ipc_bytes(coverage_schema().as_ref()).map_err(|error| {
+            fail(arrow_error_to_status_and_capture(
+                error,
+                "algeon_datafusion.server.flight.do_action_create_prepared_statement.dataset_schema_ipc",
+                "failed to encode Flight SQL prepared-statement dataset schema",
+            ))
+        })?;
+        let entry = PreparedStatementEntry::new(sql, false, StatementExecutionDomain::Data, Vec::new());
+        self.store_prepared_statement(planning_lease, query_id, caller, correlation_id, entry, dataset_schema_ipc)
+    }
+
+    fn store_prepared_statement(
+        &self,
+        mut planning_lease: QueryPlanningLease,
+        query_id: String,
+        caller: Owner,
+        correlation_id: Option<String>,
+        entry: PreparedStatementEntry,
+        dataset_schema_ipc: Bytes,
+    ) -> Result<ActionCreatePreparedStatementResult, Status> {
+        // Flight SQL's CreatePreparedStatement response has no query_id field.
+        // Reuse the returned opaque handle as this action's query_id so the
+        // successful create action remains addressable through GetQueryStats.
+        let handle = query_id;
+        // The cap check and the insert that consumes it are one operation in
+        // the store, so concurrent creates cannot both pass the check.
+        if let Err(limit) = self.prepared_statements.insert(handle.clone(), caller.clone(), entry) {
+            let error = Error::new(
+                ErrorCode::ServiceOverloaded,
+                "algeon_datafusion.server.flight.do_action_create_prepared_statement.admission",
+                format!("{} (limit {})", limit.message(), limit.limit()),
+            )
+            .with_log_safe_fact("limit", limit.limit());
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &handle, correlation_id.as_deref());
+            planning_lease.finish_captured("admission", &status, captured);
+            return Err(status);
+        }
+        self.ownership.insert(handle.clone(), caller);
+        tracing::info!(prepared_statement_handle = handle.as_str(), "created Flight SQL prepared statement");
+        planning_lease.succeed();
+
+        Ok(ActionCreatePreparedStatementResult {
+            prepared_statement_handle: handle.into_bytes().into(),
+            dataset_schema: dataset_schema_ipc,
+            parameter_schema: Bytes::new(),
+        })
+    }
 }
 
 /// Record a Flight request failure that occurs before an attempt begins. The

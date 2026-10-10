@@ -18,11 +18,11 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     server::{
-        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, BLOCKING_KIND_METADATA_KEY,
-        BLOCKING_SUBJECT_METADATA_KEY, ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
-        FlightSqlServer, REASON_METADATA_KEY, Result as ServerResult, ServerConfig, ServerShutdown,
-        UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, UNSUPPORTED_COLUMN_TYPE_METADATA_KEY,
-        backend_from_server_config, build_session_context_with_backend, init_cuda_device, serve_with_listener,
+        ALGEON_SERVER_CONFIG_FILE_ENV, BLOCKING_KIND_METADATA_KEY, BLOCKING_SUBJECT_METADATA_KEY,
+        ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer,
+        REASON_METADATA_KEY, Result as ServerResult, ServerConfig, ServerShutdown, UNSUPPORTED_COLUMN_METADATA_KEY,
+        UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, backend_from_server_config,
+        build_session_context_with_backend, init_cuda_device, serve_with_listener,
     },
 };
 use arrow::{
@@ -98,7 +98,7 @@ mod tickets;
 
 fn declare_test_gpu_ownership(config: &mut ServerConfig) {
     config.gpu_memory_ownership =
-        config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
+        config.gpu_devices().into_iter().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
 }
 
 fn test_server_config() -> ServerConfig {
@@ -111,7 +111,7 @@ fn test_server_config_with_env(mut env: std::collections::BTreeMap<&'static str,
     std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
     let path = path.to_string_lossy().into_owned();
     env.insert(ALGEON_SERVER_CONFIG_FILE_ENV, path);
-    ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("explicit test device profile")
+    ServerConfig::from_vars(env).expect("explicit test device profile")
 }
 
 // These cases inject an already-built backend, so their server configuration

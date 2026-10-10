@@ -61,11 +61,20 @@ impl ClientMessage {
     }
 }
 
+/// Opening clause of every client text of a `final_plan_requirement_unsatisfied`
+/// rejection. It names the server mode the caller configured, so the text
+/// reads in the caller's terms rather than the planner's requirement name.
+const NATIVE_REQUIRED_REJECTION: &str = "native_required mode rejected a plan that needs DataFusion CPU: ";
+
 /// The texts the status boundary shows a query caller for `error`.
 pub(crate) fn client_message(error: &Error) -> ClientMessage {
-    let logged = client_status_message(error);
+    let mut logged = client_status_message(error);
     let detail = client_actionable_kind(error).then(|| error.client_detail()).flatten();
-    let text = detail.map_or_else(|| logged.clone(), |detail| client_schema_detail_message(detail, &logged));
+    let mut text = detail.map_or_else(|| logged.clone(), |detail| client_schema_detail_message(detail, &logged));
+    if error.code() == ErrorCode::FinalPlanRequirementUnsatisfied {
+        logged.insert_str(0, NATIVE_REQUIRED_REJECTION);
+        text.insert_str(0, NATIVE_REQUIRED_REJECTION);
+    }
     let pointer = matches!(detail, Some(ClientDetail::BlockingSubject { .. })).then_some(BLOCKING_SUBJECT_POINTER);
     ClientMessage { logged, text, pointer }
 }
@@ -113,7 +122,7 @@ fn client_status_message(error: &Error) -> String {
         // report and grant no retry permission from the `Temporary` status or
         // the gRPC `RESOURCE_EXHAUSTED` code.
         ErrorCode::QueryMemoryLimitExceeded => format!(
-            "query memory cap exceeded{}. Reduce what the failing operation holds (filter or project earlier, split the query) or raise the query memory cap; resubmitting the request unchanged fails again",
+            "query memory cap exceeded{}. Reduce what the failing operation holds (filter or project earlier, split the query) or raise `admission.device_profiles.default_query_limit_bytes` for the device; resubmitting the request unchanged fails again",
             memory_failure_detail(error).unwrap_or_else(|| format!(": {}", error.message()))
         ),
         ErrorCode::QueryBudgetUnavailable => format!(

@@ -882,6 +882,7 @@ impl CapturedQuery {
 
         let artifact_truncated = output.truncated;
         let incomplete = self.capture.incomplete() || metric_projection_truncated || artifact_truncated;
+        // `QueryStatsView::Summary` finds the trailer by this first line.
         let mut trailer = String::new();
         let _ = writeln!(trailer, "# incomplete={incomplete}");
         let _ = writeln!(trailer, "# artifact_truncated={artifact_truncated}");
@@ -955,6 +956,44 @@ fn attempt_failure_message(report: &QueryAttemptReport) -> String {
 /// projection. Its label still comes from the engine's one closed mapping.
 pub(super) fn attempt_outcome_label(outcome: &RuntimeTerminalOutcome) -> &'static str {
     outcome.stable_label()
+}
+
+/// The part of a rendered query stats payload that a stats action returns.
+///
+/// Payloads contain `#` header lines, optional sections opened by blank lines,
+/// and a trailer starting at `# incomplete=`. `Summary` retains the header
+/// and trailer. It projects the retained payload because sealed queries
+/// release the capture needed to render it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QueryStatsView {
+    Full,
+    Summary,
+}
+
+impl QueryStatsView {
+    pub(super) fn project(self, payload: Arc<[u8]>) -> Arc<[u8]> {
+        match self {
+            Self::Full => payload,
+            Self::Summary => Arc::from(query_stats_summary(&payload)),
+        }
+    }
+}
+
+const QUERY_STATS_TRAILER_FIRST_LINE_PREFIX: &[u8] = b"# incomplete=";
+
+fn query_stats_summary(payload: &[u8]) -> Vec<u8> {
+    let lines = payload.split_inclusive(|byte| *byte == b'\n').collect::<Vec<_>>();
+    let Some(sections_start) = lines.iter().position(|line| line.trim_ascii().is_empty()) else {
+        return payload.to_vec();
+    };
+    // Section text can contain the trailer prefix; the renderer's trailer
+    // starts at its last occurrence.
+    let trailer_start = lines
+        .iter()
+        .rposition(|line| line.starts_with(QUERY_STATS_TRAILER_FIRST_LINE_PREFIX))
+        .filter(|index| *index > sections_start)
+        .unwrap_or(lines.len());
+    lines[..sections_start].iter().chain(&lines[trailer_start..]).flat_map(|line| line.iter().copied()).collect()
 }
 
 pub(super) struct QueryStatsPayload {

@@ -22,6 +22,12 @@ pub struct SourceChunking {
 }
 
 impl SourceChunking {
+    /// The configured source-byte ceiling, or `None` when the default leaves
+    /// the target to the admitted grant.
+    pub fn explicit_max_source_chunk_bytes(&self) -> Option<NonZeroU64> {
+        (self.max_source_chunk_bytes != Self::DEFAULT_MAX_SOURCE_CHUNK_BYTES).then_some(self.max_source_chunk_bytes)
+    }
+
     /// Default source-byte setting, without a configured ceiling.
     pub const DEFAULT_MAX_SOURCE_CHUNK_BYTES: NonZeroU64 =
         NonZeroU64::new(MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES).unwrap();

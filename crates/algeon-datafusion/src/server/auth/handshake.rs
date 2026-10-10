@@ -12,7 +12,10 @@ use std::sync::LazyLock;
 
 use argon2::Params;
 use arrow_flight::{HandshakeRequest, HandshakeResponse};
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use base64::{
+    Engine, alphabet,
+    engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
+};
 use futures::stream::{self, BoxStream};
 use tokio::task::spawn_blocking;
 use tonic::{
@@ -24,6 +27,12 @@ use super::{AuthInterceptor, AuthMode, Principal, StaticUserConfig, hash_passwor
 
 const AUTHORIZATION_HEADER: &str = "authorization";
 const BASIC_PREFIX: &str = "Basic ";
+
+/// Accepts padded and unpadded input because the ADBC Go driver omits `=` padding.
+const BASIC_CREDENTIALS_BASE64: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
 
 /// Memory budget for handshakes verifying concurrently on the blocking pool.
 /// `password.rs` hashes with Argon2's default params (`m_cost` = 19 MiB per
@@ -153,7 +162,7 @@ fn extract_basic_credentials(metadata: &MetadataMap) -> Result<(String, String),
     let encoded = header
         .strip_prefix(BASIC_PREFIX)
         .ok_or_else(|| Status::unauthenticated("authorization header must use Basic scheme"))?;
-    let decoded = BASE64_STANDARD
+    let decoded = BASIC_CREDENTIALS_BASE64
         .decode(encoded.trim())
         .map_err(|_| Status::unauthenticated("authorization header base64 decode failed"))?;
     let decoded =
@@ -170,6 +179,8 @@ fn empty_response() -> Response<HandshakeResponseStream> {
 
 #[cfg(test)]
 mod tests {
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+
     use super::*;
     use crate::server::auth::TokenStore;
 
@@ -189,6 +200,17 @@ mod tests {
         let (user, pass) = extract_basic_credentials(&md).expect("decode");
         assert_eq!(user, "alice");
         assert_eq!(pass, "s3cret");
+    }
+
+    #[test]
+    fn extract_basic_credentials_accepts_padded_and_unpadded_base64() {
+        // `alice:nope` is 10 bytes, so the padded encoding ends in `==`.
+        let padded = make_metadata(Some("Basic YWxpY2U6bm9wZQ=="));
+        let unpadded = make_metadata(Some("Basic YWxpY2U6bm9wZQ"));
+        for md in [padded, unpadded] {
+            let (user, pass) = extract_basic_credentials(&md).expect("decode");
+            assert_eq!((user.as_str(), pass.as_str()), ("alice", "nope"));
+        }
     }
 
     #[test]

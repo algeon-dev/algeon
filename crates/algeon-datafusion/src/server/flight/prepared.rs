@@ -213,28 +213,16 @@ impl DatafusionAlgeonFlightSqlService {
                 "algeon_datafusion.server.flight.do_action_create_prepared_statement.verify_plan",
                 "Flight SQL prepared DML and COPY statements are not supported",
             )),
-            LogicalPlan::Statement(statement) => match statement {
-                Statement::SetVariable(_) | Statement::ResetVariable(_) => Ok(()),
-                Statement::TransactionStart(_) | Statement::TransactionEnd(_) => Err(Error::new(
-                    ErrorCode::UnsupportedOperator,
-                    "algeon_datafusion.server.flight.do_action_create_prepared_statement.verify_plan",
-                    "Flight SQL transactions are not supported",
-                )),
-                Statement::Prepare(_) | Statement::Execute(_) | Statement::Deallocate(_) => Err(Error::new(
-                    ErrorCode::InvalidRequest,
-                    "algeon_datafusion.server.flight.do_action_create_prepared_statement.verify_plan",
-                    "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL prepared statements",
-                )),
-            },
+            LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
+                statement,
+                "algeon_datafusion.server.flight.do_action_create_prepared_statement.verify_plan",
+            ),
             _ => Ok(()),
         }
     }
 
     pub(super) fn prepared_statement_has_result_set(&self, plan: &LogicalPlan) -> bool {
-        !matches!(
-            plan,
-            LogicalPlan::Ddl(_) | LogicalPlan::Statement(Statement::SetVariable(_) | Statement::ResetVariable(_))
-        )
+        !matches!(plan, LogicalPlan::Ddl(_))
     }
 }
 

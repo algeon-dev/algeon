@@ -212,17 +212,15 @@ fn gpu_exec_ms(report: &QueryAttemptReport) -> Option<f64> {
     Some((end.saturating_sub(start)) as f64 / 1_000_000.0)
 }
 
-/// Order-sensitive fingerprint: the sweep asserts a global order, so row
-/// sequence is hashed as content. Each batch is hashed column by column, so for
-/// outputs with more than one column, a different batch split can change the
-/// fingerprint.
+/// Hashes the ordered row sequence in column order, independently of batch
+/// boundaries, including empty batches.
 fn fingerprint_ordered(batches: &[RecordBatch]) -> Result<String, Box<dyn Error>> {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("algeon-bench-sort-sweep-ordered-v1");
+    hasher.update_field("algeon-bench-sort-sweep-ordered-v2");
     let mut rows = 0_usize;
     for batch in batches {
-        for column in batch.columns() {
-            for row in 0..batch.num_rows() {
+        for row in 0..batch.num_rows() {
+            for column in batch.columns() {
                 hasher.update_field(
                     &array_value_to_string(column, row).map_err(|error| format!("fingerprint render: {error}"))?,
                 );
@@ -597,16 +595,4 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn summary_reports_median_p95_and_stddev() {
-        let values: Vec<f64> = (1..=10).map(f64::from).collect();
-        let (median, p95, stddev) = summarize(&values);
-        assert_eq!(median, 6.0);
-        assert_eq!(p95, 10.0);
-        assert!((stddev - 2.8722813232690143).abs() < 1e-9, "stddev={stddev}");
-        assert!(percentile(&[], 0.5).is_nan(), "empty samples stay NaN, never zero");
-    }
-}
+mod tests;

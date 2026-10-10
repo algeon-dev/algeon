@@ -77,7 +77,9 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true, optional = true }
 toml = { version = "1.1", optional = true }
-tonic = { workspace = true, optional = true }
+# `tls-ring` reuses the ring provider rustls already builds with. A second
+# provider in the graph makes rustls require a process-wide default.
+tonic = { workspace = true, optional = true, features = ["tls-ring"] }
 tracing = { workspace = true }
 url = "2.5"
 uuid = { version = "1.23", features = ["v4"], optional = true }
@@ -92,6 +94,8 @@ query-engine = { workspace = true, features = ["test-hooks"] }
 workloads = { workspace = true }
 hex = "0.4"
 proptest = "1.7"
+# Generates the TLS listener tests' PKI; `ring` keeps the crypto provider single.
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 # Paused-clock tests prove a wait wakes without a timer.

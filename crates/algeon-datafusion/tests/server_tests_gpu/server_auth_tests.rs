@@ -19,25 +19,34 @@ use arrow_flight::{
         ProstMessageExt, TicketStatementQuery, client::FlightSqlServiceClient,
     },
 };
+use futures::TryStreamExt;
 use prost::Message;
-use tokio::time::sleep;
+use rcgen::{
+    BasicConstraints, CertificateParams, CertifiedIssuer, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+    KeyUsagePurpose,
+};
+use tokio::time::{sleep, timeout};
 use tonic::{
     Code,
-    transport::{Channel, Endpoint},
+    transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
 
 fn declare_test_gpu_ownership(config: &mut ServerConfig) {
     config.gpu_memory_ownership =
-        config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
+        config.gpu_devices().into_iter().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
 }
 
 fn test_server_config() -> ServerConfig {
+    test_server_config_with_toml("")
+}
+
+fn test_server_config_with_toml(extra_toml: &str) -> ServerConfig {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("server.toml");
-    std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
+    std::fs::write(&path, format!("[[admission.device_profiles]]\ndevice_ordinal = 0\n\n{extra_toml}"))
+        .expect("write server config");
     let path = path.to_string_lossy().into_owned();
-    ServerConfig::from_env_get(|name| (name == ALGEON_SERVER_CONFIG_FILE_ENV).then(|| path.clone()))
-        .expect("explicit test device profile")
+    ServerConfig::from_vars([(ALGEON_SERVER_CONFIG_FILE_ENV, path)]).expect("explicit test device profile")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -212,6 +221,131 @@ async fn one_user_cannot_use_another_users_prepared_statement() {
     own.expect("the issuing principal still uses its own prepared statement");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tls_listener_serves_tls_clients_and_rejects_plaintext_clients() {
+    let pki = TestPki::new();
+    let (listener, addr) = free_local_addr();
+    let mut config = tls_server_config(&pki, false);
+    declare_test_gpu_ownership(&mut config);
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+
+    let tls = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(&pki.ca_pem)).domain_name("localhost");
+    let mut client = connect_endpoint_with_retry(tls_endpoint(addr, tls), addr).await;
+    let rows = select_one_rows(&mut client).await.expect("a TLS client completes a query");
+    // The TLS client has proven the server is serving, so a plaintext failure
+    // below cannot come from a server that is still starting.
+    let plaintext = timeout(Duration::from_secs(15), plaintext_query(addr)).await;
+    server.abort();
+
+    assert_eq!(rows, 1);
+    let outcome = plaintext.expect("the server must refuse a plaintext client without hanging");
+    assert!(outcome.is_err(), "a plaintext client must not complete a query against a TLS listener");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mtls_listener_requires_a_client_certificate() {
+    let pki = TestPki::new();
+    let (listener, addr) = free_local_addr();
+    let mut config = tls_server_config(&pki, true);
+    declare_test_gpu_ownership(&mut config);
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+
+    let trusted_server =
+        ClientTlsConfig::new().ca_certificate(Certificate::from_pem(&pki.ca_pem)).domain_name("localhost");
+    let with_identity = trusted_server.clone().identity(Identity::from_pem(&pki.client_cert_pem, &pki.client_key_pem));
+    let mut client = connect_endpoint_with_retry(tls_endpoint(addr, with_identity), addr).await;
+    let rows = select_one_rows(&mut client).await.expect("a client with a CA-signed certificate completes a query");
+    // The identified client has proven the server is serving, so the
+    // certificate-less failure below is the server's verdict.
+    let anonymous = timeout(Duration::from_secs(15), anonymous_tls_query(addr, trusted_server)).await;
+    server.abort();
+
+    assert_eq!(rows, 1);
+    let outcome = anonymous.expect("the server must refuse a client without a certificate without hanging");
+    assert!(outcome.is_err(), "a client without a certificate must not complete a query against an mTLS listener");
+}
+
+async fn select_one_rows(client: &mut FlightSqlServiceClient<Channel>) -> Result<usize, FlightError> {
+    let info = client.execute("select 1".to_string(), None).await?;
+    let ticket = info.endpoint[0].ticket.clone().expect("statement ticket");
+    let batches: Vec<_> = client.do_get(ticket).await?.try_collect().await?;
+    Ok(batches.iter().map(|batch| batch.num_rows()).sum())
+}
+
+async fn plaintext_query(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    let channel = Endpoint::from_shared(format!("http://{addr}"))?.connect().await?;
+    select_one_rows(&mut FlightSqlServiceClient::new(channel)).await?;
+    Ok(())
+}
+
+async fn anonymous_tls_query(addr: SocketAddr, tls: ClientTlsConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let channel = tls_endpoint(addr, tls).connect().await?;
+    select_one_rows(&mut FlightSqlServiceClient::new(channel)).await?;
+    Ok(())
+}
+
+fn tls_endpoint(addr: SocketAddr, tls: ClientTlsConfig) -> Endpoint {
+    Endpoint::from_shared(format!("https://{addr}")).expect("endpoint URI").tls_config(tls).expect("client TLS config")
+}
+
+/// Generates certificates per test to avoid expiring checked-in fixtures.
+struct TestPki {
+    ca_pem: String,
+    server_cert_pem: String,
+    server_key_pem: String,
+    client_cert_pem: String,
+    client_key_pem: String,
+}
+
+impl TestPki {
+    fn new() -> Self {
+        let mut ca_params = CertificateParams::new(Vec::new()).expect("CA params");
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        ca_params.distinguished_name.push(DnType::CommonName, "algeon-test-ca");
+        let ca = CertifiedIssuer::self_signed(ca_params, KeyPair::generate().expect("CA key")).expect("CA certificate");
+        let (server_cert_pem, server_key_pem) =
+            Self::leaf(&ca, "algeon-test-server", vec!["localhost".to_string()], ExtendedKeyUsagePurpose::ServerAuth);
+        let (client_cert_pem, client_key_pem) =
+            Self::leaf(&ca, "algeon-test-client", Vec::new(), ExtendedKeyUsagePurpose::ClientAuth);
+        Self { ca_pem: ca.pem(), server_cert_pem, server_key_pem, client_cert_pem, client_key_pem }
+    }
+
+    fn leaf(
+        ca: &CertifiedIssuer<'_, KeyPair>,
+        common_name: &str,
+        names: Vec<String>,
+        usage: ExtendedKeyUsagePurpose,
+    ) -> (String, String) {
+        let mut params = CertificateParams::new(names).expect("leaf params");
+        params.extended_key_usages = vec![usage];
+        params.distinguished_name.push(DnType::CommonName, common_name);
+        let key = KeyPair::generate().expect("leaf key");
+        let cert = params.signed_by(&key, ca).expect("leaf certificate");
+        (cert.pem(), key.serialize_pem())
+    }
+}
+
+fn tls_server_config(pki: &TestPki, require_client_certificate: bool) -> ServerConfig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let write = |name: &str, pem: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, pem).expect("write PEM");
+        path
+    };
+    let cert = write("server.pem", &pki.server_cert_pem);
+    let key = write("server.key", &pki.server_key_pem);
+    let mut toml = format!("[tls]\ncert_path = {cert:?}\nkey_path = {key:?}\n");
+    if require_client_certificate {
+        toml.push_str(&format!("client_ca_path = {:?}\n", write("clients.pem", &pki.ca_pem)));
+    }
+    test_server_config_with_toml(&toml)
+}
+
 /// Ask for a prepared statement's `FlightInfo` over the raw Flight channel,
 /// carrying the client's own bearer token. The Flight SQL client builds this
 /// request only from a `PreparedStatement` it owns, which is what this test
@@ -315,11 +449,14 @@ fn free_local_addr() -> (TcpListener, SocketAddr) {
 }
 
 async fn connect_with_retry(addr: SocketAddr) -> FlightSqlServiceClient<Channel> {
-    let uri = format!("http://{addr}");
+    connect_endpoint_with_retry(Endpoint::from_shared(format!("http://{addr}")).unwrap(), addr).await
+}
+
+async fn connect_endpoint_with_retry(endpoint: Endpoint, addr: SocketAddr) -> FlightSqlServiceClient<Channel> {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut backoff = Duration::from_millis(10);
     loop {
-        match Endpoint::from_shared(uri.clone()).unwrap().connect().await {
+        match endpoint.connect().await {
             Ok(channel) => return FlightSqlServiceClient::new(channel),
             Err(error) => {
                 if Instant::now() >= deadline {

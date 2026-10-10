@@ -54,7 +54,6 @@ pub(super) async fn spawn_server(
         ("TOKIO_WORKER_THREADS".to_string(), "1".to_string()),
         ("ALGEON_SERVER_BIND".to_string(), addr.to_string()),
         ("ALGEON_SERVER_LOG".to_string(), "info".to_string()),
-        ("ALGEON_SERVER_GPU_DEVICES".to_string(), params.device.to_string()),
         ("ALGEON_SERVER_CONFIG_FILE".to_string(), config_path.to_string_lossy().into_owned()),
         ("ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS".to_string(), params.query_timeout.as_millis().to_string()),
         ("ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS".to_string(), params.poll_timeout.as_secs().to_string()),

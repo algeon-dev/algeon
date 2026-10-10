@@ -1,15 +1,18 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt, fs,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use query_planning::{execution_contracts::SourceChunkPlanningMode, mode::StatisticalAggregateExecutionMode};
 use query_runtime::runtime::SourceSchedulerPolicy;
 use serde::Deserialize;
+use tonic::transport::ServerTlsConfig;
 
 use super::{
-    auth::AuthConfig,
+    auth::{AuthConfig, AuthMode},
     error::{Result, ServerError},
 };
 use crate::server::{
@@ -23,118 +26,29 @@ use crate::server::{
 
 mod admission;
 mod cugraph;
+mod effective;
 mod env;
 mod file;
 mod models;
 mod native;
 mod observability;
-mod s3;
-mod workspace;
+mod tls;
 
-pub use admission::{
-    ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
-    ALGEON_SERVER_GPU_DEVICES_ENV,
-};
-use admission::{server_device_profiles, server_gpu_devices, server_queue_policy};
+use admission::{server_device_profiles, server_queue_policy};
+pub use cugraph::CugraphServerConfig;
 use cugraph::cugraph_config;
-pub use cugraph::{
-    ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, ALGEON_SERVER_CUGRAPH_ENABLED_ENV, CugraphServerConfig,
-};
-pub use env::{
-    ALGEON_SERVER_BIND_ENV, ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV,
-    ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV, ALGEON_SERVER_LOG_ENV, ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
-};
-use env::{DEFAULT_BIND_ADDR, DEFAULT_STATEMENT_TICKET_TTL_SECS, EnvValues};
-use file::{ServerCugraphFileConfig, ServerFileOverlay, load_overlay};
+pub(crate) use effective::non_default_settings;
+pub use env::{ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_LOG_ENV};
+use env::{EnvOverride, ServerEnvironment};
+use file::{ServerFile, ServerTlsFileConfig, load_file};
 use models::models_config;
 use native::native_optimizer_config;
-pub use native::{
-    ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_NATIVE_CONFIG_OPTIONS,
-    ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV, ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-    ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-    ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-    ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, AlgeonServerNativeConfigOption,
-    ServerNativeConfigScope,
-};
+pub use observability::ServerObservabilityConfig;
 use observability::server_observability_config;
-pub use observability::{
-    ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
-    ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
-    ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
-    ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
-    ServerObservabilityConfig,
-};
-use s3::s3_storage;
-pub use s3::{
-    ALGEON_SERVER_S3_ENDPOINT_ENV, ALGEON_SERVER_S3_PATH_STYLE_ENV, ALGEON_SERVER_S3_REGION_ENV,
-    ALGEON_SERVER_S3_UNSIGNED_ENV,
-};
-use workspace::workspace_overlay_config;
-pub use workspace::{
-    ALGEON_SERVER_WORKSPACE_BACKING_ALIASES_ENV, ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
-    ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, ALGEON_SERVER_WORKSPACE_CATALOG_ENV,
-    ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, WorkspaceOverlayConfig,
-};
+use tls::tls_config;
 
-// The resource-only admission contract has one configuration surface. A
-// deployment that still sets one of these removed switches is rejected at
-// load time, so it never starts with different defaults. Keep this list
-// centrally adjacent to the first env read so every server configuration path
-// applies the same migration gate.
-const REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
-    "ALGEON_SERVER_ADMISSION_MAX_ACTIVE_ATTEMPTS_PER_DEVICE",
-    "ALGEON_SERVER_ADMISSION_ATTEMPT_FLOOR_BYTES",
-    "ALGEON_SERVER_ADMISSION_SOURCE_WORK_PER_ATTEMPT",
-    "ALGEON_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER",
-    "ALGEON_SERVER_ADMISSION_WORKLOAD_PROFILE",
-    "ALGEON_SERVER_ADMISSION_PINNED_DEVICE",
-    "ALGEON_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE",
-    "ALGEON_SERVER_ADMISSION_WAIT_TIMEOUT_MS",
-    "ALGEON_SERVER_MAX_CONCURRENT_QUERIES",
-    "ALGEON_SERVER_MAX_IN_FLIGHT",
-    "ALGEON_SERVER_NATIVE_MEMORY_POLICY",
-    "ALGEON_SERVER_NATIVE_PIPELINE_EXECUTION_MODE",
-    "ALGEON_SERVER_NATIVE_DEVICE_BUDGET_BYTES",
-    "ALGEON_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS",
-    "ALGEON_SERVER_CUGRAPH_DIRECTED",
-    "ALGEON_SERVER_CUGRAPH_RENUMBER",
-    "ALGEON_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES",
-    "ALGEON_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES",
-    "ALGEON_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER",
-    "ALGEON_SERVER_DEVICE_BUDGET_FRACTION",
-];
-
-// `native_required` replaced the separate completed-plan requirement; a
-// deployment that still sets it would otherwise allow DataFusion CPU plans.
-const REMOVED_EXECUTION_POLICY_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &["ALGEON_SERVER_FINAL_PLAN_REQUIREMENT"];
-
-// The Iceberg catalog integration was deleted from the server. Its settings
-// fail closed for the same reason as the legacy switches: a deployment that
-// still sets them would otherwise start without the tables it expects.
-const REMOVED_ICEBERG_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
-    "ALGEON_ICEBERG_CATALOG_KIND",
-    "ALGEON_ICEBERG_CATALOG_NAME",
-    "ALGEON_ICEBERG_NAMESPACE",
-    "ALGEON_ICEBERG_TABLES",
-    "ALGEON_ICEBERG_GLUE_CATALOG_NAME",
-    "ALGEON_ICEBERG_WAREHOUSE",
-    "ALGEON_ICEBERG_GLUE_CATALOG_ID",
-    "ALGEON_ICEBERG_GLUE_URI",
-    "ALGEON_ICEBERG_REST_URI",
-    "ALGEON_ICEBERG_REST_PREFIX",
-    "ALGEON_ICEBERG_REST_TOKEN",
-    "ALGEON_ICEBERG_REST_CATALOG_HANDLE",
-    "ALGEON_ICEBERG_S3_ENDPOINT",
-    "ALGEON_ICEBERG_S3_REGION",
-    "ALGEON_ICEBERG_S3_PATH_STYLE",
-    "ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE",
-    "ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS",
-    "ALGEON_ICEBERG_FOOTER_PRUNING",
-    "ALGEON_LAKEHOUSE_CACHE_ROOT",
-    "ALGEON_LAKEHOUSE_CACHE_READ",
-    "ALGEON_LAKEHOUSE_CACHE_POLICY",
-    "ALGEON_LAKEHOUSE_CACHE_MAX_BYTES",
-];
+const DEFAULT_BIND_ADDR: &str = "127.0.0.1:50051";
+const DEFAULT_STATEMENT_TICKET_TTL_SECS: u64 = 300;
 
 /// HTTP/2 transport loss detection. Acknowledging clients may retain unread results.
 #[derive(Debug, Clone, Copy)]
@@ -152,19 +66,24 @@ impl Default for Http2Keepalive {
 }
 
 #[derive(Debug, Clone)]
+/// Flight SQL deployment configuration for transport, GPU resources, and session features.
+///
+/// Loading from TOML and the environment validates settings without claiming
+/// GPU ownership. The launcher or embedding application supplies
+/// [`Self::gpu_memory_ownership`] before backend construction.
 pub struct ServerConfig {
+    /// Address bound when no prebound listener is injected.
     pub bind_addr: SocketAddr,
     /// Queue-only admission policy. Device-local bounds live in
     /// `gpu_device_profiles` and are never duplicated here.
     pub queue_policy: AlgeonGpuQueuePolicy,
-    /// Complete ordinal-keyed resource envelopes for the selected GPUs.
-    /// The server never broadcasts a scalar admission setting across this
-    /// collection.
+    /// One resource profile per selected GPU, in selection order. The
+    /// profile ordinals are the selected GPUs; see [`Self::gpu_devices`].
+    /// The server never applies one scalar admission setting to several GPUs.
     pub gpu_device_profiles: Vec<AlgeonGpuDeviceProfile>,
-    pub gpu_devices: Vec<usize>,
     /// Exact deployment ownership declaration consumed when a bounded GPU
-    /// backend is constructed. Configuration loading intentionally leaves this
-    /// empty; the embedding/launch profile must make the ownership promise.
+    /// backend is constructed. Configuration loading leaves this empty; the
+    /// embedding or launch profile makes the ownership promise.
     pub gpu_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
     /// Wall-clock time a planned Flight SQL statement ticket may wait for
     /// `DoGet`. Expired tickets are dropped; GPU admission is acquired later
@@ -174,18 +93,35 @@ pub struct ServerConfig {
     pub http2_keepalive: Http2Keepalive,
     /// Bounded native runtime-artifact capture and sealed retention policy.
     pub observability: ServerObservabilityConfig,
+    /// Native optimizer and execution settings installed in server sessions.
     pub native_optimizer_config: AlgeonNativeOptimizerConfig,
-    /// Authentication mode applied to incoming Flight SQL RPCs. Loaded from
-    /// the optional TOML overlay and disabled by default.
+    /// Authentication mode applied to incoming Flight SQL RPCs, from the
+    /// `[auth]` table and disabled by default.
     pub auth: AuthConfig,
-    /// Optional mutable workspace overlay that can read through to a
-    /// configured source schema while keeping all DDL local to the workspace.
-    pub workspace: Option<WorkspaceOverlayConfig>,
+    /// cuGraph SQL registration and staging settings; `None` leaves its SQL family unregistered.
     pub cugraph: Option<CugraphServerConfig>,
     /// Models root for `cuml_forest_predict`, from the `[models]` table.
     /// `None` leaves the function unavailable with `model_root_unconfigured`.
     pub models: Option<CumlModelStoreConfig>,
+    /// TLS for the Flight SQL listener, from the `[tls]` table. `None` serves
+    /// plaintext. The value must carry an identity, because tonic panics when
+    /// it builds a listener from a config without one. A client CA makes the
+    /// listener require and verify client certificates.
+    /// [`FlightSqlServerBuilder::build`] rejects unparsable PEM or a key that
+    /// does not match the certificate with `invalid_configuration` before it
+    /// builds a GPU backend.
+    ///
+    /// [`FlightSqlServerBuilder::build`]: crate::server::FlightSqlServerBuilder::build
+    pub tls: Option<ServerTlsConfig>,
+    /// SQL file whose DDL statements [`FlightSqlServerBuilder::build`] runs on
+    /// the shared session, one statement at a time, before the server
+    /// accepts connections. Any statement that is not DDL, or that fails,
+    /// fails the build with `invalid_configuration`.
+    ///
+    /// [`FlightSqlServerBuilder::build`]: crate::server::FlightSqlServerBuilder::build
+    pub init_sql: Option<PathBuf>,
 }
+
 impl ServerConfig {
     /// Attach the deployment ownership promise required by bounded backend
     /// construction. The backend validates this declaration against
@@ -198,94 +134,78 @@ impl ServerConfig {
         self
     }
 
-    pub fn from_env() -> Result<Self> {
-        Self::from_env_get(|name| std::env::var(name).ok())
+    /// The selected CUDA ordinals: the ordinals of
+    /// [`Self::gpu_device_profiles`], in profile order.
+    pub fn gpu_devices(&self) -> Vec<usize> {
+        self.gpu_device_profiles.iter().map(AlgeonGpuDeviceProfile::device_ordinal).collect()
     }
 
-    pub fn from_env_get(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
-        let mut values = EnvValues::new(&mut get);
-        reject_removed_server_environment(
-            &mut values,
-            REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES,
-            "this server setting was removed by the resource-only admission contract; remove it",
-        )?;
-        let bind_addr = values.socket_addr(ALGEON_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
-        let overlay_path = values.string(ALGEON_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
-        let overlay = match overlay_path {
-            Some(path) => load_overlay(&path)?,
-            None => ServerFileOverlay::default(),
-        };
-        let gpu_devices = server_gpu_devices(&mut values)?;
-        let queue_policy = server_queue_policy(&mut values, &overlay.admission)?;
-        let statement_ticket_ttl = checked_config_duration(
-            ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
-            values.positive_u64(ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
+    /// Loads the configuration from the process environment and the TOML
+    /// file it names; see [`LoadedServerConfig::from_vars`].
+    pub fn from_env() -> Result<Self> {
+        LoadedServerConfig::from_env().map(|loaded| loaded.config)
+    }
+
+    /// Loads the configuration from `vars` in place of the process
+    /// environment; see [`LoadedServerConfig::from_vars`].
+    pub fn from_vars<K, V>(vars: impl IntoIterator<Item = (K, V)>) -> Result<Self>
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        LoadedServerConfig::from_vars(vars).map(|loaded| loaded.config)
+    }
+
+    fn from_file(file: ServerFile, sources: &ConfigSources) -> Result<(Self, bool)> {
+        let bind_addr = parse_bind_addr(file.bind.as_deref().unwrap_or(DEFAULT_BIND_ADDR), sources)?;
+        let statement_ticket_ttl = positive_secs(
+            sources,
+            "statement_ticket_ttl_secs",
+            file.statement_ticket_ttl_secs.unwrap_or(DEFAULT_STATEMENT_TICKET_TTL_SECS),
         )?;
         let keepalive_defaults = Http2Keepalive::default();
         let http2_keepalive = Http2Keepalive {
-            interval: checked_config_duration(
-                ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV,
-                values.positive_u64(
-                    ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV,
-                    keepalive_defaults.interval.as_secs(),
-                )?,
+            interval: positive_secs(
+                sources,
+                "http2_keepalive_interval_secs",
+                file.http2_keepalive_interval_secs.unwrap_or(keepalive_defaults.interval.as_secs()),
             )?,
-            timeout: checked_config_duration(
-                ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV,
-                values.positive_u64(
-                    ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV,
-                    keepalive_defaults.timeout.as_secs(),
-                )?,
+            timeout: positive_secs(
+                sources,
+                "http2_keepalive_timeout_secs",
+                file.http2_keepalive_timeout_secs.unwrap_or(keepalive_defaults.timeout.as_secs()),
             )?,
         };
-        let observability = server_observability_config(&mut values, &overlay.observability)?;
-        reject_removed_server_environment(
-            &mut values,
-            REMOVED_EXECUTION_POLICY_SERVER_ENVIRONMENT_VARIABLES,
-            "replaced by ALGEON_SERVER_EXECUTION_MODE=native_required; remove it",
-        )?;
-        let native_optimizer_config = native_optimizer_config(&mut values, &overlay.native)?;
-        let native_optimizer_config = match s3_storage(&mut values, overlay.s3.as_ref())? {
-            Some(storage) => {
-                let execution = native_optimizer_config.native_execution_config().clone().with_s3_storage(storage);
-                native_optimizer_config.with_native_execution_config(execution)
-            },
-            None => native_optimizer_config,
-        };
-        let gpu_device_profiles = server_device_profiles(&overlay.admission, &gpu_devices)?;
-        reject_removed_server_environment(
-            &mut values,
-            REMOVED_ICEBERG_SERVER_ENVIRONMENT_VARIABLES,
-            "this server setting belonged to the removed Iceberg integration; remove it",
-        )?;
-
-        let cugraph = cugraph_config(&mut values, &overlay.cugraph)?;
-
-        let workspace = workspace_overlay_config(&mut values)?;
-        let models = models_config(&overlay.models)?;
-
-        overlay.auth.mode.validate()?;
+        let queue_policy = server_queue_policy(&file.admission, sources)?;
+        let (gpu_device_profiles, device_profiles_defaulted) = server_device_profiles(&file.admission)?;
+        let observability = server_observability_config(&file.observability, sources)?;
+        let native_optimizer_config = native_optimizer_config(&file.native, sources)?;
+        let cugraph = cugraph_config(&file.cugraph, sources)?;
+        let models = models_config(&file.models, sources)?;
+        let tls = tls_config(file.tls.as_ref(), sources)?;
+        let init_sql = file.init_sql.map(|path| readable_init_sql(path, sources)).transpose()?;
+        file.auth.mode.validate()?;
 
         let config = Self {
             bind_addr,
             queue_policy,
             gpu_device_profiles,
-            gpu_devices,
             gpu_memory_ownership: Vec::new(),
             statement_ticket_ttl,
             http2_keepalive,
             observability,
             native_optimizer_config,
-            auth: overlay.auth,
-            workspace,
+            auth: file.auth,
             cugraph,
             models,
+            tls,
+            init_sql,
         };
         config.validate_gpu_device_profiles()?;
-        config.validate_admission_within_live_query_capacity()?;
+        config.check_admission_within_live_query_capacity(sources)?;
         // Reject a default capture budget that overflows at load time.
         config.active_logical_capture_budget_bytes()?;
-        Ok(config)
+        Ok((config, device_profiles_defaulted))
     }
 
     /// Logical capture budget of the query coordinator under this config's
@@ -309,6 +229,10 @@ impl ServerConfig {
     /// refuse a statement while admission has room. Config loading and
     /// `FlightSqlServerBuilder::build` both run this one check.
     pub(crate) fn validate_admission_within_live_query_capacity(&self) -> Result<()> {
+        self.check_admission_within_live_query_capacity(&ConfigSources::default())
+    }
+
+    fn check_admission_within_live_query_capacity(&self, sources: &ConfigSources) -> Result<()> {
         let admission_live_attempts = admission_live_attempts(&self.queue_policy, &self.gpu_device_profiles);
         let max_live_queries = QueryCoordinatorConfig::MAX_LIVE_QUERIES;
         let capacity = u64::try_from(max_live_queries).unwrap_or(u64::MAX);
@@ -322,57 +246,29 @@ impl ServerConfig {
         let field = if active_attempts >= capacity {
             "admission.device_profiles.max_active_attempts"
         } else {
-            ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV
+            "admission.max_queued_attempts"
         };
-        Err(ServerError::invalid_config(
-            field,
-            "admission bounds must hold fewer attempts than the server registers live queries",
-        )
-        .with_fact("reason", "admission_exceeds_live_query_capacity")
-        .with_fact("admission_live_attempts", admission_live_attempts)
-        .with_fact("max_live_queries", max_live_queries))
+        Err(sources
+            .invalid(field, format!("leaves no room for other statements: the admission bounds hold {admission_live_attempts} attempts at once and the server registers at most {max_live_queries} live statements"))
+            .with_fact("reason", "admission_exceeds_live_query_capacity")
+            .with_fact("admission_live_attempts", admission_live_attempts)
+            .with_fact("max_live_queries", max_live_queries))
     }
 
-    /// Checks that the public config struct still carries one profile for each
-    /// selected ordinal. `from_env_get` already applies this check while
-    /// parsing TOML, but callers can construct `ServerConfig` directly before
-    /// injecting or constructing a Flight backend.
+    /// Rejects two profiles for one GPU. Loading already applies this check,
+    /// but callers can construct `ServerConfig` directly before injecting or
+    /// constructing a Flight backend.
     pub(crate) fn validate_gpu_device_profiles(&self) -> Result<()> {
-        let selected = self.gpu_devices.iter().copied().collect::<std::collections::BTreeSet<_>>();
-        if selected.len() != self.gpu_devices.len() {
-            return Err(ServerError::invalid_config(
-                ALGEON_SERVER_GPU_DEVICES_ENV,
-                "must not contain duplicate device ordinals",
-            ));
-        }
-        let mut configured = std::collections::BTreeSet::new();
+        let mut configured = BTreeSet::new();
         for profile in &self.gpu_device_profiles {
             if !configured.insert(profile.device_ordinal()) {
                 return Err(ServerError::invalid_config(
                     "admission.device_profiles",
-                    format!("contains duplicate profile for device ordinal {}", profile.device_ordinal()),
+                    format!("has two entries for GPU {}; give each GPU one entry", profile.device_ordinal()),
                 )
                 .with_fact("reason", "duplicate_device")
                 .with_fact("device_ordinal", profile.device_ordinal()));
             }
-        }
-        let missing = selected.difference(&configured).copied().collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(ServerError::invalid_config(
-                "admission.device_profiles",
-                "must configure every device selected by ALGEON_SERVER_GPU_DEVICES",
-            )
-            .with_fact("reason", "missing_devices")
-            .with_fact("device_ordinals", format_device_ordinals(&missing)));
-        }
-        let extra = configured.difference(&selected).copied().collect::<Vec<_>>();
-        if !extra.is_empty() {
-            return Err(ServerError::invalid_config(
-                "admission.device_profiles",
-                "must not configure a device outside ALGEON_SERVER_GPU_DEVICES",
-            )
-            .with_fact("reason", "unconfigured_devices")
-            .with_fact("device_ordinals", format_device_ordinals(&extra)));
         }
         Ok(())
     }
@@ -380,8 +276,8 @@ impl ServerConfig {
     pub(crate) fn resolve_gpu_devices(&self) -> Result<Vec<AlgeonGpuDeviceConfig>> {
         self.validate_gpu_device_profiles()?;
 
-        let selected = self.gpu_devices.iter().copied().collect::<std::collections::BTreeSet<_>>();
-        let mut declared = std::collections::BTreeMap::new();
+        let selected = self.gpu_devices().into_iter().collect::<BTreeSet<_>>();
+        let mut declared = BTreeMap::new();
         for (ordinal, ownership) in self.gpu_memory_ownership.iter().copied() {
             if declared.insert(ordinal, ownership).is_some() {
                 return Err(ServerError::invalid_config(
@@ -392,7 +288,7 @@ impl ServerConfig {
                 .with_fact("device_ordinal", ordinal));
             }
         }
-        let declared_ordinals = declared.keys().copied().collect::<std::collections::BTreeSet<_>>();
+        let declared_ordinals = declared.keys().copied().collect::<BTreeSet<_>>();
         let missing = selected.difference(&declared_ordinals).copied().collect::<Vec<_>>();
         if !missing.is_empty() {
             return Err(ServerError::invalid_config(
@@ -424,6 +320,254 @@ impl ServerConfig {
     }
 }
 
+/// Where one configuration setting took its value from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConfigValueSource {
+    /// No file entry and no environment override; the built-in default applies.
+    Default,
+    /// The TOML file named by `--config` or `ALGEON_SERVER_CONFIG_FILE`.
+    File,
+    /// The named `ALGEON_SERVER_*` environment variable.
+    Env(String),
+}
+
+impl fmt::Display for ConfigValueSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Default => f.write_str("default"),
+            Self::File => f.write_str("file"),
+            Self::Env(name) => write!(f, "env {name}"),
+        }
+    }
+}
+
+/// A validated [`ServerConfig`] together with where each setting came from.
+///
+/// The loader starts from built-in defaults, applies the TOML file named by
+/// `ALGEON_SERVER_CONFIG_FILE`, then applies environment overrides. Each
+/// scalar TOML leaf has one override named `ALGEON_SERVER_` followed by its
+/// path in upper case with `.` written as `_`; `native.execution_mode` is
+/// `ALGEON_SERVER_NATIVE_EXECUTION_MODE`. Arrays of tables
+/// (`admission.device_profiles`, `auth.mode.users`) are file-only. Any other
+/// `ALGEON_SERVER_*` variable fails loading with `invalid_configuration`,
+/// as an unknown TOML field does, and the error names the closest known
+/// variable.
+#[derive(Debug, Clone)]
+pub struct LoadedServerConfig {
+    /// The validated configuration. Ownership declarations are still empty.
+    pub config: ServerConfig,
+    sources: ConfigSources,
+}
+
+impl LoadedServerConfig {
+    /// Loads the configuration from the process environment and the TOML
+    /// file it names.
+    ///
+    /// Returns `invalid_configuration` for malformed values, unknown
+    /// `ALGEON_SERVER_*` variables, invalid file content, unreadable TLS or
+    /// `init_sql` files, or a non-UTF-8 `ALGEON_SERVER_*` value. TLS identity
+    /// parsing and key matching occur at server build.
+    pub fn from_env() -> Result<Self> {
+        let mut vars = Vec::new();
+        for (name, value) in std::env::vars_os() {
+            let Some(name) = name.to_str().filter(|name| name.starts_with("ALGEON_SERVER_")) else {
+                continue;
+            };
+            let value = value.into_string().map_err(|_| {
+                ServerError::configuration(format!("environment variable {name} must be valid UTF-8"))
+                    .with_fact("config_env", name)
+            })?;
+            vars.push((name.to_string(), value));
+        }
+        Self::from_vars(vars)
+    }
+
+    /// Loads the configuration from `vars`, a complete set of environment
+    /// variables, in place of the process environment. Variables without the
+    /// `ALGEON_SERVER_` prefix are ignored. File I/O still happens for the
+    /// config file, TLS files, the models root, and `init_sql`.
+    pub fn from_vars<K, V>(vars: impl IntoIterator<Item = (K, V)>) -> Result<Self>
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let environment =
+            ServerEnvironment::from_vars(vars.into_iter().map(|(name, value)| (name.into(), value.into())))?;
+        let file_table = match &environment.config_file {
+            Some(path) => load_file(path)?,
+            None => toml::Table::new(),
+        };
+        let mut merged = file_table.clone();
+        environment.apply_to(&mut merged);
+        let file = merged.try_into::<ServerFile>().map_err(|error| {
+            let detail = error.to_string();
+            let names =
+                environment.overrides.values().map(|value| value.env_name.as_str()).collect::<Vec<_>>().join(", ");
+            ServerError::configuration_with_source(
+                format!("the environment overrides {names} leave an incomplete configuration table: {detail}"),
+                error,
+            )
+        })?;
+        let mut sources = ConfigSources {
+            config_file: environment.config_file,
+            file_table,
+            env_overrides: environment.overrides,
+            tls: file.tls.clone(),
+            device_profiles_defaulted: false,
+        };
+        let (config, device_profiles_defaulted) = ServerConfig::from_file(file, &sources)?;
+        sources.device_profiles_defaulted = device_profiles_defaulted;
+        if device_profiles_defaulted {
+            tracing::info!(
+                device_ordinals = %format_device_ordinals(&config.gpu_devices()),
+                "no [[admission.device_profiles]] entry; using one default profile for GPU 0"
+            );
+        }
+        Ok(Self { config, sources })
+    }
+
+    /// The TOML file the configuration was read from, if any.
+    pub fn config_file(&self) -> Option<&Path> {
+        self.sources.config_file.as_deref()
+    }
+
+    /// Where the setting at the TOML `path`, such as
+    /// `native.execution_mode`, took its value from.
+    pub fn source(&self, path: &str) -> ConfigValueSource {
+        self.sources.source(path)
+    }
+
+    /// Whether the file had no `[[admission.device_profiles]]` entry, so the
+    /// configuration holds one default profile for GPU 0.
+    pub fn device_profiles_defaulted(&self) -> bool {
+        self.sources.device_profiles_defaulted
+    }
+
+    /// The effective configuration as TOML text, every setting followed by a
+    /// `# source: default`, `# source: file` or `# source: env NAME` comment.
+    /// Unset optional settings appear as comments. Password hashes are
+    /// omitted.
+    pub fn effective_toml(&self) -> String {
+        effective::render(&self.config, &self.sources)
+    }
+
+    pub(crate) fn into_parts(self) -> (ServerConfig, ConfigSources) {
+        (self.config, self.sources)
+    }
+}
+
+/// Provenance of a loaded configuration: the raw file table and the
+/// environment overrides. A config built in Rust has empty sources.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConfigSources {
+    config_file: Option<PathBuf>,
+    file_table: toml::Table,
+    env_overrides: BTreeMap<String, EnvOverride>,
+    tls: Option<ServerTlsFileConfig>,
+    device_profiles_defaulted: bool,
+}
+
+impl ConfigSources {
+    pub(crate) fn config_file(&self) -> Option<&Path> {
+        self.config_file.as_deref()
+    }
+
+    pub(crate) fn device_profiles_defaulted(&self) -> bool {
+        self.device_profiles_defaulted
+    }
+
+    fn source(&self, path: &str) -> ConfigValueSource {
+        if let Some(env) = self.env_overrides.get(path) {
+            return ConfigValueSource::Env(env.env_name.clone());
+        }
+        if table_lookup(&self.file_table, path).is_some() {
+            return ConfigValueSource::File;
+        }
+        ConfigValueSource::Default
+    }
+
+    /// `invalid_configuration` naming the TOML `path`, and the environment
+    /// variable too when an override supplied the value.
+    fn invalid(&self, path: &'static str, reason: impl Into<String>) -> ServerError {
+        match self.env_overrides.get(path) {
+            None => ServerError::invalid_config(path, reason),
+            Some(env) => ServerError::configuration(format!(
+                "{path} {} (set by environment variable {})",
+                reason.into(),
+                env.env_name
+            ))
+            .with_fact("config_field", path)
+            .with_fact("config_env", &env.env_name),
+        }
+    }
+
+    fn invalid_with_source(
+        &self,
+        path: &'static str,
+        reason: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> ServerError {
+        match self.env_overrides.get(path) {
+            None => ServerError::invalid_config_with_source(path, reason, source),
+            Some(env) => ServerError::configuration_with_source(
+                format!("{path} {} (set by environment variable {})", reason.into(), env.env_name),
+                source,
+            )
+            .with_fact("config_field", path)
+            .with_fact("config_env", &env.env_name),
+        }
+    }
+}
+
+fn table_lookup<'a>(table: &'a toml::Table, path: &str) -> Option<&'a toml::Value> {
+    let (parent, key) = match path.rsplit_once('.') {
+        Some((parent, key)) => (Some(parent), key),
+        None => (None, path),
+    };
+    let table = match parent {
+        Some(parent) => table_lookup(table, parent)?.as_table()?,
+        None => table,
+    };
+    table.get(key)
+}
+
+fn parse_bind_addr(raw: &str, sources: &ConfigSources) -> Result<SocketAddr> {
+    raw.parse().map_err(|error| {
+        sources.invalid_with_source(
+            "bind",
+            format!(
+                "must be an IP socket address such as 127.0.0.1:50051 or 0.0.0.0:50051; host names are not resolved, got `{raw}`"
+            ),
+            error,
+        )
+    })
+}
+
+fn positive_secs(sources: &ConfigSources, path: &'static str, seconds: u64) -> Result<Duration> {
+    if seconds == 0 {
+        return Err(sources.invalid(path, "must be greater than zero"));
+    }
+    checked_config_duration(sources, path, Duration::from_secs(seconds))
+}
+
+fn checked_config_duration(sources: &ConfigSources, path: &'static str, duration: Duration) -> Result<Duration> {
+    if Instant::now().checked_add(duration).is_none() {
+        return Err(sources.invalid(path, "is too large for the monotonic clock"));
+    }
+    Ok(duration)
+}
+
+fn readable_init_sql(path: PathBuf, sources: &ConfigSources) -> Result<PathBuf> {
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => Ok(path),
+        Ok(_) => Err(sources.invalid("init_sql", format!("`{}` is not a file", path.display()))),
+        Err(error) => {
+            Err(sources.invalid_with_source("init_sql", format!("`{}` cannot be read", path.display()), error))
+        },
+    }
+}
+
 /// Attempts admission can hold at once: every device's active attempts plus
 /// the queue shared by all devices.
 fn admission_live_attempts(queue_policy: &AlgeonGpuQueuePolicy, profiles: &[AlgeonGpuDeviceProfile]) -> u64 {
@@ -436,25 +580,4 @@ fn admission_live_attempts(queue_policy: &AlgeonGpuQueuePolicy, profiles: &[Alge
 
 fn format_device_ordinals(device_ordinals: &[usize]) -> String {
     device_ordinals.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
-}
-
-fn reject_removed_server_environment(
-    values: &mut EnvValues<'_>,
-    names: &[&'static str],
-    reason: &'static str,
-) -> Result<()> {
-    for name in names.iter().copied() {
-        if values.string(name).is_some() {
-            return Err(ServerError::invalid_config(name, reason));
-        }
-    }
-    Ok(())
-}
-
-fn checked_config_duration(field: &'static str, seconds: u64) -> Result<Duration> {
-    let duration = Duration::from_secs(seconds);
-    if Instant::now().checked_add(duration).is_none() {
-        return Err(ServerError::invalid_config(field, "duration exceeds the monotonic clock range"));
-    }
-    Ok(duration)
 }
