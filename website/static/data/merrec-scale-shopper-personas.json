@@ -1,14 +1,14 @@
 {
  "name": "22_shopper_personas",
  "sql_file": "fixture/demo/merrec/scripts/scale/22_shopper_personas.sql",
- "sql": "WITH shoppers AS (\n  SELECT e.user_id AS id,\n    SUM(CASE WHEN e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS purchases,\n    SUM(CASE WHEN e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS gmv,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Women' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS women,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Toys & Collectibles' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS toys,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Kids' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS kids,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Men' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS men,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Home' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS home,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Electronics' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS electronics,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Beauty' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS beauty,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Vintage & collectibles' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS vintage,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Books' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS books,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Sports & outdoors' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS sports,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Other' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS other,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Handmade' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS handmade,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Garden & Outdoor' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS garden,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Arts & Crafts' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS arts,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Pet Supplies' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS pets,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Office' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS office,\n    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Tools' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS tools\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  GROUP BY e.user_id\n  HAVING SUM(CASE WHEN e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20\n), assignments AS (\n  SELECT id, cluster_id FROM cuvs_kmeans(\n    input => (SELECT id, women, toys, kids, men, home, electronics, beauty, vintage, books, sports, other, handmade, garden, arts, pets, office, tools FROM shoppers ORDER BY id),\n    n_clusters => 10, n_init => 3, max_iter => 300)\n), personas AS (\n  SELECT a.cluster_id AS id, COUNT(*) AS shoppers,\n    AVG(CASE WHEN s.purchases > 0 THEN 1.0 ELSE 0.0 END) AS buyer_share,\n    SUM(s.gmv) AS gmv,\n    COALESCE(CAST(AVG(s.women * s.women) AS REAL), CAST(0 AS REAL)) AS women,\n    COALESCE(CAST(AVG(s.toys * s.toys) AS REAL), CAST(0 AS REAL)) AS toys,\n    COALESCE(CAST(AVG(s.kids * s.kids) AS REAL), CAST(0 AS REAL)) AS kids,\n    COALESCE(CAST(AVG(s.men * s.men) AS REAL), CAST(0 AS REAL)) AS men,\n    COALESCE(CAST(AVG(s.home * s.home) AS REAL), CAST(0 AS REAL)) AS home,\n    COALESCE(CAST(AVG(s.electronics * s.electronics) AS REAL), CAST(0 AS REAL)) AS electronics,\n    COALESCE(CAST(AVG(s.beauty * s.beauty) AS REAL), CAST(0 AS REAL)) AS beauty,\n    COALESCE(CAST(AVG(s.vintage * s.vintage) AS REAL), CAST(0 AS REAL)) AS vintage,\n    COALESCE(CAST(AVG(s.books * s.books) AS REAL), CAST(0 AS REAL)) AS books,\n    COALESCE(CAST(AVG(s.sports * s.sports) AS REAL), CAST(0 AS REAL)) AS sports,\n    COALESCE(CAST(AVG(s.other * s.other) AS REAL), CAST(0 AS REAL)) AS other,\n    COALESCE(CAST(AVG(s.handmade * s.handmade) AS REAL), CAST(0 AS REAL)) AS handmade,\n    COALESCE(CAST(AVG(s.garden * s.garden) AS REAL), CAST(0 AS REAL)) AS garden,\n    COALESCE(CAST(AVG(s.arts * s.arts) AS REAL), CAST(0 AS REAL)) AS arts,\n    COALESCE(CAST(AVG(s.pets * s.pets) AS REAL), CAST(0 AS REAL)) AS pets,\n    COALESCE(CAST(AVG(s.office * s.office) AS REAL), CAST(0 AS REAL)) AS office,\n    COALESCE(CAST(AVG(s.tools * s.tools) AS REAL), CAST(0 AS REAL)) AS tools\n  FROM assignments a JOIN shoppers s ON s.id = a.id\n  GROUP BY a.cluster_id\n), leading AS (\n  SELECT id, rank, position, value FROM cuvs_top_k(\n    input => (SELECT id, women, toys, kids, men, home, electronics, beauty, vintage, books, sports, other, handmade, garden, arts, pets, office, tools FROM personas ORDER BY id),\n    k => 3, select => 'max')\n)\nSELECT p.id AS persona, p.shoppers, p.buyer_share, p.gmv, p.gmv / p.shoppers AS gmv_per_shopper,\n  l.rank,\n  CASE l.position\n    WHEN 0 THEN 'Women'\n    WHEN 1 THEN 'Toys & Collectibles'\n    WHEN 2 THEN 'Kids'\n    WHEN 3 THEN 'Men'\n    WHEN 4 THEN 'Home'\n    WHEN 5 THEN 'Electronics'\n    WHEN 6 THEN 'Beauty'\n    WHEN 7 THEN 'Vintage & collectibles'\n    WHEN 8 THEN 'Books'\n    WHEN 9 THEN 'Sports & outdoors'\n    WHEN 10 THEN 'Other'\n    WHEN 11 THEN 'Handmade'\n    WHEN 12 THEN 'Garden & Outdoor'\n    WHEN 13 THEN 'Arts & Crafts'\n    WHEN 14 THEN 'Pet Supplies'\n    WHEN 15 THEN 'Office'\n    WHEN 16 THEN 'Tools'\n  END AS category,\n  l.value AS mean_view_share\nFROM leading l JOIN personas p ON p.id = l.id\nORDER BY p.shoppers DESC, l.rank;\n",
- "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+ "sql": "WITH shoppers AS (\n  SELECT e.user_id AS id,\n    SUM(CASE WHEN e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS purchases,\n    SUM(CASE WHEN e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS gmv,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Women' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS women,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Toys & Collectibles' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS toys,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Kids' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS kids,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Men' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS men,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Home' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS home,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Electronics' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS electronics,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Beauty' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS beauty,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Vintage & collectibles' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS vintage,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Books' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS books,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Sports & outdoors' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS sports,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Other' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS other,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Handmade' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS handmade,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Garden & Outdoor' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS garden,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Arts & Crafts' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS arts,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Pet Supplies' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS pets,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Office' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS office,\n    CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Tools' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL) AS tools\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  GROUP BY e.user_id\n  HAVING SUM(CASE WHEN e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20\n), assignments AS (\n  SELECT id, cluster_id FROM cuvs_kmeans(\n    input => (SELECT id, women, toys, kids, men, home, electronics, beauty, vintage, books, sports, other, handmade, garden, arts, pets, office, tools FROM shoppers ORDER BY id),\n    n_clusters => 10, n_init => 3, max_iter => 300)\n), personas AS (\n  SELECT a.cluster_id AS id, COUNT(*) AS shoppers,\n    AVG(CASE WHEN s.purchases > 0 THEN 1.0 ELSE 0.0 END) AS buyer_share,\n    SUM(s.gmv) AS gmv,\n    CAST(AVG(s.women * s.women) AS REAL) AS women,\n    CAST(AVG(s.toys * s.toys) AS REAL) AS toys,\n    CAST(AVG(s.kids * s.kids) AS REAL) AS kids,\n    CAST(AVG(s.men * s.men) AS REAL) AS men,\n    CAST(AVG(s.home * s.home) AS REAL) AS home,\n    CAST(AVG(s.electronics * s.electronics) AS REAL) AS electronics,\n    CAST(AVG(s.beauty * s.beauty) AS REAL) AS beauty,\n    CAST(AVG(s.vintage * s.vintage) AS REAL) AS vintage,\n    CAST(AVG(s.books * s.books) AS REAL) AS books,\n    CAST(AVG(s.sports * s.sports) AS REAL) AS sports,\n    CAST(AVG(s.other * s.other) AS REAL) AS other,\n    CAST(AVG(s.handmade * s.handmade) AS REAL) AS handmade,\n    CAST(AVG(s.garden * s.garden) AS REAL) AS garden,\n    CAST(AVG(s.arts * s.arts) AS REAL) AS arts,\n    CAST(AVG(s.pets * s.pets) AS REAL) AS pets,\n    CAST(AVG(s.office * s.office) AS REAL) AS office,\n    CAST(AVG(s.tools * s.tools) AS REAL) AS tools\n  FROM assignments a JOIN shoppers s ON s.id = a.id\n  GROUP BY a.cluster_id\n), leading AS (\n  SELECT id, rank, position, value FROM cuvs_top_k(\n    input => (SELECT id, women, toys, kids, men, home, electronics, beauty, vintage, books, sports, other, handmade, garden, arts, pets, office, tools FROM personas ORDER BY id),\n    k => 3, select => 'max')\n)\nSELECT p.id AS persona, p.shoppers, p.buyer_share, p.gmv, p.gmv / p.shoppers AS gmv_per_shopper,\n  l.rank,\n  CASE l.position\n    WHEN 0 THEN 'Women'\n    WHEN 1 THEN 'Toys & Collectibles'\n    WHEN 2 THEN 'Kids'\n    WHEN 3 THEN 'Men'\n    WHEN 4 THEN 'Home'\n    WHEN 5 THEN 'Electronics'\n    WHEN 6 THEN 'Beauty'\n    WHEN 7 THEN 'Vintage & collectibles'\n    WHEN 8 THEN 'Books'\n    WHEN 9 THEN 'Sports & outdoors'\n    WHEN 10 THEN 'Other'\n    WHEN 11 THEN 'Handmade'\n    WHEN 12 THEN 'Garden & Outdoor'\n    WHEN 13 THEN 'Arts & Crafts'\n    WHEN 14 THEN 'Pet Supplies'\n    WHEN 15 THEN 'Office'\n    WHEN 16 THEN 'Tools'\n  END AS category,\n  l.value AS mean_view_share\nFROM leading l JOIN personas p ON p.id = l.id\nORDER BY p.shoppers DESC, l.rank;\n",
+ "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
  "runs": [
   {
    "name": "22_shopper_personas_r1",
-   "query_id": "d0f19cdd-8c6d-412a-8bb4-0c283448ce8c",
-   "elapsed_s": 49.57360957597848,
+   "query_id": "64f85d0c-aa93-42c8-bf87-b81f3ce0d10b",
+   "elapsed_s": 49.312892511021346,
    "native_fragments": 7,
    "host_boundaries": 0,
    "allocator_peak_bytes": 31290568558,
@@ -16,8 +16,8 @@
   },
   {
    "name": "22_shopper_personas_r2",
-   "query_id": "385849df-82f2-4149-86d0-9a89cf31e030",
-   "elapsed_s": 49.626376757980324,
+   "query_id": "501e7c78-9103-492f-937b-6db98aa1f776",
+   "elapsed_s": 49.49826609506272,
    "native_fragments": 7,
    "host_boundaries": 0,
    "allocator_peak_bytes": 31290568558,
@@ -25,15 +25,15 @@
   },
   {
    "name": "22_shopper_personas_r3",
-   "query_id": "9be3ab10-3f08-49ce-98b8-17b9dd07ee18",
-   "elapsed_s": 50.32895308395382,
+   "query_id": "b16f4a08-6609-4674-979b-2646846861a9",
+   "elapsed_s": 49.28323203488253,
    "native_fragments": 7,
    "host_boundaries": 0,
    "allocator_peak_bytes": 31290568558,
    "query_limit_bytes": 96636764160
   }
  ],
- "median_elapsed_s_after_first": 49.97766492096707,
+ "median_elapsed_s_after_first": 49.390749064972624,
  "rows": 30,
  "identical_results_across_runs": false,
  "schema": [
@@ -49,303 +49,303 @@
  "records": [
   {
    "persona": 6,
-   "shoppers": 669863,
-   "buyer_share": 0.07813537992096892,
-   "gmv": 4406116.249999996,
-   "gmv_per_shopper": 6.577637890135739,
+   "shoppers": 669870,
+   "buyer_share": 0.07813456342275367,
+   "gmv": 4406116.249999997,
+   "gmv_per_shopper": 6.577569155209216,
    "rank": 1,
    "category": "Women",
-   "mean_view_share": 0.7868046760559082
+   "mean_view_share": 0.7868025898933411
   },
   {
    "persona": 6,
-   "shoppers": 669863,
-   "buyer_share": 0.07813537992096892,
-   "gmv": 4406116.249999996,
-   "gmv_per_shopper": 6.577637890135739,
+   "shoppers": 669870,
+   "buyer_share": 0.07813456342275367,
+   "gmv": 4406116.249999997,
+   "gmv_per_shopper": 6.577569155209216,
    "rank": 2,
    "category": "Men",
-   "mean_view_share": 0.055606454610824585
+   "mean_view_share": 0.055605921894311905
   },
   {
    "persona": 6,
-   "shoppers": 669863,
-   "buyer_share": 0.07813537992096892,
-   "gmv": 4406116.249999996,
-   "gmv_per_shopper": 6.577637890135739,
+   "shoppers": 669870,
+   "buyer_share": 0.07813456342275367,
+   "gmv": 4406116.249999997,
+   "gmv_per_shopper": 6.577569155209216,
    "rank": 3,
    "category": "Kids",
-   "mean_view_share": 0.0310441255569458
+   "mean_view_share": 0.031044976785779
   },
   {
    "persona": 7,
-   "shoppers": 451668,
-   "buyer_share": 0.11867787844168726,
-   "gmv": 5675731.260000006,
-   "gmv_per_shopper": 12.56615757591861,
+   "shoppers": 451665,
+   "buyer_share": 0.11867866671094728,
+   "gmv": 5675731.260000005,
+   "gmv_per_shopper": 12.56624104147987,
    "rank": 1,
    "category": "Toys & Collectibles",
-   "mean_view_share": 0.7429209351539612
+   "mean_view_share": 0.7429144382476807
   },
   {
    "persona": 7,
-   "shoppers": 451668,
-   "buyer_share": 0.11867787844168726,
-   "gmv": 5675731.260000006,
-   "gmv_per_shopper": 12.56615757591861,
+   "shoppers": 451665,
+   "buyer_share": 0.11867866671094728,
+   "gmv": 5675731.260000005,
+   "gmv_per_shopper": 12.56624104147987,
    "rank": 2,
    "category": "Electronics",
-   "mean_view_share": 0.05977744236588478
+   "mean_view_share": 0.05977816507220268
   },
   {
    "persona": 7,
-   "shoppers": 451668,
-   "buyer_share": 0.11867787844168726,
-   "gmv": 5675731.260000006,
-   "gmv_per_shopper": 12.56615757591861,
+   "shoppers": 451665,
+   "buyer_share": 0.11867866671094728,
+   "gmv": 5675731.260000005,
+   "gmv_per_shopper": 12.56624104147987,
    "rank": 3,
    "category": "Women",
-   "mean_view_share": 0.03469158709049225
+   "mean_view_share": 0.034692734479904175
   },
   {
    "persona": 8,
-   "shoppers": 361625,
-   "buyer_share": 0.08857518147251987,
-   "gmv": 2742111.450000003,
-   "gmv_per_shopper": 7.582748565502946,
+   "shoppers": 361616,
+   "buyer_share": 0.08857738595637361,
+   "gmv": 2742111.449999999,
+   "gmv_per_shopper": 7.58293728706694,
    "rank": 1,
    "category": "Women",
-   "mean_view_share": 0.36497488617897034
+   "mean_view_share": 0.3649793267250061
   },
   {
    "persona": 8,
-   "shoppers": 361625,
-   "buyer_share": 0.08857518147251987,
-   "gmv": 2742111.450000003,
-   "gmv_per_shopper": 7.582748565502946,
+   "shoppers": 361616,
+   "buyer_share": 0.08857738595637361,
+   "gmv": 2742111.449999999,
+   "gmv_per_shopper": 7.58293728706694,
    "rank": 2,
    "category": "Toys & Collectibles",
-   "mean_view_share": 0.1597224473953247
+   "mean_view_share": 0.1597377359867096
   },
   {
    "persona": 8,
-   "shoppers": 361625,
-   "buyer_share": 0.08857518147251987,
-   "gmv": 2742111.450000003,
-   "gmv_per_shopper": 7.582748565502946,
+   "shoppers": 361616,
+   "buyer_share": 0.08857738595637361,
+   "gmv": 2742111.449999999,
+   "gmv_per_shopper": 7.58293728706694,
    "rank": 3,
    "category": "Home",
-   "mean_view_share": 0.10516314208507538
+   "mean_view_share": 0.10516057163476944
   },
   {
    "persona": 1,
-   "shoppers": 308539,
-   "buyer_share": 0.08274156589604556,
-   "gmv": 2473168.9600000046,
-   "gmv_per_shopper": 8.015741802494999,
+   "shoppers": 308535,
+   "buyer_share": 0.08274263859853825,
+   "gmv": 2473168.9599999995,
+   "gmv_per_shopper": 8.015845722527427,
    "rank": 1,
    "category": "Men",
-   "mean_view_share": 0.6378983855247498
+   "mean_view_share": 0.637894868850708
   },
   {
    "persona": 1,
-   "shoppers": 308539,
-   "buyer_share": 0.08274156589604556,
-   "gmv": 2473168.9600000046,
-   "gmv_per_shopper": 8.015741802494999,
+   "shoppers": 308535,
+   "buyer_share": 0.08274263859853825,
+   "gmv": 2473168.9599999995,
+   "gmv_per_shopper": 8.015845722527427,
    "rank": 2,
    "category": "Women",
-   "mean_view_share": 0.14169739186763763
+   "mean_view_share": 0.14170148968696594
   },
   {
    "persona": 1,
-   "shoppers": 308539,
-   "buyer_share": 0.08274156589604556,
-   "gmv": 2473168.9600000046,
-   "gmv_per_shopper": 8.015741802494999,
+   "shoppers": 308535,
+   "buyer_share": 0.08274263859853825,
+   "gmv": 2473168.9599999995,
+   "gmv_per_shopper": 8.015845722527427,
    "rank": 3,
    "category": "Electronics",
-   "mean_view_share": 0.043735750019550323
+   "mean_view_share": 0.04373525455594063
   },
   {
    "persona": 3,
-   "shoppers": 251284,
-   "buyer_share": 0.09708934910300696,
+   "shoppers": 251283,
+   "buyer_share": 0.09708973547752932,
    "gmv": 3183777.0900000073,
-   "gmv_per_shopper": 12.670035059932218,
+   "gmv_per_shopper": 12.670085481309947,
    "rank": 1,
    "category": "Electronics",
-   "mean_view_share": 0.6816650032997131
+   "mean_view_share": 0.6816670298576355
   },
   {
    "persona": 3,
-   "shoppers": 251284,
-   "buyer_share": 0.09708934910300696,
+   "shoppers": 251283,
+   "buyer_share": 0.09708973547752932,
    "gmv": 3183777.0900000073,
-   "gmv_per_shopper": 12.670035059932218,
+   "gmv_per_shopper": 12.670085481309947,
    "rank": 2,
    "category": "Toys & Collectibles",
-   "mean_view_share": 0.08307968825101852
+   "mean_view_share": 0.08307981491088867
   },
   {
    "persona": 3,
-   "shoppers": 251284,
-   "buyer_share": 0.09708934910300696,
+   "shoppers": 251283,
+   "buyer_share": 0.09708973547752932,
    "gmv": 3183777.0900000073,
-   "gmv_per_shopper": 12.670035059932218,
+   "gmv_per_shopper": 12.670085481309947,
    "rank": 3,
    "category": "Men",
-   "mean_view_share": 0.043654665350914
+   "mean_view_share": 0.043654534965753555
   },
   {
    "persona": 5,
-   "shoppers": 238814,
-   "buyer_share": 0.07251668662641218,
-   "gmv": 1148659.2700000003,
-   "gmv_per_shopper": 4.809848961953655,
+   "shoppers": 238815,
+   "buyer_share": 0.07251638297426878,
+   "gmv": 1148659.27,
+   "gmv_per_shopper": 4.8098288214726885,
    "rank": 1,
    "category": "Kids",
-   "mean_view_share": 0.5984438061714172
+   "mean_view_share": 0.5984416604042053
   },
   {
    "persona": 5,
-   "shoppers": 238814,
-   "buyer_share": 0.07251668662641218,
-   "gmv": 1148659.2700000003,
-   "gmv_per_shopper": 4.809848961953655,
+   "shoppers": 238815,
+   "buyer_share": 0.07251638297426878,
+   "gmv": 1148659.27,
+   "gmv_per_shopper": 4.8098288214726885,
    "rank": 2,
    "category": "Women",
-   "mean_view_share": 0.18106092512607574
+   "mean_view_share": 0.18106205761432648
   },
   {
    "persona": 5,
-   "shoppers": 238814,
-   "buyer_share": 0.07251668662641218,
-   "gmv": 1148659.2700000003,
-   "gmv_per_shopper": 4.809848961953655,
+   "shoppers": 238815,
+   "buyer_share": 0.07251638297426878,
+   "gmv": 1148659.27,
+   "gmv_per_shopper": 4.8098288214726885,
    "rank": 3,
    "category": "Toys & Collectibles",
-   "mean_view_share": 0.06023906171321869
+   "mean_view_share": 0.060240261256694794
   },
   {
    "persona": 4,
-   "shoppers": 198576,
-   "buyer_share": 0.10388465877044557,
-   "gmv": 1863432.710000003,
-   "gmv_per_shopper": 9.38397746958345,
+   "shoppers": 198574,
+   "buyer_share": 0.10388570507720044,
+   "gmv": 1863432.710000002,
+   "gmv_per_shopper": 9.384071983240515,
    "rank": 1,
    "category": "Home",
-   "mean_view_share": 0.4703211188316345
+   "mean_view_share": 0.47030502557754517
   },
   {
    "persona": 4,
-   "shoppers": 198576,
-   "buyer_share": 0.10388465877044557,
-   "gmv": 1863432.710000003,
-   "gmv_per_shopper": 9.38397746958345,
+   "shoppers": 198574,
+   "buyer_share": 0.10388570507720044,
+   "gmv": 1863432.710000002,
+   "gmv_per_shopper": 9.384071983240515,
    "rank": 2,
    "category": "Vintage & collectibles",
-   "mean_view_share": 0.17513203620910645
+   "mean_view_share": 0.17513540387153625
   },
   {
    "persona": 4,
-   "shoppers": 198576,
-   "buyer_share": 0.10388465877044557,
-   "gmv": 1863432.710000003,
-   "gmv_per_shopper": 9.38397746958345,
+   "shoppers": 198574,
+   "buyer_share": 0.10388570507720044,
+   "gmv": 1863432.710000002,
+   "gmv_per_shopper": 9.384071983240515,
    "rank": 3,
    "category": "Women",
-   "mean_view_share": 0.09630616009235382
+   "mean_view_share": 0.09631325304508209
   },
   {
    "persona": 0,
    "shoppers": 143965,
    "buyer_share": 0.11532664189212656,
-   "gmv": 1798971.3699999996,
-   "gmv_per_shopper": 12.495893932553049,
+   "gmv": 1798971.3699999987,
+   "gmv_per_shopper": 12.495893932553042,
    "rank": 1,
    "category": "Beauty",
-   "mean_view_share": 0.5578782558441162
+   "mean_view_share": 0.557755172252655
   },
   {
    "persona": 0,
    "shoppers": 143965,
    "buyer_share": 0.11532664189212656,
-   "gmv": 1798971.3699999996,
-   "gmv_per_shopper": 12.495893932553049,
+   "gmv": 1798971.3699999987,
+   "gmv_per_shopper": 12.495893932553042,
    "rank": 2,
    "category": "Women",
-   "mean_view_share": 0.21532802283763885
+   "mean_view_share": 0.21537603437900543
   },
   {
    "persona": 0,
    "shoppers": 143965,
    "buyer_share": 0.11532664189212656,
-   "gmv": 1798971.3699999996,
-   "gmv_per_shopper": 12.495893932553049,
+   "gmv": 1798971.3699999987,
+   "gmv_per_shopper": 12.495893932553042,
    "rank": 3,
    "category": "Home",
-   "mean_view_share": 0.05285200849175453
+   "mean_view_share": 0.05287136882543564
   },
   {
    "persona": 9,
-   "shoppers": 102796,
-   "buyer_share": 0.07080042024981517,
-   "gmv": 672284.8500000001,
-   "gmv_per_shopper": 6.53999036927507,
+   "shoppers": 102807,
+   "buyer_share": 0.07079284484519537,
+   "gmv": 672284.8499999997,
+   "gmv_per_shopper": 6.539290612506928,
    "rank": 1,
    "category": "Sports & outdoors",
-   "mean_view_share": 0.31850486993789673
+   "mean_view_share": 0.3184998631477356
   },
   {
    "persona": 9,
-   "shoppers": 102796,
-   "buyer_share": 0.07080042024981517,
-   "gmv": 672284.8500000001,
-   "gmv_per_shopper": 6.53999036927507,
+   "shoppers": 102807,
+   "buyer_share": 0.07079284484519537,
+   "gmv": 672284.8499999997,
+   "gmv_per_shopper": 6.539290612506928,
    "rank": 2,
    "category": "Other",
-   "mean_view_share": 0.16190949082374573
+   "mean_view_share": 0.16190488636493683
   },
   {
    "persona": 9,
-   "shoppers": 102796,
-   "buyer_share": 0.07080042024981517,
-   "gmv": 672284.8500000001,
-   "gmv_per_shopper": 6.53999036927507,
+   "shoppers": 102807,
+   "buyer_share": 0.07079284484519537,
+   "gmv": 672284.8499999997,
+   "gmv_per_shopper": 6.539290612506928,
    "rank": 3,
    "category": "Men",
-   "mean_view_share": 0.12523628771305084
+   "mean_view_share": 0.12523815035820007
   },
   {
    "persona": 2,
    "shoppers": 62145,
    "buyer_share": 0.109550245393837,
-   "gmv": 844245.2399999996,
-   "gmv_per_shopper": 13.585087134926376,
+   "gmv": 844245.24,
+   "gmv_per_shopper": 13.58508713492638,
    "rank": 1,
    "category": "Books",
-   "mean_view_share": 0.5183663368225098
+   "mean_view_share": 0.5184006094932556
   },
   {
    "persona": 2,
    "shoppers": 62145,
    "buyer_share": 0.109550245393837,
-   "gmv": 844245.2399999996,
-   "gmv_per_shopper": 13.585087134926376,
+   "gmv": 844245.24,
+   "gmv_per_shopper": 13.58508713492638,
    "rank": 2,
    "category": "Toys & Collectibles",
-   "mean_view_share": 0.15902526676654816
+   "mean_view_share": 0.15901127457618713
   },
   {
    "persona": 2,
    "shoppers": 62145,
    "buyer_share": 0.109550245393837,
-   "gmv": 844245.2399999996,
-   "gmv_per_shopper": 13.585087134926376,
+   "gmv": 844245.24,
+   "gmv_per_shopper": 13.58508713492638,
    "rank": 3,
    "category": "Electronics",
-   "mean_view_share": 0.06781632453203201
+   "mean_view_share": 0.06781825423240662
   }
  ]
 }

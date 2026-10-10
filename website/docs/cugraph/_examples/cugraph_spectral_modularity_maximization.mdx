@@ -28,7 +28,7 @@ counts AS (
 ranked AS (
   SELECT cluster, primary_fos, n,
          SUM(n) OVER (PARTITION BY cluster) AS members,
-         ROW_NUMBER() OVER (PARTITION BY cluster ORDER BY n DESC) AS rn
+         ROW_NUMBER() OVER (PARTITION BY cluster ORDER BY n DESC, primary_fos) AS rn
   FROM counts)
 SELECT cluster, members, primary_fos, n
 FROM ranked WHERE rn <= 2
@@ -46,7 +46,7 @@ ORDER BY members DESC, rn;
 | 5 | 787 | Dominance-based rough set approach | 168 |
 | 5 | 787 | Rough set | 160 |
 | 3 | 142 | Feature selection | 8 |
-| 3 | 142 | Software metric | 8 |
+| 3 | 142 | Software bug | 8 |
 | 1 | 79 | Recursive least squares filter | 11 |
 | 1 | 79 | Iterative method | 8 |
 
@@ -54,4 +54,5 @@ The largest reported cluster has 28,994 papers, with convolutional neural
 network and object detection as its two most common labels. Other rows include
 probabilistic encryption, fuzzy logic, and rough set labels in smaller
 clusters. The table shows only the top two labels per cluster, and cluster ids
-are arbitrary.
+are arbitrary. Labels with equal counts are ordered by name, so cluster 3
+shows two of its three labels tied at 8 papers.

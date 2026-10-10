@@ -2,13 +2,13 @@
  "name": "08_brand_twins",
  "sql_file": "fixture/demo/merrec/scripts/scale/08_brand_twins.sql",
  "sql": "WITH fans AS (\n  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n  GROUP BY e.user_id, i.brand_id\n), top_brands AS (\n  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst ORDER BY fans DESC, dst LIMIT 2000\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT ba.brand_name AS brand_a, bb.brand_name AS brand_b,\n       a.fans AS fans_a, b.fans AS fans_b, r.similarity AS jaccard\nFROM cugraph_jaccard(\n  edges => (SELECT src, dst FROM fans),\n  vertex_pairs => (SELECT a.brand_id AS first, b.brand_id AS second\n                   FROM top_brands a JOIN top_brands b ON a.brand_id < b.brand_id),\n  directed => false\n) r\nJOIN top_brands a ON a.brand_id = r.first\nJOIN top_brands b ON b.brand_id = r.second\nJOIN brands ba ON ba.brand_id = r.first\nJOIN brands bb ON bb.brand_id = r.second\nORDER BY r.similarity DESC, brand_a\nLIMIT 30;\n",
- "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+ "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
  "runs": [
   {
    "name": "08_brand_twins_r1",
-   "query_id": "ba6a4db8-d41c-484f-80a4-ba019e63bbe8",
-   "elapsed_s": 7.243382817949168,
+   "query_id": "b4c270bd-3086-4f13-b618-1f35c16d3a30",
+   "elapsed_s": 6.379999357042834,
    "native_fragments": 3,
    "host_boundaries": 0,
    "allocator_peak_bytes": 80252580231,
@@ -16,8 +16,8 @@
   },
   {
    "name": "08_brand_twins_r2",
-   "query_id": "aad19994-1dac-45f3-ab9b-91f91bbb1b17",
-   "elapsed_s": 7.283136161975563,
+   "query_id": "2ab73590-df80-4ca7-bed3-3d0ba3b2ff6a",
+   "elapsed_s": 6.330985223175958,
    "native_fragments": 3,
    "host_boundaries": 0,
    "allocator_peak_bytes": 80252580231,
@@ -25,15 +25,15 @@
   },
   {
    "name": "08_brand_twins_r3",
-   "query_id": "dcf087b4-3fda-4051-bb05-8a0dedbc900a",
-   "elapsed_s": 6.627096662065014,
+   "query_id": "a843efb8-f619-46a3-8a0d-df7a063dbc99",
+   "elapsed_s": 7.031155088916421,
    "native_fragments": 3,
    "host_boundaries": 0,
    "allocator_peak_bytes": 80252580231,
    "query_limit_bytes": 96636764160
   }
  ],
- "median_elapsed_s_after_first": 6.955116412020288,
+ "median_elapsed_s_after_first": 6.681070156046189,
  "rows": 30,
  "identical_results_across_runs": true,
  "schema": [

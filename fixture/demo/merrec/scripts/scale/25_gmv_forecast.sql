@@ -10,7 +10,6 @@ WITH train AS (
     CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,
     CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,
     CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,
-    MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN CAST(1 AS INT) ELSE CAST(0 AS INT) END) AS label,
     CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS next_gmv
   FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
   WHERE e.event_time >= TIMESTAMP '2023-05-01 00:00:00' AND e.event_time < TIMESTAMP '2023-08-31 00:00:00'
@@ -29,7 +28,6 @@ test AS (
     CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,
     CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,
     CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,
-    MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN CAST(1 AS INT) ELSE CAST(0 AS INT) END) AS label,
     CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS next_gmv
   FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
   WHERE e.event_time >= TIMESTAMP '2023-06-01 00:00:00' AND e.event_time < TIMESTAMP '2023-10-01 00:00:00'
@@ -38,20 +36,20 @@ test AS (
 ),
 pred AS (
   SELECT id, prediction FROM cuml_random_forest_regressor(
-    training => (SELECT id, COALESCE(LN(1 + views), CAST(0 AS REAL)) AS views, COALESCE(LN(1 + likes), CAST(0 AS REAL)) AS likes, COALESCE(LN(1 + intents), CAST(0 AS REAL)) AS intents, COALESCE(LN(1 + buys), CAST(0 AS REAL)) AS buys, COALESCE(LN(1 + gmv), CAST(0 AS REAL)) AS gmv, COALESCE(LN(1 + views_30d), CAST(0 AS REAL)) AS views_30d, COALESCE(LN(1 + likes_30d), CAST(0 AS REAL)) AS likes_30d, COALESCE(LN(1 + intents_30d), CAST(0 AS REAL)) AS intents_30d, COALESCE(LN(1 + buys_30d), CAST(0 AS REAL)) AS buys_30d, COALESCE(LN(1 + mean_price), CAST(0 AS REAL)) AS mean_price, COALESCE(LN(1 + next_gmv), CAST(0 AS REAL)) AS label FROM train ORDER BY id),
-    predict => (SELECT id, COALESCE(LN(1 + views), CAST(0 AS REAL)) AS views, COALESCE(LN(1 + likes), CAST(0 AS REAL)) AS likes, COALESCE(LN(1 + intents), CAST(0 AS REAL)) AS intents, COALESCE(LN(1 + buys), CAST(0 AS REAL)) AS buys, COALESCE(LN(1 + gmv), CAST(0 AS REAL)) AS gmv, COALESCE(LN(1 + views_30d), CAST(0 AS REAL)) AS views_30d, COALESCE(LN(1 + likes_30d), CAST(0 AS REAL)) AS likes_30d, COALESCE(LN(1 + intents_30d), CAST(0 AS REAL)) AS intents_30d, COALESCE(LN(1 + buys_30d), CAST(0 AS REAL)) AS buys_30d, COALESCE(LN(1 + mean_price), CAST(0 AS REAL)) AS mean_price FROM test ORDER BY id),
+    training => (SELECT id, LN(1 + views) AS views, LN(1 + likes) AS likes, LN(1 + intents) AS intents, LN(1 + buys) AS buys, LN(1 + gmv) AS gmv, LN(1 + views_30d) AS views_30d, LN(1 + likes_30d) AS likes_30d, LN(1 + intents_30d) AS intents_30d, LN(1 + buys_30d) AS buys_30d, LN(1 + mean_price) AS mean_price, LN(1 + next_gmv) AS label FROM train ORDER BY id),
+    predict => (SELECT id, LN(1 + views) AS views, LN(1 + likes) AS likes, LN(1 + intents) AS intents, LN(1 + buys) AS buys, LN(1 + gmv) AS gmv, LN(1 + views_30d) AS views_30d, LN(1 + likes_30d) AS likes_30d, LN(1 + intents_30d) AS intents_30d, LN(1 + buys_30d) AS buys_30d, LN(1 + mean_price) AS mean_price FROM test ORDER BY id),
     n_trees => 100, max_depth => 12, seed => 42)
 ), ranked AS (
-  SELECT t.id, t.next_gmv,
+  SELECT t.next_gmv, COUNT(*) OVER () AS cohort,
          ROW_NUMBER() OVER (ORDER BY p.prediction DESC, t.id) AS by_model,
          ROW_NUMBER() OVER (ORDER BY t.gmv DESC, t.id) AS by_past_spend,
          ROW_NUMBER() OVER (ORDER BY t.intents_30d DESC, t.id) AS by_recent_intent
   FROM pred p JOIN test t ON t.id = p.id
 )
 SELECT COUNT(*) AS shoppers, SUM(next_gmv) AS next_month_gmv,
-       SUM(CASE WHEN by_model <= 20177 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top1pct_model,
-       SUM(CASE WHEN by_past_spend <= 20177 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top1pct_past_spend,
-       SUM(CASE WHEN by_recent_intent <= 20177 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top1pct_recent_intent,
-       SUM(CASE WHEN by_model <= 100887 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top5pct_model,
-       SUM(CASE WHEN by_past_spend <= 100887 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top5pct_past_spend
+       SUM(CASE WHEN by_model <= cohort / 100 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top1pct_model,
+       SUM(CASE WHEN by_past_spend <= cohort / 100 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top1pct_past_spend,
+       SUM(CASE WHEN by_recent_intent <= cohort / 100 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top1pct_recent_intent,
+       SUM(CASE WHEN by_model <= cohort / 20 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top5pct_model,
+       SUM(CASE WHEN by_past_spend <= cohort / 20 THEN next_gmv ELSE 0 END) / SUM(next_gmv) AS top5pct_past_spend
 FROM ranked;

@@ -24,7 +24,7 @@ OUTPUT = ROOT / "website/static/data/merrec-community-capture.json"
 SOURCE_PATHS = {
     "query_sql": SQL,
     "graph_preparation_sql": REPORT / "sql/01_graph_views.sql",
-    "dataset_manifest": ROOT / "fixture/demo/merrec/manifest.json",
+    "dataset_manifest": REPORT / "input_manifest.json",
     "graph_validation": REPORT / "graph_validation.json",
     "result_record": RESULT,
     "result_parquet": RESULT_PARQUET,
@@ -100,10 +100,11 @@ def main() -> None:
     planning = stats_section(stats_text, "planning")
     execution = stats_section(stats_text, "execution")
     if (
-        planning["native_plan_fragment_count"] != "2"
-        or planning["host_datafusion_boundary_count"] != "15"
+        planning["native_plan_fragment_count"] != "3"
+        or planning["host_datafusion_boundary_count"] != "0"
+        or execution["post_native_execution_path"] != "native"
     ):
-        raise ValueError("The saved query stats do not match the documented mixed execution")
+        raise ValueError("The saved query stats do not match the documented native execution")
     server_elapsed = re.search(r"^# elapsed_ms=(\d+)$", stats_text, re.MULTILINE)
     if server_elapsed is None:
         raise ValueError("Query stats have no elapsed_ms observation")
@@ -142,8 +143,8 @@ def main() -> None:
             "host_datafusion_boundary_count": int(planning["host_datafusion_boundary_count"]),
             "execution_path": execution["post_native_execution_path"],
             "host_execution_note": (
-                "Leiden and PageRank ran as native GPU fragments; joins, repartitioning, "
-                "and ranked-window processing used host DataFusion boundaries."
+                "Leiden, PageRank, and the joins and ranked-window processing ran as three "
+                "native GPU fragments with no host DataFusion boundaries."
             ),
             "algorithms": algorithm_summary(execution["graph_runtime_rows"]),
             "performance_claim": False,

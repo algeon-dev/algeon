@@ -25,13 +25,12 @@ WITH fans AS (
         FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id) n ON n.brand_id = w.brand_id
 ), ranked AS (
   SELECT world, brand_name, fans,
-         ROW_NUMBER() OVER (PARTITION BY world ORDER BY fans DESC, brand_name) AS rk
+         ROW_NUMBER() OVER (PARTITION BY world ORDER BY fans DESC, brand_name) AS rk,
+         COUNT(*) OVER (PARTITION BY world) AS brands,
+         SUM(fans) OVER (PARTITION BY world) AS fan_links
   FROM members
-), sizes AS (
-  SELECT world, COUNT(*) AS brands, SUM(fans) AS fan_links FROM members GROUP BY world
 )
-SELECT s.world, s.brands, s.fan_links, r.rk, r.brand_name, r.fans
-FROM ranked r JOIN sizes s ON s.world = r.world
-WHERE r.rk <= 5 AND s.brands >= 15
-ORDER BY s.fan_links DESC, r.rk
-;
+SELECT world, brands, fan_links, rk, brand_name, fans
+FROM ranked
+WHERE rk <= 5 AND brands >= 15
+ORDER BY fan_links DESC, rk;

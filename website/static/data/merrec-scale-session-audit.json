@@ -1,39 +1,39 @@
 {
  "name": "12_session_audit",
  "sql_file": "fixture/demo/merrec/scripts/scale/12_session_audit.sql",
- "sql": "WITH october AS (\n  SELECT user_id, session_id, MIN(event_id) AS first_event\n  FROM merrec_events\n  WHERE event_time >= TIMESTAMP '2023-10-01 00:00:00'\n  GROUP BY user_id, session_id\n), sessions AS (\n  SELECT session_id, MIN(first_event) AS session_vertex FROM october GROUP BY session_id\n), components AS (\n  SELECT vertex, component FROM cugraph_weakly_connected_components(\n    edges => (SELECT -(o.user_id + 1) AS src, s.session_vertex AS dst\n              FROM october o JOIN sessions s ON s.session_id = o.session_id),\n    directed => false)\n), user_components AS (\n  SELECT component, COUNT(*) AS users FROM components WHERE vertex < 0 GROUP BY component\n)\nSELECT CASE WHEN users = 1 THEN '1 user'\n            WHEN users <= 10 THEN '2-10 users'\n            WHEN users <= 1000 THEN '11-1,000 users'\n            ELSE 'over 1,000 users' END AS component_size,\n       COUNT(*) AS components, SUM(users) AS users, MAX(users) AS largest\nFROM user_components\nGROUP BY 1\nORDER BY largest;\n",
- "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+ "sql": "WITH october AS (\n  SELECT DISTINCT user_id, session_id\n  FROM merrec_events\n  WHERE event_time >= TIMESTAMP '2023-10-01 00:00:00'\n), components AS (\n  SELECT vertex, component FROM cugraph_weakly_connected_components(\n    edges => (SELECT CONCAT('user:', CAST(user_id AS VARCHAR)) AS src, session_id AS dst FROM october),\n    directed => false)\n), user_components AS (\n  SELECT component, COUNT(*) AS users FROM components WHERE STARTS_WITH(vertex, 'user:') GROUP BY component\n)\nSELECT CASE WHEN users = 1 THEN '1 user'\n            WHEN users <= 10 THEN '2-10 users'\n            WHEN users <= 1000 THEN '11-1,000 users'\n            ELSE 'over 1,000 users' END AS component_size,\n       COUNT(*) AS components, SUM(users) AS users, MAX(users) AS largest\nFROM user_components\nGROUP BY 1\nORDER BY largest;\n",
+ "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
  "runs": [
   {
    "name": "12_session_audit_r1",
-   "query_id": "a771fcba-9981-4aae-acde-08000e682984",
-   "elapsed_s": 5.22982349304948,
+   "query_id": "814dc38a-0513-49a7-b166-4f79481001df",
+   "elapsed_s": 2.4520790160167962,
    "native_fragments": 2,
    "host_boundaries": 0,
-   "allocator_peak_bytes": 22540495433,
+   "allocator_peak_bytes": 21516221906,
    "query_limit_bytes": 96636764160
   },
   {
    "name": "12_session_audit_r2",
-   "query_id": "9eb5a635-591b-49bc-b205-4422c236e601",
-   "elapsed_s": 5.0805079659912735,
+   "query_id": "7b35c273-4b82-4abe-aa69-905c2fe904cc",
+   "elapsed_s": 2.340557262999937,
    "native_fragments": 2,
    "host_boundaries": 0,
-   "allocator_peak_bytes": 22540499735,
+   "allocator_peak_bytes": 21500151233,
    "query_limit_bytes": 96636764160
   },
   {
    "name": "12_session_audit_r3",
-   "query_id": "53e32e6c-30ea-4488-9a43-fe9f77ae06bc",
-   "elapsed_s": 5.082421328988858,
+   "query_id": "98882d53-148a-4716-b8ec-ae783a22658d",
+   "elapsed_s": 2.263483240036294,
    "native_fragments": 2,
    "host_boundaries": 0,
-   "allocator_peak_bytes": 22719578186,
+   "allocator_peak_bytes": 21492093672,
    "query_limit_bytes": 96636764160
   }
  ],
- "median_elapsed_s_after_first": 5.0814646474900655,
+ "median_elapsed_s_after_first": 2.3020202515181154,
  "rows": 3,
  "identical_results_across_runs": true,
  "schema": [

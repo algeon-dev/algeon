@@ -2,14 +2,14 @@
  "15_ann_exact": {
   "name": "15_ann_exact",
   "sql_file": "fixture/demo/merrec/scripts/scale/15_ann_exact.sql",
-  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_brute_force_knn(\n  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  k => 10, metric => 'l2_expanded'\n);\n",
-  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_brute_force_knn(\n  dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n  queries => (SELECT * FROM mr_taste64 ORDER BY id),\n  k => 10, metric => 'l2_expanded'\n);\n",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "15_ann_exact_r1",
-    "query_id": "919abfcf-00d4-4d54-8474-c17189628769",
-    "elapsed_s": 42.035397567087784,
+    "query_id": "a7bd1a06-9f62-49e8-8572-facde198e6ac",
+    "elapsed_s": 42.74942473205738,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4153163544,
@@ -17,8 +17,8 @@
    },
    {
     "name": "15_ann_exact_r2",
-    "query_id": "88a19c41-182d-4330-be48-9bfdd4b15f26",
-    "elapsed_s": 42.02777344698552,
+    "query_id": "907500ea-70b2-4814-b5f3-0ea199979df6",
+    "elapsed_s": 43.17576369410381,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4153163544,
@@ -26,15 +26,15 @@
    },
    {
     "name": "15_ann_exact_r3",
-    "query_id": "e58ed5ca-4545-4684-99e0-cc3a70da4a39",
-    "elapsed_s": 42.03036557207815,
+    "query_id": "a187e2df-b008-4c3f-b14f-2f6d3b1f41ad",
+    "elapsed_s": 43.17971843900159,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4153163544,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 42.02906950953184,
+  "median_elapsed_s_after_first": 43.1777410665527,
   "rows": 1,
   "identical_results_across_runs": true,
   "schema": [
@@ -53,14 +53,14 @@
  "16_ann_cagra": {
   "name": "16_ann_cagra",
   "sql_file": "fixture/demo/merrec/scripts/scale/16_ann_cagra.sql",
-  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_cagra(\n  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  k => 10, graph_degree => 32, intermediate_graph_degree => 64, build_algo => 'nn_descent'\n);\n",
-  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_cagra(\n  dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n  queries => (SELECT * FROM mr_taste64 ORDER BY id),\n  k => 10, graph_degree => 32, intermediate_graph_degree => 64, build_algo => 'nn_descent'\n);\n",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "16_ann_cagra_r1",
-    "query_id": "545f7065-966d-4e43-9413-f0bd26e71b66",
-    "elapsed_s": 12.056336418027058,
+    "query_id": "85e20c05-0554-42f0-b265-2325626ecaf6",
+    "elapsed_s": 8.811353127006441,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4894814388,
@@ -68,8 +68,8 @@
    },
    {
     "name": "16_ann_cagra_r2",
-    "query_id": "7c9f7885-3e75-41a7-8d6e-c679b9f40565",
-    "elapsed_s": 8.897700484958477,
+    "query_id": "c0be9a51-a443-42e3-b8d7-834662553fe9",
+    "elapsed_s": 8.80680689890869,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4894814388,
@@ -77,15 +77,15 @@
    },
    {
     "name": "16_ann_cagra_r3",
-    "query_id": "198b033c-c243-4e45-9944-e601850a9183",
-    "elapsed_s": 9.076580701977946,
+    "query_id": "6c6e5648-249a-4b71-9c35-7be82c218dbd",
+    "elapsed_s": 8.768029720988125,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4894814388,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 8.987140593468212,
+  "median_elapsed_s_after_first": 8.787418309948407,
   "rows": 1,
   "identical_results_across_runs": false,
   "schema": [
@@ -97,21 +97,21 @@
    {
     "neighbor_rows": 20807430,
     "shoppers": 2080743,
-    "mean_distance": 0.15278667784869232
+    "mean_distance": 0.15278808509887837
    }
   ]
  },
  "17_ann_ivf_flat": {
   "name": "17_ann_ivf_flat",
   "sql_file": "fixture/demo/merrec/scripts/scale/17_ann_ivf_flat.sql",
-  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_ivf_flat(\n  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  k => 10, n_lists => 2048, n_probes => 32\n);\n",
-  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_ivf_flat(\n  dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n  queries => (SELECT * FROM mr_taste64 ORDER BY id),\n  k => 10, n_lists => 2048, n_probes => 32\n);\n",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "17_ann_ivf_flat_r1",
-    "query_id": "247446b7-0c36-4d27-bc7a-29a32389d920",
-    "elapsed_s": 8.629953245981596,
+    "query_id": "837ceac9-ea02-4ca0-8758-8fb40beb1c57",
+    "elapsed_s": 8.571641816059127,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4884024554,
@@ -119,8 +119,8 @@
    },
    {
     "name": "17_ann_ivf_flat_r2",
-    "query_id": "75117c84-1012-4145-8d26-338301fb3438",
-    "elapsed_s": 8.566833380958997,
+    "query_id": "e8936674-e163-490b-84cd-3b7f7ba06b42",
+    "elapsed_s": 8.508365240879357,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4884024554,
@@ -128,15 +128,15 @@
    },
    {
     "name": "17_ann_ivf_flat_r3",
-    "query_id": "5ddc66ad-0958-4783-ad31-4122a92ea605",
-    "elapsed_s": 8.56907395098824,
+    "query_id": "5ba54f13-0b34-42ca-9fd2-c45e4c67dba4",
+    "elapsed_s": 8.486545676831156,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4884024554,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 8.567953665973619,
+  "median_elapsed_s_after_first": 8.497455458855256,
   "rows": 1,
   "identical_results_across_runs": false,
   "schema": [
@@ -148,21 +148,21 @@
    {
     "neighbor_rows": 20807430,
     "shoppers": 2080743,
-    "mean_distance": 0.15301031135711438
+    "mean_distance": 0.15301159313615448
    }
   ]
  },
  "18_ann_ivf_pq": {
   "name": "18_ann_ivf_pq",
   "sql_file": "fixture/demo/merrec/scripts/scale/18_ann_ivf_pq.sql",
-  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_ivf_pq(\n  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  k => 10, n_lists => 2048, n_probes => 64, pq_dim => 32, pq_bits => 8\n);\n",
-  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_ivf_pq(\n  dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n  queries => (SELECT * FROM mr_taste64 ORDER BY id),\n  k => 10, n_lists => 2048, n_probes => 64, pq_dim => 32, pq_bits => 8\n);\n",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "18_ann_ivf_pq_r1",
-    "query_id": "c9fa7069-f5fb-40ae-8122-c1be83d794f3",
-    "elapsed_s": 4.874753958079964,
+    "query_id": "428b49c1-6c01-4994-b879-d82e7c17a3f9",
+    "elapsed_s": 4.870463256957009,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4884024554,
@@ -170,8 +170,8 @@
    },
    {
     "name": "18_ann_ivf_pq_r2",
-    "query_id": "96789056-f0cf-4952-b48c-b65b0f42d5cf",
-    "elapsed_s": 4.798721030005254,
+    "query_id": "db9f6f19-081c-4a61-83c2-8b3393271cf1",
+    "elapsed_s": 4.786754654953256,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4884024554,
@@ -179,15 +179,15 @@
    },
    {
     "name": "18_ann_ivf_pq_r3",
-    "query_id": "7d075709-1f35-4f82-8e6e-20f3cf76a411",
-    "elapsed_s": 4.797829771996476,
+    "query_id": "f192d538-2a78-4978-98f8-52b1019482cb",
+    "elapsed_s": 4.785392072983086,
     "native_fragments": 4,
     "host_boundaries": 0,
     "allocator_peak_bytes": 4884024554,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 4.798275401000865,
+  "median_elapsed_s_after_first": 4.786073363968171,
   "rows": 1,
   "identical_results_across_runs": false,
   "schema": [
@@ -199,28 +199,28 @@
    {
     "neighbor_rows": 20807430,
     "shoppers": 2080743,
-    "mean_distance": 0.1528037726004052
+    "mean_distance": 0.15279628692619437
    }
   ]
  },
  "19_ann_recall_cagra": {
   "name": "19_ann_recall_cagra",
   "sql_file": "fixture/demo/merrec/scripts/scale/19_ann_recall_cagra.sql",
-  "sql": "WITH exact AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_brute_force_knn(\n    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    k => 10, metric => 'l2_expanded')\n), approx AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_cagra(\n    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    k => 10, graph_degree => 32, intermediate_graph_degree => 64, build_algo => 'nn_descent')\n), kth AS (\n  SELECT query_id, MAX(distance) AS kth_distance FROM exact GROUP BY query_id\n)\nSELECT COUNT(*) AS approx_rows,\n       CAST(COUNT(e.neighbor_id) AS DOUBLE) / COUNT(*) AS id_recall,\n       AVG(CASE WHEN a.distance <= k.kth_distance + 1e-5 THEN 1.0 ELSE 0.0 END) AS within_exact_kth\nFROM approx a\nJOIN kth k ON k.query_id = a.query_id\nLEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;\n",
-  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "sql": "WITH exact AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_brute_force_knn(\n    dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n    queries => (SELECT * FROM mr_taste64 ORDER BY id),\n    k => 10, metric => 'l2_expanded')\n), approx AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_cagra(\n    dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n    queries => (SELECT * FROM mr_taste64 ORDER BY id),\n    k => 10, graph_degree => 32, intermediate_graph_degree => 64, build_algo => 'nn_descent')\n), kth AS (\n  SELECT query_id, MAX(distance) AS kth_distance FROM exact GROUP BY query_id\n)\nSELECT COUNT(*) AS approx_rows,\n       CAST(COUNT(e.neighbor_id) AS DOUBLE) / COUNT(*) AS id_recall,\n       AVG(CASE WHEN a.distance <= k.kth_distance + 1e-5 THEN 1.0 ELSE 0.0 END) AS within_exact_kth\nFROM approx a\nJOIN kth k ON k.query_id = a.query_id\nLEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;\n",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "19_ann_recall_cagra",
-    "query_id": "6162449c-6197-4acd-a559-7ad46c21cc7a",
-    "elapsed_s": 99.00780876399949,
+    "query_id": "ff0f4994-6147-4257-bac1-d69a44ecd594",
+    "elapsed_s": 95.50074519100599,
     "native_fragments": 10,
     "host_boundaries": 0,
     "allocator_peak_bytes": 6569812628,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 99.00780876399949,
+  "median_elapsed_s_after_first": 95.50074519100599,
   "rows": 1,
   "identical_results_across_runs": true,
   "schema": [
@@ -231,29 +231,29 @@
   "records": [
    {
     "approx_rows": 20807430,
-    "id_recall": 0.9923295668902887,
-    "within_exact_kth": 0.9989958394669597
+    "id_recall": 0.9928167486325798,
+    "within_exact_kth": 0.9990221281532606
    }
   ]
  },
  "20_ann_recall_ivf_flat": {
   "name": "20_ann_recall_ivf_flat",
   "sql_file": "fixture/demo/merrec/scripts/scale/20_ann_recall_ivf_flat.sql",
-  "sql": "WITH exact AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_brute_force_knn(\n    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    k => 10, metric => 'l2_expanded')\n), approx AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_ivf_flat(\n    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    k => 10, n_lists => 2048, n_probes => 32)\n), kth AS (\n  SELECT query_id, MAX(distance) AS kth_distance FROM exact GROUP BY query_id\n)\nSELECT COUNT(*) AS approx_rows,\n       CAST(COUNT(e.neighbor_id) AS DOUBLE) / COUNT(*) AS id_recall,\n       AVG(CASE WHEN a.distance <= k.kth_distance + 1e-5 THEN 1.0 ELSE 0.0 END) AS within_exact_kth\nFROM approx a\nJOIN kth k ON k.query_id = a.query_id\nLEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;\n",
-  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "sql": "WITH exact AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_brute_force_knn(\n    dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n    queries => (SELECT * FROM mr_taste64 ORDER BY id),\n    k => 10, metric => 'l2_expanded')\n), approx AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_ivf_flat(\n    dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n    queries => (SELECT * FROM mr_taste64 ORDER BY id),\n    k => 10, n_lists => 2048, n_probes => 32)\n), kth AS (\n  SELECT query_id, MAX(distance) AS kth_distance FROM exact GROUP BY query_id\n)\nSELECT COUNT(*) AS approx_rows,\n       CAST(COUNT(e.neighbor_id) AS DOUBLE) / COUNT(*) AS id_recall,\n       AVG(CASE WHEN a.distance <= k.kth_distance + 1e-5 THEN 1.0 ELSE 0.0 END) AS within_exact_kth\nFROM approx a\nJOIN kth k ON k.query_id = a.query_id\nLEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;\n",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "20_ann_recall_ivf_flat",
-    "query_id": "fd0851e2-7dae-4a60-be5a-56e9366fe212",
-    "elapsed_s": 98.60095702204853,
+    "query_id": "e821bccb-d469-4ba1-ae2b-e060477f8829",
+    "elapsed_s": 96.13583189295605,
     "native_fragments": 10,
     "host_boundaries": 0,
     "allocator_peak_bytes": 6559022794,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 98.60095702204853,
+  "median_elapsed_s_after_first": 96.13583189295605,
   "rows": 1,
   "identical_results_across_runs": true,
   "schema": [
@@ -264,29 +264,29 @@
   "records": [
    {
     "approx_rows": 20807430,
-    "id_recall": 0.9820942326851514,
-    "within_exact_kth": 0.9899842988778528
+    "id_recall": 0.9821825665159032,
+    "within_exact_kth": 0.9900260628054498
    }
   ]
  },
  "21_ann_recall_ivf_pq": {
   "name": "21_ann_recall_ivf_pq",
   "sql_file": "fixture/demo/merrec/scripts/scale/21_ann_recall_ivf_pq.sql",
-  "sql": "WITH exact AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_brute_force_knn(\n    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    k => 10, metric => 'l2_expanded')\n), approx AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_ivf_pq(\n    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n    k => 10, n_lists => 2048, n_probes => 64, pq_dim => 32, pq_bits => 8)\n), kth AS (\n  SELECT query_id, MAX(distance) AS kth_distance FROM exact GROUP BY query_id\n)\nSELECT COUNT(*) AS approx_rows,\n       CAST(COUNT(e.neighbor_id) AS DOUBLE) / COUNT(*) AS id_recall,\n       AVG(CASE WHEN a.distance <= k.kth_distance + 1e-5 THEN 1.0 ELSE 0.0 END) AS within_exact_kth\nFROM approx a\nJOIN kth k ON k.query_id = a.query_id\nLEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;\n",
-  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "sql": "WITH exact AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_brute_force_knn(\n    dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n    queries => (SELECT * FROM mr_taste64 ORDER BY id),\n    k => 10, metric => 'l2_expanded')\n), approx AS (\n  SELECT query_id, neighbor_id, distance FROM cuvs_ivf_pq(\n    dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n    queries => (SELECT * FROM mr_taste64 ORDER BY id),\n    k => 10, n_lists => 2048, n_probes => 64, pq_dim => 32, pq_bits => 8)\n), kth AS (\n  SELECT query_id, MAX(distance) AS kth_distance FROM exact GROUP BY query_id\n)\nSELECT COUNT(*) AS approx_rows,\n       CAST(COUNT(e.neighbor_id) AS DOUBLE) / COUNT(*) AS id_recall,\n       AVG(CASE WHEN a.distance <= k.kth_distance + 1e-5 THEN 1.0 ELSE 0.0 END) AS within_exact_kth\nFROM approx a\nJOIN kth k ON k.query_id = a.query_id\nLEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;\n",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "21_ann_recall_ivf_pq",
-    "query_id": "94a28c58-37ce-454e-9980-6f1999b3b534",
-    "elapsed_s": 93.87235024606343,
+    "query_id": "09c73651-0325-45d6-94ad-4d0124b34c4b",
+    "elapsed_s": 91.66601342195645,
     "native_fragments": 10,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 5828161784,
+    "allocator_peak_bytes": 6559022794,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 93.87235024606343,
+  "median_elapsed_s_after_first": 91.66601342195645,
   "rows": 1,
   "identical_results_across_runs": true,
   "schema": [
@@ -297,47 +297,47 @@
   "records": [
    {
     "approx_rows": 20807430,
-    "id_recall": 0.8619572431578527,
-    "within_exact_kth": 0.9033479386930534
+    "id_recall": 0.8613826407201658,
+    "within_exact_kth": 0.9036524933641492
    }
   ]
  },
  "28_ann_exact_10k": {
   "name": "28_ann_exact_10k",
   "sql_file": "fixture/demo/merrec/scripts/scale/28_ann_exact_10k.sql",
-  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_brute_force_knn(\n  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id LIMIT 10000),\n  k => 10, metric => 'l2_expanded'\n);\n",
-  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_brute_force_knn(\n  dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n  queries => (SELECT * FROM mr_taste64 ORDER BY id LIMIT 10000),\n  k => 10, metric => 'l2_expanded'\n);\n",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "28_ann_exact_10k_r1",
-    "query_id": "f4a37086-a0b2-4c29-9dc7-647ff210f839",
-    "elapsed_s": 0.3448301429161802,
+    "query_id": "084d7612-ca04-4fe8-9bc0-b2bdcc3ba1e9",
+    "elapsed_s": 0.33952124905772507,
     "native_fragments": 4,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 2239405015,
+    "allocator_peak_bytes": 2272697303,
     "query_limit_bytes": 96636764160
    },
    {
     "name": "28_ann_exact_10k_r2",
-    "query_id": "fcb9af65-79bc-40be-ac13-c8d8a9c88529",
-    "elapsed_s": 0.33753041306044906,
+    "query_id": "7c49e687-d204-4b83-a519-23472d0a5b7f",
+    "elapsed_s": 0.3372921710833907,
     "native_fragments": 4,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 2239405015,
+    "allocator_peak_bytes": 2272697303,
     "query_limit_bytes": 96636764160
    },
    {
     "name": "28_ann_exact_10k_r3",
-    "query_id": "dab41d88-a517-47da-9930-45c6a8951942",
-    "elapsed_s": 0.3346491660922766,
+    "query_id": "6ec7ee37-0d34-4e29-ab89-b1b81110a462",
+    "elapsed_s": 0.3360575260594487,
     "native_fragments": 4,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 2239405015,
+    "allocator_peak_bytes": 2272697303,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 0.3360897895763628,
+  "median_elapsed_s_after_first": 0.3366748485714197,
   "rows": 1,
   "identical_results_across_runs": true,
   "schema": [
@@ -356,39 +356,39 @@
  "29_ann_cagra_10k": {
   "name": "29_ann_cagra_10k",
   "sql_file": "fixture/demo/merrec/scripts/scale/29_ann_cagra_10k.sql",
-  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_cagra(\n  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),\n  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id LIMIT 10000),\n  k => 10, graph_degree => 32, intermediate_graph_degree => 64, build_algo => 'nn_descent'\n);\n",
-  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "sql": "SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance\nFROM cuvs_cagra(\n  dataset => (SELECT * FROM mr_taste64 ORDER BY id),\n  queries => (SELECT * FROM mr_taste64 ORDER BY id LIMIT 10000),\n  k => 10, graph_degree => 32, intermediate_graph_degree => 64, build_algo => 'nn_descent'\n);\n",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "29_ann_cagra_10k_r1",
-    "query_id": "67195f9d-6a6a-4faf-acc4-3ab23f85840b",
-    "elapsed_s": 8.3133587280754,
+    "query_id": "dbafaacb-0712-482f-9438-9aed6db459ef",
+    "elapsed_s": 8.08243540697731,
     "native_fragments": 4,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 2239405015,
+    "allocator_peak_bytes": 2272697303,
     "query_limit_bytes": 96636764160
    },
    {
     "name": "29_ann_cagra_10k_r2",
-    "query_id": "2ba27591-f133-4a7e-8c6e-6109e6ab0d8b",
-    "elapsed_s": 8.167896725004539,
+    "query_id": "e05dcd62-179e-4972-9a89-598c223cf490",
+    "elapsed_s": 7.963225454790518,
     "native_fragments": 4,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 2239405015,
+    "allocator_peak_bytes": 2272697303,
     "query_limit_bytes": 96636764160
    },
    {
     "name": "29_ann_cagra_10k_r3",
-    "query_id": "998cca7c-2dbb-4dee-b11b-88d7bd0251c7",
-    "elapsed_s": 8.439293012954295,
+    "query_id": "a64639a4-6fc7-4842-b57d-07ca710b7d42",
+    "elapsed_s": 8.09970143204555,
     "native_fragments": 4,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 2239405015,
+    "allocator_peak_bytes": 2272697303,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 8.303594868979417,
+  "median_elapsed_s_after_first": 8.031463443418033,
   "rows": 1,
   "identical_results_across_runs": false,
   "schema": [
@@ -400,7 +400,7 @@
    {
     "neighbor_rows": 100000,
     "shoppers": 10000,
-    "mean_distance": 0.1529751302145224
+    "mean_distance": 0.15297415679110102
    }
   ]
  }

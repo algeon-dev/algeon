@@ -1,14 +1,14 @@
 {
  "name": "09_shopping_worlds",
  "sql_file": "fixture/demo/merrec/scripts/scale/09_shopping_worlds.sql",
- "sql": "WITH fans AS (\n  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n  GROUP BY e.user_id, i.brand_id\n), top_brands AS (\n  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst ORDER BY fans DESC, dst LIMIT 5000\n), worlds AS (\n  SELECT vertex AS brand_id, community AS world\n  FROM cugraph_leiden(\n    edges => (\n      SELECT first AS src, second AS dst, CAST(similarity AS DOUBLE) AS weight\n      FROM cugraph_jaccard(\n        edges => (SELECT src, dst FROM fans),\n        vertex_pairs => (SELECT a.brand_id AS first, b.brand_id AS second\n                         FROM top_brands a JOIN top_brands b ON a.brand_id < b.brand_id),\n        directed => false)\n      WHERE similarity >= 0.02),\n    directed => false, resolution => 3, seed => 42)\n), members AS (\n  SELECT w.world, n.brand_name, t.fans\n  FROM worlds w\n  JOIN top_brands t ON t.brand_id = w.brand_id\n  JOIN (SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n        FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id) n ON n.brand_id = w.brand_id\n), ranked AS (\n  SELECT world, brand_name, fans,\n         ROW_NUMBER() OVER (PARTITION BY world ORDER BY fans DESC, brand_name) AS rk\n  FROM members\n), sizes AS (\n  SELECT world, COUNT(*) AS brands, SUM(fans) AS fan_links FROM members GROUP BY world\n)\nSELECT s.world, s.brands, s.fan_links, r.rk, r.brand_name, r.fans\nFROM ranked r JOIN sizes s ON s.world = r.world\nWHERE r.rk <= 5 AND s.brands >= 15\nORDER BY s.fan_links DESC, r.rk\n;\n",
- "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+ "sql": "WITH fans AS (\n  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n  GROUP BY e.user_id, i.brand_id\n), top_brands AS (\n  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst ORDER BY fans DESC, dst LIMIT 5000\n), worlds AS (\n  SELECT vertex AS brand_id, community AS world\n  FROM cugraph_leiden(\n    edges => (\n      SELECT first AS src, second AS dst, CAST(similarity AS DOUBLE) AS weight\n      FROM cugraph_jaccard(\n        edges => (SELECT src, dst FROM fans),\n        vertex_pairs => (SELECT a.brand_id AS first, b.brand_id AS second\n                         FROM top_brands a JOIN top_brands b ON a.brand_id < b.brand_id),\n        directed => false)\n      WHERE similarity >= 0.02),\n    directed => false, resolution => 3, seed => 42)\n), members AS (\n  SELECT w.world, n.brand_name, t.fans\n  FROM worlds w\n  JOIN top_brands t ON t.brand_id = w.brand_id\n  JOIN (SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n        FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id) n ON n.brand_id = w.brand_id\n), ranked AS (\n  SELECT world, brand_name, fans,\n         ROW_NUMBER() OVER (PARTITION BY world ORDER BY fans DESC, brand_name) AS rk,\n         COUNT(*) OVER (PARTITION BY world) AS brands,\n         SUM(fans) OVER (PARTITION BY world) AS fan_links\n  FROM members\n)\nSELECT world, brands, fan_links, rk, brand_name, fans\nFROM ranked\nWHERE rk <= 5 AND brands >= 15\nORDER BY fan_links DESC, rk;\n",
+ "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
  "runs": [
   {
    "name": "09_shopping_worlds_r1",
-   "query_id": "36020d1a-0908-4b3a-a0f2-32b11e290fbe",
-   "elapsed_s": 9.463069404941052,
+   "query_id": "bfcb66d5-ba29-48f0-aeb5-b7edb6968783",
+   "elapsed_s": 9.090672760969028,
    "native_fragments": 4,
    "host_boundaries": 0,
    "allocator_peak_bytes": 58471525743,
@@ -16,8 +16,8 @@
   },
   {
    "name": "09_shopping_worlds_r2",
-   "query_id": "9f7b5324-056f-4af4-8aac-eeff7e6ca50c",
-   "elapsed_s": 9.394511334015988,
+   "query_id": "cdf57e75-a075-4d8a-9123-87cc277f2592",
+   "elapsed_s": 9.07824986311607,
    "native_fragments": 4,
    "host_boundaries": 0,
    "allocator_peak_bytes": 58471525743,
@@ -25,17 +25,17 @@
   },
   {
    "name": "09_shopping_worlds_r3",
-   "query_id": "3d6faf61-694f-4282-934a-757d6c8f3334",
-   "elapsed_s": 9.41788225399796,
+   "query_id": "dd6c6e44-3e0e-4736-a855-43ba511155bc",
+   "elapsed_s": 9.144282145891339,
    "native_fragments": 4,
    "host_boundaries": 0,
    "allocator_peak_bytes": 58471525743,
    "query_limit_bytes": 96636764160
   }
  ],
- "median_elapsed_s_after_first": 9.406196794006974,
+ "median_elapsed_s_after_first": 9.111266004503705,
  "rows": 190,
- "identical_results_across_runs": true,
+ "identical_results_across_runs": false,
  "schema": [
   "world: int64",
   "brands: int64",
@@ -46,7 +46,7 @@
  ],
  "records": [
   {
-   "world": 2,
+   "world": 11,
    "brands": 185,
    "fan_links": 11422796,
    "rk": 1,
@@ -54,7 +54,7 @@
    "fans": 507979
   },
   {
-   "world": 2,
+   "world": 11,
    "brands": 185,
    "fan_links": 11422796,
    "rk": 2,
@@ -62,7 +62,7 @@
    "fans": 397593
   },
   {
-   "world": 2,
+   "world": 11,
    "brands": 185,
    "fan_links": 11422796,
    "rk": 3,
@@ -70,7 +70,7 @@
    "fans": 364888
   },
   {
-   "world": 2,
+   "world": 11,
    "brands": 185,
    "fan_links": 11422796,
    "rk": 4,
@@ -78,7 +78,7 @@
    "fans": 251624
   },
   {
-   "world": 2,
+   "world": 11,
    "brands": 185,
    "fan_links": 11422796,
    "rk": 5,
@@ -86,7 +86,7 @@
    "fans": 240895
   },
   {
-   "world": 1,
+   "world": 17,
    "brands": 448,
    "fan_links": 2705416,
    "rk": 1,
@@ -94,7 +94,7 @@
    "fans": 70021
   },
   {
-   "world": 1,
+   "world": 17,
    "brands": 448,
    "fan_links": 2705416,
    "rk": 2,
@@ -102,7 +102,7 @@
    "fans": 68969
   },
   {
-   "world": 1,
+   "world": 17,
    "brands": 448,
    "fan_links": 2705416,
    "rk": 3,
@@ -110,7 +110,7 @@
    "fans": 61458
   },
   {
-   "world": 1,
+   "world": 17,
    "brands": 448,
    "fan_links": 2705416,
    "rk": 4,
@@ -118,7 +118,7 @@
    "fans": 50216
   },
   {
-   "world": 1,
+   "world": 17,
    "brands": 448,
    "fan_links": 2705416,
    "rk": 5,
@@ -126,7 +126,7 @@
    "fans": 48494
   },
   {
-   "world": 3,
+   "world": 36,
    "brands": 394,
    "fan_links": 1321372,
    "rk": 1,
@@ -134,7 +134,7 @@
    "fans": 70873
   },
   {
-   "world": 3,
+   "world": 36,
    "brands": 394,
    "fan_links": 1321372,
    "rk": 2,
@@ -142,7 +142,7 @@
    "fans": 33246
   },
   {
-   "world": 3,
+   "world": 36,
    "brands": 394,
    "fan_links": 1321372,
    "rk": 3,
@@ -150,7 +150,7 @@
    "fans": 26428
   },
   {
-   "world": 3,
+   "world": 36,
    "brands": 394,
    "fan_links": 1321372,
    "rk": 4,
@@ -158,7 +158,7 @@
    "fans": 24541
   },
   {
-   "world": 3,
+   "world": 36,
    "brands": 394,
    "fan_links": 1321372,
    "rk": 5,
@@ -166,7 +166,7 @@
    "fans": 24113
   },
   {
-   "world": 0,
+   "world": 9,
    "brands": 362,
    "fan_links": 1284264,
    "rk": 1,
@@ -174,7 +174,7 @@
    "fans": 34928
   },
   {
-   "world": 0,
+   "world": 9,
    "brands": 362,
    "fan_links": 1284264,
    "rk": 2,
@@ -182,7 +182,7 @@
    "fans": 22097
   },
   {
-   "world": 0,
+   "world": 9,
    "brands": 362,
    "fan_links": 1284264,
    "rk": 3,
@@ -190,7 +190,7 @@
    "fans": 20336
   },
   {
-   "world": 0,
+   "world": 9,
    "brands": 362,
    "fan_links": 1284264,
    "rk": 4,
@@ -198,7 +198,7 @@
    "fans": 19952
   },
   {
-   "world": 0,
+   "world": 9,
    "brands": 362,
    "fan_links": 1284264,
    "rk": 5,
@@ -206,7 +206,7 @@
    "fans": 17806
   },
   {
-   "world": 7,
+   "world": 12,
    "brands": 207,
    "fan_links": 1202806,
    "rk": 1,
@@ -214,7 +214,7 @@
    "fans": 50223
   },
   {
-   "world": 7,
+   "world": 12,
    "brands": 207,
    "fan_links": 1202806,
    "rk": 2,
@@ -222,7 +222,7 @@
    "fans": 43660
   },
   {
-   "world": 7,
+   "world": 12,
    "brands": 207,
    "fan_links": 1202806,
    "rk": 3,
@@ -230,7 +230,7 @@
    "fans": 39695
   },
   {
-   "world": 7,
+   "world": 12,
    "brands": 207,
    "fan_links": 1202806,
    "rk": 4,
@@ -238,7 +238,7 @@
    "fans": 38883
   },
   {
-   "world": 7,
+   "world": 12,
    "brands": 207,
    "fan_links": 1202806,
    "rk": 5,
@@ -246,7 +246,7 @@
    "fans": 37626
   },
   {
-   "world": 15,
+   "world": 14,
    "brands": 415,
    "fan_links": 1126677,
    "rk": 1,
@@ -254,7 +254,7 @@
    "fans": 23971
   },
   {
-   "world": 15,
+   "world": 14,
    "brands": 415,
    "fan_links": 1126677,
    "rk": 2,
@@ -262,7 +262,7 @@
    "fans": 21313
   },
   {
-   "world": 15,
+   "world": 14,
    "brands": 415,
    "fan_links": 1126677,
    "rk": 3,
@@ -270,7 +270,7 @@
    "fans": 17834
   },
   {
-   "world": 15,
+   "world": 14,
    "brands": 415,
    "fan_links": 1126677,
    "rk": 4,
@@ -278,7 +278,7 @@
    "fans": 17620
   },
   {
-   "world": 15,
+   "world": 14,
    "brands": 415,
    "fan_links": 1126677,
    "rk": 5,
@@ -286,7 +286,7 @@
    "fans": 15239
   },
   {
-   "world": 6,
+   "world": 29,
    "brands": 157,
    "fan_links": 840385,
    "rk": 1,
@@ -294,7 +294,7 @@
    "fans": 36718
   },
   {
-   "world": 6,
+   "world": 29,
    "brands": 157,
    "fan_links": 840385,
    "rk": 2,
@@ -302,7 +302,7 @@
    "fans": 36503
   },
   {
-   "world": 6,
+   "world": 29,
    "brands": 157,
    "fan_links": 840385,
    "rk": 3,
@@ -310,7 +310,7 @@
    "fans": 35362
   },
   {
-   "world": 6,
+   "world": 29,
    "brands": 157,
    "fan_links": 840385,
    "rk": 4,
@@ -318,7 +318,7 @@
    "fans": 30139
   },
   {
-   "world": 6,
+   "world": 29,
    "brands": 157,
    "fan_links": 840385,
    "rk": 5,
@@ -326,7 +326,7 @@
    "fans": 27170
   },
   {
-   "world": 12,
+   "world": 21,
    "brands": 110,
    "fan_links": 553627,
    "rk": 1,
@@ -334,7 +334,7 @@
    "fans": 33846
   },
   {
-   "world": 12,
+   "world": 21,
    "brands": 110,
    "fan_links": 553627,
    "rk": 2,
@@ -342,7 +342,7 @@
    "fans": 31416
   },
   {
-   "world": 12,
+   "world": 21,
    "brands": 110,
    "fan_links": 553627,
    "rk": 3,
@@ -350,7 +350,7 @@
    "fans": 23961
   },
   {
-   "world": 12,
+   "world": 21,
    "brands": 110,
    "fan_links": 553627,
    "rk": 4,
@@ -358,7 +358,7 @@
    "fans": 23294
   },
   {
-   "world": 12,
+   "world": 21,
    "brands": 110,
    "fan_links": 553627,
    "rk": 5,
@@ -366,7 +366,7 @@
    "fans": 18651
   },
   {
-   "world": 8,
+   "world": 45,
    "brands": 139,
    "fan_links": 432756,
    "rk": 1,
@@ -374,7 +374,7 @@
    "fans": 28523
   },
   {
-   "world": 8,
+   "world": 45,
    "brands": 139,
    "fan_links": 432756,
    "rk": 2,
@@ -382,7 +382,7 @@
    "fans": 26522
   },
   {
-   "world": 8,
+   "world": 45,
    "brands": 139,
    "fan_links": 432756,
    "rk": 3,
@@ -390,7 +390,7 @@
    "fans": 16971
   },
   {
-   "world": 8,
+   "world": 45,
    "brands": 139,
    "fan_links": 432756,
    "rk": 4,
@@ -398,7 +398,7 @@
    "fans": 12993
   },
   {
-   "world": 8,
+   "world": 45,
    "brands": 139,
    "fan_links": 432756,
    "rk": 5,
@@ -446,7 +446,7 @@
    "fans": 23230
   },
   {
-   "world": 14,
+   "world": 64,
    "brands": 81,
    "fan_links": 366264,
    "rk": 1,
@@ -454,7 +454,7 @@
    "fans": 35181
   },
   {
-   "world": 14,
+   "world": 64,
    "brands": 81,
    "fan_links": 366264,
    "rk": 2,
@@ -462,7 +462,7 @@
    "fans": 34843
   },
   {
-   "world": 14,
+   "world": 64,
    "brands": 81,
    "fan_links": 366264,
    "rk": 3,
@@ -470,7 +470,7 @@
    "fans": 25211
   },
   {
-   "world": 14,
+   "world": 64,
    "brands": 81,
    "fan_links": 366264,
    "rk": 4,
@@ -478,7 +478,7 @@
    "fans": 20752
   },
   {
-   "world": 14,
+   "world": 64,
    "brands": 81,
    "fan_links": 366264,
    "rk": 5,
@@ -486,7 +486,7 @@
    "fans": 18950
   },
   {
-   "world": 9,
+   "world": 43,
    "brands": 135,
    "fan_links": 358029,
    "rk": 1,
@@ -494,7 +494,7 @@
    "fans": 15860
   },
   {
-   "world": 9,
+   "world": 43,
    "brands": 135,
    "fan_links": 358029,
    "rk": 2,
@@ -502,7 +502,7 @@
    "fans": 12259
   },
   {
-   "world": 9,
+   "world": 43,
    "brands": 135,
    "fan_links": 358029,
    "rk": 3,
@@ -510,7 +510,7 @@
    "fans": 12248
   },
   {
-   "world": 9,
+   "world": 43,
    "brands": 135,
    "fan_links": 358029,
    "rk": 4,
@@ -518,7 +518,7 @@
    "fans": 11232
   },
   {
-   "world": 9,
+   "world": 43,
    "brands": 135,
    "fan_links": 358029,
    "rk": 5,
@@ -526,7 +526,7 @@
    "fans": 9516
   },
   {
-   "world": 4,
+   "world": 55,
    "brands": 155,
    "fan_links": 326197,
    "rk": 1,
@@ -534,7 +534,7 @@
    "fans": 12769
   },
   {
-   "world": 4,
+   "world": 55,
    "brands": 155,
    "fan_links": 326197,
    "rk": 2,
@@ -542,7 +542,7 @@
    "fans": 12675
   },
   {
-   "world": 4,
+   "world": 55,
    "brands": 155,
    "fan_links": 326197,
    "rk": 3,
@@ -550,7 +550,7 @@
    "fans": 12207
   },
   {
-   "world": 4,
+   "world": 55,
    "brands": 155,
    "fan_links": 326197,
    "rk": 4,
@@ -558,7 +558,7 @@
    "fans": 9815
   },
   {
-   "world": 4,
+   "world": 55,
    "brands": 155,
    "fan_links": 326197,
    "rk": 5,
@@ -566,7 +566,7 @@
    "fans": 7869
   },
   {
-   "world": 20,
+   "world": 13,
    "brands": 153,
    "fan_links": 317471,
    "rk": 1,
@@ -574,7 +574,7 @@
    "fans": 11394
   },
   {
-   "world": 20,
+   "world": 13,
    "brands": 153,
    "fan_links": 317471,
    "rk": 2,
@@ -582,7 +582,7 @@
    "fans": 8396
   },
   {
-   "world": 20,
+   "world": 13,
    "brands": 153,
    "fan_links": 317471,
    "rk": 3,
@@ -590,7 +590,7 @@
    "fans": 8269
   },
   {
-   "world": 20,
+   "world": 13,
    "brands": 153,
    "fan_links": 317471,
    "rk": 4,
@@ -598,7 +598,7 @@
    "fans": 8218
   },
   {
-   "world": 20,
+   "world": 13,
    "brands": 153,
    "fan_links": 317471,
    "rk": 5,
@@ -606,7 +606,7 @@
    "fans": 6924
   },
   {
-   "world": 43,
+   "world": 67,
    "brands": 59,
    "fan_links": 296787,
    "rk": 1,
@@ -614,7 +614,7 @@
    "fans": 41811
   },
   {
-   "world": 43,
+   "world": 67,
    "brands": 59,
    "fan_links": 296787,
    "rk": 2,
@@ -622,7 +622,7 @@
    "fans": 21808
   },
   {
-   "world": 43,
+   "world": 67,
    "brands": 59,
    "fan_links": 296787,
    "rk": 3,
@@ -630,7 +630,7 @@
    "fans": 16470
   },
   {
-   "world": 43,
+   "world": 67,
    "brands": 59,
    "fan_links": 296787,
    "rk": 4,
@@ -638,7 +638,7 @@
    "fans": 13245
   },
   {
-   "world": 43,
+   "world": 67,
    "brands": 59,
    "fan_links": 296787,
    "rk": 5,
@@ -646,7 +646,7 @@
    "fans": 12709
   },
   {
-   "world": 33,
+   "world": 19,
    "brands": 137,
    "fan_links": 295377,
    "rk": 1,
@@ -654,7 +654,7 @@
    "fans": 9996
   },
   {
-   "world": 33,
+   "world": 19,
    "brands": 137,
    "fan_links": 295377,
    "rk": 2,
@@ -662,7 +662,7 @@
    "fans": 9120
   },
   {
-   "world": 33,
+   "world": 19,
    "brands": 137,
    "fan_links": 295377,
    "rk": 3,
@@ -670,7 +670,7 @@
    "fans": 7391
   },
   {
-   "world": 33,
+   "world": 19,
    "brands": 137,
    "fan_links": 295377,
    "rk": 4,
@@ -678,7 +678,7 @@
    "fans": 6467
   },
   {
-   "world": 33,
+   "world": 19,
    "brands": 137,
    "fan_links": 295377,
    "rk": 5,
@@ -686,7 +686,7 @@
    "fans": 6244
   },
   {
-   "world": 46,
+   "world": 37,
    "brands": 73,
    "fan_links": 289886,
    "rk": 1,
@@ -694,7 +694,7 @@
    "fans": 21728
   },
   {
-   "world": 46,
+   "world": 37,
    "brands": 73,
    "fan_links": 289886,
    "rk": 2,
@@ -702,7 +702,7 @@
    "fans": 18814
   },
   {
-   "world": 46,
+   "world": 37,
    "brands": 73,
    "fan_links": 289886,
    "rk": 3,
@@ -710,7 +710,7 @@
    "fans": 14273
   },
   {
-   "world": 46,
+   "world": 37,
    "brands": 73,
    "fan_links": 289886,
    "rk": 4,
@@ -718,7 +718,7 @@
    "fans": 13160
   },
   {
-   "world": 46,
+   "world": 37,
    "brands": 73,
    "fan_links": 289886,
    "rk": 5,
@@ -726,7 +726,7 @@
    "fans": 13126
   },
   {
-   "world": 11,
+   "world": 34,
    "brands": 86,
    "fan_links": 273689,
    "rk": 1,
@@ -734,7 +734,7 @@
    "fans": 14828
   },
   {
-   "world": 11,
+   "world": 34,
    "brands": 86,
    "fan_links": 273689,
    "rk": 2,
@@ -742,7 +742,7 @@
    "fans": 14196
   },
   {
-   "world": 11,
+   "world": 34,
    "brands": 86,
    "fan_links": 273689,
    "rk": 3,
@@ -750,7 +750,7 @@
    "fans": 9851
   },
   {
-   "world": 11,
+   "world": 34,
    "brands": 86,
    "fan_links": 273689,
    "rk": 4,
@@ -758,7 +758,7 @@
    "fans": 8593
   },
   {
-   "world": 11,
+   "world": 34,
    "brands": 86,
    "fan_links": 273689,
    "rk": 5,
@@ -766,7 +766,7 @@
    "fans": 8336
   },
   {
-   "world": 5,
+   "world": 38,
    "brands": 101,
    "fan_links": 270253,
    "rk": 1,
@@ -774,7 +774,7 @@
    "fans": 12156
   },
   {
-   "world": 5,
+   "world": 38,
    "brands": 101,
    "fan_links": 270253,
    "rk": 2,
@@ -782,7 +782,7 @@
    "fans": 10183
   },
   {
-   "world": 5,
+   "world": 38,
    "brands": 101,
    "fan_links": 270253,
    "rk": 3,
@@ -790,7 +790,7 @@
    "fans": 10007
   },
   {
-   "world": 5,
+   "world": 38,
    "brands": 101,
    "fan_links": 270253,
    "rk": 4,
@@ -798,7 +798,7 @@
    "fans": 9640
   },
   {
-   "world": 5,
+   "world": 38,
    "brands": 101,
    "fan_links": 270253,
    "rk": 5,
@@ -806,7 +806,7 @@
    "fans": 9192
   },
   {
-   "world": 26,
+   "world": 15,
    "brands": 191,
    "fan_links": 263338,
    "rk": 1,
@@ -814,7 +814,7 @@
    "fans": 4956
   },
   {
-   "world": 26,
+   "world": 15,
    "brands": 191,
    "fan_links": 263338,
    "rk": 2,
@@ -822,7 +822,7 @@
    "fans": 4181
   },
   {
-   "world": 26,
+   "world": 15,
    "brands": 191,
    "fan_links": 263338,
    "rk": 3,
@@ -830,7 +830,7 @@
    "fans": 3973
   },
   {
-   "world": 26,
+   "world": 15,
    "brands": 191,
    "fan_links": 263338,
    "rk": 4,
@@ -838,7 +838,7 @@
    "fans": 3873
   },
   {
-   "world": 26,
+   "world": 15,
    "brands": 191,
    "fan_links": 263338,
    "rk": 5,
@@ -846,7 +846,7 @@
    "fans": 3810
   },
   {
-   "world": 44,
+   "world": 52,
    "brands": 113,
    "fan_links": 254664,
    "rk": 1,
@@ -854,7 +854,7 @@
    "fans": 33919
   },
   {
-   "world": 44,
+   "world": 52,
    "brands": 113,
    "fan_links": 254664,
    "rk": 2,
@@ -862,7 +862,7 @@
    "fans": 17998
   },
   {
-   "world": 44,
+   "world": 52,
    "brands": 113,
    "fan_links": 254664,
    "rk": 3,
@@ -870,7 +870,7 @@
    "fans": 13770
   },
   {
-   "world": 44,
+   "world": 52,
    "brands": 113,
    "fan_links": 254664,
    "rk": 4,
@@ -878,7 +878,7 @@
    "fans": 10753
   },
   {
-   "world": 44,
+   "world": 52,
    "brands": 113,
    "fan_links": 254664,
    "rk": 5,
@@ -886,7 +886,7 @@
    "fans": 9477
   },
   {
-   "world": 40,
+   "world": 6,
    "brands": 186,
    "fan_links": 234773,
    "rk": 1,
@@ -894,7 +894,7 @@
    "fans": 3468
   },
   {
-   "world": 40,
+   "world": 6,
    "brands": 186,
    "fan_links": 234773,
    "rk": 2,
@@ -902,7 +902,7 @@
    "fans": 3399
   },
   {
-   "world": 40,
+   "world": 6,
    "brands": 186,
    "fan_links": 234773,
    "rk": 3,
@@ -910,7 +910,7 @@
    "fans": 3275
   },
   {
-   "world": 40,
+   "world": 6,
    "brands": 186,
    "fan_links": 234773,
    "rk": 4,
@@ -918,7 +918,7 @@
    "fans": 2725
   },
   {
-   "world": 40,
+   "world": 6,
    "brands": 186,
    "fan_links": 234773,
    "rk": 5,
@@ -926,7 +926,7 @@
    "fans": 2673
   },
   {
-   "world": 16,
+   "world": 7,
    "brands": 86,
    "fan_links": 206164,
    "rk": 1,
@@ -934,7 +934,7 @@
    "fans": 12620
   },
   {
-   "world": 16,
+   "world": 7,
    "brands": 86,
    "fan_links": 206164,
    "rk": 2,
@@ -942,7 +942,7 @@
    "fans": 9032
   },
   {
-   "world": 16,
+   "world": 7,
    "brands": 86,
    "fan_links": 206164,
    "rk": 3,
@@ -950,7 +950,7 @@
    "fans": 8166
   },
   {
-   "world": 16,
+   "world": 7,
    "brands": 86,
    "fan_links": 206164,
    "rk": 4,
@@ -958,7 +958,7 @@
    "fans": 8023
   },
   {
-   "world": 16,
+   "world": 7,
    "brands": 86,
    "fan_links": 206164,
    "rk": 5,
@@ -966,7 +966,7 @@
    "fans": 6508
   },
   {
-   "world": 27,
+   "world": 66,
    "brands": 77,
    "fan_links": 165136,
    "rk": 1,
@@ -974,7 +974,7 @@
    "fans": 9027
   },
   {
-   "world": 27,
+   "world": 66,
    "brands": 77,
    "fan_links": 165136,
    "rk": 2,
@@ -982,7 +982,7 @@
    "fans": 8505
   },
   {
-   "world": 27,
+   "world": 66,
    "brands": 77,
    "fan_links": 165136,
    "rk": 3,
@@ -990,7 +990,7 @@
    "fans": 7927
   },
   {
-   "world": 27,
+   "world": 66,
    "brands": 77,
    "fan_links": 165136,
    "rk": 4,
@@ -998,7 +998,7 @@
    "fans": 6798
   },
   {
-   "world": 27,
+   "world": 66,
    "brands": 77,
    "fan_links": 165136,
    "rk": 5,
@@ -1006,7 +1006,7 @@
    "fans": 6710
   },
   {
-   "world": 30,
+   "world": 62,
    "brands": 40,
    "fan_links": 161338,
    "rk": 1,
@@ -1014,7 +1014,7 @@
    "fans": 16913
   },
   {
-   "world": 30,
+   "world": 62,
    "brands": 40,
    "fan_links": 161338,
    "rk": 2,
@@ -1022,7 +1022,7 @@
    "fans": 16831
   },
   {
-   "world": 30,
+   "world": 62,
    "brands": 40,
    "fan_links": 161338,
    "rk": 3,
@@ -1030,7 +1030,7 @@
    "fans": 16813
   },
   {
-   "world": 30,
+   "world": 62,
    "brands": 40,
    "fan_links": 161338,
    "rk": 4,
@@ -1038,7 +1038,7 @@
    "fans": 11040
   },
   {
-   "world": 30,
+   "world": 62,
    "brands": 40,
    "fan_links": 161338,
    "rk": 5,
@@ -1046,7 +1046,7 @@
    "fans": 9303
   },
   {
-   "world": 10,
+   "world": 32,
    "brands": 74,
    "fan_links": 159261,
    "rk": 1,
@@ -1054,7 +1054,7 @@
    "fans": 21633
   },
   {
-   "world": 10,
+   "world": 32,
    "brands": 74,
    "fan_links": 159261,
    "rk": 2,
@@ -1062,7 +1062,7 @@
    "fans": 10082
   },
   {
-   "world": 10,
+   "world": 32,
    "brands": 74,
    "fan_links": 159261,
    "rk": 3,
@@ -1070,7 +1070,7 @@
    "fans": 8476
   },
   {
-   "world": 10,
+   "world": 32,
    "brands": 74,
    "fan_links": 159261,
    "rk": 4,
@@ -1078,7 +1078,7 @@
    "fans": 7499
   },
   {
-   "world": 10,
+   "world": 32,
    "brands": 74,
    "fan_links": 159261,
    "rk": 5,
@@ -1086,7 +1086,7 @@
    "fans": 6360
   },
   {
-   "world": 41,
+   "world": 2,
    "brands": 89,
    "fan_links": 145792,
    "rk": 1,
@@ -1094,7 +1094,7 @@
    "fans": 10634
   },
   {
-   "world": 41,
+   "world": 2,
    "brands": 89,
    "fan_links": 145792,
    "rk": 2,
@@ -1102,7 +1102,7 @@
    "fans": 6046
   },
   {
-   "world": 41,
+   "world": 2,
    "brands": 89,
    "fan_links": 145792,
    "rk": 3,
@@ -1110,7 +1110,7 @@
    "fans": 4123
   },
   {
-   "world": 41,
+   "world": 2,
    "brands": 89,
    "fan_links": 145792,
    "rk": 4,
@@ -1118,7 +1118,7 @@
    "fans": 4097
   },
   {
-   "world": 41,
+   "world": 2,
    "brands": 89,
    "fan_links": 145792,
    "rk": 5,
@@ -1126,7 +1126,7 @@
    "fans": 3567
   },
   {
-   "world": 18,
+   "world": 24,
    "brands": 66,
    "fan_links": 135277,
    "rk": 1,
@@ -1134,7 +1134,7 @@
    "fans": 15896
   },
   {
-   "world": 18,
+   "world": 24,
    "brands": 66,
    "fan_links": 135277,
    "rk": 2,
@@ -1142,7 +1142,7 @@
    "fans": 14254
   },
   {
-   "world": 18,
+   "world": 24,
    "brands": 66,
    "fan_links": 135277,
    "rk": 3,
@@ -1150,7 +1150,7 @@
    "fans": 9391
   },
   {
-   "world": 18,
+   "world": 24,
    "brands": 66,
    "fan_links": 135277,
    "rk": 4,
@@ -1158,7 +1158,7 @@
    "fans": 5676
   },
   {
-   "world": 18,
+   "world": 24,
    "brands": 66,
    "fan_links": 135277,
    "rk": 5,
@@ -1166,7 +1166,7 @@
    "fans": 4298
   },
   {
-   "world": 17,
+   "world": 30,
    "brands": 55,
    "fan_links": 133442,
    "rk": 1,
@@ -1174,7 +1174,7 @@
    "fans": 10128
   },
   {
-   "world": 17,
+   "world": 30,
    "brands": 55,
    "fan_links": 133442,
    "rk": 2,
@@ -1182,7 +1182,7 @@
    "fans": 8986
   },
   {
-   "world": 17,
+   "world": 30,
    "brands": 55,
    "fan_links": 133442,
    "rk": 3,
@@ -1190,7 +1190,7 @@
    "fans": 6268
   },
   {
-   "world": 17,
+   "world": 30,
    "brands": 55,
    "fan_links": 133442,
    "rk": 4,
@@ -1198,7 +1198,7 @@
    "fans": 5115
   },
   {
-   "world": 17,
+   "world": 30,
    "brands": 55,
    "fan_links": 133442,
    "rk": 5,
@@ -1206,47 +1206,7 @@
    "fans": 4756
   },
   {
-   "world": 37,
-   "brands": 27,
-   "fan_links": 132924,
-   "rk": 1,
-   "brand_name": "Ulta",
-   "fans": 26418
-  },
-  {
-   "world": 37,
-   "brands": 27,
-   "fan_links": 132924,
-   "rk": 2,
-   "brand_name": "OtterBox",
-   "fans": 15375
-  },
-  {
-   "world": 37,
-   "brands": 27,
-   "fan_links": 132924,
-   "rk": 3,
-   "brand_name": "Tahari",
-   "fans": 12615
-  },
-  {
-   "world": 37,
-   "brands": 27,
-   "fan_links": 132924,
-   "rk": 4,
-   "brand_name": "Casetify",
-   "fans": 11548
-  },
-  {
-   "world": 37,
-   "brands": 27,
-   "fan_links": 132924,
-   "rk": 5,
-   "brand_name": "Cato",
-   "fans": 10069
-  },
-  {
-   "world": 21,
+   "world": 27,
    "brands": 49,
    "fan_links": 130491,
    "rk": 1,
@@ -1254,7 +1214,7 @@
    "fans": 9404
   },
   {
-   "world": 21,
+   "world": 27,
    "brands": 49,
    "fan_links": 130491,
    "rk": 2,
@@ -1262,7 +1222,7 @@
    "fans": 8118
   },
   {
-   "world": 21,
+   "world": 27,
    "brands": 49,
    "fan_links": 130491,
    "rk": 3,
@@ -1270,7 +1230,7 @@
    "fans": 7651
   },
   {
-   "world": 21,
+   "world": 27,
    "brands": 49,
    "fan_links": 130491,
    "rk": 4,
@@ -1278,7 +1238,7 @@
    "fans": 6450
   },
   {
-   "world": 21,
+   "world": 27,
    "brands": 49,
    "fan_links": 130491,
    "rk": 5,
@@ -1286,7 +1246,47 @@
    "fans": 5755
   },
   {
-   "world": 24,
+   "world": 60,
+   "brands": 25,
+   "fan_links": 128399,
+   "rk": 1,
+   "brand_name": "Ulta",
+   "fans": 26418
+  },
+  {
+   "world": 60,
+   "brands": 25,
+   "fan_links": 128399,
+   "rk": 2,
+   "brand_name": "OtterBox",
+   "fans": 15375
+  },
+  {
+   "world": 60,
+   "brands": 25,
+   "fan_links": 128399,
+   "rk": 3,
+   "brand_name": "Tahari",
+   "fans": 12615
+  },
+  {
+   "world": 60,
+   "brands": 25,
+   "fan_links": 128399,
+   "rk": 4,
+   "brand_name": "Casetify",
+   "fans": 11548
+  },
+  {
+   "world": 60,
+   "brands": 25,
+   "fan_links": 128399,
+   "rk": 5,
+   "brand_name": "Cato",
+   "fans": 10069
+  },
+  {
+   "world": 51,
    "brands": 33,
    "fan_links": 119893,
    "rk": 1,
@@ -1294,7 +1294,7 @@
    "fans": 18575
   },
   {
-   "world": 24,
+   "world": 51,
    "brands": 33,
    "fan_links": 119893,
    "rk": 2,
@@ -1302,7 +1302,7 @@
    "fans": 10515
   },
   {
-   "world": 24,
+   "world": 51,
    "brands": 33,
    "fan_links": 119893,
    "rk": 3,
@@ -1310,7 +1310,7 @@
    "fans": 9729
   },
   {
-   "world": 24,
+   "world": 51,
    "brands": 33,
    "fan_links": 119893,
    "rk": 4,
@@ -1318,7 +1318,7 @@
    "fans": 8415
   },
   {
-   "world": 24,
+   "world": 51,
    "brands": 33,
    "fan_links": 119893,
    "rk": 5,
@@ -1326,7 +1326,7 @@
    "fans": 7658
   },
   {
-   "world": 45,
+   "world": 16,
    "brands": 60,
    "fan_links": 110824,
    "rk": 1,
@@ -1334,7 +1334,7 @@
    "fans": 8883
   },
   {
-   "world": 45,
+   "world": 16,
    "brands": 60,
    "fan_links": 110824,
    "rk": 2,
@@ -1342,7 +1342,7 @@
    "fans": 6619
   },
   {
-   "world": 45,
+   "world": 16,
    "brands": 60,
    "fan_links": 110824,
    "rk": 3,
@@ -1350,7 +1350,7 @@
    "fans": 5074
   },
   {
-   "world": 45,
+   "world": 16,
    "brands": 60,
    "fan_links": 110824,
    "rk": 4,
@@ -1358,7 +1358,7 @@
    "fans": 4646
   },
   {
-   "world": 45,
+   "world": 16,
    "brands": 60,
    "fan_links": 110824,
    "rk": 5,
@@ -1366,7 +1366,7 @@
    "fans": 4327
   },
   {
-   "world": 13,
+   "world": 20,
    "brands": 32,
    "fan_links": 108737,
    "rk": 1,
@@ -1374,7 +1374,7 @@
    "fans": 9761
   },
   {
-   "world": 13,
+   "world": 20,
    "brands": 32,
    "fan_links": 108737,
    "rk": 2,
@@ -1382,7 +1382,7 @@
    "fans": 8889
   },
   {
-   "world": 13,
+   "world": 20,
    "brands": 32,
    "fan_links": 108737,
    "rk": 3,
@@ -1390,7 +1390,7 @@
    "fans": 8115
   },
   {
-   "world": 13,
+   "world": 20,
    "brands": 32,
    "fan_links": 108737,
    "rk": 4,
@@ -1398,7 +1398,7 @@
    "fans": 7719
   },
   {
-   "world": 13,
+   "world": 20,
    "brands": 32,
    "fan_links": 108737,
    "rk": 5,
@@ -1406,7 +1406,7 @@
    "fans": 7609
   },
   {
-   "world": 22,
+   "world": 23,
    "brands": 44,
    "fan_links": 106073,
    "rk": 1,
@@ -1414,7 +1414,7 @@
    "fans": 14057
   },
   {
-   "world": 22,
+   "world": 23,
    "brands": 44,
    "fan_links": 106073,
    "rk": 2,
@@ -1422,7 +1422,7 @@
    "fans": 8235
   },
   {
-   "world": 22,
+   "world": 23,
    "brands": 44,
    "fan_links": 106073,
    "rk": 3,
@@ -1430,7 +1430,7 @@
    "fans": 8208
   },
   {
-   "world": 22,
+   "world": 23,
    "brands": 44,
    "fan_links": 106073,
    "rk": 4,
@@ -1438,7 +1438,7 @@
    "fans": 4966
   },
   {
-   "world": 22,
+   "world": 23,
    "brands": 44,
    "fan_links": 106073,
    "rk": 5,
@@ -1446,7 +1446,7 @@
    "fans": 4213
   },
   {
-   "world": 34,
+   "world": 57,
    "brands": 24,
    "fan_links": 71778,
    "rk": 1,
@@ -1454,7 +1454,7 @@
    "fans": 23811
   },
   {
-   "world": 34,
+   "world": 57,
    "brands": 24,
    "fan_links": 71778,
    "rk": 2,
@@ -1462,7 +1462,7 @@
    "fans": 6473
   },
   {
-   "world": 34,
+   "world": 57,
    "brands": 24,
    "fan_links": 71778,
    "rk": 3,
@@ -1470,7 +1470,7 @@
    "fans": 4890
   },
   {
-   "world": 34,
+   "world": 57,
    "brands": 24,
    "fan_links": 71778,
    "rk": 4,
@@ -1478,7 +1478,7 @@
    "fans": 4483
   },
   {
-   "world": 34,
+   "world": 57,
    "brands": 24,
    "fan_links": 71778,
    "rk": 5,
@@ -1486,7 +1486,7 @@
    "fans": 3933
   },
   {
-   "world": 19,
+   "world": 26,
    "brands": 25,
    "fan_links": 52786,
    "rk": 1,
@@ -1494,7 +1494,7 @@
    "fans": 10504
   },
   {
-   "world": 19,
+   "world": 26,
    "brands": 25,
    "fan_links": 52786,
    "rk": 2,
@@ -1502,7 +1502,7 @@
    "fans": 5961
   },
   {
-   "world": 19,
+   "world": 26,
    "brands": 25,
    "fan_links": 52786,
    "rk": 3,
@@ -1510,7 +1510,7 @@
    "fans": 4996
   },
   {
-   "world": 19,
+   "world": 26,
    "brands": 25,
    "fan_links": 52786,
    "rk": 4,
@@ -1518,7 +1518,7 @@
    "fans": 4391
   },
   {
-   "world": 19,
+   "world": 26,
    "brands": 25,
    "fan_links": 52786,
    "rk": 5,
@@ -1526,7 +1526,7 @@
    "fans": 3215
   },
   {
-   "world": 31,
+   "world": 0,
    "brands": 28,
    "fan_links": 52544,
    "rk": 1,
@@ -1534,7 +1534,7 @@
    "fans": 6991
   },
   {
-   "world": 31,
+   "world": 0,
    "brands": 28,
    "fan_links": 52544,
    "rk": 2,
@@ -1542,7 +1542,7 @@
    "fans": 6395
   },
   {
-   "world": 31,
+   "world": 0,
    "brands": 28,
    "fan_links": 52544,
    "rk": 3,
@@ -1550,7 +1550,7 @@
    "fans": 5250
   },
   {
-   "world": 31,
+   "world": 0,
    "brands": 28,
    "fan_links": 52544,
    "rk": 4,
@@ -1558,7 +1558,7 @@
    "fans": 3783
   },
   {
-   "world": 31,
+   "world": 0,
    "brands": 28,
    "fan_links": 52544,
    "rk": 5,

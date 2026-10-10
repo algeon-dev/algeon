@@ -215,7 +215,7 @@ Two runs of the same statement on the same data, options and GPU return the same
 | `cugraph_force_atlas2` | `seed`: initial positions | Coordinates differ in every run, because force accumulation uses atomics. |
 | `cugraph_spectral_modularity_maximization` | `seed`: Lanczos start vector and k-means initialization | The partition can differ with the same seed, because k-means centroid sums use atomics. |
 | `cugraph_ecg` | `seed`: initial community labels of each Louvain pass | Identical communities are not guaranteed. |
-| `cugraph_leiden` | `seed`: random choices in the refinement step | Identical communities are not guaranteed. The MerRec shopping-worlds capture returned one partition in three runs. |
+| `cugraph_leiden` | `seed`: random choices in the refinement step | Identical communities are not guaranteed. The MerRec shopping-worlds capture grouped the brands identically in three runs, under different community numbers. |
 | `cugraph_bfs` | none | Distances repeat. The predecessor of a vertex with several shortest-path parents can differ. |
 | `cugraph_sssp` | none | Distances and predecessors repeat. Which of several equal-cost parents becomes the predecessor is unspecified. |
 | `cugraph_hits` | none | Scores differ in the last digits, because the hub update uses atomics. |

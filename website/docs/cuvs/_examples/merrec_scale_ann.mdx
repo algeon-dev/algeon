@@ -22,15 +22,15 @@ distance.
 
 | Method | Median time (s) | Speed-up | Exact neighbor IDs kept | Within exact 10th distance |
 |---|---:|---:|---:|---:|
-| Exact brute force | 42.03 | 1.0x | 100% | 100% |
-| CAGRA | 8.99 | 4.7x | 99.2% | 99.9% |
-| IVF-Flat | 8.57 | 4.9x | 98.2% | 99.0% |
-| IVF-PQ | 4.80 | 8.8x | 86.2% | 90.3% |
+| Exact brute force | 43.18 | 1.0x | 100% | 100% |
+| CAGRA | 8.79 | 4.9x | 99.3% | 99.9% |
+| IVF-Flat | 8.50 | 5.1x | 98.2% | 99.0% |
+| IVF-PQ | 4.79 | 9.0x | 86.1% | 90.4% |
 
 All three methods beat exact search at this batch size. CAGRA keeps more
 than 99% of exact neighbor IDs at about a fifth of the exact time.
 IVF-Flat is close behind, and IVF-PQ is the fastest but loses about one
-neighbor in seven. For 10,000 query shoppers against the same table, the order reverses: exact search took 0.34 s and CAGRA 8.30 s, because every CAGRA call builds its index first. Index construction pays for itself only when the query batch is large.
+neighbor in seven. For 10,000 query shoppers against the same table, the order reverses: exact search took 0.34 s and CAGRA 8.03 s, because every CAGRA call builds its index first. Index construction pays for itself only when the query batch is large.
 
 <details>
 <summary>Executed SQL: CAGRA timing and recall</summary>
@@ -38,8 +38,8 @@ neighbor in seven. For 10,000 query shoppers against the same table, the order r
 ```sql
 SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance
 FROM cuvs_cagra(
-  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+  dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+  queries => (SELECT * FROM mr_taste64 ORDER BY id),
   k => 10, graph_degree => 32, intermediate_graph_degree => 64, build_algo => 'nn_descent'
 );
 ```
@@ -47,13 +47,13 @@ FROM cuvs_cagra(
 ```sql
 WITH exact AS (
   SELECT query_id, neighbor_id, distance FROM cuvs_brute_force_knn(
-    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+    dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+    queries => (SELECT * FROM mr_taste64 ORDER BY id),
     k => 10, metric => 'l2_expanded')
 ), approx AS (
   SELECT query_id, neighbor_id, distance FROM cuvs_cagra(
-    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+    dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+    queries => (SELECT * FROM mr_taste64 ORDER BY id),
     k => 10, graph_degree => 32, intermediate_graph_degree => 64, build_algo => 'nn_descent')
 ), kth AS (
   SELECT query_id, MAX(distance) AS kth_distance FROM exact GROUP BY query_id
@@ -74,8 +74,8 @@ LEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;
 ```sql
 SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance
 FROM cuvs_ivf_flat(
-  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+  dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+  queries => (SELECT * FROM mr_taste64 ORDER BY id),
   k => 10, n_lists => 2048, n_probes => 32
 );
 ```
@@ -83,13 +83,13 @@ FROM cuvs_ivf_flat(
 ```sql
 WITH exact AS (
   SELECT query_id, neighbor_id, distance FROM cuvs_brute_force_knn(
-    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+    dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+    queries => (SELECT * FROM mr_taste64 ORDER BY id),
     k => 10, metric => 'l2_expanded')
 ), approx AS (
   SELECT query_id, neighbor_id, distance FROM cuvs_ivf_flat(
-    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+    dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+    queries => (SELECT * FROM mr_taste64 ORDER BY id),
     k => 10, n_lists => 2048, n_probes => 32)
 ), kth AS (
   SELECT query_id, MAX(distance) AS kth_distance FROM exact GROUP BY query_id
@@ -110,8 +110,8 @@ LEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;
 ```sql
 SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance
 FROM cuvs_ivf_pq(
-  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+  dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+  queries => (SELECT * FROM mr_taste64 ORDER BY id),
   k => 10, n_lists => 2048, n_probes => 64, pq_dim => 32, pq_bits => 8
 );
 ```
@@ -119,13 +119,13 @@ FROM cuvs_ivf_pq(
 ```sql
 WITH exact AS (
   SELECT query_id, neighbor_id, distance FROM cuvs_brute_force_knn(
-    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+    dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+    queries => (SELECT * FROM mr_taste64 ORDER BY id),
     k => 10, metric => 'l2_expanded')
 ), approx AS (
   SELECT query_id, neighbor_id, distance FROM cuvs_ivf_pq(
-    dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-    queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+    dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+    queries => (SELECT * FROM mr_taste64 ORDER BY id),
     k => 10, n_lists => 2048, n_probes => 64, pq_dim => 32, pq_bits => 8)
 ), kth AS (
   SELECT query_id, MAX(distance) AS kth_distance FROM exact GROUP BY query_id
@@ -146,8 +146,8 @@ LEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;
 ```sql
 SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance
 FROM cuvs_brute_force_knn(
-  dataset => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
-  queries => (SELECT id, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47, d48, d49, d50, d51, d52, d53, d54, d55, d56, d57, d58, d59, d60, d61, d62, d63 FROM mr_taste64 ORDER BY id),
+  dataset => (SELECT * FROM mr_taste64 ORDER BY id),
+  queries => (SELECT * FROM mr_taste64 ORDER BY id),
   k => 10, metric => 'l2_expanded'
 );
 ```
@@ -234,72 +234,7 @@ WITH views AS (
   FROM counts c JOIN totals t ON t.user_id = c.user_id
   GROUP BY c.user_id, t.total
 )
-SELECT id,
-       COALESCE(d0, CAST(0 AS REAL)) AS d0,
-       COALESCE(d1, CAST(0 AS REAL)) AS d1,
-       COALESCE(d2, CAST(0 AS REAL)) AS d2,
-       COALESCE(d3, CAST(0 AS REAL)) AS d3,
-       COALESCE(d4, CAST(0 AS REAL)) AS d4,
-       COALESCE(d5, CAST(0 AS REAL)) AS d5,
-       COALESCE(d6, CAST(0 AS REAL)) AS d6,
-       COALESCE(d7, CAST(0 AS REAL)) AS d7,
-       COALESCE(d8, CAST(0 AS REAL)) AS d8,
-       COALESCE(d9, CAST(0 AS REAL)) AS d9,
-       COALESCE(d10, CAST(0 AS REAL)) AS d10,
-       COALESCE(d11, CAST(0 AS REAL)) AS d11,
-       COALESCE(d12, CAST(0 AS REAL)) AS d12,
-       COALESCE(d13, CAST(0 AS REAL)) AS d13,
-       COALESCE(d14, CAST(0 AS REAL)) AS d14,
-       COALESCE(d15, CAST(0 AS REAL)) AS d15,
-       COALESCE(d16, CAST(0 AS REAL)) AS d16,
-       COALESCE(d17, CAST(0 AS REAL)) AS d17,
-       COALESCE(d18, CAST(0 AS REAL)) AS d18,
-       COALESCE(d19, CAST(0 AS REAL)) AS d19,
-       COALESCE(d20, CAST(0 AS REAL)) AS d20,
-       COALESCE(d21, CAST(0 AS REAL)) AS d21,
-       COALESCE(d22, CAST(0 AS REAL)) AS d22,
-       COALESCE(d23, CAST(0 AS REAL)) AS d23,
-       COALESCE(d24, CAST(0 AS REAL)) AS d24,
-       COALESCE(d25, CAST(0 AS REAL)) AS d25,
-       COALESCE(d26, CAST(0 AS REAL)) AS d26,
-       COALESCE(d27, CAST(0 AS REAL)) AS d27,
-       COALESCE(d28, CAST(0 AS REAL)) AS d28,
-       COALESCE(d29, CAST(0 AS REAL)) AS d29,
-       COALESCE(d30, CAST(0 AS REAL)) AS d30,
-       COALESCE(d31, CAST(0 AS REAL)) AS d31,
-       COALESCE(d32, CAST(0 AS REAL)) AS d32,
-       COALESCE(d33, CAST(0 AS REAL)) AS d33,
-       COALESCE(d34, CAST(0 AS REAL)) AS d34,
-       COALESCE(d35, CAST(0 AS REAL)) AS d35,
-       COALESCE(d36, CAST(0 AS REAL)) AS d36,
-       COALESCE(d37, CAST(0 AS REAL)) AS d37,
-       COALESCE(d38, CAST(0 AS REAL)) AS d38,
-       COALESCE(d39, CAST(0 AS REAL)) AS d39,
-       COALESCE(d40, CAST(0 AS REAL)) AS d40,
-       COALESCE(d41, CAST(0 AS REAL)) AS d41,
-       COALESCE(d42, CAST(0 AS REAL)) AS d42,
-       COALESCE(d43, CAST(0 AS REAL)) AS d43,
-       COALESCE(d44, CAST(0 AS REAL)) AS d44,
-       COALESCE(d45, CAST(0 AS REAL)) AS d45,
-       COALESCE(d46, CAST(0 AS REAL)) AS d46,
-       COALESCE(d47, CAST(0 AS REAL)) AS d47,
-       COALESCE(d48, CAST(0 AS REAL)) AS d48,
-       COALESCE(d49, CAST(0 AS REAL)) AS d49,
-       COALESCE(d50, CAST(0 AS REAL)) AS d50,
-       COALESCE(d51, CAST(0 AS REAL)) AS d51,
-       COALESCE(d52, CAST(0 AS REAL)) AS d52,
-       COALESCE(d53, CAST(0 AS REAL)) AS d53,
-       COALESCE(d54, CAST(0 AS REAL)) AS d54,
-       COALESCE(d55, CAST(0 AS REAL)) AS d55,
-       COALESCE(d56, CAST(0 AS REAL)) AS d56,
-       COALESCE(d57, CAST(0 AS REAL)) AS d57,
-       COALESCE(d58, CAST(0 AS REAL)) AS d58,
-       COALESCE(d59, CAST(0 AS REAL)) AS d59,
-       COALESCE(d60, CAST(0 AS REAL)) AS d60,
-       COALESCE(d61, CAST(0 AS REAL)) AS d61,
-       COALESCE(d62, CAST(0 AS REAL)) AS d62,
-       COALESCE(d63, CAST(0 AS REAL)) AS d63
-FROM taste
+SELECT * FROM taste
 ORDER BY id;
 ```
 
