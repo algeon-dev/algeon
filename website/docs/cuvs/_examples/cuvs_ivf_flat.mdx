@@ -4,10 +4,18 @@ import EmberHistoricalSearch from './ember2024_historical_search.mdx';
 import MerRecScaleAnn from './merrec_scale_ann.mdx';
 
 <Tabs queryString="dataset">
-  <TabItem value="ember2024" label="EMBER2024 references" default>
-    <EmberHistoricalSearch />
+  <TabItem value="merrec" label="MerRec" default>
+
+### Which neighbor matches survive approximate search?
+
+<MerRecScaleAnn />
+
   </TabItem>
-  <TabItem value="merrec" label="MerRec marketplace">
-    <MerRecScaleAnn />
+  <TabItem value="ember2024" label="EMBER2024">
+
+### Which earlier files resemble a new-quarter file?
+
+<EmberHistoricalSearch />
+
   </TabItem>
 </Tabs>

@@ -249,11 +249,36 @@ Native support requires a correct kernel, supported types and correct semantics.
 An operator missing any of these is structured unsupported. `PlanningReport`
 records each candidate once as selected, unsupported with the first unmet
 contract, or supported but not selected by cost, with structured reasons.
-An unsupported candidate also names the [element that blocked it](../integration/gpu-coverage-validation.mdx#what-blocked-a-candidate),
+An unsupported candidate also names the [element that blocked it](../reference/gpu-coverage-report.mdx#what-blocked-a-candidate),
 such as one cast between two types, a scalar or aggregate function, or an
 operator, at the site that rejected it.
 A missing memory estimate cannot reject a candidate. Allocation limits are
 enforced during [execution](./admission.mdx#allocation-enforcement).
+
+### Uncorrelated scalar subqueries {/* #uncorrelated-scalar-subqueries */}
+
+DataFusion 55 plans an uncorrelated scalar subquery as a `ScalarSubqueryExec`
+by default (`datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery`
+is `true`). Native lowering has no counterpart for that operator. When the
+execution mode lowers relational SQL (`native_preferred` or
+`native_required`), installing the native optimizer sets the option to
+`false`, and DataFusion rewrites each such subquery into a join with its
+one-row aggregate. Installation covers the Flight SQL server session and
+embedded sessions built with `AlgeonGpuBackend::install_on` or
+`with_algeon_native`. The server installs the optimizer after reading
+`SessionConfig::from_env()`, and in those modes
+`DATAFUSION_OPTIMIZER_ENABLE_PHYSICAL_UNCORRELATED_SCALAR_SUBQUERY` has no
+effect. `functions_only` keeps DataFusion's default.
+
+The join form lowers natively for a scalar aggregate in a projection, an
+arithmetic expression, a `HAVING` clause or a filter, and for several
+subqueries in one query. The subquery may aggregate the scan the outer query
+reads with a computed argument, as `x > (SELECT AVG(x) FROM t)` does by
+averaging `CAST(x AS DOUBLE)`. With `datafusion.execution.collect_statistics`
+at its default `true`, DataFusion answers an unfiltered `MIN`, `MAX` or `COUNT`
+over a Parquet table from file statistics as literals projected over a
+`PlaceholderRowExec`. Native lowering evaluates those literals over a one-row
+source.
 
 ## Require GPU execution {/* #baseline-preservation-and-final-plan-requirements */}
 

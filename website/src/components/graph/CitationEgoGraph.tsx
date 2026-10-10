@@ -93,7 +93,7 @@ function EgoCanvas(): React.ReactElement {
     let disposed = false;
     let renderer: {kill: () => void} | null = null;
 
-    Promise.all([import('graphology'), import('sigma')]).then(
+    const start = () => Promise.all([import('graphology'), import('sigma')]).then(
       ([{default: Graph}, {default: Sigma}]) => {
         if (disposed || containerRef.current == null) {
           return;
@@ -213,7 +213,15 @@ function EgoCanvas(): React.ReactElement {
         const K_EDGE = 0.015;
         const DAMPING = 0.91;
 
-        const stepSimulation = () => {
+        // The physics advances in fixed steps so the motion does not depend on
+        // the display refresh rate; one step per frame at 120 Hz was the tuned
+        // feel, and a 60 Hz display would otherwise rebound at half speed.
+        const STEP_MS = 1000 / 120;
+        const MAX_FRAME_MS = 100;
+        let lastFrameMs: number | null = null;
+        let accumulatedMs = 0;
+
+        const integrate = () => {
           // Soft-saturating restoring force: smooth non-linear jelly elasticity
           for (const p of physicsNodes.values()) {
             if (p.id === draggedNodeId) {
@@ -281,13 +289,25 @@ function EgoCanvas(): React.ReactElement {
             if (dMag > maxDisplacement) maxDisplacement = dMag;
           }
 
-          sigma.refresh();
-
-          if (
+          return (
             draggedNodeId == null &&
             maxVelocity < 0.003 &&
             maxDisplacement < 0.015
-          ) {
+          );
+        };
+
+        const stepSimulation = (frameMs: number) => {
+          const elapsed = lastFrameMs == null ? STEP_MS : Math.min(frameMs - lastFrameMs, MAX_FRAME_MS);
+          lastFrameMs = frameMs;
+          accumulatedMs += elapsed;
+          let settled = false;
+          while (accumulatedMs >= STEP_MS && !settled) {
+            settled = integrate();
+            accumulatedMs -= STEP_MS;
+          }
+          sigma.refresh();
+
+          if (settled) {
             for (const p of physicsNodes.values()) {
               p.x = p.homeX;
               p.y = p.homeY;
@@ -298,6 +318,8 @@ function EgoCanvas(): React.ReactElement {
             }
             sigma.refresh();
             animFrameId = null;
+            lastFrameMs = null;
+            accumulatedMs = 0;
           } else {
             animFrameId = requestAnimationFrame(stepSimulation);
           }
@@ -305,6 +327,8 @@ function EgoCanvas(): React.ReactElement {
 
         const startSimulation = () => {
           if (animFrameId == null) {
+            lastFrameMs = null;
+            accumulatedMs = 0;
             animFrameId = requestAnimationFrame(stepSimulation);
           }
         };
@@ -456,8 +480,25 @@ function EgoCanvas(): React.ReactElement {
       },
     );
 
+    // Inside an inactive tab panel the container has no width, and Sigma
+    // rejects a zero-size container; wait until the panel is shown.
+    let observer: ResizeObserver | null = null;
+    if (container.clientWidth > 0) {
+      start();
+    } else {
+      observer = new ResizeObserver(() => {
+        if (container.clientWidth > 0 && observer != null) {
+          observer.disconnect();
+          observer = null;
+          start();
+        }
+      });
+      observer.observe(container);
+    }
+
     return () => {
       disposed = true;
+      observer?.disconnect();
       renderer?.kill();
     };
   }, [colorMode]);

@@ -1,11 +1,4 @@
-import Tabs from '@theme/Tabs';
-import TabItem from '@theme/TabItem';
-import MerRecAudienceCosine from './merrec_audience_cosine.mdx';
-
 {/* Hand-owned examples for cugraph_cosine. NOT generated; safe to edit. */}
-
-<Tabs queryString="dataset">
-<TabItem value="citation-network" label="Citation network" default>
 
 This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 
@@ -79,12 +72,3 @@ MASS has 53, so the score is `19 / sqrt(55 × 53) = 0.352`.
 The result ranks bibliography similarity; topic meaning is outside the score. For
 intersection divided by the union of references, see the
 [Jaccard similarity example](../udtfs/similarity/cugraph_jaccard.mdx).
-
-</TabItem>
-
-<TabItem value="merrec-shard" label="MerRec single shard">
-
-<MerRecAudienceCosine />
-
-</TabItem>
-</Tabs>

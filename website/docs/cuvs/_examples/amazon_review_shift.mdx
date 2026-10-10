@@ -1,0 +1,61 @@
+import CodeBlock from '@theme/CodeBlock';
+import capture from '@site/static/data/amazon-reviews-capture.json';
+import followup from '@site/static/data/amazon-review-followup.json';
+import Table from '@site/src/theme/MDXComponents/Table';
+
+A support analyst wants to find changes worth investigating across years.
+The query groups 99,539 sampled 2021 to 2022 headphone and earbud reviews using
+prepared text vectors, then compares each product's share in each KMeans group.
+Each denominator counts sampled reviews rated at most two stars for that
+product and year.
+
+The KMeans assignments join back to review dates, product titles and original
+text. The linked example is the 2022 review with the smallest ID for its
+product and group; it is not selected as representative text.
+
+<CodeBlock language="sql" className="no-collapse">{capture.queries.headphone_emerging.sql}</CodeBlock>
+
+For Altec Lansing NanoPods, group 7 changes as follows:
+
+<Table>
+<thead><tr><th>Year</th><th>Reviews in group</th><th>Sampled low-rating reviews</th><th>Group share</th></tr></thead>
+<tbody>{[2021, 2022].map(year => {
+  const row = capture.queries.headphone_emerging.illustrated_rows[0];
+  return <tr key={year}><td>{year}</td><td>{row[`n${year}`]}</td><td>{row[`total${year}`]}</td><td>{row[`share${year}_pct`].toFixed(2)}%</td></tr>;
+})}</tbody>
+</Table>
+
+The query also returns this original review:
+
+<blockquote>{capture.queries.headphone_emerging.illustrated_rows[0].example_review}</blockquote>
+
+**Follow-up: check the charging explanation.** The 27.92-point change raises a
+specific question about charging complaints. A raw-table query counts NanoPods
+reviews containing "charg" in the title or body. It uses all 2021 to 2022 reviews
+rated at most two stars, without the embedding sample, text-length filter or
+verified-purchase condition.
+
+<CodeBlock language="sql">{followup.charging.sql}</CodeBlock>
+
+<Table>
+<thead><tr><th>Year</th><th>Matching reviews</th><th>All low-rating reviews</th><th>Matching share</th></tr></thead>
+<tbody>{followup.charging.rows.map(row => <tr key={row.review_year}><td>{row.review_year}</td><td>{row.charging_mentions}</td><td>{row.low_rating_reviews}</td><td>{(row.charging_mentions / row.low_rating_reviews * 100).toFixed(2)}%</td></tr>)}</tbody>
+</Table>
+
+Charging language was already common in 2021. The broader source check does
+not support treating the group-share increase as a comparable rise in charging
+complaints. One quoted review cannot name the whole cluster, and substring
+matches do not measure product failure rates.
+
+The composition makes the cluster assignment usable with dates and source
+text in SQL. A follow-up can test an explanation against the raw tables while
+keeping the two sampling definitions explicit.
+
+<div className="fineprint">
+
+The [main capture](/data/amazon-reviews-capture.json) records a mixed KMeans query
+with 20 host DataFusion boundaries. The native raw-table checks and five
+original matching reviews are in the
+[follow-up capture](/data/amazon-review-followup.json).
+
+</div>

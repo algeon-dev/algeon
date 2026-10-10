@@ -3,6 +3,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 import prismDark from './src/utils/prismDark';
 import prismLight from './src/utils/prismLight';
 import highlightGpuCalls from './src/remark/highlightGpuCalls';
+import {FOCUS_MODE_RESTORE_SCRIPT} from './src/components/focusMode/constants';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -32,6 +33,8 @@ const config: Config = {
   onBrokenLinks: 'throw',
 
   clientModules: ['./src/clientModules/revealTabAnchor.ts'],
+
+  headTags: [{tagName: 'script', attributes: {}, innerHTML: FOCUS_MODE_RESTORE_SCRIPT}],
 
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang.

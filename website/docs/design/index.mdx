@@ -26,6 +26,32 @@ An embedded application and the Flight SQL server use the same execution
 stack. The server adds a remote interface, authentication and session
 management around it.
 
+## Priorities {/* #priorities */}
+
+The design serves one workload: many ad-hoc OLAP queries from an agent or an
+analyst against a shared GPU, most of them revised after the first attempt.
+Three decisions follow from it and recur across these pages.
+
+- The engine owns the physical plan. The optimizer rule decides which
+  candidates [lower to native execution](./native-lowering.mdx#selection-fallback-and-mixed-execution)
+  and which fragments stay on DataFusion; a query author chooses algorithms
+  and their options and nothing about partitions, pushdown or kernels.
+- A failed attempt returns a structured error. Native failures stay typed
+  across the DataFusion and Flight boundaries, and each carries
+  [evidence for whether to retry](../integration/handling-errors.mdx#retry-and-recovery-are-evidence-based).
+  Once GPU execution starts, nothing replays on the CPU.
+- Admission protects the shared device. Each attempt is admitted against a
+  per-device ledger and runs inside an
+  [immutable grant](./admission.mdx#device-profiles-and-grants), and a
+  query that exceeds its grant fails without taking memory from another.
+
+Reducing the latency of a query that already answers in tens of
+milliseconds is not among those decisions. Algeon also integrates with one
+query engine. The adapter crate installs into a DataFusion session owned by
+the host application, there is no Substrait input, and the Flight SQL server
+is the same library behind a network interface. The module boundaries below
+are organized around DataFusion above and the RAPIDS libraries below.
+
 ## Module boundaries {/* #crates-and-ownership */}
 
 The intermediate representation (**IR**) describes sources, operations and
@@ -77,6 +103,8 @@ and admission contracts remain backend neutral.
    cuGraph, cuVS and cuML, then back into relational operations.
 5. [Memory and query lifetime](./admission.mdx) explains admission, allocation
    limits and safe reuse after a query finishes.
+6. [Error ownership](./errors.mdx) assigns each failure to the layer that owns
+   it and defines what each diagnostic surface may disclose.
 
 Configuration and API examples live in [Integrating Algeon](../integration/overview.mdx).
 The [Glossary](../reference/glossary.md) defines the vocabulary used here.

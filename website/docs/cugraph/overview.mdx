@@ -15,51 +15,50 @@ you can compose with ordinary SQL.
 This section helps you choose a graph UDTF, provide its edge relation, and
 understand its execution and reuse boundaries.
 
-The host application lets a person or agent ask in natural language. Its
-backend agent uses an enterprise semantic layer to map terms and definitions
-to registered data entities, then submits the resulting SQL to Algeon. Algeon
-executes the SQL and returns rows for the application to present.
+## UDTFs
+
+Start with [cuGraph UDTFs](./udtfs/index.mdx) to choose an algorithm by
+family or compare the generated catalog descriptors.
+
+## Discovery and validation
+
+Use [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
+for the shared list, describe, validate, and execute workflow. The exact
+metadata response and validation-request schemas are in the
+[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx).
 
 ## Questions to explore
 
 Each question opens a captured example on its UDTF page. The examples read
-the [demo datasets](../guides/datasets/index.mdx); prepare one before running
-its queries.
+the [demo datasets](../guides/datasets/index.mdx); the MerRec statements ran
+over the full 1.27 billion events in `native_required` mode.
+
+### MerRec
+
+The [MerRec investigation](../guides/datasets/merrec.mdx) turns Mercari US likes
+and purchases from May through October 2023 into brand graphs:
+
+- [Which brands moved toward Barbie's audience after the July film?](./udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec#examples) (`cugraph_personalized_pagerank`, `cugraph_pagerank`)
+- [Which 5,000 shoppers should a Pokemon campaign reach?](../guides/datasets/merrec.mdx#audience-funnel) (`cugraph_personalized_pagerank`, then `cuvs_brute_force_knn` and `cuml_forest_predict`)
+- [Which brands belong on the same discovery page?](./udtfs/community/cugraph_leiden.mdx?dataset=merrec#examples) (`cugraph_jaccard`, `cugraph_leiden`)
+- [Which brands connect the shopping worlds?](./udtfs/centrality/cugraph_betweenness_centrality.mdx?dataset=merrec#examples) (`cugraph_betweenness_centrality`, `cugraph_leiden`)
+- [Where do brand neighborhoods appear when shared fans determine the map?](./udtfs/layout/cugraph_force_atlas2.mdx?dataset=merrec#examples) (`cugraph_force_atlas2`)
+- [Which catalog entries are one brand listed twice?](./udtfs/similarity/cugraph_jaccard.mdx?dataset=merrec#examples) (`cugraph_jaccard` over 1,999,000 pairs)
+- [Is `session_id` a per-user session key?](./udtfs/connectivity/cugraph_weakly_connected_components.mdx?dataset=merrec#examples) (`cugraph_weakly_connected_components`)
 
 ### Citation network
 
 DBLP / AMiner V12: 4.9M papers linked by 45.6M citations.
 
-- [Which papers rank highest when citations from influential papers count more?](./udtfs/centrality/cugraph_pagerank.mdx#examples) (`cugraph_pagerank`)
-- [What should I read to understand BERT beyond its own bibliography?](./udtfs/centrality/cugraph_personalized_pagerank.mdx#examples) (`cugraph_personalized_pagerank`)
-- [What is the shortest citation chain from BERT back to LSTM?](./udtfs/traversal/cugraph_bfs.mdx#examples) (`cugraph_bfs`)
-- [Which papers should I read after the Transformer if I want familiar references?](./udtfs/similarity/cugraph_jaccard.mdx#examples) (`cugraph_jaccard`)
-- [Which papers act as reading guides, and which works are their shared foundations?](./udtfs/centrality/cugraph_hits.mdx#examples) (`cugraph_hits`)
+- [Which papers rank highest when citations from influential papers count more?](./udtfs/centrality/cugraph_pagerank.mdx?dataset=citation-network#examples) (`cugraph_pagerank`)
+- [What should I read to understand BERT beyond its own bibliography?](./udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=citation-network#examples) (`cugraph_personalized_pagerank`)
 - [Do citation communities match the research fields in our catalog?](./udtfs/community/cugraph_louvain.mdx#examples) (`cugraph_louvain`)
-- [Which research pockets are disconnected from the main citation network?](./udtfs/connectivity/cugraph_weakly_connected_components.mdx#examples) (`cugraph_weakly_connected_components`)
-- [How are the papers around the Transformer connected?](./udtfs/layout/cugraph_force_atlas2.mdx#examples) (`cugraph_force_atlas2`)
-
-### MerRec marketplace
-
-All 1,268,092,738 Mercari US marketplace events from May through October 2023,
-described on the [MerRec dataset page](../guides/datasets/merrec.mdx). Each
-question builds its brand or session graph from the raw events inside one
-statement.
-
-- [Which athleisure brands draw most of their fans from lululemon's audience?](./udtfs/similarity/cugraph_overlap.mdx?dataset=merrec#examples) (`cugraph_overlap`)
-- [Which brand entries share almost the same fans?](./udtfs/similarity/cugraph_jaccard.mdx?dataset=merrec#examples) (`cugraph_jaccard`)
-- [Which shopping worlds do shared fans reveal across official categories?](./udtfs/community/cugraph_leiden.mdx?dataset=merrec#examples) (`cugraph_leiden`, `cugraph_jaccard`)
-- [Which brands moved closer to Barbie fans after the July 2023 film release?](./udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec#examples) (`cugraph_personalized_pagerank`, `cugraph_pagerank`)
-- [What does the marketplace look like when brands sit next to the brands their fans like?](./udtfs/layout/cugraph_force_atlas2.mdx?dataset=merrec#examples) (`cugraph_force_atlas2`, `cugraph_leiden`, `cugraph_jaccard`)
-- [Is `session_id` safe to use as a per-user session key?](./udtfs/connectivity/cugraph_weakly_connected_components.mdx?dataset=merrec#examples) (`cugraph_weakly_connected_components`)
-
-Single-shard captures: Mercari US browsing events from one October 2023
-source shard, built into a graph of product groups linked by browsing
-transitions and shared viewers.
-
-- [Which collectible categories should accompany a Nintendo games landing page?](./udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec-shard#examples) (`cugraph_personalized_pagerank`, `cugraph_jaccard`)
-- [Which markets draw most of their viewers from the Nintendo Games audience?](./udtfs/similarity/cugraph_cosine.mdx?dataset=merrec-shard#examples) (`cugraph_cosine`, `cugraph_jaccard`)
-- [Which browsing neighborhoods could become draft marketplace collections?](./udtfs/community/cugraph_leiden.mdx?dataset=merrec-shard#examples) (`cugraph_leiden`, `cugraph_pagerank`)
+- [How are the papers around the Transformer connected?](./udtfs/layout/cugraph_force_atlas2.mdx?dataset=citation-network#examples) (`cugraph_force_atlas2`)
+- [Which papers act as reading guides, and which works are their shared foundations?](./udtfs/centrality/cugraph_hits.mdx#examples) (`cugraph_hits`)
+- [Which papers connect the most citation routes across AI research?](./udtfs/centrality/cugraph_betweenness_centrality.mdx?dataset=citation-network#examples) (`cugraph_betweenness_centrality`)
+- [Which papers should I read after the Transformer if I want familiar references?](./udtfs/similarity/cugraph_jaccard.mdx?dataset=citation-network#examples) (`cugraph_jaccard`)
+- [Which research pockets are disconnected from the main citation network?](./udtfs/connectivity/cugraph_weakly_connected_components.mdx?dataset=citation-network#examples) (`cugraph_weakly_connected_components`)
+- [What is the shortest citation chain from BERT back to LSTM?](./udtfs/traversal/cugraph_bfs.mdx#examples) (`cugraph_bfs`)
 
 ### EMBER2024
 
@@ -126,18 +125,6 @@ columns (`src`, `dst`, `weight`, `edge_id`) are separate and keep their names.
 Each UDTF page lists its exact result schema, including algorithm-specific
 columns such as `hub_score` and `authority_score` for HITS.
 
-## UDTFs
-
-Start with [cuGraph UDTFs](./udtfs/index.mdx) to choose an algorithm by
-family or compare the generated catalog descriptors.
-
-## Discovery and validation
-
-Use [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
-for the shared list, describe, validate, and execute workflow. The exact
-metadata response and validation-request schemas are in the
-[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx).
-
 ## Reuse in bounded servers
 
 A bounded Flight SQL server can retain constructed graphs for repeat calls with
@@ -152,5 +139,5 @@ other calls bypass the cache. Configure and observe it through
   session or a Flight SQL server.
 - [Prepare graph inputs](./graph-options.mdx): choose a supported vertex-ID
   domain and refine graph construction semantics.
-- [Prepare a demo dataset](../guides/datasets/index.mdx): set up the data
-  that the UDTF-page examples read.
+- [Explore a demo investigation](../guides/datasets/index.mdx): inspect
+  captured results and the SQL that produced them.

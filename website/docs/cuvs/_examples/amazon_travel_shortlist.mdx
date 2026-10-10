@@ -1,0 +1,63 @@
+import CodeBlock from '@theme/CodeBlock';
+import capture from '@site/static/data/amazon-reviews-capture.json';
+import followup from '@site/static/data/amazon-review-followup.json';
+import Table from '@site/src/theme/MDXComponents/Table';
+
+### Which travel headphones deserve a catalog review?
+
+A catalog reviewer is looking for "Wireless noise cancelling over ear
+headphones for long airplane flights." Eligible products cost $20 to $150 in the
+snapshot, have at least 100 verified reviews in 2022 and have no more than
+20% low ratings among those reviews.
+
+SQL defines the eligible products before exact nearest-neighbor search, then
+joins ranked IDs to titles and review counts. The request and product vectors
+were encoded before the query. Both are L2 normalized; squared L2 distance
+`d` converts to cosine similarity as `1 - d / 2`.
+
+<CodeBlock language="sql">{capture.queries.travel_shortlist.sql}</CodeBlock>
+
+The first two candidates expose the distinction between passing numeric
+filters and satisfying the request:
+
+<Table>
+<thead><tr><th>Candidate</th><th>Price</th><th>Verified reviews</th><th>Low-rating share</th><th>Similarity</th></tr></thead>
+<tbody>{capture.queries.travel_shortlist.illustrated_rows.slice(0, 2).map((row, index) => <tr key={row.product_id}><td>{index === 0 ? '1. Srhythm NC35, over-ear' : '2. VELKPRO office headset, on-ear'}</td><td>${row.price.toFixed(2)}</td><td>{row.reviews_2022}</td><td>{(row.low_rating_share * 100).toFixed(2)}%</td><td>{row.cosine_similarity.toFixed(3)}</td></tr>)}</tbody>
+</Table>
+
+The VELKPRO title describes office calls and an on-ear design. Its vector is
+close enough to rank second, but a reviewer still needs to check or reject it
+against the travel request. Similarity does not verify specifications or
+noise-cancellation quality.
+
+The query combines eligibility rules with vector search, keeping the returned
+candidates tied to the conditions that admitted them. A later
+[raw-table check](/data/amazon-review-followup.json) found {followup.eligible.rows[0].eligible_products} eligible products;
+{capture.verification.travel_shortlist.eligible_products} had vectors in the sampled corpus. The other
+{followup.eligible.rows[0].eligible_products - capture.verification.travel_shortlist.eligible_products} were outside this search.
+
+<div className="fineprint">
+
+The [main capture](/data/amazon-reviews-capture.json) retains all ten candidates.
+
+</div>
+
+### Which Sony listings should an editor compare?
+
+For catalog maintenance, a separate query finds ten nearest listings for
+each of 10,000 query products in a one-million-product corpus. An editor can
+then compare condition, color and accessories before treating them as alternatives.
+
+<CodeBlock language="sql">{capture.queries.catalog_batch.sql}</CodeBlock>
+
+For a midnight-blue Sony WH-1000XM4, three leading matches are:
+
+<Table>
+<thead><tr><th>Listing difference</th><th>Text similarity</th></tr></thead>
+<tbody>{capture.queries.catalog_batch.illustrated_rows.slice(0, 3).map((row, index) => <tr key={row.neighbor_id}><td>{['Black, renewed', 'Black, with case, charger and gym bag', 'Silver, with battery bank'][index]}</td><td>{row.cosine_similarity.toFixed(3)}</td></tr>)}</tbody>
+</Table>
+
+The shared model name explains why these are useful comparison candidates.
+Condition and bundle contents still determine the editing decision. The SQL
+returns 100,000 matches and joins their titles in the same statement; it does
+not establish that the pairs are duplicate SKUs.

@@ -16,6 +16,18 @@
   mask-image: linear-gradient(to bottom, #000 calc(100% - 4rem), transparent);
 }
 
+/* A details element already controls whether its code is visible. */
+:global(details) .collapsible .clip {
+  max-height: none;
+  overflow: visible;
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+
+:global(details) .collapsible .toggle {
+  display: none;
+}
+
 .toggle {
   display: block;
   width: 100%;

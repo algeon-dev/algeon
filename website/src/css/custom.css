@@ -131,29 +131,33 @@
   }
 }
 
+/* Every scroll container carries thin-scrollbar: sidebar, outline, code
+   blocks, table wrappers, charts and diagrams. With a mouse the bar stays
+   hidden until the pointer or focus is on the container; the gutter keeps its
+   width so nothing shifts. */
 @media (min-width: 997px) and (pointer: fine) {
-  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar {
+  .thin-scrollbar {
     scrollbar-color: transparent transparent;
   }
 
-  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar::-webkit-scrollbar-track,
-  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar::-webkit-scrollbar-thumb {
+  .thin-scrollbar::-webkit-scrollbar-track,
+  .thin-scrollbar::-webkit-scrollbar-thumb {
     background: transparent;
   }
 
-  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:hover,
-  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:focus-within {
+  .thin-scrollbar:hover,
+  .thin-scrollbar:focus-within {
     scrollbar-color: var(--ifm-scrollbar-thumb-background-color)
       var(--ifm-scrollbar-track-background-color);
   }
 
-  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:hover::-webkit-scrollbar-track,
-  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:focus-within::-webkit-scrollbar-track {
+  .thin-scrollbar:hover::-webkit-scrollbar-track,
+  .thin-scrollbar:focus-within::-webkit-scrollbar-track {
     background: var(--ifm-scrollbar-track-background-color);
   }
 
-  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:hover::-webkit-scrollbar-thumb,
-  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:focus-within::-webkit-scrollbar-thumb {
+  .thin-scrollbar:hover::-webkit-scrollbar-thumb,
+  .thin-scrollbar:focus-within::-webkit-scrollbar-thumb {
     background: var(--ifm-scrollbar-thumb-background-color);
   }
 }
@@ -711,6 +715,68 @@
   }
 }
 
+/* Focus mode (`html[data-focus-mode='on']`, set by FocusModeProvider). Every
+   entry point that leaves the current article is hidden; the title, body,
+   previous/next links and back-to-top stay. `display: none` also drops the
+   hidden parts from the tab order and the accessibility tree. The skip link
+   skips the navbar, which is gone. Doc layout overrides live with the
+   swizzled DocRoot and DocItem layouts. */
+html[data-focus-mode='on'] :is(
+  .theme-announcement-bar,
+  .theme-layout-navbar,
+  .theme-layout-footer,
+  .theme-doc-sidebar-container,
+  .theme-doc-toc-mobile,
+  .theme-doc-version-banner,
+  .theme-doc-version-badge,
+  .theme-doc-footer,
+  [role='region']:has(> a[href='#__docusaurus_skipToContent_fallback'])
+) {
+  display: none;
+}
+
+/* Blog: drop the recent-posts rail and the outline column; the post centers
+   at the blog list's reading width. */
+html[data-focus-mode='on'].blog-wrapper .theme-layout-main > .container > .row > :is(aside.col, .col--2) {
+  display: none;
+}
+
+html[data-focus-mode='on'].blog-wrapper .theme-layout-main > .container > .row > main.col {
+  flex: 1 1 100%;
+  max-width: 52rem;
+  margin-inline: auto;
+}
+
+/* Entering focus mode moves focus to the content container (or a blog post's
+   `main`) with tabindex -1; it is a reading target, not a control. */
+[data-focus-mode-content]:focus,
+main[tabindex='-1']:focus {
+  outline: none;
+}
+
+/* The fixed exit button sits in this band, so neither it nor its hover label
+   covers the title when the margin beside the content is narrow. */
+html[data-focus-mode='on'] .theme-layout-main {
+  padding-top: 2.5rem;
+}
+
+::view-transition-group(focus-mode-content) {
+  animation-duration: 0.3s;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* The text reflows between the two widths. Stretching both snapshots to the
+   group width would magnify the old one; at natural size they crossfade in
+   place while the group moves, and the old one fades out early. */
+::view-transition-old(focus-mode-content),
+::view-transition-new(focus-mode-content) {
+  inline-size: auto;
+}
+
+::view-transition-old(focus-mode-content) {
+  animation-duration: 0.12s;
+}
+
 /* Design page table sizing. */
 .theme-doc-markdown.markdown:has(h1#design) table {
   font-size: 0.88rem;
@@ -734,6 +800,108 @@
     overflow-wrap: anywhere;
     white-space: normal;
   }
+}
+
+/* Folded regions inside a captured statement: one row names the hidden
+   relations and expands them in place, so the statement stays in one block
+   and never starts mid-expression. */
+.code-fold {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  width: 100%;
+  margin: 0.25em 0;
+  padding: 0.2em 0.5em 0.2em 0.25em;
+  border: 0;
+  border-top: 1px dashed var(--ifm-color-emphasis-300);
+  border-bottom: 1px dashed var(--ifm-color-emphasis-300);
+  background: var(--ifm-color-emphasis-100);
+  color: var(--ifm-color-emphasis-700);
+  font: inherit;
+  font-size: 0.85em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.code-fold:hover {
+  color: var(--ifm-font-color-base);
+  background: var(--ifm-color-emphasis-200);
+}
+
+.code-fold::before {
+  content: '';
+  flex: none;
+  border: 0.32em solid transparent;
+  border-left-color: currentColor;
+  transform: translateX(0.2em);
+  transition: transform 0.15s ease;
+}
+
+.code-fold[aria-expanded='true']::before {
+  transform: translateX(0) rotate(90deg);
+}
+
+.code-fold__count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.code-fold__count::after {
+  content: ' ·';
+  opacity: 0.6;
+}
+
+.code-fold__label {
+  opacity: 0.85;
+}
+
+/* Collapsible details: Docusaurus renders them as an info alert. Use a
+   quiet grey panel with less vertical space instead. */
+.markdown details.alert {
+  --docusaurus-details-decoration-color: var(--ifm-color-emphasis-500);
+  margin: 0.75rem 0 1rem;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 6px;
+  background-color: var(--ifm-color-emphasis-100);
+  color: var(--ifm-font-color-base);
+  box-shadow: none;
+}
+
+.markdown details.alert > summary {
+  margin: 0;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.875rem;
+}
+
+.markdown details.alert > summary + div {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+}
+
+/* Fine print: provenance, capture links and execution records that most
+   readers skip. Smaller and muted so the finding stays in front; links keep
+   the muted tone until hovered. */
+.markdown .fineprint {
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.markdown .fineprint p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown .fineprint a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--ifm-color-emphasis-300);
+  text-underline-offset: 2px;
+}
+
+.markdown .fineprint a:hover {
+  color: var(--ifm-link-color);
+  text-decoration-color: currentColor;
 }
 
 /* Footnotes: a quiet endnote block, hairline-separated, smaller and muted
@@ -778,95 +946,24 @@
   color: var(--ifm-link-color);
 }
 
-/* Overview cheatsheet: pull in the right edge with comfortable negative space
-   on desktop, aligning prose and table to the same max-width without eating up the entire right screen. */
-@media (min-width: 997px) {
-  html[class*='/udtfs/index'] article,
-  html[class*='/udtfs/index'] .theme-doc-markdown,
-  html[class*='/udtfs/index'] .pagination-nav,
-  article:has(.cu-functions-cheatsheet),
-  .theme-doc-markdown:has(.cu-functions-cheatsheet),
-  article:has(.cu-functions-cheatsheet) ~ .pagination-nav,
-  .cu-functions-cheatsheet,
-  .cugraph-function-cheatsheet,
-  .cuvs-function-cheatsheet,
-  .cuml-function-cheatsheet,
-  html[class*='/udtfs/index'] .table-responsive-wrapper {
-    width: 100%;
-    max-width: min(72rem, calc(100% - 2rem));
-    margin-right: auto;
-  }
-}
-
-.cu-functions-cheatsheet,
-.cugraph-function-cheatsheet,
-.cuvs-function-cheatsheet,
-.cuml-function-cheatsheet,
-html[class*='/udtfs/index'] .table-responsive-wrapper {
-  width: 100%;
-  overflow-x: auto;
-}
-
-.cu-functions-cheatsheet table,
-.cugraph-function-cheatsheet table,
-.cuvs-function-cheatsheet table,
-.cuml-function-cheatsheet table,
-html[class*='/udtfs/index'] .table-responsive-wrapper table {
+/* UDTF index cheatsheet: column widths only. The reading width belongs to
+   the DocItem layout, which gives a page without an outline the full column
+   and caps the article once; a width cap repeated on nested blocks compounds
+   and pushes the last column out of view. */
+.cu-functions-cheatsheet table {
   display: table;
   width: 100%;
 }
 
-.cu-functions-cheatsheet table td,
-.cugraph-function-cheatsheet table td,
-.cuvs-function-cheatsheet table td,
-.cuml-function-cheatsheet table td,
-html[class*='/udtfs/index'] .table-responsive-wrapper table td {
+.cu-functions-cheatsheet table td {
   vertical-align: top;
 }
 
-.cu-functions-cheatsheet table th:nth-child(1),
-.cu-functions-cheatsheet table td:nth-child(1),
-.cu-functions-cheatsheet table th:nth-child(2),
-.cu-functions-cheatsheet table td:nth-child(2),
-.cu-functions-cheatsheet table th:nth-child(4),
-.cu-functions-cheatsheet table td:nth-child(4),
-.cugraph-function-cheatsheet table th:nth-child(1),
-.cugraph-function-cheatsheet table td:nth-child(1),
-.cugraph-function-cheatsheet table th:nth-child(2),
-.cugraph-function-cheatsheet table td:nth-child(2),
-.cugraph-function-cheatsheet table th:nth-child(4),
-.cugraph-function-cheatsheet table td:nth-child(4),
-.cuvs-function-cheatsheet table th:nth-child(1),
-.cuvs-function-cheatsheet table td:nth-child(1),
-.cuvs-function-cheatsheet table th:nth-child(2),
-.cuvs-function-cheatsheet table td:nth-child(2),
-.cuvs-function-cheatsheet table th:nth-child(4),
-.cuvs-function-cheatsheet table td:nth-child(4),
-.cuml-function-cheatsheet table th:nth-child(1),
-.cuml-function-cheatsheet table td:nth-child(1),
-.cuml-function-cheatsheet table th:nth-child(2),
-.cuml-function-cheatsheet table td:nth-child(2),
-.cuml-function-cheatsheet table th:nth-child(4),
-.cuml-function-cheatsheet table td:nth-child(4),
-html[class*='/udtfs/index'] .table-responsive-wrapper table th:nth-child(1),
-html[class*='/udtfs/index'] .table-responsive-wrapper table td:nth-child(1),
-html[class*='/udtfs/index'] .table-responsive-wrapper table th:nth-child(2),
-html[class*='/udtfs/index'] .table-responsive-wrapper table td:nth-child(2),
-html[class*='/udtfs/index'] .table-responsive-wrapper table th:nth-child(4),
-html[class*='/udtfs/index'] .table-responsive-wrapper table td:nth-child(4) {
+.cu-functions-cheatsheet table :is(th, td):is(:nth-child(1), :nth-child(2), :nth-child(4)) {
   white-space: nowrap;
 }
 
-.cu-functions-cheatsheet table th:nth-child(3),
-.cu-functions-cheatsheet table td:nth-child(3),
-.cugraph-function-cheatsheet table th:nth-child(3),
-.cugraph-function-cheatsheet table td:nth-child(3),
-.cuvs-function-cheatsheet table th:nth-child(3),
-.cuvs-function-cheatsheet table td:nth-child(3),
-.cuml-function-cheatsheet table th:nth-child(3),
-.cuml-function-cheatsheet table td:nth-child(3),
-html[class*='/udtfs/index'] .table-responsive-wrapper table th:nth-child(3),
-html[class*='/udtfs/index'] .table-responsive-wrapper table td:nth-child(3) {
+.cu-functions-cheatsheet table :is(th, td):nth-child(3) {
   white-space: normal;
   min-width: 22rem;
 }
@@ -939,6 +1036,17 @@ html[class*='/udtfs/index'] .table-responsive-wrapper table td:nth-child(3) {
   border-bottom: 1px solid var(--ifm-table-border-color);
   padding: 0.75rem 1.15rem;
   vertical-align: top;
+}
+
+/* Infima gives every row a top border and zebra stripes; inside the wrapper
+   the cell borders and the header band carry the structure instead. */
+.markdown .table-responsive-wrapper tr,
+.markdown .table-responsive-wrapper thead tr {
+  border: none;
+}
+
+.markdown .table-responsive-wrapper tbody tr:nth-child(2n) {
+  background-color: transparent;
 }
 
 .markdown .table-responsive-wrapper tr:last-child td {

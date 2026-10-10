@@ -1,0 +1,127 @@
+{
+  "name": "ember2024_full_temporal_model_comparison",
+  "dataset": "EMBER2024",
+  "scope": "Full deduplicated Win32 training and held-out test cohorts; no SHA-256 downsampling.",
+  "cohort": {
+    "train": {
+      "split": "train",
+      "metadata_rows": 2626000,
+      "vector_rows": 2626000,
+      "win32_rows": 1560000,
+      "win32_benign": 780000,
+      "win32_malicious": 780000,
+      "week_ids": "0–51"
+    },
+    "test": {
+      "split": "test",
+      "metadata_rows": 605929,
+      "vector_rows": 605929,
+      "win32_rows": 359994,
+      "win32_benign": 179994,
+      "win32_malicious": 180000,
+      "week_ids": "52–63"
+    }
+  },
+  "features": {
+    "input": "512 normalized byte and byte-entropy histogram bins, source f7..f518",
+    "label_join": "Test labels joined after prediction",
+    "logistic": {
+      "max_iter": 1000,
+      "penalty_l2": 1.0
+    },
+    "random_forest": {
+      "n_trees": 100,
+      "max_depth": 12,
+      "seed": 42
+    }
+  },
+  "sql_file": "fixture/demo/ember2024/scripts/scale/06_temporal_model_comparison.sql",
+  "sql": "-- Unified temporal comparison training both logistic regression and random forest\n-- on the full deduplicated Win32 training dataset (~1.56M files) and predicting on\n-- the full held-out Win32 test dataset (359,994 files).\n-- Evaluates both query-local classifiers side-by-side in one GPU statement.\nWITH logistic AS (\nSELECT p.id, p.prediction, m.label, m.week_id, m.sha256, m.family\nFROM cuml_logistic_regression(\n  training => (\n    SELECT v.id, v.histogram AS vector, v.label\n    FROM ember_research_vectors_train v\n    JOIN ember_metadata_train m ON m.id = v.id\n    WHERE m.file_type = 'Win32'\n    ORDER BY v.id\n  ),\n  predict => (\n    SELECT v.id, v.histogram AS vector\n    FROM ember_research_vectors_test v\n    JOIN ember_metadata_test m ON m.id = v.id\n    WHERE m.file_type = 'Win32'\n    ORDER BY v.id\n  ),\n  max_iter => 1000,\n  penalty_l2 => 1.0\n) p\nJOIN ember_metadata_test m ON m.id = p.id\n),\nrandom_forest AS (\nSELECT p.id, p.prediction, m.label, m.week_id, m.sha256, m.family\nFROM cuml_random_forest_classifier(\n  training => (\n    SELECT v.id, v.histogram AS vector, v.label\n    FROM ember_research_vectors_train v\n    JOIN ember_metadata_train m ON m.id = v.id\n    WHERE m.file_type = 'Win32'\n    ORDER BY v.id\n  ),\n  predict => (\n    SELECT v.id, v.histogram AS vector\n    FROM ember_research_vectors_test v\n    JOIN ember_metadata_test m ON m.id = v.id\n    WHERE m.file_type = 'Win32'\n    ORDER BY v.id\n  ),\n  n_trees => 100,\n  max_depth => 12,\n  seed => 42\n) p\nJOIN ember_metadata_test m ON m.id = p.id\n),\nclassified AS (\n  SELECT 'logistic' AS model, id, prediction, label FROM logistic\n  UNION ALL\n  SELECT 'random_forest' AS model, id, prediction, label FROM random_forest\n)\nSELECT model, COUNT(*) AS files,\n       SUM(CASE WHEN prediction = 1 AND label = 1 THEN 1 ELSE 0 END) AS true_positive,\n       SUM(CASE WHEN prediction = 1 AND label = 0 THEN 1 ELSE 0 END) AS false_positive,\n       SUM(CASE WHEN prediction = 0 AND label = 1 THEN 1 ELSE 0 END) AS false_negative,\n       SUM(CASE WHEN prediction = 0 AND label = 0 THEN 1 ELSE 0 END) AS true_negative\nFROM classified\nGROUP BY model\nORDER BY model;\n",
+  "query_id": "ea38060f-89fa-4150-abab-23805c4398ce",
+  "status": "ok",
+  "schema": "model: string not null\nfiles: int64 not null\ntrue_positive: int64\nfalse_positive: int64\nfalse_negative: int64\ntrue_negative: int64",
+  "records": [
+    {
+      "model": "logistic",
+      "files": 359994,
+      "true_positive": 149414,
+      "false_positive": 24679,
+      "false_negative": 30586,
+      "true_negative": 155315
+    },
+    {
+      "model": "random_forest",
+      "files": 359994,
+      "true_positive": 156532,
+      "false_positive": 9239,
+      "false_negative": 23468,
+      "true_negative": 170755
+    }
+  ],
+  "execution": {
+    "source": "target/ember2024-scale/report/results/06_temporal_model_comparison.stats.txt.gz",
+    "path": "native",
+    "native_fragments": 7,
+    "host_boundaries": 0,
+    "query_grant_bytes": 96636764160,
+    "max_task_observed_peak_bytes": 18035732595,
+    "server_config": "fixture/demo/ember2024/scripts/scale/server.toml"
+  },
+  "repeat_observation": {
+    "scope": "Separate standalone logistic SQL 04 against the same full cohort; each query fits a new model. The unified 06 capture contains one logistic fit.",
+    "standalone_fits": [
+      {
+        "query_id": "2b7db178-25b9-49a3-a7aa-02a0ba283a16",
+        "true_positive": 149431,
+        "false_positive": 24540,
+        "false_negative": 30569,
+        "true_negative": 155454
+      },
+      {
+        "query_id": "93f9de07-a342-49ec-9876-c75cae0af89a",
+        "true_positive": 149432,
+        "false_positive": 24570,
+        "false_negative": 30568,
+        "true_negative": 155424
+      },
+      {
+        "query_id": "5dcac9ac-4905-4fab-8c8d-11b6247f1f10",
+        "true_positive": 149218,
+        "false_positive": 24605,
+        "false_negative": 30782,
+        "true_negative": 155389
+      },
+      {
+        "query_id": "31426a43-de6c-4a77-98a4-128517bdeec3",
+        "true_positive": 149318,
+        "false_positive": 24648,
+        "false_negative": 30682,
+        "true_negative": 155346
+      },
+      {
+        "query_id": "52e91246-33ac-4009-83a5-e791d493503c",
+        "true_positive": 149565,
+        "false_positive": 24759,
+        "false_negative": 30435,
+        "true_negative": 155235
+      },
+      {
+        "query_id": "04ad972a-63a5-4ab5-a5b6-bcb040c131e3",
+        "true_positive": 149479,
+        "false_positive": 24593,
+        "false_negative": 30521,
+        "true_negative": 155401
+      }
+    ]
+  },
+  "validation": {
+    "json_parquet_csv_rows_equal": true,
+    "cohort_counts_checked_against_metadata_parquet_footers_and_win32_column_scan": true
+  },
+  "source_artifacts": {
+    "result_json": "target/ember2024-scale/report/results/06_temporal_model_comparison.json",
+    "result_parquet": "target/ember2024-scale/results/06_temporal_model_comparison.parquet",
+    "result_csv_gz": "target/ember2024-scale/report/exports/06_temporal_model_comparison.csv.gz",
+    "stats_gz": "target/ember2024-scale/report/results/06_temporal_model_comparison.stats.txt.gz"
+  }
+}

@@ -1,33 +1,13 @@
 import BrandMap from '@site/src/components/merrec/BrandMap';
 import brandMap from '@site/static/data/merrec-brand-map.json';
 
-This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
-1,268,092,738 events from May through October 2023.
+The [MerRec](../../guides/datasets/merrec.mdx) map places brands with shared fans nearby. Medical scrubs, golf, cameras, and bridal wear appear as separate regions. A merchandising team can inspect these groups before testing navigation collections.
 
-### What does the marketplace look like when brands sit next to the brands their fans like?
-
-One statement computes the map and its colors from the like events. Jaccard
-scores all pairs among the 5,000 brands with the most fans. Each brand then
-keeps edges to its five most similar brands, and ForceAtlas2 positions the
-resulting graph in two dimensions. Leiden colors the same brands by
-shopping world, using every pair with a Jaccard score of at least 0.02.
-The layout uses lin-log attraction and distributes attraction away from
-hub brands, so niche worlds form islands around the large mainstream core.
+The statement derives distinct shopper-brand likes, scores the 5,000 brands with the most fans using Jaccard similarity, and keeps each brand's five nearest links for the layout. Leiden assigns colors from brand pairs whose Jaccard score reaches 0.02.
 
 <BrandMap data={brandMap} />
 
-Positions show neighborhoods, not distances with a unit. Dots in the
-crowded center belong to brands whose fans like many other brands, such as
-Nike, Disney and Handmade. The islands at the edge are worlds with a
-tightly shared audience, such as medical scrubs, golf, cameras and bridal
-wear. Each world's label is an editorial summary of its most-liked brands.
-The `seed` option fixes only the starting positions. ForceAtlas2 adds forces
-with floating-point atomics, so
-[coordinates differ in every run](../../design/gpu-table-functions.mdx#reproducibility).
-Across the three captured runs, 51% of each brand's ten nearest
-map neighbors stayed the same on average. The world colors come from Leiden and grouped the brands identically in all three runs. The map
-shows the first run; read it for regions, not for individual brand
-distances.
+Positions show neighborhoods, without a meaningful distance unit. Each region's label summarizes its leading brands. Layout coordinates can change between executions, so the map supports inspection of regions rather than precise distances between individual dots.
 
 <details>
 <summary>Executed SQL</summary>
@@ -78,5 +58,3 @@ ORDER BY l.brand_id;
 ```
 
 </details>
-
-The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 17.74 s, including planning, every step of the statement, and result receipt. Each plan had 7 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 54.46 GiB of the 90 GiB query limit. [Download the map data](/data/merrec-brand-map.json) with the executed SQL, query IDs, timings, and every brand's coordinates.

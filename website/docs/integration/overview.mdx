@@ -56,7 +56,7 @@ Local and `s3://` Parquet sources remain supported.
    [Execute one attempt per query](./datafusion-session.mdx#execute-one-attempt-per-query).
    The server reads Parquet tables that clients register with
    `CREATE EXTERNAL TABLE`, as in the
-   [citation network walkthrough](../guides/datasets/citation-network.mdx#register-the-tables).
+   [citation table registration](./flight-sql-server.mdx#start-the-citation-demo-server).
    If you use the `cugraph_*` or `cuvs_*` UDTFs, list and validate the installed
    calls with [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx).
 4. **Check whether a query runs on the GPU.** Before shipping a query, ask for

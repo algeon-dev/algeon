@@ -1,3 +1,4 @@
+import clsx from 'clsx';
 import React from 'react';
 import {
   Bar,
@@ -101,28 +102,10 @@ export default function TpchSf100Benchmark(): React.ReactElement {
         <div>
           <ul className={styles.benchmarkFacts}>
             <li>
-              <strong>Environment:</strong> AWS EC2 g7e.4xlarge, 16 vCPUs,
-              128 GiB system memory, local NVMe fixture storage, RTX PRO 6000.
-            </li>
-            <li>
-              <strong>Run:</strong> {dataset.scaleFactor.toUpperCase()},
-              {config.warmups} warmup / {config.iterations} measured iteration,
-              source cache <code>{config.nativeSourceCachePolicy}</code>,
-              LocalKvikio parquet reads.
-            </li>
-            <li>
               <strong>Result:</strong> CPU {formatSeconds(summary.cpuTotalMs)},
               GPU {formatSeconds(summary.gpuTotalMs)}, CPU / GPU{' '}
               {formatSpeedup(summary.speedup)}, peak reservation{' '}
               {formatGiB(summary.maxReservationLivePeakBytes)}.
-            </li>
-            <li>
-              <strong>KvikIO:</strong> local cuDF/libcudf file reads with cache
-              disabled; this run forced KvikIO compatibility I/O with{' '}
-              <code>KVIKIO_COMPAT_MODE={config.kvikioCompatMode}</code>. On this
-              g7e.4xlarge host, <code>OFF</code> enters the cuFile path, but
-              cuFile compatibility mode can still fall back; it does not prove
-              native GDS.
             </li>
           </ul>
         </div>
@@ -208,7 +191,7 @@ export default function TpchSf100Benchmark(): React.ReactElement {
             </TabItem>
             <TabItem value="results" label="Per-query results">
               <p className={styles.chartCaption}>{summary.queryCount} TPC-H queries.</p>
-              <div className={styles.tablePanel}>
+              <div className={clsx(styles.tablePanel, 'thin-scrollbar')}>
                 <table className={styles.resultsTable}>
                   <thead>
                     <tr>

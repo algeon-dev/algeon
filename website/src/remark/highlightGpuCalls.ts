@@ -6,6 +6,8 @@
 // `## Quickstart` template call to the page's own UDTF; highlighting it
 // marks nothing new, so that section stays plain.
 
+import {gpuCallMetastring} from '../utils/gpuCallHighlights';
+
 type MdastNode = {
   type: string;
   depth?: number;
@@ -15,7 +17,6 @@ type MdastNode = {
   children?: MdastNode[];
 };
 
-const GPU_CALL = /\b(?:cugraph|cuvs|cuml|cuopt)_\w+\s*\(/;
 const UNHIGHLIGHTED_SECTION = 'Quickstart';
 
 export default function highlightGpuCalls() {
@@ -33,13 +34,8 @@ export default function highlightGpuCalls() {
 }
 
 function visit(node: MdastNode): void {
-  if (node.type === 'code' && node.lang === 'sql' && !node.meta?.includes('{')) {
-    const lines = (node.value ?? '')
-      .split('\n')
-      .flatMap((line, index) => (GPU_CALL.test(line) ? [index + 1] : []));
-    if (lines.length > 0) {
-      node.meta = [`{${lines.join(',')}}`, node.meta].filter(Boolean).join(' ');
-    }
+  if (node.type === 'code' && node.lang === 'sql') {
+    node.meta = gpuCallMetastring(node.value ?? '', node.meta ?? undefined);
   }
   node.children?.forEach(visit);
 }

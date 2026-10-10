@@ -121,8 +121,12 @@ export function formatFunctionQuickstartSql(sql) {
   ].join('\n');
 }
 
+export function narrativePartialImport(importPath, name = 'Examples') {
+  return [`import ${name} from '${importPath}';`, '', `<${name} />`].join('\n');
+}
+
 export function narrativeExampleImport(importPath) {
-  return [`import Examples from '${importPath}';`, '', '<Examples />'].join('\n');
+  return narrativePartialImport(importPath, 'Examples');
 }
 
 export function renderFunctionPage({
@@ -136,12 +140,14 @@ export function renderFunctionPage({
   inputs,
   argumentsAndOptions,
   output,
+  notes,
   examples,
   limits,
   discoveryLink,
 }) {
   // Page order is fixed: purpose, minimal call, inputs, arguments and
-  // options, output, optional long-form examples, limits.
+  // options, output, optional hand-written notes (a partial that carries its
+  // own headings), optional long-form examples, limits.
   const parts = [
     '---',
     `title: ${title}`,
@@ -184,6 +190,7 @@ export function renderFunctionPage({
     '',
     output,
   );
+  if (notes) parts.push('', notes);
   if (examples) {
     parts.push('', '## Examples', '', examples);
     headings.push('Examples');

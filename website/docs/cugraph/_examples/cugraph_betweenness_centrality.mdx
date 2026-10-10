@@ -1,3 +1,18 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecScaleBridges from './merrec_scale_bridges.mdx';
+
+<Tabs queryString="dataset">
+<TabItem value="merrec" label="MerRec" default>
+
+### Which brands connect the shopping worlds?
+
+<MerRecScaleBridges />
+
+</TabItem>
+
+<TabItem value="citation-network" label="Citation network">
+
 {/* Hand-owned examples for cugraph_betweenness_centrality. NOT generated; safe to edit. */}
 
 This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
@@ -47,3 +62,6 @@ different measure from citation volume.
 
 For sampling options on larger graphs, see the
 [Betweenness Centrality UDTF reference](../udtfs/centrality/cugraph_betweenness_centrality.mdx).
+
+</TabItem>
+</Tabs>

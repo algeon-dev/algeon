@@ -1,185 +1,82 @@
 ---
-sidebar_position: 2
+sidebar_position: 3
 title: Citation Network
-description: Prepare the DBLP / AMiner V12 citation network, start a local server, and rank papers with cuGraph SQL.
+description: Investigate research communities, a ForceAtlas2 neighborhood, shared references and citation paths in the DBLP / AMiner V12 graph.
 ---
+
+import CitationCommunities from '../../cugraph/_examples/citation_communities.mdx';
+import CitationLayout from '../../cugraph/_examples/citation_layout.mdx';
+import CitationBibliography from '../../cugraph/_examples/citation_bibliography.mdx';
+import CitationReach from '../../cugraph/_examples/citation_reach.mdx';
 
 # Citation Network
 
-The DBLP / AMiner V12 citation network holds 4.9 million papers and 45.6
-million citations. An edge `src` → `dst` means paper `src` cites paper `dst`.
-Every cuGraph UDTF page runs its examples on these tables, and the
-integration guides use them for their first query.
+These analyses use citation structure to examine research communities, map a
+paper's neighborhood, compare bibliographies and build reading routes. Each
+query joins graph outputs to paper records, producing a result that can be
+checked against titles or cited references.
 
-The data is a fixed snapshot from April 2020. Graph scores describe a paper's
-position in this snapshot and say nothing about its quality.
+The [DBLP / AMiner V12](https://www.kaggle.com/datasets/mathurinache/citation-network-dataset)
+snapshot contains 4,894,081 papers and 45,564,149 citation edges, dated April 2020.
 
-## At a glance
+An edge `src` → `dst` means paper `src` cites paper `dst`. These records can
+show paths and structural groups in the captured graph. A citation path does
+not establish influence, and a community label is not a judgment about a
+paper's quality.
 
-| Item | Details |
-|---|---|
-| Source | [DBLP / AMiner V12](https://www.kaggle.com/datasets/mathurinache/citation-network-dataset), April 2020 snapshot |
-| Scale | 4.9M papers and 45.6M citations, plus author and field-of-study links |
-| Preparation | 12.5 GB source JSON becomes about 4.6 GB of Parquet. The recorded conversion took 17–19 minutes and 7.8 GB RAM on a 32-core host with local NVMe |
-| Python packages | `pyarrow` |
-| Server | `127.0.0.1:50051` on GPU 0; cuGraph and relational SQL execute natively on the GPU |
-| Examples | Every [cuGraph UDTF](../../cugraph/udtfs/index.mdx) |
+- [Do citation communities match the catalog's research fields?](#research-communities)
+- [How are the papers around the Transformer connected?](#forceatlas2)
+- [Which papers share the Transformer's references?](#shared-background)
+- [Trace BERT to LSTM and reverse AlexNet's citations](#citation-paths)
 
-## Examples
+<span id="run-the-examples" />
 
-- [Rank papers by PageRank](#run-the-examples), the first query on this page.
-- [Find a citation path from BERT to LSTM](../../cugraph/udtfs/traversal/cugraph_bfs.mdx#examples).
-- [Compare citation communities with research fields](../../cugraph/udtfs/community/cugraph_louvain.mdx#examples).
-- [Find papers with references similar to the Transformer](../../cugraph/udtfs/similarity/cugraph_jaccard.mdx#examples).
+## Do citation communities match the catalog's research fields? {/* #research-communities */}
 
-The remaining cuGraph pages, from degree counts to force-directed layout,
-read the same tables.
+<CitationCommunities />
 
-## Prepare the data
+## How are the papers around the Transformer connected? {/* #forceatlas2 */}
 
-Use a Linux GPU host with the
-[native libraries built](../../build/from-source.md#3-build-the-native-stack),
-and run shell commands from the repository root. GPU memory requirements
-depend on the query; the figures above describe host resources.
+<CitationLayout />
 
-Download and extract `dblp.v12.json` from the
-[DBLP / AMiner V12 dataset](https://www.kaggle.com/datasets/mathurinache/citation-network-dataset).
-Place it at `fixture/demo/citation_network/raw/dblp.v12.json`, then convert it:
+## Which papers share the Transformer's references? {/* #shared-background */}
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install pyarrow
-fixture/fixture.sh graph dblp-ingest
-```
+<CitationBibliography />
 
-The output is `fixture/demo/citation_network/v1/parquet/`. Skip this step
-when those files already exist. The
-[conversion reference](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/citation_network/README.md)
-includes the source checksum and layout details.
+## Citation paths
 
-## Start the server
+<CitationReach />
 
-Build the server and SQL client:
+## Data scope
 
-```bash
-cargo build --workspace --all-features --release --bin algeon_server --bin algeon_tools
-```
-
-Create a demo configuration for GPU 0 and start the server on localhost:
-
-```bash
-mkdir -p target
-cat > target/citation-demo.toml <<'TOML'
-[native]
-execution_mode = "native_required"
-
-[[admission.device_profiles]]
-device_ordinal = 0
-TOML
-
-ALGEON_SERVER_CONFIG_FILE="$PWD/target/citation-demo.toml" \
-ALGEON_SERVER_GPU_DEVICES=0 \
-ALGEON_SERVER_BIND=127.0.0.1:50051 \
-ALGEON_SERVER_CUGRAPH_ENABLED=true \
-flock /tmp/cudf-gpu.lock "${CARGO_TARGET_DIR:-target}/release/algeon_server"
-```
-
-Leave this terminal running. This configuration executes both explicit cuGraph
-calls and relational operations (filters, joins, aggregates, and windows) natively
-on the GPU with zero host DataFusion boundaries.
-
-## Register the tables
-
-Open another terminal at the repository root. Define a shell helper for the
-SQL client and check the connection:
-
-```bash
-sql() {
-  "${CARGO_TARGET_DIR:-target}/release/algeon_tools" \
-    flight-sql-query http://127.0.0.1:50051 "${1:-$(cat)}"
-}
-sql "SELECT 1 AS one"
-```
-
-The result should be a column named `one` containing `1`. Register the files:
-
-```bash
-citation_data="$PWD/fixture/demo/citation_network/v1/parquet"
-sql "CREATE OR REPLACE EXTERNAL TABLE citation_edges STORED AS PARQUET LOCATION '$citation_data/edges_by_src.parquet'"
-sql "CREATE OR REPLACE EXTERNAL TABLE citation_edges_by_dst STORED AS PARQUET LOCATION '$citation_data/edges_by_dst.parquet'"
-sql "CREATE OR REPLACE EXTERNAL TABLE papers STORED AS PARQUET LOCATION '$citation_data/profiles_by_paper_id.parquet'"
-sql "CREATE OR REPLACE EXTERNAL TABLE paper_authors STORED AS PARQUET LOCATION '$citation_data/paper_authors.parquet'"
-sql "CREATE OR REPLACE EXTERNAL TABLE paper_fos STORED AS PARQUET LOCATION '$citation_data/paper_fos.parquet'"
-```
-
-Table registrations last until the server stops. After restarting, run this
-registration block again; the Parquet files can be reused.
-
-## Run the examples
-
-PageRank weights incoming citations by the scores of the citing papers.
-Run this in the client terminal:
-
-```bash
-sql <<'SQL'
-SELECT p.title, p.year, r.value AS pagerank
-FROM cugraph_pagerank(edges => (SELECT src, dst FROM citation_edges)) r
-JOIN papers p ON p.paper_id = r.vertex
-ORDER BY r.value DESC
-LIMIT 5;
-SQL
-```
-
-A run recorded on 2026-09-26 returned these rows (scores rounded):
-
-| title | year | pagerank |
-|---|---|---|
-| Finite automata and their decision problems | 1959 | 0.00139 |
-| The Mathematical Theory of Communication | 1949 | 0.00134 |
-| The reduction of two-way automata to one-way automata | 1959 | 0.00126 |
-| The complexity of theorem-proving procedures | 1971 | 0.00073 |
-| A mathematical theory of communication | 1948 | 0.00066 |
-
-For the other examples, replace the query between `sql <<'SQL'` and `SQL`, or
-connect an [interactive SQL client](../../integration/flight-sql-server.mdx#use-an-interactive-client)
-to the running server. Execute multi-statement examples one statement at a
-time. Examples use `CREATE OR REPLACE` for reusable views and result tables,
-and running another example can replace shared names such as `ai_nodes` and
-`ai_edges`.
-
-## Tables
+The source is a fixed April 2020 snapshot. `papers` includes title, year,
+reported citation count, reference count, and `primary_fos`, the source's
+primary field-of-study label. The investigations join graph results
+back to these paper records. Their SQL above defines each selected subgraph
+and candidate set.
 
 | Table | Rows | Contents |
-|---|---|---|
-| `citation_edges` | 45.6M | `src`, `dst`, `weight` = 1.0; sorted by `src` |
-| `citation_edges_by_dst` | 45.6M | The same citations sorted by `dst` for reverse traversal |
-| `papers` | 4.9M | `paper_id`, `title`, `year`, `venue`, `n_citation`, `n_references`, `primary_fos`, … |
+|---|---:|---|
+| `citation_edges` | 45,564,149 | `src`, `dst`, `weight` = 1.0; sorted by `src` |
+| `citation_edges_by_dst` | 45,564,149 | The same citations sorted by `dst` for reverse traversal |
+| `papers` | 4,894,081 | `paper_id`, `title`, `year`, `venue`, `n_citation`, `n_references`, `primary_fos`, … |
 | `paper_authors` | 14.9M | Paper-author links |
 | `paper_fos` | 45.0M | Paper-field-of-study links |
 
-`papers.n_citation` is AMiner's reported global citation count. In-graph
-degree counts only edges present here; the
+`papers.n_citation` is AMiner's reported global count. In-graph degree counts
+only edges present in this snapshot; the
 [in-degree example](../../cugraph/udtfs/structure/cugraph_in_degrees_all.mdx#examples)
 compares them.
 
-## Graph scopes
+The [Flight SQL guide](../../integration/flight-sql-server.mdx) covers client
+connection. The [cuGraph function catalog](../../cugraph/udtfs/index.mdx)
+contains more queries using these tables, including degree, centrality, and
+layout examples.
 
-The cuGraph examples evaluate different graph scopes derived from the base tables:
 
-| Graph scope | Derivation / Filter | Directed edges | Active vertices | Used in |
-|---|---|---:|---:|---|
-| Full citation graph | `citation_edges` | 45,564,149 | 4,146,772 | [PageRank](#run-the-examples), global centrality |
-| Pre-2000 subgraph | `edges_pre2000` (endpoints dated 1901–2000) | 3,431,911 | 518,777 | Historical PageRank |
-| AI research subgraph | `ai_edges` (year >= 2010, 10 AI fields) | 164,368 | 38,054 | Louvain community detection |
-| Attention ego graph | `attention_ego_edges` (Transformer + 132 citations) | 399 | 133 | ForceAtlas2 layout |
-| NLP bibliography graph | `bibliography_edges` (12 candidate papers) | 452 | 371 | Sørensen similarity |
-
-<details id="seed-papers-used-in-the-examples">
-<summary>Seed papers used in the examples</summary>
-
-Use `paper_id` as the vertex ID. Titles can repeat across distinct records;
-the examples resolve seeds by title and year, adding venue when needed.
+**Seed paper records.** Queries use `paper_id` as the graph vertex. Titles can
+repeat across records; the examples select title and year together when
+identifying a seed.
 
 | Paper | `paper_id` | Exact `title` in the corpus | `year` | Extra predicate |
 |---|---|---|---|---|
@@ -191,8 +88,17 @@ the examples resolve seeds by title and year, adding venue when needed.
 | LSTM | `2064675550` | `Long short-term memory` | 1997 | |
 | PageRank | `2066636486` | `The anatomy of a large-scale hypertextual Web search engine` | 1998 | `venue = 'The Web Conference'` |
 
-String equality is exact and case-sensitive: `Attention Is All You Need`
-(capitalized) matches a separate arXiv record with a different id. Copy titles
-from this table or from a query on `papers`, not from the published paper.
+`Attention Is All You Need` with a capitalized `Is` matches a separate arXiv
+record. Copy exact titles from this table or query `papers` for the intended
+record.
 
-</details>
+<div className="fineprint">
+
+The [investigation capture](/data/citation-investigation-capture.json) contains
+the SQL, returned rows, query IDs and source counts. A separate SQL check
+enumerates the ten BERT-to-LSTM intermediates and another returns the eight
+shared references. Independent relational checks matched both results. The
+bibliography query used mixed execution; the other captured queries ran
+natively. Execution details are recorded with each query.
+
+</div>

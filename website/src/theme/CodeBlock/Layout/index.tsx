@@ -1,6 +1,7 @@
 /**
  * Collapses long code blocks to their first lines behind a fade, with a
  * button that reveals the rest. The copy button still copies the full code.
+ * The no-collapse class keeps report queries visible in the reading flow.
  */
 import React, {useId, useRef, useState, type ReactNode} from 'react';
 import clsx from 'clsx';
@@ -23,7 +24,7 @@ export default function LayoutWrapper(props: Props): ReactNode {
   const clipId = useId();
   const lineCount = metadata.code.split('\n').length;
 
-  if (lineCount <= COLLAPSE_ABOVE_LINES) {
+  if (lineCount <= COLLAPSE_ABOVE_LINES || metadata.className.split(/\s+/).includes('no-collapse')) {
     return <Layout {...props} />;
   }
 

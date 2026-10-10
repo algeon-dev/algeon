@@ -1,0 +1,385 @@
+{
+  "name": "citation_investigation",
+  "captured_at_utc": "2026-10-07T05:45:14.712521+00:00",
+  "source": {
+    "dataset": "DBLP / AMiner V12",
+    "snapshot": "April 2020",
+    "files": {
+      "edges_by_src": {
+        "path": "/mnt/algeon-nvme/algeon/fixture/demo/citation_network/v1/parquet/edges_by_src.parquet",
+        "bytes": 584567992,
+        "rows": 45564149
+      },
+      "edges_by_dst": {
+        "path": "/mnt/algeon-nvme/algeon/fixture/demo/citation_network/v1/parquet/edges_by_dst.parquet",
+        "bytes": 654032580,
+        "rows": 45564149
+      },
+      "profiles_by_paper_id": {
+        "path": "/mnt/algeon-nvme/algeon/fixture/demo/citation_network/v1/parquet/profiles_by_paper_id.parquet",
+        "bytes": 2612998799,
+        "rows": 4894081
+      }
+    }
+  },
+  "server_config": "fixture/demo/ember2024/scripts/scale/server.toml",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
+  "notes": [
+    "BFS path mode returns one shortest path; the relational path check enumerates all 10 two-hop chains for these seed records.",
+    "Bibliography SQL uses native_preferred. native_required rejects distributed aggregate lowering in this query. The saved observation records CPU/GPU boundaries; no SQL workaround was used."
+  ],
+  "reach": {
+    "name": "citation-reach",
+    "captured_at_utc": "2026-10-07T05:42:40.817941+00:00",
+    "sql": "SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year\nFROM cugraph_bfs(\n  edges => (SELECT dst AS src, src AS dst FROM citation_edges_by_dst),\n  sources => (SELECT paper_id AS vertex FROM papers\n              WHERE title = 'ImageNet Classification with Deep Convolutional Neural Networks'\n                AND year = 2012),\n  depth_limit => 3, output_mode => 'normalized') b\nJOIN papers p ON p.paper_id = b.vertex\nWHERE b.reachable\nGROUP BY b.distance\nORDER BY b.distance;",
+    "query_id": "845bab69-ef96-4662-85bb-e33c5ed40827",
+    "rows": [
+      {
+        "distance": 0,
+        "papers": 1,
+        "avg_year": 2012.0
+      },
+      {
+        "distance": 1,
+        "papers": 12185,
+        "avg_year": 2017.5
+      },
+      {
+        "distance": 2,
+        "papers": 67517,
+        "avg_year": 2017.9
+      },
+      {
+        "distance": 3,
+        "papers": 71541,
+        "avg_year": 2017.8
+      }
+    ],
+    "stats_path": "target/demo-review/citation-reach.stats.txt",
+    "execution": {
+      "post_native_execution_path": "native",
+      "native_plan_fragment_count": "3",
+      "host_datafusion_boundary_count": "0"
+    },
+    "execution_mode": "native_required"
+  },
+  "path": {
+    "name": "citation-path",
+    "captured_at_utc": "2026-10-07T05:42:41.042992+00:00",
+    "sql": "SELECT b.path_index, b.distance, p.year, p.title\nFROM cugraph_bfs(\n  edges => (SELECT src, dst FROM citation_edges),\n  sources => (SELECT paper_id AS vertex FROM papers\n              WHERE title = 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding'\n                AND year = 2018),\n  output_mode => 'path',\n  target_vertices => (SELECT paper_id AS vertex FROM papers\n                      WHERE title = 'Long short-term memory' AND year = 1997)) b\nJOIN papers p ON p.paper_id = b.vertex\nORDER BY b.path_index;",
+    "query_id": "e60da236-087b-43b5-99ab-063d54058cd9",
+    "rows": [
+      {
+        "path_index": 0,
+        "distance": 0,
+        "year": 2018,
+        "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
+      },
+      {
+        "path_index": 1,
+        "distance": 1,
+        "year": 2018,
+        "title": "Character-Level Language Modeling with Deeper Self-Attention"
+      },
+      {
+        "path_index": 2,
+        "distance": 2,
+        "year": 1997,
+        "title": "Long short-term memory"
+      }
+    ],
+    "stats_path": "target/demo-review/citation-path.stats.txt",
+    "execution": {
+      "post_native_execution_path": "native",
+      "native_plan_fragment_count": "4",
+      "host_datafusion_boundary_count": "0"
+    },
+    "execution_mode": "native_required"
+  },
+  "path_check": {
+    "name": "citation-path-check",
+    "captured_at_utc": "2026-10-07T05:44:05.069837+00:00",
+    "sql": "SELECT p.paper_id, p.title, p.year\nFROM citation_edges first_step\nJOIN papers source ON source.paper_id = first_step.src\nJOIN citation_edges second_step ON second_step.src = first_step.dst\nJOIN papers target ON target.paper_id = second_step.dst\nJOIN papers p ON p.paper_id = first_step.dst\nWHERE source.title = 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding'\n  AND source.year = 2018\n  AND target.title = 'Long short-term memory' AND target.year = 1997\nORDER BY p.year, p.paper_id;",
+    "query_id": "43abd844-9767-46b2-8317-54da4fa1b63d",
+    "rows": [
+      {
+        "paper_id": 1486649854,
+        "title": "Skip-thought vectors",
+        "year": 2015
+      },
+      {
+        "paper_id": 1566289585,
+        "title": "Aligning Books and Movies: Towards Story-Like Visual Explanations by Watching Movies and Reading Books",
+        "year": 2015
+      },
+      {
+        "paper_id": 1840435438,
+        "title": "A large annotated corpus for learning natural language inference",
+        "year": 2015
+      },
+      {
+        "paper_id": 2170973209,
+        "title": "Semi-supervised Sequence Learning",
+        "year": 2015
+      },
+      {
+        "paper_id": 2413794162,
+        "title": "A Decomposable Attention Model for Natural Language Inference",
+        "year": 2016
+      },
+      {
+        "paper_id": 2739351760,
+        "title": "SemEval-2017 Task 1: Semantic Textual Similarity Multilingual and Crosslingual Focused Evaluation",
+        "year": 2017
+      },
+      {
+        "paper_id": 2963403868,
+        "title": "Attention is all you need",
+        "year": 2017
+      },
+      {
+        "paper_id": 2963563735,
+        "title": "Semi-supervised sequence tagging with bidirectional language models",
+        "year": 2017
+      },
+      {
+        "paper_id": 2806120502,
+        "title": "Neural Network Acceptability Judgments",
+        "year": 2018
+      },
+      {
+        "paper_id": 2886490473,
+        "title": "Character-Level Language Modeling with Deeper Self-Attention",
+        "year": 2018
+      }
+    ],
+    "stats_path": "target/demo-review/citation-path-check.stats.txt",
+    "execution": {
+      "post_native_execution_path": "native",
+      "native_plan_fragment_count": "1",
+      "host_datafusion_boundary_count": "0"
+    },
+    "execution_mode": "native_required"
+  },
+  "bibliography": {
+    "name": "citation-bibliography",
+    "captured_at_utc": "2026-10-07T05:44:39.803128+00:00",
+    "sql": "CREATE OR REPLACE VIEW similarity_seed AS\nSELECT paper_id, title, n_references\nFROM papers\nWHERE title = 'Attention is all you need' AND year = 2017;\n\nCREATE OR REPLACE VIEW similarity_candidates AS\nSELECT p.paper_id, p.title, p.n_references, p.year\nFROM papers p\nWHERE p.year BETWEEN 2017 AND 2020\n  AND p.n_references >= 10\n  AND p.primary_fos IN (\n    'Natural language processing', 'Language model',\n    'Machine translation', 'Question answering');\n\nCREATE OR REPLACE VIEW bibliography_edges AS\nSELECT e.src, -e.dst AS dst\nFROM citation_edges e\nJOIN (\n  SELECT paper_id FROM similarity_seed\n  UNION\n  SELECT paper_id FROM similarity_candidates\n) selected ON selected.paper_id = e.src;\n\nSELECT p.year, p.title, p.n_references,\n       ROUND(r.similarity, 3) AS jaccard\nFROM cugraph_jaccard(\n  edges => (SELECT src, dst FROM bibliography_edges),\n  vertex_pairs => (\n    SELECT s.paper_id AS first, c.paper_id AS second\n    FROM similarity_seed s\n    CROSS JOIN similarity_candidates c\n    WHERE LOWER(c.title) <> LOWER(s.title)),\n  directed => false) r\nJOIN papers p ON p.paper_id = r.second\nORDER BY r.similarity DESC, p.paper_id\nLIMIT 5;",
+    "query_id": "8ec2c7b0-eda2-4f77-ba72-7159c7b14797",
+    "rows": [
+      {
+        "year": 2018,
+        "title": "Self-Attention with Relative Position Representations",
+        "n_references": 13,
+        "jaccard": 0.296
+      },
+      {
+        "year": 2018,
+        "title": "Future-Prediction-Based Model for Neural Machine Translation.",
+        "n_references": 20,
+        "jaccard": 0.273
+      },
+      {
+        "year": 2018,
+        "title": "Weighted Transformer Network for Machine Translation",
+        "n_references": 31,
+        "jaccard": 0.262
+      },
+      {
+        "year": 2018,
+        "title": "Parallel Attention Mechanisms in Neural Machine Translation",
+        "n_references": 12,
+        "jaccard": 0.259
+      },
+      {
+        "year": 2017,
+        "title": "XMU Neural Machine Translation Online Service",
+        "n_references": 10,
+        "jaccard": 0.231
+      }
+    ],
+    "stats_path": "target/demo-review/citation-bibliography.stats.txt",
+    "execution": {
+      "post_native_execution_path": "mixed",
+      "native_plan_fragment_count": "2",
+      "host_datafusion_boundary_count": "1"
+    },
+    "execution_mode": "native_preferred"
+  },
+  "shared_references": {
+    "name": "citation-shared-references",
+    "captured_at_utc": "2026-10-07T05:42:41.343931+00:00",
+    "sql": "WITH seed AS (\n  SELECT paper_id FROM papers\n  WHERE title = 'Attention is all you need' AND year = 2017\n), candidate AS (\n  SELECT paper_id FROM papers\n  WHERE title = 'Self-Attention with Relative Position Representations' AND year = 2018\n)\nSELECT p.paper_id, p.year, p.title\nFROM citation_edges a\nJOIN seed s ON s.paper_id = a.src\nJOIN citation_edges b ON b.dst = a.dst\nJOIN candidate c ON c.paper_id = b.src\nJOIN papers p ON p.paper_id = a.dst\nORDER BY p.year, p.paper_id;",
+    "query_id": "7b86e876-864e-4900-b7e5-a18722cc57f5",
+    "rows": [
+      {
+        "paper_id": 1522301498,
+        "year": 2014,
+        "title": "Adam: A Method for Stochastic Optimization"
+      },
+      {
+        "paper_id": 2133564696,
+        "year": 2014,
+        "title": "Neural Machine Translation by Jointly Learning to Align and Translate"
+      },
+      {
+        "paper_id": 2949888546,
+        "year": 2014,
+        "title": "Sequence to Sequence Learning with Neural Networks"
+      },
+      {
+        "paper_id": 2949335953,
+        "year": 2015,
+        "title": "Effective Approaches to Attention-based Neural Machine Translation"
+      },
+      {
+        "paper_id": 2951008357,
+        "year": 2015,
+        "title": "End-To-End Memory Networks"
+      },
+      {
+        "paper_id": 2413794162,
+        "year": 2016,
+        "title": "A Decomposable Attention Model for Natural Language Inference"
+      },
+      {
+        "paper_id": 2525778437,
+        "year": 2016,
+        "title": "Google's Neural Machine Translation System: Bridging the Gap between Human and Machine Translation"
+      },
+      {
+        "paper_id": 2540404261,
+        "year": 2016,
+        "title": "Neural Machine Translation in Linear Time"
+      }
+    ],
+    "stats_path": "target/demo-review/citation-shared-references.stats.txt",
+    "execution": {
+      "post_native_execution_path": "native",
+      "native_plan_fragment_count": "1",
+      "host_datafusion_boundary_count": "0"
+    },
+    "execution_mode": "native_required"
+  },
+  "communities": {
+    "name": "citation-communities",
+    "captured_at_utc": "2026-10-07T05:42:41.593059+00:00",
+    "sql": "CREATE OR REPLACE VIEW ai_nodes AS\nSELECT paper_id FROM papers\nWHERE year >= 2010 AND primary_fos IN (\n  'Deep learning', 'Artificial neural network', 'Convolutional neural network',\n  'Recurrent neural network', 'Natural language processing',\n  'Reinforcement learning', 'Image segmentation', 'Feature extraction',\n  'Object detection', 'Speech recognition');\n\nCREATE OR REPLACE VIEW ai_edges AS\nSELECT e.src, e.dst\nFROM citation_edges e\nJOIN ai_nodes a ON a.paper_id = e.src\nJOIN ai_nodes b ON b.paper_id = e.dst;\n\nWITH community_fos AS (\n  SELECT c.community, p.primary_fos, COUNT(*) AS n\n  FROM cugraph_louvain(edges => (SELECT src, dst FROM ai_edges)) c\n  JOIN papers p ON p.paper_id = c.vertex\n  GROUP BY c.community, p.primary_fos),\nranked AS (\n  SELECT SUM(n) OVER (PARTITION BY community) AS members,\n         ROW_NUMBER() OVER (PARTITION BY community ORDER BY n DESC) AS rn,\n         primary_fos,\n         n\n  FROM community_fos)\nSELECT members, rn, primary_fos, n\nFROM ranked\nWHERE members > 2500 AND rn <= 3\nORDER BY members DESC, rn;",
+    "query_id": "467067d6-4250-474c-aef5-96c66b38560f",
+    "rows": [
+      {
+        "members": 7172,
+        "rn": 1,
+        "primary_fos": "Convolutional neural network",
+        "n": 2698
+      },
+      {
+        "members": 7172,
+        "rn": 2,
+        "primary_fos": "Deep learning",
+        "n": 2527
+      },
+      {
+        "members": 7172,
+        "rn": 3,
+        "primary_fos": "Artificial neural network",
+        "n": 869
+      },
+      {
+        "members": 4477,
+        "rn": 1,
+        "primary_fos": "Deep learning",
+        "n": 1332
+      },
+      {
+        "members": 4477,
+        "rn": 2,
+        "primary_fos": "Recurrent neural network",
+        "n": 1280
+      },
+      {
+        "members": 4477,
+        "rn": 3,
+        "primary_fos": "Artificial neural network",
+        "n": 624
+      },
+      {
+        "members": 4260,
+        "rn": 1,
+        "primary_fos": "Image segmentation",
+        "n": 1919
+      },
+      {
+        "members": 4260,
+        "rn": 2,
+        "primary_fos": "Convolutional neural network",
+        "n": 921
+      },
+      {
+        "members": 4260,
+        "rn": 3,
+        "primary_fos": "Deep learning",
+        "n": 799
+      },
+      {
+        "members": 3859,
+        "rn": 1,
+        "primary_fos": "Reinforcement learning",
+        "n": 3129
+      },
+      {
+        "members": 3859,
+        "rn": 2,
+        "primary_fos": "Artificial neural network",
+        "n": 279
+      },
+      {
+        "members": 3859,
+        "rn": 3,
+        "primary_fos": "Deep learning",
+        "n": 226
+      },
+      {
+        "members": 3518,
+        "rn": 1,
+        "primary_fos": "Object detection",
+        "n": 2193
+      },
+      {
+        "members": 3518,
+        "rn": 2,
+        "primary_fos": "Convolutional neural network",
+        "n": 467
+      },
+      {
+        "members": 3518,
+        "rn": 3,
+        "primary_fos": "Deep learning",
+        "n": 342
+      }
+    ],
+    "stats_path": "target/demo-review/citation-communities.stats.txt",
+    "execution": {
+      "post_native_execution_path": "native",
+      "native_plan_fragment_count": "2",
+      "host_datafusion_boundary_count": "0"
+    },
+    "execution_mode": "native_required"
+  },
+  "independent_validation": {
+    "citation-path-check": "Native results match independent DuckDB query, all fields and row order.",
+    "citation-shared-references": "Native results match independent DuckDB query, all fields and row order.",
+    "bibliography_denominators": [
+      [
+        "Attention is all you need",
+        22
+      ],
+      [
+        "Self-Attention with Relative Position Representations",
+        13
+      ]
+    ],
+    "bert_path": "No direct BERT→LSTM citation. Ten two-hop chains agree with the captured relational check.",
+    "runner": "target/demo-review/verify.py"
+  }
+}

@@ -1,156 +1,58 @@
-This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
-1,268,092,738 events from May through October 2023.
+import CodeBlock from '@theme/CodeBlock';
+import capture from '@site/static/data/merrec-pokemon-interest-check.json';
+import Table from '@site/src/theme/MDXComponents/Table';
 
-### Can a lookalike audience find next season's Pokemon buyers?
+An audience planner wants to know whether shoppers resembling earlier Pokemon
+buyers will later buy Pokemon, and whether they already showed interest.
+The baseline is the simple rule of selecting previous Pokemon viewers.
 
-The seed audience is every shopper who bought a Pokemon listing (brand
-`17470`) in July or August 2023. The question is whether shoppers who browse like them buy
-Pokemon in September and October, the following two months. Each shopper's
-taste vector is the square root of their view share across the 64 busiest
-second-level categories, computed only from views before September 1.
-Shoppers need at least 20 such views. Exact kNN returns the 20 nearest
-non-seed shoppers for each seed buyer, and SQL compares later purchase
-rates for three audiences:
+Earlier CTEs construct 64 category-preference features from views before
+September 1, 2023. Each value is the square root of a shopper's share of views
+in one of the 64 busiest categories. Eligibility requires 20 views. The seed
+contains 1,302 eligible July to August Pokemon buyers; `candidates` excludes them.
 
-- the lookalikes;
-- every non-seed shopper who viewed a Pokemon listing before September;
-- every non-seed shopper with a taste vector.
+The open part of the statement searches for 20 neighbors per seed buyer,
+deduplicates the list, splits it by prior Pokemon views and joins September
+to October purchases. The folded relations build the features in the same
+statement.
 
-| Audience | Shoppers | Bought Pokemon Sep-Oct | Purchase rate |
-|---|---:|---:|---:|
-| lookalikes | 19,124 | 132 | 0.690% |
-| pokemon viewers | 250,627 | 572 | 0.228% |
-| all active shoppers | 2,079,441 | 688 | 0.033% |
+<CodeBlock language="sql" className="no-collapse" folds={[
+  {to: '), lookalikes AS (', label: 'the 64 category-share features, eligibility and the seed buyers'},
+]}>{capture.sql}</CodeBlock>
 
-The lookalike audience bought Pokemon at 21 times the rate of all active
-shoppers and three times the rate of everyone who had viewed Pokemon. For a
-retargeting budget, that is a 19,000-shopper list in place of a
-250,000-shopper one, with a higher share of later buyers. A CPU reproduction shows where the lift comes from. The 13,264 lookalikes
-who had viewed a Pokemon listing before September bought at 0.98%; the 5,859
-who had not bought at 0.034%, the base rate. The vectors rank shoppers who
-already show interest; they do not find new interest. Purchase counts here are small: 132 lookalikes
-bought. Equal distances let the 20th neighbor vary, so the lookalike count
-was 19,124 or 19,125 across the three captured runs; the buyer count was 132.
+<Table>
+<thead><tr><th>Audience</th><th>Shoppers</th><th>Later buyers</th><th>Purchase rate</th></tr></thead>
+<tbody>{[
+  ['lookalikes', 'All lookalikes'],
+  ['lookalikes with prior Pokemon views', 'Lookalikes with prior views'],
+  ['lookalikes without prior Pokemon views', 'Lookalikes without prior views'],
+  ['pokemon viewers', 'All previous viewers'],
+  ['all active shoppers', 'All eligible non-seed shoppers'],
+].map(([key, label]) => {
+  const row = capture.records.find(record => record.audience === key);
+  return <tr key={key}><td>{label}</td><td>{row.shoppers.toLocaleString('en-US')}</td><td>{row.buyers_sep_oct.toLocaleString('en-US')}</td><td>{(row.purchase_rate * 100).toFixed(3)}%</td></tr>;
+})}</tbody>
+</Table>
 
-The taste vectors are 64 `REAL` columns, one per dimension, and the kNN
-call reads them with `SELECT *`. Native execution does not build list
-columns, so a vector assembled with `ARRAY_AGG` or `MAKE_ARRAY` would move
-the statement to DataFusion on the CPU, which `native_required` rejects.
+The two prior-view rows partition the lookalike audience. They are not
+additional shoppers beyond the 19,124 in the first row.
 
-<details>
-<summary>Executed SQL</summary>
+Of the 132 later buyers in the lookalike list, 130 had already viewed Pokemon.
+The never-viewed group's 0.034% purchase rate is close to the 0.033% eligible
+baseline. This result supplies little evidence for finding a new audience.
 
-```sql
-WITH views AS (
-  SELECT e.user_id, i.c1_id, i.brand_id
-  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
-  WHERE e.event_type = 'item_view' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'
-), dims AS (
-  SELECT c1_id, ROW_NUMBER() OVER (ORDER BY n DESC, c1_id) - 1 AS dim
-  FROM (SELECT c1_id, COUNT(*) AS n FROM views GROUP BY c1_id) c
-  ORDER BY n DESC LIMIT 64
-), counts AS (
-  SELECT v.user_id, d.dim, COUNT(*) AS n FROM views v JOIN dims d ON d.c1_id = v.c1_id GROUP BY v.user_id, d.dim
-), totals AS (
-  SELECT user_id, SUM(n) AS total FROM counts GROUP BY user_id HAVING SUM(n) >= 20
-), taste AS (
-  SELECT c.user_id AS id,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 0 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d0,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 1 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d1,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 2 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d2,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 3 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d3,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 4 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d4,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 5 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d5,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 6 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d6,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 7 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d7,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 8 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d8,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 9 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d9,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 10 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d10,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 11 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d11,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 12 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d12,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 13 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d13,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 14 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d14,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 15 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d15,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 16 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d16,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 17 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d17,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 18 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d18,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 19 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d19,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 20 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d20,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 21 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d21,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 22 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d22,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 23 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d23,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 24 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d24,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 25 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d25,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 26 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d26,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 27 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d27,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 28 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d28,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 29 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d29,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 30 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d30,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 31 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d31,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 32 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d32,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 33 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d33,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 34 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d34,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 35 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d35,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 36 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d36,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 37 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d37,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 38 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d38,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 39 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d39,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 40 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d40,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 41 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d41,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 42 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d42,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 43 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d43,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 44 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d44,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 45 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d45,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 46 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d46,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 47 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d47,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 48 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d48,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 49 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d49,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 50 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d50,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 51 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d51,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 52 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d52,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 53 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d53,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 54 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d54,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 55 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d55,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 56 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d56,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 57 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d57,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 58 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d58,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 59 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d59,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 60 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d60,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 61 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d61,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 62 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d62,
-         CAST(SQRT(SUM(CASE WHEN c.dim = 63 THEN c.n ELSE 0 END) * 1.0 / t.total) AS REAL) AS d63
-  FROM counts c JOIN totals t ON t.user_id = c.user_id
-  GROUP BY c.user_id, t.total
-), pokemon_buys AS (
-  SELECT DISTINCT e.user_id, CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END AS later
-  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
-  WHERE e.event_type = 'buy_comp' AND i.brand_id = 17470 AND e.event_time >= TIMESTAMP '2023-07-01 00:00:00'
-), seed AS (
-  SELECT t.id FROM taste t JOIN (SELECT DISTINCT user_id FROM pokemon_buys WHERE later = 0) b ON b.user_id = t.id
-), candidates AS (
-  SELECT t.* FROM taste t LEFT JOIN seed s ON s.id = t.id WHERE s.id IS NULL
-), lookalikes AS (
-  SELECT DISTINCT neighbor_id AS id
-  FROM cuvs_brute_force_knn(
-    dataset => (SELECT * FROM candidates ORDER BY id),
-    queries => (SELECT t.* FROM taste t JOIN seed s ON s.id = t.id ORDER BY t.id),
-    k => 20, metric => 'l2_expanded')
-), pokemon_viewers AS (
-  SELECT DISTINCT user_id AS id FROM views WHERE brand_id = 17470
-), later_buyers AS (
-  SELECT DISTINCT user_id AS id FROM pokemon_buys WHERE later = 1
-), audiences AS (
-  SELECT 'lookalikes' AS audience, l.id FROM lookalikes l
-  UNION ALL SELECT 'pokemon viewers', c.id FROM candidates c JOIN pokemon_viewers v ON v.id = c.id
-  UNION ALL SELECT 'all active shoppers', c.id FROM candidates c
-)
-SELECT a.audience, COUNT(*) AS shoppers, COUNT(b.id) AS buyers_sep_oct,
-       CAST(COUNT(b.id) AS DOUBLE) / COUNT(*) AS purchase_rate
-FROM audiences a LEFT JOIN later_buyers b ON b.id = a.id
-GROUP BY a.audience
-ORDER BY purchase_rate DESC;
-```
+The vector output remains a SQL relation: adding the prior-view join exposes
+what a single overall purchase rate would hide. The direct-viewer rule reaches
+572 buyers from a much larger list. A comparison at equal list size is still
+needed before choosing a method, and observed purchases do not measure
+campaign impact.
 
-</details>
+Features use the latest retained category attributes. Ties at the neighbor
+cutoff can change a few list members.
 
-The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 21.88 s, including planning, every step of the statement, and result receipt. Each plan had 7 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 25.06 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-pokemon-lookalikes.json) with the executed SQL, query IDs, timings, and all result rows.
+<div className="fineprint">
+
+The [capture](/data/merrec-pokemon-interest-check.json) records the SQL and
+results used here.
+
+</div>

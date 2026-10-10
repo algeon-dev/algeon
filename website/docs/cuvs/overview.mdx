@@ -6,75 +6,12 @@ description: SQL-visible cuVS vector search and vector ML over Algeon SQL sessio
 
 # cuVS SQL API
 
-Algeon exposes NVIDIA RAPIDS
-[**cuVS**](https://github.com/NVIDIA/cuvs) as GPU UDTFs (user-defined table
-functions) over DataFusion SQL sessions, following the pattern already used by the
-[cuGraph SQL API](../cugraph/overview.mdx). Each `cuvs_*` UDTF reads a
-relation of vectors, runs a GPU vector operation, and returns rows you can join
-and filter alongside the rest of your query, over the data already in your
-session, with no separate vector store and no copy to keep in sync.
-
-Eight UDTFs are available: exact brute-force kNN (`cuvs_brute_force_knn`),
-query-local approximate IVF-Flat (`cuvs_ivf_flat`), IVF-PQ (`cuvs_ivf_pq`),
-and CAGRA (`cuvs_cagra`) search, pairwise distances (`cuvs_pairwise_distance`), per-row vector selection
-(`cuvs_top_k`), KMeans clustering (`cuvs_kmeans`), and PCA (`cuvs_pca`). They execute on
-GPU when the prerequisites in [Execution](#execution) are met. Persistent
-indexes are not exposed.
-
-The UDTF registry, JSON schemas, and generated pages below come from the
-same live metadata API exposed to embedded and Flight SQL clients.
-
-## Questions to explore
-
-Each question opens a captured example on its UDTF page. The examples read
-the [demo datasets](../guides/datasets/index.mdx); prepare one before running
-its queries.
-
-### Amazon Reviews
-
-Electronics products and low-rating reviews from Amazon Reviews 2023, with
-1,024-dimension BGE-M3 text embeddings computed before any SQL.
-
-- [Which travel headphones meet our price and review-history criteria?](./udtfs/cuvs_brute_force_knn.mdx#examples) (`cuvs_brute_force_knn`)
-- [Which products have a changed mix of low-rating reviews?](./udtfs/cuvs_kmeans.mdx#examples) (`cuvs_kmeans`)
-- [Which review themes describe each group of products?](./udtfs/cuvs_top_k.mdx#examples) (`cuvs_kmeans`, `cuvs_top_k`)
-
-### EMBER2024
-
-Extracted features for malware files: all 6,315 files in the challenge split,
-which holds only malicious files, plus 1% samples of the train and test splits.
-
-- [Which earlier Win32 files make useful references for a new quarter?](./udtfs/cuvs_cagra.mdx#examples) (`cuvs_brute_force_knn`, `cuvs_cagra`, `cuvs_ivf_flat`)
-- [How much histogram variation remains visible in two PCA dimensions?](./udtfs/cuvs_pca.mdx#examples) (`cuvs_pca`)
-- [Which high-scoring challenge files should an analyst review first?](./udtfs/cuvs_top_k.mdx?dataset=ember2024#examples) (`cuml_forest_predict`, `cuvs_top_k`)
-
-### MerRec marketplace
-
-All 1,268,092,738 Mercari US marketplace events from May through October 2023,
-described on the [MerRec dataset page](../guides/datasets/merrec.mdx). Each
-question derives per-shopper category vectors from the raw events with SQL.
-
-- [Can a lookalike audience find next season's Pokemon buyers?](./udtfs/cuvs_brute_force_knn.mdx?dataset=merrec#examples) (`cuvs_brute_force_knn`)
-- [When does approximate search pay off for a neighbor graph of every shopper?](./udtfs/cuvs_cagra.mdx?dataset=merrec#examples) (`cuvs_cagra`, `cuvs_ivf_flat`, `cuvs_ivf_pq`)
-- [Which shopper personas bring in the most spending per shopper?](./udtfs/cuvs_kmeans.mdx?dataset=merrec#examples) (`cuvs_kmeans`, `cuvs_top_k`)
-
-Single-shard captures: per-user category preferences from Mercari US browsing
-events in one October 2023 source shard.
-
-- [Which category-specific campaign variants could be worth testing?](./udtfs/cuvs_kmeans.mdx?dataset=merrec-shard#examples) (`cuvs_kmeans`, `cuvs_top_k`)
-
-## Vector input and call shape
-
-Every `cuvs_*` execution relation is a parenthesized `SELECT` subquery. The
-relation remains an explicit planner child, so it can use ordinary session
-tables, views, CTEs, Parquet scans, or a preceding SQL result.
-Bare table identifiers and quoted table-name strings are not execution inputs.
-
-For metadata-only validation, `gpu_validate_call` instead resolves a named
-registered table or view and checks its schema without scanning rows or
-invoking the GPU. [Vector Inputs](./vector-inputs.mdx) documents relation
-identity, dense-vector binding shapes, and the validation-versus-runtime
-boundary.
+Algeon exposes NVIDIA RAPIDS [cuVS](https://github.com/NVIDIA/cuvs) as GPU
+UDTFs (user-defined table functions) in DataFusion SQL sessions. Each
+`cuvs_*` UDTF reads a relation of vectors, runs one GPU vector operation and
+returns rows the same query can join and filter. Exact and approximate
+nearest neighbors, pairwise distances, per-row top-k, KMeans and PCA are
+available, and every index lives inside its statement.
 
 ## UDTFs
 
@@ -90,6 +27,53 @@ Use [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
 for the shared list, describe, validate, and execute workflow. The detailed
 column and request schemas are in the
 [GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx).
+
+## Questions to explore
+
+Each question opens a captured example on its UDTF page. The examples read
+the [demo investigations](../guides/datasets/index.mdx), which connect
+results to source records.
+
+### MerRec
+
+The [MerRec investigation](../guides/datasets/merrec.mdx) builds 64-dimensional
+taste vectors for 2.08 million shoppers from their browsing, inside SQL.
+
+- [Which 5,000 shoppers should a Pokemon campaign reach?](../guides/datasets/merrec.mdx#audience-funnel) (`cuvs_brute_force_knn` between `cugraph_personalized_pagerank` and `cuml_forest_predict`)
+- [Does a Pokemon lookalike audience find new interest?](./udtfs/cuvs_brute_force_knn.mdx?dataset=merrec#examples) (`cuvs_brute_force_knn`)
+- [Which neighbor matches survive approximate search?](./udtfs/cuvs_cagra.mdx?dataset=merrec#examples) (`cuvs_cagra`, `cuvs_ivf_flat`, `cuvs_ivf_pq` against exact search, with recall measured in SQL)
+
+### Amazon Reviews
+
+Electronics products and low-rating reviews from Amazon Reviews 2023, with
+1,024-dimension BGE-M3 text embeddings computed before any SQL.
+
+- [Which travel headphones deserve a catalog review?](./udtfs/cuvs_brute_force_knn.mdx?dataset=amazon-reviews#examples) (`cuvs_brute_force_knn`)
+- [Which products have a changed mix of low-rating reviews?](./udtfs/cuvs_kmeans.mdx#examples) (`cuvs_kmeans`)
+- [Which review themes describe each group of products?](./udtfs/cuvs_top_k.mdx#examples) (`cuvs_kmeans`, `cuvs_top_k`)
+
+### EMBER2024
+
+Extracted file features from EMBER2024. Classifier comparisons use 1.56M
+Win32 training files and 359,994 later test files. The separate challenge
+cohort contains 6,315 malicious files.
+
+- [Which earlier Win32 files make useful references for a new quarter?](./udtfs/cuvs_cagra.mdx?dataset=ember2024#examples) (`cuvs_brute_force_knn`, `cuvs_cagra`, `cuvs_ivf_flat`)
+- [How much histogram variation remains visible in two PCA dimensions?](./udtfs/cuvs_pca.mdx#examples) (`cuvs_pca`)
+- [Which high-scoring challenge files should an analyst review first?](./udtfs/cuvs_top_k.mdx?dataset=ember2024#examples) (`cuml_forest_predict`, `cuvs_top_k`)
+
+## Vector input and call shape
+
+Every `cuvs_*` execution relation is a parenthesized `SELECT` subquery. The
+relation remains an explicit planner child, so it can use ordinary session
+tables, views, CTEs, Parquet scans, or a preceding SQL result.
+Bare table identifiers and quoted table-name strings are not execution inputs.
+
+For metadata-only validation, `gpu_validate_call` instead resolves a named
+registered table or view and checks its schema without scanning rows or
+invoking the GPU. [Vector Inputs](./vector-inputs.mdx) documents relation
+identity, dense-vector binding shapes, and the validation-versus-runtime
+boundary.
 
 ## Execution
 
@@ -131,8 +115,7 @@ when vector results feed further SQL operators.
 
 ## Next steps
 
-- **[Integrate cuVS](../integration/overview.mdx)**: pick an embedded
-  session or the Flight SQL server, then confirm availability with
-  `gpu_list_functions`.
-- **[Configure the server](../integration/configuration.mdx)**: set the
-  per-device memory cap that each call runs inside.
+- [Integrate cuVS](../integration/overview.mdx): pick an embedded session or
+  the Flight SQL server, then confirm availability with `gpu_list_functions`.
+- [Configure the server](../integration/configuration.mdx): set the memory
+  cap for each device that every call runs inside.

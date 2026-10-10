@@ -1,0 +1,104 @@
+{
+ "name": "30_audience_funnel",
+ "sql_file": "fixture/demo/merrec/scripts/scale/30_audience_funnel.sql",
+ "sql": "WITH pokemon AS (\n  SELECT e.user_id,\n         MAX(CASE WHEN e.event_type = 'buy_comp' AND e.event_time >= TIMESTAMP '2023-07-01 00:00:00'\n                   AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END) AS seed,\n         MAX(CASE WHEN e.event_type = 'item_view' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END) AS viewer,\n         MAX(CASE WHEN e.event_type = 'buy_comp' AND e.event_time >= TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END) AS later_buyer\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE i.brand_id = 17470\n  GROUP BY e.user_id\n), seed AS (\n  SELECT t.id FROM mr_taste64 t JOIN pokemon p ON p.user_id = t.id WHERE p.seed = 1\n), candidates AS (\n  SELECT t.* FROM mr_taste64 t LEFT JOIN seed s ON s.id = t.id WHERE s.id IS NULL\n), likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), affinity AS (\n  SELECT -(vertex + 1) AS id, value AS ppr\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes),\n    personalization => (SELECT 17470 AS vertex, 1.0 AS value),\n    directed => false)\n  WHERE vertex < 0\n), graph_audience AS (\n  SELECT id FROM (\n    SELECT c.id, ROW_NUMBER() OVER (ORDER BY a.ppr DESC, c.id) AS rk\n    FROM affinity a JOIN candidates c ON c.id = a.id) ranked\n  WHERE rk <= 20000\n), taste_audience AS (\n  SELECT DISTINCT neighbor_id AS id\n  FROM cuvs_brute_force_knn(\n    dataset => (SELECT * FROM candidates ORDER BY id),\n    queries => (SELECT t.* FROM mr_taste64 t JOIN seed s ON s.id = t.id ORDER BY t.id),\n    k => 20, metric => 'l2_expanded')\n), features AS (\n  SELECT e.user_id AS id,\n    CAST(SUM(CASE WHEN e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views,\n    CAST(SUM(CASE WHEN e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes,\n    CAST(SUM(CASE WHEN e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents,\n    CAST(SUM(CASE WHEN e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys,\n    CAST(SUM(CASE WHEN e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS gmv,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,\n    CAST(SUM(i.price) / COUNT(*) AS REAL) AS mean_price\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_time >= TIMESTAMP '2023-06-01 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n  GROUP BY e.user_id\n), scored AS (\n  SELECT id, prediction AS score\n  FROM cuml_forest_predict(\n    input => (SELECT id, LN(1 + views) AS views, LN(1 + likes) AS likes, LN(1 + intents) AS intents,\n                     LN(1 + buys) AS buys, LN(1 + gmv) AS gmv, LN(1 + views_30d) AS views_30d,\n                     LN(1 + likes_30d) AS likes_30d, LN(1 + intents_30d) AS intents_30d,\n                     LN(1 + buys_30d) AS buys_30d, LN(1 + mean_price) AS mean_price\n              FROM features ORDER BY id),\n    model => 'propensity_xgb.json', model_format => 'xgboost_json')\n), shoppers AS (\n  SELECT c.id,\n         COALESCE(p.viewer, 0) AS viewer,\n         COALESCE(p.later_buyer, 0) AS later_buyer,\n         CASE WHEN g.id IS NULL THEN 0 ELSE 1 END AS in_graph,\n         CASE WHEN t.id IS NULL THEN 0 ELSE 1 END AS in_taste,\n         CASE WHEN g.id IS NULL AND t.id IS NULL THEN 0 ELSE 1 END AS in_pool,\n         COALESCE(s.score, 0) AS score\n  FROM candidates c\n  LEFT JOIN pokemon p ON p.user_id = c.id\n  LEFT JOIN graph_audience g ON g.id = c.id\n  LEFT JOIN taste_audience t ON t.id = c.id\n  LEFT JOIN scored s ON s.id = c.id\n), ranked AS (\n  SELECT id, viewer, later_buyer, in_graph, in_taste, in_pool,\n         ROW_NUMBER() OVER (ORDER BY score DESC, id) AS rank_all,\n         ROW_NUMBER() OVER (PARTITION BY viewer ORDER BY score DESC, id) AS rank_viewers,\n         ROW_NUMBER() OVER (PARTITION BY in_pool ORDER BY score DESC, id) AS rank_pool\n  FROM shoppers\n), stages AS (\n  SELECT 1 AS stage, 'all eligible shoppers' AS audience\n  UNION ALL SELECT 2, 'viewed a Pokemon listing before September'\n  UNION ALL SELECT 3, 'graph affinity: top 20,000 by personalized PageRank'\n  UNION ALL SELECT 4, 'taste lookalikes: 20 nearest neighbors of each seed buyer'\n  UNION ALL SELECT 5, 'graph affinity or taste lookalike'\n  UNION ALL SELECT 6, 'model-ranked top 5,000 of all eligible shoppers'\n  UNION ALL SELECT 7, 'model-ranked top 5,000 of previous viewers'\n  UNION ALL SELECT 8, 'model-ranked top 5,000 of graph or taste'\n)\nSELECT s.stage, s.audience, COUNT(*) AS shoppers,\n       SUM(r.later_buyer) AS pokemon_buyers_sep_oct,\n       CAST(SUM(r.later_buyer) AS DOUBLE) / COUNT(*) AS purchase_rate\nFROM ranked r CROSS JOIN stages s\nWHERE (s.stage = 1)\n   OR (s.stage = 2 AND r.viewer = 1)\n   OR (s.stage = 3 AND r.in_graph = 1)\n   OR (s.stage = 4 AND r.in_taste = 1)\n   OR (s.stage = 5 AND r.in_pool = 1)\n   OR (s.stage = 6 AND r.rank_all <= 5000)\n   OR (s.stage = 7 AND r.viewer = 1 AND r.rank_viewers <= 5000)\n   OR (s.stage = 8 AND r.in_pool = 1 AND r.rank_pool <= 5000)\nGROUP BY s.stage, s.audience\nORDER BY s.stage;\n",
+ "binary_sha256": "63ecfba9699bd95c403955557c1c19012feb5f721585700bb72da954b1375063",
+ "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+ "runs": [
+  {
+   "name": "30_audience_funnel_r1",
+   "query_id": "bc4e1b04-ace7-417c-8d84-d23680087b07",
+   "elapsed_s": 20.653088428080082,
+   "native_fragments": 9,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 19531870360,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "30_audience_funnel_r2",
+   "query_id": "ec415ced-ce86-4373-8116-d67fd7e94cd1",
+   "elapsed_s": 20.793362334836274,
+   "native_fragments": 9,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 19531870360,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "30_audience_funnel_r3",
+   "query_id": "104bf45d-a66d-447a-ada5-d284ec672e68",
+   "elapsed_s": 20.80808931798674,
+   "native_fragments": 9,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 19531870360,
+   "query_limit_bytes": 96636764160
+  }
+ ],
+ "median_elapsed_s_after_first": 20.800725826411508,
+ "rows": 8,
+ "identical_results_across_runs": false,
+ "schema": [
+  "stage: int64",
+  "audience: string",
+  "shoppers: int64",
+  "pokemon_buyers_sep_oct: int64",
+  "purchase_rate: double"
+ ],
+ "records": [
+  {
+   "stage": 1,
+   "audience": "all eligible shoppers",
+   "shoppers": 2079441,
+   "pokemon_buyers_sep_oct": 688,
+   "purchase_rate": 0.0003308581488967468
+  },
+  {
+   "stage": 2,
+   "audience": "viewed a Pokemon listing before September",
+   "shoppers": 250627,
+   "pokemon_buyers_sep_oct": 572,
+   "purchase_rate": 0.0022822760516624306
+  },
+  {
+   "stage": 3,
+   "audience": "graph affinity: top 20,000 by personalized PageRank",
+   "shoppers": 20000,
+   "pokemon_buyers_sep_oct": 85,
+   "purchase_rate": 0.00425
+  },
+  {
+   "stage": 4,
+   "audience": "taste lookalikes: 20 nearest neighbors of each seed buyer",
+   "shoppers": 19127,
+   "pokemon_buyers_sep_oct": 132,
+   "purchase_rate": 0.006901239086108642
+  },
+  {
+   "stage": 5,
+   "audience": "graph affinity or taste lookalike",
+   "shoppers": 37281,
+   "pokemon_buyers_sep_oct": 195,
+   "purchase_rate": 0.00523054639092299
+  },
+  {
+   "stage": 6,
+   "audience": "model-ranked top 5,000 of all eligible shoppers",
+   "shoppers": 5000,
+   "pokemon_buyers_sep_oct": 30,
+   "purchase_rate": 0.006
+  },
+  {
+   "stage": 7,
+   "audience": "model-ranked top 5,000 of previous viewers",
+   "shoppers": 5000,
+   "pokemon_buyers_sep_oct": 72,
+   "purchase_rate": 0.0144
+  },
+  {
+   "stage": 8,
+   "audience": "model-ranked top 5,000 of graph or taste",
+   "shoppers": 5000,
+   "pokemon_buyers_sep_oct": 93,
+   "purchase_rate": 0.0186
+  }
+ ]
+}

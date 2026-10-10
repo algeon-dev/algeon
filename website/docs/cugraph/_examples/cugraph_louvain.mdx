@@ -1,65 +1,7 @@
+import CitationCommunities from './citation_communities.mdx';
+
 {/* Hand-owned examples for cugraph_louvain. NOT generated; safe to edit. */}
 
-This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
+### Do citation communities match the catalog's research fields?
 
-### Do citation communities match the research fields in our catalog?
-
-Comparing graph communities with catalog fields can show where the two
-groupings align or mix. This query partitions a selected 2010s AI citation
-subgraph (58,807 papers, 164,368 edges across 38,054 active vertices), then
-reports the three most common `primary_fos` labels in larger communities.
-
-```sql
-CREATE OR REPLACE VIEW ai_nodes AS
-SELECT paper_id FROM papers
-WHERE year >= 2010 AND primary_fos IN (
-  'Deep learning', 'Artificial neural network', 'Convolutional neural network',
-  'Recurrent neural network', 'Natural language processing',
-  'Reinforcement learning', 'Image segmentation', 'Feature extraction',
-  'Object detection', 'Speech recognition');
-
-CREATE OR REPLACE VIEW ai_edges AS
-SELECT e.src, e.dst
-FROM citation_edges e
-JOIN ai_nodes a ON a.paper_id = e.src
-JOIN ai_nodes b ON b.paper_id = e.dst;
-
-WITH community_fos AS (
-  SELECT c.community, p.primary_fos, COUNT(*) AS n
-  FROM cugraph_louvain(edges => (SELECT src, dst FROM ai_edges)) c
-  JOIN papers p ON p.paper_id = c.vertex
-  GROUP BY c.community, p.primary_fos),
-ranked AS (
-  SELECT SUM(n) OVER (PARTITION BY community) AS members,
-         ROW_NUMBER() OVER (PARTITION BY community ORDER BY n DESC) AS rn,
-         primary_fos,
-         n
-  FROM community_fos)
-SELECT members, rn, primary_fos, n
-FROM ranked
-WHERE members > 2500 AND rn <= 3
-ORDER BY members DESC, rn;
-```
-
-| members | rn | primary_fos | n |
-|---|---|---|---|
-| 7,172 | 1 | Convolutional neural network | 2,698 |
-| 7,172 | 2 | Deep learning | 2,527 |
-| 7,172 | 3 | Artificial neural network | 869 |
-| 4,477 | 1 | Deep learning | 1,332 |
-| 4,477 | 2 | Recurrent neural network | 1,280 |
-| 4,477 | 3 | Artificial neural network | 624 |
-| 4,260 | 1 | Image segmentation | 1,919 |
-| 4,260 | 2 | Convolutional neural network | 921 |
-| 4,260 | 3 | Deep learning | 799 |
-| 3,859 | 1 | Reinforcement learning | 3,129 |
-| 3,859 | 2 | Artificial neural network | 279 |
-| 3,859 | 3 | Deep learning | 226 |
-| 3,518 | 1 | Object detection | 2,193 |
-| 3,518 | 2 | Convolutional neural network | 467 |
-| 3,518 | 3 | Deep learning | 342 |
-
-The 3,859-paper community has 3,129 papers labeled reinforcement learning.
-The 7,172-paper community has similar counts for convolutional neural network
-(2,698) and deep learning (2,527). These rows compare partition membership
-with the catalog's current field assignments.
+<CitationCommunities />

@@ -1,98 +1,31 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import MerRecScaleTwins from './merrec_scale_twins.mdx';
-import MerRecDiscovery from './merrec_discovery.mdx';
 import EmberImportReview from './ember2024_import_review.mdx';
+import CitationBibliography from './citation_bibliography.mdx';
 
 {/* Hand-owned examples for cugraph_jaccard. NOT generated; safe to edit. */}
 
 <Tabs queryString="dataset">
-<TabItem value="citation-network" label="Citation network" default>
+<TabItem value="merrec" label="MerRec" default>
 
-This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
-
-### Which papers should I read after the Transformer if I want familiar references?
-
-Compare the reference list of *Attention Is All You Need* (2017) with NLP
-papers published from 2017 through 2020. The candidate papers have at least 10
-references and one of the listed field labels. The score measures shared
-references against the union of both lists. A high score reflects
-bibliographic overlap; topic meaning is outside this measure. Title-identical
-records are excluded from the candidate pairs, preventing an edition with the
-seed's title from appearing as a separate reading suggestion.
-
-The similarity UDTF requires an undirected graph. Each citing paper keeps
-its positive ID, while each cited paper becomes a negative reference-role ID.
-Those separate roles make the neighborhood of a paper reflect its outgoing
-references, even when other papers cite it. The edge projection omits weights,
-so every reference contributes as one unit.
-
-```sql
-CREATE OR REPLACE VIEW similarity_seed AS
-SELECT paper_id, title, n_references
-FROM papers
-WHERE title = 'Attention is all you need' AND year = 2017;
-
-CREATE OR REPLACE VIEW similarity_candidates AS
-SELECT p.paper_id, p.title, p.n_references, p.year
-FROM papers p
-WHERE p.year BETWEEN 2017 AND 2020
-  AND p.n_references >= 10
-  AND p.primary_fos IN (
-    'Natural language processing', 'Language model',
-    'Machine translation', 'Question answering');
-
-CREATE OR REPLACE VIEW bibliography_edges AS
-SELECT e.src, -e.dst AS dst
-FROM citation_edges e
-JOIN (
-  SELECT paper_id FROM similarity_seed
-  UNION
-  SELECT paper_id FROM similarity_candidates
-) selected ON selected.paper_id = e.src;
-
-SELECT p.year, p.title, p.n_references,
-       ROUND(r.similarity, 3) AS jaccard
-FROM cugraph_jaccard(
-  edges => (SELECT src, dst FROM bibliography_edges),
-  vertex_pairs => (
-    SELECT s.paper_id AS first, c.paper_id AS second
-    FROM similarity_seed s
-    CROSS JOIN similarity_candidates c
-    WHERE LOWER(c.title) <> LOWER(s.title)),
-  directed => false) r
-JOIN papers p ON p.paper_id = r.second
-ORDER BY r.similarity DESC, p.paper_id
-LIMIT 5;
-```
-
-| year | title | n_references | jaccard |
-|---|---|---|---|
-| 2018 | Self-Attention with Relative Position Representations | 13 | 0.296 |
-| 2018 | Future-Prediction-Based Model for Neural Machine Translation. | 20 | 0.273 |
-| 2018 | Weighted Transformer Network for Machine Translation | 31 | 0.262 |
-| 2018 | Parallel Attention Mechanisms in Neural Machine Translation | 12 | 0.259 |
-| 2017 | XMU Neural Machine Translation Online Service | 10 | 0.231 |
-
-*Self-Attention with Relative Position Representations* has the highest
-Jaccard score among these candidates, at 0.296.
-
-For coverage of a smaller bibliography, see the
-[Overlap example](../udtfs/similarity/cugraph_overlap.mdx).
-
-</TabItem>
-
-<TabItem value="merrec" label="MerRec marketplace">
+### Which catalog entries are one brand listed twice?
 
 <MerRecScaleTwins />
 
 </TabItem>
-<TabItem value="merrec-shard" label="MerRec single shard">
 
-<MerRecDiscovery />
+<TabItem value="citation-network" label="Citation network">
+
+### Which papers share the Transformer's references?
+
+<CitationBibliography />
 
 </TabItem>
+
 <TabItem value="ember2024" label="EMBER2024 import review">
+
+### What connects these files to the seed?
 
 <EmberImportReview />
 

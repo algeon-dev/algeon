@@ -1,0 +1,78 @@
+import CodeBlock from '@theme/CodeBlock';
+import capture from '@site/static/data/merrec-scale-audience-funnel.json';
+import Table from '@site/src/theme/MDXComponents/Table';
+
+export const byStage = Object.fromEntries(capture.records.map(row => [row.stage, row]));
+export const pct = (row, digits = 2) => `${(row.purchase_rate * 100).toFixed(digits)}%`;
+export const n = value => value.toLocaleString('en-US');
+
+An audience planner can message 5,000 shoppers about Pokemon listings and
+wants the list that contains the most future buyers. One statement builds
+candidate lists with a graph algorithm, a vector search and an externally
+trained model, then scores every list against the purchases that followed.
+
+The seed is the {n(1302)} shoppers who bought a Pokemon listing in July or
+August 2023. Eligible shoppers are the {n(byStage[1].shoppers)} others in
+`mr_taste64`, the prepared table of 64-dimensional taste vectors for shoppers
+with at least 20 views before September 1. Three stages read that table and
+the raw events:
+
+- **Graph affinity.** `cugraph_personalized_pagerank` starts from the Pokemon
+  brand vertex on the user-brand like graph built from likes before September.
+  The 20,000 eligible shoppers with the highest scores form the graph audience.
+- **Taste lookalikes.** `cuvs_brute_force_knn` returns the 20 nearest taste
+  neighbors of each seed buyer among eligible shoppers.
+- **Model ranking.** `cuml_forest_predict` scores every eligible shopper with
+  `propensity_xgb.json`, the XGBoost purchase-propensity model from the
+  [buyer shortlist example](#model). Within each audience, the 5,000 highest
+  scores form a shortlist.
+
+Window functions rank the scores inside each audience in one pass, and the
+final `GROUP BY` counts the shoppers in each list who bought a Pokemon listing
+in September or October. The three algorithm stages are open below; the
+seed and the evaluation relations expand in place.
+
+<CodeBlock language="sql" className="no-collapse" folds={[
+  {to: '), affinity AS (', label: 'the Pokemon seed, the eligible shoppers and the like graph'},
+  {from: '), shoppers AS (', label: 'membership flags, per-audience ranks and the evaluation'},
+]}>{capture.sql}</CodeBlock>
+
+<Table>
+<thead><tr><th>Audience</th><th>Shoppers</th><th>Bought Pokemon in Sep-Oct</th><th>Purchase rate</th></tr></thead>
+<tbody>{capture.records.map(row => <tr key={row.stage}><td>{row.audience}</td><td>{n(row.shoppers)}</td><td>{n(row.pokemon_buyers_sep_oct)}</td><td>{pct(row, 3)}</td></tr>)}</tbody>
+</Table>
+
+The purchase rate rises at every stage. Previous viewers buy at {pct(byStage[2])},
+seven times the {pct(byStage[1], 3)} rate of all eligible shoppers. The graph
+audience reaches {pct(byStage[3])} and the taste lookalikes {pct(byStage[4])};
+the two lists share only {n(byStage[3].shoppers + byStage[4].shoppers - byStage[5].shoppers)} shoppers,
+so each method finds people the other misses. Ranking their union with the
+model and keeping 5,000 gives {pct(byStage[8])}: {n(byStage[8].pokemon_buyers_sep_oct)} of
+the pool's {n(byStage[5].pokemon_buyers_sep_oct)} buyers in
+{(100 * byStage[8].shoppers / byStage[5].shoppers).toFixed(0)}% of its shoppers.
+
+The two control rows show what the algorithms add. The model alone, applied
+to everyone, reaches {pct(byStage[6])}, because it predicts any purchase and
+knows nothing about Pokemon. The viewer rule plus the model reaches
+{pct(byStage[7])}. The graph-or-taste pool plus the model reaches
+{n(byStage[8].pokemon_buyers_sep_oct - byStage[7].pokemon_buyers_sep_oct)} more
+buyers than the rule at the same list size.
+
+Algeon runs the three algorithm families and the evaluation in one physical
+plan: the like graph, the taste matrix and the feature matrix are built from
+the events table inside the statement, and each algorithm's output is a
+relation the next stage joins. List size, `k` and the PageRank cutoff are
+query parameters for the next run. The outcome counts
+completed purchases of Pokemon-brand listings in this dataset and does not
+measure what a campaign would add. Ties at the neighbor cutoff can move one
+or two shoppers between runs.
+
+<div className="fineprint">
+
+{capture.runs.length > 1
+  ? `The statement ran ${capture.runs.length} times on the scale server configuration in native_required mode. The median Flight latency of runs 2 to ${capture.runs.length} was ${capture.median_elapsed_s_after_first.toFixed(2)} s, including planning, every stage and result receipt.`
+  : `The statement ran once on the scale server configuration in native_required mode, with a Flight latency of ${capture.runs[0].elapsed_s.toFixed(2)} s.`}
+{' '}Each plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
+The [capture](/data/merrec-scale-audience-funnel.json) contains the executed SQL, query IDs, timings and every result row.
+
+</div>

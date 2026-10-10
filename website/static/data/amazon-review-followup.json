@@ -1,0 +1,106 @@
+{
+  "name": "amazon_review_followup",
+  "captured_at_utc": "2026-10-07T05:44:31.188003+00:00",
+  "source": {
+    "reviews": {
+      "path": "/mnt/algeon-nvme/algeon/fixture/demo/amazon_reviews_2023/parquet/reviews.parquet",
+      "bytes": 10023307077,
+      "rows": 43886944
+    },
+    "products": {
+      "path": "/mnt/algeon-nvme/algeon/fixture/demo/amazon_reviews_2023/parquet/products.parquet",
+      "bytes": 1153846022,
+      "rows": 1610012
+    }
+  },
+  "product_id": 1507685,
+  "method": "Read-only release Flight SQL. Charging mentions are case-insensitive charg substring matches in title plus text, among all reviews rated at most two in each year. No embedding, text-length, or verified-purchase filter. This is a separate keyword check; it does not reproduce or relabel the earlier fitted KMeans cluster.",
+  "server_config": "fixture/demo/ember2024/scripts/scale/server.toml",
+  "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
+  "charging": {
+    "name": "amazon-charging",
+    "captured_at_utc": "2026-10-07T05:43:43.529907+00:00",
+    "sql": "SELECT EXTRACT(YEAR FROM review_time) AS review_year,\n       COUNT(*) AS low_rating_reviews,\n       SUM(CASE WHEN LOWER(COALESCE(title, '') || ' ' || COALESCE(text, '')) LIKE '%charg%' THEN 1 ELSE 0 END) AS charging_mentions\nFROM reviews\nWHERE product_id = 1507685 AND rating <= 2\n  AND review_time >= TIMESTAMP '2021-01-01'\n  AND review_time < TIMESTAMP '2023-01-01'\nGROUP BY EXTRACT(YEAR FROM review_time)\nORDER BY review_year;",
+    "query_id": "109d4227-993a-4c50-8a56-d027f1382da6",
+    "rows": [
+      {
+        "review_year": 2021,
+        "low_rating_reviews": 92,
+        "charging_mentions": 46
+      },
+      {
+        "review_year": 2022,
+        "low_rating_reviews": 67,
+        "charging_mentions": 37
+      }
+    ],
+    "stats_path": "target/demo-review/amazon-charging.stats.txt",
+    "execution": {
+      "post_native_execution_path": "native",
+      "native_plan_fragment_count": "1",
+      "host_datafusion_boundary_count": "0"
+    }
+  },
+  "reviews": {
+    "name": "amazon-charging-reviews",
+    "captured_at_utc": "2026-10-07T05:43:43.761830+00:00",
+    "sql": "SELECT review_id, review_time, rating, title, text\nFROM reviews\nWHERE product_id = 1507685 AND rating <= 2\n  AND review_time >= TIMESTAMP '2022-01-01'\n  AND review_time < TIMESTAMP '2023-01-01'\n  AND LOWER(COALESCE(title, '') || ' ' || COALESCE(text, '')) LIKE '%charg%'\nORDER BY review_id\nLIMIT 5;",
+    "query_id": "c5b6bac7-60bf-4728-89b3-187b47868da4",
+    "rows": [
+      {
+        "review_id": 2652092,
+        "review_time": "2022-05-21 15:37:34.097000",
+        "rating": 1
+      },
+      {
+        "review_id": 4766324,
+        "review_time": "2022-02-25 22:28:46.710000",
+        "rating": 1
+      },
+      {
+        "review_id": 8799182,
+        "review_time": "2022-01-03 05:57:20.087000",
+        "rating": 1
+      },
+      {
+        "review_id": 11761931,
+        "review_time": "2022-02-20 19:13:35.763000",
+        "rating": 1
+      },
+      {
+        "review_id": 12017802,
+        "review_time": "2022-05-20 21:26:11.755000",
+        "rating": 1
+      }
+    ],
+    "stats_path": "target/demo-review/amazon-charging-reviews.stats.txt",
+    "execution": {
+      "post_native_execution_path": "native",
+      "native_plan_fragment_count": "1",
+      "host_datafusion_boundary_count": "0"
+    }
+  },
+  "eligible": {
+    "name": "amazon-eligible",
+    "captured_at_utc": "2026-10-07T05:43:43.841341+00:00",
+    "sql": "WITH review_history AS (\n  SELECT product_id, COUNT(*) AS reviews_2022,\n         AVG(CASE WHEN rating <= 2 THEN 1.0 ELSE 0.0 END) AS low_rating_share\n  FROM reviews\n  WHERE review_time >= TIMESTAMP '2022-01-01'\n    AND review_time < TIMESTAMP '2023-01-01' AND verified_purchase\n  GROUP BY product_id\n)\nSELECT COUNT(*) AS eligible_products\nFROM products p\nJOIN review_history h ON h.product_id = p.product_id\nWHERE p.category_l3 = 'Headphones & Earbuds'\n  AND p.price BETWEEN 20 AND 150\n  AND h.reviews_2022 >= 100 AND h.low_rating_share <= 0.20;",
+    "query_id": "1e057c9c-4c05-40e2-8237-897bc3417fb7",
+    "rows": [
+      {
+        "eligible_products": 179
+      }
+    ],
+    "stats_path": "target/demo-review/amazon-eligible.stats.txt",
+    "execution": {
+      "post_native_execution_path": "native",
+      "native_plan_fragment_count": "1",
+      "host_datafusion_boundary_count": "0"
+    }
+  },
+  "independent_validation": {
+    "amazon-charging": "Native results match independent DuckDB query, all fields and row order.",
+    "amazon-charging-reviews": "Native results match independent DuckDB query, all fields and row order.",
+    "amazon-eligible": "Native results match independent DuckDB query, all fields and row order.",
+    "runner": "target/demo-review/verify.py"
+  }
+}

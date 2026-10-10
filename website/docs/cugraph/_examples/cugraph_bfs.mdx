@@ -1,66 +1,11 @@
+import CitationReach from './citation_reach.mdx';
+
 {/* Hand-owned examples for cugraph_bfs. NOT generated; safe to edit. */}
 
 These examples run on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 Edges point `src` → `dst` as "cites"; BFS distance is a hop count.
 
-### How far did AlexNet spread through later citation generations?
-
-Reversing each citation edge follows papers that cite AlexNet, then papers that
-cite those citers. The result counts papers and reports the average publication
-year at each of the first three citation steps.
-
-```sql
-SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year
-FROM cugraph_bfs(
-  edges => (SELECT dst AS src, src AS dst FROM citation_edges_by_dst),
-  sources => (SELECT paper_id AS vertex FROM papers
-              WHERE title = 'ImageNet Classification with Deep Convolutional Neural Networks'
-                AND year = 2012),
-  depth_limit => 3, output_mode => 'normalized') b
-JOIN papers p ON p.paper_id = b.vertex
-WHERE b.reachable
-GROUP BY b.distance
-ORDER BY b.distance;
-```
-
-| distance | papers | avg_year |
-|---|---|---|
-| 0 | 1 | 2012.0 |
-| 1 | 12,185 | 2017.5 |
-| 2 | 67,517 | 2017.9 |
-| 3 | 71,541 | 2017.8 |
-
-Three citation generations reach ~151k papers. (The reversed traversal reads
-`citation_edges_by_dst`, which is clustered by `dst`, so the scan prunes well.)
-
-### What is the shortest citation chain from BERT back to LSTM?
-
-Path mode returns one shortest hop chain from the 2018 BERT record to the 1997
-LSTM paper. The endpoint relations use title and year because the corpus also
-contains a 2019 conference record with the BERT preprint's title.
-
-```sql
-SELECT b.path_index, b.distance, p.year, p.title
-FROM cugraph_bfs(
-  edges => (SELECT src, dst FROM citation_edges),
-  sources => (SELECT paper_id AS vertex FROM papers
-              WHERE title = 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding'
-                AND year = 2018),
-  output_mode => 'path',
-  target_vertices => (SELECT paper_id AS vertex FROM papers
-                      WHERE title = 'Long short-term memory' AND year = 1997)) b
-JOIN papers p ON p.paper_id = b.vertex
-ORDER BY b.path_index;
-```
-
-| path_index | distance | year | title |
-|---|---|---|---|
-| 0 | 0 | 2018 | BERT: Pre-training of Deep Bidirectional Transformers… |
-| 1 | 1 | 2015 | Semi-supervised Sequence Learning |
-| 2 | 2 | 1997 | Long short-term memory |
-
-The result is one of several two-hop citation chains. Other valid paths pass
-through *SemEval-2017 Task 1* or *Aligning Books and Movies*.
+<CitationReach />
 
 ### How many papers are within two citation steps of AlexNet, VGG, or ResNet?
 

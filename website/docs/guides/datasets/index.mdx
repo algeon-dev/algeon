@@ -2,51 +2,27 @@
 sidebar_position: 1
 slug: /guides/datasets
 title: Demo Datasets
-description: Public datasets behind the cuGraph, cuVS, and cuML examples, with their preparation cost and the UDTFs that read them.
+description: Public datasets behind the cuGraph, cuVS, and cuML examples.
 ---
 
 # Demo Datasets
 
-The SQL examples on the UDTF pages read one of four public datasets.
-Each page below converts the upstream files into local Parquet, registers the
-tables in a running server, and records the captured runs. The website does
-not host raw or converted data; every preparation runs in your repository
-checkout.
-
-Every dataset page uses the same sections in the same order: At a glance,
-Examples, Prepare the data, Start the server, Register the tables, Run the
-examples, Tables, and Captured run where a capture record exists.
+The examples use four public datasets. MerRec is the largest: 1.27 billion
+marketplace events and eight statements, from an audience that moved to a
+campaign list built from a graph algorithm, a vector search and a trained
+model. The other three pages apply the same pattern to a citation graph, a
+product catalog and a malware benchmark. Each section states a question,
+shows the SQL and its saved results, and explains what the composition
+supports.
 
 | Dataset | Domain | Size used by the examples | Examples |
 |---|---|---|---|
-| [Citation Network](./citation-network.mdx) | DBLP / AMiner V12 papers, April 2020 snapshot | 4.9M papers, 45.6M citation edges | Every cuGraph UDTF; [Flight SQL](../../integration/flight-sql-server.mdx) setup |
-| [Amazon Reviews](./amazon-reviews.mdx) | Amazon Reviews 2023, Electronics | 43.9M reviews, 1.6M products; 1,024-dim BGE-M3 vectors for 1M products and 1M reviews | cuVS brute-force KNN, KMeans, Top-K; cuML UMAP |
-| [EMBER2024](./ember2024.mdx) | Malware benchmark feature vectors | 6,315 challenge files (3,225 Win32); 1% SHA-256 samples of train and test | cuML, cuVS, and cuGraph |
-| [MerRec Marketplace](./merrec.mdx) | Mercari US marketplace events, May through October 2023 | 1.268B events, 82.6M items, 5.6M users | Relational SQL around cuGraph, cuVS, and cuML; earlier single-shard captures |
+| [MerRec](./merrec.mdx) | Mercari US marketplace events, May through October 2023 | 1.268B events, 82.6M items, 5.6M users | Barbie's July, shopping worlds and their bridges, a campaign list from graph, vectors and a model, lookalikes, a budgeted model, catalog duplicates, and a session-key check |
+| [Citation Network](./citation-network.mdx) | DBLP / AMiner V12 papers, April 2020 snapshot | 4.9M papers, 45.6M citation edges | Research communities, a ForceAtlas2 neighborhood, shared references, and citation paths |
+| [Amazon Reviews](./amazon-reviews.mdx) | Amazon Reviews 2023, Electronics | 43.9M reviews, 1.6M products; 1,024-dim BGE-M3 vectors for 1M products and 1M reviews | Travel-headphone shortlist, changing review groups, and original review text |
+| [EMBER2024](./ember2024.mdx) | Malware benchmark feature vectors | 1.56M Win32 training files, 359,994 test files; 6,315 challenge files | Classifier errors, model contributions, and shared import patterns |
 
-## Choosing a dataset
 
-Start with the Citation Network for a first run. It needs only `pyarrow` for
-conversion, and its server walkthrough is the one the integration pages
-reuse. Conversion takes a 12.5 GB source JSON and about 17 to 19 minutes on a
-32-core host.
-
-Amazon Reviews is the largest preparation. Embedding the text runs PyTorch on
-the GPU before any SQL, and the captured server configuration gives each query
-a 32 GiB limit on a device with at least 64 GiB available.
-
-EMBER2024 and MerRec exercise more than one algorithm family against the
-same tables. Their preparation scripts also build derived
-relations, such as forest attributions or browsing-transition graphs, that
-some examples read.
-
-## Server and table lifetime
-
-Table registrations last until the server stops. After a restart, rerun the
-dataset's registration step; the Parquet files can be reused.
-
-Each page starts a server with the configuration used for its captures.
-Amazon Reviews and EMBER2024 both bind port 50062, so stop one server before
-starting the other. For other settings, see
-[Flight SQL server](../../integration/flight-sql-server.mdx) and
-[configuration](../../integration/configuration.mdx).
+Each example states its input scope and what its output measures. SQL defines
+which records enter a graph, vector search or model, and joins the results
+back to dates, labels and original text.

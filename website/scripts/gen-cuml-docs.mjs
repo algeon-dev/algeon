@@ -14,6 +14,7 @@ import {
   formatFunctionQuickstartSql,
   loadProviderSpecs,
   narrativeExampleImport,
+  narrativePartialImport,
   prose,
   renderDenseArguments,
   renderDenseOutputSchema,
@@ -144,6 +145,8 @@ function renderPage(spec, sidebarPosition) {
       'The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.',
     ].join('\n')),
     output: renderDenseOutputSchema(spec),
+    notes: existsSync(join(DOCS_DIR, '_notes', `${spec.function_name}.mdx`))
+      ? narrativePartialImport(`../_notes/${spec.function_name}.mdx`, 'Notes') : null,
     examples: existsSync(join(DOCS_DIR, '_examples', `${spec.function_name}.mdx`))
       ? narrativeExampleImport(`../_examples/${spec.function_name}.mdx`) : null,
     limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),

@@ -2,8 +2,8 @@ import React, {
   type ReactNode,
   useState,
   useEffect,
+  useId,
   useRef,
-  useCallback,
 } from 'react';
 import clsx from 'clsx';
 import {useWindowSize} from '@docusaurus/theme-common';
@@ -19,13 +19,12 @@ import DocBreadcrumbs from '@theme/DocBreadcrumbs';
 import ContentVisibility from '@theme/ContentVisibility';
 import TOCItems from '@theme/TOCItems';
 import type {Props} from '@theme/DocItem/Layout';
+import FocusModeToggle from '@site/src/components/focusMode/FocusModeToggle';
+import focusModeStyles from '@site/src/components/focusMode/styles.module.css';
 
 import styles from './styles.module.css';
 
-type TocMode = 'pinned' | 'floating';
-
-const STORAGE_KEY = 'algeon-doc-toc-mode';
-const WIDE_SCREEN_BREAKPOINT = 1360;
+const CLOSE_DELAY_MS = 220;
 
 function IconOutline({className}: {className?: string}) {
   return (
@@ -48,150 +47,99 @@ function IconOutline({className}: {className?: string}) {
   );
 }
 
-function IconArrowRight({className}: {className?: string}) {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <line x1="5" y1="12" x2="19" y2="12" />
-      <polyline points="12 5 19 12 12 19" />
-    </svg>
-  );
-}
-
-function IconPin({className}: {className?: string}) {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <line x1="12" y1="17" x2="12" y2="22" />
-      <path d="M5 17h14v-2l-2-3V5a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7l-2 3v2z" />
-    </svg>
-  );
-}
-
-
 export default function DocItemLayout({children}: Props): ReactNode {
   const {frontMatter, toc, metadata} = useDoc();
   const windowSize = useWindowSize();
 
   const hidden = frontMatter.hide_table_of_contents;
   const canRender = !hidden && toc.length > 0;
-
-  const [tocMode, setTocMode] = useState<TocMode>('pinned');
-  const [isHoverOpen, setIsHoverOpen] = useState(false);
-  const [isClient, setIsClient] = useState(false);
-  const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    setIsClient(true);
-    setIsHoverOpen(false);
-
-    if (metadata.id === 'intro') {
-      setTocMode('pinned');
-      return;
-    }
-
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'pinned' || stored === 'floating') {
-      setTocMode(stored);
-      return;
-    }
-    const defaultMode =
-      window.innerWidth >= WIDE_SCREEN_BREAKPOINT ? 'pinned' : 'floating';
-    setTocMode(defaultMode);
-
-    const onResize = () => {
-      const explicit = localStorage.getItem(STORAGE_KEY);
-      if (!explicit) {
-        setTocMode(
-          window.innerWidth >= WIDE_SCREEN_BREAKPOINT ? 'pinned' : 'floating',
-        );
-      }
-    };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [metadata.id]);
-
-  const updateTocMode = useCallback((mode: TocMode) => {
-    setTocMode(mode);
-    setIsHoverOpen(false);
-    if (metadata.id === 'intro') {
-      return;
-    }
-    try {
-      localStorage.setItem(STORAGE_KEY, mode);
-    } catch {
-      // ignore storage failure in private tabs
-    }
-  }, [metadata.id]);
-
-  const handleMouseEnter = () => {
-    if (leaveTimerRef.current) {
-      clearTimeout(leaveTimerRef.current);
-      leaveTimerRef.current = null;
-    }
-    setIsHoverOpen(true);
-  };
-
-  const handleMouseLeave = () => {
-    if (leaveTimerRef.current) {
-      clearTimeout(leaveTimerRef.current);
-    }
-    leaveTimerRef.current = setTimeout(() => {
-      setIsHoverOpen(false);
-    }, 220);
-  };
-
-  const handleTocLinkClick = () => {
-    setTimeout(() => setIsHoverOpen(false), 260);
-  };
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isHoverOpen) {
-        setIsHoverOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isHoverOpen]);
-
   const isDesktop = windowSize === 'desktop' || windowSize === 'ssr';
-  const showPinnedTOC = canRender && isDesktop && tocMode === 'pinned';
-  const showFloatingTOC = canRender && isDesktop && tocMode === 'floating' && isClient;
+  const showOutline = canRender && isDesktop;
+
+  const panelId = useId();
+  const [isOpen, setIsOpen] = useState(false);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusOnOpenRef = useRef(false);
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const handleRef = useRef<HTMLButtonElement>(null);
+
+  const cancelClose = () => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+
+  const closeAfter = (delay: number) => {
+    cancelClose();
+    closeTimerRef.current = setTimeout(() => setIsOpen(false), delay);
+  };
+
+  useEffect(() => {
+    setIsOpen(false);
+    return cancelClose;
+  }, [metadata.id]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    if (focusOnOpenRef.current) {
+      focusOnOpenRef.current = false;
+      const panel = drawerRef.current;
+      const link =
+        panel?.querySelector<HTMLElement>('.table-of-contents__link--active') ??
+        panel?.querySelector<HTMLElement>('a');
+      link?.focus();
+    }
+    // On document so it runs before the focus mode Esc listener on window,
+    // which skips events that are already handled.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) {
+        return;
+      }
+      event.preventDefault();
+      cancelClose();
+      setIsOpen(false);
+      if (drawerRef.current?.contains(document.activeElement)) {
+        handleRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen]);
+
+  const open = (fromKeyboard: boolean) => {
+    cancelClose();
+    focusOnOpenRef.current = fromKeyboard;
+    setIsOpen(true);
+  };
 
   return (
-    <div className="row">
+    // Which outline shows (pinned column or right-edge drawer) depends on the
+    // viewport width and focus mode, both resolved in CSS so the right one is
+    // there from the first paint and inside the focus mode view transition.
+    <div
+      className={clsx(
+        'row',
+        styles.docRow,
+        metadata.id === 'intro' && styles.pinnedOnDesktop,
+      )}
+    >
       <div
         className={clsx(
           'col',
-          !hidden && (showPinnedTOC ? styles.docItemCol : styles.docItemColFull),
+          !hidden && (canRender ? styles.docItemCol : styles.docItemColFull),
         )}
       >
         <ContentVisibility metadata={metadata} />
         <DocVersionBanner />
-        <div className={styles.docItemContainer}>
+        <div className={styles.docItemContainer} data-focus-mode-content>
           <article>
-            <DocBreadcrumbs />
+            <div className={styles.pageTools}>
+              <DocBreadcrumbs />
+              <FocusModeToggle />
+            </div>
             <DocVersionBadge />
             {canRender && <DocItemTOCMobile />}
             <DocItemContent>{children}</DocItemContent>
@@ -201,76 +149,60 @@ export default function DocItemLayout({children}: Props): ReactNode {
         </div>
       </div>
 
-      {showPinnedTOC && (
+      {showOutline && (
         <div className={clsx('col col--3', styles.tocCol)}>
           <div className={styles.pinnedTocContainer}>
-            <div className={styles.pinnedTocLineHeader}>
-              <button
-                type="button"
-                className={styles.tocCollapseLineButton}
-                onClick={() => updateTocMode('floating')}
-                title="Collapse outline"
-                aria-label="Collapse outline"
-              >
-                <IconArrowRight />
-              </button>
-            </div>
-            <div className={styles.pinnedTocTitle}>On this page</div>
             <DocItemTOCDesktop />
           </div>
         </div>
       )}
 
-      {showFloatingTOC && (
-        <aside
-          className={clsx(
-            styles.floatingTocWrapper,
-            isHoverOpen && styles.floatingTocWrapperOpen,
-          )}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
-          aria-label="Outline navigation"
+      {showOutline && (
+        <div
+          ref={drawerRef}
+          className={clsx(styles.outlineDrawer, isOpen && styles.outlineDrawerOpen)}
+          onMouseEnter={() => open(false)}
+          onMouseLeave={() => closeAfter(CLOSE_DELAY_MS)}
+          // Close when keyboard focus moves to something outside. Focus that
+          // drops to nothing, as after a fragment link click, leaves the
+          // panel to the pointer.
+          onBlur={(event) => {
+            const next = event.relatedTarget;
+            if (next && !event.currentTarget.contains(next)) {
+              closeAfter(0);
+            }
+          }}
         >
           <button
+            ref={handleRef}
             type="button"
-            className={styles.floatingTocPill}
-            onClick={() => setIsHoverOpen((v) => !v)}
-            title="Outline"
-            aria-label="Table of contents outline"
-            aria-expanded={isHoverOpen}
+            className={clsx(focusModeStyles.floatingControl, styles.outlineHandle)}
+            // A keyboard click has no pointer position (detail 0).
+            onClick={(event) => open(event.detail === 0)}
+            aria-label="On this page"
+            aria-expanded={isOpen}
+            aria-controls={panelId}
           >
             <IconOutline className={styles.iconOutline} />
           </button>
 
-          <div className={styles.floatingTocPanel}>
-            <div className={styles.floatingTocPanelHeader}>
-              <span className={styles.floatingTocTitle}>Outlines</span>
-              <div className={styles.floatingTocHeaderActions}>
-                <button
-                  type="button"
-                  className={styles.tocActionBtn}
-                  onClick={() => updateTocMode('pinned')}
-                  title="Pin outline to side"
-                  aria-label="Pin outline to side"
-                >
-                  <IconPin />
-                </button>
-              </div>
-            </div>
-            <div
-              className={clsx(styles.floatingTocPanelBody, 'thin-scrollbar')}
-              onClick={handleTocLinkClick}
-            >
+          <nav id={panelId} className={styles.outlinePanel} aria-label="On this page">
+            {/* A link click only scrolls; the panel stays until the pointer
+                or focus leaves, so the reader can jump between sections. */}
+            <div className={clsx(styles.outlinePanelBody, 'thin-scrollbar')}>
               <TOCItems
                 toc={toc}
                 minHeadingLevel={frontMatter.toc_min_heading_level}
                 maxHeadingLevel={frontMatter.toc_max_heading_level}
-                linkClassName="table-of-contents__link toc-highlight"
+                // The highlight hook marks only the first matching link among
+                // elements with all of these classes; a class of its own keeps
+                // the hidden pinned copy from taking the highlight.
+                linkClassName="table-of-contents__link outline-drawer-link"
                 linkActiveClassName="table-of-contents__link--active"
               />
             </div>
-          </div>
-        </aside>
+          </nav>
+        </div>
       )}
     </div>
   );

@@ -11,3 +11,8 @@
   min-width: 0;
   flex-shrink: 1;
 }
+
+/* Focus mode hides the doc sidebar; the main column takes its width. */
+:global(html[data-focus-mode='on']) .layout main {
+  max-width: 100%;
+}

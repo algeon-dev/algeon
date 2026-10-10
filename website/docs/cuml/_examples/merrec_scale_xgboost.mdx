@@ -1,83 +1,50 @@
-This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
-1,268,092,738 events from May through October 2023.
+import CodeBlock from '@theme/CodeBlock';
 
-### Can a model trained elsewhere rank next month's buyers inside SQL?
+export const sql = capture.sql.replaceAll(', LN(', ',\n      LN(');
+import capture from '@site/static/data/merrec-scale-propensity-xgboost.json';
+import Table from '@site/src/theme/MDXComponents/Table';
 
-A team may already train its models in Python. This example trains an
-XGBoost classifier offline, then scores the evaluation cohort inside SQL
-with `cuml_forest_predict`, so its audiences can be compared with those of
-the SQL classifiers in the
-[purchase propensity example](../udtfs/cuml_logistic_regression.mdx?dataset=merrec#examples):
+An audience planner has capacity to review 55,404 shoppers. The comparison
+uses either the highest XGBoost scores or everyone who bought in the previous
+30 days, then counts September buyers in each list.
 
-1. Export the training cohort with
-   [`26_propensity_training_features.sql`](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/26_propensity_training_features.sql).
-   It uses the same ten log-scaled features and August 1 cutoff as the
-   propensity example.
-2. Train 300 trees of depth 6 with
-   [`train_propensity_model.py`](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/train_propensity_model.py),
-   which writes `propensity_xgb.json` under the server's `[models]` root.
-3. Score the September 1 cohort. The statement rebuilds the features from
-   raw events, scores them with `cuml_forest_predict`, ranks shoppers by
-   score, and counts buyers in the top 1% (20,177 shoppers) and in the top
-   55,404, the size of the "bought in the last 30 days" rule.
+The model was trained before the query on features preceding August 1, 2023,
+with purchases in the next 30 days as labels. Training and model review are
+separate preparation steps; SQL loads `propensity_xgb.json` for inference.
 
-| Audience | Shoppers | Buyers reached | Precision | Recall |
-|---|---:|---:|---:|---:|
-| Top 1% by XGBoost score | 20,177 | 9,704 | 48.1% | 24.9% |
-| Top 55,404 by XGBoost score | 55,404 | 16,087 | 29.0% | 41.3% |
-| Bought in the last 30 days | 55,404 | 14,107 | 25.5% | 36.2% |
+The earlier `test` CTE computes ten activity and price features from June to August,
+retains shoppers with at least 20 views, and attaches the September outcome.
+The open part scores those features, ranks shoppers and evaluates both budgets.
 
-In the top 1%, 48.1% of shoppers buy in the next 30 days, 25 times
-the 1.93% base rate. At the rule's audience size, the scores find
-41.3% of next month's buyers, where the rule finds 36.2%. The SQL logistic
-regression and random forest, trained on the same cohort inside their
-statements, reach 47.0% and 47.7% in the top 1% and 40.1% and 41.1%
-at the rule's size. On these features the offline model performs about the
-same as the SQL models. What it adds is a path for a model that is trained,
-reviewed and versioned elsewhere: SQL builds the features from raw events
-and scores them where the data lives.
+<CodeBlock language="sql" className="no-collapse" folds={[
+  {to: 'scores AS (', label: 'the test relation: ten activity and price features and the September outcome'},
+]}>{sql}</CodeBlock>
 
-<details>
-<summary>Executed SQL</summary>
+The evaluation contains 2,017,739 eligible shoppers and 38,925 September buyers.
 
-```sql
-WITH test AS (
-  SELECT e.user_id AS id,
-    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views,
-    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes,
-    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents,
-    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys,
-    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS gmv,
-    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views_30d,
-    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes_30d,
-    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,
-    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,
-    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,
-    CAST(MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS INT) AS label
-  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
-  WHERE e.event_time >= TIMESTAMP '2023-06-01 00:00:00' AND e.event_time < TIMESTAMP '2023-10-01 00:00:00'
-  GROUP BY e.user_id
-  HAVING SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20
-),
-scores AS (
-  SELECT id, prediction AS score FROM cuml_forest_predict(
-    input => (SELECT id, LN(1 + views) AS views, LN(1 + likes) AS likes, LN(1 + intents) AS intents, LN(1 + buys) AS buys, LN(1 + gmv) AS gmv, LN(1 + views_30d) AS views_30d, LN(1 + likes_30d) AS likes_30d, LN(1 + intents_30d) AS intents_30d, LN(1 + buys_30d) AS buys_30d, LN(1 + mean_price) AS mean_price FROM test ORDER BY id),
-    model => 'propensity_xgb.json', model_format => 'xgboost_json')
-), ranked AS (
-  SELECT t.label, t.buys_30d,
-         ROW_NUMBER() OVER (ORDER BY s.score DESC, t.id) AS rk,
-         COUNT(*) OVER () AS shoppers,
-         SUM(CASE WHEN t.buys_30d > 0 THEN 1 ELSE 0 END) OVER () AS rule_size
-  FROM scores s JOIN test t ON t.id = s.id
-)
-SELECT MAX(shoppers) AS shoppers, MAX(shoppers) / 100 AS top_1pct, MAX(rule_size) AS rule_size,
-       SUM(label) AS buyers,
-       SUM(CASE WHEN rk <= shoppers / 100 THEN label ELSE 0 END) AS model_top_1pct_buyers,
-       SUM(CASE WHEN rk <= rule_size THEN label ELSE 0 END) AS model_rule_size_buyers,
-       SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END) AS rule_buyers
-FROM ranked;
-```
+<Table>
+<thead><tr><th>Selection</th><th>Shoppers</th><th>Later buyers</th><th>Purchase rate</th></tr></thead>
+<tbody>{[
+  ['Highest model scores, 1% budget', capture.records[0].top_1pct, capture.records[0].model_top_1pct_buyers],
+  ['Highest model scores, rule-sized budget', capture.records[0].rule_size, capture.records[0].model_rule_size_buyers],
+  ['Bought in previous 30 days', capture.records[0].rule_size, capture.records[0].rule_buyers],
+].map(([label, shoppers, buyers]) => <tr key={label}><td>{label}</td><td>{shoppers.toLocaleString('en-US')}</td><td>{buyers.toLocaleString('en-US')}</td><td>{(buyers / shoppers * 100).toFixed(1)}%</td></tr>)}</tbody>
+</Table>
 
-</details>
+At equal list size, the model includes 1,980 more observed buyers than the
+recent-purchase rule. The smaller model list has higher precision but reaches
+fewer buyers. These counts give a planner a budget comparison without treating
+model score alone as evidence of value.
 
-The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 14.89 s, including planning, every step of the statement, and result receipt. Each plan had 3 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 21.58 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-propensity-xgboost.json) with the executed SQL, query IDs, timings, and all result rows.
+Algeon combines SQL feature construction, an externally trained model and
+outcome aggregation in one statement. Filters and list size remain query
+choices. Prices use the latest retained item attributes; that limitation
+also applies to training. Performance at another monthly cutoff and
+incremental campaign impact have not been measured.
+
+<div className="fineprint">
+
+The [capture](/data/merrec-scale-propensity-xgboost.json) contains the full
+result and execution record.
+
+</div>

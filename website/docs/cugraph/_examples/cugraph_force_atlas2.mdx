@@ -1,76 +1,24 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
-import CitationEgoGraph from '@site/src/components/graph/CitationEgoGraph';
+import CitationLayout from './citation_layout.mdx';
 import MerRecScaleBrandMap from './merrec_scale_brand_map.mdx';
 
 {/* Hand-owned examples for cugraph_force_atlas2. NOT generated; safe to edit. */}
 
 <Tabs queryString="dataset">
-<TabItem value="citation-network" label="Citation network" default>
+<TabItem value="merrec" label="MerRec" default>
 
-This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
+### Where do brand neighborhoods appear when shared fans determine the map?
+
+<MerRecScaleBrandMap />
+
+</TabItem>
+
+<TabItem value="citation-network" label="Citation network">
 
 ### How are the papers around the Transformer connected?
 
-The selected graph contains *Attention Is All You Need*, its 22 references,
-and its 110 most-cited citers. The edge view keeps citations whose endpoints
-both belong to this set. ForceAtlas2 supplies coordinates and Louvain assigns
-a community to each paper; the scope excludes other papers and all but those
-110 citers.
-
-```sql
-CREATE OR REPLACE VIEW attention_seed AS
-SELECT paper_id FROM papers
-WHERE title = 'Attention is all you need' AND year = 2017;
-
-CREATE OR REPLACE VIEW attention_ego_nodes AS
-SELECT paper_id FROM (
-  SELECT e.dst AS paper_id
-  FROM citation_edges e JOIN attention_seed s ON s.paper_id = e.src
-  UNION ALL
-  SELECT src AS paper_id FROM (
-    SELECT e.src, p.n_citation
-    FROM citation_edges_by_dst e
-    JOIN attention_seed s ON s.paper_id = e.dst
-    JOIN papers p ON p.paper_id = e.src
-    ORDER BY p.n_citation DESC, e.src LIMIT 110) t
-  UNION ALL
-  SELECT paper_id FROM attention_seed
-) u GROUP BY paper_id;
-
-CREATE OR REPLACE VIEW attention_ego_edges AS
-SELECT e.src, e.dst
-FROM citation_edges e
-JOIN attention_ego_nodes a ON a.paper_id = e.src
-JOIN attention_ego_nodes b ON b.paper_id = e.dst;
-
-WITH layout AS (
-  SELECT vertex, x, y
-  FROM cugraph_force_atlas2(
-    edges => (SELECT src, dst FROM attention_ego_edges), max_iter => 500, seed => 42)),
-community AS (
-  SELECT vertex, community
-  FROM cugraph_louvain(edges => (SELECT src, dst FROM attention_ego_edges)))
-SELECT l.vertex, l.x, l.y, c.community, p.title, p.year
-FROM layout l
-JOIN community c ON c.vertex = l.vertex
-JOIN papers p ON p.paper_id = l.vertex;
-```
-
-The figure below renders that query's actual output (133 rows of
-`(vertex, x, y, community, title, year)`) with no client-side layout; the
-browser draws only what the SQL returned. Louvain's communities correspond to
-distinct research threads (labels assigned by inspecting each cluster's
-members):
-
-<CitationEgoGraph />
-
-`seed` fixes the initial placement, but the parallel layout itself is not
-bit-reproducible; expect different (equally valid) coordinates on each run;
-on larger graphs individual vertices may land far apart. If downstream queries
-must agree on positions, save the result with `CREATE OR REPLACE TABLE … AS`.
-The [result table](../graph-options.mdx#reuse-algorithm-results) occupies host
-RAM and lasts until the server stops.
+<CitationLayout />
 
 ### Can I spread overlapping papers apart without starting the map over?
 
@@ -101,12 +49,6 @@ FROM cugraph_force_atlas2(
 Both side inputs reject null, duplicate, missing, or extra vertices. Radius,
 mass, mobility, and coordinates are `Float32`; their vertex column must match
 the edge endpoint domain.
-
-</TabItem>
-
-<TabItem value="merrec" label="MerRec marketplace">
-
-<MerRecScaleBrandMap />
 
 </TabItem>
 </Tabs>

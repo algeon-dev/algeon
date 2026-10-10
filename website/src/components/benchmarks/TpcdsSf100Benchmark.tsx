@@ -1,3 +1,4 @@
+import clsx from 'clsx';
 import React from 'react';
 import {
   Bar,
@@ -187,28 +188,12 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
         <div>
           <ul className={styles.benchmarkFacts}>
             <li>
-              <strong>Environment:</strong> AWS EC2 g7e.4xlarge, 16 vCPUs,
-              128 GiB system memory, local NVMe fixture storage, RTX PRO 6000.
-            </li>
-            <li>
-              <strong>Run:</strong> {typedDataset.scaleFactor.toUpperCase()} full
-              suite ({typedSummary.queryCount} queries), {typedConfig.warmups} warmup /{' '}
-              {typedConfig.iterations} measured iteration, profile{' '}
-              <code>{typedConfig.nativeProfileName}</code>, LocalKvikio parquet reads.
-            </li>
-            <li>
               <strong>Result:</strong> CPU {formatSeconds(typedSummary.cpuTotalMs)}, GPU{' '}
               {formatSeconds(typedSummary.gpuSuccessTotalMs)} across{' '}
               {typedSummary.gpuSuccessCount}/{typedSummary.queryCount} successful native
               queries, CPU / GPU {formatSpeedup(typedSummary.speedup)}, peak reservation{' '}
               {formatGiB(typedSummary.maxReservationLivePeakBytes)}. Row counts matched on{' '}
               {typedSummary.rowsMatchCount}/{typedSummary.queryCount} queries.
-            </li>
-            <li>
-              <strong>KvikIO:</strong> local cuDF/libcudf file reads with{' '}
-              <code>KVIKIO_COMPAT_MODE={typedConfig.kvikioCompatMode}</code>. On this
-              g7e.4xlarge host, <code>OFF</code> still may enter cuFile compatibility
-              mode without native GDS.
             </li>
           </ul>
         </div>
@@ -228,7 +213,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
               <p className={styles.chartScrollHint}>
                 Scroll horizontally to inspect all {typedRows.length} queries.
               </p>
-              <div className={styles.chartScroll} role="region" aria-label="Per-query runtime chart, scroll horizontally">
+              <div className={clsx(styles.chartScroll, 'thin-scrollbar')} role="region" aria-label="Per-query runtime chart, scroll horizontally">
                 <div
                   className={`${styles.chart} ${styles.chartScrollTrack}`}
                   style={{width: Math.max(720, typedRows.length * 28)}}
@@ -370,7 +355,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
                 {typedSummary.queryCount} TPC-DS queries. GPU faster on{' '}
                 {typedSummary.gpuFasterCount}; slower on {typedSummary.gpuSlowerCount}.
               </p>
-              <div className={styles.tablePanel}>
+              <div className={clsx(styles.tablePanel, 'thin-scrollbar')}>
                 <table className={styles.resultsTable}>
                   <thead>
                     <tr>

@@ -3,8 +3,15 @@ sidebar_position: 2
 slug: /guides/gpu-udtf-discovery
 title: Discover & Validate GPU UDTFs
 sidebar_label: Discover & Validate GPU UDTFs
-description: Find installed GPU UDTFs, inspect their contracts, validate a call, and then verify whole-query GPU coverage.
+description: Find installed GPU UDTFs, inspect their contracts, validate a call, verify whole-query GPU coverage, and see the sequence on a recorded session.
 ---
+
+import CodeBlock from '@theme/CodeBlock';
+import Table from '@site/src/theme/MDXComponents/Table';
+import session from '@site/static/data/merrec-agent-session.json';
+
+export const seconds = value => value < 0.1 ? `${Math.round(value * 1000)} ms` : `${value.toFixed(2)} s`;
+export const errorOf = id => session.steps.find(item => item.step === id).error.replace(/^.*?message: /s, '');
 
 # Discover & Validate GPU UDTFs
 
@@ -96,3 +103,30 @@ DataFusion operators, sources, or host boundaries feeding and consuming that
 call. Before shipping a composed query, use
 [GPU coverage validation](../integration/gpu-coverage-validation.mdx) to check
 the final planned path.
+
+## 6. The sequence on a recorded session
+
+A session over the [MerRec dataset](./datasets/merrec.mdx) followed these
+steps through Flight SQL, with an AI model writing the statements. It asked
+which brands moved toward Barbie's audience after the July 2023 film.
+
+<Table>
+<thead><tr><th>Step</th><th>Statement</th><th>Outcome</th><th>Time</th></tr></thead>
+<tbody>{session.steps.map(item => <tr key={item.step}><td>{item.step}</td><td>{item.intent}</td><td>{item.status === 'ok' ? 'rows' : 'planning error'}</td><td>{seconds(item.elapsed_s)}</td></tr>)}</tbody>
+</Table>
+
+The two failures were guesses at column names, and each returned at planning
+time, before any row was read:
+
+<CodeBlock language="text">{[errorOf(3), errorOf(4)].join('\n')}</CodeBlock>
+
+`EXPLAIN GPU` then reported the whole statement on the GPU with no host
+boundary, and the statement itself ran four graph calls over 1.27 billion
+events in {seconds(session.steps[5].elapsed_s)}. The result and its control
+seeds are on the [MerRec page](./datasets/merrec.mdx#barbie).
+
+<div className="fineprint">
+
+The [session capture](/data/merrec-agent-session.json) holds every statement, its query ID where one was issued, the Flight status text of the failures and the returned rows, recorded on {session.recorded_at_utc} against the scale server configuration in `native_required` mode.
+
+</div>

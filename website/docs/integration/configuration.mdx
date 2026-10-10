@@ -5,7 +5,9 @@ description: Configure the Flight SQL server, GPU admission, native execution, a
 
 # Configuration
 
-Algeon has three configuration owners. Keep them separate:
+This page is the settings reference for the Flight SQL server process, ordered
+by TOML table. An embedded Rust service configures the engine through
+[DataFusion Session](./datafusion-session.mdx).
 
 | Surface              | Configure with                                  | Owns                                                                   |
 |----------------------|-------------------------------------------------|------------------------------------------------------------------------|
@@ -13,23 +15,16 @@ Algeon has three configuration owners. Keep them separate:
 | Embedded GPU backend | `AlgeonGpuBackend::builder()`                   | Device ownership, capacity, queues, and execution mode                 |
 | DataFusion session   | `SessionConfig`                                 | Standard DataFusion behavior (catalogs, batch size, target partitions) |
 
-This page covers the Flight SQL process. For an embedded Rust service, use [DataFusion Session](./datafusion-session.mdx).
+`ServerConfig::from_env()` starts from built-in defaults, overlays the TOML file
+named by `ALGEON_SERVER_CONFIG_FILE`, then applies matching environment
+overrides. The file accepts `[auth]`, `[admission]`, `[native]`,
+`[observability]`, `[cugraph]`, `[models]` and `[s3]`; an unknown field fails
+startup.
 
-## How server configuration is resolved
+## Minimal GPU server {/* #minimal-gpu-server */}
 
-`ServerConfig::from_env()` starts with built-in defaults, reads the TOML file
-named by `ALGEON_SERVER_CONFIG_FILE`, and then applies environment overrides for
-matching scalar admission, native, and observability fields.
-
-The TOML file accepts only `[auth]`, `[admission]`, `[native]`,
-`[observability]`, and `[models]`. Unknown fields fail startup. cuGraph and
-workspace settings use the environment; standard DataFusion settings come from
-its environment mapping or the embedded `SessionConfig` API.
-
-## Minimal GPU server
-
-Every selected CUDA ordinal needs exactly one TOML device profile, even when
-all device-local values use their defaults:
+Every selected CUDA ordinal needs a single device profile, even when all of
+its values are defaults:
 
 ```toml
 # server.toml
@@ -44,142 +39,131 @@ export ALGEON_SERVER_GPU_DEVICES=0
 flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
 
-The profile above uses automatic device capacity, two active attempts, one
-source-work slot, no resident GPU cache, and engine-derived installation
-bounds. For a production deployment, set explicit limits only where the
-deployment needs them.
+The [device profile table](#admission) lists each default. A production
+deployment sets explicit limits only where it needs them.
 
-## Admission
+## Admission {/* #admission */}
 
 | Environment variable | Default | Purpose |
-| --- | --- | --- |
+|---|---|---|
 | `ALGEON_SERVER_BIND` | `0.0.0.0:50051` | Flight SQL listen address |
 | `ALGEON_SERVER_LOG` | `info` | Tracing filter |
 | `ALGEON_SERVER_CONFIG_FILE` | unset | TOML overlay path |
-| `ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS` | `300` | How long an unconsumed Flight statement ticket may wait for `DoGet` |
+| `ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS` | `300` | How long an unconsumed statement ticket waits for `DoGet` |
 | `ALGEON_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA ordinals |
 | `ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS` | `64` | Maximum queued admission waiters |
 | `ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS` | `30000` | Maximum wait for a compatible device |
 
-The two queue values can also be placed under `[admission]` as
-`max_queued_attempts` and `max_queue_wait_ms`. Environment values win.
-Admission is FIFO among capability-compatible waiters; there is no overtaking
-or protected-waiter setting. The queue wait ends when a device grant is placed;
-building the query's execution context after that is bounded by the query's own
-deadline and cancellation, not by the queue wait.
+- The queue values also exist under `[admission]` as `max_queued_attempts` and
+  `max_queue_wait_ms`; the environment wins.
+- Admission is FIFO among capability-compatible waiters, with no overtaking or
+  protected-waiter setting.
+- The queue wait ends when a device grant is placed. The query's own deadline
+  and cancellation bound the execution-context build after that.
+- Capabilities and memory ownership are not file settings. The shipped server
+  declares `WholeDeviceExclusive` ownership for every selected ordinal; custom
+  embedders declare it through the Rust API.
 
-After `device_ordinal`, a profile accepts `memory_limit_bytes`,
-`backend_reserve_bytes`, `default_query_limit_bytes`, `max_active_attempts`,
-`source_work_per_attempt`, `cache_cap_bytes`, and the optional telemetry flag
-(`install_telemetry`). Configure `stream_pool_size`, `worker_count`, and
-`lane_count` together or omit all three. `worker_count` is the number of GPU
-execution workers on the device. One worker is reserved for context setup and
-release cleanup, so a placed query builds its execution context and a finished
-query returns its resources while every other worker runs queries; query
-execution uses the remaining workers. The default is `max_active_attempts + 1`,
-and an explicit `worker_count` must be at least that. An explicit `memory_limit_bytes`
-requires an explicit `backend_reserve_bytes`: automatic capacity already bakes
-in driver headroom, but an explicit limit does not, so the reserve must be
-declared (`0` is a valid, deliberate choice).
+Each `[[admission.device_profiles]]` entry takes the fields below. A rejected
+value stops startup with the `invalid_configuration` error code.
 
-An explicit `memory_limit_bytes` cannot exceed the device memory Algeon owns.
-The shipped server owns the whole device, so the ceiling is the CUDA-visible
-total, which is smaller than the nominal card size. `backend_reserve_bytes`
-must leave managed capacity. A value over its ceiling stops startup with the
-`invalid_configuration` error code, and the startup log line prints the whole
-rejection: the setting, the configured value, the ceiling, and the largest
-accepted value, each in exact bytes and GiB.
+| Field | Default | Constraint |
+|---|---|---|
+| `device_ordinal` | Required | One profile for each ordinal in `ALGEON_SERVER_GPU_DEVICES`. |
+| `memory_limit_bytes` | Automatic capacity | At most the device memory Algeon owns. |
+| `backend_reserve_bytes` | Unset | Required with an explicit `memory_limit_bytes`; must leave managed capacity. |
+| `default_query_limit_bytes` | Derived from managed capacity | Positive and within managed capacity minus `cache_cap_bytes`. |
+| `max_active_attempts` | `2` | Positive. |
+| `source_work_per_attempt` | `1` | Positive. |
+| `cache_cap_bytes` | `0` (no resident GPU cache) | Below managed capacity. |
+| `install_telemetry` | `true` | Optional boolean. |
+| `worker_count` | `max_active_attempts + 1` | At least `max_active_attempts + 1`. |
+| `stream_pool_size`, `lane_count` | Engine-derived | Set together with `worker_count`, or omit all three. |
+
+- A missing, unselected or duplicate profile ordinal is an error.
+- `worker_count` counts the device's GPU execution workers. One is reserved
+  for context setup and release cleanup, letting queries start and finish
+  while the others execute queries.
+- Automatic capacity already subtracts a driver reserve. An explicit limit
+  declares its own `backend_reserve_bytes`, where `0` is a deliberate choice.
+- The shipped server owns the whole device. Its `memory_limit_bytes` ceiling
+  is the CUDA-visible total, below the nominal card size.
+- `default_query_limit_bytes` is the immutable cap for a query whose embedding
+  caller supplies none; planner estimates do not resize it.
+- The startup log prints the setting, configured value, ceiling and largest
+  accepted value in bytes and GiB; each of the four byte fields reports the
+  largest value its capacity accepts. Lower the setting in that device's entry
+  to at most that value.
+
+<details>
+<summary>Example rejection</summary>
 
 ```text
 invalid server configuration: failed to initialize ownership-enforcing GPU backend core: device 0 memory_limit_bytes is 102005473280 bytes (95.00 GiB) but Algeon owns 101973819392 bytes (94.97 GiB) of device memory; the largest accepted memory_limit_bytes is 101973819392 bytes (94.97 GiB) [device_ordinal=0, configured_limit_bytes=102005473280, owned_capacity_bytes=101973819392, reason=explicit_capacity_exceeds_owned_capacity]
 ```
 
-Lower `memory_limit_bytes` in the `[[admission.device_profiles]]` entry for that
-device to at most the largest accepted value. The other profile keys report a
-rejected value with the same code. `backend_reserve_bytes`,
-`default_query_limit_bytes`, and `cache_cap_bytes` also state the largest value
-their capacity accepts.
+</details>
 
-Selected ordinals and profile ordinals must match exactly. A profile outside
-`ALGEON_SERVER_GPU_DEVICES`, a missing profile, or a duplicate ordinal is an
-error. `cache_cap_bytes = 0` (the default) installs no resident GPU cache.
-`default_query_limit_bytes` is the immutable cap granted to a query unless an
-embedding caller supplies an explicit cap. It must be positive and no larger
-than the device's managed capacity; planner memory estimates do not resize it.
+## Native execution {/* #native-execution */}
 
-Capabilities and memory ownership are not file settings. The shipped server
-binary declares `WholeDeviceExclusive` ownership for every selected ordinal;
-custom embedders must make that declaration through the Rust API.
+### Execution mode {/* #execution-mode */}
 
-## Native execution
-
-### Execution mode
-
-The default is `native_preferred`. To keep ordinary SQL on DataFusion CPU and
-use the GPU only for explicit cuGraph and cuVS UDTFs, add this to the server
-TOML alongside its device profiles:
+The default is `native_preferred`. `functions_only` keeps ordinary SQL on
+DataFusion CPU and uses the GPU only for explicit cuGraph and cuVS UDTFs:
 
 ```toml
 [native]
 execution_mode = "functions_only"
 ```
 
-Or override it through the environment:
-
 ```bash
 export ALGEON_SERVER_EXECUTION_MODE=functions_only
 ```
 
-Accepted values are `native_preferred`, `functions_only`, and `native_required`.
-See [Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode)
-for their behavior, composition boundaries, host staging limits, and embedded
-Rust configuration. This is backend policy, not a SQL `SET` option. UDTF
-features, registration, device profiles, and GPU admission are still required.
+[Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode)
+describes `native_preferred`, `functions_only` and `native_required`, their
+composition boundaries, host staging limits and embedded Rust configuration.
+The mode is backend policy with no SQL `SET` form. Every mode still needs UDTF
+features, registration, device profiles and GPU admission.
 
-### Native settings
+### Native settings {/* #native-settings */}
 
-Native settings are accepted both under `[native]` and through the environment:
+Each setting is accepted under `[native]` or through the environment, and each
+can be supplied independently.
 
 | TOML field | Environment variable | Default |
-| --- | --- | --- |
+|---|---|---|
 | `execution_mode` | `ALGEON_SERVER_EXECUTION_MODE` | `native_preferred` |
 | `max_source_chunk_bytes` | `ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | Derived from the admitted grant |
 | `max_row_groups_per_chunk` | `ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | `1` |
 | `max_retry_attempts` | `ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS` | `3` |
 | `max_source_reads_in_flight` | `ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT` | `2` |
-| `source_chunk_planning_mode` | `ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE` | `conservative` |
+| `source_chunk_planning_mode` | `ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE` | `conservative` (or `local_parquet_throughput`) |
 | `statistical_aggregate_execution_mode` | `ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE` | `gpu_native_tolerant` |
 | `lakehouse_footer_pruning` | `ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING` | `false` |
 
-`source_chunk_planning_mode` also accepts `local_parquet_throughput`.
+- Device capacity comes only from [`[[admission.device_profiles]]`](#admission);
+  native settings carry no device-budget planning placeholder.
+- Without `max_source_chunk_bytes`, the immutable grant sizes source reads. An
+  explicit value limits the source-byte grouping target.
+- Compatible row-group chunks coalesce into batches. One row group per chunk
+  keeps each a separate retry unit inside a coalesced read.
+- Before the next read, source-adjacent aggregates account for observed
+  decoded and staged bytes per row and live allocation-domain usage. The
+  allocator enforces the grant, retained aggregate and graph state included.
 
-`statistical_aggregate_execution_mode` controls the `stddev` and `var`
-aggregate family. The default, `gpu_native_tolerant`, keeps them on the GPU,
-but its results are not guaranteed to match DataFusion exactly: floating-point
-bits can differ, and precision degrades when values are large relative to
-their spread. Set `datafusion_exact_host_welford` when results must match
-DataFusion. That mode copies the aggregate input to host memory, and a query
-whose group keys or other aggregates in the same `GROUP BY` it cannot evaluate
-exactly is not rewritten to native execution.
+`statistical_aggregate_execution_mode` governs `stddev` and `var`. The default
+keeps them on the GPU, where floating-point bits can differ from DataFusion
+and precision degrades when values are large relative to their spread.
+`datafusion_exact_host_welford` matches DataFusion by copying the aggregate
+input to host memory. A query is not rewritten to native execution when that
+mode has no exact evaluation for its group keys or the other aggregates in the
+same `GROUP BY`.
 
-`native_required` rejects any query whose completed plan still runs a
-DataFusion CPU operator. The former `final_plan_requirement` field and
-`ALGEON_SERVER_FINAL_PLAN_REQUIREMENT` are gone; startup fails when that
-variable is set.
+The former `final_plan_requirement` field is gone, and startup fails when
+`ALGEON_SERVER_FINAL_PLAN_REQUIREMENT` is set.
 
-Native settings carry no device-budget planning placeholder. Device capacity
-is owned solely by the ordinal-keyed [`[[admission.device_profiles]]`](#admission)
-entries. An omitted `max_source_chunk_bytes` uses the immutable grant to size
-source reads. Compatible row-group chunks are coalesced into batches;
-source-adjacent aggregates account for observed decoded and staged bytes per
-row and live allocation-domain usage before the next read. The allocator
-enforces the grant, including retained aggregate and graph state.
-
-Explicit `max_source_chunk_bytes` values limit the source-byte grouping target.
-`max_row_groups_per_chunk` defaults to `1`, preserving individual retry units
-inside coalesced reads. Each setting can be supplied independently.
-
-## Authentication
+## Authentication {/* #authentication */}
 
 Authentication is TOML-only and defaults to `disabled`. Use that default only
 on a trusted local network. Static Basic credentials can be exchanged for
@@ -195,21 +179,20 @@ username = "alice"
 password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
 ```
 
-`token_ttl_secs` is required and must be greater than zero; non-expiring
-bearer tokens are not supported. `password_hash` must be a valid Argon2 PHC
-string; plaintext is rejected. Usernames must be unique.
+`token_ttl_secs` is required and positive; non-expiring bearer tokens are
+unsupported. `password_hash` must be a valid Argon2 PHC string, plaintext is rejected, and
+usernames must be unique.
 
-## Runtime observation retention
+## Runtime observation retention {/* #runtime-observation-retention */}
 
-The defaults retain bounded per-query records and sealed reports. Change them
-only when the service's traffic and exporter behavior require a different
-budget. A data statement's runtime observation belongs to its execution
-attempt. A metadata statement, such as a catalog query, runs no native work:
-its runtime artifact is the control frame alone, and its query stats come from
-the server's own capture.
+The defaults retain bounded query records and sealed reports; change them only
+when traffic or exporter behavior needs another budget. A data statement's
+runtime observation belongs to its execution attempt. A metadata statement, such as a catalog query, runs no native work;
+its runtime artifact is the control frame, and its query stats come from the
+server's own capture.
 
 | TOML field under `[observability]` | Environment override | Default |
-| --- | --- | --- |
+|---|---|---|
 | `per_query_max_records` | `ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS` | `65536` |
 | `per_query_max_bytes` | `ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES` | 8 MiB |
 | `active_logical_capture_max_bytes` | `ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES` | Admission requirement plus 1 GiB |
@@ -218,55 +201,41 @@ the server's own capture.
 | `sealed_ttl_secs` | `ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS` | `3600` |
 | `shutdown_grace_secs` | `ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS` | `30` |
 
-All values must be greater than zero.
+All values must be positive. The capture budget never refuses a query; one
+that does not fit runs without capture, its SQL text is not kept, and its query
+stats report `unavailable_reason=active_capture_budget` during and after the
+run. Admission alone decides overload.
 
-Every live Flight SQL query reserves logical capture bytes from
-`active_logical_capture_max_bytes` until it finishes: twice
-`per_query_max_bytes`, plus `per_query_max_bytes`, plus its sealed artifact
-(twice `per_query_max_bytes`, capped at `global_sealed_max_bytes`), which is
-40 MiB with the defaults. A query also holds its reservation while it plans
-and finalizes, outside its admission slot. The budget never refuses a query.
-One that does not fit runs without capture: the server keeps none of its SQL
-text, and its query stats, while it runs and after it ends, report
-`unavailable_reason=active_capture_budget`.
-Admission alone decides overload.
+<details>
+<summary>How the capture budget is computed</summary>
 
-When the field is unset, the server sets it to the capture of every attempt
-admission can hold at once (the sum of each device profile's
-`max_active_attempts` and `admission.max_queued_attempts`) plus 1 GiB. Queries
-reserve capture in the order they register, and statements that plan,
-finalize, or never take an admission slot hold reservations too, so a query
-within the admission bounds can still run without capture. The server logs
-the budget and that admission requirement at startup.
+Each live Flight SQL query reserves logical capture bytes until it finishes:
+three times `per_query_max_bytes` plus its sealed artifact (twice
+`per_query_max_bytes`, capped at `global_sealed_max_bytes`), 40 MiB with the
+defaults. It holds the reservation while planning and finalizing, outside its
+admission slot.
 
-The server registers at most 1024 live Flight SQL statements. This is a hard
-cap on every live statement: one that is planning, ticketed but not yet read,
-executing (CPU-only and metadata statements included), or finalizing counts
-against it. Startup and `FlightSqlServerBuilder::build` fail with
-`admission_exceeds_live_query_capacity` when the admission bounds alone hold
-1024 attempts or more. Its `config_field` is
+Unset, the budget is the capture of every attempt admission can hold at once
+(each profile's `max_active_attempts` plus `admission.max_queued_attempts`)
+plus 1 GiB. The server logs the budget and that requirement at startup.
+
+Reservations follow registration order. Statements that plan, finalize or never
+take an admission slot also hold them, and a query within the admission bounds
+can still run without capture.
+
+</details>
+
+The server registers at most 1024 live Flight SQL statements, counting every
+statement that is planning, ticketed but unread, executing (CPU-only and
+metadata included) or finalizing. Startup and `FlightSqlServerBuilder::build`
+fail with `admission_exceeds_live_query_capacity` when the admission bounds
+alone hold 1024 attempts or more. Its `config_field` is
 `ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS`, or
-`admission.device_profiles.max_active_attempts` when the device profiles fill
-the cap by themselves.
-Because statements outside admission share the cap, registration can refuse a
-statement while admission still has room.
+`admission.device_profiles.max_active_attempts` when the profiles fill the cap
+alone. Because statements outside admission share the cap, registration can
+refuse one while admission has room.
 
-## GPU SQL UDTFs
-
-cuGraph registration is controlled by these settings:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `ALGEON_SERVER_CUGRAPH_ENABLED` | `true` | Register the `cugraph_*` SQL frontend |
-| `ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY` | `python_cugraph` | `python_cugraph` or `raw_libcugraph` |
-
-The construction-policy override is rejected when
-`ALGEON_SERVER_CUGRAPH_ENABLED` is false. A binary without the `cugraph` feature can still expose the frontend,
-but execution returns a structured `required_feature_disabled` error.
-Per-call named `construction_policy` and other graph values override these defaults; see
-[Graph Inputs and Construction](../cugraph/graph-options.mdx).
-
-Explicit cuGraph functions also accept host staging limits in the server TOML:
+## GPU SQL UDTFs {/* #gpu-sql-udtfs */}
 
 ```toml
 [cugraph]
@@ -274,27 +243,31 @@ max_input_staging_bytes = 8589934592
 max_output_staging_bytes = 2147483648
 ```
 
-Both values must be positive. Each defaults to 1 GiB when omitted. The input
-limit covers retained Arrow batches from edges and graph side inputs together;
-the output limit covers eagerly materialized Arrow results. Input buffers shared
-by slices or by different source partitions are counted once across retained
-batches. GPU-resident inputs
-bypass host input staging. These limits apply to host RAM separately from the
-query device grant, and the DataFusion memory pool may impose a lower allocation limit.
-Setting either field while `ALGEON_SERVER_CUGRAPH_ENABLED=false` fails startup.
-Embedded sessions pass `GpuIslandHostBoundaryConfig` through
-`CugraphSqlConfig.host_boundary_config`; conflicting reinstallations are rejected.
+| Setting | Default | Meaning |
+|---|---|---|
+| `ALGEON_SERVER_CUGRAPH_ENABLED` | `true` | Registers the `cugraph_*` SQL frontend. |
+| `ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY` | `python_cugraph` | `python_cugraph` or `raw_libcugraph`. |
+| `cugraph.max_input_staging_bytes` | 1 GiB | Retained Arrow batches from edges and graph side inputs, counted together. |
+| `cugraph.max_output_staging_bytes` | 1 GiB | Eagerly materialized Arrow results. |
 
-cuVS has no enable variable. The server installs cuVS SQL on every session it
-builds; the `cuvs` feature decides whether the UDTFs execute or return a
-structured `required_feature_disabled` error. See
-[cuVS execution](../cuvs/overview.mdx#execution).
+- With `ALGEON_SERVER_CUGRAPH_ENABLED=false`, the policy variable or either
+  staging field fails startup. Staging values must be positive.
+- A binary without the `cugraph` feature can expose the frontend, but
+  execution returns a structured `required_feature_disabled` error.
+- Per-call graph values, such as a named `construction_policy`, override these
+  defaults ([Graph Inputs and Construction](../cugraph/graph-options.mdx)).
+- Input buffers shared by slices or by different source partitions count once
+  across retained batches. GPU-resident inputs bypass host input staging.
+- Staging limits apply to host RAM apart from the device grant, and the
+  DataFusion memory pool may impose a lower limit.
+- Embedded sessions pass `GpuIslandHostBoundaryConfig` through
+  `CugraphSqlConfig.host_boundary_config`; conflicting reinstallations fail.
 
-## Models and forest inference
+cuVS SQL has no enable variable and is installed on every session. The `cuvs`
+feature decides whether its UDTFs execute or return
+`required_feature_disabled` ([cuVS execution](../cuvs/overview.mdx#execution)).
 
-`cuml_forest_predict` reads its model file from a server-configured models
-root. Without a `[models]` table, the UDTF is listed by
-`gpu_list_functions()` but unavailable with `model_root_unconfigured`:
+### Models and forest inference {/* #models-and-forest-inference */}
 
 ```toml
 [models]
@@ -302,101 +275,46 @@ root = "/srv/models"
 max_model_bytes = 268435456
 ```
 
-| TOML field under `[models]` | Required | Default |
-| --- | --- | --- |
-| `root` | yes, to enable `cuml_forest_predict` | unset |
-| `max_model_bytes` | no; requires `root` | 256 MiB |
+| `[models]` field | Default | Constraint |
+|---|---|---|
+| `root` | unset | Enables `cuml_forest_predict`; must be an existing directory at startup. |
+| `max_model_bytes` | 256 MiB | Positive, and only valid with `root`. |
 
-`root` must exist and be a directory at startup; a missing or non-directory
-path fails startup. The server opens that directory once at startup and
-resolves every `model` beneath the opened directory, so renaming `root` or
-replacing it (or a symlink among its ancestors) later does not redirect
-lookups; restart the server to point at a new directory. Model lookup uses
-`openat2(2)`, which requires Linux 5.6 or newer. `max_model_bytes` must be
-positive when set. There is no environment override for either field.
-Embedded sessions pass the same settings as `CumlModelStoreConfig` through
-`try_with_cuml_sql_config`.
+Without a `[models]` table, `gpu_list_functions()` lists `cuml_forest_predict` as
+unavailable with `model_root_unconfigured`. Neither field has an environment
+override; embedded sessions use `CumlModelStoreConfig` through
+`try_with_cuml_sql_config`, and [Model files](../cuml/udtfs/cuml_forest_predict.mdx#model-files)
+covers path resolution, rejections and the trust boundary.
 
-A `model` option passed to `cuml_forest_predict` is a path relative to
-`root`; absolute paths and `..` components are rejected with
-`model_path_rejected`. Relative symlinks that stay beneath `root` are
-followed; an absolute symlink, or one whose target leaves `root`, is rejected
-as `outside_root` without looking up the target. Only regular files are
-accepted (FIFOs, directories, and other special files are rejected). A file larger than
-`max_model_bytes` is rejected with `model_too_large`; a file nvForest cannot
-parse, or a multi-target model, is rejected with `model_rejected`. A lookup
-that keeps racing concurrent renames or mounts under `root` is rejected with
-`model_path_rejected` and rejection `resolution_retry_exhausted`. The
-statement reads and binds the model once at planning, and its SHA-256 digest
-appears in `EXPLAIN` output as `model=sha256:<first 12 hex>`. Over Flight
-SQL, a model file that changes on disk between `GetFlightInfo` and `DoGet`,
-or between preparing and executing a prepared statement, fails the statement
-with `model_changed`; the statement must be planned again.
+## S3 and Parquet sources {/* #s3-storage */}
 
-Every file reachable beneath `root`, including hard links and bind mounts
-placed there, is trusted as a model source, so `root` and its subdirectories
-must not be writable by untrusted users. The model file is read and parsed
-synchronously on each planning pass (`GetFlightInfo`, `DoGet`, and prepared
-statement creation), so a large model adds its read and parse time to the
-planning latency of every statement that names it.
-
-## Removed Iceberg settings
-
-The server has no Iceberg integration. Startup fails with an error that names
-the variable and says it belonged to the removed integration when any of these
-has a non-blank value:
-
-- `ALGEON_ICEBERG_CATALOG_KIND`, `ALGEON_ICEBERG_CATALOG_NAME`,
-  `ALGEON_ICEBERG_NAMESPACE`, `ALGEON_ICEBERG_TABLES`,
-  `ALGEON_ICEBERG_WAREHOUSE`, and `ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS`
-- `ALGEON_ICEBERG_GLUE_CATALOG_NAME`, `ALGEON_ICEBERG_GLUE_CATALOG_ID`,
-  `ALGEON_ICEBERG_GLUE_URI`, `ALGEON_ICEBERG_REST_URI`,
-  `ALGEON_ICEBERG_REST_PREFIX`, `ALGEON_ICEBERG_REST_TOKEN`, and
-  `ALGEON_ICEBERG_REST_CATALOG_HANDLE`
-- `ALGEON_ICEBERG_S3_ENDPOINT`, `ALGEON_ICEBERG_S3_REGION`,
-  `ALGEON_ICEBERG_S3_PATH_STYLE`, and `ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE`
-  (use [`[s3]`](#s3-storage) instead)
-- `ALGEON_ICEBERG_FOOTER_PRUNING` (use `native.lakehouse_footer_pruning`)
-- `ALGEON_LAKEHOUSE_CACHE_ROOT`, `ALGEON_LAKEHOUSE_CACHE_READ`,
-  `ALGEON_LAKEHOUSE_CACHE_POLICY`, and `ALGEON_LAKEHOUSE_CACHE_MAX_BYTES`
-
-Remove them from the deployment environment. The last group means a server
-process cannot enable the persistent lakehouse byte cache for `s3://` Parquet
-files. See [Iceberg support](./overview.mdx#iceberg-support) for the status of
-Iceberg sources.
-
-## S3 storage
-
-The `[s3]` table configures the storage every `s3://` Parquet source reads
-through. DataFusion scans, footer pruning, and native GPU reads all use it, so
-a query that falls back to DataFusion reads the same endpoint, region, and
-credentials as one that runs on the GPU:
+`[s3]` configures the storage behind every `s3://` Parquet source. DataFusion
+scans, footer pruning and native GPU reads all use it. A DataFusion fallback
+therefore reads the same endpoint, region and credentials as GPU execution.
 
 | TOML field | Environment variable | Meaning |
-| --- | --- | --- |
+|---|---|---|
 | `endpoint` | `ALGEON_SERVER_S3_ENDPOINT` | S3-compatible endpoint, such as `http://localhost:9000` |
 | `region` | `ALGEON_SERVER_S3_REGION` | Region of every bucket |
 | `path_style` | `ALGEON_SERVER_S3_PATH_STYLE` | `true` for path-style addressing (MinIO, RustFS) |
 | `unsigned` | `ALGEON_SERVER_S3_UNSIGNED` | `true` for anonymous requests |
 
-The table, or any of its variables, turns the storage on; each variable
-overrides its TOML field. Credentials come from the default AWS chain, such as
-`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, unless `unsigned` is set.
-Without the table, the server registers no `s3://` object store for
-DataFusion, and native reads use the process-wide AWS settings.
+The table or any variable enables the storage, and variables override fields.
+Credentials come from the default AWS chain (`AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`) unless `unsigned` is set. Without the table, no
+`s3://` object store is registered for DataFusion and native reads use the
+process-wide AWS settings.
 
-## Parquet source flags
+### Parquet source flags {/* #parquet-source-flags */}
 
-Native scans read local and `s3://` Parquet files. Without `[s3]`, remote
-reads go through KvikIO, which reads `AWS_DEFAULT_REGION`; the engine's own S3
-metadata reads use `AWS_REGION` first. Set both to the same region.
+Native scans read local and `s3://` Parquet. Without `[s3]`, KvikIO reads
+`AWS_DEFAULT_REGION` while engine metadata reads prefer `AWS_REGION`; set both
+to one region. `KVIKIO_COMPAT_MODE=ON|OFF|AUTO` belongs in the process
+environment before startup, outside `ServerConfig`.
+`native.lakehouse_footer_pruning = true` enables footer row-group pruning for
+`s3://` scans ([Projection and scan pruning](../design/data-path.mdx#projection-and-scan-pruning)).
 
-`KVIKIO_COMPAT_MODE=ON|OFF|AUTO` is not a `ServerConfig` field; set it in the
-process environment before startup. `native.lakehouse_footer_pruning = true`
-enables Parquet-footer row-group pruning for `s3://` scans (see
-[Projection and scan pruning](../design/data-path.mdx#projection-and-scan-pruning)).
-
-## Workspace overlay
+## Workspace overlay {/* #workspace-overlay */}
 
 A workspace overlay keeps interactive DDL local and reads through to a backing
 schema:
@@ -409,45 +327,53 @@ export ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA=<backing schema>
 export ALGEON_SERVER_WORKSPACE_BACKING_ALIASES=<table>,<table>
 ```
 
-The backing catalog and schema must be set together, and both must already be
-registered in the server session, or session construction fails with a
-configuration error. The standalone server registers no catalog beyond
-DataFusion's default catalog. The workspace catalog and schema default to
-`datafusion.public` and must differ from the backing pair. Omitting the aliases
-exposes every backing table.
+The backing catalog and schema are set together and must already be registered
+in the server session, or session construction fails with a configuration
+error. The standalone server registers no catalog beyond DataFusion's default.
+The workspace pair defaults to `datafusion.public` and must differ from the
+backing pair. Without aliases, every backing table is exposed.
 
-## DataFusion session configuration
+## DataFusion session configuration {/* #datafusion-session-configuration */}
 
-The server builds DataFusion's `SessionConfig` with `SessionConfig::from_env()`.
-Common keys include `DATAFUSION_EXECUTION_BATCH_SIZE`,
-`DATAFUSION_EXECUTION_TARGET_PARTITIONS`,
-`DATAFUSION_CATALOG_DEFAULT_CATALOG`, and
-`DATAFUSION_CATALOG_DEFAULT_SCHEMA`.
+The server reads `SessionConfig::from_env()`, with keys such as
+`DATAFUSION_EXECUTION_BATCH_SIZE`, `DATAFUSION_EXECUTION_TARGET_PARTITIONS`,
+`DATAFUSION_CATALOG_DEFAULT_CATALOG` and `DATAFUSION_CATALOG_DEFAULT_SCHEMA`.
+In `native_preferred` and `native_required`, the native optimizer overrides
+one DataFusion optimizer default, described in
+[Uncorrelated scalar subqueries](../design/native-lowering.mdx#uncorrelated-scalar-subqueries).
 
-### Uncorrelated scalar subqueries
+Native execution policy lives only in `[native]`, the `ALGEON_SERVER_NATIVE_*`
+variables or the embedded `AlgeonGpuBackendBuilder`. Algeon registers no
+session configuration extensions, sessions carry standard DataFusion
+configuration only, and `SET algeon_datafusion.*` fails with an unrecognized
+configuration key error.
 
-DataFusion 55 plans an uncorrelated scalar subquery as a `ScalarSubqueryExec`
-by default (`datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery`
-is `true`). Native lowering has no counterpart for that operator. When the
-execution mode lowers relational SQL (`native_preferred` or
-`native_required`), installing the native optimizer sets the option to
-`false`, and DataFusion rewrites each such subquery into a join with its
-one-row aggregate. Installation covers the server session and embedded
-sessions built with `AlgeonGpuBackend::install_on` or `with_algeon_native`.
-The server installs the optimizer after reading `SessionConfig::from_env()`.
-In those modes, `DATAFUSION_OPTIMIZER_ENABLE_PHYSICAL_UNCORRELATED_SCALAR_SUBQUERY`
-has no effect. `functions_only` keeps DataFusion's default.
+## Removed Iceberg settings {/* #removed-iceberg-settings */}
 
-The join form lowers natively for a scalar aggregate in a projection, an
-arithmetic expression, a `HAVING` clause or a filter, and for several
-subqueries in one query. The subquery may aggregate the scan the outer query
-reads with a computed argument, as `x > (SELECT AVG(x) FROM t)` does by
-averaging `CAST(x AS DOUBLE)`. With `datafusion.execution.collect_statistics` at its
-default `true`, DataFusion answers an unfiltered `MIN`, `MAX` or `COUNT` over a
-Parquet table from file statistics as literals projected over a
-`PlaceholderRowExec`. Native lowering evaluates those literals over a one-row
-source.
+Startup fails when any variable below has a non-blank value; the error names
+the variable and says it belonged to the removed Iceberg integration. Remove
+them from the deployment environment.
 
-Native execution policy is owned solely by the server configuration (`[native]` TOML options and `ALGEON_SERVER_NATIVE_*` environment variables) or the embedded `AlgeonGpuBackendBuilder`.
-Algeon registers no session configuration extensions; DataFusion sessions carry standard DataFusion configuration only.
-SQL statements attempting `SET algeon_datafusion.*` fail with an unrecognized configuration key error.
+<details>
+<summary>Removed variables</summary>
+
+- `ALGEON_ICEBERG_CATALOG_KIND`, `ALGEON_ICEBERG_CATALOG_NAME`,
+  `ALGEON_ICEBERG_NAMESPACE`, `ALGEON_ICEBERG_TABLES`,
+  `ALGEON_ICEBERG_WAREHOUSE`, `ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS`
+- `ALGEON_ICEBERG_GLUE_CATALOG_NAME`, `ALGEON_ICEBERG_GLUE_CATALOG_ID`,
+  `ALGEON_ICEBERG_GLUE_URI`, `ALGEON_ICEBERG_REST_URI`,
+  `ALGEON_ICEBERG_REST_PREFIX`, `ALGEON_ICEBERG_REST_TOKEN`,
+  `ALGEON_ICEBERG_REST_CATALOG_HANDLE`
+- `ALGEON_ICEBERG_S3_ENDPOINT`, `ALGEON_ICEBERG_S3_REGION`,
+  `ALGEON_ICEBERG_S3_PATH_STYLE`, `ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE`
+- `ALGEON_ICEBERG_FOOTER_PRUNING`
+- `ALGEON_LAKEHOUSE_CACHE_ROOT`, `ALGEON_LAKEHOUSE_CACHE_READ`,
+  `ALGEON_LAKEHOUSE_CACHE_POLICY`, `ALGEON_LAKEHOUSE_CACHE_MAX_BYTES`
+
+</details>
+
+[`[s3]`](#s3-storage) replaces the Iceberg S3 group and
+`native.lakehouse_footer_pruning` replaces footer pruning. The cache group has
+no replacement, so a server process cannot enable the persistent lakehouse byte
+cache for `s3://` Parquet. [Iceberg support](./overview.mdx#iceberg-support)
+gives the status of Iceberg sources.
