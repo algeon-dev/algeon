@@ -1,9 +1,9 @@
 use std::{error::Error as StdError, fmt, net::SocketAddr, sync::Arc};
 
 use datafusion::common::DataFusionError;
+use query_planning::error::QueryError;
 #[cfg(test)]
 use query_planning::error::QueryErrorCode;
-use query_planning::error::{QueryError, bytes_with_gib};
 use tonic::{
     Status,
     metadata::{MetadataMap, MetadataValue},
@@ -12,8 +12,9 @@ use tonic::{
 
 use crate::server::{
     adapter_error::{
-        ClientDetail, DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorLogDiagnostics, ErrorSourceDiagnostics,
-        ErrorStatus, Facts, FailedStatement, classify, datafusion_error_human_message,
+        DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorLogDiagnostics, ErrorSourceDiagnostics, ErrorStatus,
+        Facts, FailedStatement, classify,
+        client::{client_actionable_kind, client_datafusion_error_message, client_message},
     },
     observability::CapturedError,
 };
@@ -51,20 +52,6 @@ pub const OMITTED_FACTS_METADATA_KEY: &str = "x-algeon-omitted-facts";
 /// the status message and query stats. The fact-metadata key set is fixed, so
 /// this per-value bound is also a fixed total bound by construction.
 const MAX_CLIENT_FACT_METADATA_VALUE_BYTES: usize = 256;
-
-/// Status message of the failure kinds whose raw text stays server-side. The
-/// query id travels in the `x-algeon-query-id` metadata of the same status.
-pub(super) const MASKED_INTERNAL_ERROR_MESSAGE: &str = "internal server error while processing the request; the full diagnostic is available through the GetQueryStats action for the query id in the x-algeon-query-id metadata";
-
-/// Maximum bytes for a client status message derived from foreign
-/// DataFusion text. Bounds what one extreme upstream `Display` can emit onto
-/// the wire; the in-process error is never rewritten.
-const MAX_CLIENT_DATAFUSION_MESSAGE_BYTES: usize = 2_048;
-
-/// Maximum depth for server-side DataFusion message traversal. Mirrors the
-/// adapter chain budget used by `classify`: extraction always terminates,
-/// returning the deepest node reached when the budget is exhausted.
-const MAX_SERVER_DATAFUSION_TRAVERSAL_DEPTH: usize = 32;
 
 pub type Result<T> = std::result::Result<T, ServerError>;
 
@@ -378,8 +365,9 @@ pub(super) fn datafusion_error_to_captured_error(
 pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
     // Caller schema identifiers reach the wire status only: the logged client
     // message is the text without them, like `error_message`.
-    let log_message = client_status_message(error);
-    let message = client_schema_detail_message(error, &log_message).unwrap_or_else(|| log_message.clone());
+    let client = client_message(error);
+    let message = client.status_message();
+    let log_message = client.logged;
     let diagnostics = ErrorLogDiagnostics::from_error(error);
     let log_messages = adapter_status_log_messages(error.message(), log_message.as_str(), &diagnostics);
     // The logged `error_message` is owner-authored adapter text: foreign
@@ -492,167 +480,6 @@ pub(super) fn status_source_diagnostics(status: &Status) -> (Option<String>, Opt
     }
     let diagnostics = ErrorSourceDiagnostics::from_error(source);
     (diagnostics.chain().map(str::to_string), diagnostics.root_cause().map(str::to_string))
-}
-
-fn client_status_message(error: &Error) -> String {
-    match error.code() {
-        // The native layer that knows the algorithm names the parameters to change in `remedy`.
-        ErrorCode::AlgorithmDidNotConverge => format!(
-            "{} did not converge after {} iterations (max_iterations={}, epsilon={}); {} and retry",
-            error.fact_value("algorithm").unwrap_or("native algorithm"),
-            error.fact_value("iterations").unwrap_or("unknown"),
-            error.fact_value("max_iterations").unwrap_or("unknown"),
-            error.fact_value("epsilon").unwrap_or("unknown"),
-            error.fact_value("remedy").unwrap_or("change the convergence parameters"),
-        ),
-        ErrorCode::SqlParse | ErrorCode::FieldNotFound | ErrorCode::ObjectNotFound | ErrorCode::DataFusionPlanning => {
-            error.message().to_string()
-        },
-        ErrorCode::SourceAccessDenied => "source object storage access denied while processing the request".to_string(),
-        ErrorCode::SourceUnauthenticated => {
-            "source object storage credentials are missing or invalid while processing the request".to_string()
-        },
-        ErrorCode::SourceObjectNotFound => {
-            "source object storage object was not found while processing the request".to_string()
-        },
-        ErrorCode::SourceTemporaryFailure => {
-            "temporary source object storage failure while processing the request; retry later".to_string()
-        },
-        ErrorCode::ServiceOverloaded => "service overloaded; retry later".to_string(),
-        // Resource messages never promise that an unchanged retry will
-        // succeed: only confirmed admission overload (above) describes queue
-        // pressure. Cap, shape, and physical failures name the change the
-        // caller must make; execution failures point at the sealed attempt
-        // report instead of synthesizing retry permission from the
-        // `Temporary` status or the gRPC `RESOURCE_EXHAUSTED` code.
-        ErrorCode::QueryMemoryLimitExceeded => format!(
-            "query memory cap exceeded{}. Reduce what the failing operation holds (filter or project earlier, split the query) or raise the query memory cap; resubmitting the request unchanged fails again",
-            memory_failure_detail(error).unwrap_or_else(|| format!(": {}", error.message()))
-        ),
-        ErrorCode::QueryBudgetUnavailable => format!(
-            "query budget cannot fit on any eligible device: {}. Request a smaller query cap or wait for device capacity to free; do not retry the same request unchanged",
-            error.message()
-        ),
-        ErrorCode::SizeOverflow => format!(
-            "result size computation overflowed the platform range: {}. Change the request shape to produce a smaller result; retrying the same request unchanged cannot succeed",
-            error.message()
-        ),
-        ErrorCode::HostMaterializationLimitExceeded => format!(
-            "one result row exceeds the configured host materialization limit: {}. Narrow the request or raise the limit; retrying the same request unchanged cannot succeed",
-            error.message()
-        ),
-        ErrorCode::HostStagingLimitExceeded => format!(
-            "host staging exceeded its configured byte ceiling: {}. Narrow the request or raise the ceiling; retrying the same request unchanged cannot succeed",
-            error.message()
-        ),
-        ErrorCode::FlightFrameTooLarge => format!(
-            "one row exceeds the Flight message limit: {}. Project a smaller value; retrying the same request unchanged cannot succeed",
-            error.message()
-        ),
-        ErrorCode::HostMemoryExhausted => format!(
-            "host memory pool exhausted while processing the request: {}. Reduce query resource usage; retrying the same request unchanged may fail again",
-            error.message()
-        ),
-        ErrorCode::DeviceOutOfMemory | ErrorCode::DeviceAllocationFailed => format!(
-            "device memory exhausted{}. Reduce what the failing operation holds (filter or project earlier, split the query) and consult the sealed attempt report for retry guidance; resubmitting the request unchanged may fail again",
-            memory_failure_detail(error)
-                .unwrap_or_else(|| format!(" while processing the request: {}", error.message()))
-        ),
-        ErrorCode::MemoryReservationFailed => format!(
-            "device memory exhausted while processing the request: {}. Reduce query resource usage and consult the sealed attempt report for retry guidance; retrying the same request unchanged may fail again",
-            error.message()
-        ),
-        _ if error.kind() == ErrorKind::ResourceExhausted => format!(
-            "resource exhausted while processing the request: {}. Change the request to use fewer resources; do not retry the same request unchanged",
-            error.message()
-        ),
-        _ if matches!(
-            error.kind(),
-            ErrorKind::Execution | ErrorKind::DependencyFailure | ErrorKind::InvariantViolation | ErrorKind::Internal
-        ) =>
-        {
-            MASKED_INTERNAL_ERROR_MESSAGE.to_string()
-        },
-        _ => error.message().to_string(),
-    }
-}
-
-/// Names the native operation and the allocator facts of a memory failure:
-/// the requested bytes, the bytes already in use, and the query grant. The
-/// native layers copy these numbers and operation identifiers onto the error;
-/// no foreign text enters the message. Returns `None` when the error carries
-/// none of them.
-fn memory_failure_detail(error: &Error) -> Option<String> {
-    let bytes = |key: &str| error.fact_value(key).and_then(|value| value.parse::<u64>().ok());
-    let operation = error.fact_value("native_operation").or_else(|| error.fact_value("budget_operation"));
-    let clauses = [
-        bytes("requested_allocation_bytes").map(|value| format!("it requested {}", bytes_with_gib(value))),
-        bytes("budget_current_bytes").map(|value| format!("{} were already in use", bytes_with_gib(value))),
-        bytes("budget_bytes").map(|value| format!("the query grant is {}", bytes_with_gib(value))),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    let location = operation.map(|operation| format!(" in {operation}"));
-    if clauses.is_empty() && location.is_none() {
-        return None;
-    }
-    let figures = match clauses.as_slice() {
-        [] => String::new(),
-        [only] => format!(": {only}"),
-        [first, second] => format!(": {first} and {second}"),
-        [init @ .., last] => format!(": {}, and {last}", init.join(", ")),
-    };
-    Some(format!("{}{figures}", location.unwrap_or_default()))
-}
-
-/// Wire status text for rejections that name the caller's own schema
-/// identifiers.
-///
-/// Owners keep column and field names and their Arrow types out of
-/// `Error::message()`, which the boundary log records verbatim, and attach
-/// them as a [`ClientDetail`]. The text is composed here, so the identifiers
-/// reach the query caller and never the log. Kinds whose client text is
-/// generic keep it generic.
-fn client_schema_detail_message(error: &Error, client_message: &str) -> Option<String> {
-    let detail = error.client_detail()?;
-    if !client_actionable_kind(error) {
-        return None;
-    }
-    Some(match detail {
-        ClientDetail::UnsupportedColumn { name, data_type, role } => {
-            format!("GPU execution does not support {role} column `{name}` with Arrow type `{data_type}`")
-        },
-        ClientDetail::RelationField { field, data_type } => {
-            format!("{client_message} (field '{field}' has Arrow type `{data_type}`)")
-        },
-        ClientDetail::Field { name } => format!("{client_message} (field '{name}')"),
-        ClientDetail::Column { name } => format!("{client_message} (column '{name}')"),
-        ClientDetail::OrderingKey { name } => format!("{client_message} (ORDER BY key '{name}')"),
-        ClientDetail::BlockingSubject { text } => {
-            format!("GPU execution does not support {text}; EXPLAIN GPU lists every blocking candidate")
-        },
-    })
-}
-
-/// Whether the error's kind is a client-actionable validation kind, whose
-/// caller detail and raw native diagnostic text (the `native_message`
-/// trailer) may cross the Flight boundary.
-///
-/// `native_message` remains trusted in-process diagnosis, but its key being
-/// allowlisted must not by itself publish raw text: internal, execution,
-/// dependency, invariant, and resource failures stay generic on the wire.
-fn client_actionable_kind(error: &Error) -> bool {
-    matches!(
-        error.kind(),
-        ErrorKind::Cancelled
-            | ErrorKind::NotFound
-            | ErrorKind::PermissionDenied
-            | ErrorKind::Unauthenticated
-            | ErrorKind::Planning
-            | ErrorKind::InvalidInput
-            | ErrorKind::Unsupported
-    )
 }
 
 /// Client wire contract for Flight error metadata.
@@ -790,43 +617,6 @@ fn adapter_error_from_datafusion_error(
     Error::new(code, operation, message).with_log_safe_fact("datafusion_error", datafusion_error).with_source(error)
 }
 
-fn client_datafusion_error_message(error: &DataFusionError) -> String {
-    let effective = effective_datafusion_error(error);
-    let human_message = datafusion_error_human_message(effective);
-    let message = match effective {
-        DataFusionError::SQL(_, _) => format!("invalid SQL statement: {human_message}"),
-        _ => human_message,
-    };
-    // Foreign upstream text enters the client message here; cap what one
-    // extreme `Display` can emit onto the wire. The in-process error keeps its
-    // full text for trusted diagnosis.
-    truncate_metadata_value(message.as_str(), MAX_CLIENT_DATAFUSION_MESSAGE_BYTES).0
-}
-
-/// Resolves the effective DataFusion error following the same wrapper
-/// precedence as [`classify`]: `Context`/`Diagnostic` unwrap, `Collection`
-/// follows the first branch, `Shared` unwraps.
-///
-/// Traversal is iterative with an explicit depth budget so an extreme but
-/// supported wrapper tree always terminates with a defined error. When the
-/// budget is exhausted the deepest node reached is returned; callers must not
-/// treat the result as proof that deeper layers hold no other variant.
-fn effective_datafusion_error(error: &DataFusionError) -> &DataFusionError {
-    let mut current = error;
-    for _ in 0..MAX_SERVER_DATAFUSION_TRAVERSAL_DEPTH {
-        match current {
-            DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => current = source.as_ref(),
-            DataFusionError::Collection(errors) => match errors.first() {
-                Some(first) => current = first,
-                None => break,
-            },
-            DataFusionError::Shared(source) => current = source.as_ref(),
-            _ => break,
-        }
-    }
-    current
-}
-
 fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
     match error {
         DataFusionError::ArrowError(_, _) => "arrow",
@@ -853,6 +643,7 @@ fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         error::Error as StdError,
         fmt,
         io::Write,
@@ -884,6 +675,10 @@ mod tests {
     use super::*;
     use crate::{
         capability::CapabilityReason,
+        error::{
+            ClientDetail,
+            client::{MASKED_INTERNAL_ERROR_MESSAGE, MAX_CLIENT_DATAFUSION_MESSAGE_BYTES},
+        },
         gpu_functions::dense_relation_errors::DenseRelationErrorContext,
         native::{ParquetReadStrategyConfig, lower_physical_plan_to_native},
         planner::{FinalPlanDisposition, native},
@@ -1547,13 +1342,13 @@ mod tests {
     }
 
     #[test]
-    fn query_memory_cap_message_names_the_operation_request_grant_and_usage() {
+    fn query_memory_cap_message_names_the_operation_request_peak_and_grant() {
         let status = adapter_error_to_status(&native_memory_failure(QueryErrorCode::QueryMemoryLimitExceeded));
 
         assert_eq!(status.code(), Code::ResourceExhausted);
         assert_eq!(
             status.message(),
-            "query memory cap exceeded in query_engine.exec.sort: it requested 4294967296 bytes (4.00 GiB), 2147483648 bytes (2.00 GiB) were already in use, and the query grant is 4294967296 bytes (4.00 GiB). Reduce what the failing operation holds (filter or project earlier, split the query) or raise the query memory cap; resubmitting the request unchanged fails again"
+            "query memory cap exceeded in query_engine.exec.sort: it requested 4294967296 bytes (4.00 GiB), the allocation peak was 3221225472 bytes (3.00 GiB), and the query grant is 4294967296 bytes (4.00 GiB). Reduce what the failing operation holds (filter or project earlier, split the query) or raise the query memory cap; resubmitting the request unchanged fails again"
         );
         assert_error_metadata(&status, "query_memory_limit_exceeded", "resource_exhausted", "permanent");
         assert_metadata_value(&status, NATIVE_OPERATION_METADATA_KEY, "query_engine.exec.sort");
@@ -1586,7 +1381,7 @@ mod tests {
             assert_eq!(status.code(), Code::ResourceExhausted);
             assert_eq!(
                 status.message(),
-                "device memory exhausted in query_engine.exec.sort: it requested 4294967296 bytes (4.00 GiB), 2147483648 bytes (2.00 GiB) were already in use, and the query grant is 4294967296 bytes (4.00 GiB). Reduce what the failing operation holds (filter or project earlier, split the query) and consult the sealed attempt report for retry guidance; resubmitting the request unchanged may fail again",
+                "device memory exhausted in query_engine.exec.sort: it requested 4294967296 bytes (4.00 GiB), the allocation peak was 3221225472 bytes (3.00 GiB), and the query grant is 4294967296 bytes (4.00 GiB). Reduce what the failing operation holds (filter or project earlier, split the query) and consult the sealed attempt report for retry guidance; resubmitting the request unchanged may fail again",
                 "{code:?}"
             );
             assert_metadata_value(&status, REQUESTED_ALLOCATION_BYTES_METADATA_KEY, "4294967296");
@@ -1645,6 +1440,33 @@ mod tests {
                 "{key} must not cross the Flight boundary for internal errors"
             );
         }
+    }
+
+    #[test]
+    fn query_stats_retain_the_byte_counts_of_a_native_memory_failure_and_nothing_else() {
+        let captured =
+            CapturedError::from_adapter_error(&native_memory_failure(QueryErrorCode::QueryMemoryLimitExceeded));
+        let facts = captured.facts.iter().cloned().collect::<BTreeMap<_, _>>();
+
+        for (key, value) in [
+            ("requested_allocation_bytes", "4294967296"),
+            ("budget_bytes", "4294967296"),
+            ("budget_peak_bytes", "3221225472"),
+            ("budget_current_bytes", "2147483648"),
+        ] {
+            assert_eq!(facts.get(key).map(String::as_str), Some(value), "{key} in {facts:?}");
+        }
+        assert!(!facts.contains_key("literal"), "{facts:?}");
+        assert!(!facts.contains_key("budget_boundary"), "{facts:?}");
+
+        let not_a_count = QueryError::new(QueryErrorCode::QueryMemoryLimitExceeded, "query_engine.exec.sort", "native")
+            .with_fact("requested_allocation_bytes", "12 secret-text");
+        let captured = CapturedError::from_adapter_error(&Error::from_native(
+            "algeon_datafusion.native_exec.execute",
+            "Algeon native query execution failed",
+            not_a_count,
+        ));
+        assert!(captured.facts.iter().all(|(key, _)| key != "requested_allocation_bytes"), "{:?}", captured.facts);
     }
 
     #[test]

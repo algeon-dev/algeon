@@ -50,9 +50,24 @@ impl QueryGpuPlanningOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuPlanningRejection {
     pub phase: QueryGpuRejectionPhase,
+    /// The error code that executing the statement returns, or the stable
+    /// code of a rejection only the validator makes.
     pub reason_code: String,
     pub source_error_status: Option<String>,
+    /// The status message that executing the statement returns to its client,
+    /// without the closing pointer to `EXPLAIN GPU` that a blocking plan
+    /// element adds to it. A failure whose raw text the server withholds has
+    /// the same static message here.
     pub detail: String,
+    /// The source-chain text of the failure, for callers in the planning
+    /// process, such as a developer tool that plans its own session.
+    ///
+    /// For a failure whose raw text the server withholds, this is that text:
+    /// foreign error messages, local paths and caller identifiers. A
+    /// rejection the validator makes itself repeats `detail`. No JSON, Arrow
+    /// or Flight projection of the coverage carries this field, and it must
+    /// not cross a trust boundary that `detail` may cross.
+    pub trusted_diagnostic: String,
 }
 
 /// Structured answer for "will this query's planned path avoid DataFusion CPU execution?"
@@ -122,6 +137,7 @@ impl QueryGpuCoverage {
             reason_code: rejection.reason_code,
             source_error_status: rejection.source_error_status.map(ToString::to_string),
             detail: rejection.detail,
+            trusted_diagnostic: rejection.trusted_diagnostic,
         });
         Self {
             planning_outcome,

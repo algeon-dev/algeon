@@ -1,6 +1,9 @@
 use std::{any::Any, sync::Arc};
 
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::{
+    array::AsArray,
+    datatypes::{DataType, Field, Schema},
+};
 use datafusion::{
     common::{
         DataFusionError, Result as DataFusionResult,
@@ -23,10 +26,10 @@ use query_planning::{
     source::{LocalParquetSource, SourceNode},
 };
 
-use super::{physical::candidate_outcomes_from_report, *};
+use super::{physical::candidate_outcomes_from_report, sql::coverage_batch, *};
 use crate::{
     capability::CapabilityReason,
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, client::MASKED_INTERNAL_ERROR_MESSAGE},
     final_plan_observation::observe_final_plan,
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
     native_report::FinalPlanDisposition,
@@ -410,7 +413,15 @@ async fn validate_query_preserves_the_installed_final_plan_policy() {
             .iter()
             .any(|outcome| outcome.reason_code.as_deref() == Some("unsupported_expression"))
     );
-    assert!(rejection.detail.contains("final physical plan"), "coverage={coverage:?}");
+    let blocked = coverage
+        .candidate_outcomes
+        .iter()
+        .find(|outcome| outcome.selection == CandidateOutcomeKind::NotSupported)
+        .and_then(|outcome| outcome.blocking.as_ref())
+        .expect("the first not-supported candidate names its blocking subject");
+    // The execution message ends with a pointer to this report, so the report
+    // omits it.
+    assert_eq!(rejection.detail, format!("GPU execution does not support {}", blocked.text()), "coverage={coverage:?}");
     assert_eq!(coverage.validated_under.final_plan_requirements, ["no_datafusion_cpu"]);
 }
 
@@ -568,6 +579,68 @@ fn coverage_preflight_ignores_retired_rejection_facts() {
             "retired fact `{retired_key}` must not change coverage phase"
         );
     }
+}
+
+/// A rejection shows what the Flight status shows for the same failure: the
+/// code `classify` assigns, and the static message for failures whose raw text
+/// the server withholds.
+#[tokio::test]
+async fn rejection_matches_the_code_and_masking_of_the_flight_status() {
+    let foreign = DataFusionError::Execution("reader failed on /private/customer.parquet".to_string());
+    let rejection = QueryGpuRejection::from_datafusion_error(QueryGpuRejectionPhase::PhysicalPlanning, &foreign);
+    assert_eq!(rejection.reason_code, ErrorCode::Internal.as_str());
+    assert_eq!(rejection.detail, MASKED_INTERNAL_ERROR_MESSAGE);
+
+    let typed = DataFusionError::External(Box::new(Error::new(
+        ErrorCode::Internal,
+        "algeon_datafusion.test",
+        "invariant broke at /private/customer.parquet",
+    )));
+    let rejection = QueryGpuRejection::from_datafusion_error(QueryGpuRejectionPhase::PhysicalPlanning, &typed);
+    assert_eq!(rejection.reason_code, ErrorCode::Internal.as_str());
+    assert_eq!(rejection.detail, MASKED_INTERNAL_ERROR_MESSAGE);
+
+    let ctx = validation_context(bounded_optimizer_config());
+    let coverage = validate_query(&ctx, "SELEC 1").await.unwrap();
+    let rejection = coverage.rejection().expect("a syntax error is a rejection");
+    assert_eq!(rejection.phase, QueryGpuRejectionPhase::Parsing);
+    assert_eq!(rejection.reason_code, ErrorCode::SqlParse.as_str());
+    assert!(rejection.detail.starts_with("invalid SQL statement: "), "{}", rejection.detail);
+}
+
+/// A failure whose raw text the server withholds keeps that text on the
+/// rejection for in-process callers. No serialized projection carries it.
+#[tokio::test]
+async fn masked_rejection_keeps_its_raw_text_in_process_only() {
+    const RAW_PATH: &str = "/private/customer.parquet";
+    let foreign = DataFusionError::Execution(format!("reader failed on {RAW_PATH}"));
+    let typed = DataFusionError::External(Box::new(Error::new(
+        ErrorCode::Internal,
+        "algeon_datafusion.test",
+        format!("invariant broke at {RAW_PATH}"),
+    )));
+
+    for error in [foreign, typed] {
+        let rejection = QueryGpuRejection::from_datafusion_error(QueryGpuRejectionPhase::PhysicalPlanning, &error);
+        assert_eq!(rejection.detail, MASKED_INTERNAL_ERROR_MESSAGE);
+        assert!(rejection.trusted_diagnostic.contains(RAW_PATH), "{}", rejection.trusted_diagnostic);
+
+        let coverage = QueryGpuCoverage::rejected(validated_under_for_tests(), rejection);
+        let rejection = coverage.rejection().expect("a rejected coverage carries its rejection");
+        assert_eq!(rejection.detail, MASKED_INTERNAL_ERROR_MESSAGE);
+        assert!(rejection.trusted_diagnostic.contains(RAW_PATH), "{}", rejection.trusted_diagnostic);
+
+        assert!(!coverage.to_json().to_string().contains(RAW_PATH));
+        let batch = coverage_batch(&coverage, ExplainGpuOutputMode::Rows, None).unwrap();
+        for column in batch.columns().iter().filter_map(|column| column.as_string_opt::<i32>()) {
+            assert!(column.iter().flatten().all(|value| !value.contains(RAW_PATH)), "{column:?}");
+        }
+    }
+
+    let ctx = validation_context(bounded_optimizer_config());
+    let empty = validate_query(&ctx, "").await.unwrap();
+    let rejection = empty.rejection().expect("empty SQL is a rejection");
+    assert_eq!(rejection.trusted_diagnostic, rejection.detail);
 }
 
 #[test]

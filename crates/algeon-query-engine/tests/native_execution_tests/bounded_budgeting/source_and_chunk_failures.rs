@@ -48,6 +48,107 @@ fn bounded_native_query_enforces_the_query_memory_cap() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// Runs a LEAD window over a GPU-resident input under a query cap of
+/// `grant_bytes` (the suite default when `None`). Returns the execution result
+/// and the attempt allocation domain's current bytes before the run and peak
+/// bytes after it.
+fn run_resident_lead_window(grant_bytes: Option<u64>) -> (QueryEngineResult<QueryExecutionResult>, u64, u64) {
+    const ROWS: i32 = 1_000_000;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("ord", DataType::Int32, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from_iter_values((0..ROWS).map(|row| row % 1000))),
+            Arc::new(Int32Array::from_iter_values((0..ROWS).rev())),
+            Arc::new(Int64Array::from_iter_values((0..ROWS).map(i64::from))),
+        ],
+    )
+    .unwrap();
+    let mut builder = QueryPlanBuilder::new();
+    let input =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("window_input", Arc::clone(&schema))));
+    let window = builder
+        .add_window(
+            input,
+            WindowSpec::new(
+                vec![Expr::column("grp")],
+                vec![SortExpr::new(Expr::column("ord"), false, false)],
+                vec![WindowFunction::lead(
+                    Expr::column("value"),
+                    1,
+                    None,
+                    Field::new("next_value", DataType::Int64, true),
+                )],
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(window).unwrap();
+
+    let admitted = backend_context_with_grant(grant_bytes).admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "window_input".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+            schema,
+        )
+        .unwrap(),
+    );
+    let input_bytes = admitted.attempt_allocation_domain_usage().unwrap().unwrap().current_bytes;
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs);
+    let peak_bytes = admitted.attempt_allocation_domain_usage().unwrap().unwrap().peak_bytes;
+    admitted.finish();
+    (result, input_bytes, peak_bytes)
+}
+
+#[test]
+fn allocation_failure_outside_a_budget_scope_reports_the_attempt_domain_counters() {
+    let (unbounded, input_bytes, peak_bytes) = run_resident_lead_window(None);
+    let unbounded = unbounded.expect("the window fits the suite's default query cap");
+    assert!(peak_bytes > input_bytes, "the window must allocate beyond its resident input");
+    assert_eq!(
+        unbounded.metrics().allocator_high_water_bytes,
+        Some(peak_bytes),
+        "the plan's final metrics carry the attempt domain's peak"
+    );
+    // A cap between the input and the window's own peak fails inside the window.
+    let grant = input_bytes + (peak_bytes - input_bytes) / 2;
+
+    let (bounded, _, _) = run_resident_lead_window(Some(grant));
+    let Err(error) = bounded else {
+        panic!("the window cannot fit beside its input under a {grant} byte cap");
+    };
+
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
+    assert!(
+        error.operation().starts_with("query_engine.window."),
+        "the failure must come from the window operator, which runs without a budget token: {}",
+        error.operation()
+    );
+    let usage = error
+        .context()
+        .memory
+        .as_ref()
+        .and_then(|memory| memory.usage)
+        .expect("a failure outside every budget scope carries the attempt domain's counters");
+    assert_eq!(usage.limit_bytes, grant);
+    let requested: u64 = error
+        .fact_value("requested_allocation_bytes")
+        .and_then(|value| value.parse().ok())
+        .expect("the allocator reports the failed request");
+    assert!(
+        usage.peak_bytes >= input_bytes && usage.peak_bytes <= grant && usage.peak_bytes + requested > grant,
+        "peak {} and request {requested} must explain a failure against the {grant} byte grant",
+        usage.peak_bytes
+    );
+}
+
 #[test]
 fn bounded_native_query_uses_exact_source_owner_instead_of_spurious_chunk_retries() {
     let dir = unique_temp_dir("query-engine-bounded-chunk-retry-exhausted");

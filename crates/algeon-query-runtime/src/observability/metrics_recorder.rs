@@ -230,6 +230,11 @@ impl MetricsRecorder {
         self.apply(|metrics| metrics.record_device_memory_observation(bytes));
     }
 
+    /// Records the allocation high-water mark of the attempt's allocation domain.
+    pub fn record_allocator_high_water_bytes(&self, bytes: u64) {
+        self.apply(|metrics| metrics.record_allocator_high_water_bytes(bytes));
+    }
+
     /// Records one operator occurrence.
     pub fn record_operator_metrics(&self, row: OperatorMetrics) {
         self.apply(|metrics| metrics.record_operator_metrics(row));

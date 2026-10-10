@@ -152,6 +152,7 @@ pub fn coverage_batch(
                 let detail = serde_json::json!({
                     "planning_outcome": "rejected",
                     "reason_code": rejection.reason_code,
+                    "detail": rejection.detail,
                     "confidence": "plan_time_only",
                     "planning_did_io": coverage.planning_did_io,
                     "runtime_caveat_count": coverage.runtime_caveats.len(),

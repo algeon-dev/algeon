@@ -66,7 +66,7 @@ the same Arrow schema. When planning produces no executable plan, the summary
 | `reason_code`, `unsupported_category` | Stable candidate or terminal-rejection reason and its triage category. |
 | `remedy_code`, `remedy_kind`, `remedy` | Stable actionable advice for a non-selected candidate. The kinds are `user_action`, `config_action`, `engine_gap`, and `cpu_preferred`. |
 | `blocking` | One line naming what blocked a `not_supported` candidate, such as ``cast from Int64 to Int32 in `CAST(buys AS INT)` ``; null when the producing site could not name it. |
-| `detail_json` | Summary metadata or candidate detail, its structured `blocking` subject, and cost evidence. |
+| `detail_json` | Summary metadata or candidate detail, its structured `blocking` subject, and cost evidence. A rejected summary adds `detail`, the rejection text. |
 | `coverage_json` | The complete structured result on the summary row; null on candidate rows. |
 
 Validation accepts exactly one query statement. Empty input, multiple
@@ -118,14 +118,49 @@ and not-supported candidates while the completed plan stays mixed.
 
 `rejected` is not a final disposition: it is the planning outcome when no
 executable plan exists, projected as `gpu_path=rejected` with null
-fragment/boundary cells. It carries the phase, stable `reason_code`, and safe
-detail in `coverage_json`. Terminal source-resolution failures, an unsupported
+fragment/boundary cells. It carries the phase, `reason_code`, and `detail` in
+`coverage_json` and repeats the code and text in the summary row
+([Rejected statements](#rejected-statements)). Terminal source-resolution failures, an unsupported
 required GPU island, and a failed final-plan requirement are planning errors.
 By contrast, an ordinary relational capability miss is not an error: the
 unsupported operator stays on DataFusion, and when DataFusion CPU execution is
 allowed each supported subtree below it runs as a native fragment if its
 DataFusion parent keeps its input contracts. The final disposition is `mixed`
 when a fragment is kept and `datafusion` otherwise.
+
+## Rejected statements
+
+A statement that fails parsing, logical planning, physical planning, or a
+final-plan requirement returns one `rejected` summary row. Candidate rows follow
+only when native planning recorded candidates before it failed. `reason_code`
+and `detail` are the code and message that executing the statement returns,
+except that `detail` omits the pointer to `EXPLAIN GPU` described below:
+
+~~~json
+{"planning_outcome":"rejected","reason_code":"invalid_request","detail":"cuML training relation requires a 'label' column","confidence":"plan_time_only","planning_did_io":false,"runtime_caveat_count":0}
+~~~
+
+A failure with an Algeon identity reports its `x-algeon-error-code` as
+`reason_code`. A DataFusion error without one is classified as the Flight SQL
+boundary classifies it, for example `sql_parse` or `field_not_found`. `detail` is
+the status message of [that boundary](./handling-errors.mdx#rejections-in-explain-gpu):
+it names the caller's field or column where the error does, and it is the static
+internal-failure message for a failure whose raw text the server withholds, so a
+masked error stays masked in the report.
+
+When the failure names a blocking plan element, the status message ends with
+`; EXPLAIN GPU lists every blocking candidate`. `detail` ends before that
+clause, since the report is where the candidates are listed. Under
+`native_required`, `SELECT APPROX_PERCENTILE_CONT(x, 0.5) FROM t` returns
+`GPU execution does not support aggregate function approx_percentile_cont` as
+`detail`. Its `not_supported` candidate row repeats the subject in `blocking`
+as `aggregate function approx_percentile_cont`.
+
+Like the blocking text, `detail` can quote the query's own SQL and identifiers.
+It reaches the session that ran the statement and stays out of operational logs.
+A rejection that exists only in the validator (empty input, multiple statements,
+a non-query statement, recursive validation) has no execution counterpart and
+carries its own stable `reason_code` and message.
 
 ## cuGraph input relations
 
@@ -275,6 +310,17 @@ println!("{}", coverage.to_json());
 
 The API is `async` because source planning can perform real I/O. It never
 executes the returned plan or performs GPU admission.
+
+A rejection has two texts. `detail` is the client-safe message from
+[Rejected statements](#rejected-statements). For a failure whose raw text a
+server withholds, such as an Arrow, Parquet or I/O error raised while planning,
+it is the static internal-failure message, which points at `GetQueryStats` and
+a query id that an embedded session does not have. `trusted_diagnostic` holds
+the source-chain text of the same failure for the process that planned it,
+including foreign error messages and local paths. A rejection that only the
+validator makes repeats `detail` there. `to_json`, the `EXPLAIN GPU` rows and
+the Flight status never carry `trusted_diagnostic`, so a caller that forwards a
+rejection to a client forwards `detail`.
 
 ## Runtime caveats
 

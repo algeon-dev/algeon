@@ -916,6 +916,7 @@ pub algeon_datafusion::gpu_coverage::QueryGpuPlanningRejection::detail: alloc::s
 pub algeon_datafusion::gpu_coverage::QueryGpuPlanningRejection::phase: algeon_datafusion::gpu_coverage::QueryGpuRejectionPhase
 pub algeon_datafusion::gpu_coverage::QueryGpuPlanningRejection::reason_code: alloc::string::String
 pub algeon_datafusion::gpu_coverage::QueryGpuPlanningRejection::source_error_status: core::option::Option<alloc::string::String>
+pub algeon_datafusion::gpu_coverage::QueryGpuPlanningRejection::trusted_diagnostic: alloc::string::String
 pub struct algeon_datafusion::gpu_coverage::QueryGpuRemedy
 pub algeon_datafusion::gpu_coverage::QueryGpuRemedy::code: &'static str
 pub algeon_datafusion::gpu_coverage::QueryGpuRemedy::guidance: &'static str

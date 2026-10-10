@@ -12,10 +12,55 @@ use std::error::Error as StdError;
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
 use cudf::core::error::FactKeyName;
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
-use query_planning::error::{QueryError, QueryErrorCode, redact_uri_tokens};
+use query_planning::error::redact_uri_tokens;
+use query_planning::error::{MemoryFailure, MemoryUsage, QueryError, QueryErrorCode};
 pub(crate) use query_runtime::native_error::{
     cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure,
 };
+use query_runtime::runtime::ExecutionContext;
+
+/// Memory-scope label of an allocation failure sampled at the attempt's
+/// allocation domain instead of an operation's budget scope.
+const ATTEMPT_DOMAIN_BOUNDARY: &str = "attempt_allocation_domain";
+
+/// Records the attempt allocation domain's counters on an allocation failure
+/// that ran outside every budget scope.
+///
+/// Only operations that execute under a budget token annotate their errors
+/// with allocator counters, so a failure in any other operation reaches the
+/// plan boundary with the requested size alone. The domain's limit is the
+/// attempt's grant. Its peak includes the failing operation's working set;
+/// its current usage does not, because the operation has released that set by
+/// the time the error is sampled here. A scope an operation already recorded
+/// is kept, and a sample that fails leaves the error as it is.
+pub(crate) fn with_attempt_domain_memory(context: &ExecutionContext, error: QueryError) -> QueryError {
+    if !matches!(
+        error.code(),
+        QueryErrorCode::QueryMemoryLimitExceeded
+            | QueryErrorCode::DeviceOutOfMemory
+            | QueryErrorCode::DeviceAllocationFailed
+    ) || error.context().memory.is_some()
+    {
+        return error;
+    }
+    let Ok(Some(usage)) = context.attempt_allocation_domain_usage() else {
+        return error;
+    };
+    let operation = error.operation();
+    error.with_memory_failure(MemoryFailure {
+        boundary: ATTEMPT_DOMAIN_BOUNDARY.into(),
+        operation: operation.into(),
+        usage: Some(MemoryUsage {
+            limit_bytes: usage.allocation_limit_bytes,
+            peak_bytes: usage.peak_bytes,
+            peak_aligned_bytes: usage.peak_aligned_bytes,
+            current_bytes: usage.current_bytes,
+            current_aligned_bytes: usage.current_aligned_bytes,
+            failed_allocation_count: usage.failed_allocation_count,
+            largest_failed_allocation_bytes: usage.largest_failed_allocation_bytes,
+        }),
+    })
+}
 
 /// Wraps a `cuvs::Error` at the native vector-execution boundary.
 ///

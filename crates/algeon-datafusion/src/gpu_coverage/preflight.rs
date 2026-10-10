@@ -22,7 +22,9 @@ use super::{
     recursion_guard::query_mentions_coverage_table_function,
 };
 use crate::{
-    error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics, Result},
+    error::{
+        DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics, FailedStatement, Result, client::client_failure,
+    },
     planner::AlgeonNativeOptimizerConfig,
     session::installed_algeon_native_optimizer_config,
 };
@@ -44,7 +46,10 @@ pub(super) struct QueryGpuRejection {
     /// Coarse source status is diagnostic context only. It is never sealed
     /// attempt retry advice.
     pub(super) source_error_status: Option<&'static str>,
+    /// Client-safe text, shared by every client-visible surface.
     pub(super) detail: String,
+    /// Source-chain text for in-process callers. Never serialized.
+    pub(super) trusted_diagnostic: String,
 }
 
 impl QueryGpuRejection {
@@ -53,29 +58,39 @@ impl QueryGpuRejection {
         reason_code: impl Into<String>,
         detail: impl Into<String>,
     ) -> Self {
-        Self { phase, reason_code: reason_code.into(), source_error_status: None, detail: detail.into() }
+        let detail = detail.into();
+        Self {
+            phase,
+            reason_code: reason_code.into(),
+            source_error_status: None,
+            trusted_diagnostic: detail.clone(),
+            detail,
+        }
     }
 
+    /// Projects the failure as a client sees it: the code and the status
+    /// message that executing the statement returns, without its pointer to
+    /// `EXPLAIN GPU`. The source-chain text of the error stays in
+    /// `trusted_diagnostic`.
     pub(super) fn from_datafusion_error(phase: QueryGpuRejectionPhase, error: &DataFusionError) -> Self {
-        if let Some(adapter_error) = error.find_algeon_error() {
-            let reason_code = adapter_error
-                .fact_value(GPU_COVERAGE_REJECTION_REASON_FACT)
-                .unwrap_or_else(|| adapter_error.code().as_str())
-                .to_string();
-            let diagnostics = ErrorSourceDiagnostics::from_error(error);
-            return Self {
-                phase,
-                reason_code,
-                source_error_status: Some(adapter_error.status().as_str()),
-                detail: diagnostics.chain().unwrap_or_else(|| adapter_error.message()).to_string(),
-            };
-        }
-        let diagnostics = ErrorSourceDiagnostics::from_error(error);
-        Self::new(
+        let (code, detail) = client_failure(error, FailedStatement::Other);
+        let adapter_error = error.find_algeon_error();
+        let reason_code = adapter_error
+            .and_then(|adapter_error| adapter_error.fact_value(GPU_COVERAGE_REJECTION_REASON_FACT))
+            .unwrap_or_else(|| code.as_str())
+            .to_string();
+        let trusted_diagnostic = match (ErrorSourceDiagnostics::from_error(error).chain(), adapter_error) {
+            (Some(chain), _) => chain.to_string(),
+            (None, Some(adapter_error)) => adapter_error.message().to_string(),
+            (None, None) => error.message().to_string(),
+        };
+        Self {
             phase,
-            ErrorCode::DataFusionPlanning.as_str(),
-            diagnostics.chain().map(ToString::to_string).unwrap_or_else(|| error.message().to_string()),
-        )
+            reason_code,
+            source_error_status: adapter_error.map(|adapter_error| adapter_error.status().as_str()),
+            detail,
+            trusted_diagnostic,
+        }
     }
 }
 

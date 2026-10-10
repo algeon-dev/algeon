@@ -1,7 +1,9 @@
 use std::{error::Error, path::PathBuf};
 
 use algeon_datafusion::{
-    gpu_coverage::{QueryGpuCandidateOutcome, QueryGpuCoverage, QueryGpuPlanningOutcome, validate_query},
+    gpu_coverage::{
+        QueryGpuCandidateOutcome, QueryGpuCoverage, QueryGpuPlanningOutcome, QueryGpuPlanningRejection, validate_query,
+    },
     planner::AlgeonNativeOptimizerConfig,
     session::AlgeonSessionStateBuilderExt,
 };
@@ -9,6 +11,7 @@ use datafusion::{
     execution::SessionStateBuilder,
     prelude::{ParquetReadOptions, SessionContext},
 };
+use serde_json::Value;
 
 type ValidateResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -40,7 +43,7 @@ pub async fn run(args: Vec<String>) -> ValidateResult<()> {
     let ctx = build_context(&config).await?;
     let coverage = validate_query(&ctx, &config.sql).await?;
     match config.format {
-        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&coverage.to_json())?),
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&coverage_json(&coverage))?),
         OutputFormat::Human => print_human(&coverage),
     }
     Ok(())
@@ -110,6 +113,18 @@ fn path_str(path: &PathBuf) -> ValidateResult<&str> {
     path.to_str().ok_or_else(|| format!("path is not valid UTF-8: {path:?}").into())
 }
 
+/// The coverage JSON with the trusted diagnostic of a rejection added. This
+/// tool plans in the process that prints, so it shows the text a server
+/// withholds from its clients.
+fn coverage_json(coverage: &QueryGpuCoverage) -> Value {
+    let mut json = coverage.to_json();
+    if let Some(rejection) = coverage.rejection() {
+        json["planning_outcome"]["rejection"]["trusted_diagnostic"] =
+            Value::from(rejection.trusted_diagnostic.as_str());
+    }
+    json
+}
+
 fn print_human(coverage: &QueryGpuCoverage) {
     println!("gpu_path: {}", coverage.gpu_path());
     match &coverage.planning_outcome {
@@ -121,12 +136,9 @@ fn print_human(coverage: &QueryGpuCoverage) {
             println!("host_materialization_count: {}", plan.host_materialization_count());
         },
         QueryGpuPlanningOutcome::Rejected(rejection) => {
-            println!("rejection_phase: {}", rejection.phase.as_str());
-            println!("reason_code: {}", rejection.reason_code);
-            if let Some(status) = &rejection.source_error_status {
-                println!("source_error_status: {status}");
+            for line in rejection_human_lines(rejection) {
+                println!("{line}");
             }
-            println!("detail: {}", rejection.detail);
         },
     }
     println!("confidence: plan_time_only");
@@ -144,6 +156,18 @@ fn print_human(coverage: &QueryGpuCoverage) {
     if let Some(root) = &coverage.physical_plan_root {
         println!("physical_plan_root: {root}");
     }
+}
+
+fn rejection_human_lines(rejection: &QueryGpuPlanningRejection) -> Vec<String> {
+    let mut lines = vec![
+        format!("rejection_phase: {}", rejection.phase.as_str()),
+        format!("reason_code: {}", rejection.reason_code),
+    ];
+    if let Some(status) = &rejection.source_error_status {
+        lines.push(format!("source_error_status: {status}"));
+    }
+    lines.push(format!("detail: {}", rejection.trusted_diagnostic));
+    lines
 }
 
 fn candidate_outcome_human_line(outcome: &QueryGpuCandidateOutcome) -> String {
@@ -214,5 +238,26 @@ mod tests {
         let coverage = validate_query(&ctx, &config.sql).await.expect("validate_query succeeds");
         assert!(coverage.validated_under.native_optimizer_rule_installed);
         assert_eq!(coverage.validated_under.optimizer_config_source, "installed_session_rule");
+    }
+
+    /// This tool has no server query id and no `GetQueryStats`, so a failure
+    /// the server masks for its clients prints its source-chain text.
+    #[tokio::test]
+    async fn masked_rejection_prints_the_trusted_diagnostic() {
+        let sql = "SELECT arrow_cast(1, 'no_such_type')";
+        let config = Config { sql: sql.to_string(), format: OutputFormat::Json, parquet_tables: Vec::new() };
+        let ctx = build_context(&config).await.expect("context build succeeds");
+        let coverage = validate_query(&ctx, sql).await.expect("validate_query succeeds");
+        let rejection = coverage.rejection().expect("an unknown Arrow type name fails planning");
+        assert!(!rejection.detail.contains("no_such_type"), "the client text stays masked: {}", rejection.detail);
+
+        let lines = rejection_human_lines(rejection);
+        let detail = lines.iter().find_map(|line| line.strip_prefix("detail: ")).expect("a detail line");
+        assert!(detail.contains("no_such_type"), "{detail}");
+        assert!(!detail.contains("GetQueryStats"), "{detail}");
+
+        let json = coverage_json(&coverage);
+        let trusted = json["planning_outcome"]["rejection"]["trusted_diagnostic"].as_str();
+        assert!(trusted.is_some_and(|text| text.contains("no_such_type")), "{json}");
     }
 }

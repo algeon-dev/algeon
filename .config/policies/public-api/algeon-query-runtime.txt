@@ -401,6 +401,7 @@ pub fn query_runtime::metrics::QueryMetrics::record_final_merge_attempt(&mut sel
 pub fn query_runtime::metrics::QueryMetrics::record_final_merge_level(&mut self)
 pub fn query_runtime::metrics::QueryMetrics::record_partial_aggregate(&mut self, u64, u64, u64)
 impl query_runtime::metrics::QueryMetrics
+pub fn query_runtime::metrics::QueryMetrics::record_allocator_high_water_bytes(&mut self, u64)
 pub fn query_runtime::metrics::QueryMetrics::record_device_memory_observation(&mut self, u64)
 impl query_runtime::metrics::QueryMetrics
 pub fn query_runtime::metrics::QueryMetrics::record_dynamic_filter_applied(&mut self, &query_planning::dynamic_filter::DynamicFilterRoute, &query_planning::dynamic_filter::DynamicFilter, query_runtime::metrics::DynamicFilterSourceSnapshot, query_runtime::metrics::DynamicFilterSourceSnapshot)
@@ -1006,6 +1007,7 @@ pub fn query_runtime::observability::MetricsRecorder::open_budget_window(&self) 
 pub const fn query_runtime::observability::MetricsRecorder::plan_execution_id(&self) -> &query_runtime::observability::PlanExecutionId
 pub fn query_runtime::observability::MetricsRecorder::progress(&self) -> query_runtime::observability::metrics_recorder::ExecutionProgress
 pub fn query_runtime::observability::MetricsRecorder::record_aggregate_strategy_decision(&self, impl alloc::string::ToString, &alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>)
+pub fn query_runtime::observability::MetricsRecorder::record_allocator_high_water_bytes(&self, u64)
 pub fn query_runtime::observability::MetricsRecorder::record_budgeted_execution(&self, impl core::convert::Into<alloc::string::String>, &cudf::runtime::budget::ExecutionBudgetReport)
 pub fn query_runtime::observability::MetricsRecorder::record_compiled_pipeline_attempt(&self)
 pub fn query_runtime::observability::MetricsRecorder::record_compiled_pipeline_host_arrow_sink(&self)
