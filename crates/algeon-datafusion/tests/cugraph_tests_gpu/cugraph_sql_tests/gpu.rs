@@ -31,6 +31,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
 };
 use futures::StreamExt;
+use query_planning::optimizer::SharedResidentExtractionDecision;
 use query_runtime::observability::{AttemptCapacityDisposition, AttemptCleanupDisposition, RuntimeTerminalOutcome};
 use tokio::{
     sync::Barrier,
@@ -490,6 +491,168 @@ async fn cugraph_sql_native_required_composes_bipartite_aggregate_edges_and_resu
         );
     }
     drop_session_context_on_blocking_thread(ctx).await;
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// The MerRec Barbie statement over two small tables. Each period's DISTINCT
+/// of the joined likes is inlined into one personalized PageRank and one
+/// PageRank edge input, with the period filter pushed below the DISTINCT.
+/// `fans` reads the DISTINCT without that filter.
+const PERIOD_LIFT_SQL: &str = "WITH likes AS (\
+       SELECT DISTINCT -(e.user_id + 1) AS src, i.brand_id AS dst, e.day >= 10 AS late \
+       FROM events e JOIN items i ON i.item_id = e.item_id WHERE e.event_type = 'like'), \
+     lift_early AS (\
+       SELECT p.vertex, p.value / r.value AS lift \
+       FROM cugraph_personalized_pagerank(\
+         edges => (SELECT src, dst FROM likes WHERE NOT late), \
+         personalization => (SELECT 1 AS vertex, 1.0 AS value), directed => false) p \
+       JOIN cugraph_pagerank(edges => (SELECT src, dst FROM likes WHERE NOT late), directed => false) r \
+         ON r.vertex = p.vertex), \
+     lift_late AS (\
+       SELECT p.vertex, p.value / r.value AS lift \
+       FROM cugraph_personalized_pagerank(\
+         edges => (SELECT src, dst FROM likes WHERE late), \
+         personalization => (SELECT 1 AS vertex, 1.0 AS value), directed => false) p \
+       JOIN cugraph_pagerank(edges => (SELECT src, dst FROM likes WHERE late), directed => false) r \
+         ON r.vertex = p.vertex), \
+     fans AS (\
+       SELECT dst AS brand_id, SUM(CASE WHEN late THEN 0 ELSE 1 END) AS fans_early, \
+         SUM(CASE WHEN late THEN 1 ELSE 0 END) AS fans_late \
+       FROM likes GROUP BY dst) \
+     SELECT l.vertex, f.fans_early, f.fans_late, e.lift AS lift_early, l.lift AS lift_late, \
+       l.lift / e.lift AS lift_change \
+     FROM lift_late l JOIN lift_early e ON e.vertex = l.vertex JOIN fans f ON f.brand_id = l.vertex \
+     WHERE l.vertex > 0 ORDER BY lift_change DESC, l.vertex LIMIT 25";
+
+/// Registers `events(user_id, item_id, event_type, day)` and
+/// `items(item_id, brand_id)`. Repeated likes of one brand collapse in the
+/// DISTINCT, and the `view` row drops out before it.
+async fn register_brand_likes(ctx: &SessionContext, dir: &std::path::Path) {
+    let events_schema = Arc::new(Schema::new(vec![
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("event_type", DataType::Utf8, false),
+        Field::new("day", DataType::Int64, false),
+    ]));
+    let events = RecordBatch::try_new(
+        Arc::clone(&events_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 0, 0, 1, 1, 2, 2, 0, 3, 3, 1])),
+            Arc::new(Int64Array::from(vec![0, 1, 2, 2, 4, 4, 0, 4, 0, 2, 1])),
+            Arc::new(StringArray::from(vec![
+                "like", "like", "like", "like", "like", "like", "view", "like", "like", "like", "like",
+            ])),
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14])),
+        ],
+    )
+    .unwrap();
+    let items_schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("brand_id", DataType::Int64, false),
+    ]));
+    let items = RecordBatch::try_new(
+        Arc::clone(&items_schema),
+        vec![Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4])), Arc::new(Int64Array::from(vec![1, 1, 2, 2, 3]))],
+    )
+    .unwrap();
+    for (name, schema, batch) in [("events", events_schema, events), ("items", items_schema, items)] {
+        let path = dir.join(format!("{name}.parquet"));
+        let mut writer = ArrowWriter::try_new(fs::File::create(&path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        ctx.register_parquet(name, path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    }
+}
+
+/// `(vertex, fans_early, fans_late, lift_early, lift_late)` rows by vertex.
+fn period_lift_rows(batches: &[RecordBatch]) -> Vec<(i64, i64, i64, f64, f64)> {
+    let mut rows = batches
+        .iter()
+        .flat_map(|batch| {
+            let int = |column: usize| batch.column(column).as_any().downcast_ref::<Int64Array>().unwrap();
+            let float = |column: usize| batch.column(column).as_any().downcast_ref::<Float64Array>().unwrap();
+            (0..batch.num_rows())
+                .map(|row| {
+                    (int(0).value(row), int(1).value(row), int(2).value(row), float(3).value(row), float(4).value(row))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.0);
+    rows
+}
+
+#[tokio::test]
+async fn cugraph_edge_inputs_of_one_period_read_one_shared_distinct() {
+    let dir = unique_temp_dir("algeon-datafusion-cugraph-shared-edges");
+    // The strict single-partition session of the MerRec server, where
+    // DataFusion wraps each graph input in a `CooperativeExec`.
+    let (backend, ctx) = backend_cugraph_sql_context_with_mode(
+        SessionStateBuilder::new_with_default_features().with_config(SessionConfig::new().with_target_partitions(1)),
+        AlgeonGpuExecutionMode::NativeRequired,
+    );
+    register_brand_likes(&ctx, &dir).await;
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    let plan = attempt.plan_sql(&ctx, PERIOD_LIFT_SQL).await.unwrap();
+    // The display repeats a producer under each unit that reads it.
+    let rendered = displayable(plan.as_ref()).indent(false).to_string();
+    let producers =
+        rendered.lines().filter(|line| line.contains("shared_consumers=2")).map(str::trim).collect::<BTreeSet<_>>();
+    assert_eq!(producers.len(), 2, "one producer per period:\n{rendered}");
+
+    // Both edge units of a period read its producer. The root's `fans` copy
+    // keeps both periods, so it differs and the root reads neither.
+    let mut readers = BTreeMap::<String, BTreeSet<usize>>::new();
+    let diagnostics = attempt.planning_diagnostics().expect("native planning diagnostics");
+    for candidate in &diagnostics.native_optimizer.shared_resident_extraction.candidates {
+        if candidate.decision == SharedResidentExtractionDecision::Extracted {
+            readers
+                .entry(candidate.resident_input_name.clone().expect("an extracted candidate names its producer"))
+                .or_default()
+                .insert(candidate.attempt_fragment.expect("island candidates name their unit"));
+        }
+    }
+    assert_eq!(readers.len(), 2, "{readers:?}");
+    assert!(readers.values().all(|units| units.len() == 2 && !units.contains(&0)), "{readers:?}");
+
+    let mut stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx).unwrap();
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.next().await {
+        batches.push(batch.expect("both periods execute under one attempt"));
+    }
+    let report = completion.await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+    assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
+    assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
+    let metrics = attempt.sealed_native_execution_snapshot().expect("sealed native execution snapshot").metrics;
+    // Each period's producer and the root's `fans` copy scan both files once.
+    assert_eq!(metrics.parquet_files, 6, "{metrics:?}");
+    assert_eq!(metrics.graph_runtime_rows.len(), 4, "{metrics:?}");
+    drop(attempt);
+    let rows = period_lift_rows(&batches);
+    assert_eq!(rows.iter().map(|row| (row.0, row.1, row.2)).collect::<Vec<_>>(), [(1, 1, 2), (2, 2, 1), (3, 2, 1)]);
+    drop_session_context_on_blocking_thread(ctx).await;
+    // One backend may be live in a process.
+    assert!(backend.close_and_wait(Duration::from_secs(10)).unwrap().gpu_resource_quiescent);
+
+    // DataFusion computes the CTE once for each reader.
+    let (_cpu_backend, cpu_ctx) = backend_cugraph_sql_context_with_mode(
+        SessionStateBuilder::new_with_default_features(),
+        AlgeonGpuExecutionMode::FunctionsOnly,
+    );
+    register_brand_likes(&cpu_ctx, &dir).await;
+    let cpu_plan = cpu_ctx.sql(PERIOD_LIFT_SQL).await.unwrap().create_physical_plan().await.unwrap();
+    let cpu_rows = period_lift_rows(&collect(cpu_plan, cpu_ctx.task_ctx()).await.unwrap());
+    assert_eq!(cpu_rows.len(), rows.len());
+    for (native, reference) in rows.iter().zip(&cpu_rows) {
+        assert_eq!((native.0, native.1, native.2), (reference.0, reference.1, reference.2));
+        assert!(
+            (native.3 - reference.3).abs() < 1e-9 && (native.4 - reference.4).abs() < 1e-9,
+            "{rows:?} {cpu_rows:?}"
+        );
+    }
+    drop_session_context_on_blocking_thread(cpu_ctx).await;
     fs::remove_dir_all(dir).unwrap();
 }
 

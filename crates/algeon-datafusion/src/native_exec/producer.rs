@@ -87,8 +87,8 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
     /// `Some` lets the final native optimizer replace a DataFusion child with a
     /// lowered GPU-resident producer. `None` means the producer owns its
     /// children's placement (cuGraph plans them in a nested session, native
-    /// fragments have no DataFusion children), so the optimizer leaves the
-    /// subtree unchanged.
+    /// fragments have no DataFusion children), so lowering leaves those
+    /// children unchanged.
     fn native_relation_input_names(&self) -> Option<&[String]> {
         None
     }

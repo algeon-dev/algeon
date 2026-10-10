@@ -1,20 +1,21 @@
 //! Subplans shared by the native units of one composed attempt.
 //!
 //! A query root that lowers over GPU functions becomes one composed island
-//! made of the root unit, the functions it reads, and the units lowered from
-//! their relation inputs. All of them run in the context the root acquires.
-//! DataFusion inlines each CTE reference, so a CTE that feeds a function
-//! input and is joined again by the root is planned in two units.
+//! made of the root unit, the functions it reads, and the GPU-resident units
+//! lowered from their inputs: cuVS and cuML relation inputs, and cuGraph edge
+//! and side inputs, which graph planning lowers in a nested session. All of
+//! them run in the context the root acquires. DataFusion inlines each CTE
+//! reference, so a CTE that feeds two function inputs, or one input and a
+//! join in the root, is planned in two units.
 //!
 //! This pass hands the island's unit plans to the shared-resident extraction
 //! stage, which owns the matching and the retention rule. It admits the
 //! producers that stage creates and the units rewritten to read them, then
 //! rebinds the island so each reading unit lists the producer among its
 //! GPU-resident inputs. The island root's execution computes each shared
-//! producer once and releases it after its last reading unit.
-//!
-//! cuGraph subtrees stay opaque because graph inputs are planned in their own
-//! session and bound by graph admission.
+//! producer once and releases it after its last reading unit. A graph reads
+//! a rewritten edge unit like any composed edge producer, and its admission
+//! evidence includes the shared producer's.
 
 use std::sync::Arc;
 
@@ -165,10 +166,11 @@ fn island_unit(plan: &Arc<dyn ExecutionPlan>, is_root: bool) -> Option<&AlgeonNa
     plan.downcast_ref::<AlgeonNativeExec>().filter(|unit| is_root || !unit.materializes_host())
 }
 
-/// Whether `plan` is a GPU function whose relation inputs this attempt
-/// lowered; its GPU-resident children belong to the island.
-fn reads_lowered_relation_inputs(plan: &dyn ExecutionPlan) -> bool {
-    gpu_resident_producer(plan).is_some_and(|producer| producer.native_relation_input_names().is_some())
+/// Whether `plan` is a GPU function the island reads, or the scheduling
+/// wrapper DataFusion places above one or above a unit. A function runs its
+/// GPU-resident inputs in the island's context, so they belong to the island.
+fn reads_island_inputs(plan: &dyn ExecutionPlan) -> bool {
+    gpu_resident_producer(plan).is_some()
 }
 
 /// Collects the island's units in pre-order, the order
@@ -179,7 +181,7 @@ fn collect_units<'a>(plan: &'a Arc<dyn ExecutionPlan>, is_root: bool, units: &mu
         for input in unit.gpu_inputs() {
             collect_units(input, false, units);
         }
-    } else if reads_lowered_relation_inputs(plan.as_ref()) {
+    } else if reads_island_inputs(plan.as_ref()) {
         for child in plan.children() {
             collect_units(child, false, units);
         }
@@ -218,7 +220,7 @@ impl IslandRebind {
             });
             return Ok(Arc::new(unit.with_rebound_plan(admitted, inputs)?));
         }
-        if !reads_lowered_relation_inputs(plan.as_ref()) {
+        if !reads_island_inputs(plan.as_ref()) {
             return Ok(Arc::clone(plan));
         }
         let children = plan.children().into_iter().cloned().collect::<Vec<_>>();
