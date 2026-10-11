@@ -75,11 +75,17 @@ pub(super) fn dataframe_mixed_join_options(
     residual_columns: &JoinResidualColumns,
     null_equality: JoinNullEquality,
 ) -> DataFrameMixedJoinOptions {
+    let cudf_left = residual_columns.cudf_left_side();
+    let cudf_right = probe_side(cudf_left);
+    let (cudf_left_keys, cudf_right_keys) = match cudf_left {
+        JoinSide::Left => (left_keys, right_keys),
+        JoinSide::Right => (right_keys, left_keys),
+    };
     DataFrameMixedJoinOptions::new()
-        .left_on(left_keys.iter().map(String::as_str))
-        .right_on(right_keys.iter().map(String::as_str))
-        .left_predicate_columns(residual_columns.names(JoinSide::Left).iter().map(String::as_str))
-        .right_predicate_columns(residual_columns.names(JoinSide::Right).iter().map(String::as_str))
+        .left_on(cudf_left_keys.iter().map(String::as_str))
+        .right_on(cudf_right_keys.iter().map(String::as_str))
+        .left_predicate_columns(residual_columns.names(cudf_left).iter().map(String::as_str))
+        .right_predicate_columns(residual_columns.names(cudf_right).iter().map(String::as_str))
         .null_equality(lower_null_equality(null_equality))
 }
 

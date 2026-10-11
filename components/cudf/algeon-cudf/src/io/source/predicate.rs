@@ -148,6 +148,11 @@ impl SourceReaderPredicate {
 /// source chunk. This keeps logical `Decimal128` source schemas compatible with
 /// Parquet columns that libcudf evaluates as Decimal32, Decimal64, or
 /// Decimal128.
+///
+/// Other columns use their source-schema dtype: boolean, signed and unsigned
+/// integers of every width, Float64, string, and `TimestampDays`. An integer
+/// literal becomes the column's integer dtype, and a value outside that dtype's
+/// range fails with [`ErrorCode::ValueOutOfRange`].
 pub fn build_local_parquet_reader_predicate(
     runtime: &Runtime,
     source: &LocalParquetSource,
@@ -338,14 +343,14 @@ fn source_reader_literal_scalar(
             SourceReaderPredicateLiteral::Boolean(value) => runtime.scalar(*value),
             _ => source_reader_literal_type_mismatch(literal, target_type),
         },
-        TypeId::Int64 => match literal {
-            SourceReaderPredicateLiteral::Int64(value) => runtime.scalar(*value),
-            _ => source_reader_literal_type_mismatch(literal, target_type),
-        },
-        TypeId::UInt64 => match literal {
-            SourceReaderPredicateLiteral::UInt64(value) => runtime.scalar(*value),
-            _ => source_reader_literal_type_mismatch(literal, target_type),
-        },
+        TypeId::Int8 => runtime.scalar(source_reader_integer_literal::<i8>(literal, target_type)?),
+        TypeId::Int16 => runtime.scalar(source_reader_integer_literal::<i16>(literal, target_type)?),
+        TypeId::Int32 => runtime.scalar(source_reader_integer_literal::<i32>(literal, target_type)?),
+        TypeId::Int64 => runtime.scalar(source_reader_integer_literal::<i64>(literal, target_type)?),
+        TypeId::UInt8 => runtime.scalar(source_reader_integer_literal::<u8>(literal, target_type)?),
+        TypeId::UInt16 => runtime.scalar(source_reader_integer_literal::<u16>(literal, target_type)?),
+        TypeId::UInt32 => runtime.scalar(source_reader_integer_literal::<u32>(literal, target_type)?),
+        TypeId::UInt64 => runtime.scalar(source_reader_integer_literal::<u64>(literal, target_type)?),
         TypeId::Float64 => match literal {
             SourceReaderPredicateLiteral::Float64(value) => runtime.scalar(*value),
             _ => source_reader_literal_type_mismatch(literal, target_type),
@@ -390,6 +395,29 @@ fn source_reader_literal_type_mismatch<T>(literal: &SourceReaderPredicateLiteral
     .with_detail("literal", format!("{literal:?}"))
     .with_detail("target_type_id", target_type.id().to_string())
     .with_detail("target_type_scale", target_type.scale().to_string()))
+}
+
+/// Converts an integer literal to the integer dtype of the predicate column.
+///
+/// The cudf AST compares operands of one dtype, so a value that the column
+/// type cannot hold is refused instead of wrapped.
+fn source_reader_integer_literal<T>(literal: &SourceReaderPredicateLiteral, target_type: DataType) -> Result<T>
+where T: TryFrom<i64> + TryFrom<u64> {
+    let converted = match literal {
+        SourceReaderPredicateLiteral::Int64(value) => T::try_from(*value).ok(),
+        SourceReaderPredicateLiteral::UInt64(value) => T::try_from(*value).ok(),
+        _ => return source_reader_literal_type_mismatch(literal, target_type),
+    };
+    converted.ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            OP_SOURCE_READER_PREDICATE,
+            "integer source reader predicate literal does not fit the target column dtype",
+        )
+        .with_detail("reason", "integer_literal_out_of_range")
+        .with_detail("literal", format!("{literal:?}"))
+        .with_detail("target_type_id", target_type.id().to_string())
+    })
 }
 
 fn source_reader_decimal_literal_raw(literal: &SourceReaderPredicateLiteral, target_scale: i32) -> Result<i128> {

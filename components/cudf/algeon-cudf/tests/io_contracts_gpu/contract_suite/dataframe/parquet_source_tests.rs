@@ -21,8 +21,9 @@ use cudf::{
             LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, PredicateDisposition, SourceChunk,
             SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef, SourceColumnRole, SourceOutputColumn,
             SourceReadMode, SourceReaderPredicate, SourceReaderPredicateColumn, SourceReaderPredicateLiteral,
-            SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN, build_local_parquet_reader_batch_predicate,
-            build_local_parquet_reader_predicate, plan_local_parquet_source_chunks,
+            SourceReaderPredicateOp, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
+            build_local_parquet_reader_batch_predicate, build_local_parquet_reader_predicate,
+            plan_local_parquet_source_chunks,
         },
     },
     ops::ast::AstExpression,
@@ -167,6 +168,37 @@ fn assert_decimal_amount_raws(df: &DataFrame, expected: &[i128]) {
     let amount = batch.column(0).as_primitive::<Decimal128Type>();
     assert_eq!(amount.scale(), 2);
     assert_eq!(amount.values().as_ref(), expected);
+}
+
+fn write_decimal_integer_parquet_df(path: &std::path::Path) {
+    let rt = sample_runtime();
+    let dtype = DataType::fixed_point(TypeId::Decimal32, -2).unwrap();
+    let amount = rt.series(&[-5i64, 0, 1, 2]).unwrap().on(Exec::RETAINED).astype(dtype).unwrap();
+    let id = rt.series(&[1i32, 2, 3, 4]).unwrap();
+    let code = rt.series(&[10u16, 20, 30, 40]).unwrap();
+    DataFrame::from_series([("amount", amount), ("id", id), ("code", code)]).unwrap().write_parquet(path).unwrap();
+}
+
+fn decimal_integer_source(path: &std::path::Path) -> LocalParquetSource {
+    let decimal128 = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
+    LocalParquetSource::data(
+        [LocalParquetFile::new(path, "decimal-integer", []).unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("amount", decimal128, false).unwrap(),
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("code", dtype(TypeId::UInt16), false).unwrap(),
+        ])
+        .unwrap(),
+        ["amount", "id", "code"],
+        [
+            SourceOutputColumn::new("amount", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(1)).unwrap(),
+            SourceOutputColumn::new("code", SourceColumnRef::ReadColumn(2)).unwrap(),
+        ],
+        [],
+        [],
+    )
+    .unwrap()
 }
 
 fn write_i32_parquet_with_row_groups(path: &std::path::Path, values: &[i32], row_group_size: usize) -> bool {
@@ -915,6 +947,79 @@ fn decimal_reader_predicate_supports_integer_and_in_list_literals() {
     .map(ParquetSourceChunkReadOutput::into_frame)
     .unwrap();
     assert_decimal_amount_raws(&frame, &[-500, 200]);
+}
+
+#[test]
+fn decimal_reader_predicate_combines_with_narrow_integer_columns() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("decimal_reader_predicate_narrow_integers.parquet");
+    let rt = sample_runtime();
+
+    write_decimal_integer_parquet_df(&path);
+    let source = decimal_integer_source(&path);
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let chunk = &plan.chunks()[0];
+    let predicate = SourceReaderPredicate::and(
+        SourceReaderPredicate::and(
+            SourceReaderPredicate::greater_equal(
+                SourceReaderPredicateColumn::read_column("amount", 0).unwrap(),
+                SourceReaderPredicateLiteral::Decimal128 { raw: 100, scale: -2 },
+            ),
+            SourceReaderPredicate::in_list(
+                SourceReaderPredicateColumn::read_column("id", 1).unwrap(),
+                vec![
+                    SourceReaderPredicateLiteral::Int64(3),
+                    SourceReaderPredicateLiteral::Int64(4),
+                    SourceReaderPredicateLiteral::UInt64(9),
+                ],
+                false,
+            )
+            .unwrap(),
+        ),
+        SourceReaderPredicate::comparison(
+            SourceReaderPredicateColumn::read_column("code", 2).unwrap(),
+            SourceReaderPredicateOp::NotEqual,
+            SourceReaderPredicateLiteral::UInt64(40),
+        ),
+    );
+    let source = decimal_predicate_source(&rt, &source, chunk, predicate);
+
+    let frame = DataFrame::read_parquet_source(
+        SourceRead::new(&source, slice::from_ref(chunk), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .unwrap();
+    assert_decimal_amount_raws(&frame, &[100]);
+    assert_eq!(frame.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3]);
+}
+
+#[test]
+fn reader_predicate_rejects_integer_literal_outside_column_dtype() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("reader_predicate_integer_literal_out_of_range.parquet");
+    let rt = sample_runtime();
+
+    write_decimal_integer_parquet_df(&path);
+    let source = decimal_integer_source(&path);
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let predicate = SourceReaderPredicate::and(
+        SourceReaderPredicate::greater_equal(
+            SourceReaderPredicateColumn::read_column("amount", 0).unwrap(),
+            SourceReaderPredicateLiteral::Decimal128 { raw: 100, scale: -2 },
+        ),
+        SourceReaderPredicate::equal(
+            SourceReaderPredicateColumn::read_column("id", 1).unwrap(),
+            SourceReaderPredicateLiteral::Int64(i64::from(i32::MAX) + 1),
+        ),
+    );
+
+    let err = build_local_parquet_reader_predicate(&rt, &source, &plan.chunks()[0], &predicate)
+        .expect_err("an Int32 column cannot compare against a literal above i32::MAX");
+
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("integer_literal_out_of_range"));
 }
 
 #[test]
