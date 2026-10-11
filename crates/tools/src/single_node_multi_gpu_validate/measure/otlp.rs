@@ -1,7 +1,6 @@
-use std::{
-    sync::{Arc, Condvar, Mutex},
-    time::Duration,
-};
+#[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 #[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
 use {
@@ -9,7 +8,9 @@ use {
     opentelemetry_proto::tonic::resource::v1::Resource, tokio::runtime::Builder,
 };
 
-use super::{AlgeonGpuBackend, OtlpExportEvidence, ToolResult, unix_epoch_ns};
+#[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
+use super::unix_epoch_ns;
+use super::{AlgeonGpuBackend, OtlpExportEvidence, ToolResult};
 
 /// Runtime-only OTLP exporter input. Its full endpoint is deliberately never
 /// copied into an artifact; only `endpoint_host_port` is retained.

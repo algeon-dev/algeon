@@ -5,7 +5,12 @@ description: Clone one recursive repository, configure one checkout-local enviro
 
 # Building from Source
 
-This is the complete source-build path. It starts with one recursive
+For an external Rust application using registry crates, follow
+[Use as a Rust dependency](./rust-dependency.md). It builds only the required
+native layers from the matching tag and then leaves the checkout to build the
+application.
+
+This is the complete repository source-build path. It starts with one recursive
 `algeon` checkout and keeps every source, native build tree, install
 prefix, Rust crate, and validation command inside that checkout.
 
@@ -84,11 +89,13 @@ unset CUDF_CMAKE_CUDA_ARCHITECTURES
 
 # Native selectors default to this checkout's target/native/ prefixes. Clearing
 # them keeps another checkout's libraries out and gives every shell the same
-# build fingerprint. Cargo-built binaries find the native libraries through
-# their rpath, so this block does not set LD_LIBRARY_PATH.
+# build fingerprint. Repository binaries receive native rpath arguments from
+# their package build scripts. External applications need their own loader
+# environment as described in the Rust dependency quickstart.
 unset ALGEON_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \
   CUVS_INSTALL_DIR CUVS_ROOT CUML_CPP_BUILD_DIR CUML_INSTALL_DIR \
-  CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR
+  CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR CUGRAPH_NATIVE_INCLUDE_DIRS \
+  CUGRAPH_NATIVE_LINK_DIRS CUGRAPH_RUNTIME_LIB_DIRS
 ```
 
 Edit the CUDA and compiler lines if your toolkit or compiler lives elsewhere.
@@ -174,7 +181,7 @@ ls "$ALGEON_ROOT"/target/native/cugraph-build/libcugraph.so \
    "$ALGEON_ROOT"/target/native/cugraph-build/libcugraph_c.so
 ls "$ALGEON_ROOT"/target/native/cugraph-install/lib/libcugraph.so \
    "$ALGEON_ROOT"/target/native/cugraph-install/include/cugraph_c/algorithms.h \
-   "$ALGEON_ROOT"/target/native/cugraph-install/share/cugraph/crate-version
+   "$ALGEON_ROOT"/target/native/cugraph-install/share/algeon-cugraph/crate-version
 ```
 
 On Blackwell (`sm_120`), the pinned cuGraph fork carries the required
@@ -200,26 +207,16 @@ ls "$ALGEON_ROOT"/target/native/cuml-install/lib/{libcuml.so,libcuml_rust.so}
 
 ### Use the native stack from registry crates
 
-The four build scripts create a native root that registry-installed Algeon
-crates can consume without a source checkout inside Cargo's package archive:
-
-```bash
-export ALGEON_NATIVE_DIR="$ALGEON_ROOT/target/native"
-cargo build --all-features
-```
-
-`ALGEON_NATIVE_DIR` must contain `cudf-install`, `cuvs-install`,
-`cugraph-install`, and `cuml-install` from the matching Algeon tag. The sys crates verify their
-required library before invoking any native tool; the cuDF and cuGraph
-prefixes also carry a `crate-version` marker and are rejected when it differs
-from the Rust crate version. A registry build still needs `cmake` for cuVS
-package discovery, `readelf` and `ldd` from binutils for cuGraph loader
-validation, and a C compiler for the cuVS ABI probe. It does not run bindgen or
-build cuDF or cuGraph with CMake.
+The build scripts install the artifacts consumed by registry crates. Continue
+with [Use as a Rust dependency](./rust-dependency.md#3-create-an-external-application)
+to copy the complete example into an application outside the checkout, select
+`ALGEON_NATIVE_DIR`, build, and directly execute its binary with the required
+loader directories. The guide defines each feature's native install closure and
+its compiler, header and CUDA requirements.
 
 `CUDF_INSTALL_DIR`, `CUVS_ROOT`, `CUVS_INSTALL_DIR`, `CUML_INSTALL_DIR`, and the three
 `CUGRAPH_NATIVE_*` variables remain lower-level developer selectors. Prefer
-`ALGEON_NATIVE_DIR` when consuming the complete stack.
+`ALGEON_NATIVE_DIR` when consuming release artifacts.
 
 ## 4. Build the Rust workspace
 
@@ -284,7 +281,7 @@ set one only to point a step at a prefix outside the checkout.
 | Variable | Owner and purpose |
 | --- | --- |
 | `ALGEON_ROOT` | Root of the one recursive checkout. |
-| `ALGEON_NATIVE_DIR` | Root containing the four matching registry-consumer install prefixes. Defaults to `target/native`. |
+| `ALGEON_NATIVE_DIR` | Root containing the matching registry-consumer install prefixes required by the enabled features. Checkout builds default to `target/native`. Use an absolute path for an external application. |
 | `CMAKE_CUDA_ARCHITECTURES` | One CUDA target list shared by cuDF, cuVS, cuGraph, and cuML. Defaults to `NATIVE`. |
 | `CUDF_CPP_BUILD_DIR` | cuDF CMake cache. Defaults to `target/native/cudf-build`. |
 | `CUDF_INSTALL_DIR` / `INSTALL_PREFIX` | cuDF install containing the stack's one shared `librmm.so`. Defaults to `target/native/cudf-install`. |
@@ -292,7 +289,7 @@ set one only to point a step at a prefix outside the checkout.
 | `CUML_CPP_BUILD_DIR` / `CUML_INSTALL_DIR` | cuML build tree and native install. Defaults to `target/native/cuml-build` and `target/native/cuml-install`. |
 | `CUGRAPH_CMAKE_BUILD_DIR` | cuGraph CMake build and runtime-library directory. Defaults to `target/native/cugraph-build`. |
 | `CUGRAPH_INSTALL_DIR` | Installed cuGraph libraries, headers, and crate-version marker. Defaults to `target/native/cugraph-install`. |
-| `LD_LIBRARY_PATH` | Runtime resolution in dependency order: cuGraph, cuML, cuDF/RMM, cuVS, CUDA. Not needed for Cargo-built binaries, which resolve native libraries through their rpath; only a caller that runs a non-Cargo loader, such as a rustdoc doctest binary, needs to compose it. |
+| `LD_LIBRARY_PATH` | Runtime library directories for the selected feature closure and CUDA. Repository binaries receive rpath arguments from their own package build scripts; downstream application binaries do not inherit those arguments from dependency crates. External applications and rustdoc doctests need an explicit loader environment or application-owned RUNPATH. See [the Rust dependency quickstart](./rust-dependency.md#4-build-and-run-the-application). |
 
 The native dependency relationship is:
 

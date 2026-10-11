@@ -10,6 +10,28 @@ structured planning and runtime diagnostics, and Parquet source integration.
 See the [Algeon documentation](https://algeon.dev) for setup,
 supported SQL, configuration, and operational contracts.
 
+## Use as a Rust dependency
+
+The `0.1.0` registry installation uses native libraries built from the matching
+`v0.1.0` Algeon source tag:
+
+```toml
+[dependencies]
+algeon-datafusion = "=0.1.0"
+datafusion = "55.1"
+```
+
+The adapter has no default features. Relational execution needs cuDF/RMM;
+`cuvs` adds cuVS, `cugraph` adds cuVS and cuGraph, and `cuml` adds cuVS and
+cuML. Rust package installation does not build these native libraries.
+Follow the [Rust dependency quickstart](https://algeon.dev/build/rust-dependency)
+for native build order, compiler and header requirements, `ALGEON_NATIVE_DIR`,
+`LD_LIBRARY_PATH`, and a complete async application with result assertions and
+backend shutdown. The guide uses the release consumer fixture as its example;
+its validation does not establish that the tag or packages have been published.
+
+## Native source batching
+
 Native source batching uses the immutable admission grant when no source-byte
 target is configured. Individual row groups remain retryable units; compatible
 units are coalesced into reads. Source-adjacent aggregates size later reads from

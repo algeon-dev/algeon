@@ -165,15 +165,15 @@ pub enum SourceColumnRole {
 pub enum SourceColumnRef {
     /// Decoded read projection ordinal.
     ///
-    /// This index points into [`LocalParquetSource::read_columns`]. It does not
+    /// This index points into [`LocalParquetSource::read_columns`](crate::io::source::LocalParquetSource::read_columns). It does not
     /// refer to the original Parquet file schema. Callers that start from
     /// file-schema ordinals must translate them into decoded read-projection
     /// ordinals.
     ReadColumn(usize),
-    /// Partition-column ordinal in [`LocalParquetSource::partition_columns`].
+    /// Partition-column ordinal in [`LocalParquetSource::partition_columns`](crate::io::source::LocalParquetSource::partition_columns).
     Partition(usize),
     /// Synthetic metadata row-count column. Valid only for
-    /// [`LocalParquetSourceKind::MetadataRowCount`].
+    /// [`LocalParquetSourceKind::MetadataRowCount`](crate::io::source::LocalParquetSourceKind::MetadataRowCount).
     ZeroColumnCount,
     /// Nullable logical column absent from the physical file schema. Valid only
     /// for data sources whose target schema column is nullable and whose dtype

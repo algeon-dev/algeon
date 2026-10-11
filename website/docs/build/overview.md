@@ -12,7 +12,12 @@ uses RAPIDS cuDF, graph SQL adds cuGraph, vector SQL adds cuVS, and cuML SQL
 adds dimensionality reduction. cuGraph and cuML depend on the shared cuVS
 install. A full-feature source build includes all four native layers.
 
-Follow the pages in this order:
+For an application that embeds Algeon, start with
+[Use as a Rust dependency](./rust-dependency.md). It selects the native libraries
+required by the application's Cargo features, then builds and runs an external
+application against the matching release tag.
+
+For the Flight SQL server or repository development, follow these pages in order:
 
 1. [Prerequisites](./prerequisites.md): the GPU, compiler, Rust, and
    test-runner environment.

@@ -130,6 +130,8 @@ policy_scripts() {
   done
   python3 scripts/ci/tests/check_check_all_tests.py || status=1
   python3 scripts/ci/tests/check_single_brand_tests.py || status=1
+  python3 scripts/ci/tests/check_release_archives_tests.py || status=1
+  python3 scripts/ci/tests/check_registry_consumer_tests.py || status=1
   test_layout_policy || status=1
   return "${status}"
 }
@@ -232,7 +234,7 @@ shipped_clippy() {
 
 if [[ "${mode}" == full ]]; then
   PHASES=(gate rustfmt native-sources checked-bindings policy-scripts test-build tests doctests clippy orphan-sources rustdoc
-    public-api-surface feature-isolation shipped-clippy msrv native-free public-api-consumers publication-policy)
+    public-api-surface feature-isolation shipped-clippy msrv native-free docsrs-native-free public-api-consumers publication-policy)
 else
   PHASES=(gate rustfmt native-sources policy-scripts cpu-tests)
 fi
@@ -302,6 +304,7 @@ if [[ "${mode}" == full ]]; then
   CARGO_TARGET_DIR="${ROOT}/target/check-all/msrv" \
     run msrv nice -n 10 cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo &
   DOCS_RS=1 run native-free nice -n 10 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check &
+  run docsrs-native-free nice -n 10 bash scripts/ci/check_docsrs_native_free.sh &
   run public-api-consumers nice -n 10 python3 scripts/ci/check_public_api_consumers.py "${ROOT}" .config/policies/public-api \
     target/check-all/public-api-consumers &
   run publication-policy python3 scripts/ci/check_workspace_publication.py &

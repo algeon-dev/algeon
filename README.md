@@ -134,8 +134,15 @@ immutable grant on one GPU.
 
 ## Run it
 
-Algeon runs on Linux with an NVIDIA GPU and a CUDA toolkit. The four RAPIDS
-libraries are built from the pinned submodules before the Rust workspace:
+Algeon runs on Linux with an NVIDIA GPU and a CUDA toolkit. To embed it in a
+Rust application, use the `algeon-datafusion` registry dependency and build the
+native libraries from the matching Algeon tag. The
+[Rust dependency quickstart](https://algeon.dev/build/rust-dependency) covers
+feature selection, a complete application and its runtime loader environment.
+It describes the `0.1.0` release workflow; package and tag availability require
+release confirmation.
+
+To build the Flight SQL server or contribute, clone the pinned native sources:
 
 ```bash
 git clone --recurse-submodules https://github.com/algeon-dev/algeon.git

@@ -22,6 +22,34 @@ provides the shared saved-query metadata reader used by the community and
 supervised verification scripts. Local policy checks keep native source
 registry and workspace publication-policy failures separate in the full gate.
 
+`ci/release_archives.py --output /tmp/algeon-release` packages the allowlist
+owned by `ci/check_workspace_publication.py` with the adapter's release
+features. It checks normalized dependency versions, docs.rs metadata and
+native build inputs, then retains archives, extracted sources, the source
+lockfile, `release.json`, `patches.toml` and logs outside the checkout.
+`--require-clean` rejects dirty release sources; development checks permit
+working-tree edits. Its fault-injection suite is
+`python3 scripts/ci/tests/check_release_archives_tests.py`.
+
+`ci/check_docsrs_native_free.sh` runs in the full gate's `docsrs-native-free`
+phase. It prepares those archives, or reuses `--archives DIR`, and documents
+every release crate with its own docs.rs features. It replaces native/CUDA
+selectors with nonexistent paths, clears Cargo configuration and fetches
+dependencies before building. Strict rustdoc then runs offline with
+`DOCS_RS=1`; current Cargo build-script messages and outputs must contain no
+sys-crate native linker directives. `native-free-evidence.json` records those
+paths and outputs. This local check does not provide the hosted docs.rs
+filesystem or network sandbox. `--target-dir DIR` reuses an external
+compilation cache across archive preparations.
+
+`ci/check_registry_consumer.sh` invokes `ci/registry_consumer.py` for the
+separate release application gate. It builds the documented fixture from
+archives, validates dependency resolution and loader identities, executes
+feature-selected queries from another cwd, and checks native discovery
+failures. Both fresh application resolution and the source lockfile lane
+run by default. Its isolated suite is
+`python3 scripts/ci/tests/check_registry_consumer_tests.py`.
+
 `ci/nextest_gpu_lock.sh` is the nextest run-wrapper that every test runs
 through (configured in `.config/nextest.toml`): it takes `/tmp/cudf-gpu.lock`
 shared for the `gpu` test group and exclusive for `gpu-exclusive`, and takes
