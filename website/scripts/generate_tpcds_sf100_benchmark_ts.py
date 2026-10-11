@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 from pathlib import Path
 
@@ -47,11 +48,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cpu-tsv", type=Path, required=True)
     ap.add_argument("--gpu-tsv", type=Path, required=True)
+    ap.add_argument("--environment", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--kvikio-compat-mode", default="ON")
     ap.add_argument("--generated-at-utc", default=None)
     args = ap.parse_args()
 
+    environment = json.loads(args.environment.read_text())
     cpu_meta, cpu = load(args.cpu_tsv, "cpu_datafusion")
     gpu_meta, gpu = load(args.gpu_tsv, "native_gpu")
     query_ids = sorted(set(cpu) | set(gpu), key=lambda q: (int("".join(ch for ch in q if ch.isdigit()) or "999"), q))
@@ -85,7 +88,6 @@ def main() -> None:
                 if gpu_row.get("peak_memory_operator_class") not in (None, "none")
                 else "",
                 "peakMemoryOperatorClassBytes": inum(gpu_row.get("peak_memory_operator_class_bytes")),
-                "reservationLivePeakBytes": inum(gpu_row.get("reservation_live_peak_bytes")),
                 "parquetReadTimeMs": fnum(gpu_row.get("parquet_read_time_ms")),
                 "sourceReadTimeMs": fnum(gpu_row.get("source_read_time_ms")),
                 "operatorTimeMs": fnum(gpu_row.get("operator_time_ms")),
@@ -107,10 +109,14 @@ def main() -> None:
         threshold = float("inf")
     outliers = [row["queryId"] for row in rows if max(row["cpuMs"], row["gpuWallMs"] or 0) > threshold]
 
-    root = Path("/opt/dlami/nvme/fixture/data/tpcds/sf100/parquet")
-    files = sorted(root.glob("*.parquet")) if root.exists() else []
+    root_value = gpu_meta.get("tpcds_benchmark_root")
+    if not root_value:
+        raise SystemExit(f"tpcds_benchmark_root missing from {args.gpu_tsv}")
+    root = Path(root_value)
+    if not root.is_dir():
+        raise SystemExit(f"tpcds_benchmark_root {root} is not a directory")
+    files = sorted(root.glob("*.parquet"))
     dataset = {
-        "fixture": "AWS EC2 g7e.4xlarge local NVMe",
         "generationScript": "fixture/fixture.sh tpcds generate",
         "generatorImplementation": "fixture/tpc-ds/generate.py",
         "scaleFactor": "sf100",
@@ -131,7 +137,7 @@ def main() -> None:
         ),
         "nativeProfileName": gpu_meta.get("tpcds_benchmark_native_profile_name", "sf100_gpu_throughput"),
         "nativeProfileSource": gpu_meta.get("tpcds_benchmark_native_profile_source", "env_profile"),
-        "nativeDeviceBudgetBytes": int(gpu_meta.get("tpcds_benchmark_native_device_budget_bytes", "0") or 0),
+        # No device budget: the bench header prints the profile's 256 MiB placeholder, not the automatic limit the run used.
         "nativeMaxSourceChunkBytes": int(gpu_meta.get("tpcds_benchmark_native_max_source_chunk_bytes", "0") or 0),
         "nativeMaxRowGroupsPerChunk": int(
             gpu_meta.get("tpcds_benchmark_native_max_row_groups_per_chunk", "0") or 0
@@ -159,7 +165,6 @@ def main() -> None:
         "speedup": round(cpu_for_gpu / gpu_total, 3) if gpu_total else None,
         "gpuFasterCount": sum(1 for ratio in ratios if ratio >= 1),
         "gpuSlowerCount": sum(1 for ratio in ratios if ratio < 1),
-        "maxReservationLivePeakBytes": max((row["reservationLivePeakBytes"] for row in rows), default=0),
         "maxPeakMemoryOperatorClassBytes": max((row["peakMemoryOperatorClassBytes"] for row in rows), default=0),
         "fastestSpeedupQuery": max(gpu_succ, key=lambda row: row["speedup"] or 0)["queryId"] if gpu_succ else "",
         "slowestSpeedupQuery": min(gpu_succ, key=lambda row: row["speedup"] or 1e18)["queryId"] if gpu_succ else "",
@@ -168,14 +173,15 @@ def main() -> None:
     }
     stamp = args.generated_at_utc
     if not stamp:
-        for part in args.gpu_tsv.parts:
-            if part.startswith("20") and "T" in part and part.endswith("Z"):
-                raw = part.split("_")[-1]
-                stamp = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}T{raw[9:11]}:{raw[11:13]}:{raw[13:15]}Z"
-                break
-        stamp = stamp or "unknown"
+        m = re.search(r"(20\d{6}T\d{6}Z)", str(args.gpu_tsv))
+        if m:
+            raw = m.group(1)
+            stamp = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}T{raw[9:11]}:{raw[11:13]}:{raw[13:15]}Z"
+        else:
+            stamp = "unknown"
     payload = {
         "generatedAtUtc": stamp,
+        "environment": environment,
         "dataset": dataset,
         "config": config,
         "summary": summary,
@@ -194,7 +200,6 @@ def main() -> None:
   runtimeOperatorClass: string;
   peakMemoryOperatorClass: string;
   peakMemoryOperatorClassBytes: number;
-  reservationLivePeakBytes: number;
   parquetReadTimeMs: number | null;
   sourceReadTimeMs: number | null;
   operatorTimeMs: number | null;
@@ -205,11 +210,12 @@ def main() -> None:
     label = args.gpu_tsv.parent.name
     body = json.dumps(payload, indent=2)
     text = (
-        f"// Generated from target/bench/{label}/cpu_tpcds_three_way_bench.tsv and gpu_tpcds_three_way_bench.tsv.\n"
+        f"// Generated from target/bench/{label}/{args.cpu_tsv.name} and {args.gpu_tsv.name}.\n"
         f"// Do not hand-edit benchmark values; regenerate from the TSV artifacts.\n\n"
         f"{type_block}\n"
         f"export const tpcdsSf100Benchmark = {body} satisfies {{\n"
         f"  generatedAtUtc: string;\n"
+        f"  environment: Record<string, unknown>;\n"
         f"  dataset: Record<string, unknown>;\n"
         f"  config: Record<string, unknown>;\n"
         f"  summary: Record<string, unknown>;\n"

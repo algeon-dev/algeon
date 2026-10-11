@@ -4,7 +4,7 @@
 Usage:
   python3 website/scripts/generate_tpch_sf100_benchmark_ts.py \
     --tsv target/bench/.../native_tpch_benchmark.tsv \
-    --stderr target/bench/.../native_tpch_benchmark.stderr \
+    --environment target/bench/.../environment.json \
     --kvikio-compat-mode ON \
     --out website/src/data/tpchSf100Benchmark.ts
 """
@@ -56,17 +56,6 @@ def inum(value: str | None) -> int:
     return int(n)
 
 
-def parse_gate_lines(stderr_text: str) -> tuple[str, str]:
-    bounded = ""
-    full = ""
-    for line in stderr_text.splitlines():
-        if "stage=sf100_bounded_reservation_gate" in line:
-            bounded = line.strip()
-        elif "stage=sf100_full_reservation_health_gate" in line:
-            full = line.strip()
-    return bounded, full
-
-
 def generated_at_from_path(tsv: Path, meta: dict[str, str]) -> str:
     m = re.search(r"(20\d{6}T\d{6}Z)", str(tsv))
     if m:
@@ -83,15 +72,14 @@ def nullish_ms(value: str | None) -> float | None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tsv", type=Path, required=True)
-    ap.add_argument("--stderr", type=Path, default=None)
+    ap.add_argument("--environment", type=Path, required=True)
     ap.add_argument("--kvikio-compat-mode", default="ON")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--artifact-label", default=None, help="comment label; default = tsv parent dir name")
     args = ap.parse_args()
 
     meta, rows = load_tsv(args.tsv)
-    stderr_text = args.stderr.read_text() if args.stderr and args.stderr.exists() else ""
-    bounded_gate, full_gate = parse_gate_lines(stderr_text)
+    environment = json.loads(args.environment.read_text())
 
     query_ids = [r["query_id"] for r in rows]
     cpu_total = sum(fnum(r.get("cpu_wall_ms")) or 0.0 for r in rows)
@@ -121,7 +109,6 @@ def main() -> None:
                 "parquetFiles": inum(r.get("parquet_files")),
                 "peakMemoryOperatorClass": r.get("peak_memory_operator_class", "") or "",
                 "peakMemoryOperatorClassBytes": inum(r.get("peak_memory_operator_class_bytes")),
-                "reservationLivePeakBytes": inum(r.get("reservation_live_peak_bytes")),
                 "sourcePredicatePushdownStatus": r.get("source_predicate_pushdown_status", "") or "",
                 "partitionedJoinCount": inum(r.get("partitioned_join_count")),
                 "joinPartitioningStatus": r.get("join_partitioning_status", "") or "",
@@ -144,19 +131,15 @@ def main() -> None:
         "maxPeakMemoryOperatorClassBytes": max(
             (inum(r.get("peak_memory_operator_class_bytes")) for r in rows), default=0
         ),
-        "maxReservationLivePeakBytes": max((inum(r.get("reservation_live_peak_bytes")) for r in rows), default=0),
         "parquetFilesSummedAcrossQueries": sum(inum(r.get("parquet_files")) for r in rows),
         "rowGroupsSelectedSummedAcrossQueries": sum(inum(r.get("row_groups_selected")) for r in rows),
         "fastestSpeedupQuery": fastest,
         "slowestSpeedupQuery": slowest,
-        "reservationGateLine": bounded_gate,
-        "fullReservationGateLine": full_gate,
     }
 
     # Preserve known website fixture wording whenever generation command matches.
     gen_cmd = meta.get("tpch_dataset_generation_command", "fixture/fixture.sh tpch generate")
     dataset = {
-        "fixture": "AWS EC2 g7e.4xlarge local NVMe",
         "generationScript": gen_cmd if gen_cmd.startswith("fixture/") else "fixture/fixture.sh tpch generate",
         "generatorImplementation": "fixture/tpc-h/generate.py",
         "scaleFactor": meta.get("tpch_dataset_scale_factor", "sf100"),
@@ -186,6 +169,7 @@ def main() -> None:
         "nativeMemoryPolicy": meta_or("tpch_benchmark_native_memory_policy", "bounded"),
         "nativeProfileName": meta_or("tpch_benchmark_native_profile_name", "sf100_gpu_throughput"),
         "nativeProfileSource": meta_or("tpch_benchmark_native_profile_source", "resolved_values"),
+        "nativeDeviceBudgetPolicy": meta_or("tpch_benchmark_native_device_budget_policy", "automatic"),
         "nativeDeviceBudgetBytes": inum(
             meta_or("tpch_benchmark_native_device_budget_bytes", "102005473280")
         ),
@@ -208,15 +192,12 @@ def main() -> None:
         "nativeRuntimePolicy": meta_or(
             "tpch_benchmark_native_runtime_policy", "shared_per_benchmark_run"
         ),
-        "nativeSourceCachePolicy": meta_or("tpch_benchmark_native_source_cache_policy", "disabled"),
-        "nativeSourceCacheMaxRetainedBytes": meta_or(
-            "tpch_benchmark_native_source_cache_max_retained_bytes", "none"
-        ),
         "kvikioCompatMode": args.kvikio_compat_mode,
     }
 
     payload = {
         "generatedAtUtc": generated_at_from_path(args.tsv, meta),
+        "environment": environment,
         "dataset": dataset,
         "config": config,
         "summary": summary,
@@ -236,12 +217,6 @@ def main() -> None:
   parquetFiles: number;
   peakMemoryOperatorClass: string;
   peakMemoryOperatorClassBytes: number;
-  reservationLivePeakBytes: number;
-  sourceCacheHits: number;
-  sourceCacheMisses: number;
-  sourceCacheInserts: number;
-  sourceCacheInsertSkipped: number;
-  sourceCacheRetainedBytes: number;
   sourcePredicatePushdownStatus: string;
   partitionedJoinCount: number;
   joinPartitioningStatus: string;

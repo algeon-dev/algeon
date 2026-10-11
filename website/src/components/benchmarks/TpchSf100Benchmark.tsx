@@ -93,7 +93,7 @@ export default function TpchSf100Benchmark(): React.ReactElement {
   }));
   const memoryData = rows.map((row) => ({
     query: row.queryId,
-    'Reservation peak': row.reservationLivePeakBytes / bytesPerGiB,
+    'Task memory peak': row.peakMemoryOperatorClassBytes / bytesPerGiB,
   }));
 
   return (
@@ -104,8 +104,8 @@ export default function TpchSf100Benchmark(): React.ReactElement {
             <li>
               <strong>Result:</strong> CPU {formatSeconds(summary.cpuTotalMs)},
               GPU {formatSeconds(summary.gpuTotalMs)}, CPU / GPU{' '}
-              {formatSpeedup(summary.speedup)}, peak reservation{' '}
-              {formatGiB(summary.maxReservationLivePeakBytes)}.
+              {formatSpeedup(summary.speedup)}, largest task memory peak{' '}
+              {formatGiB(summary.maxPeakMemoryOperatorClassBytes)}.
             </li>
           </ul>
         </div>
@@ -158,19 +158,8 @@ export default function TpchSf100Benchmark(): React.ReactElement {
             </TabItem>
             <TabItem value="memory" label="Memory pressure">
               <p className={styles.chartCaption}>
-                Query-level reservation ledger high-water marks used by bounded admission.
+                Largest cuDF allocator peak that one compiled task reported, per query.
               </p>
-              <ul className={styles.chartNotes}>
-                <li>
-                  <strong>Reservation peak</strong> is the whole-query live reserved
-                  byte peak, not an operator-class diagnostic.
-                </li>
-                <li>
-                  <code>nvidia-smi</code> can be higher or lower because it samples
-                  process/GPU memory externally and includes CUDA/libcudf allocator
-                  state outside the query reservation ledger.
-                </li>
-              </ul>
               <div className={styles.chart}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={memoryData} margin={{top: 8, right: 16, left: 0, bottom: 0}}>
@@ -184,7 +173,7 @@ export default function TpchSf100Benchmark(): React.ReactElement {
                       cursor={tooltipCursorStyle}
                       formatter={(value) => formatGiBShort(Number(value))}
                     />
-                    <Bar dataKey="Reservation peak" fill={colorMemory} />
+                    <Bar dataKey="Task memory peak" fill={colorMemory} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
