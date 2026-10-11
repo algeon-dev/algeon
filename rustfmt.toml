@@ -1,23 +1,14 @@
-# Requires nightly rustfmt (`cargo +nightly fmt`). Options such as imports_granularity
-# and group_imports are still unstable in Rust 1.99, and stable rustfmt skips them.
+# Requires nightly rustfmt for unstable formatting options.
 unstable_features = true
 style_edition = "2024"
 max_width = 120
 
-# Keep simple logic compact
 use_small_heuristics = "Max"
-
-# Use shorthand to save tokens in struct initialization
 use_field_init_shorthand = true
+where_single_line = true
+match_block_trailing_comma = true
 
-# Merge all imports from the same crate.
 imports_granularity = "Crate"
 group_imports = "StdExternalCrate"
 
 format_code_in_doc_comments = true
-
-# Keep "where" clauses and simple blocks on one line
-where_single_line = true
-
-# Trailing commas help the Agent avoid "missing comma" syntax errors during generation
-match_block_trailing_comma = true

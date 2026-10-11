@@ -4,11 +4,10 @@ import followup from '@site/static/data/amazon-review-followup.json';
 import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
-A support analyst wants to find changes worth investigating across years.
 The query groups 99,539 sampled 2021 to 2022 headphone and earbud reviews using
-prepared text vectors, then compares each product's share in each KMeans group.
-Each denominator counts sampled reviews rated at most two stars for that
-product and year.
+prepared text vectors, then compares each product's share in each KMeans group
+across the two years. Each denominator counts sampled reviews rated at most two
+stars for that product and year.
 
 The KMeans assignments join back to review dates, product titles and original
 text. The linked example is the 2022 review with the smallest ID for its

@@ -116,11 +116,9 @@ bash scripts/check_all.sh
 
 For a run that outlives a terminal or tool call, launch it with `nohup` and
 poll `target/check-all/latest/summary.tsv`. With no arguments the script
-starts policy checks and the `test-build` phase. That phase captures fresh
-`cargo metadata --all-features --format-version 1` output and builds through
-`cargo nextest list --workspace --all-features --list-type binaries-only
---message-format json`. The list reuses the captured Cargo metadata. The
-other groups start after that phase completes:
+starts policy checks and the `test-build` phase, which captures Cargo metadata
+and builds the test binaries once. The other groups start after that phase
+completes:
 
 | Group | What runs | Order |
 | --- | --- | --- |
@@ -130,9 +128,8 @@ other groups start after that phase completes:
 | hygiene | seven feature-isolation shards and their union check, the shipped-server clippy lane, `msrv-check`, a docs.rs native-free compile check, the hidden-API consumer probe, and the component-package check | Independent after the test build; compilation uses `nice -n 10` and separate target directories |
 
 - A failed phase in any group fails the gate.
-- Nextest execution uses `--cargo-metadata` and `--binaries-metadata` instead
-  of build-selection flags. Those files fix the same full-workspace,
-  all-features graph as `cargo nt`, and avoid another Cargo build-lock wait.
+- Nextest reuses the test build's Cargo and binaries metadata, which fix the
+  same full-workspace, all-features graph as `cargo nt`.
 - Every other Cargo phase uses `--workspace --all-features`. Feature-isolation
   and the shipped-server clippy lane are the exceptions
   ([Feature coverage](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#feature-coverage)); the feature-off

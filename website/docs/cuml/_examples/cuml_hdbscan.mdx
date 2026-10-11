@@ -12,14 +12,12 @@ to summarize the resulting groups.
 The capture contains seven clusters and 508 rows assigned to noise (`cluster_id
 = -1`). HDBSCAN keeps those noise rows in the output. Cluster IDs are local to
 this fit. The 930-file cluster contains 736 `snackarcin` files, 193
-`opensupdater` files, and one file without a family label. The 1,005-file
-cluster has 734 family-labeled files, 547 of them `malicord`. These family
-counts describe the families present within each fitted group.
+`opensupdater` files, and one file without a family label.
 All challenge files are positive examples, so this cohort cannot measure a
 false-positive rate.
 
-The SQL returns one row per cluster. `example_sha256` is the minimum SHA-256
-within that cluster's most common labeled family. It provides an audit link;
+`example_sha256` is the minimum SHA-256 within that cluster's most common
+labeled family. It provides an audit link;
 the query does not compute a representative sample. The complete capture
 preserves the full SHA values.
 

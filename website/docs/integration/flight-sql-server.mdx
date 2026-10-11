@@ -281,14 +281,6 @@ Flight SQL:
 arrow_cli --host 127.0.0.1 --port 50051 --timeout 120
 ```
 
-GPU execution requires a CUDA-capable host and the runtime libraries for the
-enabled Cargo features. In the default mode, relational candidates the server
-does not select for GPU execution stay in DataFusion; a failure after GPU
-execution starts is returned as a structured error and is not replayed on CPU.
-Use `EXPLAIN GPU` (see
-[GPU Coverage Validation](./gpu-coverage-validation.mdx)) to see which parts of
-a query will run on the GPU.
-
 ## Client settings {/* #client-settings */}
 
 | Client | Endpoint | Basic credentials | Trust a server certificate |

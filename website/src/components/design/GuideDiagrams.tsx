@@ -6,13 +6,14 @@ import styles from './styles.module.css';
 
 type Point = [number, number];
 
-function Card({x, y, w, h = 72, name, note, tone = 'plain', kind}: DiagramNode & {
+function Card({x, y, w, h = 72, name, note, tone = 'plain', kind, dashed = false}: DiagramNode & {
   x: number;
   y: number;
   w: number;
   h?: number;
+  dashed?: boolean;
 }) {
-  return <Box node={{name, note, tone, kind}} x={x} y={y} w={w} h={h} />;
+  return <Box node={{name, note, tone, kind}} x={x} y={y} w={w} h={h} borderDashed={dashed} />;
 }
 
 function Arrow({id, points, dashed = false, arrowhead = true}: {
@@ -262,9 +263,9 @@ export function ParquetRead() {
 }
 
 export function StorageRoutes() {
-  return <GuideFigure width={960} minWidth={880} height={440}
-    label="Payload routes for a PCIe-attached GPU. Default local compatibility path: NVMe file, POSIX read to pinned host bounce buffer, PCIe copy to VRAM. Conditional GDS path: storage DMA through cuFile to GPU memory. S3 path: HTTP range request through libcurl host buffers, copy to pinned host staging, PCIe copy to VRAM. Each route occupies one horizontal row."
-    caption="The diagram shows a PCIe-attached GPU. Payload ends in VRAM; metadata and I/O submission remain on the CPU. The GDS row requires a supported and configured direct path.">
+  return <GuideFigure width={960} minWidth={880} height={592}
+    label="Payload routes for a PCIe-attached GPU. Default local compatibility path: NVMe file, POSIX read to pinned host bounce buffer, PCIe copy to VRAM. Conditional GDS path: storage DMA through cuFile to GPU memory. S3 path: HTTP range request through libcurl host buffers, copy to pinned host staging, PCIe copy to VRAM. cuObject path, drawn dashed and not yet supported by Algeon: an object server with cuObject writes the payload by RDMA over InfiniBand or RoCE into a registered VRAM buffer. Each route occupies one horizontal row."
+    caption="The diagram shows a PCIe-attached GPU. Payload ends in VRAM; metadata and I/O submission remain on the CPU. The GDS row requires a supported and configured direct path. The dashed cuObject row shows a route Algeon does not support yet.">
     <Label x={8} y={18}>Local file · cuDF default compatibility path</Label>
     <Arrow id="io:posix" points={[[182, 82], [474, 82]]} />
     <BackedLabel x={328} y={68} text="pread" />
@@ -291,6 +292,12 @@ export function StorageRoutes() {
     <Card x={256} y={357} w={174} name="libcurl buffers" note="Host memory" tone="plan" />
     <Card x={514} y={357} w={190} name="Pinned staging" note="Batched curl chunks" tone="bridge" />
     <Card x={804} y={357} w={148} name="GPU VRAM" note="For decoding" tone="gpu" />
+    {sketchLine('io:divider3', 8, 450, 952, 450, {stroke: COLOR.border, dashed: true})}
+    <Label x={8} y={481}>S3 · cuObject RDMA path · not yet supported</Label>
+    <Arrow id="io:cuobject" points={[[182, 545], [798, 545]]} dashed />
+    <BackedLabel x={490} y={529} text="RDMA write via cuObject over InfiniBand / RoCE" />
+    <Card x={8} y={509} w={168} name="S3 object" note="cuObject server" tone="lake" dashed />
+    <Card x={804} y={509} w={148} name="GPU VRAM" note="For decoding" tone="gpu" dashed />
   </GuideFigure>;
 }
 

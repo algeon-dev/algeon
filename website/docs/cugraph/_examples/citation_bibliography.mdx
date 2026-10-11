@@ -3,10 +3,11 @@ import capture from '@site/static/data/citation-investigation-capture.json';
 import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
-A researcher wants related reading based on shared references. Candidates are
-papers from 2017 to 2020 with at least ten references and one of four catalog labels:
-natural language processing, language model, machine translation or question
-answering. Papers with the seed's title are excluded.
+The seed is *Attention is all you need*, and related reading is ranked by
+shared references. Candidates are papers from 2017 to 2020 with at least ten
+references and one of four catalog labels: natural language processing,
+language model, machine translation or question answering. Papers with the
+seed's title are excluded.
 
 Jaccard divides shared references by the union of the reference lists. The
 query gives cited papers negative reference-role IDs and citing papers
@@ -36,8 +37,7 @@ Translation by Jointly Learning to Align and Translate*.
 <p className="fineprint">The query took {timings.queries.citation.shared_references.elapsed_s.toFixed(2)} s.</p>
 
 The score is 8 / (22 + 13 − 8) = 0.296 after rounding. The shared works explain
-what produced the ranking and give the researcher a bibliography to inspect.
-Overlap does not establish topic equivalence or paper quality.
+what produced the ranking and form a bibliography to inspect.
 
 <div className="fineprint">
 

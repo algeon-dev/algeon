@@ -21,6 +21,8 @@ from sklearn.metrics import (
     recall_score,
 )
 
+from merrec_verify_common import query_record
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "target/merrec-exploration/results"
@@ -41,31 +43,17 @@ GPU_RESULTS = {
 }
 
 
-def query_record(name: str) -> dict[str, object]:
-    path = QUERY_RECORDS / f"{name}.json"
-    if not path.is_file():
-        return {"path": str(path.relative_to(ROOT)), "status": "missing"}
-    record = json.loads(path.read_text())
-    return {
-        "path": str(path.relative_to(ROOT)),
-        "status": record.get("status"),
-        "query_id": record.get("query_id"),
-        "rows": record.get("rows"),
-        "error": record.get("error"),
-    }
-
-
 def query_provenance(model: str, result_filename: str) -> dict[str, object]:
     corrected_name = f"{model}_ordered"
     return {
         "initial_attempt": {
             "sql": f"docs/research/merrec/sql/probes/{model}.sql",
-            **query_record(model),
+            **query_record(QUERY_RECORDS, ROOT, model),
         },
         "verified_attempt": {
             "sql": f"docs/research/merrec/sql/probes/{corrected_name}.sql",
             "parquet": str((RESULTS / result_filename).relative_to(ROOT)),
-            **query_record(corrected_name),
+            **query_record(QUERY_RECORDS, ROOT, corrected_name),
         },
     }
 

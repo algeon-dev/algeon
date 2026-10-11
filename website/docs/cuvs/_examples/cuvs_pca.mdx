@@ -8,8 +8,7 @@ This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.m
 The HDBSCAN review case reduces the 512-dimensional Win32 challenge histogram
 to 16 PCA components before clustering. A CPU geometry check reports that
 these 16 centered components retain 89.997% of the input variance
-for the 3,225-row cohort. This reduction keeps more of the cohort's centered
-variance than the two-dimensional inspection projection below.
+for the 3,225-row cohort.
 
 The query returns two PCA coordinates for all 3,225 Win32 challenge rows. The
 first two centered components retain 71.187% of the variance. Labels and
@@ -18,8 +17,8 @@ of row IDs and histograms.
 
 <div className="fineprint">
 
-A separate centered-Gram comparison against the CPU reference passed with
-relative Frobenius error `4.681247737755186e-07` (tolerance `0.0001`).
+A separate centered-Gram comparison against the CPU reference passed with a
+relative Frobenius error of about `4.7e-7` against a `0.0001` tolerance.
 The SQL result contains 3,225 rows and recorded `native` disposition.
 
 </div>

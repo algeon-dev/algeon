@@ -61,7 +61,7 @@ adapter, planning, runtime and engine boundaries. Their native dependencies are:
 
 | Component | Role | Language | How it is consumed |
 | --- | --- | --- | --- |
-| `components/cudf` | Safe Rust API over libcudf (`cudf`, `cudf-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/algeon-dev/cudf) | Rust + C++/CUDA | one component + submodule |
+| [`components/cudf`](https://github.com/algeon-dev/algeon/blob/main/components/cudf/README.md) | Safe Rust API over libcudf (`cudf`, `cudf-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/algeon-dev/cudf) | Rust + C++/CUDA | one component + submodule |
 | `components/cuvs` | Safe Rust API over libcuvs (`cuvs`, `cuvs-sys`); pins the [`cuvs` fork](https://github.com/algeon-dev/cuvs) | Rust + C++/CUDA | one component + submodule |
 | `components/cuml` | Safe Rust API over libcuml (`cuml`, `cuml-sys`); pins the cuML submodule | Rust + C++/CUDA | one component + submodule |
 | `components/cugraph` | Safe Rust API over libcugraph (`cugraph`, `cugraph-sys`); pins the [`cugraph` fork](https://github.com/algeon-dev/cugraph) | Rust + C++/CUDA | one component + submodule |

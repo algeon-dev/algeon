@@ -32,8 +32,9 @@ A statement passes a subquery to a GPU UDTF (user-defined table function)
 and gets rows back. SQL groups those rows, joins them to names or labels, or
 passes them to another UDTF. The
 [MerRec campaign statement](./guides/datasets/merrec.mdx#audience-funnel)
-ranks a graph's output, searches vectors among the result, scores the union
-with a trained model and counts the outcome, inside one physical plan. The
+scores shoppers with personalized PageRank, finds taste lookalikes of earlier
+Pokemon buyers with a vector search, ranks the union with a trained model and
+counts who later bought Pokemon, inside one physical plan. The
 other [demo datasets](./guides/datasets/index.mdx) apply the same pattern to
 a citation graph, a product catalog and a malware benchmark.
 

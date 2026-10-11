@@ -1,5 +1,6 @@
 import clsx from 'clsx';
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
+import {flushSync} from 'react-dom';
 import styles from './styles.module.css';
 import {
   HAND, SANS, handTextWidth, sansTextWidth,
@@ -19,6 +20,11 @@ import {
  * proportionally on narrow viewports (viewBox), with a legibility minimum after
  * which the container scrolls horizontally and fades the cut edge. A
  * FlowDiagram switches to a top-to-bottom drawing below that minimum width.
+ *
+ * Every figure has an enlarge control that opens the same drawing in a modal
+ * dialog at a chosen scale. The dialog renders the SVG again rather than a
+ * raster copy, so its text stays selectable, and it pans by native scrolling
+ * so a drag keeps selecting text.
  *
  * Shapes:
  * - SystemDiagram: a lane-based DAG (host / GPU swim lanes, fork & merge
@@ -142,7 +148,7 @@ export function measureNode(node: DiagramNode, fonts: BoxFonts = COMPACT_FONTS):
  * over an opaque surface, hand-lettered title with sans notes, optional
  * interactivity. */
 export function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS,
-  borderColor = INK, borderWidth = 1.5}: {
+  borderColor = INK, borderWidth = 1.5, borderDashed = false}: {
   node: DiagramNode;
   x: number;
   y: number;
@@ -153,6 +159,7 @@ export function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS
   fonts?: BoxFonts;
   borderColor?: string;
   borderWidth?: number;
+  borderDashed?: boolean;
 }) {
   const notes = noteLines(node);
   const tone = node.tone ?? 'plain';
@@ -192,6 +199,7 @@ export function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS
   const {fill, outline} = sketchRoundRectLayers(`box:${node.kind ?? ''}:${node.name}`, x, y, w, h, BOX_RADIUS, {
     stroke: selected ? toneColor : borderColor,
     strokeWidth: selected ? borderWidth + 0.8 : borderWidth,
+    dashed: borderDashed,
     fill: tinted ? toneColor : undefined,
     className: styles.boxRect,
   });
@@ -256,24 +264,227 @@ export interface FigureCanvas {
   children: React.ReactNode;
 }
 
-function Canvas({svgW, svgH, minW, maxW, interactive, ariaLabel, center, className, children}: {
+function Canvas({ref, svgW, svgH, minW, maxW, scale, interactive, ariaLabel, center, className, children}: {
+  ref?: React.Ref<SVGSVGElement>;
   svgW: number;
   svgH: number;
   minW: number;
   maxW?: number;
+  /** Fixed scale for the enlarge dialog; without it the drawing fills its column. */
+  scale?: number;
   interactive?: boolean;
   ariaLabel?: string;
   center?: boolean;
   className?: string;
   children: React.ReactNode;
 }) {
+  // In the dialog's flex viewport, auto margins center a drawing smaller than
+  // the viewport and resolve to zero once it overflows, so every edge stays
+  // reachable by scrolling.
+  const size = scale === undefined
+    ? {maxWidth: maxW ?? svgW, minWidth: Math.min(maxW ?? svgW, minW), margin: center ? '0 auto' : undefined}
+    : {width: svgW * scale, height: svgH * scale, flex: 'none', margin: 'auto'};
   return (
-    <svg className={clsx(styles.canvas, className)} viewBox={`0 0 ${svgW} ${svgH}`} width="100%"
+    <svg ref={ref} className={clsx(styles.canvas, className)} viewBox={`0 0 ${svgW} ${svgH}`} width="100%"
       role={interactive ? 'group' : 'img'} aria-label={ariaLabel}
-      style={{maxWidth: maxW ?? svgW, minWidth: Math.min(maxW ?? svgW, minW),
-        margin: center ? '0 auto' : undefined, fontFamily: SANS}}>
+      style={{...size, fontFamily: SANS}}>
       {children}
     </svg>
+  );
+}
+
+function ControlIcon({children}: {children: React.ReactNode}) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+
+const ZOOM_STEPS = [0.5, 0.75, 1, 1.5, 2, 3, 4];
+// Fit enlarges a small drawing at most this much, so a few boxes do not fill a
+// large screen.
+const FIT_MAX = 2;
+// Zoom steps share the curve of the enlarge morph, whose timing lives in
+// styles.module.css under the same view-transition name as MORPH_NAME.
+const EASE_OUT = 'cubic-bezier(0.16, 1, 0.3, 1)';
+const ZOOM_STEP_MS = 220;
+const MORPH_NAME = 'figure-enlarge';
+
+const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** Runs `update` as a view transition in which `from` before the update and
+ * `to()` after it share one name, so the drawing grows from the page into the
+ * dialog, or shrinks back, while everything else crossfades. `update` must
+ * commit synchronously. Without the API, or under reduced motion, the update
+ * applies at once. */
+function morph(from: SVGElement | null, update: () => void, to: () => SVGElement | null) {
+  if (!('startViewTransition' in document) || reduceMotion()) {
+    update();
+    return;
+  }
+  from?.style.setProperty('view-transition-name', MORPH_NAME);
+  let target: SVGElement | null = null;
+  const transition = document.startViewTransition(() => {
+    from?.style.removeProperty('view-transition-name');
+    update();
+    target = to();
+    target?.style.setProperty('view-transition-name', MORPH_NAME);
+  });
+  // A newer transition skips this one; its update has still run.
+  transition.ready.catch(() => {});
+  transition.finished.finally(() => target?.style.removeProperty('view-transition-name'));
+}
+
+/** The enlarge dialog: the figure's drawing at a fit-to-screen or stepped
+ * scale, with an interactive figure's detail panel underneath. Node selection
+ * stays in the figure's state, so the page and the dialog show the same
+ * selection. */
+function FigureDialog({drawing, narrow, interactive, ariaLabel, panel, canvasRef, returnTo, onClosed}: {
+  drawing: FigureCanvas;
+  narrow?: FigureCanvas;
+  interactive?: boolean;
+  ariaLabel?: string;
+  panel?: React.ReactNode;
+  canvasRef: React.RefObject<SVGSVGElement | null>;
+  /** The page drawing the dialog's drawing shrinks back into on close. */
+  returnTo: () => SVGElement | null;
+  onClosed: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<{x: number; y: number; rect: DOMRect} | null>(null);
+  const pressedBackdropRef = useRef(false);
+  const [room, setRoom] = useState<{w: number; h: number} | null>(null);
+  const [zoom, setZoom] = useState<number | 'fit'>('fit');
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    const viewport = viewportRef.current;
+    if (!dialog || !viewport) return undefined;
+    dialog.showModal();
+    viewport.focus({preventScroll: true});
+    // Border-box sizes include scrollbars, so stepping to a scale that
+    // overflows does not shrink the room that fit and the drawing choice read.
+    const measure = () => {
+      const style = getComputedStyle(viewport);
+      setRoom({
+        w: viewport.offsetWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+        h: viewport.offsetHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom),
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewport, {box: 'border-box'});
+    return () => observer.disconnect();
+  }, []);
+
+  // Below the wide drawing's legibility floor the dialog shows the narrow
+  // drawing, as the page does.
+  const shown = narrow && room && room.w < drawing.minW ? narrow : drawing;
+  const fit = room ? Math.min(room.w / shown.svgW, room.h / shown.svgH, FIT_MAX) : 1;
+  const scale = zoom === 'fit' ? fit : zoom;
+  const zoomOut = [...ZOOM_STEPS].reverse().find((step) => step < scale - 0.01);
+  const zoomIn = ZOOM_STEPS.find((step) => step > scale + 0.01);
+
+  const zoomTo = (next: number | 'fit') => {
+    const viewport = viewportRef.current;
+    const canvas = canvasRef.current;
+    if (viewport && canvas) {
+      anchorRef.current = {
+        x: (viewport.scrollLeft + viewport.clientWidth / 2) / viewport.scrollWidth,
+        y: (viewport.scrollTop + viewport.clientHeight / 2) / viewport.scrollHeight,
+        rect: canvas.getBoundingClientRect(),
+      };
+    }
+    setZoom(next);
+  };
+
+  // A zoom step keeps the point under the viewport's center in place, and the
+  // drawing scales there from its previous on-screen box. The animation is a
+  // transform on the live SVG, so the viewport clips it and the text stays
+  // selectable throughout.
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const canvas = canvasRef.current;
+    const anchor = anchorRef.current;
+    anchorRef.current = null;
+    if (!viewport || !canvas || !anchor) return;
+    for (const running of canvas.getAnimations()) running.cancel();
+    viewport.scrollLeft = anchor.x * viewport.scrollWidth - viewport.clientWidth / 2;
+    viewport.scrollTop = anchor.y * viewport.scrollHeight - viewport.clientHeight / 2;
+    if (reduceMotion()) return;
+    const from = anchor.rect;
+    const to = canvas.getBoundingClientRect();
+    const dx = from.left + from.width / 2 - (to.left + to.width / 2);
+    const dy = from.top + from.height / 2 - (to.top + to.height / 2);
+    canvas.animate(
+      [{transform: `translate(${dx}px, ${dy}px) scale(${from.width / to.width})`}, {transform: 'none'}],
+      {duration: ZOOM_STEP_MS, easing: EASE_OUT},
+    );
+  }, [scale]);
+
+  // A zoomed drawing overflows the viewport, and a morph would draw its
+  // unclipped snapshot over the toolbar, so only a fitted drawing morphs back;
+  // otherwise the dialog crossfades out.
+  const close = () => morph(zoom === 'fit' ? canvasRef.current : null, () => {
+    dialogRef.current?.close();
+    flushSync(onClosed);
+  }, returnTo);
+
+  // Escape stays animated while the browser lets the page cancel it; when it
+  // does not, the native close lands in onClose.
+  const onCancel = (e: React.SyntheticEvent<HTMLDialogElement>) => {
+    if (!e.cancelable) return;
+    e.preventDefault();
+    close();
+  };
+
+  // Clicks on the backdrop target the dialog itself. A press that starts
+  // inside, as a text selection drag does, never closes the dialog even when
+  // it is released over the backdrop.
+  const onPointerDown = (e: React.PointerEvent<HTMLDialogElement>) => {
+    pressedBackdropRef.current = e.target === e.currentTarget;
+  };
+  const onClick = (e: React.MouseEvent<HTMLDialogElement>) => {
+    if (pressedBackdropRef.current && e.target === e.currentTarget) close();
+  };
+
+  return (
+    <dialog ref={dialogRef} className={styles.zoomDialog} aria-label={ariaLabel ?? 'Diagram'}
+      onCancel={onCancel} onClose={onClosed} onPointerDown={onPointerDown} onClick={onClick}>
+      <div className={styles.zoomBar}>
+        <span className={styles.zoomHint}>Scroll to pan · drag to select text</span>
+        <div className={styles.zoomControls}>
+          <button type="button" className={styles.zoomButton} aria-label="Zoom out"
+            disabled={zoomOut === undefined} onClick={() => zoomOut !== undefined && zoomTo(zoomOut)}>
+            <ControlIcon><path d="M5 12h14" /></ControlIcon>
+          </button>
+          <span className={styles.zoomLevel}>{Math.round(scale * 100)}%</span>
+          <button type="button" className={styles.zoomButton} aria-label="Zoom in"
+            disabled={zoomIn === undefined} onClick={() => zoomIn !== undefined && zoomTo(zoomIn)}>
+            <ControlIcon><path d="M5 12h14" /><path d="M12 5v14" /></ControlIcon>
+          </button>
+          <button type="button" className={styles.zoomButton} aria-pressed={zoom === 'fit'}
+            onClick={() => zoomTo('fit')}>
+            Fit
+          </button>
+          <button type="button" className={styles.zoomButton} aria-label="Close" onClick={close}>
+            <ControlIcon><path d="M18 6 6 18" /><path d="m6 6 12 12" /></ControlIcon>
+          </button>
+        </div>
+      </div>
+      <div ref={viewportRef} className={clsx(styles.zoomViewport, zoom === 'fit' && styles.zoomFit)} tabIndex={0}>
+        {room ? (
+          <Canvas ref={canvasRef} svgW={shown.svgW} svgH={shown.svgH} minW={shown.minW} scale={scale}
+            interactive={interactive} ariaLabel={ariaLabel}>
+            {shown.children}
+          </Canvas>
+        ) : null}
+      </div>
+      {panel ? <div className={styles.zoomPanel}>{panel}</div> : null}
+    </dialog>
   );
 }
 
@@ -319,25 +530,44 @@ export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel,
   narrow?: FigureCanvas;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const dialogCanvasRef = useRef<SVGSVGElement>(null);
+  const [enlarged, setEnlarged] = useState(false);
   useOverflowEdges(scrollRef);
+  // The wide or the narrow drawing, whichever the container query shows.
+  const pageCanvas = () => Array.from(scrollRef.current?.querySelectorAll<SVGSVGElement>(':scope > svg') ?? [])
+    .find((svg) => svg.getClientRects().length > 0) ?? null;
+  const open = () => morph(pageCanvas(), () => flushSync(() => setEnlarged(true)), () => dialogCanvasRef.current);
   return (
     <div className={styles.figure}>
       <figure style={{margin: 0}}>
-        <div ref={scrollRef} className={clsx(styles.scroll, 'thin-scrollbar')}>
-          <Canvas className={narrow ? styles.wideCanvas : undefined} svgW={svgW} svgH={svgH} minW={minW}
-            maxW={maxW} interactive={interactive} ariaLabel={ariaLabel} center={center}>
-            {children}
-          </Canvas>
-          {narrow ? (
-            <Canvas className={styles.narrowCanvas} svgW={narrow.svgW} svgH={narrow.svgH} minW={narrow.minW}
-              interactive={interactive} ariaLabel={ariaLabel} center={center}>
-              {narrow.children}
+        <div className={clsx(styles.frame, enlarged && styles.frameEnlarged)}>
+          <div ref={scrollRef} className={clsx(styles.scroll, 'thin-scrollbar')}>
+            <Canvas className={narrow ? styles.wideCanvas : undefined} svgW={svgW} svgH={svgH} minW={minW}
+              maxW={maxW} interactive={interactive} ariaLabel={ariaLabel} center={center}>
+              {children}
             </Canvas>
-          ) : null}
+            {narrow ? (
+              <Canvas className={styles.narrowCanvas} svgW={narrow.svgW} svgH={narrow.svgH} minW={narrow.minW}
+                interactive={interactive} ariaLabel={ariaLabel} center={center}>
+                {narrow.children}
+              </Canvas>
+            ) : null}
+          </div>
+          <button type="button" className={styles.enlarge} aria-label="Enlarge diagram" title="Enlarge"
+            aria-haspopup="dialog" onClick={open}>
+            <ControlIcon>
+              <path d="M15 3h6v6" /><path d="M9 21H3v-6" /><path d="m21 3-7 7" /><path d="m3 21 7-7" />
+            </ControlIcon>
+          </button>
         </div>
         {caption ? <figcaption className={styles.caption}>{caption}</figcaption> : null}
       </figure>
       {panel}
+      {enlarged ? (
+        <FigureDialog drawing={{svgW, svgH, minW, children}} narrow={narrow} interactive={interactive}
+          ariaLabel={ariaLabel} panel={panel} canvasRef={dialogCanvasRef} returnTo={pageCanvas}
+          onClosed={() => setEnlarged(false)} />
+      ) : null}
     </div>
   );
 }
@@ -687,7 +917,7 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
   };
   const source: DiagramNode = {
     kind: 'S3-compatible',
-    name: 'Object storage',
+    name: 'Object storage(WIP)',
     note: 'Parquet · read-only',
     tone: 'lake',
   };
@@ -798,7 +1028,7 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
       <Box node={out} x={outLeft} y={outY} w={outSize.w} h={outSize.h} fonts={ARCH_FONTS} />
       <Box node={disk} x={colX} y={diskY} w={diskSize.w} h={diskSize.h} fonts={ARCH_FONTS} />
       <Box node={source} x={sourceCx - sourceSize.w / 2} y={sourceY} w={sourceSize.w} h={sourceSize.h}
-        fonts={ARCH_FONTS} />
+        fonts={ARCH_FONTS} borderDashed />
     </Figure>
   );
 }

@@ -31,7 +31,14 @@ filter = '''
 binary(/_gpu_exclusive$/)
 | test(/(^|::)gpu_exclusive::/)
 | (binary_id(algeon-cudf::interop_contracts_gpu) & test(/::(device_event_export_rejects_readiness_from_another_device|helper_built_exports_reject_cross_device_inputs)$/))
-| (binary_id(algeon-query-runtime) & test(/^runtime::query_service::tests::(multi_device_registry::(query_service_places_concurrent_runtime_handles_on_distinct_devices_when_available|alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse|escaped_query_anchor_blocks_only_its_selected_device)|release_commit::device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate|placement::queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting|queue::query_admission_waiter_timeout_reports_the_selected_device_requirement)$/))
+| (binary_id(algeon-query-runtime) & test(/(?x)
+    ^runtime::query_service::tests::(multi_device_registry::(query_service_places_concurrent_runtime_handles_on_distinct_devices_when_available
+    | alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse
+    | escaped_query_anchor_blocks_only_its_selected_device)
+    | release_commit::device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate
+    | placement::queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting
+    | queue::query_admission_waiter_timeout_reports_the_selected_device_requirement)$
+  /))
 | (binary_id(algeon-cudf) & test(/^runtime::execution_resolver::tests::cross_device_secondary_is_rejected_with_public_classification$/))
 | (binary_id(algeon-query-runtime) & test(/^runtime::cache::local_parquet::tests::source_copy_rejects_a_cache_domain_on_another_device$/))
 '''
@@ -50,28 +57,630 @@ binary(/_cpu$/)
 | binary_id(algeon-interop)
 | binary_id(algeon-server::bin/algeon_server) | binary_id(tools::bin/algeon_tools)
 | (binary_id(algeon-cudf) & test(/^testing::named_cases::|^internal::resolve::tests::/))
-| (binary_id(algeon-query-runtime) & test(/^(runtime::backend_core::tests::close_recovers_a_poisoned_generation_slot|runtime::backend_core::tests::close_and_wait_reclaims_the_backend_cleanup_worker|runtime::backend_core::tests::engine_begin_records_one_sealed_projection_despite_a_panicking_peer_sink|runtime::backend_core::tests::observation_delivery_rejects_all_blocking_close_apis_without_signaling_close|runtime::backend_core::tests::pure_config_rejects_invalid_device_profiles_before_construction|runtime::backend_core::tests::pure_config_rejects_explicit_zero_default_query_limit_before_construction|runtime::backend_core::tests::observation_completion_executor_spawn_failure_never_publishes_or_retains_live_owner|runtime::backend_core::tests::pure_config_rejects_a_reserve_that_exhausts_the_fallback_capacity|runtime::backend_core::tests::pure_config_rejects_an_explicit_limit_above_the_static_partition_with_the_largest_accepted_value|runtime::backend_core::tests::automatic_installation_bounds_cover_every_active_attempt|runtime::backend_core::tests::automatic_bounds_keep_device_source_work_independent_of_execution_prefetch|runtime::backend_core::tests::post_worker_failure_transfers_owner_release_to_cleanup_coordinator|runtime::backend_core::tests::close_after_report_ready_does_not_wait_for_a_held_completion_receiver|runtime::backend_core::tests::concurrent_begin_and_close_linearize_without_an_unaccounted_attempt|runtime::backend_core::tests::probe_capacities_resolve_owned_and_managed_bounds|runtime::backend_core::tests::probe_capacities_reject_partition_above_cuda_total|runtime::backend_core::tests::probe_capacities_reject_exhausting_reserve|runtime::backend_core::tests::derived_installation_bounds_clear_explicit_bounds|runtime::backend_core::tests::homogeneous_device_configs_rebind_template_ordinals|runtime::gpu::inventory::tests::telemetry_provider_samples_every_configured_ordinal_in_order|runtime::gpu::ledger::tests::explicit_query_caps_are_immutable_and_not_clamped_to_transient_capacity|runtime::gpu::ledger::tests::default_query_limit_is_not_clamped_to_transient_capacity|runtime::gpu::ledger::tests::frozen_resident_transition_moves_budget_to_resident_and_preserves_cap_boundary|runtime::gpu::ledger::tests::frozen_resident_bytes_plus_every_committed_cap_stay_within_managed_capacity|runtime::gpu::ledger::tests::frozen_resident_accepts_empty_outputs_but_remains_bounded_and_terminal|runtime::gpu::ledger::tests::resident_owners_are_observation_not_an_allocation_gate|runtime::gpu::ledger::tests::zero_query_caps_are_rejected_and_closed_admission_does_not_mutate_grants|runtime::gpu::ledger::tests::grant_identity_is_preserved_for_fixed_cap_admission|runtime::gpu::ledger::tests::transition_snapshots_expose_budget_to_resident_boundary|runtime::gpu::ledger::tests::grant_release_notifies_observers_after_their_registries_are_poisoned|runtime::gpu::ledger::tests::grant_drop_with_a_poisoned_frozen_domain_slot_keeps_the_device_open|runtime::gpu::ledger::tests::grant_release_completes_after_the_ledger_lock_is_poisoned|runtime::gpu::ledger::tests::prepared_resident_transition_keeps_full_grant_until_report_publication|runtime::gpu::ledger::tests::cache_residency_remains_separate_from_fixed_query_grants|runtime::gpu::ledger::tests::derived_default_grants_admit_two_parallel_attempts_and_queue_the_third|runtime::gpu::ledger::tests::explicit_large_grants_serialize_without_spending_cache_bytes|runtime::gpu::ledger::tests::cache_and_query_orders_promise_identical_capacity|runtime::gpu::ledger::tests::explicit_caps_beyond_the_query_share_queue_instead_of_clamping|runtime::gpu::ledger::tests::frozen_resident_returns_grant_minus_resident_in_query_share_terms|runtime::gpu::ledger::tests::failed_attempt_capacity_returns_only_after_cleanup_while_survivors_hold_theirs|runtime::gpu::ledger::tests::resident_owners_share_the_grant_generation_lease|runtime::query_service::tests::config_resources::query_service_admission_test_config_can_record_non_default_device_without_runtime_resources|runtime::query_service::tests::config_resources::query_service_rejects_inconsistent_dynamic_filter_execution_policy|runtime::query_service::tests::config_resources::query_service_rejects_inconsistent_keyed_hash_join_strategy_policy|runtime::query_service::tests::config_resources::query_service_rejects_invalid_aggregate_strategy_execution_policy|runtime::query_service::tests::config_resources::query_service_rejects_invalid_source_chunk_planning_policy|runtime::query_service::tests::config_resources::controller_honors_per_device_active_attempt_limit|runtime::query_service::tests::contexts::absolute_shutdown_deadline_includes_admission_close_lock_contention|runtime::query_service::tests::contexts::close_signal_is_nonblocking_and_fail_closed_during_admission_lock_contention|runtime::query_service::tests::contexts::quiescence_reached_after_absolute_deadline_is_not_accepted|runtime::query_service::tests::observation::fallible_activity_acquisition_rejects_without_entering_admission|runtime::query_service::tests::observation::async_permanent_rejection_remains_terminal_rejected|runtime::query_service::tests::observation::query_service_observes_queued_waiter_drop_as_cancellation|runtime::query_service::tests::observation::queued_waiter_drop_recovers_a_poisoned_admission_guard_before_terminal_completion|runtime::query_service::tests::observation::close_drains_queued_completion_from_a_poisoned_admission_guard|runtime::query_service::tests::observation::close_and_wait_quiesces_after_admission_poison|runtime::query_service::tests::observation::query_service_observes_pre_enqueue_rejection_without_reclassifying_error|runtime::query_service::tests::observation::query_service_observes_deterministic_queued_timeout_once|runtime::query_service::tests::observation::admission_snapshot_leaves_an_expired_waiter_to_its_own_step|runtime::query_service::tests::observation::sweep_finishes_timeout_after_waiter_consumes_terminal_error|runtime::query_service::tests::observation::sweep_preserves_attempt_binding_primary_failure_after_waiter_consumes_timeout|runtime::query_service::tests::observation::sweep_finishes_health_rejection_after_waiter_consumes_terminal_error|runtime::query_service::tests::placement::dropping_admission_ticket_wakes_a_close_waiter_after_cleanup|runtime::query_service::tests::placement::device_entries_keep_distinct_ordinal_capability_requirements|runtime::query_service::tests::placement::candidate_local_entry_resolution_prunes_only_the_rejected_ordinal|runtime::query_service::tests::placement::all_device_entry_resolution_failures_return_capability_reason_before_queueing|runtime::query_service::tests::release_commit::backend_unhealthy_rejects_new_submissions_while_inflight_finishes|runtime::resident::tests::host_output_schema_binding_rejects_count_and_type_mismatches_with_ordinal_facts|runtime::service_stream::tests::zero_capacity_rejects_before_runtime_initialization|runtime::service_stream::tests::stream_cleanup_jobs_run_on_background_thread|runtime::service_stream::tests::process_exit_joins_an_orphaned_cleanup_supervisor|runtime::service_stream::tests::cleanup_submission_racing_process_exit_is_retained_after_terminal_boundary|runtime::service_stream::tests::cleanup_supervisor_spawn_failure_rejects_pool_construction|runtime::service_stream::tests::close_and_wait_explicitly_joins_cleanup_supervisor_for_all_clones|runtime::service_stream::tests::unexpected_cleanup_supervisor_exit_is_permanent_and_joined|runtime::service_stream::tests::cleanup_supervisor_elects_one_joiner_for_concurrent_close_callers|runtime::service_stream::tests::cleanup_supervisor_precommit_join_timeout_is_retryable|runtime::service_stream::tests::cleanup_supervisor_join_panic_supersedes_provisional_clean_outcome|runtime::service_stream::permit_class_tests::zero_class_capacity_is_rejected|runtime::tests::p6_snapshot_json_shapes_match_goldens|runtime::tests::object_store_fetch_returns_bytes_from_full_get|runtime::tests::service_stream_pool_default_size_is_sm_aware_with_cap_and_fallback|runtime::tests::gpu_inventory_fake_drives_pool_size_and_budget_math_without_gpu|runtime::tests::default_lakehouse_cache_fill_budget_is_capped|runtime::tests::cache_fill_byte_budget_tracks_acquire_grow_and_release|runtime::tests::execution_cancellation_sleep_ends_at_cancellation_or_deadline|runtime::tests::cache_fill_byte_budget_grow_reports_saturation_without_waiting|runtime::tests::cache_fill_byte_budget_two_holders_growing_past_the_remainder_never_deadlock|runtime::tests::cache_fill_byte_budget_rejects_oversized_fetches|runtime::tests::execution_context_rejects_invalid_source_chunk_planning_options|runtime::tests::lakehouse_cache_fill_config_rejects_zero_controls)$/))
-| (binary_id(algeon-datafusion::cugraph_tests_gpu) & test(/^(cugraph_parity::compare::tests::partition_comparison_ignores_label_renaming|cugraph_parity::compare::tests::partition_comparison_reads_connected_component_ids|cugraph_parity::compare::tests::ecg_quality_comparison_accepts_different_partition_at_the_same_quality|cugraph_parity::compare::tests::ecg_quality_comparison_rejects_low_modularity_partition|cugraph_parity::compare::tests::ecg_quality_comparison_accepts_higher_modularity_than_the_oracle|cugraph_parity::compare::tests::ecg_quality_comparison_rejects_unreasonable_community_count|cugraph_parity::compare::tests::ecg_quality_comparison_rejects_incomplete_vertex_coverage|cugraph_parity::compare::tests::spectral_oracle_comparison_uses_partition_quality_not_exact_equality|cugraph_parity::compare::tests::spectral_quality_comparison_accepts_equal_quality_partition|cugraph_parity::compare::tests::spectral_quality_comparison_rejects_low_modularity_partition|cugraph_parity::compare::tests::repeated_partition_quality_accepts_stable_replay_and_rejects_degradation|cugraph_parity::compare::tests::repeated_partition_comparison_ignores_label_renaming_but_rejects_group_changes|cugraph_parity::compare::tests::batch_conversion_preserves_null_integer_cells|cugraph_parity::compare::tests::layout_structure_comparison_ignores_rigid_motion_and_rejects_scale_and_scrambled_layouts|cugraph_parity::compare::tests::average_ranks_share_the_mean_rank_across_ties|cugraph_parity::compare::tests::edge_comparison_ignores_undirected_orientation_and_duplicate_rows|cugraph_parity::compare::tests::similarity_multiset_comparison_preserves_duplicates_orientation_and_self_pairs|cugraph_parity::compare::tests::numeric_comparison_rejects_non_finite_gpu_values|cugraph_parity::compare::tests::numeric_comparison_keeps_integer_columns_exact|cugraph_parity::compare::tests::numeric_comparison_accepts_boundary_and_rejects_larger_delta|cugraph_parity::compare::tests::edge_betweenness_comparison_keys_reordered_rows|cugraph_parity::compare::tests::top_k_comparison_uses_vertex_set_under_score_ties|cugraph_parity::compare::tests::bfs_comparison_accepts_alternate_valid_predecessor_tree|cugraph_parity::parity_specs_declare_a_comparator_family|cugraph_parity::parity_oracle_lookup_reports_missing_with_refresh_hint|cugraph_parity::parity_manifest_loads_and_dataset_checksums_match|cugraph_parity::parity_specs_reference_existing_datasets|cugraph_parity::parity_specs_cover_all_registered_algorithms|cugraph_parity::parity_oracle_inventory_exactly_matches_specs|cugraph_sql_tests::binder::cugraph_named_relation_binder_requires_canonical_edge_columns|cugraph_sql_tests::binder::cugraph_named_relation_planner_keeps_side_inputs_as_children|cugraph_sql_tests::binder::cugraph_named_binder_rejects_conflicting_relations_and_values|cugraph_sql_tests::binder::cugraph_named_binder_derives_canonical_edge_and_bfs_schema|cugraph_sql_tests::binder::cugraph_force_atlas2_binds_both_optional_relations_as_children|cugraph_sql_tests::binder::cugraph_named_relation_binder_rejects_ambiguous_contract_columns|cugraph_sql_tests::binder::cugraph_named_binder_accepts_typed_literals_and_null_selectors|cugraph_sql_tests::binder::cugraph_named_binder_applies_scalar_values|cugraph_sql_tests::binder::cugraph_named_binder_is_order_independent|cugraph_sql_tests::binder::cugraph_named_binder_rejects_unknown_duplicate_missing_null_and_range_arguments|cugraph_sql_tests::metadata::cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api|cugraph_sql_tests::metadata::cugraph_examples_use_common_envelopes_with_flat_options|cugraph_sql_tests::metadata::cugraph_validation_uses_common_envelope_and_preserves_graph_facts|cugraph_sql_tests::metadata::cugraph_validation_output_schema_matches_pagerank_provider_for_each_vertex_domain|cugraph_sql_tests::metadata::cugraph_validation_requires_flat_common_options|cugraph_sql_tests::metadata::cugraph_validation_rejects_sssp_source_vertices_list|cugraph_sql_tests::metadata::cugraph_validation_keeps_relation_aware_errors_structured|cugraph_sql_tests::metadata::cugraph_validation_details_name_the_offending_argument_or_relation|cugraph_sql_tests::metadata::cugraph_force_atlas2_validation_resolves_every_optional_relation_role|cugraph_sql_tests::metadata::cugraph_normalized_calls_revalidate_and_schemas_project_group_constraints|cugraph_sql_tests::metadata::cugraph_validation_rejects_invalid_common_envelopes_before_graph_parsing|cugraph_sql_tests::metadata::cugraph_vertex_id_descriptors_match_registry_string_contracts|cugraph_sql_tests::metadata::cugraph_sql_registers_only_execution_udtfs_and_the_common_catalog|cugraph_sql_tests::metadata::cugraph_descriptor_weight_data_types_match_validation|cugraph_sql_tests::metadata::cugraph_string_selector_descriptors_publish_their_logical_types|cugraph_sql_tests::metadata::cugraph_m1_algorithms_validate_all_string_endpoint_family_combinations|cugraph_sql_tests::metadata::cugraph_m2_relation_side_inputs_validate_and_canonicalize_string_outputs|cugraph_sql_tests::metadata::cugraph_m3_string_selectors_validate_with_concrete_utf8_output_schemas|cugraph_sql_tests::metadata::cugraph_reinstall_is_idempotent_and_conflicting_graph_defaults_are_rejected|cugraph_sql_tests::metadata::cugraph_registry_projects_into_the_common_catalog|cugraph_sql_tests::planning::cugraph_leiden_result_feeds_a_native_partition_count_window|cugraph_sql_tests::planning::cugraph_edge_input_that_cannot_lower_is_reported_with_its_function_and_relation|cugraph_sql_tests::planning::native_required_names_the_blocking_subject_of_a_cugraph_edge_input|cugraph_sql_tests::planning::cugraph_sql_planning_preserves_structured_logical_edge_id_capability_errors|cugraph_sql_tests::planning::cugraph_similarity_sql_resolves_the_pair_relation_as_an_explicit_second_input|cugraph_sql_tests::planning::cugraph_strongly_connected_components_rejects_undirected_graph_option|cugraph_sql_tests::planning::cugraph_undirected_only_algorithms_reject_directed_graph_option|cugraph_sql_tests::planning::cugraph_table_function_scan_plans_int64_and_string_vertices_for_legacy_int32_algorithms|cugraph_sql_tests::planning::cugraph_result_columns_follow_the_documented_naming_in_descriptors_and_planned_schemas|cugraph_sql_tests::planning::cugraph_bfs_path_mode_exposes_path_schema_through_canonical_function|cugraph_sql_tests::planning::cugraph_bfs_path_mode_requires_target_relation|cugraph_sql_tests::planning::cugraph_bfs_path_name_is_not_registered_or_aliased|cugraph_sql_tests::planning::cugraph_bfs_normalized_output_mode_is_opt_in|cugraph_sql_tests::planning::cugraph_sql_planning_exposes_stable_output_schemas|cugraph_sql_tests::planning::cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains|cugraph_sql_tests::planning::cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema|cugraph_sql_tests::planning::cugraph_relation_arguments_reject_outer_query_correlation|cugraph_sql_tests::planning::cugraph_bfs_string_subplans_lower_to_native_gpu_producers|cugraph_sql_tests::planning::cugraph_bfs_predicate_options_plan_as_exec_side_inputs|cugraph_sql_tests::planning::cugraph_relation_projections_preserve_exact_camel_case_columns|cugraph_sql_tests::planning::cugraph_sql_planning_schema_contracts_are_exact)$/))
+| (binary_id(algeon-query-runtime) & test(/(?x)
+    ^(runtime::backend_core::tests::close_recovers_a_poisoned_generation_slot
+    | runtime::backend_core::tests::close_and_wait_reclaims_the_backend_cleanup_worker
+    | runtime::backend_core::tests::engine_begin_records_one_sealed_projection_despite_a_panicking_peer_sink
+    | runtime::backend_core::tests::observation_delivery_rejects_all_blocking_close_apis_without_signaling_close
+    | runtime::backend_core::tests::pure_config_rejects_invalid_device_profiles_before_construction
+    | runtime::backend_core::tests::pure_config_rejects_explicit_zero_default_query_limit_before_construction
+    | runtime::backend_core::tests::observation_completion_executor_spawn_failure_never_publishes_or_retains_live_owner
+    | runtime::backend_core::tests::pure_config_rejects_a_reserve_that_exhausts_the_fallback_capacity
+    | runtime::backend_core::tests::pure_config_rejects_an_explicit_limit_above_the_static_partition_with_the_largest_accepted_value
+    | runtime::backend_core::tests::automatic_installation_bounds_cover_every_active_attempt
+    | runtime::backend_core::tests::automatic_bounds_keep_device_source_work_independent_of_execution_prefetch
+    | runtime::backend_core::tests::post_worker_failure_transfers_owner_release_to_cleanup_coordinator
+    | runtime::backend_core::tests::close_after_report_ready_does_not_wait_for_a_held_completion_receiver
+    | runtime::backend_core::tests::concurrent_begin_and_close_linearize_without_an_unaccounted_attempt
+    | runtime::backend_core::tests::probe_capacities_resolve_owned_and_managed_bounds
+    | runtime::backend_core::tests::probe_capacities_reject_partition_above_cuda_total
+    | runtime::backend_core::tests::probe_capacities_reject_exhausting_reserve
+    | runtime::backend_core::tests::derived_installation_bounds_clear_explicit_bounds
+    | runtime::backend_core::tests::homogeneous_device_configs_rebind_template_ordinals
+    | runtime::gpu::inventory::tests::telemetry_provider_samples_every_configured_ordinal_in_order
+    | runtime::gpu::ledger::tests::explicit_query_caps_are_immutable_and_not_clamped_to_transient_capacity
+    | runtime::gpu::ledger::tests::default_query_limit_is_not_clamped_to_transient_capacity
+    | runtime::gpu::ledger::tests::frozen_resident_transition_moves_budget_to_resident_and_preserves_cap_boundary
+    | runtime::gpu::ledger::tests::frozen_resident_bytes_plus_every_committed_cap_stay_within_managed_capacity
+    | runtime::gpu::ledger::tests::frozen_resident_accepts_empty_outputs_but_remains_bounded_and_terminal
+    | runtime::gpu::ledger::tests::resident_owners_are_observation_not_an_allocation_gate
+    | runtime::gpu::ledger::tests::zero_query_caps_are_rejected_and_closed_admission_does_not_mutate_grants
+    | runtime::gpu::ledger::tests::grant_identity_is_preserved_for_fixed_cap_admission
+    | runtime::gpu::ledger::tests::transition_snapshots_expose_budget_to_resident_boundary
+    | runtime::gpu::ledger::tests::grant_release_notifies_observers_after_their_registries_are_poisoned
+    | runtime::gpu::ledger::tests::grant_drop_with_a_poisoned_frozen_domain_slot_keeps_the_device_open
+    | runtime::gpu::ledger::tests::grant_release_completes_after_the_ledger_lock_is_poisoned
+    | runtime::gpu::ledger::tests::prepared_resident_transition_keeps_full_grant_until_report_publication
+    | runtime::gpu::ledger::tests::cache_residency_remains_separate_from_fixed_query_grants
+    | runtime::gpu::ledger::tests::derived_default_grants_admit_two_parallel_attempts_and_queue_the_third
+    | runtime::gpu::ledger::tests::explicit_large_grants_serialize_without_spending_cache_bytes
+    | runtime::gpu::ledger::tests::cache_and_query_orders_promise_identical_capacity
+    | runtime::gpu::ledger::tests::explicit_caps_beyond_the_query_share_queue_instead_of_clamping
+    | runtime::gpu::ledger::tests::frozen_resident_returns_grant_minus_resident_in_query_share_terms
+    | runtime::gpu::ledger::tests::failed_attempt_capacity_returns_only_after_cleanup_while_survivors_hold_theirs
+    | runtime::gpu::ledger::tests::resident_owners_share_the_grant_generation_lease
+    | runtime::query_service::tests::config_resources::query_service_admission_test_config_can_record_non_default_device_without_runtime_resources
+    | runtime::query_service::tests::config_resources::query_service_rejects_inconsistent_dynamic_filter_execution_policy
+    | runtime::query_service::tests::config_resources::query_service_rejects_inconsistent_keyed_hash_join_strategy_policy
+    | runtime::query_service::tests::config_resources::query_service_rejects_invalid_aggregate_strategy_execution_policy
+    | runtime::query_service::tests::config_resources::query_service_rejects_invalid_source_chunk_planning_policy
+    | runtime::query_service::tests::config_resources::controller_honors_per_device_active_attempt_limit
+    | runtime::query_service::tests::contexts::absolute_shutdown_deadline_includes_admission_close_lock_contention
+    | runtime::query_service::tests::contexts::close_signal_is_nonblocking_and_fail_closed_during_admission_lock_contention
+    | runtime::query_service::tests::contexts::quiescence_reached_after_absolute_deadline_is_not_accepted
+    | runtime::query_service::tests::observation::fallible_activity_acquisition_rejects_without_entering_admission
+    | runtime::query_service::tests::observation::async_permanent_rejection_remains_terminal_rejected
+    | runtime::query_service::tests::observation::query_service_observes_queued_waiter_drop_as_cancellation
+    | runtime::query_service::tests::observation::queued_waiter_drop_recovers_a_poisoned_admission_guard_before_terminal_completion
+    | runtime::query_service::tests::observation::close_drains_queued_completion_from_a_poisoned_admission_guard
+    | runtime::query_service::tests::observation::close_and_wait_quiesces_after_admission_poison
+    | runtime::query_service::tests::observation::query_service_observes_pre_enqueue_rejection_without_reclassifying_error
+    | runtime::query_service::tests::observation::query_service_observes_deterministic_queued_timeout_once
+    | runtime::query_service::tests::observation::admission_snapshot_leaves_an_expired_waiter_to_its_own_step
+    | runtime::query_service::tests::observation::sweep_finishes_timeout_after_waiter_consumes_terminal_error
+    | runtime::query_service::tests::observation::sweep_preserves_attempt_binding_primary_failure_after_waiter_consumes_timeout
+    | runtime::query_service::tests::observation::sweep_finishes_health_rejection_after_waiter_consumes_terminal_error
+    | runtime::query_service::tests::placement::dropping_admission_ticket_wakes_a_close_waiter_after_cleanup
+    | runtime::query_service::tests::placement::device_entries_keep_distinct_ordinal_capability_requirements
+    | runtime::query_service::tests::placement::candidate_local_entry_resolution_prunes_only_the_rejected_ordinal
+    | runtime::query_service::tests::placement::all_device_entry_resolution_failures_return_capability_reason_before_queueing
+    | runtime::query_service::tests::release_commit::backend_unhealthy_rejects_new_submissions_while_inflight_finishes
+    | runtime::resident::tests::host_output_schema_binding_rejects_count_and_type_mismatches_with_ordinal_facts
+    | runtime::service_stream::tests::zero_capacity_rejects_before_runtime_initialization
+    | runtime::service_stream::tests::stream_cleanup_jobs_run_on_background_thread
+    | runtime::service_stream::tests::process_exit_joins_an_orphaned_cleanup_supervisor
+    | runtime::service_stream::tests::cleanup_submission_racing_process_exit_is_retained_after_terminal_boundary
+    | runtime::service_stream::tests::cleanup_supervisor_spawn_failure_rejects_pool_construction
+    | runtime::service_stream::tests::close_and_wait_explicitly_joins_cleanup_supervisor_for_all_clones
+    | runtime::service_stream::tests::unexpected_cleanup_supervisor_exit_is_permanent_and_joined
+    | runtime::service_stream::tests::cleanup_supervisor_elects_one_joiner_for_concurrent_close_callers
+    | runtime::service_stream::tests::cleanup_supervisor_precommit_join_timeout_is_retryable
+    | runtime::service_stream::tests::cleanup_supervisor_join_panic_supersedes_provisional_clean_outcome
+    | runtime::service_stream::permit_class_tests::zero_class_capacity_is_rejected
+    | runtime::tests::p6_snapshot_json_shapes_match_goldens
+    | runtime::tests::object_store_fetch_returns_bytes_from_full_get
+    | runtime::tests::service_stream_pool_default_size_is_sm_aware_with_cap_and_fallback
+    | runtime::tests::gpu_inventory_fake_drives_pool_size_and_budget_math_without_gpu
+    | runtime::tests::default_lakehouse_cache_fill_budget_is_capped
+    | runtime::tests::cache_fill_byte_budget_tracks_acquire_grow_and_release
+    | runtime::tests::execution_cancellation_sleep_ends_at_cancellation_or_deadline
+    | runtime::tests::cache_fill_byte_budget_grow_reports_saturation_without_waiting
+    | runtime::tests::cache_fill_byte_budget_two_holders_growing_past_the_remainder_never_deadlock
+    | runtime::tests::cache_fill_byte_budget_rejects_oversized_fetches
+    | runtime::tests::execution_context_rejects_invalid_source_chunk_planning_options
+    | runtime::tests::lakehouse_cache_fill_config_rejects_zero_controls)$
+  /))
+| (binary_id(algeon-datafusion::cugraph_tests_gpu) & test(/(?x)
+    ^(cugraph_parity::compare::tests::partition_comparison_ignores_label_renaming
+    | cugraph_parity::compare::tests::partition_comparison_reads_connected_component_ids
+    | cugraph_parity::compare::tests::ecg_quality_comparison_accepts_different_partition_at_the_same_quality
+    | cugraph_parity::compare::tests::ecg_quality_comparison_rejects_low_modularity_partition
+    | cugraph_parity::compare::tests::ecg_quality_comparison_accepts_higher_modularity_than_the_oracle
+    | cugraph_parity::compare::tests::ecg_quality_comparison_rejects_unreasonable_community_count
+    | cugraph_parity::compare::tests::ecg_quality_comparison_rejects_incomplete_vertex_coverage
+    | cugraph_parity::compare::tests::spectral_oracle_comparison_uses_partition_quality_not_exact_equality
+    | cugraph_parity::compare::tests::spectral_quality_comparison_accepts_equal_quality_partition
+    | cugraph_parity::compare::tests::spectral_quality_comparison_rejects_low_modularity_partition
+    | cugraph_parity::compare::tests::repeated_partition_quality_accepts_stable_replay_and_rejects_degradation
+    | cugraph_parity::compare::tests::repeated_partition_comparison_ignores_label_renaming_but_rejects_group_changes
+    | cugraph_parity::compare::tests::batch_conversion_preserves_null_integer_cells
+    | cugraph_parity::compare::tests::layout_structure_comparison_ignores_rigid_motion_and_rejects_scale_and_scrambled_layouts
+    | cugraph_parity::compare::tests::average_ranks_share_the_mean_rank_across_ties
+    | cugraph_parity::compare::tests::edge_comparison_ignores_undirected_orientation_and_duplicate_rows
+    | cugraph_parity::compare::tests::similarity_multiset_comparison_preserves_duplicates_orientation_and_self_pairs
+    | cugraph_parity::compare::tests::numeric_comparison_rejects_non_finite_gpu_values
+    | cugraph_parity::compare::tests::numeric_comparison_keeps_integer_columns_exact
+    | cugraph_parity::compare::tests::numeric_comparison_accepts_boundary_and_rejects_larger_delta
+    | cugraph_parity::compare::tests::edge_betweenness_comparison_keys_reordered_rows
+    | cugraph_parity::compare::tests::top_k_comparison_uses_vertex_set_under_score_ties
+    | cugraph_parity::compare::tests::bfs_comparison_accepts_alternate_valid_predecessor_tree
+    | cugraph_parity::parity_specs_declare_a_comparator_family
+    | cugraph_parity::parity_oracle_lookup_reports_missing_with_refresh_hint
+    | cugraph_parity::parity_manifest_loads_and_dataset_checksums_match
+    | cugraph_parity::parity_specs_reference_existing_datasets
+    | cugraph_parity::parity_specs_cover_all_registered_algorithms
+    | cugraph_parity::parity_oracle_inventory_exactly_matches_specs
+    | cugraph_sql_tests::binder::cugraph_named_relation_binder_requires_canonical_edge_columns
+    | cugraph_sql_tests::binder::cugraph_named_relation_planner_keeps_side_inputs_as_children
+    | cugraph_sql_tests::binder::cugraph_named_binder_rejects_conflicting_relations_and_values
+    | cugraph_sql_tests::binder::cugraph_named_binder_derives_canonical_edge_and_bfs_schema
+    | cugraph_sql_tests::binder::cugraph_force_atlas2_binds_both_optional_relations_as_children
+    | cugraph_sql_tests::binder::cugraph_named_relation_binder_rejects_ambiguous_contract_columns
+    | cugraph_sql_tests::binder::cugraph_named_binder_accepts_typed_literals_and_null_selectors
+    | cugraph_sql_tests::binder::cugraph_named_binder_applies_scalar_values
+    | cugraph_sql_tests::binder::cugraph_named_binder_is_order_independent
+    | cugraph_sql_tests::binder::cugraph_named_binder_rejects_unknown_duplicate_missing_null_and_range_arguments
+    | cugraph_sql_tests::metadata::cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
+    | cugraph_sql_tests::metadata::cugraph_examples_use_common_envelopes_with_flat_options
+    | cugraph_sql_tests::metadata::cugraph_validation_uses_common_envelope_and_preserves_graph_facts
+    | cugraph_sql_tests::metadata::cugraph_validation_output_schema_matches_pagerank_provider_for_each_vertex_domain
+    | cugraph_sql_tests::metadata::cugraph_validation_requires_flat_common_options
+    | cugraph_sql_tests::metadata::cugraph_validation_rejects_sssp_source_vertices_list
+    | cugraph_sql_tests::metadata::cugraph_validation_keeps_relation_aware_errors_structured
+    | cugraph_sql_tests::metadata::cugraph_validation_details_name_the_offending_argument_or_relation
+    | cugraph_sql_tests::metadata::cugraph_force_atlas2_validation_resolves_every_optional_relation_role
+    | cugraph_sql_tests::metadata::cugraph_normalized_calls_revalidate_and_schemas_project_group_constraints
+    | cugraph_sql_tests::metadata::cugraph_validation_rejects_invalid_common_envelopes_before_graph_parsing
+    | cugraph_sql_tests::metadata::cugraph_vertex_id_descriptors_match_registry_string_contracts
+    | cugraph_sql_tests::metadata::cugraph_sql_registers_only_execution_udtfs_and_the_common_catalog
+    | cugraph_sql_tests::metadata::cugraph_descriptor_weight_data_types_match_validation
+    | cugraph_sql_tests::metadata::cugraph_string_selector_descriptors_publish_their_logical_types
+    | cugraph_sql_tests::metadata::cugraph_m1_algorithms_validate_all_string_endpoint_family_combinations
+    | cugraph_sql_tests::metadata::cugraph_m2_relation_side_inputs_validate_and_canonicalize_string_outputs
+    | cugraph_sql_tests::metadata::cugraph_m3_string_selectors_validate_with_concrete_utf8_output_schemas
+    | cugraph_sql_tests::metadata::cugraph_reinstall_is_idempotent_and_conflicting_graph_defaults_are_rejected
+    | cugraph_sql_tests::metadata::cugraph_registry_projects_into_the_common_catalog
+    | cugraph_sql_tests::planning::cugraph_leiden_result_feeds_a_native_partition_count_window
+    | cugraph_sql_tests::planning::cugraph_edge_input_that_cannot_lower_is_reported_with_its_function_and_relation
+    | cugraph_sql_tests::planning::native_required_names_the_blocking_subject_of_a_cugraph_edge_input
+    | cugraph_sql_tests::planning::cugraph_sql_planning_preserves_structured_logical_edge_id_capability_errors
+    | cugraph_sql_tests::planning::cugraph_similarity_sql_resolves_the_pair_relation_as_an_explicit_second_input
+    | cugraph_sql_tests::planning::cugraph_strongly_connected_components_rejects_undirected_graph_option
+    | cugraph_sql_tests::planning::cugraph_undirected_only_algorithms_reject_directed_graph_option
+    | cugraph_sql_tests::planning::cugraph_table_function_scan_plans_int64_and_string_vertices_for_legacy_int32_algorithms
+    | cugraph_sql_tests::planning::cugraph_result_columns_follow_the_documented_naming_in_descriptors_and_planned_schemas
+    | cugraph_sql_tests::planning::cugraph_bfs_path_mode_exposes_path_schema_through_canonical_function
+    | cugraph_sql_tests::planning::cugraph_bfs_path_mode_requires_target_relation
+    | cugraph_sql_tests::planning::cugraph_bfs_path_name_is_not_registered_or_aliased
+    | cugraph_sql_tests::planning::cugraph_bfs_normalized_output_mode_is_opt_in
+    | cugraph_sql_tests::planning::cugraph_sql_planning_exposes_stable_output_schemas
+    | cugraph_sql_tests::planning::cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains
+    | cugraph_sql_tests::planning::cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema
+    | cugraph_sql_tests::planning::cugraph_relation_arguments_reject_outer_query_correlation
+    | cugraph_sql_tests::planning::cugraph_bfs_string_subplans_lower_to_native_gpu_producers
+    | cugraph_sql_tests::planning::cugraph_bfs_predicate_options_plan_as_exec_side_inputs
+    | cugraph_sql_tests::planning::cugraph_relation_projections_preserve_exact_camel_case_columns
+    | cugraph_sql_tests::planning::cugraph_sql_planning_schema_contracts_are_exact)$
+  /))
 | (binary_id(algeon-datafusion::native_exec_tests_gpu) & test(/^(native_optimizer_rule_is_inserted_before_final_validation|native_optimizer_rule_uses_configured_optimizer_config_at_optimize_time)$/))
-| (binary_id(algeon-query-engine::native_execution_tests_gpu) & test(/^(aggregate_execution::global_state::native_query_rejects_global_valid_count_reserved_state_alias_collision_before_source_read|bounded_budgeting::validation::bounded_native_query_rejects_unsupported_expression_before_source_read|bounded_joins::input_subplans_and_resident::rejections::bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_read|bounded_joins::multi_join_pipelines::rejections::bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_read|native_join_execution::residual_and_validation::validation::native_query_rejects_invalid_cross_join_before_source_read|native_join_execution::residual_and_validation::validation::native_query_rejects_cross_join_with_residual_before_source_read|native_join_execution::residual_and_validation::validation::native_query_rejects_duplicate_join_output_names_before_runtime_materialization|projection_validation::scalar_expressions::native_query_rejects_unread_source_column_in_nested_scalar_before_cudf_execution|projection_validation::scalar_expressions::native_query_rejects_date_trunc_output_unit_mismatch_before_cudf_execution|projection_validation::scalar_expressions::native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution|projection_validation::scalar_expressions::native_query_rejects_scalar_type_mismatch_before_cudf_execution|projection_validation::schema_validation::native_projection_schema_coercion_rejects_unsupported_output_type_mismatch|projection_validation::residual_validation::native_query_rejects_unqualified_residual_column_before_source_read|projection_validation::residual_validation::native_query_rejects_post_join_date_trunc_residual_before_source_read|projection_validation::residual_validation::native_query_rejects_post_join_extract_new_fields_before_source_read|projection_validation::residual_validation::native_query_rejects_join_residual_casts_and_integer_division_the_ast_cannot_check|projection_validation::residual_validation::native_query_rejects_one_sided_residual_predicate_before_source_read|projection_validation::scalar_expressions::native_query_rejects_untyped_decimal_division_before_cudf_execution|dimension_pruning::dimension_derived_row_group_pruning_uses_filtered_dimension_key_range|projection_validation::residual_validation::native_query_rejects_non_boolean_residual_predicate_before_source_read|projection_validation::residual_validation::native_query_rejects_unsupported_join_residual_cast_before_source_read|projection_validation::residual_validation::native_query_rejects_join_residual_in_list_with_non_literal_values_before_source_read|projection_validation::residual_validation::native_query_rejects_unsupported_residual_expression_families_before_source_read|projection_validation::scalar_expressions::native_query_rejects_date64_temporal_scalars_before_source_read|projection_validation::scalar_expressions::native_query_rejects_out_of_envelope_substring_before_source_read|vector_algorithm_execution::bounded_vector_rejection_reports_the_contract_it_misses|projection_validation::schema_validation::native_query_rejects_duplicate_projection_output_names_generically_before_runtime_materialization)$/))
+| (binary_id(algeon-query-engine::native_execution_tests_gpu) & test(/(?x)
+    ^(aggregate_execution::global_state::native_query_rejects_global_valid_count_reserved_state_alias_collision_before_source_read
+    | bounded_budgeting::validation::bounded_native_query_rejects_unsupported_expression_before_source_read
+    | bounded_joins::input_subplans_and_resident::rejections::bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_read
+    | bounded_joins::multi_join_pipelines::rejections::bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_read
+    | native_join_execution::residual_and_validation::validation::native_query_rejects_invalid_cross_join_before_source_read
+    | native_join_execution::residual_and_validation::validation::native_query_rejects_cross_join_with_residual_before_source_read
+    | native_join_execution::residual_and_validation::validation::native_query_rejects_duplicate_join_output_names_before_runtime_materialization
+    | projection_validation::scalar_expressions::native_query_rejects_unread_source_column_in_nested_scalar_before_cudf_execution
+    | projection_validation::scalar_expressions::native_query_rejects_date_trunc_output_unit_mismatch_before_cudf_execution
+    | projection_validation::scalar_expressions::native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution
+    | projection_validation::scalar_expressions::native_query_rejects_scalar_type_mismatch_before_cudf_execution
+    | projection_validation::schema_validation::native_projection_schema_coercion_rejects_unsupported_output_type_mismatch
+    | projection_validation::residual_validation::native_query_rejects_unqualified_residual_column_before_source_read
+    | projection_validation::residual_validation::native_query_rejects_post_join_date_trunc_residual_before_source_read
+    | projection_validation::residual_validation::native_query_rejects_post_join_extract_new_fields_before_source_read
+    | projection_validation::residual_validation::native_query_rejects_join_residual_casts_and_integer_division_the_ast_cannot_check
+    | projection_validation::residual_validation::native_query_rejects_one_sided_residual_predicate_before_source_read
+    | projection_validation::scalar_expressions::native_query_rejects_untyped_decimal_division_before_cudf_execution
+    | dimension_pruning::dimension_derived_row_group_pruning_uses_filtered_dimension_key_range
+    | projection_validation::residual_validation::native_query_rejects_non_boolean_residual_predicate_before_source_read
+    | projection_validation::residual_validation::native_query_rejects_unsupported_join_residual_cast_before_source_read
+    | projection_validation::residual_validation::native_query_rejects_join_residual_in_list_with_non_literal_values_before_source_read
+    | projection_validation::residual_validation::native_query_rejects_unsupported_residual_expression_families_before_source_read
+    | projection_validation::scalar_expressions::native_query_rejects_date64_temporal_scalars_before_source_read
+    | projection_validation::scalar_expressions::native_query_rejects_out_of_envelope_substring_before_source_read
+    | vector_algorithm_execution::bounded_vector_rejection_reports_the_contract_it_misses
+    | projection_validation::schema_validation::native_query_rejects_duplicate_projection_output_names_generically_before_runtime_materialization)$
+  /))
 | (binary_id(algeon-query-engine::runtime_execution_integration_tests_gpu) & test(/^(execution_observation::supplied_session_identity_mismatches_are_structured_errors|execution_observation::build_error_into_parts_disarms_drop_and_returns_live_owner)$/))
-| (binary_id(algeon-query-engine) & test(/^(chunk::tests|materialization_sizing::tests|native_error::tests|parquet_metadata::tests|prepared|source_chunk::metadata::tests|exec::(retry::tests|nvtx::tests|operators::(tests|projection::tests|aggregate::((filtered_segment_policy|grouping_sets)::tests|tests::(prior_evidence|runtime_probe|source_adjacent)))|bounded::((partition_row_policy|partition_target_policy|source_batching_policy|facts)::tests|aggregate::(final_merge_policy::tests|source_adjacent::tests|tests)|chunks::retry::tests|final_sort::sort_lane::tests|join::(leaf::batching::tests|compiled::tests|compiled::partitioned::driver::tests)|compiled::(scheduler::tests|topology_tests|execution_tests::fixtures_plans))|graph_algorithm|join::residual::tests|ml_algorithm::enabled::tests|source::(metrics::tests|read::tests|scheduler::observation_tests|lakehouse_cache::(cache|policy)::tests)))::/))
+| (binary_id(algeon-query-engine) & test(/(?x)
+    ^(chunk::tests
+    | materialization_sizing::tests
+    | native_error::tests
+    | parquet_metadata::tests
+    | prepared
+    | source_chunk::metadata::tests
+    | exec::(retry::tests
+    | nvtx::tests
+    | operators::(tests
+    | projection::tests
+    | aggregate::((filtered_segment_policy
+    | grouping_sets)::tests
+    | tests::(prior_evidence
+    | runtime_probe
+    | source_adjacent)))
+    | bounded::((partition_row_policy
+    | partition_target_policy
+    | source_batching_policy
+    | facts)::tests
+    | aggregate::(final_merge_policy::tests
+    | source_adjacent::tests
+    | tests)
+    | chunks::retry::tests
+    | final_sort::sort_lane::tests
+    | join::(leaf::batching::tests
+    | compiled::tests
+    | compiled::partitioned::driver::tests)
+    | compiled::(scheduler::tests
+    | topology_tests
+    | execution_tests::fixtures_plans))
+    | graph_algorithm
+    | join::residual::tests
+    | ml_algorithm::enabled::tests
+    | source::(metrics::tests
+    | read::tests
+    | scheduler::observation_tests
+    | lakehouse_cache::(cache
+    | policy)::tests)))::
+  /))
 | (binary_id(algeon-datafusion) & test(/^cugraph_sql::exec::singleflight::tests::singleflight_tests::requests_with_different_sources_or_output_caps_never_form_a_leader_follower_group$/))
 | (binary_id(algeon-datafusion) & test(/^server::(auth|coordinator|diagnostics|error|io_lifecycle|observability|session|workspace)::|^server::flight::(frame_limiter|metadata|ownership|prepared|status)::/))
-| (binary_id(algeon-datafusion) & test(/^server::flight::(correlation::correlation_tests::(dropping_runtime_artifact_action_stream_releases_egress_lease|get_query_stats_action_waits_for_another_render_off_the_tokio_worker|get_query_runtime_artifact_action_returns_atomic_sanitized_frames|unavailable_runtime_artifact_action_emits_only_its_control_frame|stream_error_terminalizes_once_with_structured_adapter_metadata)|tests::(failed_statement_logs_omit_the_status_message_on_get_flight_info_and_do_get|execution_terminal_log_includes_resolved_sql))$/))
-| (binary_id(algeon-datafusion) & test(/^(native::(lowering_tests|expression_contract|source|tests|lowering|footers|table_format_pruning_policy|lakehouse_pruning::tests)|native_exec::(metrics|child_inputs|common|relation_function))::/))
-| (binary_id(algeon-datafusion) & test(/^(error|native_report|source_cardinality|gpu_functions|physical_plan|report|cuml_sql|cuvs_sql::gpu_family|gpu_coverage::(tests|remedy|explain_gpu)|cugraph_sql::(parity|types|exec::lowering)|planner::native::(attempt|capability_envelope|shared_resident))::/))
-| (binary_id(algeon-query-runtime) & test(/^(attempt|metrics|native_error|observability)::|^runtime::(allocator_correlation|backend_close|backend_lifecycle|backend_metrics|cache::(factory|residency)|cache_fill|context::(auxiliary_slots|epoch)|deadline|gpu::(lanes|memory_failure|owner|placement|profile|registry)|gpu_execution_pool|io_lifecycle|object_store|observation_completion|process_exit|reservation|source_identity|supervised_worker|query_service::(admission|drain_outcome_tests|resources|service|tests::(grant_requests|queue)))::/))
-| (binary_id(algeon-datafusion) & test(/^(server::flight::correlation::correlation_tests::request_correlation_id_accepts_server_key_and_alias|server::tests::shutdown_supervisor_reports_coordinator_deadline_expiry_as_error|server::admission::tests::server_backend_preserves_multi_gpu_device_subset|server::tests::server_session_configuration_preserves_datafusion_settings|server::flight::tests::masked_internal_failures_carry_the_query_id_on_every_statement_path|server::flight::tests::cancel_invalid_argument_status_carries_adapter_metadata|server::flight::tests::invalid_ticket_kind_status_carries_the_query_id_and_correlation_id|server::flight::tests::update_ddl_read_only_schema_failure_does_not_classify_upstream_error_prose|server::tests::builder_rejects_session_context_without_injected_backend|server::flight::tests::issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get|server::flight::tests::prepared_update_shutdown_promotion_preserves_operation_and_request_metadata|server::flight::tests::statement_status_log_omits_sql_before_ticket_resolution|server::flight::tests::get_tables_metadata_log_uses_the_same_collection_error_for_fields_and_cause|server::tests::supervisor_uses_captured_expired_plan_after_coordinator_finalization_clears_deadline|server::flight::tests::statement_status_log_flattens_resolved_sql_and_keeps_all_fields|server::flight::tests::set_and_reset_are_rejected_on_every_endpoint|server::flight::tests::statement_logs_mask_options_values_on_the_update_and_prepared_paths|server::tests::distinct_librmm_mappings_counts_deleted_and_ignores_lookalikes|server::tests::builder_rejects_admission_bounds_the_coordinator_cannot_register|server::tests::distinct_librmm_mappings_dedupes_segments_and_matches_versioned_sonames|server::tests::startup_rejection_of_a_configuration_prints_the_setting_value_and_accepted_range|server::tests::unset_logical_capture_budget_registers_every_attempt_admission_can_hold_beside_a_finalizing_query|server::tests::single_librmm_runtime_mapping_check_passes_in_this_process|native::lakehouse_pruning::product_path_tests::product_pruning_reads_footers_through_the_installed_s3_storage|native_exec::config::tests::config_validation_errors_carry_configured_correlation_ids|native_exec::composed::tests::complete_composed_admission_evidence_keeps_no_authority_unchanged|native_exec::composed::tests::composed_constructor_preserves_host_owned_graph_gpu_output_rejection|native::lakehouse_pruning::product_path_tests::product_pruning_prefers_a_registered_store_over_the_s3_storage|native_exec::adapter_tests::native_optimizer_composes_feature_neutral_gpu_resident_producer_child|native_exec::config::tests::async_execution_context_requires_gpu_backend_before_resolving_cuda_state|native::lakehouse_pruning::product_path_tests::product_pruning_uses_runtime_object_store_and_noops_when_store_is_missing|native_exec::adapter_tests::native_exec_constructs_host_arrow_leaf_with_conservative_properties|native_exec::adapter_tests::native_exec_rejects_gpu_resident_sink_for_datafusion_output|native_exec::adapter_tests::native_optimizer_composed_exec_preserves_root_sort_ordering_properties|backend::tests::backend_validation_projection_keeps_device_configs_independent|backend::tests::backend_rejects_invalid_queue_policy_bounds|backend::tests::backend_install_installs_optimizer_rule_matching_backend_config|backend::tests::backend_install_with_cugraph_sql_preserves_conflicting_reinstall_error|backend::tests::backend_builder_validate_accepts_consistent_declaration_without_gpu_resources|backend::tests::backend_builder_validate_rejects_empty_devices|backend::tests::backend_core_build_error_surfaces_capacity_cause_in_display|backend::tests::backend_builder_validate_states_the_setting_value_limit_and_largest_accepted_value|cugraph_sql::composed_planning_tests::synthetic_n3_composed_fixture_preserves_equal_producer_occurrences|cugraph_sql::exec::singleflight::tests::singleflight_tests::identical_requests_share_one_physical_traversal|cugraph_sql::exec::singleflight::tests::singleflight_tests::attempt_bound_follower_retains_its_physical_leader_identity|cugraph_sql::exec::singleflight::tests::singleflight_tests::correlated_events_are_emitted_by_the_singleflight_owner|cugraph_sql::exec::singleflight::tests::singleflight_tests::published_multi_batch_result_retains_one_shared_reservation_for_followers|cugraph_sql::exec::singleflight::tests::singleflight_tests::gpu_handoff_drain_waits_until_every_follower_settles|cugraph_sql::exec::singleflight::tests::singleflight_tests::gpu_handoff_drain_observes_a_settle_between_its_count_check_and_its_wait|cugraph_sql::exec::singleflight::tests::singleflight_tests::gpu_handoff_drain_releases_the_leader_exactly_once_per_follower|cugraph_sql::exec::singleflight::tests::singleflight_tests::host_publication_creates_no_handoff_drain|cugraph_sql::exec::singleflight::tests::singleflight_tests::batch_width_overflow_starts_an_independent_generation|cugraph_sql::exec::singleflight::tests::singleflight_tests::failed_leader_releases_followers_to_retry|cugraph_sql::exec::singleflight::tests::singleflight_tests::dropped_leader_is_cancelled_and_releases_followers|cugraph_sql::exec::singleflight::tests::singleflight_tests::cancelled_follower_leaves_the_leader_running|cugraph_sql::exec::tests::edge_source_output_rows_rejects_inexact_datafusion_statistics|cugraph_sql::exec::tests::numeric_graph_results_preserve_the_input_vertex_domain_for_every_vertex_column|cugraph_sql::exec::tests::logical_bfs_edge_id_capability_is_rejected_during_exec_construction|cugraph_sql::exec::tests::graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output|cugraph_sql::exec::tests::cugraph_algo_exec_does_not_request_input_repartitioning|cugraph_sql::exec::tests::logical_bfs_path_gpu_plan_decodes_the_bounded_path_schema|cugraph_sql::exec::tests::bfs_path_exec_declares_ordering_only_while_path_index_is_preserved|cugraph_sql::exec::tests::string_pagerank_plan_restores_subsumed_top_k_order_after_decode|cugraph_sql::exec::tests::m1_string_algorithms_share_the_int64_codebook_and_vertex_decode_path|cugraph_sql::exec::tests::legacy_int32_algorithms_map_int64_and_string_vertices_through_an_int32_codebook|cugraph_sql::exec::tests::m3_string_selectors_lower_to_encoded_native_side_inputs_and_decode_identity_outputs|cugraph_sql::exec::tests::string_pagerank_subsumes_only_bounded_sorts|cugraph_sql::exec::tests::string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts|cugraph_sql::exec::tests::malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries|cugraph_sql::exec::tests::cugraph_native_staging_retains_hard_rows_and_never_executes_a_wrapped_child|cugraph_sql::exec::tests::cugraph_host_staging_polls_every_partition_of_a_dynamic_filter_join|cugraph_sql::exec::tests::cugraph_producer_preparation_enforces_the_cumulative_input_cap|cugraph_sql::exec::tests::cugraph_producer_preparation_counts_shared_buffers_once_across_batches_and_partitions|cugraph_sql::exec::tests::cugraph_producer_preparation_keeps_utf8_literal_sources_out_of_host_staging|cugraph_sql::exec::tests::cugraph_producer_preparation_charges_utf8_relation_sources_to_the_same_input_cap|cugraph_sql::exec::tests::cugraph_algo_exec_records_graph_residency_for_native_edge_source|cugraph_sql::exec::tests::simple_directed_footer_omits_python_edge_normalization_through_native_edge_wrapper|cugraph_sql::exec::tests::cugraph_algo_exec_records_graph_residency_for_datafusion_parquet_edge_source|cugraph_sql::exec::tests::graph_residency_translates_parallel_datafusion_parquet_scan_without_order_contract|cugraph_sql::exec::tests::graph_vertex_footer_bound_is_read_from_the_complete_datafusion_parquet_scan|cugraph_sql::exec::tests::simple_directed_footer_omits_python_edge_normalization_only_for_the_proven_rowset|cugraph_sql::exec::tests::simple_directed_footer_does_not_cross_a_rowset_changing_limit|cugraph_sql::exec::tests::cugraph_algo_exec_bypasses_graph_residency_for_datafusion_parquet_scan_limit|cugraph_sql::exec::tests::cugraph_algo_exec_bypasses_graph_residency_for_logical_bfs_datafusion_parquet_edge_source|cugraph_sql::exec::tests::cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_parquet_edge_source|cugraph_sql::exec::tests::cugraph_bfs_path_projection_fanout_shares_one_full_result_producer|cugraph_sql::exec::tests::graph_residency_schema_guard_rejects_descriptor_dtype_mismatch|cugraph_sql::exec::tests::standalone_bounded_cugraph_rejects_native_child_execution_without_admission|cugraph_sql::exec::tests::cugraph_prepares_nested_native_source_metadata_before_graph_admission|cuvs_sql::exec::tests::physical_planning_lowers_typed_vector_ir_and_clone_retains_planner|gpu_coverage::sql::tests::native_session_builder_registers_coverage_table_function|planner::native::tests::reject_datafusion_cpu_policy_rejects_the_exact_datafusion_final_plan|planner::native::tests::strict_rejection_schema_detail_is_client_visible_but_not_log_safe|planner::native::tests::native_required_errors_and_records_name_only_their_own_plan|planner::native::tests::one_planning_pass_parses_each_footer_once_across_optimizer_stages|session::tests::only_relational_native_modes_plan_uncorrelated_scalar_subqueries_as_joins|session::tests::cugraph_subplanning_leaves_the_cpu_policy_to_the_outer_run|session::tests::final_rewrite_checks_the_output_of_rules_installed_before_it|session::tests::cugraph_subplanning_leaves_dynamic_filter_pushdown_to_the_outer_run|session::tests::cugraph_subplanning_plans_single_group_scans_for_declared_orderings|session::tests::functions_only_cugraph_subplanning_preserves_parent_parallelism)$/))
-| (binary_id(algeon-query-runtime) & test(/^(runtime::backend_core::tests::begin_attempt_after_close_is_rejected_without_creating_an_attempt|runtime::backend_core::tests::begin_attempt_winning_the_close_gate_is_counted_until_report_ready|runtime::query_service::tests::multi_device_registry::per_device_active_limit_forces_spread_and_then_blocks|runtime::query_service::tests::multi_device_registry::least_loaded_placement_spreads_across_identical_devices|runtime::query_service::tests::multi_device_registry::multi_device_admissions_preserve_each_profiles_fixed_default_query_limit|runtime::query_service::tests::multi_device_registry::multi_device_admissions_do_not_resize_the_fixed_default_query_limit_for_open_slots)$/))
-| (binary_id(algeon-cudf) & test(/^(io::parquet::tests::require_kvikio_accepts_compatibility_io_from_explicit_remote_datasource|core::error::size_overflow_tests::native_size_overflow_status_maps_to_permanent_resource_error|internal::resolve::tests::validate_no_duplicate_names_rejects_dup|io::tests::test_collect_column_names_rejects_negative_count|ops::reshape::tests::interleave_output_size_overflow_is_structured|runtime::device_health::tests::cross_device_teardown_suspends_instead_of_quarantining|diagnostics::memory::tests::fixed_pressure_plan_is_bounded_and_preserves_the_documented_reserve|runtime::matrix::tests::matrix_element_count_accepts_cudf_size_type_maximum|core::error::facts::tests::insert_keeps_first_value_on_duplicate_key|diagnostics::memory::tests::request_above_pressure_adds_one_fixed_granularity|io::tests::test_validate_input_path_rejects_directory|runtime::device_health::tests::cudf_fault_status_retains_its_unsigned_ffi_value|runtime::matrix::tests::matrix_element_count_rejects_one_past_cudf_size_type_maximum|runtime::matrix::tests::matrix_element_count_overflow_is_structured|core::error::classification::allocation_attribution_tests::size_overflow_is_not_an_allocation_failure|io::parquet::tests::require_kvikio_rejects_unverified_path_reader_and_backend_fallback|core::error::facts::tests::insert_panics_on_wrong_value_variant|core::types::tests::fixed_point_rejects_non_decimal_types|core::types::tests::type_id_from_raw_round_trips_every_mirrored_discriminant|io::parquet::tests::require_direct_accepts_kvikio_remote_datasource_evidence|ops::materialization::tests::string_payload_must_be_proved|runtime::device_guard::tests::restore_failure_is_reported_once_and_finally_invalidates_thread_authority|core::error::classification::allocation_attribution_tests::unknown_allocation_source_with_scope_usage_stays_unattributed|core::error::classification::allocation_attribution_tests::allocation_without_any_provenance_stays_unattributed_despite_scope_usage|core::error::classification::allocation_attribution_tests::physical_failure_is_confirmed_physical_despite_budget_annotation|core::error::classification::allocation_attribution_tests::reservation_limit_is_a_confirmed_query_limit_despite_budget_annotation|core::error::classification::allocation_attribution_tests::dependency_failure_through_a_budgeted_scope_is_not_an_allocation_failure|core::types::tests::type_id_from_raw_rejects_unmirrored_discriminants|io::parquet::tests::remote_profile_raw_carries_known_size_bytes_hint|io::parquet::tests::require_kvikio_is_fail_closed_when_backend_is_unavailable|ops::stream_compaction::tests::ffi_failure_records_keys_count_as_a_typed_fact|runtime::device_guard::tests::get_device_failure_is_reported_once_and_poisons_thread_authority|runtime::device_guard::tests::set_device_failure_is_reported_once_on_explicit_target_and_poisons_thread_authority|core::error::ffi_detail_tests::ffi_detail_is_retained_as_typed_error_payload|diagnostics::memory::tests::fixed_pressure_plan_refuses_to_spend_the_safe_reserve|frame::dataframe::join::gather_map_bound_tests::hash_join_pair_bound_caps_at_the_largest_representable_output|io::parquet::tests::require_direct_rejects_device_read_unsupported_kvikio_remote_datasource_evidence|io::tests::test_collect_column_names_rejects_null_entry_pointer|ops::materialization::tests::fixed_width_and_string_components_form_checked_peak|ops::reshape::tests::interleave_output_size_rejects_one_past_cudf_size_type_maximum|runtime::device_health::tests::first_fault_is_stable_and_later_work_is_rejected|runtime::device_health::tests::nonfatal_native_teardown_failure_is_observable_without_poisoning_admission|core::error::classification::allocation_attribution_tests::foreign_resource_exhaustion_without_provenance_stays_unattributed|io::parquet::tests::require_direct_accepts_pruned_metadata_only_kvikio_remote_datasource_evidence|io::tests::kvikio_bounce_buffer_drain_busy_error_is_flat_and_retryable|io::tests::kvikio_bounce_buffer_drain_idle_result_is_idempotent|runtime::device_guard::tests::nested_cross_device_entry_is_rejected_before_switch_and_same_device_restore_is_top_level|runtime::device_health::tests::diagnostics_are_first_and_power_of_two_only|core::types::tests::bool_materialization_accepts_every_non_zero_byte|core::memory::tests::failure_info_preserves_unknown_allocation_domain_identity|interop::arrow_host::import::tests::list_offset_normalization_rejects_negative_non_monotonic_and_i32_overflow|io::tests::test_collect_column_names_rejects_null_names_ptr_with_positive_count|ops::reshape::tests::interleave_output_size_accepts_cudf_size_type_maximum|core::memory::tests::allocator_event_preserves_optional_samples_without_zero_fabrication|interop::arrow_host::testing_hooks::tests::resetting_one_call_count_observer_does_not_rewind_another|io::parquet::tests::require_direct_rejects_host_only_kvikio_remote_datasource_payload_evidence|io::tests::test_collect_column_names_success|runtime::device_health::tests::counter_increment_saturates|core::types::tests::raw_data_type_rejects_non_decimal_scale|frame::dataframe::info::size_accounting_tests::dataframe_memory_total_overflow_is_typed_and_does_not_wrap|internal::resolve::tests::validate_no_duplicate_names_ok|runtime::binding_extension::tests::slot_map_reuses_type_ids_and_enforces_cardinality_limit|io::parquet::tests::require_direct_rejects_unverified_remote_path_evidence|io::tests::test_validate_input_path_reports_io_failure|runtime::device_guard::tests::teardown_entry_suspends_nested_entries_on_another_device_and_resumes_them)$/))
+| (binary_id(algeon-datafusion) & test(/(?x)
+    ^server::flight::(correlation::correlation_tests::(dropping_runtime_artifact_action_stream_releases_egress_lease
+    | get_query_stats_action_waits_for_another_render_off_the_tokio_worker
+    | get_query_runtime_artifact_action_returns_atomic_sanitized_frames
+    | unavailable_runtime_artifact_action_emits_only_its_control_frame
+    | stream_error_terminalizes_once_with_structured_adapter_metadata)
+    | tests::(failed_statement_logs_omit_the_status_message_on_get_flight_info_and_do_get
+    | execution_terminal_log_includes_resolved_sql))$
+  /))
+| (binary_id(algeon-datafusion) & test(/(?x)
+    ^(native::(lowering_tests
+    | expression_contract
+    | source
+    | tests
+    | lowering
+    | footers
+    | table_format_pruning_policy
+    | lakehouse_pruning::tests)
+    | native_exec::(metrics
+    | child_inputs
+    | common
+    | relation_function))::
+  /))
+| (binary_id(algeon-datafusion) & test(/(?x)
+    ^(error
+    | native_report
+    | source_cardinality
+    | gpu_functions
+    | physical_plan
+    | report
+    | cuml_sql
+    | cuvs_sql::gpu_family
+    | gpu_coverage::(tests
+    | remedy
+    | explain_gpu)
+    | cugraph_sql::(parity
+    | types
+    | exec::lowering)
+    | planner::native::(attempt
+    | capability_envelope
+    | shared_resident))::
+  /))
+| (binary_id(algeon-query-runtime) & test(/(?x)
+    ^(attempt
+    | metrics
+    | native_error
+    | observability)::
+    | ^runtime::(allocator_correlation
+    | backend_close
+    | backend_lifecycle
+    | backend_metrics
+    | cache::(factory
+    | residency)
+    | cache_fill
+    | context::(auxiliary_slots
+    | epoch)
+    | deadline
+    | gpu::(lanes
+    | memory_failure
+    | owner
+    | placement
+    | profile
+    | registry)
+    | gpu_execution_pool
+    | io_lifecycle
+    | object_store
+    | observation_completion
+    | process_exit
+    | reservation
+    | source_identity
+    | supervised_worker
+    | query_service::(admission
+    | drain_outcome_tests
+    | resources
+    | service
+    | tests::(grant_requests
+    | queue)))::
+  /))
+| (binary_id(algeon-datafusion) & test(/(?x)
+    ^(server::flight::correlation::correlation_tests::request_correlation_id_accepts_server_key_and_alias
+    | server::tests::shutdown_supervisor_reports_coordinator_deadline_expiry_as_error
+    | server::admission::tests::server_backend_preserves_multi_gpu_device_subset
+    | server::tests::server_session_configuration_preserves_datafusion_settings
+    | server::flight::tests::masked_internal_failures_carry_the_query_id_on_every_statement_path
+    | server::flight::tests::cancel_invalid_argument_status_carries_adapter_metadata
+    | server::flight::tests::invalid_ticket_kind_status_carries_the_query_id_and_correlation_id
+    | server::flight::tests::update_ddl_read_only_schema_failure_does_not_classify_upstream_error_prose
+    | server::tests::builder_rejects_session_context_without_injected_backend
+    | server::flight::tests::issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get
+    | server::flight::tests::prepared_update_shutdown_promotion_preserves_operation_and_request_metadata
+    | server::flight::tests::statement_status_log_omits_sql_before_ticket_resolution
+    | server::flight::tests::get_tables_metadata_log_uses_the_same_collection_error_for_fields_and_cause
+    | server::tests::supervisor_uses_captured_expired_plan_after_coordinator_finalization_clears_deadline
+    | server::flight::tests::statement_status_log_flattens_resolved_sql_and_keeps_all_fields
+    | server::flight::tests::set_and_reset_are_rejected_on_every_endpoint
+    | server::flight::tests::statement_logs_mask_options_values_on_the_update_and_prepared_paths
+    | server::tests::distinct_librmm_mappings_counts_deleted_and_ignores_lookalikes
+    | server::tests::builder_rejects_admission_bounds_the_coordinator_cannot_register
+    | server::tests::distinct_librmm_mappings_dedupes_segments_and_matches_versioned_sonames
+    | server::tests::startup_rejection_of_a_configuration_prints_the_setting_value_and_accepted_range
+    | server::tests::unset_logical_capture_budget_registers_every_attempt_admission_can_hold_beside_a_finalizing_query
+    | server::tests::single_librmm_runtime_mapping_check_passes_in_this_process
+    | native::lakehouse_pruning::product_path_tests::product_pruning_reads_footers_through_the_installed_s3_storage
+    | native_exec::config::tests::config_validation_errors_carry_configured_correlation_ids
+    | native_exec::composed::tests::complete_composed_admission_evidence_keeps_no_authority_unchanged
+    | native_exec::composed::tests::composed_constructor_preserves_host_owned_graph_gpu_output_rejection
+    | native::lakehouse_pruning::product_path_tests::product_pruning_prefers_a_registered_store_over_the_s3_storage
+    | native_exec::adapter_tests::native_optimizer_composes_feature_neutral_gpu_resident_producer_child
+    | native_exec::config::tests::async_execution_context_requires_gpu_backend_before_resolving_cuda_state
+    | native::lakehouse_pruning::product_path_tests::product_pruning_uses_runtime_object_store_and_noops_when_store_is_missing
+    | native_exec::adapter_tests::native_exec_constructs_host_arrow_leaf_with_conservative_properties
+    | native_exec::adapter_tests::native_exec_rejects_gpu_resident_sink_for_datafusion_output
+    | native_exec::adapter_tests::native_optimizer_composed_exec_preserves_root_sort_ordering_properties
+    | backend::tests::backend_validation_projection_keeps_device_configs_independent
+    | backend::tests::backend_rejects_invalid_queue_policy_bounds
+    | backend::tests::backend_install_installs_optimizer_rule_matching_backend_config
+    | backend::tests::backend_install_with_cugraph_sql_preserves_conflicting_reinstall_error
+    | backend::tests::backend_builder_validate_accepts_consistent_declaration_without_gpu_resources
+    | backend::tests::backend_builder_validate_rejects_empty_devices
+    | backend::tests::backend_core_build_error_surfaces_capacity_cause_in_display
+    | backend::tests::backend_builder_validate_states_the_setting_value_limit_and_largest_accepted_value
+    | cugraph_sql::composed_planning_tests::synthetic_n3_composed_fixture_preserves_equal_producer_occurrences
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::identical_requests_share_one_physical_traversal
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::attempt_bound_follower_retains_its_physical_leader_identity
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::correlated_events_are_emitted_by_the_singleflight_owner
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::published_multi_batch_result_retains_one_shared_reservation_for_followers
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::gpu_handoff_drain_waits_until_every_follower_settles
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::gpu_handoff_drain_observes_a_settle_between_its_count_check_and_its_wait
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::gpu_handoff_drain_releases_the_leader_exactly_once_per_follower
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::host_publication_creates_no_handoff_drain
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::batch_width_overflow_starts_an_independent_generation
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::failed_leader_releases_followers_to_retry
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::dropped_leader_is_cancelled_and_releases_followers
+    | cugraph_sql::exec::singleflight::tests::singleflight_tests::cancelled_follower_leaves_the_leader_running
+    | cugraph_sql::exec::tests::edge_source_output_rows_rejects_inexact_datafusion_statistics
+    | cugraph_sql::exec::tests::numeric_graph_results_preserve_the_input_vertex_domain_for_every_vertex_column
+    | cugraph_sql::exec::tests::logical_bfs_edge_id_capability_is_rejected_during_exec_construction
+    | cugraph_sql::exec::tests::graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output
+    | cugraph_sql::exec::tests::cugraph_algo_exec_does_not_request_input_repartitioning
+    | cugraph_sql::exec::tests::logical_bfs_path_gpu_plan_decodes_the_bounded_path_schema
+    | cugraph_sql::exec::tests::bfs_path_exec_declares_ordering_only_while_path_index_is_preserved
+    | cugraph_sql::exec::tests::string_pagerank_plan_restores_subsumed_top_k_order_after_decode
+    | cugraph_sql::exec::tests::m1_string_algorithms_share_the_int64_codebook_and_vertex_decode_path
+    | cugraph_sql::exec::tests::legacy_int32_algorithms_map_int64_and_string_vertices_through_an_int32_codebook
+    | cugraph_sql::exec::tests::m3_string_selectors_lower_to_encoded_native_side_inputs_and_decode_identity_outputs
+    | cugraph_sql::exec::tests::string_pagerank_subsumes_only_bounded_sorts
+    | cugraph_sql::exec::tests::string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts
+    | cugraph_sql::exec::tests::malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries
+    | cugraph_sql::exec::tests::cugraph_native_staging_retains_hard_rows_and_never_executes_a_wrapped_child
+    | cugraph_sql::exec::tests::cugraph_host_staging_polls_every_partition_of_a_dynamic_filter_join
+    | cugraph_sql::exec::tests::cugraph_producer_preparation_enforces_the_cumulative_input_cap
+    | cugraph_sql::exec::tests::cugraph_producer_preparation_counts_shared_buffers_once_across_batches_and_partitions
+    | cugraph_sql::exec::tests::cugraph_producer_preparation_keeps_utf8_literal_sources_out_of_host_staging
+    | cugraph_sql::exec::tests::cugraph_producer_preparation_charges_utf8_relation_sources_to_the_same_input_cap
+    | cugraph_sql::exec::tests::cugraph_algo_exec_records_graph_residency_for_native_edge_source
+    | cugraph_sql::exec::tests::simple_directed_footer_omits_python_edge_normalization_through_native_edge_wrapper
+    | cugraph_sql::exec::tests::cugraph_algo_exec_records_graph_residency_for_datafusion_parquet_edge_source
+    | cugraph_sql::exec::tests::graph_residency_translates_parallel_datafusion_parquet_scan_without_order_contract
+    | cugraph_sql::exec::tests::graph_vertex_footer_bound_is_read_from_the_complete_datafusion_parquet_scan
+    | cugraph_sql::exec::tests::simple_directed_footer_omits_python_edge_normalization_only_for_the_proven_rowset
+    | cugraph_sql::exec::tests::simple_directed_footer_does_not_cross_a_rowset_changing_limit
+    | cugraph_sql::exec::tests::cugraph_algo_exec_bypasses_graph_residency_for_datafusion_parquet_scan_limit
+    | cugraph_sql::exec::tests::cugraph_algo_exec_bypasses_graph_residency_for_logical_bfs_datafusion_parquet_edge_source
+    | cugraph_sql::exec::tests::cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_parquet_edge_source
+    | cugraph_sql::exec::tests::cugraph_bfs_path_projection_fanout_shares_one_full_result_producer
+    | cugraph_sql::exec::tests::graph_residency_schema_guard_rejects_descriptor_dtype_mismatch
+    | cugraph_sql::exec::tests::standalone_bounded_cugraph_rejects_native_child_execution_without_admission
+    | cugraph_sql::exec::tests::cugraph_prepares_nested_native_source_metadata_before_graph_admission
+    | cuvs_sql::exec::tests::physical_planning_lowers_typed_vector_ir_and_clone_retains_planner
+    | gpu_coverage::sql::tests::native_session_builder_registers_coverage_table_function
+    | planner::native::tests::reject_datafusion_cpu_policy_rejects_the_exact_datafusion_final_plan
+    | planner::native::tests::strict_rejection_schema_detail_is_client_visible_but_not_log_safe
+    | planner::native::tests::native_required_errors_and_records_name_only_their_own_plan
+    | planner::native::tests::one_planning_pass_parses_each_footer_once_across_optimizer_stages
+    | session::tests::only_relational_native_modes_plan_uncorrelated_scalar_subqueries_as_joins
+    | session::tests::cugraph_subplanning_leaves_the_cpu_policy_to_the_outer_run
+    | session::tests::final_rewrite_checks_the_output_of_rules_installed_before_it
+    | session::tests::cugraph_subplanning_leaves_dynamic_filter_pushdown_to_the_outer_run
+    | session::tests::cugraph_subplanning_plans_single_group_scans_for_declared_orderings
+    | session::tests::functions_only_cugraph_subplanning_preserves_parent_parallelism)$
+  /))
+| (binary_id(algeon-query-runtime) & test(/(?x)
+    ^(runtime::backend_core::tests::begin_attempt_after_close_is_rejected_without_creating_an_attempt
+    | runtime::backend_core::tests::begin_attempt_winning_the_close_gate_is_counted_until_report_ready
+    | runtime::query_service::tests::multi_device_registry::per_device_active_limit_forces_spread_and_then_blocks
+    | runtime::query_service::tests::multi_device_registry::least_loaded_placement_spreads_across_identical_devices
+    | runtime::query_service::tests::multi_device_registry::multi_device_admissions_preserve_each_profiles_fixed_default_query_limit
+    | runtime::query_service::tests::multi_device_registry::multi_device_admissions_do_not_resize_the_fixed_default_query_limit_for_open_slots)$
+  /))
+| (binary_id(algeon-cudf) & test(/(?x)
+    ^(io::parquet::tests::require_kvikio_accepts_compatibility_io_from_explicit_remote_datasource
+    | core::error::size_overflow_tests::native_size_overflow_status_maps_to_permanent_resource_error
+    | internal::resolve::tests::validate_no_duplicate_names_rejects_dup
+    | io::tests::test_collect_column_names_rejects_negative_count
+    | ops::reshape::tests::interleave_output_size_overflow_is_structured
+    | runtime::device_health::tests::cross_device_teardown_suspends_instead_of_quarantining
+    | diagnostics::memory::tests::fixed_pressure_plan_is_bounded_and_preserves_the_documented_reserve
+    | runtime::matrix::tests::matrix_element_count_accepts_cudf_size_type_maximum
+    | core::error::facts::tests::insert_keeps_first_value_on_duplicate_key
+    | diagnostics::memory::tests::request_above_pressure_adds_one_fixed_granularity
+    | io::tests::test_validate_input_path_rejects_directory
+    | runtime::device_health::tests::cudf_fault_status_retains_its_unsigned_ffi_value
+    | runtime::matrix::tests::matrix_element_count_rejects_one_past_cudf_size_type_maximum
+    | runtime::matrix::tests::matrix_element_count_overflow_is_structured
+    | core::error::classification::allocation_attribution_tests::size_overflow_is_not_an_allocation_failure
+    | io::parquet::tests::require_kvikio_rejects_unverified_path_reader_and_backend_fallback
+    | core::error::facts::tests::insert_panics_on_wrong_value_variant
+    | core::types::tests::fixed_point_rejects_non_decimal_types
+    | core::types::tests::type_id_from_raw_round_trips_every_mirrored_discriminant
+    | io::parquet::tests::require_direct_accepts_kvikio_remote_datasource_evidence
+    | ops::materialization::tests::string_payload_must_be_proved
+    | runtime::device_guard::tests::restore_failure_is_reported_once_and_finally_invalidates_thread_authority
+    | core::error::classification::allocation_attribution_tests::unknown_allocation_source_with_scope_usage_stays_unattributed
+    | core::error::classification::allocation_attribution_tests::allocation_without_any_provenance_stays_unattributed_despite_scope_usage
+    | core::error::classification::allocation_attribution_tests::physical_failure_is_confirmed_physical_despite_budget_annotation
+    | core::error::classification::allocation_attribution_tests::reservation_limit_is_a_confirmed_query_limit_despite_budget_annotation
+    | core::error::classification::allocation_attribution_tests::dependency_failure_through_a_budgeted_scope_is_not_an_allocation_failure
+    | core::types::tests::type_id_from_raw_rejects_unmirrored_discriminants
+    | io::parquet::tests::remote_profile_raw_carries_known_size_bytes_hint
+    | io::parquet::tests::require_kvikio_is_fail_closed_when_backend_is_unavailable
+    | ops::stream_compaction::tests::ffi_failure_records_keys_count_as_a_typed_fact
+    | runtime::device_guard::tests::get_device_failure_is_reported_once_and_poisons_thread_authority
+    | runtime::device_guard::tests::set_device_failure_is_reported_once_on_explicit_target_and_poisons_thread_authority
+    | core::error::ffi_detail_tests::ffi_detail_is_retained_as_typed_error_payload
+    | diagnostics::memory::tests::fixed_pressure_plan_refuses_to_spend_the_safe_reserve
+    | frame::dataframe::join::gather_map_bound_tests::hash_join_pair_bound_caps_at_the_largest_representable_output
+    | io::parquet::tests::require_direct_rejects_device_read_unsupported_kvikio_remote_datasource_evidence
+    | io::tests::test_collect_column_names_rejects_null_entry_pointer
+    | ops::materialization::tests::fixed_width_and_string_components_form_checked_peak
+    | ops::reshape::tests::interleave_output_size_rejects_one_past_cudf_size_type_maximum
+    | runtime::device_health::tests::first_fault_is_stable_and_later_work_is_rejected
+    | runtime::device_health::tests::nonfatal_native_teardown_failure_is_observable_without_poisoning_admission
+    | core::error::classification::allocation_attribution_tests::foreign_resource_exhaustion_without_provenance_stays_unattributed
+    | io::parquet::tests::require_direct_accepts_pruned_metadata_only_kvikio_remote_datasource_evidence
+    | io::tests::kvikio_bounce_buffer_drain_busy_error_is_flat_and_retryable
+    | io::tests::kvikio_bounce_buffer_drain_idle_result_is_idempotent
+    | runtime::device_guard::tests::nested_cross_device_entry_is_rejected_before_switch_and_same_device_restore_is_top_level
+    | runtime::device_health::tests::diagnostics_are_first_and_power_of_two_only
+    | core::types::tests::bool_materialization_accepts_every_non_zero_byte
+    | core::memory::tests::failure_info_preserves_unknown_allocation_domain_identity
+    | interop::arrow_host::import::tests::list_offset_normalization_rejects_negative_non_monotonic_and_i32_overflow
+    | io::tests::test_collect_column_names_rejects_null_names_ptr_with_positive_count
+    | ops::reshape::tests::interleave_output_size_accepts_cudf_size_type_maximum
+    | core::memory::tests::allocator_event_preserves_optional_samples_without_zero_fabrication
+    | interop::arrow_host::testing_hooks::tests::resetting_one_call_count_observer_does_not_rewind_another
+    | io::parquet::tests::require_direct_rejects_host_only_kvikio_remote_datasource_payload_evidence
+    | io::tests::test_collect_column_names_success
+    | runtime::device_health::tests::counter_increment_saturates
+    | core::types::tests::raw_data_type_rejects_non_decimal_scale
+    | frame::dataframe::info::size_accounting_tests::dataframe_memory_total_overflow_is_typed_and_does_not_wrap
+    | internal::resolve::tests::validate_no_duplicate_names_ok
+    | runtime::binding_extension::tests::slot_map_reuses_type_ids_and_enforces_cardinality_limit
+    | io::parquet::tests::require_direct_rejects_unverified_remote_path_evidence
+    | io::tests::test_validate_input_path_reports_io_failure
+    | runtime::device_guard::tests::teardown_entry_suspends_nested_entries_on_another_device_and_resumes_them)$
+  /))
 | (binary_id(algeon-cudf::cache_allocation_domain_contracts_gpu) & test(/^zero_cache_capacity_cannot_create_an_allocation_domain$/))
 | (binary_id(algeon-cudf::device_memory_manager_installation_identity_contract_gpu) & test(/^allocation_limit_validation_is_cuda_free_and_rejects_inconsistent_pool_bounds$/))
-| (binary_id(algeon-cugraph) & test(/^(error::tests::fatal_native_cuda_classification_quarantines_the_explicit_owner_device|graph::tests::test_graph_drop_quarantines_native_pointer_when_device_entry_fails|handle::tests::test_restore_failure_rejects_future_work_on_failed_ambient_device|handle::tests::test_enter_temporarily_enters_owner_device_and_restores_ambient_device|cudf_interop::errors::tests::map_cudf_error_cuda_runtime_is_temporary_unexpected|cudf_interop::errors::tests::map_cudf_error_fatal_cuda_is_persistent_unexpected|array::tests::test_array_types_not_send_sync|cudf_interop::errors::tests::owned_import_interop_execution_binding_mismatch_is_invalid_input|cudf_interop::types::tests::borrowed_type_to_cugraph_matches_cudf_mapping|centrality::result::tests::hits_result_from_raw_rejects_null|cudf_interop::errors::tests::map_cudf_error_out_of_memory|structure::subgraph::tests::induced_subgraph_result_from_raw_rejects_null|centrality::result::tests::edge_centrality_result_from_raw_rejects_null|cudf_interop::errors::tests::map_cudf_error_runtime_binding_mismatch_is_invalid_state|cudf_interop::prepared::tests::prepared_column_without_explicit_null_count_is_invalid_state|centrality::result::tests::centrality_result_from_raw_rejects_null|community::triangle_count::tests::triangle_count_result_from_raw_rejects_null|cudf_interop::errors::tests::prepared_lease_activation_interop_without_leaf_message_keeps_boundary_message_clean|community::result::tests::hierarchical_clustering_result_from_raw_rejects_null|cudf_interop::errors::tests::prepared_projection_interop_readiness_unavailable_uses_temporary_source_status|cudf_interop::types::tests::cudf_to_cugraph_roundtrip|array::tests::test_host_array_view_rejects_undersized_slice|cudf_interop::errors::tests::map_cudf_error_io_error|cudf_interop::errors::tests::map_cudf_error_missing_column_is_invalid_input|cudf_interop::prepared::tests::prepared_column_binding_shorter_than_active_range_is_invalid_state|error::tests::test_require_non_null_rejects_null_pointers|labeling::result::tests::labeling_result_from_raw_rejects_null|similarity::vertex_pairs::tests::vertex_pairs_from_raw_rejects_null|community::clustering::tests::clustering_result_from_raw_rejects_null|cudf_interop::errors::tests::prepared_lease_activation_interop_preserves_leaf_failure_message|error::tests::test_check_error_out_of_memory_is_temporary|error::tests::test_error_kind_from_error_code|error::tests::test_with_operation_stacking|types::tests::test_data_type_roundtrip|array::tests::test_host_array_view_rejects_overflowing_size|cudf_interop::errors::tests::map_cudf_error_foreign_invariant_violation_is_invalid_state|error::tests::allocation_source_maps_native_values_and_fails_closed|error::tests::test_check_error_failure_unknown_code_maps_to_unexpected|error::tests::test_check_error_success|types::tests::test_cugraph_element_size_matches_data_type|array::tests::test_host_array_view_accepts_exact_size|array::tests::test_raw_device_array_view_from_borrowed_rejects_null|array::tests::test_raw_device_array_view_try_from_raw_rejects_overflowing_size|error::tests::native_payload_preserves_allocation_facts_and_error_identity|error::tests::test_check_error_failure_null_ptr|error::tests::test_error_display_with_message_and_context|error::tests::test_error_source_chain|layout::force_atlas2::layout_result_constructor_tests::layout_result_from_raw_rejects_null|sampling::tests::neighbor_sampling_fan_out_rejects_empty|similarity::result::tests::similarity_result_from_raw_rejects_null|cudf_interop::errors::tests::prepared_lease_completion_interop_readiness_unavailable_uses_persistent_source_status|cudf_interop::prepared::tests::prepared_fixed_width_values_binding_missing_values_binding_is_invalid_state|cudf_interop::types::tests::cugraph_to_cudf_roundtrip|error::tests::allocation_failure_source_maps_native_values_and_fails_closed|sampling::tests::random_walk_result_from_raw_rejects_null|structure::core::tests::core_number_result_from_raw_rejects_null|traversal::paths::tests::paths_result_from_raw_rejects_null|types::tests::test_graph_properties_to_c|handle::tests::test_from_raw_resource_handle_rejects_null|traversal::paths::tests::extract_paths_result_from_raw_rejects_null|types::tests::test_bool_conversion|types::tests::test_data_type_try_from_unknown_value_returns_descriptive_error|sampling::tests::sample_result_from_raw_rejects_null|handle::tests::test_adopt_raw_resource_handle_rejects_null|structure::core::tests::k_core_result_from_raw_rejects_null|array::tests::test_host_array_view_accepts_oversized_slice)$/))
+| (binary_id(algeon-cugraph) & test(/(?x)
+    ^(error::tests::fatal_native_cuda_classification_quarantines_the_explicit_owner_device
+    | graph::tests::test_graph_drop_quarantines_native_pointer_when_device_entry_fails
+    | handle::tests::test_restore_failure_rejects_future_work_on_failed_ambient_device
+    | handle::tests::test_enter_temporarily_enters_owner_device_and_restores_ambient_device
+    | cudf_interop::errors::tests::map_cudf_error_cuda_runtime_is_temporary_unexpected
+    | cudf_interop::errors::tests::map_cudf_error_fatal_cuda_is_persistent_unexpected
+    | array::tests::test_array_types_not_send_sync
+    | cudf_interop::errors::tests::owned_import_interop_execution_binding_mismatch_is_invalid_input
+    | cudf_interop::types::tests::borrowed_type_to_cugraph_matches_cudf_mapping
+    | centrality::result::tests::hits_result_from_raw_rejects_null
+    | cudf_interop::errors::tests::map_cudf_error_out_of_memory
+    | structure::subgraph::tests::induced_subgraph_result_from_raw_rejects_null
+    | centrality::result::tests::edge_centrality_result_from_raw_rejects_null
+    | cudf_interop::errors::tests::map_cudf_error_runtime_binding_mismatch_is_invalid_state
+    | cudf_interop::prepared::tests::prepared_column_without_explicit_null_count_is_invalid_state
+    | centrality::result::tests::centrality_result_from_raw_rejects_null
+    | community::triangle_count::tests::triangle_count_result_from_raw_rejects_null
+    | cudf_interop::errors::tests::prepared_lease_activation_interop_without_leaf_message_keeps_boundary_message_clean
+    | community::result::tests::hierarchical_clustering_result_from_raw_rejects_null
+    | cudf_interop::errors::tests::prepared_projection_interop_readiness_unavailable_uses_temporary_source_status
+    | cudf_interop::types::tests::cudf_to_cugraph_roundtrip
+    | array::tests::test_host_array_view_rejects_undersized_slice
+    | cudf_interop::errors::tests::map_cudf_error_io_error
+    | cudf_interop::errors::tests::map_cudf_error_missing_column_is_invalid_input
+    | cudf_interop::prepared::tests::prepared_column_binding_shorter_than_active_range_is_invalid_state
+    | error::tests::test_require_non_null_rejects_null_pointers
+    | labeling::result::tests::labeling_result_from_raw_rejects_null
+    | similarity::vertex_pairs::tests::vertex_pairs_from_raw_rejects_null
+    | community::clustering::tests::clustering_result_from_raw_rejects_null
+    | cudf_interop::errors::tests::prepared_lease_activation_interop_preserves_leaf_failure_message
+    | error::tests::test_check_error_out_of_memory_is_temporary
+    | error::tests::test_error_kind_from_error_code
+    | error::tests::test_with_operation_stacking
+    | types::tests::test_data_type_roundtrip
+    | array::tests::test_host_array_view_rejects_overflowing_size
+    | cudf_interop::errors::tests::map_cudf_error_foreign_invariant_violation_is_invalid_state
+    | error::tests::allocation_source_maps_native_values_and_fails_closed
+    | error::tests::test_check_error_failure_unknown_code_maps_to_unexpected
+    | error::tests::test_check_error_success
+    | types::tests::test_cugraph_element_size_matches_data_type
+    | array::tests::test_host_array_view_accepts_exact_size
+    | array::tests::test_raw_device_array_view_from_borrowed_rejects_null
+    | array::tests::test_raw_device_array_view_try_from_raw_rejects_overflowing_size
+    | error::tests::native_payload_preserves_allocation_facts_and_error_identity
+    | error::tests::test_check_error_failure_null_ptr
+    | error::tests::test_error_display_with_message_and_context
+    | error::tests::test_error_source_chain
+    | layout::force_atlas2::layout_result_constructor_tests::layout_result_from_raw_rejects_null
+    | sampling::tests::neighbor_sampling_fan_out_rejects_empty
+    | similarity::result::tests::similarity_result_from_raw_rejects_null
+    | cudf_interop::errors::tests::prepared_lease_completion_interop_readiness_unavailable_uses_persistent_source_status
+    | cudf_interop::prepared::tests::prepared_fixed_width_values_binding_missing_values_binding_is_invalid_state
+    | cudf_interop::types::tests::cugraph_to_cudf_roundtrip
+    | error::tests::allocation_failure_source_maps_native_values_and_fails_closed
+    | sampling::tests::random_walk_result_from_raw_rejects_null
+    | structure::core::tests::core_number_result_from_raw_rejects_null
+    | traversal::paths::tests::paths_result_from_raw_rejects_null
+    | types::tests::test_graph_properties_to_c
+    | handle::tests::test_from_raw_resource_handle_rejects_null
+    | traversal::paths::tests::extract_paths_result_from_raw_rejects_null
+    | types::tests::test_bool_conversion
+    | types::tests::test_data_type_try_from_unknown_value_returns_descriptive_error
+    | sampling::tests::sample_result_from_raw_rejects_null
+    | handle::tests::test_adopt_raw_resource_handle_rejects_null
+    | structure::core::tests::k_core_result_from_raw_rejects_null
+    | array::tests::test_host_array_view_accepts_oversized_slice)$
+  /))
 | (binary_id(algeon-cudf::execution_contracts_gpu) & test(/^(source_contract_tests::source_contract_tests_cases)$/))
-| (binary_id(algeon-cudf::io_contracts_gpu) & test(/^(contract_suite::dataframe::parquet_source_tests::parquet_source_chunk_preflight_rejects_stale_remote_contract_with_same_file_identity|contract_suite::dataframe::parquet_source_tests::parquet_source_chunk_exact_preflight_reports_fixed_width_output_bound|contract_suite::dataframe::parquet_source_tests::parquet_source_chunk_exact_preflight_returns_none_for_variable_width_output|contract_suite::source_contract_tests::zero_column_count_chunks_require_row_count_metadata_and_carry_known_counts|contract_suite::source_contract_tests::row_group_and_row_count_execution_boundary_conversions_are_checked|contract_suite::source_contract_tests::predicate_disposition_names_cover_reader_pushdown_contract|contract_suite::source_contract_tests::data_source_reader_predicate_sets_reader_pushdown_diagnostics|contract_suite::source_contract_tests::data_source_represents_missing_nullable_columns_as_schema_mapping|contract_suite::source_contract_tests::data_source_rejects_non_nullable_missing_null_columns|contract_suite::source_contract_tests::source_validation_rejects_duplicate_output_names|contract_suite::source_contract_tests::source_validation_rejects_read_partition_name_collisions|contract_suite::source_contract_tests::source_validation_checks_partition_value_count_type_and_supported_dtype|contract_suite::source_contract_tests::source_validation_accepts_extended_partition_values_and_rejects_mismatches|contract_suite::source_contract_tests::source_validation_checks_schema_refs_and_source_ref_bounds|contract_suite::source_contract_tests::local_files_are_local_and_sources_must_have_files|contract_suite::source_contract_tests::data_source_derives_diagnostics_and_read_column_refs_are_decoded_ordinals|contract_suite::source_contract_tests::object_store_source_chunks_preserve_reader_uri|contract_suite::source_contract_tests::typed_remote_parquet_source_reports_conservative_capability|contract_suite::source_contract_tests::remote_parquet_datasource_probe_rejects_virtual_hosted_custom_endpoint_before_open|contract_suite::source_contract_tests::remote_parquet_datasource_probe_rejects_secret_bearing_endpoint_without_echoing_it|contract_suite::source_contract_tests::remote_parquet_datasource_probe_rejects_oversized_preferred_read_size_before_open|contract_suite::source_contract_tests::object_store_file_preserves_typed_remote_profile_and_mode|contract_suite::source_contract_tests::zero_column_count_constructor_builds_only_the_synthetic_count_shape|contract_suite::source_contract_tests::metadata_shapes_are_checked|contract_suite::source_contract_tests::local_files_preserve_row_group_selection_shape|contract_suite::source_contract_tests::empty_data_read_projection_does_not_infer_metadata_count|contract_suite::source_contract_tests::rejected_source_feature_names_are_neutral_source_vocabulary|contract_suite::source_contract_tests::chunk_planning_preserves_none_row_groups_as_all_without_metadata|contract_suite::source_contract_tests::chunk_planning_policy_rejects_zero_limits|contract_suite::source_contract_tests::chunk_planning_skips_explicit_empty_row_group_selections_for_data_and_count|contract_suite::source_contract_tests::chunk_planning_preserves_selected_row_group_order_and_file_facts|contract_suite::source_contract_tests::empty_variable_width_payload_evidence_propagates_through_source_descriptor|contract_suite::source_contract_tests::chunk_planning_expands_all_row_groups_and_honors_byte_policy_with_metadata|contract_suite::source_contract_tests::chunk_planning_uses_projected_uncompressed_bytes_before_read_bytes|contract_suite::source_contract_tests::chunk_planning_validates_selected_row_groups_against_metadata|contract_suite::source_contract_tests::chunk_selection_validates_row_groups_against_byte_only_metadata)$/))
+| (binary_id(algeon-cudf::io_contracts_gpu) & test(/(?x)
+    ^(contract_suite::dataframe::parquet_source_tests::parquet_source_chunk_preflight_rejects_stale_remote_contract_with_same_file_identity
+    | contract_suite::dataframe::parquet_source_tests::parquet_source_chunk_exact_preflight_reports_fixed_width_output_bound
+    | contract_suite::dataframe::parquet_source_tests::parquet_source_chunk_exact_preflight_returns_none_for_variable_width_output
+    | contract_suite::source_contract_tests::zero_column_count_chunks_require_row_count_metadata_and_carry_known_counts
+    | contract_suite::source_contract_tests::row_group_and_row_count_execution_boundary_conversions_are_checked
+    | contract_suite::source_contract_tests::predicate_disposition_names_cover_reader_pushdown_contract
+    | contract_suite::source_contract_tests::data_source_reader_predicate_sets_reader_pushdown_diagnostics
+    | contract_suite::source_contract_tests::data_source_represents_missing_nullable_columns_as_schema_mapping
+    | contract_suite::source_contract_tests::data_source_rejects_non_nullable_missing_null_columns
+    | contract_suite::source_contract_tests::source_validation_rejects_duplicate_output_names
+    | contract_suite::source_contract_tests::source_validation_rejects_read_partition_name_collisions
+    | contract_suite::source_contract_tests::source_validation_checks_partition_value_count_type_and_supported_dtype
+    | contract_suite::source_contract_tests::source_validation_accepts_extended_partition_values_and_rejects_mismatches
+    | contract_suite::source_contract_tests::source_validation_checks_schema_refs_and_source_ref_bounds
+    | contract_suite::source_contract_tests::local_files_are_local_and_sources_must_have_files
+    | contract_suite::source_contract_tests::data_source_derives_diagnostics_and_read_column_refs_are_decoded_ordinals
+    | contract_suite::source_contract_tests::object_store_source_chunks_preserve_reader_uri
+    | contract_suite::source_contract_tests::typed_remote_parquet_source_reports_conservative_capability
+    | contract_suite::source_contract_tests::remote_parquet_datasource_probe_rejects_virtual_hosted_custom_endpoint_before_open
+    | contract_suite::source_contract_tests::remote_parquet_datasource_probe_rejects_secret_bearing_endpoint_without_echoing_it
+    | contract_suite::source_contract_tests::remote_parquet_datasource_probe_rejects_oversized_preferred_read_size_before_open
+    | contract_suite::source_contract_tests::object_store_file_preserves_typed_remote_profile_and_mode
+    | contract_suite::source_contract_tests::zero_column_count_constructor_builds_only_the_synthetic_count_shape
+    | contract_suite::source_contract_tests::metadata_shapes_are_checked
+    | contract_suite::source_contract_tests::local_files_preserve_row_group_selection_shape
+    | contract_suite::source_contract_tests::empty_data_read_projection_does_not_infer_metadata_count
+    | contract_suite::source_contract_tests::rejected_source_feature_names_are_neutral_source_vocabulary
+    | contract_suite::source_contract_tests::chunk_planning_preserves_none_row_groups_as_all_without_metadata
+    | contract_suite::source_contract_tests::chunk_planning_policy_rejects_zero_limits
+    | contract_suite::source_contract_tests::chunk_planning_skips_explicit_empty_row_group_selections_for_data_and_count
+    | contract_suite::source_contract_tests::chunk_planning_preserves_selected_row_group_order_and_file_facts
+    | contract_suite::source_contract_tests::empty_variable_width_payload_evidence_propagates_through_source_descriptor
+    | contract_suite::source_contract_tests::chunk_planning_expands_all_row_groups_and_honors_byte_policy_with_metadata
+    | contract_suite::source_contract_tests::chunk_planning_uses_projected_uncompressed_bytes_before_read_bytes
+    | contract_suite::source_contract_tests::chunk_planning_validates_selected_row_groups_against_metadata
+    | contract_suite::source_contract_tests::chunk_selection_validates_row_groups_against_byte_only_metadata)$
+  /))
 | (binary_id(algeon-cuml) & test(/^(surface_tests::error_taxonomy_projects_leaf_codes)$/))
-| (binary_id(algeon-cuvs) & test(/^(device::tests::tensor_stride_footprint_overflow_returns_an_error|error::tests::native_message_text_never_changes_error_kind|error::tests::native_error_kind_classifies_allocations_without_parsing_text|kmeans::tests::row_count_accepts_cuvs_i32_maximum|kmeans::tests::row_count_rejects_one_past_cuvs_i32_maximum|kmeans::tests::feature_count_rejects_one_past_the_prediction_i32_maximum|pca::tests::input_dimensions_reject_a_single_row_before_native_pca|pca::tests::input_dimensions_accept_the_native_boundary)$/))
+| (binary_id(algeon-cuvs) & test(/(?x)
+    ^(device::tests::tensor_stride_footprint_overflow_returns_an_error
+    | error::tests::native_message_text_never_changes_error_kind
+    | error::tests::native_error_kind_classifies_allocations_without_parsing_text
+    | kmeans::tests::row_count_accepts_cuvs_i32_maximum
+    | kmeans::tests::row_count_rejects_one_past_cuvs_i32_maximum
+    | kmeans::tests::feature_count_rejects_one_past_the_prediction_i32_maximum
+    | pca::tests::input_dimensions_reject_a_single_row_before_native_pca
+    | pca::tests::input_dimensions_accept_the_native_boundary)$
+  /))
 | (binary_id(algeon-cuml-sys::native_abi_contract_gpu) & test(/^(native_error_boundary_copies_status_and_message_into_tls_detail|umap_null_arguments_replace_previous_native_error_detail)$/))
 '''
 test-group = '@global'
@@ -83,7 +692,16 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 [[profile.default.overrides]]
 filter = '''
 binary_id(algeon-query-engine::native_execution_tests_gpu)
-& test(/(single_distinct_split_streams_grouped_count_distinct_beside_sum_and_count_within_a_small_grant|bounded_native_query_filters_source_chunks_before_frame_only_consumers|bounded_native_query_merges_high_cardinality_partials_incrementally_under_the_query_cap|bounded_native_query_joins_differently_filtered_scans_of_one_source_without_widening_them|bounded_native_query_fails_typed_when_a_shared_leaf_consumer_cannot_shrink_below_the_cap|bounded_native_query_reads_a_shared_staged_leaf_once_for_both_join_consumers|bounded_native_query_releases_a_shared_leaf_stream_when_cancelled_mid_stream|bounded_native_mixed_left_build_preserves_identity_and_finalizes_after_all_probe_batches)$/)
+& test(/(?x)
+    (single_distinct_split_streams_grouped_count_distinct_beside_sum_and_count_within_a_small_grant
+    | bounded_native_query_filters_source_chunks_before_frame_only_consumers
+    | bounded_native_query_merges_high_cardinality_partials_incrementally_under_the_query_cap
+    | bounded_native_query_joins_differently_filtered_scans_of_one_source_without_widening_them
+    | bounded_native_query_fails_typed_when_a_shared_leaf_consumer_cannot_shrink_below_the_cap
+    | bounded_native_query_reads_a_shared_staged_leaf_once_for_both_join_consumers
+    | bounded_native_query_releases_a_shared_leaf_stream_when_cancelled_mid_stream
+    | bounded_native_mixed_left_build_preserves_identity_and_finalizes_after_all_probe_batches)$
+  /)
 '''
 priority = 100
 

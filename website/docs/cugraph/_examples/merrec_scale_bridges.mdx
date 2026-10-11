@@ -4,13 +4,10 @@ import Table from '@site/src/theme/MDXComponents/Table';
 
 export const n = value => value.toLocaleString('en-US');
 
-Once brands are grouped into worlds, a merchandiser wants to know which
-brands sit between them: the entries a shopper passes through on the way
-from one audience to another. Betweenness centrality counts how often a
-brand lies on the shortest paths between other brands in the similarity
-graph. Brands that connect many worlds are candidates for cross-world
-navigation, or for exclusion from a collection that should stay inside one
-world.
+Betweenness centrality counts how often a brand lies on the shortest paths
+between other brands in the similarity graph.
+Brands that connect many worlds are candidates for cross-world navigation,
+or for exclusion from a collection that should stay inside one world.
 
 The statement builds the same Jaccard graph as the worlds query: 5,000
 brands, edges where the shared-fan similarity reaches 0.02. Leiden assigns

@@ -57,10 +57,7 @@ algeon/
 
 The cuDF script also installs `libcudf_rust_rmm_interop.so` beside the shim;
 `docker/stage-docker-payload.sh` stages both automatically. Docker consumes the
-matching install prefixes under `ALGEON_NATIVE_DIR`; the cuGraph CMake
-build tree is only an intermediate used while producing `cugraph-install`.
-KvikIO and nvCOMP are linked statically into `libcudf.so`; staging copies them
-only when a cuDF build lists them as shared dependencies.
+matching install prefixes under `ALGEON_NATIVE_DIR`.
 
 The lean `FEATURES=nvml` image omits cuVS, cuML, and cuGraph, so it
 needs neither optional native artifact. Production examples keep `nvml` enabled so live
@@ -112,16 +109,13 @@ frontend and returns a structured `required_feature_disabled` error when
 cuGraph execution is requested. Set `ALGEON_SERVER_CUGRAPH_ENABLED=false` to
 hide it.
 
-Staging always runs its own clean build of `algeon_server`, even when a
-release binary from the source build exists. The payload manifest records a
-verifiable artifact identity: binary hash, policy fingerprint, features,
-target triple, and codegen flags. To produce one, the packaging helper invokes
-Cargo from an isolated working directory and a clean `CARGO_HOME`, with the
-fixed target triple and `target-cpu=x86-64-v4` from
-`.config/policies/cpu-packaging.toml`, and writes a build record beside the
-binary. An ordinary `target/release` build has no such record and is not
-reused. Expect about five minutes for this build on a warm native prefix; it
-took 5 min 04 s on 2026-10-09.
+Staging always runs its own clean build of `algeon_server`, from an isolated
+working directory and a clean `CARGO_HOME`, with the fixed target triple and
+`target-cpu=x86-64-v4` from `.config/policies/cpu-packaging.toml`. It writes a
+build record (binary hash, policy fingerprint, features, target triple and
+codegen flags) beside the binary; an ordinary `target/release` build has no
+such record and is not reused. Expect about five minutes on a warm native
+prefix; it took 5 min 04 s on 2026-10-09.
 
 `SKIP_CARGO_BUILD=1` re-stages a payload from a previous packaging build only:
 
@@ -130,12 +124,10 @@ SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh
 bash docker/build-image.sh
 ```
 
-It verifies that the recorded binary hash, policy fingerprint, features,
-target, and codegen flags still agree before reusing the artifact.
-`docker/dist/payload-manifest.json` records the staged files, checksums, and
-artifact-affecting policy fingerprint. The image build fails if its baseline,
-target, or hashes disagree with that manifest; `docker/build-image.sh`
-verifies the manifest and supplies the build arguments.
+It reuses the artifact only when the recorded build record still agrees.
+`docker/dist/payload-manifest.json` records the staged files, checksums and
+policy fingerprint, and `docker/build-image.sh` fails when its baseline,
+target or hashes disagree with that manifest.
 
 What ends up in the image:
 

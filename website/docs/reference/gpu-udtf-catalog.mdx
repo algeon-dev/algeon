@@ -130,8 +130,7 @@ points to `gpu_list_functions()`, for example
 Validation checks that the UDTF exists, resolves every required relation,
 validates the relation bindings, columns, types, dimensions, conditional
 arguments and option values, applies defaults, and derives the output schema
-when it can. It scans no rows, builds no graph, launches no kernel and
-allocates no device memory, so it proves no runtime fact: source-vertex
+when it can. It reads no data and proves no runtime fact: source-vertex
 existence, vector uniformity and cardinality are checked at execution, and an
 admitted call that exceeds its memory grant fails there with an allocation
 error. `would_execute_gpu` covers this one call;

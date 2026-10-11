@@ -64,8 +64,7 @@ edge normalization.
 | `raw_libcugraph` | Pre-normalized edge tables, lower-level libcugraph parity checks, and performance-sensitive paths where duplicate/reverse-edge semantics are intentionally handled upstream. | Skips Python-style `EdgeNormalize` and sends the edge list to the libcugraph-compatible graph builder. Null edge rows are still sanitized because libcugraph has no null-edge semantics. |
 
 For SQL calls, both policies still use simple graph properties selected by
-`directed`; there is no SQL multigraph option. The difference is whether Algeon
-performs the Python-compatible edge normalization before the raw graph build.
+`directed`; there is no SQL multigraph option.
 
 ## What `python_cugraph` normalizes
 
@@ -140,8 +139,6 @@ Look for both fields in the physical plan:
 - `construction_policy=python_cugraph` with `edge_normalize_inserted=false`
   means the optimizer proved the input is already canonical for the requested
   Python-compatible semantics.
-- `construction_policy=raw_libcugraph` with `edge_normalize_inserted=false`
-  means the call bypasses Python-style normalization.
 
 ## Reuse algorithm results
 

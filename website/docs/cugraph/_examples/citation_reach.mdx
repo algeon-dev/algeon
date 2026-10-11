@@ -5,9 +5,9 @@ import Table from '@site/src/theme/MDXComponents/Table';
 
 ### How does BERT connect to the original LSTM paper?
 
-A researcher wants a short reading route between two papers. Citation edges
-run from the citing paper to its reference. The query selects BERT and LSTM
-by title and year, follows those edges with BFS, and joins the path to titles.
+Citation edges run from the citing paper to its reference. The query selects
+BERT and LSTM by title and year, follows those edges with BFS, and joins the
+path to titles.
 
 <CodeBlock language="sql">{capture.path.sql}</CodeBlock>
 
@@ -15,7 +15,7 @@ by title and year, follows those edges with BFS, and joins the path to titles.
 
 <p className="fineprint">The query took {timings.queries.citation.path.elapsed_s.toFixed(2)} s.</p>
 
-BFS returns one shortest path, with two citation steps. A citation path does not establish a causal history of ideas.
+BFS returns one shortest path, with two citation steps.
 
 **Follow-up: compare the other shortest routes.** A relational query checks
 which papers BERT cites that also cite LSTM.
@@ -36,9 +36,9 @@ records and an independent check of these edges.
 
 ### How many papers cite AlexNet within three steps?
 
-A researcher assessing citation reach needs counts at each distance, without
-counting one paper repeatedly. Reversing the edges follows papers that cite
-AlexNet and then papers that cite those papers.
+The query counts papers at each distance from AlexNet without counting one
+paper repeatedly. Reversing the edges follows papers that cite AlexNet and
+then papers that cite those papers.
 
 <CodeBlock language="sql">{capture.reach.sql}</CodeBlock>
 
@@ -52,6 +52,6 @@ AlexNet and then papers that cite those papers.
 The three layers contain 151,243 papers, excluding AlexNet itself. Each paper
 appears at its shortest distance.
 
-The count describes reach within the April 2020 graph, not causal influence.
-Restricting citing papers by year would answer a different question; that
-comparison has not been run here.
+The count describes reach within the April 2020 snapshot. Restricting citing
+papers by year would answer a different question; that comparison has not
+been run here.

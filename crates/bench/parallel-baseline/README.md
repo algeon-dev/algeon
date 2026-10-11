@@ -150,7 +150,7 @@ before `target/debug/native_tpch_benchmark`. Raw output is
 coverage field, outcome, fingerprint, and memory/copy counter.
 `artifacts-v3/loaded-native-libraries.json` was written by that process after
 execution. It hashes the mapped executable and 46 executable shared libraries,
-including the actually loaded `cudf-install/lib/libcudf_rust.so` and
+including the loaded `cudf-install/lib/libcudf_rust.so` and
 `libcudf.so`; the manifest verifies those recorded paths and hashes.
 The exact benchmarked binaries are retained under `binaries-v3/`, since subsequent
 Cargo checks may replace the files in `target/debug`; the manifests hash the

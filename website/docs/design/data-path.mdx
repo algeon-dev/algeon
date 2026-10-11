@@ -105,12 +105,34 @@ and cache fills for `s3://` sources run on a process-wide
 `algeon-object-store-control` Tokio runtime, separate from the host and device
 runtimes ([Runtimes and threads](./index.mdx#runtimes-and-threads)).
 
-**RDMA**, remote direct memory access, requires a compatible network and
-storage stack. It is distinct from local NVMe DMA. Algeon's HTTP/libcurl
-source follows the staged path shown above; an `s3://` URL does not imply
-RDMA or GDS. KvikIO's
+KvikIO's
 [remote transfer implementation](https://github.com/rapidsai/kvikio/blob/0f6900f08c5a7ca150689e5454ae28562f875eec/cpp/src/remote_handle.cpp#L37-L133)
-shows the host staging and device copy.
+shows the host staging and device copy. An `s3://` URL does not imply RDMA or
+GDS.
+
+### cuObject and RDMA
+
+[cuObject](https://docs.nvidia.com/gpudirect-storage/cuobject/), which NVIDIA
+documents as GPUDirect Storage for objects, changes the payload route for
+S3-compatible storage. The client still sends an S3 range `GET` over HTTP. An
+`x-amz-rdma-token` header in that request describes a registered destination
+buffer, and the object server writes the payload into it by **RDMA**, remote
+direct memory access, over an InfiniBand or RoCE network. RDMA is a network
+transfer and differs from the local NVMe DMA that GDS performs. With VRAM as
+the destination, the libcurl buffers and pinned staging of the S3 row leave
+the payload route, as the dashed row of the diagram above shows. The HTTP
+response carries the status and an `x-amz-rdma-reply` header.
+
+Both ends take part. The client library ships in CUDA Toolkit 13.1.1 and
+later and needs a ConnectX-5 or newer InfiniBand or RoCE adapter. The object
+store must integrate NVIDIA's cuObject server library, and an endpoint
+without it serves payload only over HTTP.
+
+Algeon does not support cuObject yet. Its S3 datasource reads through KvikIO's
+remote handle, and the KvikIO version in Algeon's cuDF 26.08 build moves every
+remote payload over HTTP. Every `s3://` read therefore takes the staged HTTP
+route above. cuDF reaches object storage through KvikIO, and RDMA for Algeon's
+S3 reads depends on KvikIO's remote I/O adding it.
 
 ## Source and workspace {/* #lakehouse-and-workspace-boundary */}
 

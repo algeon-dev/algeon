@@ -69,13 +69,14 @@ shows the full result.
 ## Why
 
 A lakehouse holds terabytes, and a question is about one tenant, one quarter
-or one cohort. SQL reduces the lake to that working set, which fits one GPU,
-and the questions worth asking about it (which companies form a cluster,
-which products sit nearest in embedding space, which rows a model would
-flag) have mature GPU implementations and no expression as a join. Each has
-usually cost an export job and a notebook. Algeon keeps them inside the
-query, and a person or an agent tests the next hypothesis for the price of
-one more statement.
+or one cohort. SQL reduces the lake to that working set, and a working set of
+that size fits in one GPU's memory, with decoded columns, graph storage and
+temporary algorithm memory all counting against it. The questions about it
+(which companies form a cluster, which products sit nearest in embedding
+space, which rows a model would flag) have mature GPU implementations and no
+expression as a join. Each has usually cost an export job and a notebook.
+Algeon keeps them inside the query, and a person or an agent writes the next
+hypothesis as the next statement.
 [Introducing Algeon](https://algeon.dev/blog/introducing-algeon) makes the
 case in full.
 

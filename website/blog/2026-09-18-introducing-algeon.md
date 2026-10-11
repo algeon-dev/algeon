@@ -53,47 +53,36 @@ The [session capture](/data/merrec-agent-session.json) records each statement, i
 
 </div>
 
-The shape recurs elsewhere. A supply-chain analyst asks which upstream
-company two late product lines share. A security team asks which hosts a
-stolen credential reached. A researcher asks which papers connect two ideas.
-The evidence is already in the records, the question needs a graph
-traversal, a similarity search or a model score in the middle, and the first
-version of the question is usually wrong.
+The shape recurs elsewhere: which upstream company two late product lines
+share, which hosts a stolen credential reached, which papers connect two
+ideas. In each case the evidence is already in the records, the question
+needs a graph traversal, a similarity search or a model score in the middle,
+and the first version of the question is often wrong.
 
 **Algeon is a GPU query engine for this kind of exploration.**
 An analyst or an AI agent applies a graph, vector or machine-learning
 algorithm to a relation defined by SQL, and the output comes back as rows the
-same statement can keep joining, filtering and aggregating. Each question
-costs one statement and runs on one GPU. This post is as much about what
-Algeon cannot do yet as about what it can.
+same statement can keep joining, filtering and aggregating. Each attempt
+costs one statement and runs on one GPU.
 
-## A question now costs one statement
+## Seconds per attempt
 
-Most of the interesting signals in an organization's data were never found
-because looking was expensive, whether that meant a graph database
-procurement, an ETL job or a quarter of glue code for one question. When a
-look costs one SQL statement, an agent can afford many of them.
-
-Queries have come from people and from application code written by people.
-Agents are a newer kind of author, and they behave unlike either. They issue
-far more queries. They are frequently wrong on the first attempt. They work
-by hypothesis: run something, look at the result, revise, run again.
-
-Writing the query has become cheap. A model that knows a domain's vocabulary
-and sees the schema writes the SQL for the next question in seconds, and a
-smaller model specialized to that domain can do it at a cost that no longer
-limits how often it asks. The step that stayed expensive was any question
-with a graph traversal, a nearest-neighbor search or a model score in it.
-Those ran as separate jobs, with an export before and an import after, and
-the answer arrived after the agent's turn had ended.
+The opening session shows how an agent asks: six statements for one
+question, two of them rejected at planning time, and each written after
+reading the result of the one before. Writing the next query is the cheap
+step; a model that knows a domain's vocabulary and sees the schema produces
+it in seconds. A question with a graph traversal, a nearest-neighbor search
+or a model score in it is the expensive one when the algorithm runs as a
+separate job outside SQL, with an export before and an import after.
 
 Algeon moves those steps into the statement. The Barbie statement builds two
 like graphs from the 1.27 billion events, runs four PageRank calls and joins
 brand names. A second statement from the same dataset, a campaign list, runs
-personalized PageRank, an exact nearest-neighbor search among its result, a
-trained forest and an evaluation against later purchases. Each was run three
-times over Flight SQL, with planning, data reads, algorithm execution and
-receipt of the complete result inside the timing:
+personalized PageRank, an exact nearest-neighbor search among the same
+eligible shoppers, a trained forest over the union and an evaluation against
+later purchases. Each was run three times over Flight SQL, with planning,
+data reads, algorithm execution and receipt of the complete result inside
+the timing:
 
 <Table>
 <thead><tr><th>Statement</th><th>First run</th><th>Median of runs 2 and 3</th><th>Peak GPU allocation</th></tr></thead>
@@ -108,13 +97,13 @@ and the saved [Barbie](/data/merrec-scale-barbie-tie-ins.json) and
 [campaign](/data/merrec-scale-audience-funnel.json) results name the server
 configuration, the binary and the query IDs behind each number.
 
-A few seconds per attempt changes what an agent can afford. Spark's unit of
-work is a job over the whole lake, scheduled with a driver and executors, and
-its GPU acceleration is measured in job hours saved. Algeon targets the
-moment after that job has run: one working set, one device, one process,
-many small questions, most of them ad hoc and many of them wrong on the first
-try. Latency per attempt matters more there than throughput per job, and an
-answer that arrives inside the agent's turn can be acted on in the same turn.
+A few seconds per attempt changes what an agent can afford. Spark schedules
+a job with a driver and executors over partitions of the lake, and its GPU
+plugins accelerate that job. Algeon targets the moment after such a job has
+run, when one working set on one device receives
+many small questions, most of them ad hoc. Latency per attempt matters more
+there than throughput per job, and an answer that arrives inside the agent's
+turn can be acted on in the same turn.
 
 ## A working set for each question
 
@@ -183,26 +172,26 @@ are visible in the statement.
 
 ## The handoff is glue code today
 
-Anyone who has run a GPU graph algorithm over warehouse data knows the shape
-of the work. Export the selected rows and columns to a bucket. Load them in a
-notebook. Clean the IDs, drop the nulls, dedupe the edges, cast the types.
-Call cuGraph. Write the result somewhere. Import it into the system where the
-rest of the analysis lives and join it back. Each step is an ad-hoc ETL
-script, written for the small fraction of the dataset that one question
+Outside the query engine, a GPU graph algorithm over warehouse data runs as a
+detour around the warehouse. Export the selected rows and columns to a bucket.
+Load them in a notebook. Clean the IDs, drop the nulls, dedupe the edges, cast
+the types. Call cuGraph. Write the result somewhere. Import it into the system
+where the rest of the analysis lives and join it back. Each step is an ad-hoc
+ETL script, written for the small fraction of the dataset that one question
 needs, and two scripts that differ slightly can encode different semantics
 without anyone comparing them.
 
 <GlueVsPlanFigure
-  caption={<>Left: the detour most teams build today, where each step is an
+  caption={<>Left: the detour as glue code, where each step is an
   ad-hoc ETL script and most steps copy the data. Right: the same work as one
   SQL statement, with the algorithm as a UDTF between the SQL that
   prepares its input and the SQL that consumes its output.</>}
 />
 
-Algeon's answer is a declarative execution contract. Selection and cleaning
-happen in SQL before the algorithm, enrichment happens in SQL after it, and
-the algorithm sits between them as a UDTF (user-defined table function) with
-a documented input relation and a documented output schema. The physical
+In Algeon, selection and cleaning happen in SQL before the algorithm,
+enrichment happens in SQL after it, and the algorithm sits between them as a
+UDTF (user-defined table function) with a documented input relation and a
+documented output schema. The physical
 decisions (what to scan, what to push down, whether a stage can stay on the
 device) belong to the planner; the choice of algorithm and its options stays
 with the query author.
@@ -245,7 +234,7 @@ Taylor Swift also ranked highly in the graph, but the name check found few
 matching likes, and that movement stays unexplained.
 
 A second check re-ran the ranking with Hot Wheels and then Nike as the seed,
-to separate a Barbie-specific movement from a general summer rise. With Nike,
+to test whether the same brands rise with other seeds. With Nike,
 none of the four brands appeared among the 25 largest changes. With Hot
 Wheels, a Mattel brand whose collector audience overlaps Barbie's, NYX, ALDO
 and Primark appeared with smaller changes. Each check was one more statement
@@ -261,9 +250,9 @@ check cheap enough to run.
 
 ## Follow the result somewhere new
 
-Stages chain. One algorithm's output is often the candidate set, the
-structure or the feature the next stage needs, and often something plain
-SQL could not have produced at all. The
+One algorithm's output is often the candidate set, the structure or the
+feature the next stage needs, and often something plain SQL could not have
+produced at all. The
 [campaign statement](/guides/datasets/merrec#audience-funnel) measured above
 does this three times for a planner who can contact 5,000 shoppers about
 Pokemon listings. Personalized PageRank from the Pokemon brand vertex scores
@@ -316,15 +305,11 @@ agent's context, the ontology and the schema meet in the statement.
   caption={<>The application owns the agent, the ontology that maps its
   vocabulary to tables and keys, and the service that submits SQL. Algeon
   plans, admits, and executes each statement on one GPU over the lakehouse,
-  and returns rows plus structured diagnostics the agent can act on. Each
-  pass around the loop costs one statement.</>}
+  and returns rows plus structured diagnostics the agent can act on.</>}
 />
 
 A first query can be wrong, and the error message is part of the interface.
-An agent that receives a stack trace learns nothing; an agent that receives
-a stable code, the kind of failure and the context that triggered it can fix
-the query on the next attempt. The two failures in the opening session read,
-in full:
+The two failures in the opening session read, in full:
 
 <CodeBlock language="text" className="blog-code-message">{[errorOf(3), errorOf(4)].join('\n')}</CodeBlock>
 
@@ -346,8 +331,7 @@ execution would and reports which parts will run on the GPU and why the rest
 will not; in the opening session it took {wholeMs(stepOf(5).elapsed_s)} ms
 and reported no host boundary. The
 [discovery guide](/guides/gpu-udtf-discovery) walks through the sequence and
-replays the session. None of these interfaces establishes that a hypothesis
-is sound; that judgment stays with the application and the people behind it.
+replays the session.
 
 ## The current build
 
@@ -367,10 +351,9 @@ pairwise distances, KMeans and PCA; and the [`cuml_*`](/cuml) UDTFs fit
 query-local models (TSVD, HDBSCAN, UMAP, logistic regression, random forests)
 while [`cuml_forest_predict`](/cuml/udtfs/cuml_forest_predict) scores
 rows with a pretrained XGBoost, LightGBM or Treelite forest. The last one
-reflects where trained models usually live. The model is trained elsewhere,
-weeks earlier and by someone else, and the engine's job is to carry the
-features produced by joins and aggregations into inference without a detour
-through files. Query-local fitting serves exploration; scoring a model
+covers a model trained elsewhere, weeks earlier and by someone else, whose
+inference reads the features that joins and aggregations produced without a
+detour through files. Query-local fitting serves exploration; scoring a model
 somebody else trained is the case we expect in production.
 
 Three [execution modes](/integration/datafusion-session#choose-an-execution-mode)
@@ -391,9 +374,6 @@ S3-compatible object storage, read-only, and results return as Arrow
 batches. The [integration guide](/integration) covers both paths.
 
 ## Known gaps
-
-Both Algeon's stability and its verifiability have a long way to go, and we
-would rather list the gaps than have you find them.
 
 - Correctness evidence is partial. In the TPC-DS SF100 run recorded on
   {tpcdsDate}, all {tpcds.queryCount} queries completed on both paths with
@@ -432,8 +412,8 @@ The obvious comparison is NVIDIA's own Spark work.
 [cuDF for Spark](https://github.com/NVIDIA/cudf-spark) replaces Spark SQL
 operators with cuDF-backed ones, and
 [cuML for Spark](https://github.com/NVIDIA/cuml-spark) offers PySpark
-ML-compatible estimators backed by cuML. Both serve the job over the whole
-lake described above, and the unit of composition differs too. In Spark, an
+ML-compatible estimators backed by cuML. Both accelerate the Spark job described
+above, and the unit of composition differs too. In Spark, an
 ML estimator is an object in Python or Scala, and moving between SQL and cuML
 is application code again; Spark SQL has no graph algorithms of its own, and
 GraphX and GraphFrames are separate APIs. In Algeon the algorithm is a
@@ -459,9 +439,7 @@ its output in the next query. Measure the full query cost, including data
 preparation, and compare the result with a trusted reference. A
 [GitHub issue](https://github.com/algeon-dev/algeon/issues) with the SQL,
 the expected output and the timing tells us where an operator is missing, a
-result is wrong or a step costs more than it should. And if the experiment
-answers a question you had written off as too expensive to ask, tell us
-which one.
+result is wrong or a step costs more than it should.
 
 [^1]: Redshift figures are from van Renen et al.,
 [*Why TPC Is Not Enough: An Analysis of the Amazon Redshift

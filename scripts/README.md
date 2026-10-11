@@ -17,9 +17,10 @@ it links to [harness maintenance](test-harness.md) and the build contracts.
 Developer maintenance helpers under `dev/` include
 `bindings.sh` (the single checked-in cuDF/cuGraph/cuVS bindings entry) and
 `clean_target_artifacts.sh` (report / mold-temp / `cargo clean`). Cleanup is
-never an implicit side effect of a test command. Local policy checks keep native
-source registry and workspace publication-policy failures separate in the full
-gate.
+never an implicit side effect of a test command. `merrec_verify_common.py`
+provides the shared saved-query metadata reader used by the community and
+supervised verification scripts. Local policy checks keep native source
+registry and workspace publication-policy failures separate in the full gate.
 
 `ci/nextest_gpu_lock.sh` is the nextest run-wrapper that every test runs
 through (configured in `.config/nextest.toml`): it takes `/tmp/cudf-gpu.lock`
@@ -39,6 +40,13 @@ Repository-owned policy data lives in `.config/policies/`; standard tool
 configuration such as `.config/nextest.toml` (the only test-lane source)
 remains at the location expected by that tool. When moving or adding a
 script, update this map and all callers in the same change.
+
+Duplicate-code and prose checks use two tools. Deslop provides advisory
+code-similarity queries through MCP and repository scans through its CLI;
+the authoring rules live in the root [AGENTS.md](../AGENTS.md#deslop).
+`ci/check_prose_slop.sh` checks prohibited wording, em dashes and Markdown
+front matter in the policy phase. Its self-test is
+`ci/tests/check_prose_slop_tests.sh`.
 
 `check_all.sh` takes no arguments for the full pre-merge gate, or `--fast` for
 a partial edit loop (policy checks, rustfmt, and CPU tests).

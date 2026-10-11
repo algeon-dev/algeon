@@ -3,15 +3,13 @@ import reviewMap from '@site/src/data/amazonReviewMap.json';
 import capture from '@site/static/data/amazon-reviews-capture.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
-A two-dimensional projection can help choose reviews to read together, but
-coordinates alone do not explain a complaint. This query projects 9,967
-sampled low-rating headphone reviews from 1,024 dimensions and joins the
-output IDs to product names and review text.
+This query projects 9,967 sampled low-rating headphone reviews from 1,024
+dimensions and joins the output IDs to product names and review text.
 
 <CodeBlock language="sql">{capture.queries.headphone_umap2.sql}</CodeBlock>
 
-Three records from the saved projection illustrate the returned coordinates
-and source text. They are examples of the output, not a selected cluster.
+The first three records of the saved projection show the returned
+coordinates and source text.
 
 <Table>
 <thead><tr><th>Review ID</th><th>x</th><th>y</th><th>Original text</th></tr></thead>
@@ -19,9 +17,10 @@ and source text. They are examples of the output, not a selected cluster.
 </Table>
 
 UMAP's output is a relation that can be joined to the review records in the
-same statement. The text remains available to check any explanation proposed
-from a projection. Two-dimensional distance is not a defect score or proof
-that reviews describe the same issue; the projection does not label topics.
+same statement, and the joined text is the check on any reading of the
+projection. The projection can help choose reviews to read together. It does
+not label topics, and distance in two dimensions is neither a defect score
+nor evidence that two reviews describe the same issue.
 
 <div className="fineprint">
 

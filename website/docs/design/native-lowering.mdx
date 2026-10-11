@@ -165,12 +165,10 @@ WHERE status = 'paid'
 GROUP BY customer_id;
 ```
 
-`EXPLAIN GPU` plans its inner query without executing it. A later execution of
-that SQL has its own query ID and attempt. The explain statement's query ID
-cannot identify observations from that later run.
-
-After consuming the query's Flight `DoGet` result, retrieve `GetQueryStats`
-using **that execution's query ID**. Its `[planning]` section describes
+`EXPLAIN GPU` plans its inner query without executing it, so its query ID
+carries no execution observations. After consuming the query's Flight `DoGet`
+result, retrieve `GetQueryStats` with that execution's query ID. Its
+`[planning]` section describes
 selection; `[execution]` contains the attempt's observed work. Available
 `[physical_plan]` and `[native_explain]` sections retain the textual plans.
 
@@ -254,7 +252,7 @@ by zero or scaling overflow. Outer, semi, anti and keyless joins retain their
 existing residual capability restrictions.
 
 Native support requires a correct kernel, supported types and correct semantics.
-An operator missing any of these is structured unsupported. `PlanningReport`
+An operator missing any of these is unsupported. `PlanningReport`
 records each candidate once as selected, unsupported with the first unmet
 contract, or supported but not selected by cost, with structured reasons.
 An unsupported candidate also names the [element that blocked it](../reference/gpu-coverage-report.mdx#what-blocked-a-candidate),

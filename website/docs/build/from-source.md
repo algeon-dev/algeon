@@ -92,12 +92,6 @@ unset ALGEON_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \
 ```
 
 Edit the CUDA and compiler lines if your toolkit or compiler lives elsewhere.
-The `unset` clears any native selectors inherited from a previous shell, such
-as an older `CUDF_INSTALL_DIR`, `CUVS_INSTALL_DIR`, `CUVS_ROOT`, `CUML_INSTALL_DIR`, or
-`CUGRAPH_CMAKE_BUILD_DIR`, so another checkout's libraries cannot leak in.
-Every Cargo build script and `scripts/build/build_lib*.sh` already default
-each cleared selector to this checkout's `target/native/` prefixes, so leaving
-them unset gives every shell the same build fingerprint.
 
 Also write the CUDA and compiler lines once into a Cargo `[env]` table outside
 the checkout, as described in
@@ -114,9 +108,7 @@ env | sort | grep -E '^(INSTALL_PREFIX|ALGEON_NATIVE_DIR|CUDF_[^=]*|CUVS_[^=]*|C
 The first command must show `ALGEON_ROOT` at the checkout root and
 `CMAKE_CUDA_ARCHITECTURES` at the chosen target list. The second must print
 `clean`; if it prints `selector leaked`, rerun the block above from the
-current repository root. The build scripts and `scripts/check_all.sh` inherit
-the configured identity as-is; they do not guess that an exported path is stale.
-What each selector means is listed under
+current repository root. What each selector means is listed under
 [Build-shell selectors](#build-shell-selectors).
 
 ## 3. Build the native stack

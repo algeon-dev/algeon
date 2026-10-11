@@ -1,34 +1,27 @@
-// Highlights the lines of each SQL block that open a GPU UDTF call,
-// so a reader can see where cuGraph, cuVS, or cuML work enters the statement.
-// A block whose metastring already sets a `{…}` line range keeps that range.
-//
-// Generated UDTF pages (scripts/gpu-docs-common.mjs) open with a
-// `## Quickstart` template call to the page's own UDTF; highlighting it
-// marks nothing new, so that section stays plain.
+// Highlights the lines of each SQL block in a demo-dataset example partial
+// (`docs/*/_examples/`) that open a GPU UDTF call, so a reader can see where
+// cuGraph, cuVS, or cuML work enters the scenario's statement. Reference,
+// design, and integration pages show call syntax, and generated UDTF pages
+// show a template call, so their blocks stay plain.
+// A block whose metastring already sets a `{…}` line range keeps that range,
+// and a block where every non-blank line opens a call stays plain.
 
 import {gpuCallMetastring} from '../utils/gpuCallHighlights';
 
 type MdastNode = {
   type: string;
-  depth?: number;
   lang?: string | null;
   meta?: string | null;
   value?: string;
   children?: MdastNode[];
 };
 
-const UNHIGHLIGHTED_SECTION = 'Quickstart';
+const EXAMPLE_PARTIAL = /[\\/]_examples[\\/]/;
 
 export default function highlightGpuCalls() {
-  return (tree: MdastNode): void => {
-    let section: string | undefined;
-    for (const child of tree.children ?? []) {
-      if (child.type === 'heading' && child.depth === 2) {
-        section = textOf(child);
-      }
-      if (section !== UNHIGHLIGHTED_SECTION) {
-        visit(child);
-      }
+  return (tree: MdastNode, file: {path?: string}): void => {
+    if (file.path !== undefined && EXAMPLE_PARTIAL.test(file.path)) {
+      visit(tree);
     }
   };
 }
@@ -38,8 +31,4 @@ function visit(node: MdastNode): void {
     node.meta = gpuCallMetastring(node.value ?? '', node.meta ?? undefined);
   }
   node.children?.forEach(visit);
-}
-
-function textOf(node: MdastNode): string {
-  return node.value ?? (node.children ?? []).map(textOf).join('');
 }

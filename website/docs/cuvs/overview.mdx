@@ -15,11 +15,11 @@ available, and every index lives inside its statement.
 
 ## UDTFs
 
-Start with [cuVS UDTFs](./udtfs/index.mdx) to choose nearest neighbors,
-distance, selection, cluster, or preprocessing by its
-one-statement lifecycle. Every
-UDTF page links back to [Vector Inputs](./vector-inputs.mdx) for the shared
-input contract.
+The [cuVS UDTFs](./udtfs/index.mdx) index groups every function into the
+Nearest Neighbors, Distance, Selection, Cluster and Preprocessing families.
+Each function page documents its inputs, arguments, output and limits, and
+links back to [Vector Inputs](./vector-inputs.mdx) for the shared input
+contract.
 
 ## Discovery and validation
 
@@ -94,18 +94,13 @@ A `cuvs_*` call runs on the GPU when all of the following hold:
 3. a `AlgeonGpuBackend` is installed, because execution needs an admitted query
    memory domain.
 
-`gpu_validate_call` validates schemas and options without scanning relations or
-executing GPU work. At runtime, `cuvs_*` calls use the admitted query memory
-domain, and its allocator enforces the configured cap; an input that does not
-fit that cap fails with a typed allocation error rather than spilling.
+At runtime, `cuvs_*` calls use the admitted query memory domain, and its
+allocator enforces the configured cap; an input that does not fit that cap
+fails with a typed allocation error rather than spilling.
 
-cuVS SQL has no persistent cross-statement cache for brute-force, IVF-Flat,
-IVF-PQ, or CAGRA indexes, KMeans models, PCA transforms, or result relations. Pairwise distances
-and Top-K selections likewise produce query-local results. Exact kNN and
-IVF-Flat, IVF-PQ, and CAGRA each build and destroy an index within one evaluated statement.
-KMeans fits its model, and PCA fits and transforms its input.
-
-The server's source and graph caches do not cache cuVS artifacts. See
+cuVS SQL has no persistent cross-statement cache: every index, KMeans model,
+PCA transform and result relation is local to its statement, and the server's
+source and graph caches do not cache cuVS artifacts. See
 [Configuration](../integration/configuration.mdx) for server cache configuration
 and bounded memory limits.
 

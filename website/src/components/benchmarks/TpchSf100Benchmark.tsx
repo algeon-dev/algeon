@@ -13,9 +13,17 @@ import {
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import {tpchSf100Benchmark} from '@site/src/data/tpchSf100Benchmark';
+import {
+  bytesPerGiB,
+  formatGiB,
+  formatGiBShort,
+  formatNumber,
+  tooltipContentStyle,
+  tooltipCursorStyle,
+  tooltipItemStyle,
+  tooltipLabelStyle,
+} from './benchmarkChartUtils';
 import styles from './TpchSf100Benchmark.module.css';
-
-const bytesPerGiB = 1024 ** 3;
 
 // Palette values match the Tremor chart colors.
 const colorCpu = '#0071C5'; // cpu-blue
@@ -37,48 +45,6 @@ function formatSeconds(value: number): string {
 function formatSpeedup(value: number): string {
   return `${value.toFixed(1)}x`;
 }
-
-function formatGiB(value: number): string {
-  return `${(value / bytesPerGiB).toFixed(1)} GiB`;
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat('en-US').format(value);
-}
-
-function formatGiBShort(value: number): string {
-  return `${value.toFixed(1)} GiB`;
-}
-
-// recharts renders its default tooltip with hard-coded white styling, which
-// clashes with the dark theme. Style it through Infima CSS variables so it
-// tracks the active theme automatically.
-const tooltipContentStyle: React.CSSProperties = {
-  background: 'var(--ifm-background-surface-color)',
-  border: '1px solid var(--ifm-color-emphasis-300)',
-  borderRadius: '6px',
-  boxShadow: 'var(--ifm-global-shadow-md)',
-  color: 'var(--ifm-font-color-base)',
-  fontSize: '0.82rem',
-  lineHeight: 1.4,
-  padding: '0.5rem 0.75rem',
-};
-
-const tooltipLabelStyle: React.CSSProperties = {
-  color: 'var(--ifm-heading-color)',
-  fontWeight: 600,
-  marginBottom: '0.25rem',
-};
-
-const tooltipItemStyle: React.CSSProperties = {
-  color: 'var(--ifm-font-color-base)',
-  padding: 0,
-};
-
-const tooltipCursorStyle = {
-  fill: 'var(--ifm-color-emphasis-300)',
-  fillOpacity: 0.35,
-} as const;
 
 export default function TpchSf100Benchmark(): React.ReactElement {
   const {dataset, config, rows, summary} = tpchSf100Benchmark;

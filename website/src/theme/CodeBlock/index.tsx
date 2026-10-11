@@ -13,8 +13,8 @@ type CodeBlockProps = Props & {
 };
 
 export default function CodeBlockWrapper({folds, previewBefore, ...props}: CodeBlockProps): ReactNode {
-  // Fenced blocks use className and the remark pass, which also preserves
-  // Quickstart exclusions. Explicit language props cover captured SQL strings.
+  // Fenced blocks use className and the remark pass, which highlights only
+  // example partials. Explicit language props cover captured demo SQL strings.
   const metastring = props.language === 'sql' && typeof props.children === 'string'
     ? gpuCallMetastring(props.children, props.metastring)
     : props.metastring;

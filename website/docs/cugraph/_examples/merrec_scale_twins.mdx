@@ -4,11 +4,9 @@ import Table from '@site/src/theme/MDXComponents/Table';
 
 export const n = value => value.toLocaleString('en-US');
 
-A catalog team suspects that sellers enter the same brand under several
-names. Instead of matching strings, this query asks the shoppers: two
-entries liked by the same people are candidates for one brand. The input is
-every `item_like` event of the six months, reduced to distinct user-brand
-pairs.
+Sellers can enter the same brand under several names. Two entries liked by
+the same people are candidates for one brand. The input is every `item_like`
+event of the six months, reduced to distinct user-brand pairs.
 
 Jaccard divides the shared fans of two entries by the union of their fan
 sets. The query scores all {n(1999000)} pairs of the 2,000 most-liked
@@ -33,14 +31,12 @@ and Bape, Hermès and HERMES, BabyBjorn and BABYBJÖRN. No name was compared
 to find them. The remaining pairs are distinct brands that one audience
 follows together, such as Hello Kitty and Sanrio, Konami and Yu-Gi-Oh!, or
 Panini and Topps. The first group is a merge list for review; the second
-group is material for cross-brand navigation. A high score alone does not
-establish that two entries are the same brand, so the names still need a
-reviewer.
+group is material for cross-brand navigation.
 
 The pair list is a SQL relation, so the same statement could join each
 pair's leaf categories or price ranges to separate duplicates from
-companions. Scores over the full six months hide seasonal pairs; a shorter
-window is one filter away.
+companions. Scores over the full six months hide seasonal pairs; a date
+filter on the events restricts the window.
 
 <div className="fineprint">
 

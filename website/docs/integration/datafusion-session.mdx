@@ -265,7 +265,7 @@ inputs, memory exhaustion, cancellation, and runtime failures remain errors;
 after GPU execution starts, Algeon never replays the query on CPU. See
 [Handling Errors](./handling-errors.mdx) for the structured error contract.
 `NativeRequired` checks the completed plan without replanning under a different
-policy; it does not make unsupported operations GPU-capable.
+policy.
 
 Use [GPU Coverage Validation](./gpu-coverage-validation.mdx) to inspect the
 exact final disposition before execution. `validate_query(&ctx, sql)` is the

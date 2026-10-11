@@ -35,9 +35,9 @@ appears for 54 users. Session analysis on this dataset has to group by
 examples does. The query shows that IDs repeat; why they repeat is a property
 of the source data that these records do not explain.
 
-The check costs one statement over the raw events. The same shape audits any
-column that is supposed to identify something: devices, carts, orders. A
-component with more than one owner is the exception to investigate.
+The same query, with the column substituted, audits any other identifier
+such as a device, cart or order ID; a component with more than one owner is
+the case to investigate.
 
 <div className="fineprint">
 

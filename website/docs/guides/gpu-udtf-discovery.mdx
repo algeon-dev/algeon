@@ -55,10 +55,8 @@ The example shows three rows from a build with all providers enabled.
 </Details>
 
 `available=true` means the UDTF can be planned for GPU execution in this
-build and session; cuVS UDTFs require the `cuvs` feature. It does not
-reserve GPU memory, inspect relation rows, or prove that a surrounding query
-runs entirely on the GPU. Memory is decided at execution: the call runs inside
-its granted cap and fails with an allocation error if it exceeds it.
+build and session; cuVS UDTFs require the `cuvs` feature. It does not prove
+that a surrounding query runs entirely on the GPU; step 5 covers that.
 
 ## 2. Describe the selected UDTF
 
@@ -99,8 +97,7 @@ with `Int64` `src` and `dst` columns.
 </Details>
 
 This is static validation: it checks the named tables' or views' schemas and
-the options, reads no data, and runs nothing on the GPU (no rows scanned, no
-subquery run, no device memory allocated, no kernel launched). Only registered
+the options, reads no data, and runs nothing on the GPU. Only registered
 tables or views resolve, and each one must already expose the role's canonical
 columns (`src`/`dst` for cuGraph edges, `id` plus feature columns for cuVS
 relations). A call whose relation aliases, filters, joins, or reads a CTE is
