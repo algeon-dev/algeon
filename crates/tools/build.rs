@@ -8,9 +8,7 @@ fn main() {
         return;
     }
     rapids_build_support::configure(rapids_build_support::Config {
-        // `all` applies the link arg to every target. The bin carries `test = true`,
-        // so its unit-test harness needs the same rpath, and this crate has no
-        // separate test or bench targets for the narrower flags to apply to.
+        // Apply the rpath to tool binaries and their test harnesses.
         link_arg_targets: rapids_build_support::LinkArgTargets::new(true, false, false),
         consumers: rapids_build_support::RapidsConsumers::new(
             std::env::var_os("DEP_CUGRAPH_RUNTIME_LIB_DIRS").is_some(),

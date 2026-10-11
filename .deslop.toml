@@ -1,0 +1,7 @@
+[defaults]
+exclude = [
+  "components/cudf/cudf/**",
+  "components/cugraph/cugraph/**",
+  "components/cuml/cuml/**",
+  "components/cuvs/cuvs/**",
+]

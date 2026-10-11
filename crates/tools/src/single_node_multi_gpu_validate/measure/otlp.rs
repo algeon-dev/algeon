@@ -4,8 +4,8 @@ use std::time::Duration;
 
 #[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
 use {
-    examples::otlp_metrics::BackendMetricsOtlpExporter, opentelemetry::global,
-    opentelemetry_proto::tonic::resource::v1::Resource, tokio::runtime::Builder,
+    opentelemetry::global, opentelemetry_proto::tonic::resource::v1::Resource, tokio::runtime::Builder,
+    tools::otlp_metrics::BackendMetricsOtlpExporter,
 };
 
 #[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
@@ -43,9 +43,9 @@ impl OtlpExportConfig {
     }
 }
 
-/// Runs the reference `examples` OTLP exporter beside live traffic.
+/// Runs the OTLP exporter beside live traffic.
 /// It owns no execution state and obtains every value through the public
-/// `backend_metrics_snapshot()` accessor supplied to the example adapter.
+/// `backend_metrics_snapshot()` accessor supplied to the adapter.
 #[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
 pub(super) struct OtlpExportWorker {
     pub(super) stop: Arc<(Mutex<bool>, Condvar)>,

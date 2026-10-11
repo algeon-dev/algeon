@@ -1,4 +1,4 @@
-//! Predefined citation-network pipelines exposed by the example HTTP API.
+//! Predefined citation-network pipelines exposed by the fixture HTTP API.
 //!
 //! This module validates request parameters and renders them into SQL or
 //! cuGraph SQL calls that run through the shared DataFusion session.

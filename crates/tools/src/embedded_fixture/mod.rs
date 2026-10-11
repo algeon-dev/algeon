@@ -1,6 +1,6 @@
-//! Shared types for the embedded backend example.
+//! Shared state for the REST/Flight acceptance fixture.
 //!
-//! This library holds the state passed between the example's HTTP API frontend,
+//! This library holds the state passed between the fixture's HTTP API frontend,
 //! Flight SQL frontend, pipeline registry, and shared GPU backend.
 
 use std::{net::SocketAddr, sync::Arc};
@@ -9,8 +9,6 @@ use algeon_datafusion::backend::AlgeonGpuBackend;
 use datafusion::prelude::SessionContext;
 
 pub mod flight;
-#[cfg(feature = "otlp-metrics")]
-pub mod otlp_metrics;
 pub mod pipelines;
 pub mod rest;
 

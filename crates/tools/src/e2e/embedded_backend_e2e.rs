@@ -1,7 +1,7 @@
-//! Black-box E2E for the embedded dual-frontend backend example.
+//! Black-box E2E for the embedded dual-frontend backend fixture.
 //!
 //! This runner intentionally lives outside Cargo test targets. It starts the
-//! example binary as a child process, registers the citation-network Parquet
+//! fixture binary as a child process, registers the citation-network Parquet
 //! files through Flight SQL, talks to REST with HTTP and to Flight SQL with
 //! gRPC, and keeps all GPU use behind the caller's `flock`.
 
@@ -66,9 +66,9 @@ pub async fn run(args: Vec<String>) -> E2eResult<()> {
         return Ok(());
     }
     let params = RunParams::from_args(args)?;
-    build_example_binary(&params.repo_root).await?;
+    build_fixture_binary(&params.repo_root).await?;
 
-    let mut child = spawn_example(&params)?;
+    let mut child = spawn_fixture(&params)?;
     let result = run_checks(&params, &mut child).await;
     if result.is_err() {
         terminate_child_best_effort(&mut child).await;
@@ -125,7 +125,7 @@ impl RunParams {
         })
     }
 
-    fn example_binary(&self) -> PathBuf {
+    fn fixture_binary(&self) -> PathBuf {
         self.target_dir().join("debug").join(format!("embedded_backend{}", env::consts::EXE_SUFFIX))
     }
 
@@ -168,8 +168,8 @@ fn print_usage() {
     );
 }
 
-async fn build_example_binary(repo_root: &Path) -> E2eResult<()> {
-    println!("building embedded_backend example binary");
+async fn build_fixture_binary(repo_root: &Path) -> E2eResult<()> {
+    println!("building embedded_backend fixture binary");
     let status = Command::new(cargo_bin())
         .current_dir(repo_root)
         .args(["build", "--workspace", "--all-features", "--bin", "embedded_backend"])
@@ -190,7 +190,7 @@ fn server_config() -> String {
     )
 }
 
-fn spawn_example(params: &RunParams) -> E2eResult<Child> {
+fn spawn_fixture(params: &RunParams) -> E2eResult<Child> {
     let config_path = params.server_config_path();
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
@@ -198,7 +198,7 @@ fn spawn_example(params: &RunParams) -> E2eResult<Child> {
     fs::write(&config_path, server_config())?;
 
     println!("starting embedded_backend rest={} flight={}", params.rest_bind, params.flight_bind);
-    let mut command = Command::new(params.example_binary());
+    let mut command = Command::new(params.fixture_binary());
     command.current_dir(&params.repo_root).stdout(Stdio::inherit()).stderr(Stdio::inherit());
     // Inherited server settings would change the topology under test.
     for (name, _) in env::vars() {
