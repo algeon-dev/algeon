@@ -2,9 +2,9 @@ import CodeBlock from '@theme/CodeBlock';
 import capture from '@site/static/data/merrec-scale-shopping-worlds.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
-A merchandising analyst wants to find brands with overlapping audiences,
-including combinations that cross catalog categories. The query uses
-May to October 2023 likes: a fan is a distinct shopper who liked a brand.
+The query groups brands by overlapping audiences, including combinations
+that cross catalog categories. It uses May to October 2023 likes: a fan is a
+distinct shopper who liked a brand.
 
 SQL reduces 182,889,825 like events to user-brand pairs and selects the
 5,000 brands with the most fans. Jaccard measures shared audience divided
@@ -25,11 +25,10 @@ The query returns five leading brands for each of 38 groups with at least
 })}</tbody>
 </Table>
 
-The 101-brand group puts power tools beside kitchen appliances. It gives
-an analyst a candidate home-project collection to inspect. Shared likes
-supply a relationship beyond the catalog's categories; they do not establish
-that the products substitute for one another or that a collection will sell.
-Membership stability across months has not been tested.
+The 101-brand group puts power tools beside kitchen appliances, a candidate
+home-project collection to inspect. Shared likes supply a relationship beyond
+the catalog's categories. Whether such a collection sells, and whether
+membership is stable across months, has not been tested.
 
 <div className="fineprint">
 

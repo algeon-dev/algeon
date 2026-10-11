@@ -13,8 +13,6 @@
 gpu-function-specs.old.*
 
 # Misc
-cufile.log
-.DS_Store
 .env.local
 .env.development.local
 .env.test.local

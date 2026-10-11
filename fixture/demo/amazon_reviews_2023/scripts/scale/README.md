@@ -54,7 +54,7 @@ Following the normalization and lowering extensions in `crates/algeon-datafusion
 - Input normalization under `WindowAggExec` and `BoundedWindowAggExec` permits partition-preserving sorts.
 - Whole-partition window frame lowering recognizes both `Rows` and `Range` unbounded boundary specifications.
 
-As a result, all five demo queries lower into pure native GPU fragments and execute with **zero host boundaries**
+All five demo queries therefore lower into native GPU fragments and run with no host boundaries
 under `execution_mode = "native_required"`.
 
 ## Server configuration

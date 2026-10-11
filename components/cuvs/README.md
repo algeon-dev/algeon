@@ -7,18 +7,15 @@ workspace component consumers. See the
 [API documentation boundary](https://algeon.dev/design#api-documentation).
 
 `components/cuvs` is the Algeon Rust vector integration component
-built around [`libcuvs`](https://github.com/algeon-dev/cuvs). It is part of the
-root Cargo workspace, not a second repository or workspace.
-Its main direction is to make cuVS usable as part of backend services and query execution systems for
-[Algeon](https://github.com/algeon-dev/algeon/tree/main/components/cuvs). It focuses on safe Rust APIs for GPU vector
-search and clustering while keeping ownership, memory movement, execution context, synchronization, and interop
-behavior explicit enough for service-side integration.
+built around [`libcuvs`](https://github.com/algeon-dev/cuvs), and it lives in
+the root Cargo workspace. It provides safe Rust APIs for GPU vector search and
+clustering with explicit ownership, memory movement, execution context,
+synchronization, and cuDF interop contracts.
 
 ## Focus
 
-- Safe, idiomatic Rust wrappers around `libcuvs` for brute-force k-NN, query-local IVF-Flat, IVF-PQ, and CAGRA search, pairwise distance, vector Top-K, k-means, and PCA.
-- Backend-service and query-engine integration, rather than just direct API bindings.
-- Exact binding to a `cudf::Runtime` device, stream, and memory resource.
+- Safe Rust wrappers around `libcuvs` for brute-force k-NN, query-local IVF-Flat, IVF-PQ, and CAGRA search, pairwise distance, vector Top-K, k-means, and PCA.
+- Binding to one `cudf::Runtime` device, stream, and memory resource.
 - Device-resident cuDF interop with explicit ownership and synchronization.
 - Checked FFI, ABI, tensor layout, and algorithm-output contracts.
 

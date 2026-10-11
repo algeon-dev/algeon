@@ -7,17 +7,16 @@ import Table from '@site/src/theme/MDXComponents/Table';
 export const tieIns = ['NYX', 'Amc', 'Primark', 'ALDO'];
 export const liftOf = (records, name) => { const row = records.find(record => record.brand_name === name); return row ? `${row.lift_change.toFixed(2)}×` : 'absent from the top 25'; };
 
-A trend analyst agent wants a shortlist of brands whose audience relationship to
-Barbie changed between May to June and July to August 2023. A later check of product
-names tests whether the change coincides with Barbie-related listings.
+The statement compares each brand's affinity to Barbie's audience between
+May to June and July to August 2023 and ranks the change. A later check of
+product names tests whether the change coincides with Barbie-related listings.
 
 Each period has a graph of distinct user-brand likes. The `after_release`
 flag is true for July to August likes; the split at 1 July falls 20 days
 before the Barbie film opened on 21 July. User vertices are `-(user_id + 1)`
-and brand vertices are `brand_id` values; both columns are non-negative and
-non-null in this data (users 10 to 58,760,845, brands 0 to 25,814, with
-brand 0 excluded). Users therefore occupy negative IDs, and `la.vertex > 0`
-keeps only brands.
+and brand vertices are `brand_id` values; both columns are non-negative in
+this data, so users occupy negative IDs and `la.vertex > 0` keeps only brands
+(brand 0 is excluded).
 
 Personalized PageRank starts from Barbie; ordinary PageRank supplies each
 brand's global graph score. Their ratio, `lift`, describes relative graph
@@ -42,15 +41,10 @@ plan. The complete statement took
 **{capture.median_elapsed_s_after_first.toFixed(2)} s** over Flight SQL,
 including planning, execution and result receipt.
 
-The result identifies which records to investigate next; it does not
-attribute the change to a product or claim sales impact.
-
 **Follow-up: check product names.** The graph query did not search names.
 This separate SQL counts like events on listings whose names contain
-"Barbie", using the same periods. Its percentages describe listing-name
-matches, while the earlier ratio describes graph scores. Each of the five
-brand names checked here maps to one `brand_id`, matching the brands in
-the graph result.
+"Barbie", using the same periods. Each of the five brand names checked here
+maps to one `brand_id`, matching the brands in the graph result.
 
 <CodeBlock language="sql">{listingCheck.queries[0].sql}</CodeBlock>
 
@@ -84,9 +78,8 @@ exclusion; the rest of the statement is unchanged.
 With Nike as the seed, none of the four brands appears among the 25 largest
 changes. With Hot Wheels, NYX, ALDO and Primark appear with smaller changes
 and Amc is absent, consistent with the Mattel collector audience sharing
-part of the Barbie movement. The two controls separate the Barbie-specific
-movement from a general summer rise; a seasonal baseline over several years
-would need data this snapshot lacks. Item attributes are the latest retained
+part of the Barbie movement. A seasonal baseline over several years would
+need data this snapshot lacks. Item attributes are the latest retained
 values, and the calendar comparison is not an event-date experiment.
 
 <div className="fineprint">

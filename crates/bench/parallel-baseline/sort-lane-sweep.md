@@ -129,22 +129,22 @@ cancel latency (cancel call to terminal report): 1.1 ms at 2M, 3.6 ms at
 
 ## Reading the numbers
 
-Overlap without end-to-end gain. Widths agree within run-to-run variance;
-the 2M width-4 median sits slightly above width 1 (four-lane dispatch for
-two candidates: overhead without benefit). Parquet decode dominates kernel time
-(decode kernels ~25% of the kernel summary against ~50% merge-sort), so
-halving candidate sort time moves a fraction of the query. The API trace of
-the same run shows 1489 `cudaStreamSynchronize` calls (~70 ms total): host
-synchronization around source reads and D2H leaves little room for sort
-overlap to change the wall time. Int64 single-key sorts at these sizes are
-memory-bandwidth bound, so two concurrent sorts share the bus while the
-makespan does not shrink.
+The candidates overlap and the end-to-end time does not change. Widths agree
+within run-to-run variance; the 2M width-4 median sits slightly above width 1
+since four lanes are dispatched for two candidates and the two extra lanes
+carry no work. In the Nsight kernel summary of the same run, merge-sort
+kernels take about 50% of kernel time and Parquet decode kernels about 25%,
+so halving candidate sort time can move at most a quarter of kernel time. The
+API trace shows 1489 `cudaStreamSynchronize` calls (~70 ms total) around
+source reads and D2H; that host synchronization bounds how much sort overlap
+can change the wall time. Int64 single-key sorts at these sizes are probably
+memory-bandwidth bound, in which case two concurrent sorts share the bus and
+the makespan does not shrink; bus utilization was not measured in this run.
 
-The mechanism stage is complete; the performance stage is not claimed. The
-revisit precondition is a profile where un-limited or sort-dominated work
-holds lanes idle: final-sort time above roughly 20% of attempt wall time with
-concurrent lanes free, on wider rows or multi-key string sorts where overlap
-buys makespan.
+The mechanism stage is complete and no performance gain is claimed. Revisit
+when a profile shows final-sort time above roughly 20% of attempt wall time
+with concurrent lanes free, for example on wider rows or multi-key string
+sorts.
 
 ## Sirius gap table
 

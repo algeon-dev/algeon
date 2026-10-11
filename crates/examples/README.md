@@ -1,15 +1,14 @@
 # Embedding Examples
 
 Algeon is a GPU query engine for
-[Apache DataFusion](https://datafusion.apache.org/) that is designed to sit
-inside your own process: your service keeps its HTTP framework, session
-lifecycle, and catalogs, while Algeon evaluates supported physical plans on CUDA
-with cuDF and exposes cuGraph/cuVS algorithms as SQL UDTFs.
+[Apache DataFusion](https://datafusion.apache.org/) that runs inside the
+embedding process. The service keeps its HTTP framework, session lifecycle,
+and catalogs; Algeon evaluates supported physical plans on CUDA with cuDF and
+exposes cuGraph/cuVS algorithms as SQL UDTFs.
 
-This crate is the runnable entry point for embedding Algeon. Each binary is a
-complete program you can read top to bottom, run, and copy from. The examples
-are **layers, not alternatives**: start with the smallest one that builds, and
-move up only when you need the next capability.
+This crate holds the runnable embedding examples. Each binary is a complete
+program that builds and runs on its own, and each later example adds one layer
+to the previous one in the order of the table below.
 
 ## The embedding model
 
@@ -29,8 +28,8 @@ Every example is assembled from the same three pieces:
    of what happened: disposition (native cuDF execution or DataFusion CPU
    fallback), admission grant, terminal outcome, and timing.
 
-Planning decisions are structured values, not log text. Assert
-`PlanningReport`s and attempt reports; never depend on printed physical plans.
+Planning decisions are structured values. Assert `PlanningReport`s and
+attempt reports; printed physical plans are not a stable interface.
 `algeon_explain_coverage('<sql>')` in SQL and `EXPLAIN GPU <sql>` over Flight
 SQL return the same coverage evidence before a query runs.
 
@@ -42,11 +41,10 @@ SQL return the same coverage evidence before a query runs.
 | [`embedded_backend`](#embedded_backend-one-process-two-frontends) | A production-shaped service topology | `SessionContext::sql` (REST) and Flight SQL tickets | CUDA device, demo dataset | Minutes |
 | [`otlp_metrics_exporter`](#otlp_metrics_exporter-backend-metrics-over-otlp) | The metrics ownership split | `BackendMetricsOtlpExporter` in your process | Nothing; an OTLP collector is optional | Seconds |
 
-A common point of confusion: `embedded_backend` does **not** call
-`begin_attempt`. Its admission is plan-scoped (REST path) or ticket-scoped
-(Flight path), driven by the installed optimizer rule and the Flight server
-under the hood. `attempt_lifecycle` is the example that drives the attempt API
-directly; read it to understand the contract those frameworks manage for you.
+`embedded_backend` does not call `begin_attempt`. Its admission is plan-scoped
+(REST path) or ticket-scoped (Flight path), driven by the installed optimizer
+rule and the Flight server. `attempt_lifecycle` drives the attempt API directly
+and shows the contract those frameworks manage.
 
 ## `attempt_lifecycle`: the per-query contract
 
@@ -127,11 +125,9 @@ B: Flight SQL client ---->   Flight SQL frontend                 |
                          registered as external tables
 ```
 
-This topology is useful when an application has a small set of product-owned
-workflows but still needs an expert SQL side door for operators, notebooks, or
-BI tools. The important property is not the REST framework; it is that every
-frontend in the process shares one backend and one catalog view. GPU-native
-execution shares one admission ledger.
+This topology fits an application with a small set of product-owned workflows
+that also exposes SQL to operators, notebooks, or BI tools. Both frontends share
+the process's backend, catalog view, and admission ledger.
 
 ### Data
 
@@ -276,13 +272,13 @@ The ownership split is the point of the example:
 - **Your application owns the OpenTelemetry SDK**: the meter provider, export
   schedule, resource attributes, and endpoint policy.
 
-The pattern: construct your SDK meter/provider, pass the meter and a
-backend-snapshot closure to `BackendMetricsOtlpExporter::new`, and call
-`export_histograms` on your own export schedule with your OTLP `Resource`, the
-current backend generation's cumulative start time, and the collection
-timestamp. The binary is a pointer, not a service; the embeddable code is
-[`src/otlp_metrics.rs`](src/otlp_metrics.rs), and its protobuf contracts are
-pinned by [`tests/otlp_metrics_exporter.rs`](tests/otlp_metrics_exporter.rs):
+Construct the SDK meter provider, pass the meter and a backend-snapshot
+closure to `BackendMetricsOtlpExporter::new`, and call `export_histograms` on
+the application's export schedule with its OTLP `Resource`, the current backend
+generation's cumulative start time, and the collection timestamp. The
+embeddable code is [`src/otlp_metrics.rs`](src/otlp_metrics.rs); its protobuf
+contracts are pinned by
+[`tests/otlp_metrics_exporter.rs`](tests/otlp_metrics_exporter.rs):
 
 ```bash
 cargo test -p examples --all-features

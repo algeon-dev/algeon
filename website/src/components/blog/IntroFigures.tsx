@@ -119,8 +119,9 @@ export function GlueVsPlanFigure({caption}: {caption?: React.ReactNode}) {
   const lcx = leftX + leftW / 2;
   const rcx = groupX + GROUP_PAD + rightW / 2;
 
+  // At 90% the figure and its caption fit below the navbar on an 800 px tall screen.
   return (
-    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={620} center
+    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={620} maxW={Math.round(svgW * 0.9)} center
       ariaLabel="Left: export, notebook, GPU call, and import as separate steps. Right: one SQL statement with the algorithm as a UDTF.">
       <text x={leftX} y={EDGE + 14} fontSize={HEAD.size} letterSpacing={`${HEAD.track}em`}
         fill={COLOR.muted}>

@@ -2,9 +2,10 @@ import CodeBlock from '@theme/CodeBlock';
 import capture from '@site/static/data/merrec-pokemon-interest-check.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
-An audience planner wants to know whether shoppers resembling earlier Pokemon
-buyers will later buy Pokemon, and whether they already showed interest.
-The baseline is the simple rule of selecting previous Pokemon viewers.
+The lookalike list contains shoppers whose taste vectors resemble earlier
+Pokemon buyers. The query checks whether they later bought Pokemon and
+whether they had already viewed it, against the simple rule of selecting
+previous Pokemon viewers.
 
 Earlier CTEs construct 64 category-preference features from views before
 September 1, 2023. Each value is the square root of a shopper's share of views

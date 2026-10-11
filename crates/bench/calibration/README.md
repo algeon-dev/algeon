@@ -15,20 +15,16 @@ derive from itself:
 
 The header lines record the GPU the calibration ran on and the dataset
 fingerprints it used. A measurement run refuses to start when the live device
-or dataset differs, because a deadline calibrated elsewhere says nothing about
-this machine. Regenerate with:
+or dataset differs. The files are host- and dataset-specific and are not
+committed (`.gitignore` excludes `*.tsv` here); regenerate them on each host
+with:
 
 ```bash
 crates/bench/scripts/run_goodput_matrix.sh calibrate
 ```
 
-These files are therefore host- and dataset-specific, and are not committed
-(`.gitignore` excludes `*.tsv` here). They are regenerated per host rather than
-shared, because a deadline calibrated on other hardware, or against a different
-dataset build, is not a fact about this machine.
-
-A published comparison must therefore quote the calibration values it was judged
-against inline in its evidence, rather than pointing at this directory.
+A published comparison must quote the calibration values it was judged against
+inline in its evidence, because this directory is not committed.
 
 The optional request-cap manifest is an independent TSV input with schema
 `algeon-goodput-cap-assignment` and columns `kind`, `key`, `cap_bytes`. Rows

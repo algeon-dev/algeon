@@ -59,8 +59,8 @@ python3 scripts/dev/citation_run.py --uri grpc://127.0.0.1:50065 --register --re
 ## Performance measurements
 
 Timings were collected on an NVIDIA RTX PRO 6000 Blackwell Server Edition (96 GB device budget,
-90 GiB query grant, 1 GiB backend reserve). All five runs executed with zero host boundaries,
-zero allocation retries, and zero CPU fallbacks. Medians below exclude the first run:
+90 GiB query grant, 1 GiB backend reserve). All five runs reported no host boundaries, allocation
+retries, or CPU fallbacks. Medians below exclude the first run:
 
 | Query | Rows | 1st Run (s) | Median (s) | Peak Memory (GiB) | Native Fragments | Host Boundaries |
 |---|---:|---:|---:|---:|---:|---:|
@@ -74,4 +74,4 @@ zero allocation retries, and zero CPU fallbacks. Medians below exclude the first
 In comparison, the `functions_only` mode introduced 6 to 16 host boundaries per statement and
 ran between 3x and 10x slower on relational pre/post-processing, while `06_sorensen_nlp.sql`
 failed due to host-staged vertex pair conversion errors. Under `native_required`, every statement
-completed with identical validated rows and zero host boundaries.
+completed with identical validated rows.

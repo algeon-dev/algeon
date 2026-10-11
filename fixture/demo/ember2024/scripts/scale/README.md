@@ -1,8 +1,8 @@
 # EMBER2024 scale evaluation
 
 The EMBER2024 dataset contains extracted features, metadata, and labels for files uploaded
-to VirusTotal between September 2023 and December 2024. Following deduplication of duplicate
-lines in raw upstream archives, the full dataset comprises 3,238,244 distinct files:
+to VirusTotal between September 2023 and December 2024. After removing duplicate lines in the
+raw upstream archives, the full dataset comprises 3,238,244 distinct files:
 - **Training set (Weeks 1 to 52)**: 2,626,000 unique files (~1.56M Win32 executables).
 - **Test set (Weeks 53 to 64)**: 605,929 unique files (359,994 Win32 executables).
 - **Challenge set**: 6,315 malicious files (3,225 Win32 executables) evading antivirus engines.
@@ -29,13 +29,13 @@ max 1 active attempt).
 
 \*Single run captured for full-corpus vector search and combined model comparison; multi-run repeats captured for supervised classifiers and challenge review queries.
 
-## Technical findings and domain analysis
+## Findings
 
-### 1. Removal of artificial downsampling
+### 1. Full deduplicated relations
 
 Earlier preparation scripts applied `int(digest_hex[:8], 16) % 100 == 0`, producing an arbitrary
 1% sample of train/test vectors (26,277 train and 6,102 test rows; 15,588 and 3,618 Win32 rows).
-In this scale suite, this artificial constraint is completely eliminated:
+This scale suite uses the full deduplicated relations:
 - `ember_research_vectors_train`: all 2,626,000 unique files.
 - `ember_research_vectors_test`: all 605,929 unique files.
 - `ember_metadata_train` and `ember_metadata_test`: all 2,626,000 and 605,929 files.
@@ -46,36 +46,33 @@ In this scale suite, this artificial constraint is completely eliminated:
 The historical reference search constructs its searchable corpus over the entire deduplicated
 Win32 training dataset (~1.56M files) across weeks 0 to 51. The query batch selects 10,000
 held-out Win32 test queries from weeks 52 to 63, returning Top-10 reference neighbors
-(100,000 result rows). Distinguishing the multi-million indexed corpus from the query batch
-reflects real-world malware triage workflows where analysts search against historical reference
-repositories.
+(100,000 result rows). Weeks 52 to 63 are held out as queries so that the corpus stands in for
+a historical reference repository.
 
-### 3. cuVS vector search scalability and CAGRA duplicate vector degeneration
+### 3. cuVS vector search at corpus scale and the CAGRA build failure
 
 - **Exact Search (`cuvs_brute_force_knn`)**:
   Computes exact squared-L2 distances between 10,000 queries and the ~1.56M corpus (15.6 billion
-  pairwise distances, 512 dimensions) and executes Top-10 reduction entirely in GPU memory in
-  281.53s, joining query and neighbor metadata post-search with zero host boundaries.
+  pairwise distances, 512 dimensions), executes the Top-10 reduction in GPU memory in 281.53s,
+  and joins query and neighbor metadata after the search.
 
 - **IVF-Flat Search (`cuvs_ivf_flat`)**:
   Trains 1024 inverted lists via GPU k-means clustering across the 1.56M vectors and searches
-  32 probes for 10,000 queries in 302.90s with zero host boundaries.
+  32 probes for 10,000 queries in 302.90s.
 
-- **CAGRA Index Build Degeneration (`cuvs_cagra`)**:
-  CAGRA failed during query-local index build with a structured cuVS RAFT dependency error:
+- **CAGRA Index Build Failure (`cuvs_cagra`)**:
+  CAGRA failed during query-local index build with a cuVS RAFT error:
   `Could not generate an intermediate CAGRA graph because the initial kNN graph contains too many invalid or duplicated neighbor nodes.`
-  In PE malware analysis, byte histograms (normalized byte frequencies and byte entropies)
-  frequently produce identical feature representations across different binaries (e.g. shared
-  compiler stubs, standard PE section padding, uniform resource blocks). While brute force and
-  IVF-Flat handle identical vectors seamlessly, CAGRA's intermediate IVF-PQ graph construction
-  (intermediate_graph_degree=64) encounters zero-distance duplicate nodes that break reverse
-  edge generation. Documenting this structural characteristic is critical for vector index selection
-  on malware feature representations.
+  The probable trigger is duplicate feature vectors. Byte histograms (normalized byte frequencies
+  and byte entropies) are identical across binaries that share compiler stubs, PE section padding,
+  or uniform resource blocks, and the error names duplicated neighbor nodes in the initial kNN
+  graph. The failing step inside the intermediate graph build (intermediate_graph_degree=64) was
+  not traced in this run. Brute force and IVF-Flat completed on the same vectors.
 
 ### 4. Supervised temporal generalization on full cohorts
 
-Both logistic regression and random forest train on the complete ~1.56M Win32 training cohort
-and evaluate every single held-out Win32 test file (359,994 files) without downsampling or truncation.
+Both logistic regression and random forest train on the ~1.56M Win32 training cohort and
+evaluate all 359,994 held-out Win32 test files.
 
 Confusion metrics evaluated over 359,994 test files:
 - **Logistic Regression (`cuml_logistic_regression`)**:
@@ -87,8 +84,8 @@ Confusion metrics evaluated over 359,994 test files:
   - True Positives: 156,532 | False Positives: 9,239 | False Negatives: 23,468 | True Negatives: 170,755.
   - Accuracy: 90.91%.
 
-Random forest achieves a 6.26% accuracy improvement over logistic regression, reducing false
-positives from 24,679 down to 9,239 on the held-out quarter.
+Random forest is 6.26 points more accurate than logistic regression on the held-out quarter,
+with 9,239 false positives against 24,679.
 
 ### 5. Challenge graph and forest attribution analysis
 

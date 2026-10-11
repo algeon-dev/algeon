@@ -78,8 +78,7 @@ which allocations are resident. Admission commits the service-configured cap
 without predicting the query's peak. For example, with 16 GiB available for grants
 and an 8 GiB query cap, memory accounting permits two grants, even when their
 current allocations total only 3 GiB. Other service limits can reduce that
-concurrency. These numbers are illustrative; deployments configure their own
-limits.
+concurrency.
 
 Unless a profile sets `worker_count`, `stream_pool_size` and `lane_count`,
 each device derives these counts from `A_d` and `S_d`.

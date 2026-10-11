@@ -3,13 +3,13 @@ import fullCapture from '@site/static/data/ember2024-full-temporal-capture.json'
 import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
-A security analyst needs to compare both benign files flagged and malicious
-files missed. Both models train on 1,560,000 Win32 files from weeks 0 to 51,
-using the same 512 normalized byte and byte-entropy histogram features.
-Evaluation uses 359,994 later Win32 files from weeks 52 to 63.
+Logistic regression and random forest train on 1,560,000 Win32 files from
+weeks 0 to 51, using the same 512 normalized byte and byte-entropy histogram
+features. Evaluation uses 359,994 later Win32 files from weeks 52 to 63 and
+counts both benign files flagged and malicious files missed.
 
-The statement fits logistic regression and random forest, predicts labels for
-the later files, then joins the known labels and aggregates the errors.
+The statement fits both models, predicts labels for the later files, then
+joins the known labels and aggregates the errors.
 Predictions are class IDs `0` and `1`. Test labels are joined after prediction.
 
 <CodeBlock language="sql" className="no-collapse">{fullCapture.sql}</CodeBlock>

@@ -3,10 +3,9 @@ import timings from '@site/static/data/demo-query-timings.json';
 import CitationEgoGraph from '@site/src/components/graph/CitationEgoGraph';
 import data from '@site/src/components/graph/attentionEgo';
 
-A researcher wants to inspect the references and later papers around
-*Attention is all you need*. The selected graph contains the seed paper,
-its 22 references and its 110 most-cited citers in the April 2020 snapshot.
-The goal is to see the links among those papers with their titles attached.
+The selected graph contains *Attention is all you need*, its 22 references
+and its 110 most-cited citers in the April 2020 snapshot. The layout shows
+the links among those papers with their titles attached.
 
 <CodeBlock language="sql" className="no-collapse">{`CREATE OR REPLACE VIEW attention_seed AS
 SELECT paper_id FROM papers
@@ -61,8 +60,7 @@ so displayed positions are not a fixed plot of a single SQL result.
 
 Every selected paper links to the Transformer by construction. The other
 links, including those involving LSTM and Adam, point to related references
-inside the neighborhood. The view covers only this selected neighborhood. Layout distance does not measure
-research influence, and the saved group names are display annotations.
+inside the neighborhood. The saved group names are display annotations.
 
 A fixed `seed` controls initial placement, but parallel force accumulation
 can produce different coordinates across runs. Save coordinates when later

@@ -106,10 +106,8 @@ memory, packaging them into Arrow `RecordBatch` instances for DataFusion.
  └──────────────────┘   or Doorbell        verifies coherence)
 ```
 
-The device-to-host transfer uses the ordered FIFO guarantee of the execution
-stream. Upstream compute kernels precede the copy operation in the queue. The
-hardware command processor and copy engine execute earlier kernels to
-completion before starting the transfer over PCIe.
+The device-to-host copy is queued on the execution stream after the upstream
+kernels and starts once they complete.
 
 The host runtime polls the DataFusion stream and awaits each pool job without
 blocking a worker. The first poll runs the fragment's schedule. Each later poll
@@ -119,8 +117,7 @@ reservation per stream), copies the chunk from device to host and waits in
 `cudaStreamSynchronize`. A pool worker does the waiting, and the driver parks it
 in the OS scheduler until the copy completes.
 
-Because the return of `cudaStreamSynchronize` guarantees CPU cache coherence
-with the transferred bytes, the worker can safely wrap the host buffers into
-Arrow arrays without redundant copies. The last chunk ends the result stream,
+Once `cudaStreamSynchronize` returns, the worker wraps the host buffers into
+Arrow arrays without another copy. The last chunk ends the result stream,
 and the attempt [releases its grant](./admission.mdx#resident-handoff-and-release)
 once no fragment is running.

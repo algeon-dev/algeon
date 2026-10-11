@@ -7,9 +7,9 @@ fixture.
 
 ## Code axes (S / P / W / G / I)
 
-`S`, `P`, `W`, `G`, and `I` are short handles, not self-explanatory names. Each
-points at the place that owns the full meaning, which stays authoritative when
-the two disagree. `S` cells are owned by a section of this runbook; the
+`S`, `P`, `W`, `G`, and `I` are short handles. Each points at the place that
+owns the full meaning, and that place stays authoritative when the two
+disagree. `S` cells are owned by a section of this runbook; the
 `P`/`W`/`G`/`I` codes are owned by comments in
 `crates/tools/src/single_node_multi_gpu_validate/`. Keep this table in
 sync when a code is added or retired.
@@ -241,10 +241,10 @@ The listed duration is the configured warmup plus measurement time. After the
 last submission, stress profiles permit at most their recorded
 `completion_drain_grace_seconds`
 `completion_drain_grace_seconds` for already-admitted work to seal its report;
-this allowance never extends the measurement window or permits new work.
+this allowance does not extend the measurement window or admit new work.
 Budget a little longer for connection/setup, artifact writing, and fixture
-preflight. A run that overruns or cannot meet its profile is evidence, not a
-reason to edit the profile in place.
+preflight. A run that overruns or cannot meet its profile is retained as
+evidence, and the profile is not edited in place.
 
 ## In-process profiles
 
@@ -293,7 +293,7 @@ scheduling and workloads; only cache configuration may differ.
 
 `stress-s1-embedded-shared-graph-interleave-sf10.json` and
 `stress-s1-embedded-distinct-graph-interleave-sf10.json` are a paired
-population control, not part of that cache A/B pair. They have identical
+population control separate from that cache A/B pair. They have identical
 backend, scheduling, relational queries, ordered G1-G4 labels, and graph
 claim requirements; only the DBLP source identity differs. Both use the eight
 active device slots and repeat the ten-request stream through the 600-second
@@ -367,8 +367,8 @@ six rate multipliers, and the final `KW/2` is recovery. The 80,000 budget
 leaves 20,000 attempts below the 100,000 retention cap. `W` must be at least
 one; the generator rejects a non-even `K` and any `K` above 1,758 (where
 `W = 1`, expected 79,989 arrivals). A larger measured knee
-needs a profile/scheduler design change before a qualifying rate run, not a
-truncated artifact. Every artifact must still prove
+needs a profile/scheduler design change before a qualifying rate run; a
+truncated artifact does not qualify. Every artifact must still prove
 `arrival_plan.truncated_by_attempt_cap = false`, because the seeded Poisson
 schedule is the authoritative count.
 
@@ -397,10 +397,10 @@ contract. A larger claim-over-actual delta is stranded capacity. Both are
 non-qualifying and must be repaired at the planner/allocation owner before
 retaining the knee. The sampler brackets every CUDA/NVML pull with ledger
 sequences: a row is eligible only when its admission-plus-cache claim did not
-change across that bracket. The baseline is never a peak candidate; every
-ordinal also needs a post-baseline stable row with both nonzero CUDA use and a
+change across that bracket. The baseline is excluded from peak candidates;
+every ordinal also needs a post-baseline stable row with both nonzero CUDA use and a
 nonzero claim. A zero-versus-zero baseline, or an unstable ledger/telemetry
-pair, is `failed`, not calibration evidence.
+pair, is recorded as `failed` and contributes no calibration evidence.
 
 For any profile with `graph_claim_calibration` (G1-G4 and graph-algorithm
 S5-S7 cells), also inspect
@@ -413,7 +413,7 @@ provenance. A `cache_scope_high_water` is direct only after the cache scope's
 fence and health proof completed, including an error path. A
 `bfs_singleflight_follower` must retain zero graph rows plus its engine-minted
 leader attempt id, which must reference an evidenced physical measurement-phase
-leader; it never reuses the leader's peak. A
+leader; it does not reuse the leader's peak. A
 `graph_memory_admission_denied` row can replace a peak only with its exact
 pre-executor engine state, `requested_bytes > budget_bytes`, and a sealed
 native `MemoryReservationFailed` temporary execution failure. Missing,
@@ -436,7 +436,7 @@ one calibration set. Nsight must agree on allocation/free lifetime and phase
 ownership before adjusting a memory model; it is not valid to replace a missing
 runtime peak with NVML or a trace-derived total.
 
-I8 uses a single deliberately slow completion receiver, not a synthetic
+I8 uses a single deliberately slow completion receiver and no synthetic
 backend fault. Its rate (51/s) is strictly above the one-per-20-ms serial sink
 capacity (50/s). Retain the artifact even when it is non-qualifying: its
 `completion_sink` section records offered-versus-drain pressure, exact report
@@ -474,7 +474,7 @@ Retain both `run-artifact.json` files. A qualifying artifact has status
 `cache_calibration`, all cache clauses `evidenced`, and qualifying cache-off
 and cache-on measurements. The thrash cell additionally records at least
 48 GiB of cumulative source promotion across the four devices, an eviction
-batch, direct physical-domain bytes never above the paired ledger charge, and
+batch, direct physical-domain bytes at or below the paired ledger charge, and
 no unexplained cache-on-only admission failure. The same-key cell must retain
 nonzero source-promotion coalescing and BFS follower evidence with fewer
 physical BFS traversals than eligible BFS requests; it uses the unbounded

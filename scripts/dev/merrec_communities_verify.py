@@ -17,6 +17,8 @@ import pyarrow.parquet as pq
 import sklearn
 from sklearn.metrics import adjusted_rand_score
 
+from merrec_verify_common import query_record
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "target/merrec-exploration/results"
@@ -38,20 +40,6 @@ COMMUNITY_RESULTS = {
 }
 COMPARISON_METHODS = ("cugraph_louvain", "cugraph_leiden", "cugraph_ecg")
 COMPOSITION_PATH = RESULTS / "24_market_collections_final.parquet"
-
-
-def query_reference(name: str) -> dict[str, object]:
-    path = QUERY_RECORDS / f"{name}.json"
-    if not path.is_file():
-        return {"path": str(path.relative_to(ROOT)), "status": "missing"}
-    record = json.loads(path.read_text())
-    return {
-        "path": str(path.relative_to(ROOT)),
-        "status": record.get("status"),
-        "query_id": record.get("query_id"),
-        "rows": record.get("rows"),
-        "error": record.get("error"),
-    }
 
 
 def require_columns(
@@ -481,11 +469,11 @@ def main() -> int:
     composition["query_provenance"] = {
         "verified_final_capture": {
             "parquet": str(COMPOSITION_PATH.relative_to(ROOT)),
-            **query_reference("24_market_collections_final"),
+            **query_record(QUERY_RECORDS, ROOT, "24_market_collections_final"),
         },
         "initial_failed_attempt": {
             "parquet": str((RESULTS / "24_market_collections.parquet").relative_to(ROOT)),
-            **query_reference("24_market_collections"),
+            **query_record(QUERY_RECORDS, ROOT, "24_market_collections"),
         },
     }
     pending = [

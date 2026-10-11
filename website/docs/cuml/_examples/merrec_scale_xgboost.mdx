@@ -4,9 +4,9 @@ export const sql = capture.sql.replaceAll(', LN(', ',\n      LN(');
 import capture from '@site/static/data/merrec-scale-propensity-xgboost.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
-An audience planner has capacity to review 55,404 shoppers. The comparison
-uses either the highest XGBoost scores or everyone who bought in the previous
-30 days, then counts September buyers in each list.
+The recent-purchase rule selects the 55,404 shoppers who bought in the
+previous 30 days. The model list keeps the same number of highest-scoring
+shoppers, and the query counts September buyers in each list.
 
 The model was trained before the query on features preceding August 1, 2023,
 with purchases in the next 30 days as labels. Training and model review are

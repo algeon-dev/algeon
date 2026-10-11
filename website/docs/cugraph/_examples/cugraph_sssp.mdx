@@ -14,9 +14,7 @@ The query follows references from the 2017 Transformer paper and ranks
 reachable language-related papers published by 2005 with at least 500 reported
 citations. Each row includes the previous paper on its cheapest route.
 The source ID is the Transformer record
-in the [seed table](../../guides/datasets/citation-network.mdx#data-scope);
-`source_vertex` accepts a literal, so the lookup does not need a separate
-example query.
+in the [seed table](../../guides/datasets/citation-network.mdx#data-scope).
 
 ```sql
 SELECT p.year, p.title, p.n_citation, CAST(s.distance AS BIGINT) AS reading_cost,
@@ -49,12 +47,8 @@ LIMIT 6;
 | 2001 | A Study of Smoothing Methods for Language Models Applied to Ad Hoc Information Retrieval | 1829 | 32 | Passage retrieval based on language models |
 | 2000 | Improved statistical alignment models | 924 | 34 | A Syntax-based Statistical Translation Model |
 
-The first listed route reaches *Statistical Significance Tests for Machine
-Translation Evaluation.* at cost 26 through *Hybrid data-driven models of
-machine translation*. The table abbreviates the GENIA title to *GENIA corpus…*.
+The table abbreviates the GENIA title to *GENIA corpus…*.
 
-The edge filter excludes invalid years and publications after the source's
-year. Forward-dated citations within that interval retain a positive cost.
 Unreachable vertices are excluded. If several routes have the same minimum
 cost, the query names the predecessor of one of them. Repeated runs on the same
 data name the same paper, but which of the tied routes that is stays

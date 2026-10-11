@@ -1,7 +1,7 @@
 /* Design-page diagram framing. The diagrams themselves are SVG with a
    computed layout (see Diagram.tsx); this file styles the figure shell
-   (scroll container, caption), node interactivity, and the HTML
-   detail panel below each interactive diagram. */
+   (scroll container, caption, enlarge dialog), node interactivity, and the
+   HTML detail panel below each interactive diagram. */
 
 .figure {
   margin: 2.4rem 0;
@@ -58,6 +58,199 @@
 
 .algorithmComparison table {
   min-width: 48rem;
+}
+
+/* ===== Enlarge control and dialog ======================================== */
+.frame {
+  position: relative;
+}
+
+/* The drawing lives in the dialog while it is open. A copy left on the page
+   would show under the backdrop and trail the morphing drawing. The enlarge
+   button stays visible: closing the dialog returns focus to it, and a hidden
+   element cannot take focus. */
+.frameEnlarged > .scroll {
+  visibility: hidden;
+}
+
+/* Hidden until the pointer is over the figure, so it never covers the drawing
+   while reading; keyboard focus and touch screens always show it. */
+.enlarge {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  color: var(--ag-dg-fg-muted);
+  background: var(--ag-dg-surface);
+  border: 1px solid var(--ag-dg-border);
+  border-radius: 999px;
+  cursor: zoom-in;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.frame:hover .enlarge,
+.enlarge:focus-visible {
+  opacity: 1;
+}
+.enlarge:hover {
+  color: var(--ag-dg-accent);
+  border-color: var(--ag-dg-accent);
+}
+@media (hover: none) {
+  .enlarge {
+    opacity: 0.85;
+  }
+}
+
+.zoomDialog {
+  width: calc(100% - 2rem);
+  height: calc(100% - 2rem);
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  color: var(--ag-dg-fg);
+  /* Infima leaves --ifm-background-color transparent in the light theme, and
+     the drawing's own background is transparent, so the dialog needs an
+     opaque surface of its own. */
+  background: var(--ag-dg-surface);
+  border: 1px solid var(--ag-dg-border);
+  border-radius: var(--ag-dg-radius);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.3);
+  /* Its own transition layer, so the dialog fades in and out over a root that
+     only dims; in the root crossfade, page text would show through it. */
+  view-transition-name: figure-enlarge-dialog;
+}
+.zoomDialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.zoomDialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* The drawing moves between its place on the page and the dialog with the
+   focus-mode curve (custom.css); the backdrop and dialog chrome crossfade. */
+::view-transition-group(figure-enlarge) {
+  animation-duration: 0.3s;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  /* On open the dialog's layer exists only in the new state, so it would
+     stack above the drawing's. */
+  z-index: 1;
+}
+
+/* The drawing's background is transparent and the curve covers most of the
+   distance early, so the dialog surface fades faster than the drawing moves;
+   otherwise page text shows between the boxes on the way in. */
+::view-transition-old(figure-enlarge-dialog),
+::view-transition-new(figure-enlarge-dialog) {
+  animation-duration: 0.12s;
+}
+@media (max-width: 576px) {
+  .zoomDialog {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+  }
+}
+
+/* Not selectable, so a drag that runs past the drawing's top edge copies no
+   control labels. */
+.zoomBar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--ag-dg-border);
+  user-select: none;
+}
+
+.zoomHint {
+  font-size: 0.75rem;
+  color: var(--ag-dg-fg-subtle);
+}
+@media (hover: none) {
+  .zoomHint {
+    display: none;
+  }
+}
+
+.zoomControls {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.zoomButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0 0.6rem;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--ag-dg-fg-muted);
+  background: transparent;
+  border: 1px solid var(--ag-dg-border);
+  border-radius: var(--ag-dg-radius-sm);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.zoomButton:hover:not(:disabled) {
+  color: var(--ag-dg-accent);
+  border-color: var(--ag-dg-accent);
+}
+.zoomButton[aria-pressed='true'] {
+  color: var(--ag-dg-fg);
+  background: var(--ag-dg-surface-2);
+}
+.zoomButton:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.zoomLevel {
+  min-width: 3.2em;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--ag-dg-fg-muted);
+}
+
+/* Native scrolling pans, so a pointer drag stays a text selection. */
+.zoomViewport {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 1.5rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.zoomViewport:focus-visible {
+  outline: 2px solid var(--ag-dg-accent);
+  outline-offset: -2px;
+}
+
+/* A fitted drawing never overflows; hiding overflow keeps a rounding pixel
+   from adding a scrollbar. */
+.zoomFit {
+  overflow: hidden;
+}
+
+.zoomPanel {
+  flex: none;
+  max-height: 40%;
+  padding: 0 1.5rem 1.25rem;
+  overflow: auto;
 }
 
 /* ===== Node interactivity ================================================ */

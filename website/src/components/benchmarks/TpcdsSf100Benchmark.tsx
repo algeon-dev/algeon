@@ -15,9 +15,17 @@ import {
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import {tpcdsSf100Benchmark, type TpcdsSf100BenchmarkRow} from '@site/src/data/tpcdsSf100Benchmark';
+import {
+  bytesPerGiB,
+  formatGiB,
+  formatGiBShort,
+  tooltipContentStyle,
+  tooltipCursorStyle,
+  tooltipItemStyle,
+  tooltipLabelStyle,
+} from './benchmarkChartUtils';
 import styles from './TpchSf100Benchmark.module.css';
 
-const bytesPerGiB = 1024 ** 3;
 const colorCpu = '#0071C5';
 const colorGpu = '#76B900';
 const colorSpeedup = '#10b981';
@@ -85,45 +93,6 @@ function formatSpeedup(value: number | null | undefined, decimals = 1): string {
   }
   return `${value.toFixed(decimals)}x`;
 }
-
-function formatGiB(value: number): string {
-  return `${(value / bytesPerGiB).toFixed(1)} GiB`;
-}
-
-function formatGiBShort(value: number): string {
-  return `${value.toFixed(1)} GiB`;
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat('en-US').format(value);
-}
-
-const tooltipContentStyle: React.CSSProperties = {
-  background: 'var(--ifm-background-surface-color)',
-  border: '1px solid var(--ifm-color-emphasis-300)',
-  borderRadius: '6px',
-  boxShadow: 'var(--ifm-global-shadow-md)',
-  color: 'var(--ifm-font-color-base)',
-  fontSize: '0.82rem',
-  lineHeight: 1.4,
-  padding: '0.5rem 0.75rem',
-};
-
-const tooltipLabelStyle: React.CSSProperties = {
-  color: 'var(--ifm-heading-color)',
-  fontWeight: 600,
-  marginBottom: '0.25rem',
-};
-
-const tooltipItemStyle: React.CSSProperties = {
-  color: 'var(--ifm-font-color-base)',
-  padding: 0,
-};
-
-const tooltipCursorStyle = {
-  fill: 'var(--ifm-color-emphasis-300)',
-  fillOpacity: 0.35,
-} as const;
 
 export default function TpcdsSf100Benchmark(): React.ReactElement {
   const {dataset, config, rows, summary} = tpcdsSf100Benchmark;

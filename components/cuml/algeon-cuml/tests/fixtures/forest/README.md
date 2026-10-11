@@ -154,16 +154,14 @@ depend on generation order.
 An earlier revision of this generator planned two additional fixtures built
 directly with `treelite.model_builder.ModelBuilder`, with `postprocessor`
 set to `"max_index"`, to exercise a lowest-index-on-tie argmax path
-independent of XGBoost's own softmax mapping. That plan was dropped: on
-treelite 4.7.2, `src/serializer.cc`'s legacy-checkpoint deserializer
-rewrites any model with `postprocessor == "max_index"` to `"softmax"` on
-load (`model->postprocessor = "softmax"; // max_index no longer supported`),
+independent of XGBoost's own softmax mapping. Treelite 4.7.2 cannot
+round-trip such a model. The legacy-checkpoint deserializer in
+`src/serializer.cc` rewrites `postprocessor == "max_index"` to `"softmax"`
+on load (`model->postprocessor = "softmax"; // max_index no longer supported`),
 and GTIL's `postprocessor.cc` has no `"max_index"` entry in
-`GetPostProcessorFunc` at all, so a freshly built `"max_index"` model's
-default (non-`pred_margin`) `treelite.gtil.predict` call raises
-`TreeliteError: Post-processor named 'max_index' not found`. A `.tl`
-checkpoint with a genuinely surviving `"max_index"` postprocessor cannot be
-produced and round-tripped through this treelite version, so no
-`tl_max_index` / `tl_max_index_tie` fixtures exist here. `xgb_multiclass_tie`
-(fixture 6) covers the same lowest-index-tie behavior through the
-`softmax` postprocessor that XGBoost `multi:softmax` models actually get.
+`GetPostProcessorFunc`. A freshly built `"max_index"` model's default
+(non-`pred_margin`) `treelite.gtil.predict` call therefore raises
+`TreeliteError: Post-processor named 'max_index' not found`. No
+`tl_max_index` / `tl_max_index_tie` fixtures exist here for that reason.
+`xgb_multiclass_tie` (fixture 6) covers the lowest-index tie through the
+`softmax` postprocessor that XGBoost `multi:softmax` models receive.

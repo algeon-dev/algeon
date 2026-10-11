@@ -54,7 +54,10 @@ choice.
   so a working set larger than the memory grant does not fail.
 - Development and testing on hardware with real
   [GPUDirect Storage](https://docs.nvidia.com/gpudirect-storage/); current
-  runs go through KvikIO compatibility mode.
+  runs go through KvikIO compatibility mode. The object-storage counterpart,
+  [cuObject](https://docs.nvidia.com/gpudirect-storage/cuobject/), follows
+  once KvikIO's remote reads support it and an RDMA-capable object store is
+  available for testing.
 - Multi-GPU execution. Development runs on one consumer GPU today, so this
   waits for sponsored hardware.
 - File formats other than Parquet on the GPU scan path. Non-Parquet
