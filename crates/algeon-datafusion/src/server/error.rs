@@ -2,8 +2,6 @@ use std::{error::Error as StdError, fmt, net::SocketAddr, sync::Arc};
 
 use datafusion::common::DataFusionError;
 use query_planning::error::QueryError;
-#[cfg(test)]
-use query_planning::error::QueryErrorCode;
 use tonic::{
     Status,
     metadata::{MetadataMap, MetadataValue},
@@ -668,7 +666,7 @@ mod tests {
         prelude::SessionContext,
         sql::sqlparser::parser::ParserError,
     };
-    use query_planning::error::{MemoryFailure, MemoryUsage};
+    use query_planning::error::{MemoryFailure, MemoryUsage, QueryErrorCode};
     use tonic::{Code, metadata::KeyAndValueRef};
     use tracing::subscriber::with_default;
 

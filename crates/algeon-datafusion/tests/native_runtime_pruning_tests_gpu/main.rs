@@ -54,8 +54,12 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
+use fixtures::*;
 use query_planning::{optimizer::NativeOptimizerDiagnostics, source::SourceDiagnostics};
+use sql::*;
+use support::*;
 use tokio::{runtime::Builder as TestRuntimeBuilder, sync::Mutex};
+use tpch_session::tpch_report_session_config;
 use workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 
 static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::const_new(());
@@ -69,11 +73,6 @@ mod scalar_expressions;
 mod sql;
 mod support;
 mod tpch;
-
-use fixtures::*;
-use sql::*;
-use support::*;
-use tpch_session::tpch_report_session_config;
 
 async fn native_runtime_default_sql_min_max_count_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-default-min-max-count");

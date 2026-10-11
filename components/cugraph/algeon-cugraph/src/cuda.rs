@@ -153,11 +153,6 @@ pub(crate) fn quarantine_device_drop(operation: &'static str, device: i32, reaso
 }
 
 #[cfg(test)]
-pub(crate) use cudf::testing::device_safety::{
-    DeviceEntryTestCall as TestCudaCall, DeviceSafetyTestScope as TestCudaHooks,
-};
-
-#[cfg(test)]
 pub(crate) fn fail_next_fatal_device_resource_destroy(cuda_status: i32) {
     // SAFETY: the native test hook stores two scalar values in thread-local
     // state and retains no Rust pointers.

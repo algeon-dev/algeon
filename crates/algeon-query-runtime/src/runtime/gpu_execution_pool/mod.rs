@@ -56,8 +56,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use super::{ExecutionCancellation, context::QueryServiceResourceEpoch};
 use crate::observability::{GpuJobLifecycleState, RuntimeJobId, RuntimeObservationHandle, RuntimeStreamLeaseScope};
-#[cfg(test)]
-use crate::observability::{RuntimeObservationPayload, RuntimeTopologyRecord};
 
 mod inner;
 mod job;
@@ -73,8 +71,6 @@ use job::{
 use lease::{BlockingCompletionNotify, BlockingWorkOutcome};
 pub use lease::{GpuExecutorLease, PoolBlockingWork};
 use supervisor::RuntimeSupervisor;
-#[cfg(test)]
-use supervisor::{SUPERVISOR_JOINED, SUPERVISOR_NOT_JOINED};
 
 const BUILD_OPERATION: &str = "query_engine.gpu_execution_pool.build";
 const RUN_OPERATION: &str = "query_engine.gpu_execution_pool.run";

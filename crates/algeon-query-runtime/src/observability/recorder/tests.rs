@@ -11,7 +11,7 @@ use std::{
 
 use query_planning::error::{QueryError, QueryErrorCode};
 
-use super::*;
+use super::{owner::RuntimeObservationOwnerLifecycleState, *};
 use crate::{
     metrics::{BudgetedExecutionEvent, SourceReadRuntimeMetrics},
     observability::{

@@ -637,14 +637,17 @@ mod tests {
         sync::atomic::{AtomicBool, Ordering},
     };
 
-    use cudf::{DeviceMemoryResource, QueryMemoryDomainOptions, testing::run_named_cases};
+    use cudf::{
+        DeviceMemoryResource, QueryMemoryDomainOptions,
+        testing::{
+            device_safety::{DeviceEntryTestCall as TestCudaCall, DeviceSafetyTestScope as TestCudaHooks},
+            run_named_cases,
+        },
+    };
     use cugraph_sys::cugraph_create_resource_handle;
 
     use super::*;
-    use crate::{
-        DeviceArray,
-        cuda::{TestCudaCall, TestCudaHooks},
-    };
+    use crate::DeviceArray;
 
     struct ReleaseProbe(Arc<AtomicBool>);
 

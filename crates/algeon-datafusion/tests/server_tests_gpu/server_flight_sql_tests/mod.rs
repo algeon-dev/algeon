@@ -60,6 +60,9 @@ use datafusion::{
     sql::sqlparser::ast::TableFactor,
 };
 use explain_gpu::{coverage_candidate_row, coverage_string};
+use futures::TryStreamExt;
+use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use prost::{Message as _, bytes::Bytes};
 use query_planning::error::bytes_with_gib;
 use support::{
     ControlledPlanReplacement, ScanFailingTableProvider, assert_error_metadata, assert_no_diagnostic_fields,
@@ -76,7 +79,11 @@ use tokio::{
     task::{JoinHandle, spawn_blocking, yield_now},
     time::{sleep, timeout},
 };
-use tonic::transport::Channel;
+use tokio_util::sync::CancellationToken;
+use tonic::{
+    Code,
+    transport::{Channel, Endpoint},
+};
 
 mod admission;
 mod ddl;
@@ -131,11 +138,6 @@ fn build_injected_test_backend(config: &mut ServerConfig) -> AlgeonGpuBackend {
         config.native_optimizer_config.clone().with_native_execution_config(AlgeonNativeExecutionConfig::default());
     backend_from_server_config(config).expect("injected backend test profile must build")
 }
-use futures::TryStreamExt;
-use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use prost::{Message as _, bytes::Bytes};
-use tokio_util::sync::CancellationToken;
-use tonic::{Code, transport::Endpoint};
 
 const QUERY_ID_METADATA_KEY: &str = "x-algeon-query-id";
 const CANCEL_RESULT_CANCELLING: i32 = 2;

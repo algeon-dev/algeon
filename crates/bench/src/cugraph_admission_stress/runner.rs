@@ -64,14 +64,8 @@ mod report;
 mod sampling;
 mod workload;
 
-#[cfg(test)]
-use config::parse_workload;
 use config::{ENV_FOS, ENV_PAPERS, ENV_PRINT_PLANNING};
-#[cfg(test)]
-use report::{DEVICE_SAMPLE_COLUMNS, QUERY_COLUMNS, SAMPLE_COLUMNS, device_peaks};
 use report::{query_rows_makespan_ms, write_outputs};
-#[cfg(test)]
-use sampling::device_sample_rows;
 use sampling::spawn_sampler;
 use workload::{catalog, expand_workload};
 

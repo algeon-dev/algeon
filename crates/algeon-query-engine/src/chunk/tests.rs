@@ -12,7 +12,11 @@ use arrow::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_planning::{
-    chunk::{SourceChunkPlanningOptions, SourceChunkPlanningPolicy, SourceTaskMemoryModel},
+    chunk::{
+        LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES,
+        SourceChunkPlanningOptions, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
+        decimal::validate_supplied_reader_decimal_types_match_footer,
+    },
     error::QueryErrorCode,
     execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
     expr::{BinaryOp, Expr, LiteralValue},
@@ -23,10 +27,9 @@ use query_planning::{
     },
 };
 
-use super::{
-    decimal::validate_supplied_reader_decimal_types_match_footer,
-    metadata::{SourceMetadataCacheKey, local_parquet_footer_metadata_path, sidecar_content_identity},
-    *,
+use super::*;
+use crate::source_chunk::metadata::{
+    SourceMetadataCacheKey, local_parquet_footer_metadata_path, sidecar_content_identity,
 };
 
 fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {

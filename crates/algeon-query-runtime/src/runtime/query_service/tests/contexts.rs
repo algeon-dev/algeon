@@ -1,4 +1,7 @@
+use query_planning::error::QueryErrorCode;
+
 use super::*;
+use crate::runtime::{GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership};
 
 #[test]
 fn bounded_query_service_context_uses_hard_limited_query_domain_members() {

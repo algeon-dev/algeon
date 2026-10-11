@@ -72,8 +72,6 @@ pub use gpu::{
     DeviceCapabilities, DeviceCapability, DeviceFacts, DeviceLedgerGrantRow, DeviceLedgerReport,
     DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot, DeviceTelemetryStatus,
 };
-#[cfg(test)]
-pub(crate) use gpu::{DeviceResourceEnvelope, GpuInventory, device_budget_bytes_from_facts};
 #[doc(hidden)]
 pub use gpu_execution_pool::PoolBlockingWork;
 pub use gpu_execution_pool::{
@@ -97,9 +95,6 @@ pub use query_service::{
 pub use reservation::RetryFacts;
 #[doc(hidden)]
 pub use service_stream::AttemptWorkLease;
-#[cfg(test)]
-#[cfg(any(test, feature = "test-hooks"))]
-pub(crate) use service_stream::DEFAULT_SERVICE_STREAM_POOL_SIZE;
 pub use service_stream::ServiceStreamPool;
 pub(crate) use service_stream::{StreamLease, StreamPermitClass};
 #[doc(hidden)]

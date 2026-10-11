@@ -27,8 +27,6 @@
 //! `stream_pool_idle_timeout` or `stream_pool_quiescence_timeout` together
 //! with the cleanup-deadline marker.
 
-#[cfg(test)]
-use std::sync::{Barrier, mpsc};
 use std::{
     cell::Cell,
     fmt,
@@ -61,17 +59,6 @@ use tokio::{
 #[cfg(test)]
 use super::DeviceFacts;
 pub(crate) use super::stream_cleanup::StreamCleanupOutcome;
-#[cfg(test)]
-pub(crate) use super::stream_cleanup::block_stream_cleanup_thread_for_test;
-#[cfg(test)]
-use super::stream_cleanup::{
-    STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION, STREAM_CLEANUP_SUPERVISOR_JOINED, STREAM_CLEANUP_SUPERVISOR_NOT_JOINED,
-    StreamCleanupEnqueueError, StreamCleanupSupervisorTerminal, fail_next_cleanup_supervisor_spawn_for_test,
-    force_cleanup_supervisor_unexpected_exit_for_test, observe_cleanup_supervisor_join_waiter_for_test,
-    observe_cleanup_supervisor_shutdown_send_failure_for_test, panic_cleanup_supervisor_after_outcome_for_test,
-    pause_cleanup_supervisor_before_worker_return_for_test, probe_cleanup_job_for_test,
-    stream_cleanup_thread_id_for_test, wait_for_cleanup_supervisor_worker_finished_for_test,
-};
 use super::{
     ExecutionCancellation, ExecutionContext,
     context::{AttemptAuxiliaryPermit, QueryServiceResourceEpoch},
@@ -1390,7 +1377,10 @@ pub(super) fn validate_service_stream_pool_size(pool_size: usize) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        sync::{Barrier, mpsc},
+        time::Duration,
+    };
 
     use cudf::{
         runtime::{DeviceFaultKind, DeviceFaultNativeStatus, report_device_fault},
@@ -1399,9 +1389,20 @@ mod tests {
     use query_planning::error::QueryErrorStatus;
 
     use super::*;
-    use crate::observability::{
-        PlanExecutionId, RuntimeJobId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTaskId,
-        RuntimeWorkerId, assert_live_topology_references_resolve,
+    use crate::{
+        observability::{
+            PlanExecutionId, RuntimeJobId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTaskId,
+            RuntimeWorkerId, assert_live_topology_references_resolve,
+        },
+        runtime::stream_cleanup::{
+            STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION, STREAM_CLEANUP_SUPERVISOR_JOINED,
+            STREAM_CLEANUP_SUPERVISOR_NOT_JOINED, StreamCleanupEnqueueError, StreamCleanupSupervisorTerminal,
+            block_stream_cleanup_thread_for_test, fail_next_cleanup_supervisor_spawn_for_test,
+            force_cleanup_supervisor_unexpected_exit_for_test, observe_cleanup_supervisor_join_waiter_for_test,
+            observe_cleanup_supervisor_shutdown_send_failure_for_test, panic_cleanup_supervisor_after_outcome_for_test,
+            pause_cleanup_supervisor_before_worker_return_for_test, probe_cleanup_job_for_test,
+            stream_cleanup_thread_id_for_test, wait_for_cleanup_supervisor_worker_finished_for_test,
+        },
     };
 
     #[test]

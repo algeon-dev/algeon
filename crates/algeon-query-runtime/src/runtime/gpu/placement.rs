@@ -12,8 +12,6 @@ use query_planning::{
     error::Result,
 };
 
-#[cfg(test)]
-use super::DeviceResourceEnvelope;
 use super::{DeviceAdmissionHealth, DeviceLedger, DeviceResourceProfile};
 
 /// Internal placement input derived from planner-owned capability evidence.
@@ -211,7 +209,7 @@ mod tests {
     use query_planning::admission::ExecutionCapability;
 
     use super::*;
-    use crate::runtime::{DeviceCapabilities, DeviceCapability};
+    use crate::runtime::{DeviceCapabilities, DeviceCapability, gpu::DeviceResourceEnvelope};
 
     fn candidate(
         ordinal: usize,

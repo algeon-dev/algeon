@@ -19,10 +19,13 @@ use tokio::{
 use super::*;
 use crate::{
     observability::{
-        RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationOwner,
-        assert_live_topology_references_resolve,
+        RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload,
+        RuntimeTopologyRecord, assert_live_topology_references_resolve,
     },
-    runtime::context::{QueryResourceEpoch, QueryServiceEpoch, QueryServiceResourceEpoch},
+    runtime::{
+        context::{QueryResourceEpoch, QueryServiceEpoch, QueryServiceResourceEpoch},
+        gpu_execution_pool::supervisor::{SUPERVISOR_JOINED, SUPERVISOR_NOT_JOINED},
+    },
 };
 
 #[derive(Default)]

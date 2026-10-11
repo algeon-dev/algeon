@@ -8,10 +8,11 @@ use super::{
     ExecutionContext, ExecutionMetrics, GpuDataFrame, PartialAggregateInputEvidence, ProjectionNode, Result,
     ScheduledLocalParquetReadOutput, SourceChunk, SourceChunkBatch, attach_chunk_resource_facts,
     execute_filter_with_budget, execute_partial_aggregate_with_budget, execute_projection_with_budget,
-    execute_projection_with_budget_and_prepared, execution_budget_token_for_boundary, is_retryable_chunk_error,
-    is_source_adjacent_grouped_aggregate, observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint,
-    plan_source_chunk_batches, projection_regexp_replace_prepare,
-    read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
+    execute_projection_with_budget_and_prepared, execution::read_bounded_chunk_source,
+    execution_budget_token_for_boundary, is_retryable_chunk_error, is_source_adjacent_grouped_aggregate,
+    observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint, plan_source_chunk_batches,
+    projection_regexp_replace_prepare, read_local_parquet_chunk_batch_required_only_no_commit,
+    record_chunk_retry_error,
 };
 use crate::{
     exec::retry::{RetryLimits, backoff_before_retry},
@@ -107,7 +108,6 @@ fn execute_source_adjacent_batch_retry(
     batch: SourceChunkBatch,
     attempt: usize,
 ) -> Result<SourceAdjacentBatchOutput> {
-    use super::execution::read_bounded_chunk_source;
     execution.context().check_cancellation("query_engine.exec.bounded.source_adjacent_chunk_batch_retry")?;
     let RetryLimits { max_attempts, min_split_row_groups } = RetryLimits::of(execution.context());
     let source = if batch.is_singleton() {

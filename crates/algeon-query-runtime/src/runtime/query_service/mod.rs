@@ -16,24 +16,16 @@
 
 use std::sync::Mutex;
 
-#[cfg(test)]
-use query_planning::policy::PlanningPolicy;
 use query_planning::{
     admission::AttemptCapabilityEvidence,
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     correlation::QueryId,
-    error::{QueryError, QueryErrorCode, Result},
+    error::{QueryError, Result},
     execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
     mode::StatisticalAggregateExecutionMode,
 };
-#[cfg(test)]
-use tokio::time;
 
-#[cfg(test)]
-use super::LakehouseCacheFillConfig;
-#[cfg(test)]
-use super::{DeviceLedgerReport, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership};
 use super::{
     DeviceRegistry, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool, MemoryGrant,
     SourceSchedulerPolicy,
@@ -57,14 +49,10 @@ mod service;
 mod tests;
 
 use admission::QueryCompletion;
-#[cfg(test)]
-use admission::{AdmissionState, DeviceAdmissionEntries};
 pub use config::{QueryExecutionConfig, QueueBounds};
 pub use handle::{AdmittedQueryContext, QueryHandle};
 #[cfg(feature = "qualification")]
 pub use service::DeviceQuarantineInjection;
-#[cfg(test)]
-pub(crate) use service::QueryAdmissionOutcome;
 use service::QueryServiceInner;
 pub use service::{
     BackendDiagnostics, QueryActivityLease, QueryAdmissionRequest, QueryService, QueryServiceAdmissionSnapshot,
@@ -218,6 +206,8 @@ fn admission_rejection(error: &QueryError) -> AdmissionLifecycleState {
 
 #[cfg(test)]
 mod drain_outcome_tests {
+    use query_planning::error::QueryErrorCode;
+
     use super::*;
 
     #[test]

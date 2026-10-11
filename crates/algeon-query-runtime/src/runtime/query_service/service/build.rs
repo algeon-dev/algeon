@@ -16,8 +16,6 @@ use super::{
     },
     QueryService, QueryServiceInner,
 };
-#[cfg(test)]
-use crate::runtime::gpu::GpuInventory;
 use crate::runtime::{
     AlgeonGpuInventory, CacheFillByteBudget, GpuDeviceMemoryLimit,
     allocator_correlation::AllocatorEventCorrelationIndex,
@@ -279,7 +277,7 @@ fn device_registry_config(config: &ValidatedGpuBackendConfig) -> DeviceRegistryC
 #[cfg(test)]
 mod construction_tests {
     use super::*;
-    use crate::runtime::{DeviceCapabilities, DeviceFacts};
+    use crate::runtime::{DeviceCapabilities, DeviceFacts, gpu::GpuInventory};
 
     #[derive(Debug)]
     struct FrozenPlanInventory(Vec<DeviceFacts>);

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
+use self::SingleDistinctAggregateSplitRejectedReason as Reason;
 use super::{NativeOptimizerChange, rewrite};
 use crate::{
     error::Result,
@@ -252,8 +253,6 @@ fn split_on_distinct_column(
     input_schema: &Schema,
     output_schema: &Schema,
 ) -> SplitOutcome {
-    use SingleDistinctAggregateSplitRejectedReason as Reason;
-
     let spec = &aggregate.spec;
     if spec.grouping_sets.is_some() {
         return Err(Reason::GroupingSets);

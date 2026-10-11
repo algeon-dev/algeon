@@ -2,6 +2,8 @@
 // order; cleanup complete → disposition/health commit → seal/report_ready →
 // capacity release; plus health disposition coverage.
 
+use query_planning::error::QueryErrorCode;
+
 use super::*;
 
 fn wait_until(deadline: Instant, mut condition: impl FnMut() -> bool, what: &str) {

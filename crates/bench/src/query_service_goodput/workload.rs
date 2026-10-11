@@ -1,6 +1,10 @@
 use std::{collections::BTreeMap, error::Error, sync::Arc};
 
 use algeon_datafusion::backend::AlgeonGpuBackend;
+#[cfg(feature = "cugraph")]
+use algeon_datafusion::cugraph_sql::CugraphSqlConfig;
+#[cfg(feature = "cugraph")]
+use algeon_datafusion::session::AlgeonSessionStateBuilderExt as _;
 use arrow::array::{Array as _, Int64Array};
 use datafusion::{
     execution::SessionStateBuilder,
@@ -334,8 +338,6 @@ fn new_session(backend: &AlgeonGpuBackend) -> Result<SessionContext, Box<dyn Err
 
 #[cfg(feature = "cugraph")]
 fn install_workload_sql(builder: SessionStateBuilder) -> Result<SessionStateBuilder, Box<dyn Error>> {
-    use algeon_datafusion::{cugraph_sql::CugraphSqlConfig, session::AlgeonSessionStateBuilderExt};
-
     Ok(builder.try_with_cugraph_sql(CugraphSqlConfig::default())?)
 }
 

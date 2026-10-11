@@ -6,7 +6,12 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
 };
 
-use super::*;
+use super::{
+    config::parse_workload,
+    report::{DEVICE_SAMPLE_COLUMNS, QUERY_COLUMNS, SAMPLE_COLUMNS, device_peaks},
+    sampling::device_sample_rows,
+    *,
+};
 
 #[test]
 fn output_fingerprint_compares_full_row_multisets() {

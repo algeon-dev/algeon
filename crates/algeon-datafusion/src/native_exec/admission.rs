@@ -14,10 +14,6 @@
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(test)]
-static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
-
 use std::{
     any::Any,
     fmt::{self, Formatter},
@@ -56,6 +52,9 @@ use crate::{
     native_exec::metrics::NativeExecutionMetricsCapture,
     planner::native::Invocation,
 };
+
+#[cfg(test)]
+static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Backend-owned service admission source copied into optimizer configs.
 #[derive(Debug, Clone)]

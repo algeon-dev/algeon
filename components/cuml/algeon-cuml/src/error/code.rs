@@ -70,25 +70,31 @@ impl fmt::Display for ErrorStatus {
 }
 
 pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
-    use ErrorCode::*;
     match code {
-        EmptyInput
-        | ShapeMismatch
-        | ParameterOutOfRange
-        | LabelOutOfRange
-        | NonFiniteInput
-        | NullUnexpected
-        | ForeignInvalidArgument => ErrorKind::InvalidInput,
-        UnsupportedDtype | UnsupportedLayout | UnsupportedParameter | ForeignUnsupported => ErrorKind::Unsupported,
-        RuntimeBindingMismatch
-        | MemoryResourceUnsupported
-        | ResourcesClosed
-        | ModelClosed
-        | ReservationCoverageMissing
-        | ForeignInvalidState => ErrorKind::ExecutionContext,
-        SizeOverflow | OutOfMemory | HostOutOfMemory => ErrorKind::ResourceExhausted,
-        CudaRuntime | FatalCuda | ForeignUnknown | NativeReleaseFailed => ErrorKind::DependencyFailure,
-        OutputNotFinite | OutputOutOfRange | InvariantViolation => ErrorKind::InvariantViolation,
+        ErrorCode::EmptyInput
+        | ErrorCode::ShapeMismatch
+        | ErrorCode::ParameterOutOfRange
+        | ErrorCode::LabelOutOfRange
+        | ErrorCode::NonFiniteInput
+        | ErrorCode::NullUnexpected
+        | ErrorCode::ForeignInvalidArgument => ErrorKind::InvalidInput,
+        ErrorCode::UnsupportedDtype
+        | ErrorCode::UnsupportedLayout
+        | ErrorCode::UnsupportedParameter
+        | ErrorCode::ForeignUnsupported => ErrorKind::Unsupported,
+        ErrorCode::RuntimeBindingMismatch
+        | ErrorCode::MemoryResourceUnsupported
+        | ErrorCode::ResourcesClosed
+        | ErrorCode::ModelClosed
+        | ErrorCode::ReservationCoverageMissing
+        | ErrorCode::ForeignInvalidState => ErrorKind::ExecutionContext,
+        ErrorCode::SizeOverflow | ErrorCode::OutOfMemory | ErrorCode::HostOutOfMemory => ErrorKind::ResourceExhausted,
+        ErrorCode::CudaRuntime | ErrorCode::FatalCuda | ErrorCode::ForeignUnknown | ErrorCode::NativeReleaseFailed => {
+            ErrorKind::DependencyFailure
+        },
+        ErrorCode::OutputNotFinite | ErrorCode::OutputOutOfRange | ErrorCode::InvariantViolation => {
+            ErrorKind::InvariantViolation
+        },
     }
 }
 

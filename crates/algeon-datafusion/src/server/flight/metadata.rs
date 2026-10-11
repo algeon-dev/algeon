@@ -1,6 +1,12 @@
 use std::sync::{Arc, OnceLock};
 
-use arrow::{array::ArrayRef, compute::kernels::comparison::like, error::ArrowError, record_batch::RecordBatch};
+use arrow::{
+    array::ArrayRef,
+    compute::kernels::comparison::like,
+    datatypes::{DataType, Field},
+    error::ArrowError,
+    record_batch::RecordBatch,
+};
 use arrow_flight::{FlightData, sql::metadata::SqlInfoData};
 use futures::stream::once;
 
@@ -21,7 +27,6 @@ const FLIGHT_SQL_TABLE_TYPES: &[&str] = &[FLIGHT_SQL_TABLE_TYPE_TABLE, FLIGHT_SQ
 /// `GetTableTypesBuilder`, switch both this helper and `do_get_table_types` to
 /// use it directly.
 pub(super) fn flight_sql_table_types_schema() -> Arc<Schema> {
-    use arrow::datatypes::{DataType, Field};
     static SCHEMA: OnceLock<Arc<Schema>> = OnceLock::new();
     Arc::clone(SCHEMA.get_or_init(|| Arc::new(Schema::new(vec![Field::new("table_type", DataType::Utf8, false)]))))
 }

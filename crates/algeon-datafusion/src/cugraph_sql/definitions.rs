@@ -1319,77 +1319,121 @@ pub fn arguments_for_algorithm(algorithm: CugraphAlgorithm) -> &'static [Cugraph
 }
 
 fn native_default(field: CugraphNativeDefault, algorithm: CugraphAlgorithm) -> Result<Value> {
-    use CugraphAlgorithmParams::*;
-
     let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None)?;
     Ok(match (field, params) {
-        (CugraphNativeDefault::Alpha, PageRank(params)) => json!(params.alpha),
-        (CugraphNativeDefault::Alpha, PersonalizedPageRank(params)) => json!(params.pagerank.alpha),
-        (CugraphNativeDefault::Alpha, KatzCentrality(params)) => json!(params.alpha),
-        (CugraphNativeDefault::Epsilon, PageRank(params)) => json!(params.epsilon),
-        (CugraphNativeDefault::Epsilon, PersonalizedPageRank(params)) => json!(params.pagerank.epsilon),
-        (CugraphNativeDefault::Epsilon, EigenvectorCentrality(params)) => json!(params.epsilon),
-        (CugraphNativeDefault::Epsilon, KatzCentrality(params)) => json!(params.epsilon),
-        (CugraphNativeDefault::Epsilon, Hits(params)) => json!(params.epsilon),
-        (CugraphNativeDefault::MaxIterations, PageRank(params)) => json!(params.max_iterations),
-        (CugraphNativeDefault::MaxIterations, PersonalizedPageRank(params)) => json!(params.pagerank.max_iterations),
-        (CugraphNativeDefault::MaxIterations, EigenvectorCentrality(params)) => json!(params.max_iterations),
-        (CugraphNativeDefault::MaxIterations, KatzCentrality(params)) => json!(params.max_iterations),
-        (CugraphNativeDefault::MaxIterations, Hits(params)) => json!(params.max_iterations),
-        (CugraphNativeDefault::MaxLevel, Louvain(params)) => json!(params.max_level),
-        (CugraphNativeDefault::MaxLevel, Leiden(params)) => json!(params.max_level),
-        (CugraphNativeDefault::MaxLevel, Ecg(params)) => json!(params.max_level),
-        (CugraphNativeDefault::DepthLimit, Bfs(params)) => json!(params.depth_limit),
-        (CugraphNativeDefault::OutputMode, Bfs(params)) => json!(params.output.mode.as_str()),
-        (CugraphNativeDefault::ReturnTargetInfo, Bfs(params)) => json!(params.output.return_target_info),
-        (CugraphNativeDefault::Threshold, Louvain(params)) => json!(params.threshold),
-        (CugraphNativeDefault::Threshold, Ecg(params)) => json!(params.threshold),
-        (CugraphNativeDefault::Resolution, Louvain(params)) => json!(params.resolution),
-        (CugraphNativeDefault::Resolution, Leiden(params)) => json!(params.resolution),
-        (CugraphNativeDefault::Resolution, Ecg(params)) => json!(params.resolution),
-        (CugraphNativeDefault::Beta, KatzCentrality(params)) => json!(params.beta),
-        (CugraphNativeDefault::Normalize, Hits(params)) => json!(params.normalize),
-        (CugraphNativeDefault::Normalized, BetweennessCentrality(params)) => json!(params.normalized),
-        (CugraphNativeDefault::Normalized, EdgeBetweennessCentrality(params)) => json!(params.normalized),
-        (CugraphNativeDefault::Seeds, BetweennessCentrality(_)) => Value::Null,
-        (CugraphNativeDefault::Seeds, EdgeBetweennessCentrality(_)) => Value::Null,
-        (CugraphNativeDefault::K, BetweennessCentrality(params)) => json!(params.k),
-        (CugraphNativeDefault::K, EdgeBetweennessCentrality(params)) => json!(params.k),
-        (CugraphNativeDefault::K, KCore(params)) => json!(params.k),
-        (CugraphNativeDefault::IncludeEndpoints, BetweennessCentrality(params)) => json!(params.include_endpoints),
-        (CugraphNativeDefault::ExactVertexThreshold, BetweennessCentrality(params)) => {
+        (CugraphNativeDefault::Alpha, CugraphAlgorithmParams::PageRank(params)) => json!(params.alpha),
+        (CugraphNativeDefault::Alpha, CugraphAlgorithmParams::PersonalizedPageRank(params)) => {
+            json!(params.pagerank.alpha)
+        },
+        (CugraphNativeDefault::Alpha, CugraphAlgorithmParams::KatzCentrality(params)) => json!(params.alpha),
+        (CugraphNativeDefault::Epsilon, CugraphAlgorithmParams::PageRank(params)) => json!(params.epsilon),
+        (CugraphNativeDefault::Epsilon, CugraphAlgorithmParams::PersonalizedPageRank(params)) => {
+            json!(params.pagerank.epsilon)
+        },
+        (CugraphNativeDefault::Epsilon, CugraphAlgorithmParams::EigenvectorCentrality(params)) => json!(params.epsilon),
+        (CugraphNativeDefault::Epsilon, CugraphAlgorithmParams::KatzCentrality(params)) => json!(params.epsilon),
+        (CugraphNativeDefault::Epsilon, CugraphAlgorithmParams::Hits(params)) => json!(params.epsilon),
+        (CugraphNativeDefault::MaxIterations, CugraphAlgorithmParams::PageRank(params)) => json!(params.max_iterations),
+        (CugraphNativeDefault::MaxIterations, CugraphAlgorithmParams::PersonalizedPageRank(params)) => {
+            json!(params.pagerank.max_iterations)
+        },
+        (CugraphNativeDefault::MaxIterations, CugraphAlgorithmParams::EigenvectorCentrality(params)) => {
+            json!(params.max_iterations)
+        },
+        (CugraphNativeDefault::MaxIterations, CugraphAlgorithmParams::KatzCentrality(params)) => {
+            json!(params.max_iterations)
+        },
+        (CugraphNativeDefault::MaxIterations, CugraphAlgorithmParams::Hits(params)) => json!(params.max_iterations),
+        (CugraphNativeDefault::MaxLevel, CugraphAlgorithmParams::Louvain(params)) => json!(params.max_level),
+        (CugraphNativeDefault::MaxLevel, CugraphAlgorithmParams::Leiden(params)) => json!(params.max_level),
+        (CugraphNativeDefault::MaxLevel, CugraphAlgorithmParams::Ecg(params)) => json!(params.max_level),
+        (CugraphNativeDefault::DepthLimit, CugraphAlgorithmParams::Bfs(params)) => json!(params.depth_limit),
+        (CugraphNativeDefault::OutputMode, CugraphAlgorithmParams::Bfs(params)) => json!(params.output.mode.as_str()),
+        (CugraphNativeDefault::ReturnTargetInfo, CugraphAlgorithmParams::Bfs(params)) => {
+            json!(params.output.return_target_info)
+        },
+        (CugraphNativeDefault::Threshold, CugraphAlgorithmParams::Louvain(params)) => json!(params.threshold),
+        (CugraphNativeDefault::Threshold, CugraphAlgorithmParams::Ecg(params)) => json!(params.threshold),
+        (CugraphNativeDefault::Resolution, CugraphAlgorithmParams::Louvain(params)) => json!(params.resolution),
+        (CugraphNativeDefault::Resolution, CugraphAlgorithmParams::Leiden(params)) => json!(params.resolution),
+        (CugraphNativeDefault::Resolution, CugraphAlgorithmParams::Ecg(params)) => json!(params.resolution),
+        (CugraphNativeDefault::Beta, CugraphAlgorithmParams::KatzCentrality(params)) => json!(params.beta),
+        (CugraphNativeDefault::Normalize, CugraphAlgorithmParams::Hits(params)) => json!(params.normalize),
+        (CugraphNativeDefault::Normalized, CugraphAlgorithmParams::BetweennessCentrality(params)) => {
+            json!(params.normalized)
+        },
+        (CugraphNativeDefault::Normalized, CugraphAlgorithmParams::EdgeBetweennessCentrality(params)) => {
+            json!(params.normalized)
+        },
+        (CugraphNativeDefault::Seeds, CugraphAlgorithmParams::BetweennessCentrality(_)) => Value::Null,
+        (CugraphNativeDefault::Seeds, CugraphAlgorithmParams::EdgeBetweennessCentrality(_)) => Value::Null,
+        (CugraphNativeDefault::K, CugraphAlgorithmParams::BetweennessCentrality(params)) => json!(params.k),
+        (CugraphNativeDefault::K, CugraphAlgorithmParams::EdgeBetweennessCentrality(params)) => json!(params.k),
+        (CugraphNativeDefault::K, CugraphAlgorithmParams::KCore(params)) => json!(params.k),
+        (CugraphNativeDefault::IncludeEndpoints, CugraphAlgorithmParams::BetweennessCentrality(params)) => {
+            json!(params.include_endpoints)
+        },
+        (CugraphNativeDefault::ExactVertexThreshold, CugraphAlgorithmParams::BetweennessCentrality(params)) => {
             json!(params.exact_vertex_threshold)
         },
-        (CugraphNativeDefault::ExactVertexThreshold, EdgeBetweennessCentrality(params)) => {
+        (CugraphNativeDefault::ExactVertexThreshold, CugraphAlgorithmParams::EdgeBetweennessCentrality(params)) => {
             json!(params.exact_vertex_threshold)
         },
-        (CugraphNativeDefault::Cutoff, Sssp(params)) => json!(params.cutoff),
-        (CugraphNativeDefault::DegreeType, CoreNumber(params)) => json!(params.degree_type.as_str()),
-        (CugraphNativeDefault::DegreeType, KCore(params)) => json!(params.degree_type.as_str()),
-        (CugraphNativeDefault::Seed, Leiden(params)) => json!(params.seed),
-        (CugraphNativeDefault::Seed, Ecg(params)) => json!(params.seed),
-        (CugraphNativeDefault::Seed, SpectralModularityMaximization(params)) => json!(params.seed),
-        (CugraphNativeDefault::Seed, ForceAtlas2(params)) => json!(params.seed),
-        (CugraphNativeDefault::MinWeight, Ecg(params)) => json!(params.min_weight),
-        (CugraphNativeDefault::EnsembleSize, Ecg(params)) => json!(params.ensemble_size),
-        (CugraphNativeDefault::NClusters, SpectralModularityMaximization(params)) => json!(params.n_clusters),
-        (CugraphNativeDefault::NEigenvectors, SpectralModularityMaximization(params)) => json!(params.n_eigenvectors),
-        (CugraphNativeDefault::EvsTolerance, SpectralModularityMaximization(params)) => json!(params.evs_tolerance),
-        (CugraphNativeDefault::MaxIter, ForceAtlas2(params)) => json!(params.max_iter),
-        (CugraphNativeDefault::OutboundAttractionDistribution, ForceAtlas2(params)) => {
+        (CugraphNativeDefault::Cutoff, CugraphAlgorithmParams::Sssp(params)) => json!(params.cutoff),
+        (CugraphNativeDefault::DegreeType, CugraphAlgorithmParams::CoreNumber(params)) => {
+            json!(params.degree_type.as_str())
+        },
+        (CugraphNativeDefault::DegreeType, CugraphAlgorithmParams::KCore(params)) => json!(params.degree_type.as_str()),
+        (CugraphNativeDefault::Seed, CugraphAlgorithmParams::Leiden(params)) => json!(params.seed),
+        (CugraphNativeDefault::Seed, CugraphAlgorithmParams::Ecg(params)) => json!(params.seed),
+        (CugraphNativeDefault::Seed, CugraphAlgorithmParams::SpectralModularityMaximization(params)) => {
+            json!(params.seed)
+        },
+        (CugraphNativeDefault::Seed, CugraphAlgorithmParams::ForceAtlas2(params)) => json!(params.seed),
+        (CugraphNativeDefault::MinWeight, CugraphAlgorithmParams::Ecg(params)) => json!(params.min_weight),
+        (CugraphNativeDefault::EnsembleSize, CugraphAlgorithmParams::Ecg(params)) => json!(params.ensemble_size),
+        (CugraphNativeDefault::NClusters, CugraphAlgorithmParams::SpectralModularityMaximization(params)) => {
+            json!(params.n_clusters)
+        },
+        (CugraphNativeDefault::NEigenvectors, CugraphAlgorithmParams::SpectralModularityMaximization(params)) => {
+            json!(params.n_eigenvectors)
+        },
+        (CugraphNativeDefault::EvsTolerance, CugraphAlgorithmParams::SpectralModularityMaximization(params)) => {
+            json!(params.evs_tolerance)
+        },
+        (CugraphNativeDefault::MaxIter, CugraphAlgorithmParams::ForceAtlas2(params)) => json!(params.max_iter),
+        (CugraphNativeDefault::OutboundAttractionDistribution, CugraphAlgorithmParams::ForceAtlas2(params)) => {
             json!(params.outbound_attraction_distribution)
         },
-        (CugraphNativeDefault::LinLogMode, ForceAtlas2(params)) => json!(params.lin_log_mode),
-        (CugraphNativeDefault::PreventOverlapping, ForceAtlas2(params)) => json!(params.prevent_overlapping),
-        (CugraphNativeDefault::OverlapScalingRatio, ForceAtlas2(params)) => json!(params.overlap_scaling_ratio),
-        (CugraphNativeDefault::EdgeWeightInfluence, ForceAtlas2(params)) => json!(params.edge_weight_influence),
-        (CugraphNativeDefault::JitterTolerance, ForceAtlas2(params)) => json!(params.jitter_tolerance),
-        (CugraphNativeDefault::BarnesHutOptimize, ForceAtlas2(params)) => json!(params.barnes_hut_optimize),
-        (CugraphNativeDefault::BarnesHutTheta, ForceAtlas2(params)) => json!(params.barnes_hut_theta),
-        (CugraphNativeDefault::ScalingRatio, ForceAtlas2(params)) => json!(params.scaling_ratio),
-        (CugraphNativeDefault::StrongGravityMode, ForceAtlas2(params)) => json!(params.strong_gravity_mode),
-        (CugraphNativeDefault::Gravity, ForceAtlas2(params)) => json!(params.gravity),
-        (CugraphNativeDefault::Verbose, ForceAtlas2(params)) => json!(params.verbose),
+        (CugraphNativeDefault::LinLogMode, CugraphAlgorithmParams::ForceAtlas2(params)) => {
+            json!(params.lin_log_mode)
+        },
+        (CugraphNativeDefault::PreventOverlapping, CugraphAlgorithmParams::ForceAtlas2(params)) => {
+            json!(params.prevent_overlapping)
+        },
+        (CugraphNativeDefault::OverlapScalingRatio, CugraphAlgorithmParams::ForceAtlas2(params)) => {
+            json!(params.overlap_scaling_ratio)
+        },
+        (CugraphNativeDefault::EdgeWeightInfluence, CugraphAlgorithmParams::ForceAtlas2(params)) => {
+            json!(params.edge_weight_influence)
+        },
+        (CugraphNativeDefault::JitterTolerance, CugraphAlgorithmParams::ForceAtlas2(params)) => {
+            json!(params.jitter_tolerance)
+        },
+        (CugraphNativeDefault::BarnesHutOptimize, CugraphAlgorithmParams::ForceAtlas2(params)) => {
+            json!(params.barnes_hut_optimize)
+        },
+        (CugraphNativeDefault::BarnesHutTheta, CugraphAlgorithmParams::ForceAtlas2(params)) => {
+            json!(params.barnes_hut_theta)
+        },
+        (CugraphNativeDefault::ScalingRatio, CugraphAlgorithmParams::ForceAtlas2(params)) => {
+            json!(params.scaling_ratio)
+        },
+        (CugraphNativeDefault::StrongGravityMode, CugraphAlgorithmParams::ForceAtlas2(params)) => {
+            json!(params.strong_gravity_mode)
+        },
+        (CugraphNativeDefault::Gravity, CugraphAlgorithmParams::ForceAtlas2(params)) => json!(params.gravity),
+        (CugraphNativeDefault::Verbose, CugraphAlgorithmParams::ForceAtlas2(params)) => json!(params.verbose),
         (field, params) => panic!("cuGraph argument default {field:?} is not defined for {params:?}"),
     })
 }

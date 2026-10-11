@@ -2,6 +2,7 @@
 
 use std::{
     fs,
+    os::unix::fs::FileExt,
     path::{Path, PathBuf},
 };
 
@@ -80,8 +81,6 @@ fn i64_le(bytes: &[u8], offset: usize) -> i64 {
 /// Returns an empty list for binaries without a dynamic section. Only
 /// little-endian ELF64 executables and shared libraries are supported.
 pub(crate) fn elf_dt_needed(path: &Path) -> Result<Vec<String>, String> {
-    use std::os::unix::fs::FileExt;
-
     let context = |error: String| format!("{}: {error}", path.display());
     let file = fs::File::open(path).map_err(|error| context(format!("failed to open: {error}")))?;
     let mut ehdr = [0u8; ELF64_EHDR_SIZE];

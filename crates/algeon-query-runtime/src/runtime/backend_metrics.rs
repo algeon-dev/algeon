@@ -13,11 +13,9 @@ use std::{
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
 
-#[cfg(test)]
-use crate::runtime::gpu::LedgerTransitionKind;
 use crate::{
     metrics::{
-        BACKEND_ATTEMPT_DURATION_BUCKETS_NS, BackendDurationProjectionError, BackendMetricDescriptor,
+        BACKEND_ATTEMPT_DURATION_BUCKETS_NS, BackendDurationProjectionError, BackendMetric, BackendMetricDescriptor,
         project_backend_duration_histogram,
     },
     observability::{AttemptDisposition, RuntimeTerminalOutcome, SealedAttemptProjection},
@@ -312,8 +310,6 @@ impl BackendMetricsSnapshot {
         if descriptor != descriptor.metric.descriptor() {
             return Err(BackendMetricProjectionError::NonCanonicalDescriptor { metric_name: descriptor.name });
         }
-
-        use crate::metrics::BackendMetric;
 
         let mut samples = Vec::new();
         match descriptor.metric {
@@ -841,7 +837,7 @@ mod tests {
             AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptId, AttemptRetryAdvice,
             SEALED_ATTEMPT_PROJECTION_SCHEMA,
         },
-        runtime::gpu::LedgerSnapshot,
+        runtime::gpu::{LedgerTransitionKind, ledger::LedgerSnapshot},
     };
 
     fn ledger_transition(

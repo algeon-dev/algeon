@@ -20,7 +20,7 @@ use super::*;
 use crate::{
     error::{ErrorCode, ErrorKind},
     planner::AlgeonGpuExecutionMode,
-    session::installed_algeon_native_optimizer_config,
+    session::{AlgeonSessionStateBuilderExt, installed_algeon_native_optimizer_config},
 };
 
 fn backend_builder(device_ordinals: &[usize]) -> AlgeonGpuBackendBuilder {
@@ -225,8 +225,6 @@ impl QueryPlanner for SentinelQueryPlanner {
 }
 
 fn backend_can_install_independent_custom_planner_and_cuvs_sessions() {
-    use crate::session::AlgeonSessionStateBuilderExt;
-
     let backend = InstalledTestGpuBackend::new();
     let core_builder = SessionStateBuilder::new().with_query_planner(Arc::new(SentinelQueryPlanner));
     let core_state = backend.install_on(core_builder).expect("core install succeeds").build();
@@ -257,7 +255,6 @@ fn backend_install_with_cugraph_sql_preserves_conflicting_reinstall_error() {
     use crate::{
         cugraph_sql::{CugraphGraphOptions, CugraphSqlConfig},
         error::DataFusionErrorExt,
-        session::AlgeonSessionStateBuilderExt,
     };
 
     let backend = validated(bounded_backend_builder(&[0])).unwrap();

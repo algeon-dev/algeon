@@ -63,6 +63,20 @@ mod scheduler;
 mod stages;
 mod stream;
 
+use batching::*;
+use concat::*;
+use dynamic_filter::*;
+pub(in crate::exec::bounded) use planning::{
+    plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
+    plan_bounded_shared_join_aggregate_local_parquet_source_stream,
+    plan_bounded_unary_chain_local_parquet_source_stream,
+};
+use read_serial::*;
+use scheduler::*;
+use stages::*;
+pub(in crate::exec::bounded) use stream::bounded_join_leaf_local_parquet_source_frame_stream;
+use stream::*;
+
 /// Names the join source read as the failing boundary so a resource error
 /// from a leaf read is attributed to the leaf, with the chunk and attempt that
 /// failed, rather than to the join operator above it.
@@ -84,20 +98,6 @@ fn attach_join_source_read_resource_facts(
         .with_fact_if_absent("path", parquet_chunk_path_fact(chunk));
     attach_row_group_facts_if_absent(error, chunk)
 }
-
-use batching::*;
-use concat::*;
-use dynamic_filter::*;
-pub(in crate::exec::bounded) use planning::{
-    plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
-    plan_bounded_shared_join_aggregate_local_parquet_source_stream,
-    plan_bounded_unary_chain_local_parquet_source_stream,
-};
-use read_serial::*;
-use scheduler::*;
-use stages::*;
-pub(in crate::exec::bounded) use stream::bounded_join_leaf_local_parquet_source_frame_stream;
-use stream::*;
 
 /// Deferred Parquet leaf work that compiled join tasks can materialize in chunks.
 ///

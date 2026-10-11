@@ -5,7 +5,10 @@ use std::{
     fmt,
 };
 
-use cudf::interop::contract::{InteropError, InteropErrorKind};
+use cudf::{
+    ErrorCode,
+    interop::contract::{InteropError, InteropErrorKind},
+};
 use cuvs_sys::{cuvsError_t, cuvsErrorKind_t};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -233,8 +236,6 @@ pub(crate) fn unsupported(operation: &'static str, message: impl Into<String>) -
 }
 
 pub(crate) fn from_cudf(operation: &'static str, error: cudf::Error) -> Error {
-    use cudf::ErrorCode;
-
     let kind = match error.code() {
         ErrorCode::OutOfMemory | ErrorCode::ForeignResourceExhausted => ErrorKind::OutOfMemory,
         ErrorCode::UnsupportedDtype | ErrorCode::UnsupportedLayout | ErrorCode::UnsupportedOperation => {

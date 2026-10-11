@@ -20,13 +20,9 @@ pub(crate) mod profile;
 pub(crate) mod registry;
 
 pub(crate) use device_context::DeviceContext;
-#[cfg(test)]
-pub(crate) use inventory::device_budget_bytes_from_facts;
 pub(crate) use inventory::{AlgeonGpuInventory, AlgeonNvmlTelemetry, GpuInventory, GpuTelemetry};
 pub use inventory::{DeviceFacts, DeviceTelemetrySnapshot, DeviceTelemetryStatus};
 pub(crate) use lanes::{DeviceLanePermit, DeviceWorkerScope};
-#[cfg(test)]
-pub(crate) use ledger::LedgerSnapshot;
 pub(crate) use ledger::{
     DeviceAdmissionHealth, DeviceLedger, GrantIdentity, LedgerTransition, LedgerTransitionKind, MemoryGrant,
 };

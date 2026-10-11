@@ -18,6 +18,8 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
+use fixtures_parquet::*;
+use fixtures_plans::*;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_planning::{
     admission::{
@@ -58,6 +60,11 @@ use query_runtime::{
         GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership, QueryAdmissionRequest,
         QueryExecutionConfig, QueryHandle, QueueBounds, resident::GpuResidentInputMap,
     },
+};
+use remaining_topologies::{
+    AggregateOverJoinSubplanTopKVariant, ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
+    aggregate_over_join_subplan_topk_plan_inner, resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner,
+    resident_grouped_aggregate_subquery_filter_plan,
 };
 
 use super::{CompiledGpuTaskExecutor, CompiledPipelineScheduler};
@@ -112,14 +119,6 @@ mod lane_execution;
 #[expect(dead_code, reason = "compiled scheduler cases use three constructors from the shared topology fixtures")]
 mod remaining_topologies;
 mod source_read_lease;
-
-use fixtures_parquet::*;
-use fixtures_plans::*;
-use remaining_topologies::{
-    AggregateOverJoinSubplanTopKVariant, ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
-    aggregate_over_join_subplan_topk_plan_inner, resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner,
-    resident_grouped_aggregate_subquery_filter_plan,
-};
 
 static PIPELINE_BACKEND: Mutex<Option<GpuBackendCore>> = Mutex::new(None);
 

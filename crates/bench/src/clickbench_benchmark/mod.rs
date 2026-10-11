@@ -1,6 +1,8 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     fmt::Write as _,
     fs::{self, File},
+    hash::{Hash, Hasher},
     io::{self, Write as _},
     path::{Path, PathBuf},
     process::ExitCode,
@@ -589,10 +591,6 @@ fn dump_record_batches_to_tsv(batches: &[RecordBatch], path: PathBuf) -> Result<
 ///
 /// Values are tagged so `NULL` and `""` do not collide in Arrow string output.
 fn fingerprint_batches(batches: &[RecordBatch]) -> Result<String, ArrowError> {
-    use std::{
-        collections::hash_map::DefaultHasher,
-        hash::{Hash, Hasher},
-    };
     let mut rows: Vec<String> = Vec::new();
     for batch in batches {
         let num_cols = batch.num_columns();

@@ -7,8 +7,6 @@ use arrow::{
     datatypes::{DataType, Field, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
-#[cfg(test)]
-use cudf::testing;
 use datafusion::{
     catalog::{Session, TableFunction, TableFunctionImpl, TableProvider},
     common::{DataFusionError, Result, ScalarValue},
@@ -17,8 +15,6 @@ use datafusion::{
     logical_expr::Expr,
     physical_plan::ExecutionPlan,
 };
-#[cfg(test)]
-use tokio::runtime::Builder as TestRuntimeBuilder;
 
 use crate::{
     error::{Error, ErrorCode},
@@ -285,7 +281,9 @@ fn optional_int64s(values: Vec<Option<i64>>) -> ArrayRef {
 #[cfg(test)]
 mod tests {
     use arrow::array::Array;
+    use cudf::testing;
     use datafusion::execution::SessionStateBuilder;
+    use tokio::runtime::Builder as TestRuntimeBuilder;
 
     use super::*;
     use crate::{

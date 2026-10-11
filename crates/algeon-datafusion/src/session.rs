@@ -31,6 +31,7 @@ use datafusion::{
     physical_planner::ExtensionPlanner,
 };
 
+pub use crate::gpu_query_planner::AlgeonQueryPlanner;
 #[cfg(feature = "cugraph")]
 use crate::planner::native::InputPlanningSink;
 use crate::{
@@ -56,8 +57,6 @@ const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
 #[cfg(feature = "cugraph")]
 const DATAFUSION_POST_OPTIMIZATION_FILTER_PUSHDOWN_RULE_NAME: &str = "FilterPushdown(Post)";
-
-pub use crate::gpu_query_planner::AlgeonQueryPlanner;
 
 type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
 

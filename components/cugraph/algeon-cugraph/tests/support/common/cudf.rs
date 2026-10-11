@@ -15,10 +15,11 @@ use cugraph::{
     types::GraphProperties,
 };
 
+use crate::common::support::write_bfs_graph_parquet;
+
 const EDGE_COLUMN_NAMES: &[&str] = &["src", "dst", "weight"];
 
 pub use crate::common::fs::unique_temp_dir;
-use crate::common::support::write_bfs_graph_parquet;
 
 pub fn cuda_test_serial_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

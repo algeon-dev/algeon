@@ -55,8 +55,6 @@ use workloads::{
     tpch::register_tpch_tables,
 };
 
-#[cfg(test)]
-use super::aggregate::scenario_clauses_pass;
 use super::{
     aggregate::{
         AttemptFailureClass, AttemptObservation, AttemptTerminalEvidence, CacheQuarantineEvidence, DeviceConfiguration,
@@ -1135,6 +1133,7 @@ mod tests {
     use query_runtime::observability::AttemptId;
 
     use super::*;
+    use crate::single_node_multi_gpu_validate::aggregate::scenario_clauses_pass;
 
     #[test]
     fn calibration_claim_requires_identical_ledger_brackets() {

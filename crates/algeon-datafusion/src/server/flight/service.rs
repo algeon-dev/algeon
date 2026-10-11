@@ -5,6 +5,7 @@ use arrow::record_batch::RecordBatch;
 use super::*;
 #[cfg(test)]
 use crate::server::{
+    auth::{AuthMode, TokenStore},
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,

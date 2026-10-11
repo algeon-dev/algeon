@@ -30,12 +30,51 @@ mod source;
 mod table_format_pruning_policy;
 mod validate;
 
+use std::sync::Arc;
+
+use arrow::datatypes::{FieldRef as ArrowFieldRef, SchemaRef as ArrowSchemaRef};
+use cudf::interop::arrow_host::is_supported_arrow_type;
+use datafusion::{
+    physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr, expressions::Column},
+    physical_expr_common::physical_expr::fmt_sql,
+    physical_plan::ExecutionPlan,
+};
 pub(crate) use expression_contract::{
     ExpressionCapability, ExpressionRejection, ExpressionRejectionKind, ExpressionRejectionSubject,
 };
 #[cfg(test)]
 pub(crate) use footers::footer_parses_on_this_thread;
 pub(crate) use footers::{FooterCache, FooterScope};
+use lowering::lower_normalized_plan;
+use normalize::{
+    NormalizedNativeAggregate, NormalizedNativeInput, NormalizedNativeLiteralSource,
+    make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan,
+};
+pub(crate) use operator_support::first_join_operator;
+pub(crate) use pruning::scan_predicate_exactly_matches_filter;
+use query_planning::{
+    datatypes::diagnostic_arrow_type,
+    error::QueryError,
+    expr::{Expr as NativeExpr, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec},
+    plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryNode, QueryPlan as NativeQueryPlan},
+    source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
+};
+use source::source_diagnostics_for_normalized_plan;
+pub(crate) use source::{ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint};
+#[cfg(feature = "cugraph")]
+pub(crate) use source::{
+    datafusion_local_parquet_scan_has_simple_directed_edge_topology, exact_row_count_for_datafusion_local_parquet_scan,
+    graph_residency_descriptor_for_datafusion_local_parquet_scan,
+    graph_vertex_upper_bound_for_datafusion_local_parquet_scan,
+};
+pub(crate) use validate::floating_statistical_aggregate_input_is_partitioned;
+use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
+
+use crate::{
+    capability::CapabilityReason,
+    error::{Error, Result},
+    report::{GpuCandidate, NotSupportedDetail, PlanBlocker, PlanningReport, UnsupportedColumnDetail},
+};
 
 /// Rejection raised while lowering a normalized candidate.
 ///
@@ -154,46 +193,6 @@ impl ExpressionRejection {
         }
     }
 }
-
-use std::sync::Arc;
-
-use arrow::datatypes::{FieldRef as ArrowFieldRef, SchemaRef as ArrowSchemaRef};
-use cudf::interop::arrow_host::is_supported_arrow_type;
-use datafusion::{
-    physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr, expressions::Column},
-    physical_expr_common::physical_expr::fmt_sql,
-    physical_plan::ExecutionPlan,
-};
-use lowering::lower_normalized_plan;
-use normalize::{
-    NormalizedNativeAggregate, NormalizedNativeInput, NormalizedNativeLiteralSource,
-    make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan,
-};
-pub(crate) use operator_support::first_join_operator;
-pub(crate) use pruning::scan_predicate_exactly_matches_filter;
-use query_planning::{
-    datatypes::diagnostic_arrow_type,
-    error::QueryError,
-    expr::{Expr as NativeExpr, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec},
-    plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryNode, QueryPlan as NativeQueryPlan},
-    source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
-};
-use source::source_diagnostics_for_normalized_plan;
-pub(crate) use source::{ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint};
-#[cfg(feature = "cugraph")]
-pub(crate) use source::{
-    datafusion_local_parquet_scan_has_simple_directed_edge_topology, exact_row_count_for_datafusion_local_parquet_scan,
-    graph_residency_descriptor_for_datafusion_local_parquet_scan,
-    graph_vertex_upper_bound_for_datafusion_local_parquet_scan,
-};
-pub(crate) use validate::floating_statistical_aggregate_input_is_partitioned;
-use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
-
-use crate::{
-    capability::CapabilityReason,
-    error::{Error, Result},
-    report::{GpuCandidate, NotSupportedDetail, PlanBlocker, PlanningReport, UnsupportedColumnDetail},
-};
 
 pub(in crate::native) const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
 

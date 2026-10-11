@@ -1,6 +1,6 @@
 use cudf::CudfAllocationAttribution;
 
-use super::{Error, ErrorCode};
+use super::{CumlErrorFailureSource, Error, ErrorCode};
 
 pub fn allocation_attribution(error: &Error) -> CudfAllocationAttribution {
     if let Some(detail) = error.ffi_detail() {
@@ -18,5 +18,3 @@ pub fn allocation_attribution(error: &Error) -> CudfAllocationAttribution {
         CudfAllocationAttribution::NonAllocationFailure
     }
 }
-
-use super::CumlErrorFailureSource;

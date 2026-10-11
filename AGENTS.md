@@ -79,8 +79,16 @@ before changing behavior; drafts, blog posts and examples are not normative.
 
 ## Imports
 
-- Import items in the file's top `use` block, or in `mod tests` when only tests
-  use them. Reach variants and associated functions through the imported type.
+- Import production dependencies in the file's top `use` block. Imports used
+  only by test modules belong inside each consuming test module, including
+  when multiple test modules need the same item. Let the module's `cfg(test)`
+  gate those imports; preserve other feature, platform and attribute conditions.
+  Standalone test sources and shared test-support modules own their imports.
+  Keep imports needed by parent-module `cfg(test)` helpers or `test-hooks`
+  interfaces with those consumers, preserving their visibility and feature
+  conditions. Follow [Test layout](scripts/test-harness.md#test-layout) for
+  source ownership. Reach variants and associated functions through the
+  imported type.
 - Use `super::` only for the direct parent; use `crate::` above it.
 - On name collisions, the local item keeps the bare name and foreign items use
   an origin prefix, such as `CudfDataType`, `ArrowDataType`, or

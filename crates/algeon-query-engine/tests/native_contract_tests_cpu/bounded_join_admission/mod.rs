@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use plans::*;
 use query_engine::{
     dimension_pruning::local_dimension_pruning_resolver, exec::admit_query_plan,
     rapids_backend::rapids_analysis_context,
@@ -78,4 +79,3 @@ mod mixed_residual;
 #[expect(dead_code, reason = "fixtures shared with the GPU pipeline target are not all used by this target")]
 pub(crate) mod plans;
 mod residual_resident_grouped_aggregate;
-use plans::*;

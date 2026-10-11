@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde_json::Value;
+
 use super::CugraphAlgorithm;
 
 /// Manifest JSON resident next to locally prepared cuGraph datasets.
@@ -625,7 +627,7 @@ pub fn load_manifest(data_root: &Path) -> Result<ParityManifest, ParityManifestE
     let manifest_path = data_root.join("manifest.json");
     let raw = fs::read_to_string(&manifest_path)
         .map_err(|source| ParityManifestError::MissingManifest { path: manifest_path.clone(), source })?;
-    let value: serde_json::Value = serde_json::from_str(&raw)
+    let value: Value = serde_json::from_str(&raw)
         .map_err(|source| ParityManifestError::InvalidManifest { path: manifest_path.clone(), source })?;
     let datasets = value
         .get("datasets")
@@ -649,7 +651,7 @@ pub fn load_manifest(data_root: &Path) -> Result<ParityManifest, ParityManifestE
     })
 }
 
-fn parity_dataset_from_json(v: &serde_json::Value) -> ParityDataset {
+fn parity_dataset_from_json(v: &Value) -> ParityDataset {
     ParityDataset {
         id: v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         path: v.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -669,7 +671,7 @@ fn parity_dataset_from_json(v: &serde_json::Value) -> ParityDataset {
     }
 }
 
-fn parity_reference_from_json(v: &serde_json::Value) -> ParityReference {
+fn parity_reference_from_json(v: &Value) -> ParityReference {
     ParityReference {
         id: v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         path: v.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -759,7 +761,7 @@ pub fn load_ref_csv_vertex_list(data_root: &Path, relpath: &str) -> Result<Vec<i
 pub enum OracleLookup {
     /// The oracle JSON is present on disk and its header matches the
     /// parity spec.
-    Present { document: serde_json::Value, path: PathBuf },
+    Present { document: Value, path: PathBuf },
     /// The oracle JSON file does not exist yet. Callers can render the
     /// structured refresh hint; the GPU acceptance run treats it as a failure.
     Missing { path: PathBuf },
@@ -790,7 +792,7 @@ pub fn load_oracle(data_root: &Path, spec: &ParitySpec, manifest: Option<&Parity
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return OracleLookup::Missing { path },
         Err(error) => return OracleLookup::Invalid { path, reason: format!("read failed: {error}") },
     };
-    let document: serde_json::Value = match serde_json::from_str(&raw) {
+    let document: Value = match serde_json::from_str(&raw) {
         Ok(value) => value,
         Err(error) => return OracleLookup::Invalid { path, reason: format!("invalid JSON: {error}") },
     };
@@ -800,11 +802,7 @@ pub fn load_oracle(data_root: &Path, spec: &ParitySpec, manifest: Option<&Parity
     OracleLookup::Present { document, path }
 }
 
-fn check_oracle_header(
-    document: &serde_json::Value,
-    spec: &ParitySpec,
-    manifest: Option<&ParityManifest>,
-) -> Result<(), String> {
+fn check_oracle_header(document: &Value, spec: &ParitySpec, manifest: Option<&ParityManifest>) -> Result<(), String> {
     let header = document.get("header").ok_or_else(|| "oracle JSON is missing a header object".to_string())?;
     let dataset = header.get("dataset").and_then(|v| v.as_str()).unwrap_or("");
     if dataset != spec.dataset {
@@ -815,8 +813,8 @@ fn check_oracle_header(
     if algorithm != expected_algorithm {
         return Err(format!("oracle header algorithm='{algorithm}' but parity spec expects '{expected_algorithm}'"));
     }
-    let params = header.get("params").cloned().unwrap_or(serde_json::Value::Null);
-    let expected_params: serde_json::Value = serde_json::from_str(spec.params_json)
+    let params = header.get("params").cloned().unwrap_or(Value::Null);
+    let expected_params: Value = serde_json::from_str(spec.params_json)
         .map_err(|error| format!("parity spec params_json is not valid JSON: {error}"))?;
     if !json_equal_numerically(&params, &expected_params) {
         return Err(format!("oracle header params {params} but parity spec expects {expected_params}"));
@@ -843,15 +841,16 @@ fn check_oracle_header(
 /// JSON equality that treats `1.0` and `1` as the same value to avoid
 /// false positives across Python json (which writes `1.0`) and Rust
 /// `serde_json` (which round-trips integers when possible).
-fn json_equal_numerically(left: &serde_json::Value, right: &serde_json::Value) -> bool {
-    use serde_json::Value::*;
+fn json_equal_numerically(left: &Value, right: &Value) -> bool {
     match (left, right) {
-        (Number(a), Number(b)) => match (a.as_f64(), b.as_f64()) {
+        (Value::Number(a), Value::Number(b)) => match (a.as_f64(), b.as_f64()) {
             (Some(x), Some(y)) => x == y,
             _ => a == b,
         },
-        (Array(a), Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(l, r)| json_equal_numerically(l, r)),
-        (Object(a), Object(b)) => {
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(l, r)| json_equal_numerically(l, r))
+        },
+        (Value::Object(a), Value::Object(b)) => {
             a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| json_equal_numerically(v, w)))
         },
         _ => left == right,

@@ -17,7 +17,15 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
 use futures::future::BoxFuture;
 use query_runtime::runtime::GpuBackendDeviceStartupRecord;
-use tokio::{net::TcpListener, signal::ctrl_c, sync::oneshot, task::JoinHandle};
+use tokio::{
+    net::TcpListener,
+    signal::{
+        ctrl_c,
+        unix::{SignalKind, signal},
+    },
+    sync::oneshot,
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};
 
@@ -903,8 +911,6 @@ fn log_auth_mode_snapshot(mode: &AuthMode) {
 /// The future also resolves if the signal stream errors out so the server
 /// does not hang holding a broken listener.
 async fn wait_for_shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-
     let mut sigterm = match signal(SignalKind::terminate()) {
         Ok(stream) => stream,
         Err(error) => {

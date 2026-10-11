@@ -22,7 +22,7 @@ use super::{
     CUGRAPH_EDGE_WEIGHT_COLUMN, CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphBfsSource, CugraphBfsSourceVertex,
     CugraphLogicalNode, CugraphRelationRole, CugraphSqlConfig, CugraphVertexIdDomain,
     definitions::{
-        CugraphAllowedValue, CugraphArgumentDefinition, CugraphArgumentKind, CugraphArgumentType,
+        CugraphAllowedValue, CugraphArgumentDefinition, CugraphArgumentKind, CugraphArgumentType, CugraphDefaultValue,
         CugraphRelationColumnType, CugraphValueDefinition, CugraphValueRange, arguments_for_algorithm,
     },
     error::invalid_option,
@@ -672,8 +672,6 @@ fn configured_default(
     definition: CugraphValueDefinition,
     config: &CugraphSqlConfig,
 ) -> Option<Value> {
-    use super::definitions::CugraphDefaultValue;
-
     let graph = algorithm.effective_default_graph_options(&config.default_graph_options);
     match definition.default {
         CugraphDefaultValue::GraphDirected => Some(json!(graph.directed)),

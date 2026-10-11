@@ -92,7 +92,7 @@ mod correlation_tests {
     use crate::server::{
         attempt::AttemptOptions,
         coordinator::{
-            QueryTerminalOutcome, install_coordinator_render_probe,
+            CoordinatorArtifact, QueryTerminalOutcome, install_coordinator_render_probe,
             test_support::{cpu_attempt_report, seal_attempt_observation},
         },
         error::{

@@ -1,7 +1,5 @@
 //! Native Parquet source contracts.
 
-#[cfg(test)]
-use std::path::Path;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -11,8 +9,6 @@ use std::{
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
-#[cfg(test)]
-use super::diagnostics::{redacted_object_store_path_diagnostic, redacted_stable_id_diagnostic};
 use super::{
     diagnostics::{
         LocalParquetDiagnosticColumns, PredicateDisposition, RejectedSourceFeature, SourceDiagnostics,
@@ -994,8 +990,13 @@ impl LocalParquetFile {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
-    use crate::source::{LakehouseCacheStatus, ParquetReadStrategy, ResolvedParquetInput};
+    use crate::source::{
+        LakehouseCacheStatus, ParquetReadStrategy, ResolvedParquetInput,
+        diagnostics::{redacted_object_store_path_diagnostic, redacted_stable_id_diagnostic},
+    };
 
     #[test]
     fn column_roles_expose_projected_then_filter_only_fields_without_duplicates() {

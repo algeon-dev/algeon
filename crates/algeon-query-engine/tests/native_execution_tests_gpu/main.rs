@@ -11,6 +11,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+use aggregate_test_support::*;
 use arrow::{
     array::{
         Array, ArrayRef, AsArray, BooleanArray, Date32Array, Date64Array, Decimal32Array, Decimal64Array,
@@ -24,7 +25,10 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{DataFrame, testing::run_named_cases};
+use join_test_support::*;
+use metrics_assertions::*;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use parquet_fixtures::{fixture_local_parquet_source as LocalParquetSource, *};
 use query_engine::{
     chunk::plan_local_parquet_source_chunks,
     exec::{
@@ -80,6 +84,7 @@ use query_runtime::{
     attempt::{AttemptOwner, BeginAttemptRequest},
     observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig},
 };
+use test_support::*;
 
 // Ordinary integration cases exercise real allocations under a bounded cap;
 // failure cases request their smaller cap explicitly through the fixture.
@@ -481,9 +486,3 @@ mod unbounded_pruning_regressions;
 #[cfg(feature = "cuvs")]
 mod vector_algorithm_execution;
 mod window_execution;
-
-use aggregate_test_support::*;
-use join_test_support::*;
-use metrics_assertions::*;
-use parquet_fixtures::{fixture_local_parquet_source as LocalParquetSource, *};
-use test_support::*;

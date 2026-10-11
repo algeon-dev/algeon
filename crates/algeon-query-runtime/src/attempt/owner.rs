@@ -28,8 +28,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(test)]
-use query_planning::error::AttemptFailureCode;
 use query_planning::{
     correlation::{QueryId, TraceId},
     error::QueryError,
@@ -46,15 +44,6 @@ use crate::observability::{
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::runtime::BackendLifecycle;
-#[cfg(test)]
-use crate::{
-    observability::AttemptDeviceHealth, observability::AttemptDeviceHealthStatus, observability::AttemptFailureFactKey,
-    observability::AttemptFailureFactValue, observability::AttemptFailureOrigin, observability::AttemptFailureStatus,
-    observability::AttemptFaultIsolation, observability::AttemptFinalDomainUsage,
-    observability::AttemptHealthTransition, observability::AttemptNativeFault,
-    observability::AttemptNativeFaultEvidence, observability::AttemptNativeFaultKind,
-    observability::AttemptNativeStatus, observability::AttemptTeardownHealth, observability::QueryBoundaryKind,
-};
 use crate::{
     observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAlternateDeviceEligibility, AttemptCapacityDisposition,
@@ -1315,13 +1304,17 @@ impl fmt::Debug for AttemptCompletionFactory {
 mod tests {
     use std::sync::mpsc;
 
-    use query_planning::error::{QueryError, QueryErrorCode};
+    use query_planning::error::{AttemptFailureCode, QueryError, QueryErrorCode};
 
     use super::*;
     use crate::{
         observability::{
-            DeterministicRuntimeObservationClock, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationRecord,
-            SourceReadFact, write_runtime_observation_jsonl,
+            AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptFailureFactKey, AttemptFailureFactValue,
+            AttemptFailureOrigin, AttemptFailureStatus, AttemptFaultIsolation, AttemptFinalDomainUsage,
+            AttemptHealthTransition, AttemptNativeFault, AttemptNativeFaultEvidence, AttemptNativeFaultKind,
+            AttemptNativeStatus, AttemptTeardownHealth, DeterministicRuntimeObservationClock, PlanExecutionId,
+            QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationRecord, SourceReadFact,
+            write_runtime_observation_jsonl,
         },
         runtime::BackendLifecycle,
     };
@@ -2003,10 +1996,13 @@ mod tests {
 
 #[cfg(test)]
 mod terminalize_race_tests {
-    use query_planning::error::QueryErrorCode;
+    use query_planning::error::{AttemptFailureCode, QueryErrorCode};
 
     use super::*;
-    use crate::{observability::DeterministicRuntimeObservationClock, runtime::BackendLifecycle};
+    use crate::{
+        observability::{AttemptFailureStatus, DeterministicRuntimeObservationClock},
+        runtime::BackendLifecycle,
+    };
 
     #[test]
     fn admission_rejection_terminalized_at_the_binding_wins_over_the_wrapper_commit() {

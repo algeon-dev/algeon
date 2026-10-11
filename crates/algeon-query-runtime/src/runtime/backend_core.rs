@@ -29,11 +29,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-#[cfg(test)]
-use std::{
-    sync::{Condvar, atomic::AtomicU8, mpsc},
-    thread,
-};
 
 use cudf::{DeviceMemoryManager, DeviceMemoryManagerInstallationState, DeviceMemoryManagerOptions};
 use query_planning::error::{QueryError, QueryErrorCode, Result, bytes_with_gib};
@@ -41,8 +36,8 @@ use tokio::task::spawn_blocking;
 
 #[cfg(feature = "qualification")]
 use super::DeviceQuarantineInjection;
-#[cfg(test)]
-use super::observation_completion::ObservationCompletionWorkerLane;
+pub use super::backend_close::GpuBackendCloseSnapshot;
+pub(crate) use super::observation_completion::ObservationCompletionDispatcher;
 use super::{
     BackendDiagnostics, DeviceCapabilities, DeviceFacts, DeviceResourceProfile, DeviceTelemetrySnapshot,
     QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
@@ -70,9 +65,6 @@ use crate::{
 const BUILD_OPERATION: &str = "query_engine.gpu_backend_core.build";
 const CLOSE_OPERATION: &str = "query_engine.gpu_backend_core.close";
 const RESOURCE_OPERATION: &str = "query_engine.gpu_backend_core.resource";
-
-pub use super::backend_close::GpuBackendCloseSnapshot;
-pub(crate) use super::observation_completion::ObservationCompletionDispatcher;
 
 /// Deployment ownership promised for one CUDA device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1765,6 +1757,11 @@ fn next_backend_identity() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{Condvar, atomic::AtomicU8, mpsc},
+        thread,
+    };
+
     use tokio::runtime::Builder as TokioRuntimeBuilder;
 
     use super::*;
@@ -1772,7 +1769,7 @@ mod tests {
         observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTerminalOutcome},
         runtime::{
             BACKEND_METRIC_DEVICE_CAPACITY, GpuExecutionJobKind, GpuExecutionPool, QueryActivityLease,
-            SourceSchedulerPolicy,
+            SourceSchedulerPolicy, observation_completion::ObservationCompletionWorkerLane,
         },
     };
 

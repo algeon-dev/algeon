@@ -772,7 +772,6 @@ fn every_live_attempt_caller_holds_a_distinct_fork_including_the_root() {
 }
 
 fn union_output_data_form(pipeline: &CompiledPipeline, task_kind: PipelineTaskKind) -> ResidentDataForm {
-    use ResidentDataForm;
     let producer = pipeline
         .tasks()
         .iter()

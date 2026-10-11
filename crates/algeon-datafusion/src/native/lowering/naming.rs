@@ -1,3 +1,5 @@
+use query_planning::naming::unique_alias_with_suffix;
+
 pub(super) fn sanitize_field_name(name: &str) -> String {
     let sanitized =
         name.chars().map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' { ch } else { '_' }).collect::<String>();
@@ -7,4 +9,3 @@ pub(super) fn sanitize_field_name(name: &str) -> String {
 pub(super) fn unique_name_with_suffix(base: &str, mut is_available: impl FnMut(&str) -> bool) -> String {
     unique_alias_with_suffix(base, |candidate| !is_available(candidate))
 }
-use query_planning::naming::unique_alias_with_suffix;

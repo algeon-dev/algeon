@@ -41,8 +41,6 @@ use query_planning::{
     source::{LocalParquetSource, SourceColumnRef},
 };
 
-#[cfg(test)]
-use self::object_store::stable_hash_hex;
 use self::object_store::{
     FooterObjectStoreRegistry, foreign_error_diagnostic, object_error_context, object_store_file,
     object_store_pruning_error, stable_log_field,
@@ -800,7 +798,7 @@ mod tests {
     };
     use parquet::{file::metadata::ColumnChunkMetaData, schema::parser::parse_message_type};
 
-    use super::*;
+    use super::{object_store::stable_hash_hex, *};
 
     fn column_chunk_with_statistics(schema_body: &str, statistics: Statistics) -> ColumnChunkMetaData {
         let parquet_type = parse_message_type(schema_body).expect("test Parquet schema should parse");
