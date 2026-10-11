@@ -120,6 +120,8 @@ POLICY_SCRIPTS=(
   scripts/ci/check_sloplint.sh
   scripts/ci/tests/check_cugraph_example_ddl_tests.sh
   scripts/ci/check_cugraph_example_ddl.sh
+  scripts/ci/tests/check_docker_scripts_tests.sh
+  scripts/ci/check_docker_scripts.sh
 )
 
 policy_scripts() {

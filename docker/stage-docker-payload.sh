@@ -168,11 +168,19 @@ CUDF_LIB="$CUDF_INSTALL_DIR/lib"
 echo "==> Staging forked cuDF libs from $CUDF_LIB"
 copy_lib "$CUDF_LIB/libcudf.so"          || { echo "ERROR: libcudf.so missing" >&2; exit 1; }
 copy_lib "$CUDF_LIB/librmm.so"           || { echo "ERROR: librmm.so missing" >&2; exit 1; }
-# kvikio (remote/GDS reads) and nvcomp (parquet codecs) are optional but bundled.
-# libcudf dlopen()s them, and ldd does not list dlopen()ed libraries. Bundle them eagerly.
-copy_lib "$CUDF_LIB/libkvikio.so"        || echo "    note: libkvikio.so absent (remote-direct reads unavailable)"
-copy_lib "$CUDF_LIB/libnvcomp.so"*       || echo "    note: libnvcomp.so absent (GPU parquet codecs may be unavailable)"
+# The canonical cuDF build links KvikIO and nvCOMP statically: libcudf.so has
+# no NEEDED entry for either and exports their symbols itself. A build that
+# links them dynamically lists them as NEEDED, which the check below enforces.
+copy_lib "$CUDF_LIB/libkvikio.so"*       || true
+copy_lib "$CUDF_LIB/libnvcomp.so"*       || true
 copy_lib "$CUDF_LIB/libnvcomp_cpu.so"*   || true
+while IFS= read -r needed; do
+    [[ -e "$DIST_DIR/lib/$needed" ]] || {
+        echo "ERROR: $CUDF_LIB/libcudf.so needs $needed, but $CUDF_LIB does not provide it." >&2
+        exit 1
+    }
+done < <(readelf -d "$CUDF_LIB/libcudf.so" \
+    | awk -F'[][]' '/\(NEEDED\)/ && $2 ~ /^lib(kvikio|nvcomp)/ { print $2 }')
 
 # 6. Stage canonical cuVS and optional cuGraph / cuML libraries
 CUVS_LIB=""
@@ -208,8 +216,11 @@ if [[ $want_cugraph -eq 1 ]]; then
         echo "ERROR: $CUGRAPH_LIB not found; build cugraph first." >&2
         exit 1
     }
+    # The installed library's RUNPATH names the cuVS and RMM prefixes it was
+    # built against (scripts/build/build_libcugraph.sh), so this resolves
+    # without a caller-provided LD_LIBRARY_PATH.
     GRAPH_CUVS_REALPATH=$(resolve_needed_realpath "$CUGRAPH_LIB/libcugraph.so" libcuvs) || {
-        echo "ERROR: ldd could not resolve libcugraph.so to a canonical libcuvs.so." >&2
+        echo "ERROR: ldd could not resolve libcugraph.so to a canonical libcuvs.so; its RUNPATH must name the cuVS prefix (rebuild with scripts/build/build_libcugraph.sh)." >&2
         exit 1
     }
     CANONICAL_CUVS_REALPATH=$(readlink -f "$CUVS_LIB/libcuvs.so")
@@ -234,7 +245,7 @@ if [[ $want_cuml -eq 1 ]]; then
     CUML_LIB="$CUML_INSTALL_DIR/lib"
     [[ -d "$CUML_LIB" ]] || { echo "ERROR: $CUML_LIB not found; build cuml first." >&2; exit 1; }
     ML_CUVS_REALPATH=$(resolve_needed_realpath "$CUML_LIB/libcuml.so" libcuvs) || {
-        echo "ERROR: ldd could not resolve libcuml.so to a canonical libcuvs.so." >&2
+        echo "ERROR: ldd could not resolve libcuml.so to a canonical libcuvs.so; its RUNPATH must name the cuVS prefix (rebuild with scripts/build/build_libcuml.sh)." >&2
         exit 1
     }
     CANONICAL_CUVS_REALPATH=$(readlink -f "$CUVS_LIB/libcuvs.so")

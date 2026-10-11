@@ -22,7 +22,8 @@
 #                  toolkit libraries this binary actually needs and copies just
 #                  those out. A cuDF-only binary pulls ~110 MB (cudart+nvrtc);
 #                  cuML adds CUDA math dependencies (cuSolver, cuBLAS,
-#                  cuBLASLt, cuSparse); image size with cuML is not measured.
+#                  cuBLASLt, cuSparse); the full-feature image measured
+#                  3.68 GB on 2026-10-09.
 #   runtime      : a minimal nvidia/cuda:-base image + the native libs + the
 #                  harvested CUDA subset. No conda, no RAPIDS, no build tools.
 # ===========================================================================
@@ -50,9 +51,11 @@ ARG CPU_TARGET
 ARG CPU_BINARY_SHA256
 ARG CPU_MANIFEST_SHA256
 
+# libgomp1 lets the closure check below resolve the OpenMP dependency of the
+# staged cuVS, cuGraph and cuML libraries; the runtime stage installs it too.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        binutils && \
+        binutils libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Drop the staged payload in at its final runtime location so the binary's
@@ -82,7 +85,7 @@ RUN set -eu; mkdir -p /cuda-collect; \
     done)"; \
     echo "$closure"; \
     test -z "$(echo "$closure" \
-        | awk '$1 != "visibility=hidden" && $2 == "=>" && $3 == "not" && $4 == "found")"; \
+        | awk '$1 != "visibility=hidden" && $2 == "=>" && $3 == "not" && $4 == "found"')"; \
     test "$(echo "$closure" | awk '$1 ~ /^librmm\.so/ && $3 ~ /^\// { print $3 }' \
         | xargs -r -n1 readlink -f | sort -u | wc -l)" -eq 1; \
     logger_count="$(echo "$closure" | awk '$1 ~ /^librapids_logger\.so/ && $3 ~ /^\// { print $3 }' \
@@ -133,10 +136,11 @@ ARG CPU_MANIFEST_SHA256
 
 # Runtime system libs the bundled RAPIDS libs need that are NOT in the CUDA
 # -base image: libgomp1 (OpenMP, cuVS/cuGraph), libbrotli1 (Arrow/Parquet in
-# libcudf), ca-certificates (TLS to S3/Glue). tini = correct PID 1 / signals.
+# libcudf). tini = correct PID 1 / signals. The server makes no outbound TLS
+# connections, so no CA bundle is installed.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        libgomp1 libbrotli1 ca-certificates tini && \
+        libgomp1 libbrotli1 tini && \
     rm -rf /var/lib/apt/lists/*
 
 # Policy and artifact identity are supplied only by the verified canonical
@@ -170,7 +174,7 @@ RUN set -eu; \
     done)"; \
     echo "$closure"; \
     test -z "$(echo "$closure" \
-        | awk '$1 != "visibility=hidden" && $2 == "=>" && $3 == "not" && $4 == "found")"; \
+        | awk '$1 != "visibility=hidden" && $2 == "=>" && $3 == "not" && $4 == "found"')"; \
     test "$(echo "$closure" | awk '$1 ~ /^librmm\.so/ && $3 ~ /^\// { print $3 }' \
         | xargs -r -n1 readlink -f | sort -u | wc -l)" -eq 1; \
     logger_count="$(echo "$closure" | awk '$1 ~ /^librapids_logger\.so/ && $3 ~ /^\// { print $3 }' \
@@ -201,43 +205,11 @@ ENV LD_LIBRARY_PATH=/app/lib \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# ===========================================================================
-# Runtime configuration: environment variables read by the server
-# (verified against crates/algeon-datafusion/src/server/config/; names are load-bearing)
-# ===========================================================================
-#
-# ── Server core ─────────────────────────────────────────────────────────────
-#   ALGEON_SERVER_BIND                  listen addr           (default 0.0.0.0:50051)
-#   ALGEON_SERVER_LOG                   tracing filter        (default info)
-#   ALGEON_SERVER_GPU_DEVICES           CUDA ordinals, csv    (default 0)
-#   ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS                   (default 300)
-#   ALGEON_SERVER_CONFIG_FILE           optional TOML overlay ([admission],[native],[observability])
-#
-# ── Native GPU execution (bounded per-device admission) ─────────────────────
-#   ALGEON_SERVER_NATIVE_DEVICE_BUDGET_BYTES          ┐ set all three together,
-#   ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES       │ or omit all (auto-sized)
-#   ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK     ┘
-#   ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS
-#   ALGEON_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS
-#   ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT
-#   ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE   conservative | local_parquet_throughput
-#   ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
-#                                      datafusion_exact_host_welford | gpu_native_tolerant
-#
-# ── S3 access ───────────────────────────────────────────────────────────────
-#   AWS_DEFAULT_REGION                 REQUIRED for KvikIO S3 (reads ONLY this var;
-#                                      AWS_REGION alone -> unsigned reqs -> 403)
-#   AWS_REGION  AWS_PROFILE  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
-#
-# ── DataFusion session (SessionConfig::from_env; single underscores) ────────
-#   DATAFUSION_EXECUTION_TARGET_PARTITIONS   DATAFUSION_EXECUTION_BATCH_SIZE
-#
-# ── cuGraph SQL DSL (image must be built with the cugraph feature) ──────────
-#   ALGEON_SERVER_CUGRAPH_ENABLED       true | false
-#   ALGEON_SERVER_CUGRAPH_DIRECTED  ALGEON_SERVER_CUGRAPH_RENUMBER
-#   ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY   python_cugraph | raw_libcugraph
-#
-# ===========================================================================
+# Configuration reference: website/docs/integration/configuration.mdx
+# (https://algeon.dev/integration/configuration).
+# The image sets ALGEON_SERVER_BIND=0.0.0.0:50051 so `docker run -p` reaches the listener.
+# Every other setting comes from a mounted TOML file named by ALGEON_SERVER_CONFIG_FILE
+# or from ALGEON_SERVER_* variables derived from TOML paths.
 
 EXPOSE 50051
 

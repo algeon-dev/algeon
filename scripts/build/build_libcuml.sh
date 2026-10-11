@@ -177,6 +177,12 @@ if [[ ! -f "${cuml_library}" ]]; then
     echo "error: native build did not produce '${cuml_library}'." >&2
     exit 1
 fi
+# The installed libraries carry only $ORIGIN, and RUNPATH is not transitive,
+# so a consumer that links libcuml without its own cuVS edge could not
+# resolve libcuvs.so. Bind the install to the selected prefixes, as the cuVS
+# install binds to its RMM prefix.
+algeon_bind_install_runpath "${cuml_library}" "\$ORIGIN:${cuvs_runtime_lib_dir}:${cudf_install_dir}/lib"
+algeon_bind_install_runpath "${install_dir}/lib/libnvforest.so" "\$ORIGIN:${cudf_install_dir}/lib"
 if ! nm -DC --defined-only "${cuml_library}" | grep 'ML::SpectralEmbedding::transform' >/dev/null; then
     echo "error: the restricted cuML build omitted spectral embedding required by UMAP." >&2
     exit 1

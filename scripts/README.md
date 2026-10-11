@@ -50,6 +50,20 @@ symlink targets and pending deletions against `ci/check_single_brand.sh`.
 Pending deletions have no working-tree content; their indexed paths and blobs
 remain subject to the branding check.
 
+`ci/check_docker_scripts.sh` runs `bash -n` on `docker/*.sh` and `sh -n` on
+each `RUN` body of `docker/Dockerfile`, naming the instruction's first line on
+failure. It needs no staged payload or Docker daemon; a full `docker build`
+is not part of the gate. Its self-test is
+`ci/tests/check_docker_scripts_tests.sh`.
+
+`ci/check_public_api_surface.sh` compares the API snapshots and invokes
+`ci/check_public_api_docs.py` for the
+[application API documentation boundary](../website/docs/design/index.mdx#api-documentation).
+The documentation check uses complete workspace rustdoc JSON to inspect owner
+types reached through the application API. Its real-rustdoc regression suite,
+`ci/tests/check_public_api_docs_tests.py`, runs from the existing snapshot
+policy self-test in `ci/tests/check_public_api_surface_tests.sh`.
+
 Native build helpers also run from this root and default to the repo-local
 prefixes `target/native/cudf-install`, `target/native/cuvs-install`, and
 `target/native/cugraph-build`. Native source is resolved only through the root

@@ -2,6 +2,25 @@
 
 ALGEON_CUDA_ARCHITECTURE_CONTRACT_RELATIVE_PATH="share/algeon-native/cuda-architectures.env"
 
+# Binds an installed shared library to the prefixes it was built against and
+# proves that the dynamic loader resolves it without the caller's
+# LD_LIBRARY_PATH. RUNPATH is not transitive, so each install names its own
+# dependency prefixes; the Docker staging rewrites them to $ORIGIN later.
+algeon_bind_install_runpath() {
+    local library="$1" runpath="$2" unresolved
+    command -v patchelf >/dev/null || {
+        echo "error: patchelf is required to bind ${library} to its dependency prefixes" >&2
+        return 1
+    }
+    patchelf --set-rpath "${runpath}" "${library}" || return 1
+    unresolved="$(env -u LD_LIBRARY_PATH ldd "${library}" | grep 'not found' || true)"
+    [[ -z "${unresolved}" ]] || {
+        echo "error: ${library} has unresolved dependencies after RUNPATH binding to ${runpath}:" >&2
+        printf '%s\n' "${unresolved}" >&2
+        return 1
+    }
+}
+
 algeon_cuda_architectures() {
     if [[ -n "${CUDF_CMAKE_CUDA_ARCHITECTURES:-}" ]]; then
         echo "error: CUDF_CMAKE_CUDA_ARCHITECTURES is no longer a supported public selector." >&2
