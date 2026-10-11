@@ -337,6 +337,10 @@ pub(super) fn matrix_layout_name(layout: DenseMatrixLayout) -> &'static str {
     }
 }
 
+/// Packs one relation into a matrix of `element`, the type its native
+/// consumer reads. A Float64 relation packed for a Float32 consumer is packed
+/// as Float64 and narrowed on the device inside the same pack stage; any other
+/// element mismatch is an unsupported-type error.
 #[expect(clippy::too_many_arguments, reason = "the caller supplies its relation binding and observation identity")]
 pub(super) fn pack_dense_relation_for(
     ops: &DenseRelationOperations,
@@ -393,7 +397,7 @@ pub(super) fn pack_dense_relation_for(
                 (role, column),
             )
         })?;
-        require_element(validated.element(), element, node_id, algorithm, role, pack_operation)?;
+        let narrow = requires_narrowing(validated.element(), element, node_id, algorithm, role, pack_operation)?;
         let dimension = validated.dimension();
         let rows = validated.rows();
         let bytes = packed_bytes(rows, dimension, element, node_id, role, ops)?;
@@ -402,16 +406,19 @@ pub(super) fn pack_dense_relation_for(
             guard.fail(&error);
             return Err(error);
         }
-        let result = validated.pack_active_child_into_runtime(runtime, layout).map_err(|error| {
-            cudf_query_error(
-                pack_operation,
-                "failed to pack the validated uniform List vector child into an owned matrix",
-                error,
-            )
-            .with_fact("node_id", node_id)
-            .with_fact("relation_role", role)
-            .with_fact("column", column)
-        });
+        let result = validated
+            .pack_active_child_into_runtime(runtime, layout)
+            .map_err(|error| {
+                cudf_query_error(
+                    pack_operation,
+                    "failed to pack the validated uniform List vector child into an owned matrix",
+                    error,
+                )
+                .with_fact("node_id", node_id)
+                .with_fact("relation_role", role)
+                .with_fact("column", column)
+            })
+            .and_then(|packed| narrow_packed(runtime, packed, narrow, node_id, role, pack_operation));
         return finish_pack(guard, result, rows, dimension, bytes);
     }
     let dimension = relation_dimension_for(binding, schema, node_id, role, pack_operation)?;
@@ -441,9 +448,10 @@ pub(super) fn pack_dense_relation_for(
                 let actual = series[0].dtype().map_err(|error| {
                     cudf_query_error(pack_operation, "failed to inspect vector feature element type", error)
                 })?;
-                require_element(actual.id(), element, node_id, algorithm, role, pack_operation)?;
-                runtime.pack_columns(&series.iter().map(Series::as_column).collect::<Vec<_>>(), layout).map_err(
-                    |error| {
+                let narrow = requires_narrowing(actual.id(), element, node_id, algorithm, role, pack_operation)?;
+                let packed = runtime
+                    .pack_columns(&series.iter().map(Series::as_column).collect::<Vec<_>>(), layout)
+                    .map_err(|error| {
                         cudf_query_error(
                             pack_operation,
                             "failed to pack the wide feature columns into an owned matrix",
@@ -451,8 +459,8 @@ pub(super) fn pack_dense_relation_for(
                         )
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
-                    },
-                )
+                    })?;
+                narrow_packed(runtime, packed, narrow, node_id, role, pack_operation)
             })
         },
         DenseVectorBinding::VectorColumn(column) => (|| {
@@ -477,8 +485,8 @@ pub(super) fn pack_dense_relation_for(
                     (role, column),
                 )
             })?;
-            require_element(validated.element(), element, node_id, algorithm, role, pack_operation)?;
-            validated.pack_active_child_into_runtime(runtime, layout).map_err(|error| {
+            let narrow = requires_narrowing(validated.element(), element, node_id, algorithm, role, pack_operation)?;
+            let packed = validated.pack_active_child_into_runtime(runtime, layout).map_err(|error| {
                 cudf_query_error(
                     pack_operation,
                     "failed to pack the validated FixedSizeList vector child into an owned matrix",
@@ -487,22 +495,28 @@ pub(super) fn pack_dense_relation_for(
                 .with_fact("node_id", node_id)
                 .with_fact("relation_role", role)
                 .with_fact("column", column)
-            })
+            })?;
+            narrow_packed(runtime, packed, narrow, node_id, role, pack_operation)
         })(),
     };
     finish_pack(guard, result, rows, dimension, bytes)
 }
 
-fn require_element(
+/// Returns whether a relation of `actual` elements packs for a consumer of
+/// `expected` elements only through Float64 to Float32 narrowing.
+fn requires_narrowing(
     actual: TypeId,
     expected: TypeId,
     node_id: NodeId,
     algorithm: &str,
     role: &'static str,
     pack_operation: &'static str,
-) -> Result<()> {
+) -> Result<bool> {
     if actual == expected {
-        return Ok(());
+        return Ok(false);
+    }
+    if (actual, expected) == (TypeId::Float64, TypeId::Float32) {
+        return Ok(true);
     }
     Err(QueryError::new(
         QueryErrorCode::UnsupportedType,
@@ -514,6 +528,24 @@ fn require_element(
     .with_fact("relation_role", role)
     .with_fact("reason", "unsupported_vector_element_type")
     .with_fact("element", actual.name()))
+}
+
+fn narrow_packed(
+    runtime: &Runtime,
+    packed: PackedMatrix,
+    narrow: bool,
+    node_id: NodeId,
+    role: &'static str,
+    pack_operation: &'static str,
+) -> Result<PackedMatrix> {
+    if !narrow {
+        return Ok(packed);
+    }
+    runtime.narrow_packed_matrix_to_float32(&packed).map_err(|error| {
+        cudf_query_error(pack_operation, "failed to narrow the packed Float64 features to Float32", error)
+            .with_fact("node_id", node_id)
+            .with_fact("relation_role", role)
+    })
 }
 
 fn field_index(

@@ -678,7 +678,7 @@ fn validate_vector_relation_binding(
     )
 }
 
-fn with_supported_types(error: QueryError, supported_types: Option<&'static str>) -> QueryError {
+fn with_supported_types(error: QueryError, supported_types: Option<&str>) -> QueryError {
     match supported_types {
         Some(types) => error.with_fact("supported_types", types),
         None => error,
@@ -696,7 +696,7 @@ pub(crate) fn validate_dense_relation_binding(
     role: &'static str,
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],
-    supported_types: Option<&'static str>,
+    supported_types: Option<&str>,
     validate_element: impl FnOnce(&DenseRelationValidation) -> Result<()>,
 ) -> Result<DenseRelationValidation> {
     let node_id = consumer_id;

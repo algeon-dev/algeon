@@ -26,6 +26,7 @@ use crate::{
 const PACK_OPERATION: &str = "runtime::pack_columns";
 const PACK_FLAT_OPERATION: &str = "runtime::pack_flat_column";
 const WIDEN_OPERATION: &str = "runtime::widen_packed_matrix_to_float64";
+const NARROW_OPERATION: &str = "runtime::narrow_packed_matrix_to_float32";
 const UNPACK_OPERATION: &str = "runtime::unpack_dense_matrix";
 
 pub(crate) fn matrix_element_bytes(element: TypeId, operation: &'static str) -> Result<usize> {
@@ -508,35 +509,49 @@ impl Runtime {
     /// exactly representable in Float64. Any other source element type is a
     /// `TypeMismatch`. The source matrix stays valid.
     pub fn widen_packed_matrix_to_float64(&self, matrix: &PackedMatrix) -> Result<PackedMatrix> {
-        if matrix.element != TypeId::Float32 {
-            return Err(Error::new_with(
-                ErrorCode::TypeMismatch,
-                WIDEN_OPERATION,
-                "only a Float32 matrix can be widened to Float64",
-            )
-            .with_fact(FACT_LEFT_TYPE_ID, matrix.element)
-            .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Float64));
+        self.cast_packed_matrix(
+            matrix,
+            (TypeId::Float32, TypeId::Float64),
+            WIDEN_OPERATION,
+            "only a Float32 matrix can be widened to Float64",
+        )
+    }
+
+    /// Narrow a Float64 packed matrix to Float32 on this runtime's exact
+    /// execution domain, preserving shape and layout. Each value rounds to the
+    /// nearest Float32; a finite value beyond the Float32 range becomes
+    /// infinite, which [`PackedMatrix::validate`] then rejects. Any other
+    /// source element type is a `TypeMismatch`. The source matrix stays valid.
+    pub fn narrow_packed_matrix_to_float32(&self, matrix: &PackedMatrix) -> Result<PackedMatrix> {
+        self.cast_packed_matrix(
+            matrix,
+            (TypeId::Float64, TypeId::Float32),
+            NARROW_OPERATION,
+            "only a Float64 matrix can be narrowed to Float32",
+        )
+    }
+
+    fn cast_packed_matrix(
+        &self,
+        matrix: &PackedMatrix,
+        (source, target): (TypeId, TypeId),
+        operation: &'static str,
+        mismatch: &'static str,
+    ) -> Result<PackedMatrix> {
+        if matrix.element != source {
+            return Err(Error::new_with(ErrorCode::TypeMismatch, operation, mismatch)
+                .with_fact(FACT_LEFT_TYPE_ID, matrix.element)
+                .with_fact(FACT_RIGHT_TYPE_ID, target));
         }
-        let view = matrix.values.view().map_err(|error| error.reanchor(WIDEN_OPERATION))?;
+        let view = matrix.values.view().map_err(|error| error.reanchor(operation))?;
         let execution = ResolvedExecution::with_output_domain(
             Arc::clone(self.execution_domain()),
             [matrix.values.execution_domain()],
-            WIDEN_OPERATION,
+            operation,
         )?;
-        let values = cast_impl(
-            &view,
-            &DataType::new(TypeId::Float64),
-            execution.output_domain(),
-            execution.exec_options(),
-            WIDEN_OPERATION,
-        )?;
-        Ok(PackedMatrix {
-            values,
-            element: TypeId::Float64,
-            rows: matrix.rows,
-            columns: matrix.columns,
-            layout: matrix.layout,
-        })
+        let values =
+            cast_impl(&view, &DataType::new(target), execution.output_domain(), execution.exec_options(), operation)?;
+        Ok(PackedMatrix { values, element: target, rows: matrix.rows, columns: matrix.columns, layout: matrix.layout })
     }
 
     /// Pack one flat, non-null numeric column whose values describe a

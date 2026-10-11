@@ -842,7 +842,7 @@ fn enqueue_background_lakehouse_cache_entry_fill(
     let _fetch_handle = context.spawn_lakehouse_cache_maintenance(
         {
             let cache_path = cache_path.clone();
-            move || {
+            move || async move {
                 let _operation_permit = operation_permit;
                 stream_lakehouse_cache_fill(
                     store,
@@ -855,6 +855,7 @@ fn enqueue_background_lakehouse_cache_entry_fill(
                     estimated_fetch_bytes,
                     budget_permit,
                 )
+                .await
             }
         },
         move |fill_result| {

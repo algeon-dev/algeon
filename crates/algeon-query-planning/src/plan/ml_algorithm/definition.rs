@@ -11,34 +11,54 @@ use crate::plan::{
     },
 };
 
+/// Canonical SQL function name for truncated SVD fit-transform.
 pub const CUML_TSVD_FUNCTION: &str = "cuml_tsvd";
+/// Canonical SQL function name for HDBSCAN clustering.
 pub const CUML_HDBSCAN_FUNCTION: &str = "cuml_hdbscan";
+/// Canonical SQL function name for UMAP embedding.
 pub const CUML_UMAP_FUNCTION: &str = "cuml_umap";
+/// Canonical SQL function name for logistic-regression fit and predict.
 pub const CUML_LOGISTIC_REGRESSION_FUNCTION: &str = "cuml_logistic_regression";
+/// Canonical SQL function name for classification-forest fit and predict.
 pub const CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION: &str = "cuml_random_forest_classifier";
+/// Canonical SQL function name for regression-forest fit and predict.
 pub const CUML_RANDOM_FOREST_REGRESSOR_FUNCTION: &str = "cuml_random_forest_regressor";
+/// Canonical SQL function name for pretrained forest prediction.
 pub const CUML_FOREST_PREDICT_FUNCTION: &str = "cuml_forest_predict";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// SQL operation identity selecting a canonical cuML registry entry.
 pub enum CumlOperation {
+    /// Fits truncated SVD and returns transformed components.
     Tsvd,
+    /// Fits HDBSCAN and returns cluster membership.
     Hdbscan,
+    /// Fits UMAP and returns embedding coordinates.
     Umap,
+    /// Fits a classification model and scores an independent relation.
     LogisticRegression,
+    /// Fits a classification forest and scores an independent relation.
     RandomForestClassifier,
+    /// Fits a regression forest and scores an independent relation.
     RandomForestRegressor,
+    /// Scores a relation with a model snapshot bound at planning.
     ForestPredict,
 }
 
 impl CumlOperation {
+    /// Iterates supported operations in the canonical registry order.
     pub fn all() -> impl ExactSizeIterator<Item = Self> + Clone {
         CUML_OPERATION_REGISTRY.iter().map(|descriptor| descriptor.operation)
     }
 
+    /// Returns the static metadata, options, and output contract for this operation.
     pub fn descriptor(self) -> &'static CumlOperationDescriptor {
         CUML_OPERATION_REGISTRY.iter().find(|descriptor| descriptor.operation == self).expect("cuML registry entry")
     }
 
+    /// Looks up an exact canonical SQL name; returns `None` for an unknown name.
+    ///
+    /// This lookup does not normalize case.
     pub fn from_sql_function_name(name: &str) -> Option<Self> {
         CUML_OPERATION_REGISTRY
             .iter()
@@ -48,13 +68,18 @@ impl CumlOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Purpose of one relation argument in an ML operation.
 pub enum MlRelationRole {
+    /// Rows consumed by a fit-transform or pretrained prediction operation.
     Input,
+    /// Features and targets used to fit a query-local supervised model.
     Training,
+    /// Feature rows scored by the fitted supervised model; no target binding.
     Predict,
 }
 
 impl MlRelationRole {
+    /// Canonical lowercase identifier used in options and plan display.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Input => "input",
@@ -63,41 +88,64 @@ impl MlRelationRole {
         }
     }
 
+    /// Static catalog description of this relation role.
     pub const fn description(self) -> &'static str {
         match self {
-            Self::Input => "Dense Float32 rows fitted and transformed in this statement.",
-            Self::Training => "Dense Float32 features and an Int32 label used to fit the query-local model.",
-            Self::Predict => "Independent dense Float32 rows scored with the query-local model; must omit label.",
+            Self::Input => "Dense feature rows fitted and transformed in this statement.",
+            Self::Training => "Dense features and an Int32 label used to fit the query-local model.",
+            Self::Predict => "Independent dense feature rows scored with the query-local model; must omit label.",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Result-shape family used to construct the operation's Arrow schema.
 pub enum CumlOutputContract {
+    /// Input identifiers followed by transformed `pc_<index>` values.
     Components,
+    /// Input identifiers, selected cluster ID, and membership probability.
     HdbscanClusters,
+    /// Input identifiers followed by `dim_<index>` coordinates.
     Embedding,
+    /// Prediction-row identifiers and the classification or regression result.
     Predictions,
+    /// Input identifiers and score, class-index, or multiple-score columns.
     ForestPrediction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Canonical SQL, validation, documentation, and output metadata for one operation.
 pub struct CumlOperationDescriptor {
+    /// Identity selecting this registry entry.
     pub operation: CumlOperation,
+    /// Canonical table-function identifier.
     pub sql_function_name: &'static str,
+    /// Human-readable title used in the function catalog.
     pub display_name: &'static str,
+    /// Catalog summary of the operation's result.
     pub summary: &'static str,
+    /// Input and workload conditions used to explain operation selection.
     pub use_this_when: &'static str,
+    /// Relation argument roles in SQL argument order.
     pub relation_roles: &'static [MlRelationRole],
+    /// Supported dense feature element types.
     pub vector_element_support: &'static [VectorElementType],
+    /// Result-shape family selected by this operation.
     pub output_contract: CumlOutputContract,
+    /// Required options, accepted values, and defaults.
     pub options: &'static [GpuOptionDefinition],
+    /// Ordered output field metadata, including repeated-field templates.
     pub output_fields: &'static [GpuOutputFieldDefinition],
+    /// Executable SQL example of the supported call shape.
     pub quickstart_sql: &'static str,
+    /// Static and row-dependent constraints beyond option shape.
     pub limitations: &'static [&'static str],
 }
 
 const ELEMENTS: &[VectorElementType] = &[VectorElementType::Float32];
+/// Element types of operations that narrow Float64 features to Float32
+/// before the native call.
+const NARROWED_ELEMENTS: &[VectorElementType] = &[VectorElementType::Float32, VectorElementType::Float64];
 const ROLES: &[MlRelationRole] = &[MlRelationRole::Input];
 const SUPERVISED_ROLES: &[MlRelationRole] = &[MlRelationRole::Training, MlRelationRole::Predict];
 const SOLVERS: &[&str] = &["cov_eig_dq", "cov_eig_jacobi"];
@@ -106,7 +154,7 @@ const COMMON_OPTIONS: &[GpuOptionDefinition] = &[
         name: "input",
         required: true,
         kind: GpuOptionKind::RelationBinding,
-        description: "ID and ordered Float32 features from the input subquery.",
+        description: "ID and ordered features from the input subquery.",
     },
     GpuOptionDefinition {
         name: "n_components",
@@ -289,13 +337,13 @@ const LOGISTIC_OPTIONS: &[GpuOptionDefinition] = &[
         name: "training",
         required: true,
         kind: GpuOptionKind::RelationBinding,
-        description: "ID, Float32 features, and an Int32 label.",
+        description: "ID, features, and an Int32 label.",
     },
     GpuOptionDefinition {
         name: "predict",
         required: true,
         kind: GpuOptionKind::RelationBinding,
-        description: "ID and Float32 features without a label.",
+        description: "ID and features without a label.",
     },
     GpuOptionDefinition {
         name: "penalty_l1",
@@ -443,7 +491,7 @@ const RF_OPTIONS: &[GpuOptionDefinition] = &[
         name: "max_batch_size",
         required: false,
         kind: GpuOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: Some(4096) },
-        description: "Maximum prediction batch size.",
+        description: "Maximum tree nodes processed together during fitting.",
     },
     GpuOptionDefinition {
         name: "seed",
@@ -474,11 +522,14 @@ const RF_CLASSIFIER_OPTIONS: &[GpuOptionDefinition] = &[
         description: "Classification split criterion.",
     },
 ];
+/// Precision contract of every operation whose element types include Float64.
+const FLOAT64_NARROWING: &str = "Float64 features, as wide columns or list elements, are narrowed to Float32 on the device before training or inference. Each value rounds to the nearest Float32, which keeps about seven significant digits; a value beyond the Float32 range becomes infinite and fails the query.";
 const RF_LIMITATIONS: &[&str] = &[
     "Classifier labels must be Int32 contiguous classes 0..C-1; regressor labels must be finite Float32. Null labels fail the query. Predict must omit label and match the training feature dimension.",
     "Prediction imports the fitted forest into nvForest and scores the predict relation on the GPU; a classifier tie resolves to the lowest class index. Training and prediction inputs are limited to i32::MAX rows and the packed feature matrix to i32::MAX elements; the random forest path does not batch rows.",
     "Training uses one RAFT pool stream whose allocations share the query grant. The forest is query-local; an empty predict relation returns an empty result.",
     "seed sets the bootstrap rows and feature subsets; refits are not guaranteed to be bit-identical, because regression histograms accumulate with floating-point atomics.",
+    FLOAT64_NARROWING,
 ];
 const LOGISTIC_LIMITATIONS: &[&str] = &[
     "Training labels must be Int32 contiguous classes 0..C-1 and must not be null; predict must omit label and match the feature dimension.",
@@ -486,6 +537,7 @@ const LOGISTIC_LIMITATIONS: &[&str] = &[
     "probability covers only the predicted class; per-class probabilities are not returned. Class weights are not exposed, so threshold probability to trade precision for recall.",
     "The model is query-local. An empty predict relation returns an empty result without a native call.",
     "Coefficients and scores can differ slightly between runs, because the loss reduction accumulates with floating-point atomics; there is no seed option.",
+    FLOAT64_NARROWING,
 ];
 const RF_CLASSIFIER_LIMITATIONS: &[&str] = &[
     RF_LIMITATIONS[0],
@@ -493,6 +545,7 @@ const RF_CLASSIFIER_LIMITATIONS: &[&str] = &[
     "probability covers only the predicted class; per-class probabilities are not returned. Class weights are not exposed, so threshold probability to trade precision for recall.",
     RF_LIMITATIONS[2],
     "seed sets the bootstrap rows and feature subsets; with the same input row order, a refit on the same GPU grows the same forest.",
+    FLOAT64_NARROWING,
 ];
 const HDBSCAN_FIELDS: &[GpuOutputFieldDefinition] = &[
     OUTPUT_FIELDS[0],
@@ -524,12 +577,14 @@ const EMBEDDING_FIELDS: &[GpuOutputFieldDefinition] = &[
     },
 ];
 const HDBSCAN_LIMITATIONS: &[&str] = &[
-    "Only Float32 features are supported; L2SqrtExpanded distance and brute-force kNN are fixed.",
+    "L2SqrtExpanded distance and brute-force kNN are fixed.",
+    FLOAT64_NARROWING,
     "Empty input returns an empty result. Other inputs require min_samples < rows, min_cluster_size <= rows, and max_cluster_size <= rows; row-dependent conditions are checked at execution.",
     "Cluster ID -1 denotes noise. The fit and output are query-local.",
 ];
 const UMAP_LIMITATIONS: &[&str] = &[
-    "Only Float32 features are supported; L2SqrtExpanded distance, brute-force kNN, and deterministic mode are fixed.",
+    "L2SqrtExpanded distance, brute-force kNN, and deterministic mode are fixed.",
+    FLOAT64_NARROWING,
     "Empty input returns an empty result. Other inputs require n_neighbors < rows, checked at execution.",
     "min_dist must not exceed spread. The fit and embedding are query-local.",
     "random_state seeds the spectral initialization, the edge shuffle, and negative sampling.",
@@ -606,20 +661,21 @@ const FOREST_LIMITATIONS: &[&str] = &[
 ];
 const TSVD_LIMITATIONS: &[&str] = &[
     "Empty input returns an empty result without a native call. Nonempty input requires at least two evaluated rows and two feature dimensions. n_components cannot exceed dimension; known dimensions are checked during planning, otherwise execution reports a structured error.",
-    "Only Float32 features are supported. Use CAST in the input subquery for other element types.",
+    FLOAT64_NARROWING,
     "Component sign is not semantic; this operation returns transformed rows only, not components, explained variance, or mean.",
     "TSVD allocates a temporary rows * n_components score matrix inside the query device cap.",
 ];
 
+/// Supported cuML operations in their canonical catalog order.
 pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
     CumlOperationDescriptor {
         operation: CumlOperation::Tsvd,
         sql_function_name: CUML_TSVD_FUNCTION,
         display_name: "TSVD",
-        summary: "cuML truncated SVD fits and transforms Float32 input rows.",
+        summary: "cuML truncated SVD fits and transforms dense feature rows.",
         use_this_when: "Reduce input features to query-local transformed rows using truncated SVD.",
         relation_roles: ROLES,
-        vector_element_support: ELEMENTS,
+        vector_element_support: NARROWED_ELEMENTS,
         output_contract: CumlOutputContract::Components,
         options: COMMON_OPTIONS,
         output_fields: OUTPUT_FIELDS,
@@ -631,9 +687,9 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
         sql_function_name: CUML_HDBSCAN_FUNCTION,
         display_name: "HDBSCAN",
         summary: "cuML HDBSCAN fits density-based clusters and returns query-local labels and membership probabilities.",
-        use_this_when: "Find dense groups and identify noise among Float32 feature rows.",
+        use_this_when: "Find dense groups and identify noise among feature rows.",
         relation_roles: ROLES,
-        vector_element_support: ELEMENTS,
+        vector_element_support: NARROWED_ELEMENTS,
         output_contract: CumlOutputContract::HdbscanClusters,
         options: HDBSCAN_OPTIONS,
         output_fields: HDBSCAN_FIELDS,
@@ -644,10 +700,10 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
         operation: CumlOperation::Umap,
         sql_function_name: CUML_UMAP_FUNCTION,
         display_name: "UMAP",
-        summary: "cuML UMAP fits a deterministic, query-local manifold embedding for Float32 rows.",
-        use_this_when: "Embed dense Float32 feature rows into a chosen number of dimensions.",
+        summary: "cuML UMAP fits a deterministic, query-local manifold embedding for dense feature rows.",
+        use_this_when: "Embed dense feature rows into a chosen number of dimensions.",
         relation_roles: ROLES,
-        vector_element_support: ELEMENTS,
+        vector_element_support: NARROWED_ELEMENTS,
         output_contract: CumlOutputContract::Embedding,
         options: UMAP_OPTIONS,
         output_fields: EMBEDDING_FIELDS,
@@ -659,9 +715,9 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
         sql_function_name: CUML_LOGISTIC_REGRESSION_FUNCTION,
         display_name: "Logistic Regression",
         summary: "Fit a query-local cuML logistic or softmax classifier and score independent rows.",
-        use_this_when: "Classify Float32 predict rows after fitting contiguous Int32 training labels.",
+        use_this_when: "Classify predict rows after fitting contiguous Int32 training labels.",
         relation_roles: SUPERVISED_ROLES,
-        vector_element_support: ELEMENTS,
+        vector_element_support: NARROWED_ELEMENTS,
         output_contract: CumlOutputContract::Predictions,
         options: LOGISTIC_OPTIONS,
         output_fields: LOGISTIC_FIELDS,
@@ -673,9 +729,9 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
         sql_function_name: CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION,
         display_name: "Random Forest Classifier",
         summary: "Fit a query-local cuML random forest classifier and score independent rows.",
-        use_this_when: "Classify Float32 rows after fitting contiguous Int32 training labels.",
+        use_this_when: "Classify feature rows after fitting contiguous Int32 training labels.",
         relation_roles: SUPERVISED_ROLES,
-        vector_element_support: ELEMENTS,
+        vector_element_support: NARROWED_ELEMENTS,
         output_contract: CumlOutputContract::Predictions,
         options: RF_CLASSIFIER_OPTIONS,
         output_fields: RF_CLASSIFIER_FIELDS,
@@ -687,9 +743,9 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
         sql_function_name: CUML_RANDOM_FOREST_REGRESSOR_FUNCTION,
         display_name: "Random Forest Regressor",
         summary: "Fit a query-local cuML random forest regressor and score independent rows.",
-        use_this_when: "Predict Float32 targets from Float32 feature rows.",
+        use_this_when: "Predict Float32 targets from feature rows.",
         relation_roles: SUPERVISED_ROLES,
-        vector_element_support: ELEMENTS,
+        vector_element_support: NARROWED_ELEMENTS,
         output_contract: CumlOutputContract::Predictions,
         options: RF_OPTIONS,
         output_fields: RF_REGRESSOR_FIELDS,
@@ -713,10 +769,15 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
 ];
 
 impl CumlOperationDescriptor {
+    /// Looks up an exact option name; returns `None` if this operation has no such option.
     pub fn option(&self, name: &str) -> Option<&'static GpuOptionDefinition> {
         self.options.iter().find(|option| option.name == name)
     }
 
+    /// Builds a draft 2020-12 JSON Schema for this operation's options.
+    ///
+    /// The schema includes defaults and required bindings, and rejects unknown properties.
+    /// Training bindings require the canonical label column.
     pub fn options_json_schema(&self) -> Value {
         let relation_schema = dense_relation_binding_schema(self.vector_element_support);
         let mut properties = serde_json::Map::new();
@@ -747,6 +808,13 @@ impl CumlOperationDescriptor {
     }
 }
 
+/// Parses option JSON, inserts defaults, and validates scalar values and binding shape.
+///
+/// # Errors
+///
+/// Returns an option error for malformed JSON, unknown or missing options, invalid
+/// values, a prediction label, or a UMAP `min_dist` greater than `spread`. Column
+/// schema and row-dependent requirements are checked later by planning and execution.
 pub fn canonicalize_cuml_options(
     operation: CumlOperation,
     raw: &str,
@@ -806,6 +874,7 @@ pub enum MlAlgorithm {
 }
 
 impl MlAlgorithm {
+    /// Canonical lowercase identifier used in options and plan display.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Tsvd => "tsvd",
