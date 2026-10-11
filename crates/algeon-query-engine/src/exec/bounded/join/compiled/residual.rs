@@ -354,10 +354,11 @@ pub(super) fn rewrite_join_residual_for_candidate(
         Expr::EndsWith { expr, suffix } => {
             Ok(Expr::ends_with(rewrite_join_residual_for_candidate(expr, residual_output_names)?, suffix.clone()))
         },
-        Expr::StringLength { expr, output_type } => Ok(Expr::string_length(
-            rewrite_join_residual_for_candidate(expr, residual_output_names)?,
-            output_type.clone(),
-        )),
+        Expr::StringLength { expr, unit, output_type } => Ok(Expr::StringLength {
+            expr: Box::new(rewrite_join_residual_for_candidate(expr, residual_output_names)?),
+            unit: *unit,
+            output_type: output_type.clone(),
+        }),
         Expr::RegexpReplace { expr, pattern, replacement, output_type } => Ok(Expr::regexp_replace(
             rewrite_join_residual_for_candidate(expr, residual_output_names)?,
             pattern.clone(),

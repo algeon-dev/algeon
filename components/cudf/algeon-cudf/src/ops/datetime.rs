@@ -1,7 +1,8 @@
 //! GPU-accelerated datetime operations.
 //!
 //! These functions operate on timestamp-typed columns. Component extraction
-//! returns newly allocated `INT16` columns, and floor and calendrical-month
+//! returns newly allocated `INT16` columns whose time-of-day fields are
+//! non-negative for instants before the epoch, and floor and calendrical-month
 //! offsets return newly allocated timestamp columns. Null input elements
 //! produce null output elements.
 
@@ -25,6 +26,18 @@ pub enum DatetimeComponent {
     Month = 1,
     /// Day of month, 1 through 31.
     Day = 2,
+    /// Hour of the day, 0 through 23.
+    Hour = 3,
+    /// Minute of the hour, 0 through 59.
+    Minute = 4,
+    /// Second of the minute, 0 through 59.
+    Second = 5,
+    /// Millisecond segment within the second, 0 through 999. This is not a
+    /// total of milliseconds since the epoch or since midnight.
+    Millisecond = 6,
+    /// Microsecond segment within the millisecond, 0 through 999. Finer
+    /// timestamp resolution than microseconds is dropped.
+    Microsecond = 7,
 }
 
 /// Datetime floor/ceil/round frequencies supported by cudf.
@@ -72,6 +85,11 @@ impl DatetimeComponent {
             DatetimeComponent::Year => "year",
             DatetimeComponent::Month => "month",
             DatetimeComponent::Day => "day",
+            DatetimeComponent::Hour => "hour",
+            DatetimeComponent::Minute => "minute",
+            DatetimeComponent::Second => "second",
+            DatetimeComponent::Millisecond => "millisecond",
+            DatetimeComponent::Microsecond => "microsecond",
         }
     }
 
@@ -80,6 +98,11 @@ impl DatetimeComponent {
             DatetimeComponent::Year => cudf_sys::CUDF_DATETIME_COMPONENT_YEAR,
             DatetimeComponent::Month => cudf_sys::CUDF_DATETIME_COMPONENT_MONTH,
             DatetimeComponent::Day => cudf_sys::CUDF_DATETIME_COMPONENT_DAY,
+            DatetimeComponent::Hour => cudf_sys::CUDF_DATETIME_COMPONENT_HOUR,
+            DatetimeComponent::Minute => cudf_sys::CUDF_DATETIME_COMPONENT_MINUTE,
+            DatetimeComponent::Second => cudf_sys::CUDF_DATETIME_COMPONENT_SECOND,
+            DatetimeComponent::Millisecond => cudf_sys::CUDF_DATETIME_COMPONENT_MILLISECOND,
+            DatetimeComponent::Microsecond => cudf_sys::CUDF_DATETIME_COMPONENT_MICROSECOND,
         }
     }
 }

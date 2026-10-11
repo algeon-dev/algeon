@@ -1,4 +1,5 @@
 use cudf::testing;
+use query_planning::expr::{DatePart, StringLengthUnit};
 use tokio::runtime::Builder as TestRuntimeBuilder;
 
 use super::*;
@@ -325,6 +326,119 @@ async fn sql_trim_family_lowers_to_native_string_trim_expressions() {
             if alias == "label_btrim_empty"
                 && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "label")
     )));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_octet_and_character_length_lower_to_distinct_native_units() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-string-length-units");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT octet_length(label) AS label_bytes, character_length(label) AS label_chars FROM bench",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let projections = native_projection_exprs(result.selected_plan());
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_bytes"
+                && matches!(expr.as_ref(), Expr::StringLength { unit: StringLengthUnit::Bytes, .. })
+    )));
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_chars"
+                && matches!(expr.as_ref(), Expr::StringLength { unit: StringLengthUnit::Characters, .. })
+    )));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_extract_time_fields_lower_to_native_extract() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-extract-time-fields");
+    let path = dir.join("input.parquet");
+    write_timestamp_extract_parquet_file(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT EXTRACT(YEAR FROM shipdate) AS y, EXTRACT(HOUR FROM ts_ns) AS h, EXTRACT(MINUTE FROM ts_us) AS mi, \
+         EXTRACT(SECOND FROM ts_ms) AS s, EXTRACT(MILLISECOND FROM ts_s) AS ms, \
+         EXTRACT(MICROSECOND FROM ts_ns) AS us, EXTRACT(MINUTE FROM to_timestamp_seconds(epoch_s)) AS cast_minute \
+         FROM bench",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let projections = native_projection_exprs(result.selected_plan());
+    let extract_of = |alias: &str| {
+        projections
+            .iter()
+            .find_map(|expr| match expr {
+                Expr::Alias { alias: name, expr } if name == alias => match expr.as_ref() {
+                    Expr::Extract { field, expr } => Some((*field, expr.as_ref())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("projection {alias} must be a native EXTRACT: {projections:?}"))
+    };
+    for (alias, expected_field, expected_column) in [
+        ("y", DatePart::Year, "shipdate"),
+        ("h", DatePart::Hour, "ts_ns"),
+        ("mi", DatePart::Minute, "ts_us"),
+        ("s", DatePart::Second, "ts_ms"),
+        ("ms", DatePart::Millisecond, "ts_s"),
+        ("us", DatePart::Microsecond, "ts_ns"),
+    ] {
+        let (field, input) = extract_of(alias);
+        assert_eq!(field, expected_field, "{alias}");
+        assert!(matches!(input, Expr::Column(column) if column.name() == expected_column), "{alias}: {input:?}");
+    }
+    let (field, input) = extract_of("cast_minute");
+    assert_eq!(field, DatePart::Minute);
+    assert!(
+        matches!(
+            input,
+            Expr::Cast { expr, target_type }
+                if matches!(expr.as_ref(), Expr::Column(column) if column.name() == "epoch_s")
+                    && *target_type == DataType::Timestamp(TimeUnit::Second, None)
+        ),
+        "{input:?}"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_extract_time_fields_reject_date32_timezone_and_nanosecond() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-extract-time-rejections");
+    let path = dir.join("input.parquet");
+    write_timestamp_extract_parquet_file(&path);
+
+    for (sql, reason) in [
+        ("SELECT EXTRACT(HOUR FROM shipdate) FROM bench", CapabilityReason::UnsupportedType),
+        ("SELECT EXTRACT(HOUR FROM ts_utc) FROM bench", CapabilityReason::UnsupportedType),
+        ("SELECT EXTRACT(NANOSECOND FROM ts_ns) FROM bench", CapabilityReason::UnsupportedExpression),
+    ] {
+        let plan = sql_plan(&path, direct_friendly_sql_session_config(), sql).await;
+
+        let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+        assert_native_rejection(&result, reason);
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }

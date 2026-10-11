@@ -26,6 +26,21 @@ cudf_status_t to_datetime_component(cudf_datetime_component_t input,
     case CUDF_DATETIME_COMPONENT_DAY:
       *out = cudf::datetime::datetime_component::DAY;
       return CUDF_SUCCESS;
+    case CUDF_DATETIME_COMPONENT_HOUR:
+      *out = cudf::datetime::datetime_component::HOUR;
+      return CUDF_SUCCESS;
+    case CUDF_DATETIME_COMPONENT_MINUTE:
+      *out = cudf::datetime::datetime_component::MINUTE;
+      return CUDF_SUCCESS;
+    case CUDF_DATETIME_COMPONENT_SECOND:
+      *out = cudf::datetime::datetime_component::SECOND;
+      return CUDF_SUCCESS;
+    case CUDF_DATETIME_COMPONENT_MILLISECOND:
+      *out = cudf::datetime::datetime_component::MILLISECOND;
+      return CUDF_SUCCESS;
+    case CUDF_DATETIME_COMPONENT_MICROSECOND:
+      *out = cudf::datetime::datetime_component::MICROSECOND;
+      return CUDF_SUCCESS;
     default: set_error("invalid datetime component"); return CUDF_ERROR_INVALID_OPERATION;
   }
 }

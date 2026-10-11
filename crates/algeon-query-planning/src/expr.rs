@@ -193,10 +193,12 @@ pub enum Expr {
         /// Literal suffix.
         suffix: String,
     },
-    /// SQL `CHARACTER_LENGTH(expr)` string expression.
+    /// SQL `CHARACTER_LENGTH(expr)` or `OCTET_LENGTH(expr)` string expression.
     StringLength {
-        /// String expression whose characters are counted.
+        /// String expression whose length is measured.
         expr: Box<Expr>,
+        /// Whether the length counts characters or UTF-8 bytes.
+        unit: StringLengthUnit,
         /// Declared frontend output type.
         output_type: DataType,
     },
@@ -518,7 +520,12 @@ impl Expr {
 
     /// SQL `CHARACTER_LENGTH` with the frontend-declared `output_type`.
     pub fn string_length(expr: Self, output_type: DataType) -> Self {
-        Self::StringLength { expr: Box::new(expr), output_type }
+        Self::StringLength { expr: Box::new(expr), unit: StringLengthUnit::Characters, output_type }
+    }
+
+    /// SQL `OCTET_LENGTH` with the frontend-declared `output_type`.
+    pub fn octet_length(expr: Self, output_type: DataType) -> Self {
+        Self::StringLength { expr: Box::new(expr), unit: StringLengthUnit::Bytes, output_type }
     }
 
     /// SQL `REGEXP_REPLACE`; `replacement` may contain back-references.
@@ -662,7 +669,12 @@ impl fmt::Display for Expr {
             Self::StringContains { expr, pattern } => write!(f, "CONTAINS({expr}, {pattern:?})"),
             Self::StartsWith { expr, prefix } => write!(f, "STARTS_WITH({expr}, {prefix:?})"),
             Self::EndsWith { expr, suffix } => write!(f, "ENDS_WITH({expr}, {suffix:?})"),
-            Self::StringLength { expr, output_type } => write!(f, "CHARACTER_LENGTH({expr})::{output_type}"),
+            Self::StringLength { expr, unit: StringLengthUnit::Characters, output_type } => {
+                write!(f, "CHARACTER_LENGTH({expr})::{output_type}")
+            },
+            Self::StringLength { expr, unit: StringLengthUnit::Bytes, output_type } => {
+                write!(f, "OCTET_LENGTH({expr})::{output_type}")
+            },
             Self::RegexpReplace { expr, pattern, replacement, output_type } => {
                 write!(f, "REGEXP_REPLACE({expr}, {pattern:?}, {replacement:?})::{output_type}")
             },
@@ -726,6 +738,15 @@ impl CaseWhen {
     }
 }
 
+/// Unit counted by [`Expr::StringLength`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StringLengthUnit {
+    /// Unicode scalar values, as SQL `CHARACTER_LENGTH` counts them.
+    Characters,
+    /// UTF-8 bytes, as SQL `OCTET_LENGTH` counts them.
+    Bytes,
+}
+
 /// Date or timestamp field named by `EXTRACT` or `DATE_TRUNC`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DatePart {
@@ -735,24 +756,41 @@ pub enum DatePart {
     Month,
     /// Day of month for extraction, or day boundary for truncation.
     Day,
-    /// Hour boundary for timestamp truncation.
+    /// Hour field for extraction, or hour boundary for truncation.
     Hour,
-    /// Minute field for supported extraction, or minute boundary for truncation.
+    /// Minute field for extraction, or minute boundary for truncation.
     Minute,
-    /// Second boundary for timestamp truncation.
+    /// Second field for extraction, or second boundary for truncation.
     Second,
-    /// Millisecond boundary for timestamp truncation.
+    /// Millisecond field for extraction, or millisecond boundary for truncation.
     Millisecond,
-    /// Microsecond boundary for timestamp truncation.
+    /// Microsecond field for extraction, or microsecond boundary for truncation.
     Microsecond,
     /// Nanosecond boundary for timestamp truncation.
     Nanosecond,
 }
 
 impl DatePart {
-    /// Fields native `EXTRACT` returns. `MINUTE` applies only to a timestamp
-    /// cast from integer seconds.
-    pub const EXTRACT_FIELDS: [Self; 4] = [Self::Year, Self::Month, Self::Day, Self::Minute];
+    /// Fields native `EXTRACT` reads from a `Date32` or a timezone-free
+    /// timestamp.
+    pub const EXTRACT_DATE_FIELDS: [Self; 3] = [Self::Year, Self::Month, Self::Day];
+    /// Fields native `EXTRACT` reads from a timezone-free timestamp only. As in
+    /// DataFusion, `MILLISECOND` and `MICROSECOND` include the whole seconds
+    /// of the minute, and sub-unit remainders are dropped.
+    pub const EXTRACT_TIME_FIELDS: [Self; 5] =
+        [Self::Hour, Self::Minute, Self::Second, Self::Millisecond, Self::Microsecond];
+    /// Fields native `EXTRACT` returns: [`Self::EXTRACT_DATE_FIELDS`] and
+    /// [`Self::EXTRACT_TIME_FIELDS`]. `NANOSECOND` is not native.
+    pub const EXTRACT_FIELDS: [Self; 8] = [
+        Self::Year,
+        Self::Month,
+        Self::Day,
+        Self::Hour,
+        Self::Minute,
+        Self::Second,
+        Self::Millisecond,
+        Self::Microsecond,
+    ];
     /// Fields `EXTRACT` returns inside a post-join residual filter.
     pub(crate) const POST_JOIN_EXTRACT_FIELDS: [Self; 3] = [Self::Year, Self::Month, Self::Day];
     /// Fields native `DATE_TRUNC` floors a timestamp to: the fixed-duration

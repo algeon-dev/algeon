@@ -2,8 +2,10 @@ use std::{fs::File, sync::Arc};
 
 use arrow::{
     array::{
-        BooleanArray, Date32Array, Decimal128Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
+        BooleanArray, Date32Array, Decimal128Array, FixedSizeListArray, Int32Array, Int64Array, ListArray, StringArray,
+        TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
     },
+    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
@@ -309,6 +311,104 @@ pub(super) fn write_nullable_scalar_expression_input_parquet(path: &std::path::P
     writer.close().unwrap();
 }
 
+pub(super) fn write_string_length_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8])),
+            Arc::new(StringArray::from(vec![
+                Some("abc"),
+                Some("é"),
+                Some("中文"),
+                Some("🙂"),
+                Some("e\u{301}"),
+                Some(""),
+                None,
+                Some("naïve"),
+            ])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(3)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+/// Rows: 2020-03-04 12:34:56.789123456, the tick before the epoch, NULL,
+/// 1970-01-01 00:00:59, 1970-01-01 00:59:59.999 and 2001-09-09 01:46:40.5,
+/// each stored in every timestamp unit. `epoch_s` holds integer seconds
+/// including negative ones.
+pub(super) fn write_timestamp_extract_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
+        Field::new("ts_s", DataType::Timestamp(TimeUnit::Second, None), true),
+        Field::new("ts_ms", DataType::Timestamp(TimeUnit::Millisecond, None), true),
+        Field::new("ts_us", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("ts_ns", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+        Field::new("shipdate", DataType::Date32, true),
+        Field::new("epoch_s", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 1, 2, 3, 4, 5])),
+            Arc::new(TimestampSecondArray::from(vec![
+                Some(1_583_325_296),
+                Some(-1),
+                None,
+                Some(59),
+                Some(3_599),
+                Some(1_000_000_000),
+            ])),
+            Arc::new(TimestampMillisecondArray::from(vec![
+                Some(1_583_325_296_789),
+                Some(-1),
+                None,
+                Some(59_000),
+                Some(3_599_999),
+                Some(1_000_000_000_500),
+            ])),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                Some(1_583_325_296_789_123),
+                Some(-1),
+                None,
+                Some(59_000_000),
+                Some(3_599_999_000),
+                Some(1_000_000_000_500_000),
+            ])),
+            Arc::new(TimestampNanosecondArray::from(vec![
+                Some(1_583_325_296_789_123_456),
+                Some(-1),
+                None,
+                Some(59_000_000_000),
+                Some(3_599_999_000_000),
+                Some(1_000_000_000_500_000_000),
+            ])),
+            Arc::new(Date32Array::from(vec![
+                date32(2020, 3, 4),
+                date32(1969, 12, 31),
+                date32(1970, 1, 1),
+                date32(1970, 1, 1),
+                date32(1970, 1, 1),
+                date32(2001, 9, 9),
+            ])),
+            Arc::new(Int64Array::from(vec![Some(1_583_325_296), Some(-1), None, Some(59), Some(-61), Some(-3_600)])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 pub(super) fn write_nullable_sort_input_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("group_key", DataType::Int32, false),
@@ -477,4 +577,52 @@ pub(super) fn date32(year: i32, month: u32, day: u32) -> i32 {
     let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146097 + day_of_era - 719468
+}
+
+pub(super) fn write_list_count_input_parquet(path: &std::path::Path) {
+    let item = Arc::new(Field::new("element", DataType::Int64, true));
+    let pair = Arc::new(Field::new("element", DataType::Int32, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("items", DataType::List(Arc::clone(&item)), true),
+        Field::new("pairs", DataType::FixedSizeList(Arc::clone(&pair), 2), true),
+    ]));
+    // items: NULL, [], [NULL], [1, NULL], [2, 3], NULL. Child nulls and empty
+    // lists count as valid rows; only the two top-level NULLs are excluded.
+    let items = ListArray::new(
+        item,
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 0, 0, 1, 3, 5, 5])),
+        Arc::new(Int64Array::from(vec![None, Some(1), None, Some(2), Some(3)])),
+        Some(NullBuffer::from(vec![false, true, true, true, true, false])),
+    );
+    // pairs: [1, 2], NULL, [NULL, NULL], [3, 4], NULL, [5, 6].
+    let pairs = FixedSizeListArray::new(
+        pair,
+        2,
+        Arc::new(Int32Array::from(vec![
+            Some(1),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            Some(4),
+            None,
+            None,
+            Some(5),
+            Some(6),
+        ])),
+        Some(NullBuffer::from(vec![true, false, true, true, false, true])),
+    );
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])), Arc::new(items), Arc::new(pairs)],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }

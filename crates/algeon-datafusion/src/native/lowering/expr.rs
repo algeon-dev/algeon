@@ -478,7 +478,12 @@ fn lower_scalar_function_expr(
         ScalarFunctionKind::EndsWith => {
             lower_string_predicate_function(function, validated, scope, NativeExpr::ends_with)
         },
-        ScalarFunctionKind::StringLength => lower_string_length_function(function, validated, scope),
+        ScalarFunctionKind::StringLength => {
+            lower_string_length_function(function, validated, scope, NativeExpr::string_length)
+        },
+        ScalarFunctionKind::OctetLength => {
+            lower_string_length_function(function, validated, scope, NativeExpr::octet_length)
+        },
         ScalarFunctionKind::RegexpReplace => lower_regexp_replace_function(function, validated, scope),
         ScalarFunctionKind::Concat => lower_concat_function(function, validated, scope),
         ScalarFunctionKind::Abs => lower_abs_function(function, validated, scope),
@@ -590,10 +595,11 @@ fn lower_string_length_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     scope: LoweringScope<'_>,
+    constructor: fn(NativeExpr, ArrowDataType) -> NativeExpr,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [expr] = function.args() else { unreachable!("validated string length function must have one argument") };
     let output_type = validated_scalar_output_type(function, validated);
-    Ok(NativeExpr::string_length(lower_validated_child_expr(expr, validated, scope)?, output_type))
+    Ok(constructor(lower_validated_child_expr(expr, validated, scope)?, output_type))
 }
 
 fn lower_regexp_replace_function(

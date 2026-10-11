@@ -216,3 +216,47 @@ async fn direct_friendly_sql_distinct_avg_lowers_as_explicit_aggregate_stack() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn direct_friendly_sql_global_list_count_lowers() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-global-list-count");
+    let path = dir.join("input.parquet");
+    write_list_utf8_parquet_file(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT COUNT(tags) AS tag_rows, COUNT(*) AS all_rows FROM bench",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(native_aggregate_group_exprs(result.selected_plan()).is_empty());
+    assert_eq!(
+        native_aggregate_functions(result.selected_plan()),
+        vec![AggregateFunction::Count, AggregateFunction::Count]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_distinct_or_grouped_list_count_remains_rejected() {
+    for (name, sql) in [
+        ("distinct", "SELECT COUNT(DISTINCT tags) AS tag_rows FROM bench"),
+        ("grouped", "SELECT key, COUNT(tags) AS tag_rows FROM bench GROUP BY key"),
+    ] {
+        let dir = unique_temp_dir(&format!("algeon-datafusion-native-lowering-{name}-list-count"));
+        let path = dir.join("input.parquet");
+        write_list_utf8_parquet_file(&path);
+        let plan = sql_plan(&path, direct_friendly_sql_session_config(), sql).await;
+
+        let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+        assert_native_rejection(&result, CapabilityReason::UnsupportedType);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}

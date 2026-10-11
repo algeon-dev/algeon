@@ -27,8 +27,10 @@ use datafusion::{
     },
 };
 use query_planning::{
-    capability::is_cudf_median_input_type, datatypes::is_timestamp_with_timezone,
+    capability::is_cudf_median_input_type,
+    datatypes::is_timestamp_with_timezone,
     expr::AggregateFunction as NativeAggregateFunction,
+    validation::{AggregateArgumentUse, is_validity_count_input_type},
 };
 
 use super::{
@@ -84,7 +86,7 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
             AggregateDefect::MedianWithStatistical,
         ));
     }
-    for aggregate_expr in aggregate.aggr_expr() {
+    for (index, aggregate_expr) in aggregate.aggr_expr().iter().enumerate() {
         let kind = native_aggregate_function_kind(aggregate_expr.fun());
         let function = aggregate_expr.fun().name();
         if aggregate_expr.is_distinct() && !matches!(kind, Some(NativeAggregateFunction::Count)) {
@@ -115,8 +117,22 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
                 AggregateDefect::ArgumentCount(expressions.len()),
             ));
         };
-        validate_physical_expr_contract(arg, &aggregate.input().schema())?;
-        validate_operator_value_expr(arg, &aggregate.input().schema())?;
+        let validity_only = kind.is_some_and(|function| {
+            AggregateArgumentUse {
+                function,
+                distinct: aggregate_expr.is_distinct(),
+                filtered: aggregate.filter_expr().get(index).is_some_and(Option::is_some),
+                grouped: !group_by.expr().is_empty(),
+                column_argument: arg.downcast_ref::<Column>().is_some(),
+            }
+            .reads_only_top_level_validity()
+        });
+        if validity_only {
+            validate_validity_count_argument_expr(arg, &aggregate.input().schema())?;
+        } else {
+            validate_physical_expr_contract(arg, &aggregate.input().schema())?;
+            validate_operator_value_expr(arg, &aggregate.input().schema())?;
+        }
         if matches!(kind, Some(NativeAggregateFunction::Median)) {
             validate_median_input_type(arg, &aggregate.input().schema())?;
         }
@@ -306,6 +322,21 @@ fn validate_operator_value_expr(
         Err(ExpressionRejection::unsupported_value_type(expr, data_type).into())
     } else {
         Ok(())
+    }
+}
+
+/// A validity-only `COUNT` still proves the argument expression against the
+/// native expression contract, but reads no values, so list carry types pass.
+fn validate_validity_count_argument_expr(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> Result<(), LoweringRejection> {
+    validate_physical_expr_contract(expr, input_schema)?;
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
+    if is_validity_count_input_type(&data_type) {
+        Ok(())
+    } else {
+        Err(ExpressionRejection::unsupported_value_type(expr, data_type).into())
     }
 }
 

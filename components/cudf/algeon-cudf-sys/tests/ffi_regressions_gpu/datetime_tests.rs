@@ -30,11 +30,15 @@ fn required_test_exec() -> (OwnedStream, OwnedMemoryResource, cudf_sys::cudf_exe
 }
 
 fn make_timestamp_days_column(values: &[i32]) -> cudf_sys::cudf_column_handle {
+    make_timestamp_column(cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS, values)
+}
+
+fn make_timestamp_column<T>(type_id: cudf_sys::cudf_type_id_t, values: &[T]) -> cudf_sys::cudf_column_handle {
     let (_stream, _mr, exec) = required_test_exec();
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_column_create_fixed_width_from_host_ex(
-            cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS,
+            type_id,
             0,
             values.as_ptr() as *const c_void,
             values.len() as i32,
@@ -130,6 +134,35 @@ fn test_datetime_extract_component_ex_uses_explicit_stream_and_mr() {
     }
 }
 
+fn test_datetime_extract_time_components_map_to_matching_fields() {
+    // 2020-03-04 12:34:56.789123 and 1969-12-31 23:59:59.999999.
+    let input = make_timestamp_column(cudf_sys::CUDF_TYPE_TIMESTAMP_MICROSECONDS, &[1_583_325_296_789_123i64, -1]);
+    let view = make_column_view(input);
+    let (_stream, _mr, exec) = required_test_exec();
+
+    for (component, expected) in [
+        (cudf_sys::CUDF_DATETIME_COMPONENT_HOUR, vec![12i16, 23]),
+        (cudf_sys::CUDF_DATETIME_COMPONENT_MINUTE, vec![34, 59]),
+        (cudf_sys::CUDF_DATETIME_COMPONENT_SECOND, vec![56, 59]),
+        (cudf_sys::CUDF_DATETIME_COMPONENT_MILLISECOND, vec![789, 999]),
+        (cudf_sys::CUDF_DATETIME_COMPONENT_MICROSECOND, vec![123, 999]),
+    ] {
+        let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
+        let status = unsafe { cudf_sys::cudf_datetime_extract_component_ex(view, component, &mut out, &exec) };
+
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+        assert!(!out.is_null());
+        assert_column_type(out, cudf_sys::CUDF_TYPE_INT16);
+        assert_eq!(read_i16_column_data_with_exec(out, 2, &exec), expected);
+        unsafe { cudf_sys::cudf_column_destroy(out) };
+    }
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(input);
+    }
+}
+
 fn test_datetime_extract_component_validates_null_handles_and_invalid_component() {
     let input = make_timestamp_days_column(&[0]);
     let view = make_column_view(input);
@@ -163,6 +196,10 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "datetime_tests::test_datetime_extract_component_ex_uses_explicit_stream_and_mr",
         test_datetime_extract_component_ex_uses_explicit_stream_and_mr,
+    ),
+    (
+        "datetime_tests::test_datetime_extract_time_components_map_to_matching_fields",
+        test_datetime_extract_time_components_map_to_matching_fields,
     ),
     (
         "datetime_tests::test_datetime_extract_component_validates_null_handles_and_invalid_component",

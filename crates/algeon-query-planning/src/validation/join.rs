@@ -720,7 +720,7 @@ fn validate_post_join_residual_expr(
             require_string(&data_type, "post-join residual string predicate input")?;
             Ok(ArrowDataType::Boolean)
         },
-        Expr::StringLength { expr, output_type } => {
+        Expr::StringLength { expr, output_type, .. } => {
             let data_type = validate_post_join_residual_expr(
                 expr,
                 left_schema,

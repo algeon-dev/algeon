@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, SchemaRef, TimeUnit};
+use arrow::datatypes::{DataType, Field, SchemaRef};
 use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     common::ScalarValue,
@@ -444,7 +444,9 @@ fn validate_scalar_function_kind(
         ScalarFunctionKind::Contains | ScalarFunctionKind::StartsWith | ScalarFunctionKind::EndsWith => {
             validate_string_predicate_function(function, input_schema)
         },
-        ScalarFunctionKind::StringLength => validate_string_length_function(function, input_schema),
+        ScalarFunctionKind::StringLength | ScalarFunctionKind::OctetLength => {
+            validate_string_length_function(function, input_schema)
+        },
         ScalarFunctionKind::RegexpReplace => validate_regexp_replace_function(function, input_schema),
         ScalarFunctionKind::Concat => validate_concat_function(function, input_schema),
         ScalarFunctionKind::Abs => validate_abs_function(function, input_schema),
@@ -479,8 +481,8 @@ fn validate_extract_function(
         .filter(|field| NativeDatePart::EXTRACT_FIELDS.contains(field))
         .ok_or_else(unsupported_field)?;
     validate_physical_expr(expr, input_schema)?;
-    if field == NativeDatePart::Minute {
-        validate_timestamp_second_expr(expr, input_schema)
+    if NativeDatePart::EXTRACT_TIME_FIELDS.contains(&field) {
+        validate_timestamp_expr(expr, input_schema)
     } else {
         validate_date_or_timestamp_expr(expr, input_schema)
     }
@@ -885,12 +887,9 @@ fn validate_date_or_timestamp_expr(
     if matches!(data_type, DataType::Date32 | DataType::Timestamp(_, None)) { Ok(()) } else { Err(unsupported_type()) }
 }
 
-fn validate_timestamp_second_expr(
-    expr: &Arc<dyn PhysicalExpr>,
-    input_schema: &SchemaRef,
-) -> Result<(), ExpressionRejection> {
+fn validate_timestamp_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
     let data_type = physical_expr_data_type(expr, input_schema)?;
-    if matches!(data_type, DataType::Timestamp(TimeUnit::Second, None)) { Ok(()) } else { Err(unsupported_type()) }
+    if matches!(data_type, DataType::Timestamp(_, None)) { Ok(()) } else { Err(unsupported_type()) }
 }
 
 fn validate_numeric_or_decimal_expr(

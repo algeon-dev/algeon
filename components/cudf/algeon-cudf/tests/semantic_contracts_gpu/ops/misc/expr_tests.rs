@@ -831,6 +831,26 @@ fn timestamp_expr_datetime_namespace_extracts_components() {
     assert_output_name(col("ts").dt().year(), Some("ts"));
 }
 
+fn timestamp_expr_datetime_namespace_extracts_time_of_day_components() {
+    // 2020-03-04 12:34:56.789123 and 1969-12-31 23:59:59.999999.
+    let instants = series("ts", &[1_583_325_296_789_123i64, -1])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(TypeId::DurationMicroseconds)
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(TypeId::TimestampMicroseconds)
+        .unwrap();
+    let df = df_with_series("ts", instants);
+
+    assert_eq!(eval_i16(col("ts").dt().hour().alias("hour"), &df), vec![12, 23]);
+    assert_eq!(eval_i16(col("ts").dt().minute().alias("minute"), &df), vec![34, 59]);
+    assert_eq!(eval_i16(col("ts").dt().second().alias("second"), &df), vec![56, 59]);
+    assert_eq!(eval_i16(col("ts").dt().millisecond().alias("millisecond"), &df), vec![789, 999]);
+    assert_eq!(eval_i16(col("ts").dt().microsecond().alias("microsecond"), &df), vec![123, 999]);
+    assert_output_name(col("ts").dt().hour(), Some("ts"));
+}
+
 fn is_null_expr() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let result = eval(col("v").is_null().alias("nulls"), &df);
@@ -1539,6 +1559,10 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "expr_tests::timestamp_expr_datetime_namespace_extracts_components",
         timestamp_expr_datetime_namespace_extracts_components,
+    ),
+    (
+        "expr_tests::timestamp_expr_datetime_namespace_extracts_time_of_day_components",
+        timestamp_expr_datetime_namespace_extracts_time_of_day_components,
     ),
     ("expr_tests::is_null_expr", is_null_expr),
     ("expr_tests::is_not_null_expr", is_not_null_expr),

@@ -245,6 +245,30 @@ mod tests {
     }
 
     #[test]
+    fn single_leaf_mapping_refuses_list_roots_with_one_required_leaf() {
+        let parquet_type = parse_message_type(
+            "
+            message schema {
+              optional group items (LIST) {
+                repeated group list {
+                  required int32 element;
+                }
+              }
+              optional int32 fact_key;
+            }
+            ",
+        )
+        .expect("test Parquet schema should parse");
+        let schema = SchemaDescriptor::new(Arc::new(parquet_type));
+
+        // The list has one leaf whose own null count is zero while the nullable
+        // parent still holds nulls, so its footer cannot prove non-null rows.
+        assert_eq!(schema.num_columns(), 2);
+        assert_eq!(single_leaf_primitive_root_column_index(&schema, 0), None);
+        assert_eq!(single_leaf_primitive_root_column_index(&schema, 1), Some(1));
+    }
+
+    #[test]
     fn single_leaf_mapping_uses_parquet_root_indexes_not_names() {
         let parquet_type = parse_message_type(
             "

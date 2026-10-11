@@ -1,4 +1,4 @@
-use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
+use arrow::datatypes::DataType as ArrowDataType;
 use cudf::{
     AggSpec as CudfAggSpec, Expr as CudfExpr, GroupByAgg,
     interop::arrow_host::cudf_dtype_from_arrow_type,
@@ -10,8 +10,8 @@ use cudf::{
 use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{
-        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, DatePart, Expr, LiteralValue, UnaryMathOp,
-        interval_month_day_nano,
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, DatePart, Expr, LiteralValue,
+        StringLengthUnit, UnaryMathOp, interval_month_day_nano,
     },
     expression_lowering_policy::ExpressionLoweringPolicy,
     plan::ProjectionOutput,
@@ -82,7 +82,7 @@ pub(crate) fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
         Expr::StringContains { expr, pattern } => Ok(lower_expr(expr)?.str().contains(pattern.clone())),
         Expr::StartsWith { expr, prefix } => Ok(lower_expr(expr)?.str().starts_with(prefix.clone())),
         Expr::EndsWith { expr, suffix } => Ok(lower_expr(expr)?.str().ends_with(suffix.clone())),
-        Expr::StringLength { expr, output_type } => lower_string_length(expr, output_type),
+        Expr::StringLength { expr, unit, output_type } => lower_string_length(expr, *unit, output_type),
         Expr::RegexpReplace { expr, pattern, replacement, output_type } => {
             lower_regexp_replace(expr, pattern, replacement, output_type)
         },
@@ -492,8 +492,12 @@ fn lower_substring(expr: &Expr, start: i32, length: Option<i32>) -> Result<CudfE
     Ok(lower_expr(expr)?.str().slice(options))
 }
 
-fn lower_string_length(expr: &Expr, output_type: &ArrowDataType) -> Result<CudfExpr> {
-    let length = lower_expr(expr)?.str().len();
+fn lower_string_length(expr: &Expr, unit: StringLengthUnit, output_type: &ArrowDataType) -> Result<CudfExpr> {
+    let input = lower_expr(expr)?;
+    let length = match unit {
+        StringLengthUnit::Characters => input.str().len(),
+        StringLengthUnit::Bytes => input.str().byte_count(),
+    };
     let target = cudf_dtype_from_arrow_type(output_type).map_err(|error| {
         cudf_unsupported_type_error(
             "query_engine.expr.lower_string_length",
@@ -673,17 +677,28 @@ fn lower_case(branches: &[CaseWhen], else_expr: &Expr) -> Result<CudfExpr> {
 }
 
 fn lower_extract(field: DatePart, expr: &Expr) -> Result<CudfExpr> {
-    if matches!(field, DatePart::Minute) {
-        let raw_seconds = lower_timestamp_second_integer_cast_raw(expr)?;
-        return Ok(lower_timestamp_second_minute(raw_seconds).cast(cudf::DataType::new(cudf::TypeId::Int32)));
-    }
     let lowered = lower_expr(expr)?;
-    let component = match field {
-        DatePart::Year => lowered.dt().year(),
-        DatePart::Month => lowered.dt().month(),
-        DatePart::Day => lowered.dt().day(),
-        DatePart::Minute => unreachable!("minute extraction is handled before datetime component lowering"),
-        DatePart::Hour | DatePart::Second | DatePart::Millisecond | DatePart::Microsecond | DatePart::Nanosecond => {
+    let int32 = cudf::DataType::new(cudf::TypeId::Int32);
+    let component = |value: CudfExpr| value.cast(int32);
+    Ok(match field {
+        DatePart::Year => component(lowered.dt().year()),
+        DatePart::Month => component(lowered.dt().month()),
+        DatePart::Day => component(lowered.dt().day()),
+        DatePart::Hour => component(lowered.dt().hour()),
+        DatePart::Minute => component(lowered.dt().minute()),
+        DatePart::Second => component(lowered.dt().second()),
+        // cuDF yields the sub-second segments while the SQL value includes the
+        // seconds of the minute, so the arithmetic recombines them.
+        DatePart::Millisecond => {
+            let seconds = component(lowered.clone().dt().second());
+            seconds * lit(1_000_i32) + component(lowered.dt().millisecond())
+        },
+        DatePart::Microsecond => {
+            let seconds = component(lowered.clone().dt().second());
+            let milliseconds = component(lowered.clone().dt().millisecond());
+            seconds * lit(1_000_000_i32) + milliseconds * lit(1_000_i32) + component(lowered.dt().microsecond())
+        },
+        DatePart::Nanosecond => {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedExpression,
                 "query_engine.expr.lower_extract",
@@ -691,12 +706,7 @@ fn lower_extract(field: DatePart, expr: &Expr) -> Result<CudfExpr> {
             )
             .with_fact("field", field.to_string()));
         },
-    };
-    Ok(component.cast(cudf::DataType::new(cudf::TypeId::Int32)))
-}
-
-fn lower_timestamp_second_minute(expr: CudfExpr) -> CudfExpr {
-    cudf_binary_expr(expr.floor_div(lit(60_i64)), BinaryOperator::Pymod, lit(60_i64))
+    })
 }
 
 fn lower_date_trunc(field: DatePart, expr: &Expr, output_type: &ArrowDataType) -> Result<CudfExpr> {
@@ -735,26 +745,6 @@ fn lower_date_trunc(field: DatePart, expr: &Expr, output_type: &ArrowDataType) -
         .with_fact("output_type", format!("{output_type:?}"))
     })?;
     Ok(lower_expr(expr)?.dt().floor(frequency).cast(target))
-}
-
-fn lower_timestamp_second_integer_cast_raw(expr: &Expr) -> Result<CudfExpr> {
-    let Expr::Cast { expr, target_type } = expr else {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "query_engine.expr.lower_timestamp_second_raw",
-            "native second timestamp minute operations currently require an integer-to-timestamp cast",
-        )
-        .with_fact("expression", expr));
-    };
-    if !matches!(target_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "query_engine.expr.lower_timestamp_second_raw",
-            "native second timestamp minute operations require Timestamp(Second, None)",
-        )
-        .with_fact("target_type", format!("{target_type:?}")));
-    }
-    Ok(lower_expr(expr)?.cast(cudf::DataType::new(cudf::TypeId::Int64)))
 }
 
 #[cfg(test)]

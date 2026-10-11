@@ -72,6 +72,80 @@ fn bounded_native_query_executes_global_sum_min_max_count_and_final_merge() {
 }
 
 #[test]
+fn bounded_native_query_counts_list_rows_across_chunks() {
+    let dir = unique_temp_dir("query-engine-bounded-native-global-list-count");
+    let path = dir.join("input.parquet");
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let input_schema = write_row_grouped_list_input_parquet(&path);
+
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("count_items", DataType::Int64, false),
+        Field::new("count_names", DataType::Int64, false),
+        Field::new("count_pairs", DataType::Int64, false),
+        Field::new("count_key", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "items".to_string(), "names".to_string(), "pairs".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        vec![
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("items"), "count_items"),
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("names"), "count_names"),
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("pairs"), "count_pairs"),
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count_key"),
+        ],
+    );
+
+    // Null lists and lists holding null elements differ: only a null list is
+    // left out of the count.
+    for (filter, expected_counts) in [
+        (None, [4, 5, 4, 6]),
+        (Some(Expr::binary(Expr::column("key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(4)))), [2, 3, 2, 3]),
+    ] {
+        let mut builder = QueryPlanBuilder::new();
+        let mut input = builder.add_source(SourceNode::LocalParquet(source.clone()));
+        if let Some(filter) = filter {
+            input = builder.add_filter(input, filter).unwrap();
+        }
+        let aggregate = builder.add_aggregate(input, aggregate.clone(), Arc::clone(&aggregated_schema)).unwrap();
+        let plan = builder.finish_with_host_sink(aggregate).unwrap();
+
+        let result = execute_query_plan(&context, &plan).unwrap();
+        let metrics = result.metrics();
+        assert_eq!(metrics.source_chunks_committed, 3, "{expected_counts:?}");
+        assert_budgeted_success_event_with_boundary(
+            metrics,
+            "query_engine.global_aggregate.count_output",
+            1,
+            "chunk_operator",
+        );
+
+        let QueryOutput::HostArrow(batch) = result.output() else {
+            panic!("host sink should materialize one RecordBatch");
+        };
+        assert_eq!(batch.num_rows(), 1);
+        for (column, expected) in expected_counts.into_iter().enumerate() {
+            assert_eq!(
+                int64_array(batch, column).values().as_ref(),
+                &[expected],
+                "{expected_counts:?} column {column}"
+            );
+        }
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state() {
     let dir = unique_temp_dir("query-engine-bounded-native-single-chunk-global-state");
     let path = dir.join("input.parquet");

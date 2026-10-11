@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow::datatypes::{Decimal32Type, Decimal64Type, UnionFields, UnionMode, validate_decimal_precision_and_scale};
 use cudf::testing::run_named_cases;
 use query_engine::{exec::preflight_query_plan, rapids_backend::rapids_backend};
-use query_planning::{backend::BackendCapabilities, datatypes::is_narrow_decimal_carry_type};
+use query_planning::{backend::BackendCapabilities, datatypes::is_narrow_decimal_carry_type, expr::DatePart};
 
 use super::*;
 
@@ -411,23 +411,27 @@ fn carry_only_columns_are_rejected_as_native_aggregate_and_window_operands() {
             Field::new("tags", carry_type.clone(), true),
         ]));
 
-        let aggregate_error = native_validation_error_for_plan(|builder| {
-            let source =
-                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-            builder
-                .add_aggregate(
-                    source,
-                    AggregateSpec::new(
-                        Vec::new(),
-                        vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("tags"), "tag_count")],
-                    ),
-                    Arc::new(Schema::new(vec![Field::new("tag_count", DataType::Int64, false)])),
-                )
-                .unwrap()
-        });
-        assert_eq!(aggregate_error.code(), QueryErrorCode::UnsupportedType);
-        assert_eq!(aggregate_error.fact_value("context"), Some("aggregate input"));
-        assert_eq!(aggregate_error.fact_value("expected"), Some("expected scalar operator key"));
+        // A list is a valid global COUNT argument because the count reads only
+        // top-level validity; narrow decimals keep the value contract.
+        if is_narrow_decimal_carry_type(&carry_type) {
+            let aggregate_error = native_validation_error_for_plan(|builder| {
+                let source = builder
+                    .add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+                builder
+                    .add_aggregate(
+                        source,
+                        AggregateSpec::new(
+                            Vec::new(),
+                            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("tags"), "tag_count")],
+                        ),
+                        Arc::new(Schema::new(vec![Field::new("tag_count", DataType::Int64, false)])),
+                    )
+                    .unwrap()
+            });
+            assert_eq!(aggregate_error.code(), QueryErrorCode::UnsupportedType);
+            assert_eq!(aggregate_error.fact_value("context"), Some("aggregate input"));
+            assert_eq!(aggregate_error.fact_value("expected"), Some("expected scalar or list operator value"));
+        }
 
         let window_aggregate_error = native_validation_error_for_plan(|builder| {
             let source =
@@ -473,6 +477,68 @@ fn carry_only_columns_are_rejected_as_native_aggregate_and_window_operands() {
         assert_eq!(lag_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(lag_error.fact_value("context"), Some("window LAG / LEAD input"));
         assert_eq!(lag_error.fact_value("expected"), Some("expected scalar operator value"));
+    }
+}
+
+#[test]
+fn supported_list_global_count_reads_only_top_level_validity() {
+    let count_tags = || AggregateExpr::new(AggregateFunction::Count, Expr::column("tags"), "tag_count");
+    let count_output = || Arc::new(Schema::new(vec![Field::new("tag_count", DataType::Int64, false)]));
+
+    for list_type in [
+        DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+        DataType::LargeList(Arc::new(Field::new("item", DataType::Int64, true))),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 2),
+    ] {
+        assert!(is_supported_list_carry_type(&list_type), "{list_type:?}");
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::Int32, false),
+            Field::new("tags", list_type.clone(), true),
+        ]));
+
+        let mut builder = QueryPlanBuilder::new();
+        let source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+        let aggregate =
+            builder.add_aggregate(source, AggregateSpec::new(Vec::new(), vec![count_tags()]), count_output()).unwrap();
+        preflight_query_plan(&builder.finish_with_host_sink(aggregate).unwrap())
+            .unwrap_or_else(|error| panic!("global COUNT over {list_type:?} should preflight: {error}"));
+
+        // Anything that reads values, splits by key or filters rows keeps the
+        // scalar operator contract.
+        let key_and_count_output = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::Int32, false),
+            Field::new("tag_count", DataType::Int64, false),
+        ]));
+        for (case, spec, output_schema) in [
+            ("distinct", AggregateSpec::new(Vec::new(), vec![count_tags().with_distinct(true)]), count_output()),
+            (
+                "filtered",
+                AggregateSpec::new(
+                    Vec::new(),
+                    vec![count_tags().with_filter(Some(Expr::is_not_null(Expr::column("key"))))],
+                ),
+                count_output(),
+            ),
+            (
+                "sum",
+                AggregateSpec::new(
+                    Vec::new(),
+                    vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("tags"), "tag_count")],
+                ),
+                count_output(),
+            ),
+            ("grouped", AggregateSpec::new(vec![Expr::column("key")], vec![count_tags()]), key_and_count_output),
+        ] {
+            let error = native_validation_error_for_plan(|builder| {
+                let source = builder
+                    .add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+                builder.add_aggregate(source, spec, output_schema).unwrap()
+            });
+            assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "{case} {list_type:?}");
+            assert_eq!(error.fact_value("context"), Some("aggregate input"), "{case} {list_type:?}");
+            assert_eq!(error.fact_value("expected"), Some("expected scalar operator key"), "{case} {list_type:?}");
+        }
     }
 }
 
@@ -620,6 +686,43 @@ fn projection_preflight_rejects_unsupported_implicit_output_cast() {
     assert_eq!(error.fact_value("field_index"), Some("0"));
     assert_eq!(error.fact_value("actual_type"), Some("Int32"));
     assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
+}
+
+#[test]
+fn extract_time_fields_admit_only_timezone_free_timestamps() {
+    let preflight_extract = |input_type: DataType, field: DatePart| {
+        let input_schema = Arc::new(Schema::new(vec![Field::new("event", input_type, true)]));
+        let output_schema = Arc::new(Schema::new(vec![Field::new("part", DataType::Int32, true)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
+        let projection = builder
+            .add_projection(
+                source,
+                projection_outputs(vec![Expr::extract(field, Expr::column("event"))], output_schema),
+            )
+            .unwrap();
+        preflight_query_plan(&builder.finish_with_host_sink(projection).unwrap())
+    };
+
+    for (input_type, field) in [
+        (DataType::Timestamp(TimeUnit::Second, None), DatePart::Hour),
+        (DataType::Timestamp(TimeUnit::Millisecond, None), DatePart::Second),
+        (DataType::Timestamp(TimeUnit::Nanosecond, None), DatePart::Microsecond),
+        (DataType::Date32, DatePart::Day),
+    ] {
+        preflight_extract(input_type.clone(), field)
+            .unwrap_or_else(|error| panic!("EXTRACT {field} over {input_type:?} should preflight: {error}"));
+    }
+
+    for input_type in [DataType::Date32, DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()))] {
+        let error = preflight_extract(input_type.clone(), DatePart::Second).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "{input_type:?}");
+        assert_eq!(error.fact_value("context"), Some("EXTRACT time field input"), "{input_type:?}");
+    }
+
+    let error = preflight_extract(DataType::Timestamp(TimeUnit::Nanosecond, None), DatePart::Nanosecond).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+    assert_eq!(error.fact_value("field"), Some("NANOSECOND"));
 }
 
 #[test]

@@ -13,9 +13,14 @@ extern "C" {
 
 /// Datetime components wrapped by cudf.
 typedef enum {
-  CUDF_DATETIME_COMPONENT_YEAR  = 0,
-  CUDF_DATETIME_COMPONENT_MONTH = 1,
-  CUDF_DATETIME_COMPONENT_DAY   = 2,
+  CUDF_DATETIME_COMPONENT_YEAR        = 0,
+  CUDF_DATETIME_COMPONENT_MONTH       = 1,
+  CUDF_DATETIME_COMPONENT_DAY         = 2,
+  CUDF_DATETIME_COMPONENT_HOUR        = 3,
+  CUDF_DATETIME_COMPONENT_MINUTE      = 4,
+  CUDF_DATETIME_COMPONENT_SECOND      = 5,
+  CUDF_DATETIME_COMPONENT_MILLISECOND = 6,
+  CUDF_DATETIME_COMPONENT_MICROSECOND = 7,
 } cudf_datetime_component_t;
 
 /// Datetime rounding frequencies wrapped by cudf.
@@ -30,6 +35,11 @@ typedef enum {
 } cudf_datetime_rounding_frequency_t;
 
 /// Extract a datetime component as an INT16 column.
+///
+/// HOUR, MINUTE and SECOND are the time of day. MILLISECOND is the millisecond
+/// part of the second and MICROSECOND is the microsecond part of the
+/// millisecond, each 0 through 999. Time-of-day fields are non-negative for
+/// instants before the epoch.
 ///
 /// `options` must be non-NULL, name an explicit valid device, provide a
 /// non-NULL stream, and provide a non-NULL memory resource. `options->mr` must

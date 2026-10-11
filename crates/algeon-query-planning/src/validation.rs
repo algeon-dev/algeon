@@ -59,12 +59,12 @@ mod expressions;
 mod join;
 mod types;
 
-use aggregate::validate_aggregate_capability;
 #[doc(hidden)]
 pub use aggregate::{
-    global_count_star_expr, global_valid_count_state_alias, validate_aggregate_output_names,
+    AggregateArgumentUse, global_count_star_expr, global_valid_count_state_alias, validate_aggregate_output_names,
     validate_avg_output_fields, validate_global_aggregate_capability,
 };
+use aggregate::{aggregate_argument_use, validate_aggregate_capability};
 #[doc(hidden)]
 pub use expressions::substring_stop_position;
 pub(crate) use expressions::validate_expr;
@@ -72,9 +72,9 @@ use expressions::{comma_separated, validate_projection_output_expr};
 use join::validate_join_capability;
 pub(crate) use join::walk_join_residual_column_sides;
 #[doc(hidden)]
-pub use types::{is_integral_type, is_string_type};
+pub use types::{is_integral_type, is_string_type, is_validity_count_input_type};
 pub(crate) use types::{require_boolean, temporal_duration_binary_output_type};
-use types::{require_scalar_operator_value, require_timezone_free_operator_key};
+use types::{require_scalar_operator_value, require_timezone_free_operator_key, require_validity_count_input};
 
 #[doc(hidden)]
 pub fn projection_schema_mismatch_error(
@@ -280,7 +280,11 @@ pub(crate) fn check_node(
             let mut avg_input_types = Vec::new();
             for expr in &aggregate.spec.aggr_exprs {
                 let data_type = validate_expr(&expr.expr, input.output_schema(), input_available, ctx)?;
-                require_timezone_free_operator_key(&data_type, "aggregate input")?;
+                if aggregate_argument_use(&aggregate.spec, expr).reads_only_top_level_validity() {
+                    require_validity_count_input(&data_type, "aggregate input")?;
+                } else {
+                    require_timezone_free_operator_key(&data_type, "aggregate input")?;
+                }
                 if let Some(filter) = &expr.filter {
                     let filter_type = validate_expr(filter, input.output_schema(), input_available, ctx)?;
                     require_boolean(&filter_type, "aggregate filter predicate")?;
