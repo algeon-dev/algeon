@@ -24,7 +24,7 @@ export default function BlogPostItemHeaderTitle({className}: Props): ReactNode {
     separatorAt > 0 ? (
       <>
         {title.slice(0, separatorAt)}
-        <span className={styles.subtitle}>{title.slice(separatorAt + SEPARATOR.length)}</span>
+        <span className="heading-subtitle">{title.slice(separatorAt + SEPARATOR.length)}</span>
       </>
     ) : (
       title

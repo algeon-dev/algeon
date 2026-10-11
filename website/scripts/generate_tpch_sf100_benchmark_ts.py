@@ -228,9 +228,8 @@ def main() -> None:
 };
 '''
 
-    # Keep numbers compact-ish like the previous file (JSON dump with default spacing).
     body = json.dumps(payload, indent=2)
-    # TypeScript-friendly: leave raw nulls; JSON is valid TS object literal here.
+    # Nulls stay as raw `null`; the JSON is a valid TypeScript object literal.
     text = (
         f"// Generated from target/bench/{label}/native_tpch_benchmark.tsv.\n"
         f"// Do not hand-edit benchmark values; regenerate from the TSV artifact.\n\n"

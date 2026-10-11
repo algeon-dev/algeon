@@ -23,6 +23,37 @@ Follow the pages in this order:
 4. [Building with Docker](./docker.md): optional packaging of the Flight SQL
    server after a source build.
 
+## Run the server only {/* #run-the-server-only */}
+
+To run the Flight SQL server without contributing, follow these steps and
+skip the rest of this guide:
+
+1. Check the [CPU requirement](./prerequisites.md#cpu-requirement) and
+   install the CUDA toolkit, host compiler, and stable Rust from
+   [Prerequisites](./prerequisites.md). Nightly Rust, `cargo-nextest`, and
+   `cargo-hack` are not needed.
+2. Clone the repository and configure the build shell as in steps 1 and 2 of
+   [Building from Source](./from-source.md#1-clone-and-initialize-the-repository).
+3. Build the native libraries in order:
+   [cuDF](./from-source.md#build-cudf-and-the-shared-rmm-prefix),
+   [cuVS](./from-source.md#build-cuvs),
+   [cuGraph](./from-source.md#build-cugraph), and
+   [cuML](./from-source.md#build-cuml).
+4. Build the server:
+
+   ```bash
+   cargo build --release -p algeon-server --features cugraph,cuvs,cuml,nvml
+   ```
+
+5. Start `target/release/algeon_server`. It needs no configuration file and
+   listens on `127.0.0.1:50051`.
+6. Run a first query with the
+   [Flight SQL quickstart](../integration/flight-sql-server.mdx#quickstart).
+
+The workspace build with `--all-features` and the full gate in
+[step 5 of Building from Source](./from-source.md#5-validate-the-checkout) are
+for contributors.
+
 ## The stack
 
 The [module ownership map](../design/index.mdx#crates-and-ownership) defines the
@@ -77,6 +108,12 @@ release closure and `publish = false` otherwise. Do not set
 `[workspace.package].publish`. The allowlist and its validation belong to
 [`check_workspace_publication.py`](https://github.com/algeon-dev/algeon/blob/main/scripts/ci/check_workspace_publication.py),
 which rejects undeclared or mismatched publication settings.
+
+The release closure includes the normal and build dependencies needed to
+install `algeon-datafusion` from crates.io. Published implementation packages
+keep their owner APIs for workspace consumers. The
+[application API and documentation boundary](../design/index.mdx#api-documentation)
+determines which interfaces require application-facing rustdoc.
 
 [`algeon-build-support`](https://github.com/algeon-dev/algeon/blob/main/components/algeon-build-support/Cargo.toml)
 (library `rapids_build_support`) is the shared build-dependency for packages

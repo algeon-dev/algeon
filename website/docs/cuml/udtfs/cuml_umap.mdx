@@ -1,7 +1,7 @@
 ---
 title: UMAP
 sidebar_label: UMAP
-description: "cuML UMAP fits a deterministic, query-local manifold embedding for Float32 rows."
+description: "cuML UMAP fits a deterministic, query-local manifold embedding for dense feature rows."
 slug: /cuml/udtfs/cuml_umap
 sidebar_position: 7
 ---
@@ -14,7 +14,7 @@ UDTF: `cuml_umap`
 
 Official cuML reference: [Python API](https://docs.nvidia.com/cuml/latest/api/generated/cuml.manifold.UMAP/)
 
-cuML UMAP fits a deterministic, query-local manifold embedding for Float32 rows.
+cuML UMAP fits a deterministic, query-local manifold embedding for dense feature rows.
 
 ## Quickstart
 
@@ -31,17 +31,18 @@ ORDER BY row_ordinal;
 
 ## Inputs
 
-Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, Float32 feature, null, finite-value, and runtime-dimension contract.
+Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, feature element, Float64 narrowing, null, finite-value, and runtime-dimension contract.
 
 | Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
-| `input` | yes | `table` | Dense Float32 rows fitted and transformed in this statement. |
+| `input` | yes | `table` | Dense feature rows fitted and transformed in this statement. |
 
 ### Vector element types
 
 | Element type | Valid metrics |
 | --- | --- |
 | `Float32` | Not applicable |
+| `Float64` | Not applicable |
 
 ## Arguments and options
 
@@ -81,7 +82,7 @@ Each relation argument is a parenthesized `SELECT` subquery. Metadata validation
 
 ### Vector binding shapes
 
-Each relation subquery projects an `id` and either Float32 feature columns in dimension order or one `vector` list column of Float32 values. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
+Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
 
 The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
 
@@ -105,7 +106,8 @@ import Examples from '../_examples/cuml_umap.mdx';
 
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
 - Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
-- Only Float32 features are supported; L2SqrtExpanded distance, brute-force kNN, and deterministic mode are fixed.
+- L2SqrtExpanded distance, brute-force kNN, and deterministic mode are fixed.
+- Float64 features, as wide columns or list elements, are narrowed to Float32 on the device before training or inference. Each value rounds to the nearest Float32, which keeps about seven significant digits; a value beyond the Float32 range becomes infinite and fails the query.
 - Empty input returns an empty result. Other inputs require n_neighbors &lt; rows, checked at execution.
 - min_dist must not exceed spread. The fit and embedding are query-local.
 - random_state seeds the spectral initialization, the edge shuffle, and negative sampling.

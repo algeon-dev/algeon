@@ -50,7 +50,6 @@ DataFusion, Arrow and SQL terms are not defined here.
 
 | Term | Meaning | Defined in |
 | --- | --- | --- |
-| Workspace overlay | A mutable DataFusion catalog layered over a read-only source catalog, for interactive DDL and short names. | [Source and workspace](../design/data-path.mdx#lakehouse-and-workspace-boundary) |
 | Residency | The lifecycle of a GPU-cached value, from attempt-owned through evictable or pinned to destroyed, with every resident byte charged to the ledger. | [Completion and resident data](../design/admission.mdx#resident-handoff-and-release) |
 | Provenance | The recorded origin of a GPU-resident value: device, stream and producing source or graph contract. Values move forward only within a matching provenance domain. | [Resident results and the query memory cap](../design/gpu-table-functions.mdx#resident-results-and-the-query-memory-cap) |
 

@@ -55,7 +55,7 @@ const config: Config = {
         },
         blog: {
           routeBasePath: 'blog',
-          editUrl: `${GITHUB_URL}/tree/main/website/blog/`,
+          editUrl: `${GITHUB_URL}/tree/main/website/`,
           showReadingTime: false,
         },
         theme: {
@@ -67,9 +67,9 @@ const config: Config = {
 
   themes: [
     [
-      // Local, build-time, client-side search. No external service: the index
-      // is generated during `npm run build` and queried entirely in the
-      // browser. The SearchBar appears in the navbar automatically.
+      // Local, build-time, client-side search. No external service is involved.
+      // The index is generated during `npm run build` and queried entirely in
+      // the browser. The SearchBar appears in the navbar automatically.
       //
       // To switch to Algolia DocSearch later, remove this `themes` block and
       // the `@easyops-cn/docusaurus-search-local` dependency, then add an
@@ -94,8 +94,8 @@ const config: Config = {
       respectPrefersColorScheme: false,
     },
     navbar: {
-      // The wide logo already includes the "Algeon" wordmark, so we
-      // intentionally omit a separate navbar title to avoid duplicating it.
+      // The wide logo already includes the "Algeon" wordmark, so the navbar
+      // intentionally omits a separate title to avoid duplicating it.
       // The wordmark is a mid-tone slate that reads on both themes, so one
       // file serves light and dark without a `srcDark` variant.
       logo: {

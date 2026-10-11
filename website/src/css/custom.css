@@ -110,6 +110,8 @@
   --ifm-container-width-xl: 1560px;
   --algeon-layout-width: 1600px;
   --algeon-layout-toc-width: 295px;
+  /* Infima's 1rem default makes a tab row about 61px tall. */
+  --ifm-tabs-padding-vertical: 0.4rem;
 }
 
 @media (min-width: 1601px) {
@@ -652,6 +654,36 @@
   max-width: min(1440px, 100%);
 }
 
+.blog-wrapper.blog-post-page {
+  --algeon-blog-prose-width: 48.4rem;
+}
+
+.blog-wrapper.blog-post-page .markdown .table-responsive-wrapper {
+  display: block;
+  width: fit-content;
+  min-width: 0;
+  margin-inline: auto;
+}
+
+.blog-wrapper.blog-post-page .markdown .table-responsive-wrapper :is(th, td) {
+  padding: 0.45rem 0.9rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.blog-wrapper.blog-post-page .markdown .table-responsive-wrapper th {
+  font-size: 0.8rem;
+}
+
+.blog-wrapper.blog-post-page .markdown .theme-code-block {
+  --ifm-code-font-size: 0.9rem;
+  --ifm-pre-padding: 0.85rem;
+}
+
+.blog-wrapper.blog-post-page .markdown figcaption {
+  text-align: center;
+}
+
 @media (min-width: 997px) {
   .blog-wrapper .row > aside.col {
     --ifm-col-width: 15rem;
@@ -661,6 +693,38 @@
     flex: 1 1 0;
     max-width: none;
     min-width: 0;
+  }
+
+  .blog-wrapper.blog-post-page main article > header,
+  .blog-wrapper.blog-post-page main article .markdown > :is(p, h2, h3, ul, ol, .fineprint) {
+    max-width: var(--algeon-blog-prose-width);
+    margin-inline: auto;
+  }
+
+  .blog-wrapper.blog-post-page main article .markdown > :is(
+    .theme-code-block,
+    div:has(> div > .theme-code-block)
+  ) {
+    max-width: min(95%, 54rem);
+    margin-inline: auto;
+  }
+
+  .blog-wrapper.blog-post-page main article .markdown > .theme-code-block.blog-code-message {
+    max-width: var(--algeon-blog-prose-width);
+  }
+
+  .blog-wrapper.blog-post-page main article .markdown > .table-responsive-wrapper {
+    max-width: min(90%, var(--algeon-blog-prose-width));
+    margin-inline: auto;
+  }
+
+  .blog-wrapper.blog-post-page main article .markdown > div:has(> figure) {
+    max-width: 95%;
+    margin-inline: auto;
+  }
+
+  .blog-wrapper.blog-post-page main article .markdown {
+    font-size: 1.0625rem;
   }
 }
 
@@ -776,6 +840,19 @@ html[data-focus-mode='on'] .theme-layout-main {
 
 ::view-transition-old(focus-mode-content) {
   animation-duration: 0.12s;
+}
+
+/* Heading subtitle, used by blog post titles and dataset guide pages. It stays
+   inside the heading element, so the document outline and the blog list link
+   keep the full title. It breaks onto its own line and steps down in size and
+   weight. */
+.heading-subtitle {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.5em;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ifm-color-emphasis-700);
 }
 
 /* Design page table sizing. */

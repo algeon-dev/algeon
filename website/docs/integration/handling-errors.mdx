@@ -121,14 +121,22 @@ Every status built from an adapter `Error` carries `x-algeon-error-code`,
 followed by the [projected facts](../design/errors.mdx#projected-facts) that
 apply.
 
+The ADBC Flight SQL driver picks the Python exception class from the gRPC code
+alone, and it maps `RESOURCE_EXHAUSTED` to `InternalError`. A memory-cap
+failure therefore arrives as `InternalError` even though the server classified
+it as `resource_exhausted`. Read `x-algeon-error-code` and `x-algeon-error-kind`
+from the exception's `details` list of `(key, value)` pairs instead of
+branching on the class.
+
 ### Memory failures {/* #memory-failures */}
 
 For `query_memory_limit_exceeded`, `device_out_of_memory` and
 `device_allocation_failed`, the message names the operation and the requested,
 peak and grant bytes it carries, each also in GiB. It then asks the caller to
-filter or project earlier, split the query, or raise the query memory cap,
-since an unchanged resubmission fails again. A device allocation failure also
-points at the sealed attempt report.
+filter or project earlier, split the query, or raise
+`admission.device_profiles.default_query_limit_bytes` for the device, since an
+unchanged resubmission fails again. A device allocation failure also points at
+the sealed attempt report.
 
 | Fact | Meaning |
 | --- | --- |
@@ -150,13 +158,13 @@ native layer's `remedy`. Katz centrality asks for a lower `alpha` (below
 
 ### Strict unsupported rejection {/* #strict-unsupported-rejection */}
 
-Under the `NoDataFusionCpu` final-plan requirement, an unsupported column
-cannot stay on the DataFusion plan. The code is
-`final_plan_requirement_unsatisfied`, Flight returns `InvalidArgument`, and the
-message names the first blocking field in schema order, its Arrow type and role:
+In `native_required` mode, an unsupported column cannot stay on the
+DataFusion plan. The code is `final_plan_requirement_unsatisfied`, Flight
+returns `InvalidArgument`, and the message names the first blocking field in
+schema order, its Arrow type and role:
 
 ~~~text
-GPU execution does not support projected column `countDetail` with Arrow type `List(Decimal128(10, 2))`
+native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support projected column `countDetail` with Arrow type `List(Decimal128(10, 2))`
 ~~~
 
 | Metadata key | Example value |
@@ -172,7 +180,7 @@ GPU execution does not support projected column `countDetail` with Arrow type `L
 the message names it, or stays generic when the producing site cannot name one:
 
 ~~~text
-GPU execution does not support cast from Int64 to Int32 in `CAST(buys AS INT)`; EXPLAIN GPU lists every blocking candidate
+native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support cast from Int64 to Int32 in `CAST(buys AS INT)`; EXPLAIN GPU lists every blocking candidate
 ~~~
 
 That status carries `x-algeon-blocking-kind`, from a fixed vocabulary such as
@@ -188,3 +196,60 @@ the `x-algeon-error-code` value, and `detail_json.detail` is the status message
 without the trailing `EXPLAIN GPU` pointer or any `x-algeon-*` metadata. The
 [rejected summary row](../reference/gpu-coverage-report.mdx#rejected-summary-row)
 reference has the remaining rules.
+
+## Query stats {/* #query-stats */}
+
+`GetQueryStats` returns the retained diagnostics of one query as UTF-8 text.
+Its action body is a plain string. The server first reads it as a query id. When
+no query has that id, it reads it as a correlation id and picks the most
+recently registered query with that id among the caller's own queries. The
+response metadata carries the resolved `x-algeon-query-id`, and
+`x-algeon-correlation-id` when the query has one.
+
+A client that sets its own correlation id does not need to read any response
+header. With the Python ADBC driver, set the header once for the connection:
+
+```python
+from adbc_driver_flightsql import dbapi
+
+conn = dbapi.connect(
+    uri="grpc://127.0.0.1:50051",
+    db_kwargs={"adbc.flight.sql.rpc.call_header.x-algeon-correlation-id": "agent-run-1"},
+)
+```
+
+The same key passed to `conn.adbc_connection.set_options(...)` changes the id
+for later statements on that connection.
+
+`GetQueryStatsSummary` takes the same body and returns only the `#` header
+lines, the attempt labels and the trailer, without the planning and execution
+records:
+
+```python
+import pyarrow.flight as flight
+
+client = flight.FlightClient("grpc://127.0.0.1:50051")
+results = client.do_action(flight.Action("GetQueryStatsSummary", b"agent-run-1"))
+print(b"".join(result.body.to_pybytes() for result in results).decode())
+```
+
+~~~text
+# algeon_datafusion_query_stats
+# query_id=d09b7593-af81-4e40-a77a-39220a119fb8
+# correlation_id=agent-run-1
+# outcome=succeeded
+# sealed=true
+# elapsed_ms=1106
+# sql=SELECT ...
+# attempt_id=attempt-000000000000000886c3b4a7b7f0ef0a
+# attempt_disposition=native
+# attempt_outcome=succeeded
+...
+# incomplete=false
+~~~
+
+The summary answers whether the query finished, on which device, and whether
+retry advice applies. Call `GetQueryStats` when the answer needs the per-operator
+`[planning]` and `[execution]` rows, the `[structured_error]` facts or the
+explained plans; a simple aggregate already returns a payload of more than
+100 KB.

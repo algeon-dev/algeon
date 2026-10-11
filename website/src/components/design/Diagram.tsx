@@ -16,9 +16,9 @@ import {
  * in the browser, so boxes are sized to their content and nothing wraps or
  * overlaps. Shapes are drawn by rough.js through sketch.ts with seeds derived
  * from node ids, so hydration reproduces the same strokes. Figures scale down
- * proportionally on narrow viewports (viewBox), with a legibility floor after
+ * proportionally on narrow viewports (viewBox), with a legibility minimum after
  * which the container scrolls horizontally and fades the cut edge. A
- * FlowDiagram instead switches to a top-to-bottom drawing below that floor.
+ * FlowDiagram switches to a top-to-bottom drawing below that minimum width.
  *
  * Shapes:
  * - SystemDiagram: a lane-based DAG (host / GPU swim lanes, fork & merge
@@ -30,19 +30,19 @@ import {
  *   top to bottom in a narrow figure.
  *
  * Nodes carrying a `detail` are clickable (and keyboard-focusable); the
- * selected node's detail renders in an HTML panel under the SVG, so the
- * diagram stays sparse while the content stays rich.
+ * selected node's detail renders in an HTML panel under the SVG, so the SVG
+ * carries only short labels and notes while the longer text sits in the panel.
  *
  * Colors come from the theme-aware --ag-* tokens in src/css/custom.css, with
  * literal fallbacks so an extracted SVG still renders standalone. Tones are a
- * small fixed palette; meaning is always carried by an adjacent label, never
- * by color alone.
+ * small fixed palette. Meaning is carried by an adjacent label, so no meaning
+ * depends on color alone.
  */
 
 export type Tone = 'plan' | 'gpu' | 'engine' | 'bridge' | 'graph' | 'lake' | 'foreign' | 'reject' | 'plain';
 
 export interface DiagramNode {
-  /** Quiet uppercase type prefix above the name. */
+  /** Type prefix, rendered in uppercase above the name. */
   kind?: string;
   /** Main label (one line, never wrapped). */
   name: string;
@@ -372,8 +372,6 @@ function DetailPanel({node}: {node: DiagramNode}) {
   );
 }
 
-/* ======================= SystemDiagram ======================= */
-
 export interface SystemLane {
   id: string;
   /** Short gutter label, e.g. "host" / "gpu". */
@@ -413,7 +411,7 @@ export interface SystemDiagramProps {
 }
 
 const LANE_PAD = 16;
-const REGION_HEAD = 30; // headroom above nodes for the region label
+const REGION_HEAD = 30; // space above nodes for the region label
 const REGION_FOOT = 12;
 const MIN_GAP = 56;
 
@@ -431,7 +429,6 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const nCols = Math.max(...nodes.map((n) => n.col)) + 1;
 
-  // Column widths from the widest node in each column.
   const colW: number[] = Array.from({length: nCols}, (_, c) =>
     Math.max(...nodes.filter((n) => n.col === c).map((n) => sizes.get(n.id)!.w)),
   );
@@ -455,7 +452,8 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
     gap[c] = Math.max(gap[c], need);
   });
 
-  // Lane geometry. A lane hosting region nodes gets label headroom.
+  // Lane geometry. A lane hosting region nodes gets room above and below its
+  // nodes for the region outline.
   const regionLanes = new Set(
     regions.flatMap((r) => r.nodes.map((id) => byId.get(id)!.lane)),
   );
@@ -482,7 +480,6 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
   }
   const svgW = x + EDGE + 4;
 
-  // Node rects (centered in their column and lane).
   const rect = new Map<string, {x: number; y: number; w: number; h: number; cy: number}>();
   nodes.forEach((n) => {
     const s = sizes.get(n.id)!;
@@ -501,7 +498,6 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
     <Figure caption={caption} svgW={svgW} svgH={svgH} minW={660} interactive
       ariaLabel={ariaLabel ?? 'Interactive system diagram'}
       panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
-      {/* lane bands */}
       {lanes.map((lane) => {
         const top = laneTop.get(lane.id)!;
         const h = laneH.get(lane.id)!;
@@ -517,14 +513,12 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
           </g>
         );
       })}
-      {/* lane separators */}
       {lanes.slice(1).map((lane) => (
         <g key={`sep-${lane.id}`} opacity={0.7}>
           {sketchLine(`sep:${lane.id}`, 0, laneTop.get(lane.id)!, svgW, laneTop.get(lane.id)!,
             {stroke: COLOR.border, strokeWidth: 1, dashed: true, roughness: 0.5})}
         </g>
       ))}
-      {/* regions */}
       {regions.map((region, i) => {
         const rs = region.nodes.map((id) => rect.get(id)!);
         const rx = Math.min(...rs.map((r) => r.x)) - 12;
@@ -546,7 +540,6 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
           </g>
         );
       })}
-      {/* edges */}
       {edges.map((e, i) => {
         const a = rect.get(e.from)!;
         const b = rect.get(e.to)!;
@@ -582,7 +575,6 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
           </g>
         );
       })}
-      {/* nodes */}
       {nodes.map((n) => {
         const r = rect.get(n.id)!;
         return (
@@ -595,15 +587,12 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
   );
 }
 
-/* ======================= StackDiagram ======================= */
-
 export interface StackDiagramProps {
   ariaLabel?: string;
   nodes: DiagramNode[];
   caption?: React.ReactNode;
 }
 
-/** A top-down layered stack with optional labelled boundary dividers. */
 export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
   const interactive = nodes.some((n) => n.detail);
   const [selectedIdx, setSelectedIdx] = useState<number>(nodes.findIndex((n) => n.detail));
@@ -649,8 +638,6 @@ export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
     </Figure>
   );
 }
-
-/* ======================= ArchitectureDiagram ======================= */
 
 const ARCH_FONTS: BoxFonts = {
   kind: {size: 11, lh: 17, face: 'sans', track: 0.08},
@@ -727,7 +714,7 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
   const outBottom = outY + outSize.h;
   // Storage cards share one baseline even though their heights differ, and
   // one container encloses both: the single KvikIO arrow below rises from
-  // the container's top edge, not from either card.
+  // the container's top edge. Neither card is its origin.
   const inputY = gpuBottom + 96;
   const inputBottom = inputY + Math.max(diskSize.h, sourceSize.h);
   const diskY = inputBottom - diskSize.h;
@@ -816,8 +803,6 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
   );
 }
 
-/* ======================= FlowDiagram ======================= */
-
 export const FLOW_FONTS: BoxFonts = {
   kind: {size: 11, lh: 17, face: 'sans', track: 0.08},
   name: {size: 19, lh: 26, face: 'hand'},
@@ -827,7 +812,7 @@ export const FLOW_FONTS: BoxFonts = {
 };
 const FL_MIN_GAP = 72;
 const FL_BAND_PAD = 18;
-const FL_BAND_HEAD = 34; // headroom inside a band for its corner label
+const FL_BAND_HEAD = 34; // space inside a band for its corner label
 const FL_BAND_FOOT = 14;
 const FL_RAIL_DROP = 34;
 /** Figure width in CSS px under which the column layout replaces the row;
@@ -843,7 +828,7 @@ export interface FlowNode extends DiagramNode {
 }
 
 export interface FlowGroup {
-  /** Corner label, rendered as given (no case transform). */
+  /** Corner label, rendered in uppercase. */
   label: string;
   /** Contiguous node ids the band encloses. */
   nodes: string[];
@@ -954,9 +939,9 @@ function layoutFlowRow(ctx: FlowContext): FlowLayout {
         const sx = a.x + a.w;
         const dx = b.x;
         const cy = a.cy;
-        // Center labels on the visible arrow shaft, and when the arrow enters a
-        // band the previous node is outside of, on the clear space before the
-        // band's edge rather than on the gap as a whole.
+        // Center labels on the visible arrow shaft. When the arrow enters a band
+        // the previous node is outside of, center the label on the clear space
+        // before the band's edge.
         const entersBand = groupOf.has(n.id) && groupOf.get(n.id) !== groupOf.get(nodes[i - 1].id);
         const right = entersBand ? dx - FL_BAND_PAD : dx - 10;
         const mid = (sx + 2 + right) / 2;

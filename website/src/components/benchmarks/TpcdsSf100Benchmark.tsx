@@ -25,10 +25,10 @@ const colorSpeedupSlow = '#C92A2A';
 const colorMemory = '#6366f1';
 const colorFailed = '#6C757D';
 
-// Broken Y-axis for per-query runtime: on SF100, most queries are at or under
-// 35s while Q72 CPU is ~86s. Skip the empty mid-range so normal bars stay readable.
+// Q72 CPU takes 71.5s; the remaining queries finish below 35s.
+// The axis break covers a range with no measured values.
 const RUNTIME_Y_BREAK_START_MS = 35_000;
-const RUNTIME_Y_BREAK_END_MS = 80_000;
+const RUNTIME_Y_BREAK_END_MS = 60_000;
 const RUNTIME_Y_BREAK_WIDTH_MS = 2_500;
 const RUNTIME_Y_TAIL_SCALE = 0.4;
 
@@ -79,11 +79,11 @@ function formatSeconds(value: number): string {
   return `${(value / 1000).toFixed(1)}s`;
 }
 
-function formatSpeedup(value: number | null | undefined): string {
+function formatSpeedup(value: number | null | undefined, decimals = 1): string {
   if (value == null || Number.isNaN(value)) {
     return '-';
   }
-  return `${value.toFixed(1)}x`;
+  return `${value.toFixed(decimals)}x`;
 }
 
 function formatGiB(value: number): string {
@@ -154,7 +154,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
       // Transformed values drive bar height on the broken Y-axis.
       CPU: brokenRuntimeMs(cpuMs),
       GPU: brokenRuntimeMs(gpuMs),
-      // Raw values are used by the tooltip and stay honest to measured wall time.
+      // Raw values feed the tooltip, which reports the measured wall time.
       cpuRawMs: cpuMs,
       gpuRawMs: gpuMs,
       gpuOutcome: row.gpuOutcome,
@@ -165,10 +165,10 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
     ...runtimeData.flatMap((row) => [row.cpuRawMs, row.gpuRawMs]),
   );
   const runtimeUsesBrokenAxis = runtimeMaxRealMs > RUNTIME_Y_BREAK_START_MS;
-  const runtimeYDomainMax = runtimeUsesBrokenAxis
-    ? brokenRuntimeMs(runtimeMaxRealMs) * 1.06
-    : Math.max(runtimeMaxRealMs * 1.08, 1);
   const {tickVals: runtimeTickVals, tickText: runtimeTickText} = runtimeYTicks(runtimeMaxRealMs);
+  const runtimeYDomainMax = runtimeUsesBrokenAxis
+    ? Math.max(brokenRuntimeMs(runtimeMaxRealMs), ...runtimeTickVals) * 1.06
+    : Math.max(runtimeMaxRealMs * 1.08, 1);
   const speedupData = typedRows
     .filter((row) => row.speedup != null)
     .slice()
@@ -191,7 +191,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
               <strong>Result:</strong> CPU {formatSeconds(typedSummary.cpuTotalMs)}, GPU{' '}
               {formatSeconds(typedSummary.gpuSuccessTotalMs)} across{' '}
               {typedSummary.gpuSuccessCount}/{typedSummary.queryCount} successful native
-              queries, CPU / GPU {formatSpeedup(typedSummary.speedup)}, largest task memory peak{' '}
+              queries, CPU / GPU {formatSpeedup(typedSummary.speedup, 2)}, largest task memory peak{' '}
               {formatGiB(typedSummary.maxPeakMemoryOperatorClassBytes)}. Row counts matched on{' '}
               {typedSummary.rowsMatchCount}/{typedSummary.queryCount} queries.
             </li>

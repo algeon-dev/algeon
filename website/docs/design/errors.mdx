@@ -41,8 +41,8 @@ only when crossing a layer boundary.
 Normal native-planning declines are no errors. `NotSupported` and
 `NotSelectedByCost` are candidate outcomes in a `PlanningReport`, never error
 codes or `DataFusionError`s, and the original DataFusion plan remains
-executable. A malformed plan, an unsatisfied final-plan requirement, or a
-runtime failure is an error.
+executable. A malformed plan, a plan that `native_required` mode rejects
+because it needs DataFusion CPU, or a runtime failure is an error.
 
 ## Creating and wrapping errors {/* #creating-and-wrapping-errors */}
 
@@ -142,7 +142,11 @@ and tests compare each surface on its own terms, never as equal strings.
   `blocking_kind` is a log-safe fact next to `reason`.
 - The sealed attempt report does not copy arbitrary messages or facts.
 - The Flight status and the rejected `EXPLAIN GPU` summary row read their code
-  and text from the same client projection.
+  and text from the same client projection. That projection opens every
+  `final_plan_requirement_unsatisfied` text with
+  `native_required mode rejected a plan that needs DataFusion CPU: `, so the
+  caller sees the mode it configured rather than the planner's requirement
+  name.
 - Metadata and query stats are machine-readable projections beside the status
   message and do not replace it. The allowlist and masking rules apply to
   them, and neither the status message nor metadata exposes raw facts or the

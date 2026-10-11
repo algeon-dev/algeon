@@ -91,7 +91,7 @@ function EgoCanvas(): React.ReactElement {
       return undefined;
     }
     let disposed = false;
-    let renderer: {kill: () => void} | null = null;
+    let renderer: {kill: () => void; redraw: () => void} | null = null;
 
     const start = () => Promise.all([import('graphology'), import('sigma')]).then(
       ([{default: Graph}, {default: Sigma}]) => {
@@ -115,11 +115,11 @@ function EgoCanvas(): React.ReactElement {
           }
         }
         const dark = colorMode === 'dark';
-        // Solid hex only: sigma's WebGL color packing does not take rgba() strings.
+        // Use solid hex values. Sigma's WebGL color packing does not take rgba() strings.
         const edgeColor = dark ? '#343b4a' : '#d9d8d3';
         const dimmed = dark ? '#1b1f29' : '#e4e3de';
         const highlight = dark ? '#e6b450' : '#52514e';
-        // Mutable interaction state closed over by the reducers: the reducers run
+        // Mutable interaction state closed over by the reducers. The reducers run
         // during Sigma's constructor render, before the instance binding exists.
         const state: {
           selected: string | null;
@@ -129,6 +129,10 @@ function EgoCanvas(): React.ReactElement {
           hovered: null,
         };
         const sigma = new Sigma(graph, container, {
+          // Switching tabs hides the panel while physics frames still mutate
+          // the graph, and each mutation schedules a Sigma render. Without
+          // this setting that render throws on the zero-width container.
+          allowInvalidContainer: true,
           renderLabels: false,
           defaultEdgeColor: edgeColor,
           labelColor: {color: dark ? '#e6e1cf' : '#0b0b0b'},
@@ -476,29 +480,31 @@ function EgoCanvas(): React.ReactElement {
             document.removeEventListener('click', handleDocumentClick);
             sigma.kill();
           },
+          redraw: () => sigma.refresh(),
         };
       },
     );
 
-    // Inside an inactive tab panel the container has no width, and Sigma
-    // rejects a zero-size container; wait until the panel is shown.
-    let observer: ResizeObserver | null = null;
-    if (container.clientWidth > 0) {
-      start();
-    } else {
-      observer = new ResizeObserver(() => {
-        if (container.clientWidth > 0 && observer != null) {
-          observer.disconnect();
-          observer = null;
-          start();
-        }
-      });
-      observer.observe(container);
-    }
+    // An inactive tab panel gives the container zero width. Start once the panel
+    // is shown, and redraw each time it returns. Sigma resizes its canvas only on
+    // window resize events, so it would otherwise keep its hidden 1x1 fallback.
+    let started = false;
+    const observer = new ResizeObserver(() => {
+      if (container.clientWidth === 0) {
+        return;
+      }
+      if (started) {
+        renderer?.redraw();
+      } else {
+        started = true;
+        start();
+      }
+    });
+    observer.observe(container);
 
     return () => {
       disposed = true;
-      observer?.disconnect();
+      observer.disconnect();
       renderer?.kill();
     };
   }, [colorMode]);

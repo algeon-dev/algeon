@@ -94,6 +94,35 @@ ownership across library boundaries.
 Backend memory models belong to their component owners. IR, facts, schedules
 and admission contracts remain backend neutral.
 
+## API documentation
+
+`algeon-datafusion` is the application-facing Rust crate. The query and GPU
+component crates, interop and build support are implementation dependencies
+published with it. Workspace code imports each contract from its owner;
+applications use the adapter and its re-exports. Publication requirements
+are defined in [Workspace and publication contracts](../build/overview.md#workspace-and-publication-contracts).
+
+Visible adapter APIs require rustdoc, including public fields, enum variants
+and callable methods. The requirement also covers workspace-owned types
+re-exported by the adapter or reachable through its public signatures. Their
+documentation belongs at the defining item, so the adapter and internal
+consumers share one description. Document units, valid inputs, `None` meanings,
+errors and lifetime obligations where they affect callers.
+
+Internal cross-crate interfaces retain documentation for ownership, safety and
+other non-obvious invariants. They do not require application tutorials or
+exhaustive `missing_docs` enforcement merely because their package is published.
+Generated FFI declarations and existing hidden test interfaces stay outside
+the application documentation surface; handwritten safety contracts remain
+with their owners. Hiding an item or changing its visibility requires the
+existing API review and cannot substitute for documenting an application API.
+Reports, metrics and native plan wrappers retain their existing contracts.
+
+The [documentation checks](../build/tests.md) enforce this scope alongside the
+API snapshots and owner-type policy. A passing completeness check establishes
+that documentation exists; review must still verify its claims against the
+implementation.
+
 ## Runtimes and threads {/* #runtimes-and-threads */}
 
 Three Tokio runtimes serve a query.

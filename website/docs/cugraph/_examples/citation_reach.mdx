@@ -15,9 +15,7 @@ by title and year, follows those edges with BFS, and joins the path to titles.
 
 <p className="fineprint">The query took {timings.queries.citation.path.elapsed_s.toFixed(2)} s.</p>
 
-BFS returns one shortest path, with two citation steps. Its paper IDs can be
-joined to catalog records in the same statement, making the graph result a
-reading list. A citation path does not establish a causal history of ideas.
+BFS returns one shortest path, with two citation steps. A citation path does not establish a causal history of ideas.
 
 **Follow-up: compare the other shortest routes.** A relational query checks
 which papers BERT cites that also cite LSTM.
@@ -52,9 +50,7 @@ AlexNet and then papers that cite those papers.
 <p className="fineprint">The query took {timings.queries.citation.reach.elapsed_s.toFixed(2)} s.</p>
 
 The three layers contain 151,243 papers, excluding AlexNet itself. Each paper
-appears at its shortest distance. SQL defines the edge direction before BFS
-and aggregates the returned distances, expressing both the traversal and the
-report in one query.
+appears at its shortest distance.
 
 The count describes reach within the April 2020 graph, not causal influence.
 Restricting citing papers by year would answer a different question; that

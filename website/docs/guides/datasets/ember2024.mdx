@@ -9,12 +9,7 @@ import TemporalModels from '../../cuml/_examples/ember2024_temporal_models.mdx';
 import ForestReview from '../../cuml/_examples/ember2024_forest_review.mdx';
 import ImportReview from '../../cugraph/_examples/ember2024_import_review.mdx';
 
-# EMBER2024: A Benchmark Dataset for Holistic Evaluation of Malware Classifiers {/* #ember2024 */}
-
-These analyses compare classification errors, inspect model contributions and
-check the imports behind graph matches. Each query connects algorithm output
-to labels or file records, allowing an analyst to evaluate a model or examine
-a proposed match.
+# EMBER2024 <span className="heading-subtitle">A Benchmark Dataset for Holistic Evaluation of Malware Classifiers</span> {/* #ember2024 */}
 
 [EMBER2024](https://github.com/FutureComputing4AI/EMBER2024) provides extracted
 file features, metadata and labels. The reports use a later test period for
@@ -39,18 +34,9 @@ model evaluation and a separate challenge cohort for file inspection.
 ## Data scope
 
 The deduplicated train, test and challenge splits contain **2,626,000**,
-**605,929** and **6,315** files. The first investigation filters the train
-split to 1,560,000 Win32 files from weeks 0 to 51 and the later test split to
-359,994 Win32 files from weeks 52 to 63. Test labels divide into 180,000
-malicious and 179,994 benign files. Its model inputs are 512 normalized byte
-and byte-entropy histogram features.
-
-The challenge split contains 6,315 malicious files, including 3,225 Win32
-files. The scoring example uses all 2,568 model features across challenge
-file types. The import graph is built from Win32 challenge files only.
-Challenge results have no benign denominator, so they cannot provide a
-false-positive rate. Research preparation retains the first occurrence of
-each SHA-256 within a split and assigns separate ID ranges to train, test and
+**605,929** and **6,315** files. Every challenge file is malicious; 3,225 of
+them are Win32. Research preparation retains the first occurrence of each
+SHA-256 within a split and assigns separate ID ranges to train, test and
 challenge records.
 
 ## Related analyses

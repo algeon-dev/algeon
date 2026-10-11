@@ -110,7 +110,7 @@ function loadSpecs() {
 
 function renderInputs(spec) {
   return [
-    'Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, Float32 feature, null, finite-value, and runtime-dimension contract.',
+    'Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, feature element, Float64 narrowing, null, finite-value, and runtime-dimension contract.',
     '',
     table(['Role', 'Required', 'Validation reference', 'Description'], spec.relation_roles.map(role => [
       code(role.name), role.required === false ? 'no' : 'yes', code(role.reference?.type || 'table'), cell(role.description),
@@ -140,7 +140,7 @@ function renderPage(spec, sidebarPosition) {
     },
     inputs: renderInputs(spec),
     argumentsAndOptions: renderDenseArguments(spec, [
-      'Each relation subquery projects an `id` and either Float32 feature columns in dimension order or one `vector` list column of Float32 values. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.',
+      'Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.',
       '',
       'The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.',
     ].join('\n')),

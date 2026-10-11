@@ -114,9 +114,7 @@ On the standalone Flight SQL server, set a process default with
 `ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY`. A per-call named value still wins:
 
 ```bash
-ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY=raw_libcugraph \
-ALGEON_SERVER_CUGRAPH_ENABLED=true \
-flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
+ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY=raw_libcugraph target/release/algeon_server
 ```
 
 ## Verify the planned path

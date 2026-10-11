@@ -17,14 +17,12 @@ import CodeBlock from '@theme/CodeBlock';
 import BrandMap from '@site/src/components/merrec/BrandMap';
 import brandMap from '@site/static/data/merrec-brand-map.json';
 
-# MerRec: A Large-scale Multipurpose Mercari Dataset for Consumer-to-Consumer Recommendation Systems {/* #merrec */}
+# MerRec <span className="heading-subtitle">A Large-scale Multipurpose Mercari Dataset for C2C Recommendation Systems</span> {/* #merrec */}
 
 [MerRec](https://huggingface.co/datasets/mercari-us/merrec) holds 1.27 billion
 events from 5.57 million Mercari US shoppers between May and October 2023:
 views, likes, cart taps, offers and completed purchases over 82.6 million
-listings. Each section below states a merchandising or audience question,
-shows the SQL and its captured result, and notes the follow-up the result
-calls for. Likes define interest, completed purchases supply the later
+listings. Likes define interest, completed purchases supply the later
 outcome, and every statement ran over the full dataset on one GPU.
 
 - [Barbie's July](#barbie): which brands moved toward Barbie's audience after

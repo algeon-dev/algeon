@@ -7,69 +7,131 @@ description: Build and run the algeon-server Flight SQL endpoint, then connect w
 
 Run the standalone server when clients need a remote Arrow Flight SQL
 endpoint instead of an embedded Rust API. It builds one shared GPU backend,
-installs the cuVS UDTFs on every session (and the cuGraph UDTFs
-when [enabled in its configuration](./configuration.mdx#gpu-sql-udtfs)),
+installs the cuGraph, cuVS, and cuML UDTFs on every session (cuGraph can be
+[disabled in its configuration](./configuration.mdx#gpu-sql-udtfs)),
 and serves ordinary Arrow results to any ADBC or Flight SQL client. Its
 embeddable implementation and public API live in
 `algeon_datafusion::server`; `crates/algeon-server` is the standalone launcher.
 
 ## Build and start
 
-Build the `algeon-server` package and its `algeon_server` binary:
+After the native libraries are built (see
+[Run the server only](../build/overview.md#run-the-server-only)), build the
+`algeon-server` package and its `algeon_server` binary:
 
 ```bash
-cargo build --workspace --all-features --release --bin algeon_server
+cargo build --release -p algeon-server --features cugraph,cuvs,cuml,nvml
 ```
 
-Every selected GPU needs an explicit device profile. For a single-GPU local
-server, create `server.toml` in the repository root:
-
-```toml
-[[admission.device_profiles]]
-device_ordinal = 0
-```
-
-Then start the server on localhost:
+Start it with no configuration file:
 
 ```bash
-export ALGEON_SERVER_CONFIG_FILE="$PWD/server.toml"
-export ALGEON_SERVER_BIND=127.0.0.1:50051
-
-flock /tmp/cudf-gpu.lock "${CARGO_TARGET_DIR:-target}/release/algeon_server"
+target/release/algeon_server
 ```
+
+With no configuration the server uses GPU 0, binds `127.0.0.1:50051`, and
+leaves authentication disabled. `algeon_server --help` lists the command-line
+flags, and `algeon_server --check-config` prints the effective configuration
+and the source of each value without touching the GPU. For memory limits,
+more GPUs, authentication, and TLS, start from the
+[complete example](./configuration.mdx#complete-example).
+Before binding another interface, enable
+[authentication](./configuration.mdx#authentication) and either
+[TLS](./configuration.mdx#tls) or a TLS-terminating proxy.
+
+To keep ordinary SQL on DataFusion CPU while explicit cuGraph, cuVS, and cuML
+calls run on GPU, set `ALGEON_SERVER_NATIVE_EXECUTION_MODE=functions_only`
+(or `execution_mode = "functions_only"` under `[native]`) before startup.
+The default is `native_preferred`; see
+[Execution mode](./configuration.mdx#execution-mode) for all three modes.
 
 From another terminal, verify the endpoint with the repository client:
 
 ```bash
-cargo run -p tools --all-features -- \
-  flight-sql-query http://127.0.0.1:50051 "SELECT 1 AS one"
+cargo run -p tools -- \
+  flight-sql-query grpc://127.0.0.1:50051 "SELECT 1 AS one"
 ```
 
-The expected result is a column named `one` containing `1`. Authentication is
-disabled by default, so keep this setup on a trusted local interface. See
-[Configuration](./configuration.mdx) before exposing the endpoint or selecting
-more GPUs.
+The expected result is a column named `one` containing `1`. The tool is a
+plaintext smoke-test client with no authentication or TLS; applications
+connect through [ADBC](#connect-with-adbc). It waits up to 5 seconds for the
+server and prints a progress line each second;
+`--connect-timeout-secs <n>` before the URL changes that limit.
 
-To keep ordinary SQL on DataFusion CPU while explicit cuGraph and cuVS calls
-run on GPU, set `ALGEON_SERVER_EXECUTION_MODE=functions_only` before startup.
-The default is `native_preferred`; see
-[Execution mode](./configuration.mdx#execution-mode) for all three modes and
-their TOML equivalents.
+## Five-minute quickstart {/* #quickstart */}
+
+These statements need no dataset: the GPU functions read inline `VALUES`
+rows. Run them in any client from [Client settings](#client-settings).
+
+List the GPU functions this build installed:
+
+```sql
+SELECT function_name, provider, available FROM gpu_list_functions() ORDER BY function_name;
+```
+
+Check the server version, enabled features, and execution mode:
+
+```sql
+SELECT * FROM algeon_version();
+```
+
+Rank four vertices with PageRank. The result has one `vertex` and `value`
+row per vertex:
+
+```sql
+SELECT * FROM cugraph_pagerank(edges => (SELECT * FROM (VALUES (1,2),(2,3),(3,1),(3,4)) AS t(src, dst)));
+```
+
+Cluster four points into two groups with cuVS k-means:
+
+```sql
+SELECT * FROM cuvs_kmeans(input => (SELECT * FROM (VALUES (1, 0.0, 0.0), (2, 0.1, 0.0), (3, 5.0, 5.0), (4, 5.1, 4.9)) AS t(id, x, y)), n_clusters => 2);
+```
+
+`gpu_validate_call` checks a call against the schema of a registered table
+or view without reading rows. Register the edges as a view, then validate a
+PageRank call over it:
+
+```sql
+CREATE OR REPLACE VIEW quickstart_edges AS
+SELECT * FROM (VALUES (1,2),(2,3),(3,1),(3,4)) AS t(src, dst);
+```
+
+```sql
+SELECT *
+FROM gpu_validate_call(
+  'cugraph_pagerank',
+  '{
+    "relations":{"edges":{"table":"quickstart_edges"}},
+    "options":{"alpha":0.9,"directed":true}
+  }'
+);
+```
+
+The row has `valid = true` and `would_execute_gpu = true`. Finally, ask the
+planner which parts of the PageRank statement run on the GPU:
+
+```sql
+EXPLAIN GPU SELECT * FROM cugraph_pagerank(edges => (SELECT * FROM (VALUES (1,2),(2,3),(3,1),(3,4)) AS t(src, dst)));
+```
+
+The `summary` row reports `gpu_path = native` with zero CPU boundaries.
+[Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx) walks
+through the same sequence with descriptors and registered data, and
+[GPU coverage validation](./gpu-coverage-validation.mdx) explains each
+`EXPLAIN GPU` column.
 
 ## Start the citation demo server
 
 The [citation investigation](../guides/datasets/citation-network.mdx) uses
 Parquet files produced by the
 [citation fixture](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/citation_network/README.md).
-With those files available, enable cuGraph in the server configuration above
-before starting it:
+cuGraph is enabled by default, so the server needs no extra setting. Paths in
+`LOCATION` resolve against the server's working directory; start it from the
+repository root.
 
-```bash
-export ALGEON_SERVER_CUGRAPH_ENABLED=true
-```
-
-Run the server from the repository root. In a connected SQL client, register
-the paper records and the two sort orders of the citation edges:
+To register the tables at every start, save these statements in a file such
+as `citation-init.sql`:
 
 ```sql
 CREATE OR REPLACE EXTERNAL TABLE citation_edges
@@ -78,24 +140,72 @@ CREATE OR REPLACE EXTERNAL TABLE citation_edges_by_dst
 STORED AS PARQUET LOCATION 'fixture/demo/citation_network/v1/parquet/edges_by_dst.parquet';
 CREATE OR REPLACE EXTERNAL TABLE papers
 STORED AS PARQUET LOCATION 'fixture/demo/citation_network/v1/parquet/profiles_by_paper_id.parquet';
-```
-
-Submit each statement separately. The three tables supply the citation-path,
-bibliography and community queries on the investigation page. Examples that
-use author or field links also need these registrations:
-
-```sql
 CREATE OR REPLACE EXTERNAL TABLE paper_authors
 STORED AS PARQUET LOCATION 'fixture/demo/citation_network/v1/parquet/paper_authors.parquet';
 CREATE OR REPLACE EXTERNAL TABLE paper_fos
 STORED AS PARQUET LOCATION 'fixture/demo/citation_network/v1/parquet/paper_fos.parquet';
 ```
 
-Registrations last until the server stops. The saved SQL includes any
-additional views that its algorithm inputs require. The default
+and name it with [`init_sql`](./configuration.mdx#startup-sql):
+
+```bash
+ALGEON_SERVER_INIT_SQL="$PWD/citation-init.sql" target/release/algeon_server
+```
+
+Alternatively, submit each statement separately from a connected SQL client
+after startup. The first three tables supply the citation-path, bibliography
+and community queries on the investigation page; examples that use author or
+field links also need `paper_authors` and `paper_fos`. The saved SQL includes
+any additional views that its algorithm inputs require. The default
 `native_preferred` mode supports the bibliography example's mixed execution
 path; inspect a changed query with
 [GPU coverage validation](./gpu-coverage-validation.mdx).
+
+## Shared catalog {/* #shared-catalog */}
+
+The DDL namespace is server-wide. A table or view that one connection
+creates is visible to every connection and every authenticated user, and a
+`CREATE OR REPLACE` from one client replaces the object for all of them.
+When several agents or users share a server, give each one distinct names or
+a name prefix. Registrations last until the server stops; `init_sql`
+recreates its objects at the next start.
+
+## Statement limits {/* #statement-limits */}
+
+Flight SQL parameter binding is not supported. A prepared statement with
+placeholders fails with:
+
+```text
+Flight SQL parameter binding is not supported; prepare statements without placeholders
+```
+
+Applications therefore interpolate values into the SQL text. Escape a string
+value by doubling each single quote, and accept identifiers such as table
+names only after checking them against an allowlist or a strict pattern:
+
+```python
+def sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+```
+
+`EXPLAIN GPU` runs from statement queries and from prepared statements without
+parameters, so the Python DB-API `cursor.execute("EXPLAIN GPU ...")` works;
+see [GPU coverage validation](./gpu-coverage-validation.mdx).
+
+DML and `COPY` are rejected. A statement query returns
+`Flight SQL statement query does not support DML or COPY statements`, and a
+prepared statement returns
+`Flight SQL prepared DML and COPY statements are not supported`.
+
+`SET` and `RESET` are rejected on every endpoint with:
+
+```text
+SET and RESET are not supported over Flight SQL; configure DataFusion session options with DATAFUSION_* environment variables before starting the server
+```
+
+Set DataFusion session options through
+[`DATAFUSION_*` variables](./configuration.mdx#datafusion-session-configuration)
+before the server starts.
 
 ## Connect with ADBC
 
@@ -118,8 +228,15 @@ with dbapi.connect(uri="grpc://127.0.0.1:50051") as conn:
         result = cur.fetch_arrow_table()
 ```
 
+The DB-API wrapper emits
+`Warning: Cannot disable autocommit; conn will not be DB-API 2.0 compliant`
+when a connection opens. Flight SQL has no transactions, so the warning is
+expected and needs no action.
+
 The same endpoint works with other ADBC language bindings. Keep pooling,
 timeouts, authentication, and result conversion in the client service.
+[Query stats](./handling-errors.mdx#query-stats) describes how to fetch
+per-query statistics by query id or correlation id.
 
 ## Connection loss and result backpressure {/* #connection-loss */}
 
@@ -147,9 +264,11 @@ Choose either client for an interactive session.
 ### DataBow
 
 [`databow`](https://github.com/columnar-tech/databow) exercises the ADBC driver
-path:
+path. Install the Flight SQL driver with
+[`dbc`](https://github.com/columnar-tech/dbc) first, then connect:
 
 ```bash
+dbc install flightsql
 databow --driver flightsql --uri grpc://127.0.0.1:50051
 ```
 
@@ -162,8 +281,6 @@ Flight SQL:
 arrow_cli --host 127.0.0.1 --port 50051 --timeout 120
 ```
 
-Flight SQL accepts ordinary DataFusion `SET` statements, but rejects
-`SET algeon_datafusion.*`; server resource policy comes from `ServerConfig`.
 GPU execution requires a CUDA-capable host and the runtime libraries for the
 enabled Cargo features. In the default mode, relational candidates the server
 does not select for GPU execution stay in DataFusion; a failure after GPU
@@ -171,3 +288,22 @@ execution starts is returned as a structured error and is not replayed on CPU.
 Use `EXPLAIN GPU` (see
 [GPU Coverage Validation](./gpu-coverage-validation.mdx)) to see which parts of
 a query will run on the GPU.
+
+## Client settings {/* #client-settings */}
+
+| Client | Endpoint | Basic credentials | Trust a server certificate |
+| --- | --- | --- | --- |
+| ADBC (Python) | `grpc://host:port`, or `grpc+tls://host:port` for TLS | `db_kwargs={"username": "...", "password": "..."}` | `db_kwargs={"adbc.flight.sql.client_option.tls_root_certs": pem_text}`, where the value is the PEM file's contents |
+| databow | `--uri grpc://host:port` or `--uri grpc+tls://host:port` | `--username` and `--password` | `--option "adbc.flight.sql.client_option.tls_root_certs=$(cat ca.pem)"` |
+| arrow_cli | `--host` and `--port`; add `--tls` for TLS | `-u` and `-p` | Its README documents no custom CA option |
+| `tools flight-sql-query` | `grpc://host:port` or `http://host:port` | Not supported | Not supported; plaintext only |
+
+The ADBC option names are those of `adbc_driver_flightsql` 1.12.0. A client
+and server that disagree on TLS fail at connection time:
+
+- A plaintext client against a TLS server reports
+  `error reading server preface: unexpected EOF`. Switch the URI to
+  `grpc+tls://`.
+- A TLS client against a plaintext server reports a TLS handshake error.
+  Switch the URI to `grpc://`, or enable [TLS](./configuration.mdx#tls) on the
+  server.

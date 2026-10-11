@@ -12,8 +12,9 @@ prefix, Rust crate, and validation command inside that checkout.
 Before you start:
 
 - [Prerequisites](./prerequisites.md) are installed: CUDA toolkit with `nvcc`,
-  a RAPIDS-compatible host compiler, CMake, Ninja, `clang`, `mold`, Rust, and
-  the pinned `cargo-nextest` and `cargo-hack` versions.
+  a RAPIDS-compatible host compiler, CMake, Ninja, `clang`, `mold`, `patchelf`
+  (the native install scripts bind each library's RUNPATH with it), and Rust;
+  step 5 also needs `cargo-nextest` and the required `cargo-hack` version.
 - The build host has the GPU the artifacts will run on, or you have chosen an
   explicit architecture list ([Choosing CUDA architectures](#choosing-cuda-architectures)).
 
@@ -230,8 +231,16 @@ build cuDF or cuGraph with CMake.
 
 ## 4. Build the Rust workspace
 
-After all four native layers exist, build the unified workspace with one
-feature selection:
+To run only the Flight SQL server, build its package with the GPU features
+and continue with the
+[Flight SQL server](../integration/flight-sql-server.mdx#build-and-start) page:
+
+```bash
+cargo build --release -p algeon-server --features cugraph,cuvs,cuml,nvml
+```
+
+For development, after all four native layers exist, build the unified
+workspace with one feature selection:
 
 ```bash
 cargo build --workspace --all-features
@@ -249,7 +258,8 @@ cargo build -p cudf --all-features
 
 ## 5. Validate the checkout
 
-Run the single full pre-merge gate bare, from the checkout root:
+This step is for contributors; running the server does not need it. Run the
+single full pre-merge gate bare, from the checkout root:
 
 ```bash
 bash scripts/check_all.sh
