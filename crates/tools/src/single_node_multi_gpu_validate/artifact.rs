@@ -686,8 +686,22 @@ impl QpsEnvelopeEvidence {
             let recovered = aggregate_steps.iter().find(|step| step.step_index == recovery.recovery_step_index)?;
             Some(QpsEnvelopeRecoveryEvidence::from_steps(recovery, baseline, recovered))
         });
-        let recovery_evidenced =
-            profile.recovery.is_none_or(|_| recovery.as_ref().is_some_and(QpsEnvelopeRecoveryEvidence::within_band));
+        let recovery_evidenced = profile.recovery.is_none_or(|contract| {
+            let Some(baseline) = steps.iter().find(|step| step.step_index == contract.baseline_step_index) else {
+                return false;
+            };
+            let Some(baseline_rate) = baseline.arrival_rate_per_second else {
+                return false;
+            };
+            recovery.as_ref().is_some_and(QpsEnvelopeRecoveryEvidence::within_band)
+                && baseline.queue_high_watermark_through_step.is_some_and(|peak| peak < queue_limit)
+                && steps.iter().any(|step| {
+                    step.step_index > contract.baseline_step_index
+                        && step.step_index < contract.recovery_step_index
+                        && step.arrival_rate_per_second.is_some_and(|rate| rate > baseline_rate)
+                        && step.queue_high_watermark_through_step == Some(queue_limit)
+                })
+        });
         let status = if !arrival_plan_truncated_by_attempt_cap
             && queue_bound_respected
             && gpu_only_successes
@@ -1268,7 +1282,7 @@ mod qps_envelope_tests {
     }
 
     #[test]
-    fn qps_envelope_requires_complete_gpu_progress_bounded_queue_and_recovery() {
+    fn qps_envelope_requires_complete_gpu_progress_queue_pressure_and_recovery() {
         let profile = QpsEnvelopeProfile {
             min_gpu_reaching_completions_per_step: 1,
             recovery: Some(QpsEnvelopeRecoveryProfile {
@@ -1282,6 +1296,40 @@ mod qps_envelope_tests {
         assert_eq!(evidence.status, ClauseStatus::Evidenced);
         assert!(evidence.passes());
         assert!(evidence.recovery.as_ref().is_some_and(|recovery| recovery.total_latency_within_band));
+
+        let no_pressure = QpsEnvelopeEvidence::from_steps(profile, &steps, 16, 64, false, &[(0, 0), (1, 63), (2, 63)]);
+        assert_eq!(no_pressure.status, ClauseStatus::Failed);
+
+        let sweep = QpsEnvelopeEvidence::from_steps(
+            QpsEnvelopeProfile { recovery: None, ..profile },
+            &steps,
+            16,
+            64,
+            false,
+            &[(0, 0), (1, 63), (2, 63)],
+        );
+        assert_eq!(sweep.status, ClauseStatus::Evidenced);
+
+        let saturated_baseline =
+            QpsEnvelopeEvidence::from_steps(profile, &steps, 16, 64, false, &[(0, 64), (1, 64), (2, 64)]);
+        assert_eq!(saturated_baseline.status, ClauseStatus::Failed);
+
+        let zero_queue = QpsEnvelopeEvidence::from_steps(profile, &steps, 16, 0, false, &[(0, 0), (1, 0), (2, 0)]);
+        assert_eq!(zero_queue.status, ClauseStatus::Failed);
+
+        let pressure_during_recovery =
+            QpsEnvelopeEvidence::from_steps(profile, &steps, 16, 64, false, &[(0, 0), (1, 63), (2, 64)]);
+        assert_eq!(pressure_during_recovery.status, ClauseStatus::Failed);
+
+        let missing_pressure_phase = QpsEnvelopeEvidence::from_steps(
+            profile,
+            &[steps[0].clone(), steps[2].clone()],
+            16,
+            64,
+            false,
+            &[(0, 0), (2, 64)],
+        );
+        assert_eq!(missing_pressure_phase.status, ClauseStatus::Failed);
 
         let missing_high_water = QpsEnvelopeEvidence::from_steps(profile, &steps, 16, 64, false, &[(0, 0), (1, 64)]);
         assert_eq!(missing_high_water.status, ClauseStatus::Failed);

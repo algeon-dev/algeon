@@ -14,7 +14,7 @@ use super::{
     cache_quarantine_observation, drain, drain_with_feature_off_cugraph_capture, elapsed_ns,
     finish_cancellation_barrier, spawn_attempt_task, spawn_feature_off_cugraph_probes,
 };
-use crate::single_node_multi_gpu_validate::schedule::ScheduledArrival;
+use crate::single_node_multi_gpu_validate::schedule::{ScheduledArrival, StepPlan};
 
 pub(super) struct DrivenRun {
     pub(super) observations: Vec<AttemptObservation>,
@@ -1016,9 +1016,113 @@ pub(super) async fn drive_duration_paced_quarantine_cycles(
     })
 }
 
-/// Drives the close-under-saturation scenario. A closed-loop cohort
-/// oversubscribes the fleet; at the measurement-window midpoint the runner
-/// stops submitting, snapshots public admission state, and initiates the
+struct CloseUnderLoadSchedule<'a> {
+    plan: &'a ArrivalPlan,
+    started: Instant,
+    close_at: Instant,
+    step_index: usize,
+    round: usize,
+    last_step_index: usize,
+    close_round: usize,
+}
+
+enum CloseUnderLoadAction {
+    WaitUntil(Instant),
+    Submit(CloseUnderLoadCohort),
+}
+
+struct CloseUnderLoadCohort {
+    step: StepPlan,
+    round: usize,
+    submission_deadline: Option<Instant>,
+}
+
+impl<'a> CloseUnderLoadSchedule<'a> {
+    fn new(plan: &'a ArrivalPlan, timing: RunTiming) -> Self {
+        Self {
+            plan,
+            started: timing.started,
+            close_at: timing.started + Duration::from_nanos(plan.warmup_ns + plan.measurement_ns / 2),
+            step_index: 0,
+            round: 0,
+            last_step_index: 0,
+            close_round: 0,
+        }
+    }
+
+    fn next(&mut self, now: Instant) -> CloseUnderLoadAction {
+        while let Some(step) = self.plan.steps.get(self.step_index) {
+            if now >= self.close_at {
+                break;
+            }
+            self.last_step_index = self.step_index;
+            self.close_round = self.round;
+            let deadline = (self.started + Duration::from_nanos(step.start_ns.saturating_add(step.measurement_ns)))
+                .min(self.close_at);
+            let concurrency = if self.plan.is_duration_paced_concurrency() {
+                step.concurrency
+            } else {
+                // Reserve the close cohort inside the finite plan's attempt
+                // budget, including a plan cut short by the planning cap.
+                step.planned_arrivals
+                    .saturating_sub(step.concurrency)
+                    .saturating_sub(self.round.saturating_mul(step.concurrency))
+                    .min(step.concurrency)
+            };
+            if now < deadline && concurrency != 0 {
+                let cohort = CloseUnderLoadCohort {
+                    step: StepPlan { concurrency, ..*step },
+                    round: self.round,
+                    submission_deadline: Some(deadline),
+                };
+                self.round = self.round.saturating_add(1);
+                self.close_round = self.round;
+                return CloseUnderLoadAction::Submit(cohort);
+            }
+            self.finish_step();
+        }
+        if now < self.close_at {
+            return CloseUnderLoadAction::WaitUntil(self.close_at);
+        }
+        // The close witness needs a complete fresh cohort even when a drain
+        // crosses the midpoint or the finite ordinary rounds end before it.
+        let mut step = self.plan.steps[self.last_step_index];
+        let round = if self.plan.is_duration_paced_concurrency() {
+            0
+        } else {
+            step.concurrency = step.concurrency.min(step.planned_arrivals);
+            self.close_round
+        };
+        CloseUnderLoadAction::Submit(CloseUnderLoadCohort { step, round, submission_deadline: None })
+    }
+
+    fn finish_step(&mut self) {
+        self.step_index += 1;
+        self.round = 0;
+    }
+}
+
+impl CloseUnderLoadCohort {
+    fn arrivals<'a>(
+        self,
+        sequence: &'a mut usize,
+        queries: &'a [SelectedQuery],
+        sessions: &'a SessionPool,
+        mut now: impl FnMut() -> Instant + 'a,
+    ) -> impl Iterator<Item = ScheduledArrival> + 'a {
+        (0..self.step.concurrency).map_while(move |_| {
+            if self.submission_deadline.is_some_and(|deadline| now() >= deadline) {
+                return None;
+            }
+            let arrival = duration_paced_arrival(*sequence, self.round, self.step.step_index, queries, sessions);
+            *sequence = sequence.saturating_add(1);
+            Some(arrival)
+        })
+    }
+}
+
+/// Drives ordinary closed-loop rounds until the measurement-window midpoint,
+/// then submits a fresh cohort, snapshots public admission state and initiates the
 /// public close path. Queued waiters must seal `backend_closing`, in-flight
 /// attempts must finish, and every submitted attempt must be accounted for
 /// exactly once. The runner never aborts a task to force the shape.
@@ -1032,104 +1136,8 @@ pub(super) async fn drive_close_under_load(
     if plan.arrival_mode != "concurrency" {
         return Err("--close-under-load requires concurrency scheduling so close lands mid-cohort".into());
     }
-    if plan.is_duration_paced_concurrency() {
-        return drive_duration_paced_close_under_load(backend, sessions, queries, plan, completion_drain_grace).await;
-    }
-
     let timing = RunTiming::new(plan, completion_drain_grace);
-    let started = timing.started;
-    let warmup_deadline = timing.warmup_deadline;
-    let run_deadline = timing.completion_deadline;
-    let close_at = started + Duration::from_nanos(plan.warmup_ns + plan.measurement_ns / 2);
-    let mut tasks = Vec::new();
-    let mut observations = Vec::new();
-    let mut begin_failures = 0_u64;
-    let mut join_failures = 0_u64;
-    let mut current_round = 0;
-    let mut cancellation_barrier = None;
-    let mut storm_cancellers = Vec::new();
-    let mut submitted_attempts = 0_u64;
-    let mut live_sequences = BTreeSet::new();
-
-    for arrival in &plan.arrivals {
-        if Instant::now() >= close_at || Instant::now() >= run_deadline {
-            break;
-        }
-        if arrival.round != current_round {
-            drain(&mut tasks, &mut observations, &mut join_failures).await;
-            live_sequences.clear();
-            current_round = arrival.round;
-        }
-        match spawn_attempt_task(
-            backend,
-            sessions,
-            queries,
-            *arrival,
-            true,
-            warmup_deadline,
-            run_deadline,
-            None,
-            &mut cancellation_barrier,
-            StormKnobs::default(),
-            &mut storm_cancellers,
-        ) {
-            Ok(task) => {
-                submitted_attempts += 1;
-                live_sequences.insert(arrival.sequence);
-                tasks.push(task);
-            },
-            Err(()) => {
-                begin_failures += 1;
-                break;
-            },
-        }
-    }
-
-    // Public admission facts are read first, then the public close
-    // transition runs. No further submissions happen after this point.
-    let (admitted_at_close, queued_at_close) = wait_for_close_under_load_cohort(backend, run_deadline).await?;
-    let close_requested_offset_ns = elapsed_ns(started);
-    let close_initiated = backend.close();
-    let barrier = CloseUnderLoadBarrier {
-        close_requested_offset_ns,
-        close_initiated,
-        admitted_at_close,
-        queued_at_close,
-        in_flight_at_close: tasks.len(),
-        in_flight_sequences: std::mem::take(&mut live_sequences),
-        submitted_attempts,
-    };
-    drain(&mut tasks, &mut observations, &mut join_failures).await;
-    observations.sort_by_key(|observation| observation.sequence);
-
-    Ok(DrivenRun {
-        observations,
-        dropped_overrun_arrivals: 0,
-        begin_failures,
-        join_failures,
-        deadline: timing.deadline_evidence(),
-        cancellation_barrier: None,
-        quarantine_barrier: None,
-        deadline_barrier: None,
-        physical_allocator_pressure: None,
-        observed_peak_queued_attempts: 0,
-        queue_high_watermarks: Vec::new(),
-        storm_cancellations_requested: 0,
-        quarantine_cycle_barriers: Vec::new(),
-        close_under_load: Some(barrier),
-        feature_off_cugraph_source_errors: Vec::new(),
-    })
-}
-
-pub(super) async fn drive_duration_paced_close_under_load(
-    backend: &AlgeonGpuBackend,
-    sessions: &SessionPool,
-    queries: &[SelectedQuery],
-    plan: &ArrivalPlan,
-    completion_drain_grace: Duration,
-) -> ToolResult<DrivenRun> {
-    let timing = RunTiming::new(plan, completion_drain_grace);
-    let close_at = timing.started + Duration::from_nanos(plan.warmup_ns + plan.measurement_ns / 2);
+    let mut schedule = CloseUnderLoadSchedule::new(plan, timing);
     let mut tasks = Vec::new();
     let mut observations = Vec::new();
     let mut begin_failures = 0_u64;
@@ -1138,86 +1146,53 @@ pub(super) async fn drive_duration_paced_close_under_load(
     let mut storm_cancellers = Vec::new();
     let mut sequence = 0_usize;
     let mut submitted_attempts = 0_u64;
-    let mut last_step = &plan.steps[0];
+    let mut in_flight_sequences = BTreeSet::new();
 
-    for step in &plan.steps {
-        if Instant::now() >= close_at {
+    loop {
+        let cohort = match schedule.next(Instant::now()) {
+            CloseUnderLoadAction::WaitUntil(close_at) => {
+                sleep_until(TokioInstant::from_std(close_at)).await;
+                continue;
+            },
+            CloseUnderLoadAction::Submit(cohort) => cohort,
+        };
+        let closing = cohort.submission_deadline.is_none();
+        let mut submitted_this_round = 0_usize;
+        for arrival in cohort.arrivals(&mut sequence, queries, sessions, Instant::now) {
+            match spawn_attempt_task(
+                backend,
+                sessions,
+                queries,
+                arrival,
+                true,
+                timing.warmup_deadline,
+                timing.completion_deadline,
+                None,
+                &mut cancellation_barrier,
+                StormKnobs::default(),
+                &mut storm_cancellers,
+            ) {
+                Ok(task) => {
+                    if closing {
+                        in_flight_sequences.insert(arrival.sequence);
+                    }
+                    tasks.push(task);
+                    submitted_attempts += 1;
+                    submitted_this_round += 1;
+                },
+                Err(()) => {
+                    begin_failures += 1;
+                    break;
+                },
+            }
+        }
+        if closing {
             break;
         }
-        last_step = step;
-        let step_deadline =
-            (timing.started + Duration::from_nanos(step.start_ns.saturating_add(step.measurement_ns))).min(close_at);
-        let mut round = 0_usize;
-        while Instant::now() < step_deadline {
-            let mut submitted_this_round = 0_usize;
-            for _ in 0..step.concurrency {
-                if Instant::now() >= step_deadline {
-                    break;
-                }
-                let arrival = duration_paced_arrival(sequence, round, step.step_index, queries, sessions);
-                sequence = sequence.saturating_add(1);
-                match spawn_attempt_task(
-                    backend,
-                    sessions,
-                    queries,
-                    arrival,
-                    true,
-                    timing.warmup_deadline,
-                    timing.completion_deadline,
-                    None,
-                    &mut cancellation_barrier,
-                    StormKnobs::default(),
-                    &mut storm_cancellers,
-                ) {
-                    Ok(task) => {
-                        tasks.push(task);
-                        submitted_attempts += 1;
-                        submitted_this_round += 1;
-                    },
-                    Err(()) => {
-                        begin_failures += 1;
-                        break;
-                    },
-                }
-            }
-            if submitted_this_round == 0 {
-                break;
-            }
-            drain(&mut tasks, &mut observations, &mut join_failures).await;
-            round = round.saturating_add(1);
+        if submitted_this_round == 0 {
+            schedule.finish_step();
         }
-    }
-
-    if Instant::now() < close_at {
-        sleep_until(TokioInstant::from_std(close_at)).await;
-    }
-    let mut in_flight_sequences = BTreeSet::new();
-    for _ in 0..last_step.concurrency {
-        let arrival = duration_paced_arrival(sequence, 0, last_step.step_index, queries, sessions);
-        sequence = sequence.saturating_add(1);
-        match spawn_attempt_task(
-            backend,
-            sessions,
-            queries,
-            arrival,
-            true,
-            timing.warmup_deadline,
-            timing.completion_deadline,
-            None,
-            &mut cancellation_barrier,
-            StormKnobs::default(),
-            &mut storm_cancellers,
-        ) {
-            Ok(task) => {
-                in_flight_sequences.insert(arrival.sequence);
-                tasks.push(task);
-                submitted_attempts += 1;
-            },
-            Err(()) => {
-                begin_failures += 1;
-                break;
-            },
-        }
+        drain(&mut tasks, &mut observations, &mut join_failures).await;
     }
 
     let (admitted_at_close, queued_at_close) =

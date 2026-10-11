@@ -3,7 +3,6 @@ use std::{
     env,
     fs::{self, File},
     path::{Path, PathBuf},
-    process::Command,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -582,9 +581,8 @@ fn feature_off_cugraph_profile_requires_a_duration_paced_mixed_relational_cell()
     not(feature = "single-node-multi-gpu-validate-run-cugraph")
 ))]
 #[test]
-fn normal_cugraph_s1_profile_is_rejected_by_the_base_runner() {
-    let profile =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s1-embedded-sf1.json").as_bytes()).unwrap();
+fn cugraph_algorithm_profile_is_rejected_by_the_base_runner() {
+    let profile = measured_run_profile();
     let queries = select_queries(&profile.workloads).unwrap();
     let error = super::measure::validate_cugraph_runner_mode(&profile, &queries).unwrap_err().to_string();
     assert!(error.contains("single-node-multi-gpu-validate-run-cugraph"), "{error}");
@@ -760,35 +758,6 @@ impl Drop for TestDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
-}
-
-fn s2_profile_generator(out_dir: &Path) -> Command {
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/stress/generate_s2_graph_profiles.py");
-    let mut command = Command::new("python3");
-    command.arg(script).arg("--out-dir").arg(out_dir);
-    command
-}
-
-fn generate_s2_profiles(out_dir: &Path, knee_qps: u64) {
-    let status = s2_profile_generator(out_dir)
-        .arg("--knee-qps")
-        .arg(knee_qps.to_string())
-        .status()
-        .expect("start deterministic S2 profile generator");
-    assert!(status.success(), "S2 profile generator must succeed");
-    let status = s2_profile_generator(out_dir)
-        .arg("--knee-qps")
-        .arg(knee_qps.to_string())
-        .arg("--check")
-        .status()
-        .expect("check deterministic S2 profile generator");
-    assert!(status.success(), "S2 profile generator check must succeed");
-}
-
-fn read_generated_s2_profile(out_dir: &Path, name: &str) -> RunProfile {
-    let path = out_dir.join(name);
-    let source = fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-    RunProfile::parse_bytes(&source).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
 fn fixture_preflight_profile(tpch_root: &Path, dblp_root: &Path) -> RunProfile {
@@ -1376,13 +1345,30 @@ fn qps_envelope_recovery_must_be_the_final_return_to_the_baseline_rate() {
             max_p95_latency_multiplier: 3,
         }),
     });
-    profile.vram_calibration = Some(VramCalibrationProfile {
-        max_underclaim_bytes: 64 * 1024 * 1024,
+    profile.vram_calibration = None;
+    profile.validate().unwrap();
+
+    let mut calibrated = profile.clone();
+    calibrated.vram_calibration = Some(VramCalibrationProfile {
+        max_underclaim_bytes: 0,
         max_observed_to_claim_ratio_milli: 1_000,
-        max_overclaim_bytes: 64 * 1024 * 1024,
+        max_overclaim_bytes: 0,
         max_claim_to_observed_ratio_milli: 1_000,
     });
-    profile.validate().unwrap();
+    calibrated.validate().unwrap();
+    for (observed_to_claim, claim_to_observed, field) in
+        [(999, 1_000, "max_observed_to_claim_ratio_milli"), (1_000, 999, "max_claim_to_observed_ratio_milli")]
+    {
+        let mut invalid = calibrated.clone();
+        let calibration = invalid.vram_calibration.as_mut().unwrap();
+        calibration.max_observed_to_claim_ratio_milli = observed_to_claim;
+        calibration.max_claim_to_observed_ratio_milli = claim_to_observed;
+        let error = invalid.validate().unwrap_err().to_string();
+        assert!(error.contains(field), "{error}");
+    }
+    calibrated.backend.device_profiles[0].install_telemetry = false;
+    let error = calibrated.validate().unwrap_err().to_string();
+    assert!(error.contains("vram_calibration requires CUDA telemetry"), "{error}");
 
     let mut later_overload = profile.clone();
     later_overload.scheduling.steps.push(ScheduleStepProfile {
@@ -1393,6 +1379,13 @@ fn qps_envelope_recovery_must_be_the_final_return_to_the_baseline_rate() {
     });
     let error = later_overload.validate().unwrap_err().to_string();
     assert!(error.contains("must follow the final above-baseline"), "{error}");
+
+    let mut overload_before_baseline = profile.clone();
+    overload_before_baseline.scheduling.steps[0].arrival_rate_per_second = Some(100);
+    overload_before_baseline.scheduling.steps[1].arrival_rate_per_second = Some(10);
+    overload_before_baseline.qps_envelope.as_mut().unwrap().recovery.as_mut().unwrap().baseline_step_index = 1;
+    let error = overload_before_baseline.validate().unwrap_err().to_string();
+    assert!(error.contains("requires a prior offered rate"), "{error}");
 
     let mut no_prior_overload = profile;
     no_prior_overload.scheduling.steps[1].arrival_rate_per_second = Some(10);
@@ -1424,10 +1417,7 @@ fn storm_knobs_validate_their_shapes() {
     assert!(error.contains("cancel_after_ms requires"), "{error}");
 }
 
-/// Every directly runnable shipped stress-suite profile must parse and
-/// validate, so a broken library entry fails here, before qualification starts.
-/// Templates and generator bases are instantiated by their
-/// deterministic generators before use.
+/// Shipped profiles must parse and validate before fixture access or execution.
 #[test]
 fn shipped_stress_profiles_parse_and_validate() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
@@ -1453,134 +1443,46 @@ fn shipped_stress_profiles_parse_and_validate() {
 }
 
 #[test]
-fn graph_claim_calibration_requires_graph_work_and_all_i11_graph_profiles_opt_in() {
+fn graph_claim_calibration_requires_graph_algorithm_work() {
     let mut no_graph = RunProfile::parse_bytes(valid_profile_json().as_bytes()).unwrap();
     no_graph.graph_claim_calibration = Some(GraphClaimCalibrationProfile {});
     let error = no_graph.validate().unwrap_err().to_string();
     assert!(error.contains("requires at least one selected cuGraph algorithm workload"), "{error}");
 
-    let mut graph_io_only =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s2-sweep-graph-io-sf10.json").as_bytes())
-            .unwrap();
+    let mut graph_io_only = measured_run_profile();
+    graph_io_only.workloads[1].queries = vec!["edge_scan".to_string()];
     graph_io_only.graph_claim_calibration = Some(GraphClaimCalibrationProfile {});
     let error = graph_io_only.validate().unwrap_err().to_string();
     assert!(error.contains("requires at least one selected cuGraph algorithm workload"), "{error}");
 }
 
-const S2_RATE_ARRIVAL_BUDGET: u64 = 80_000;
-
-fn s2_even_knee_qps(observed_qps_milli: u64) -> u64 {
-    let rounded_up_qps = observed_qps_milli.div_ceil(1_000).max(1);
-    rounded_up_qps.div_ceil(2) * 2
-}
-
-fn s2_rate_phase_seconds(knee_qps: u64) -> Option<u64> {
-    let numerator = S2_RATE_ARRIVAL_BUDGET.checked_sub(5_u64.checked_mul(knee_qps)?)?.checked_mul(2)?;
-    let denominator = 81_u64.checked_mul(knee_qps)?;
-    let seconds = (numerator / denominator).min(60);
-    (seconds != 0).then_some(seconds)
-}
-
 #[test]
-fn generated_s2_rate_profiles_pin_even_knees_and_a_cap_safe_phase_window() {
-    assert_eq!(s2_even_knee_qps(278), 2);
-    assert_eq!(s2_even_knee_qps(33_417), 34);
-    assert_eq!(s2_even_knee_qps(42_000), 42);
-    assert_eq!(s2_even_knee_qps(42_001), 44);
+fn same_key_probe_rejects_ambiguous_dblp_slice_queries() {
+    use super::profile::{CacheSameKeyProbeProfile, CacheSameKeyQueryProfile, CacheStressProfile};
 
-    assert_eq!(s2_rate_phase_seconds(32), Some(60));
-    assert_eq!(s2_rate_phase_seconds(34), Some(57));
-    assert_eq!(s2_rate_phase_seconds(42), Some(46));
-    assert_eq!(s2_rate_phase_seconds(1_758), Some(1));
-    assert_eq!(s2_rate_phase_seconds(1_760), None);
-
-    let generated = TestDirectory::new("generated-s2-rate");
-    for (knee_qps, expected) in
-        [(41, "must be a positive even integer"), (1_760, "largest supported positive even knee is 1758")]
-    {
-        let output = s2_profile_generator(generated.path())
-            .arg("--knee-qps")
-            .arg(knee_qps.to_string())
-            .output()
-            .expect("run invalid S2 profile generator invocation");
-        assert!(!output.status.success(), "knee {knee_qps} must be rejected");
-        assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+    let mut profile = measured_run_profile();
+    profile.workloads[1].queries = vec!["bfs".to_string()];
+    for device in &mut profile.backend.device_profiles {
+        device.cache_cap_bytes = 64 * 1024 * 1024;
     }
-    generate_s2_profiles(generated.path(), 42);
-    let profiles = [
-        ("stress-s2-rate-scan-sf10.json", false),
-        ("stress-s2-rate-aggregate-sf10.json", false),
-        ("stress-s2-rate-graph-io-sf10.json", false),
-        ("stress-s2-rate-g1-force-atlas2-sf10.json", true),
-        ("stress-s2-rate-g2-bfs-deep-sf10.json", true),
-        ("stress-s2-rate-g3-pagerank-sf10.json", true),
-        ("stress-s2-rate-g4-betweenness-sf10.json", true),
-    ];
-    let expected_rates = [21, 42, 63, 84, 210, 420];
-
-    for (name, expects_graph_calibration) in profiles {
-        let profile = read_generated_s2_profile(generated.path(), name);
-        assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Rate);
-        assert_eq!(profile.scheduling.steps.len(), 13);
-        for (index, step) in profile.scheduling.steps.iter().enumerate() {
-            assert_eq!(step.measurement_seconds, 46);
-            assert_eq!(
-                step.arrival_rate_per_second,
-                Some(if index == 12 { expected_rates[0] } else { expected_rates[index % expected_rates.len()] })
-            );
-            assert_eq!(
-                step.rate_overrun,
-                Some(if index < 6 || index == 12 { RateOverrunPolicy::Delay } else { RateOverrunPolicy::Drop })
-            );
-        }
-        let recovery = profile.qps_envelope.and_then(|envelope| envelope.recovery).expect("S2 recovery contract");
-        assert_eq!(recovery.baseline_step_index, 0);
-        assert_eq!(recovery.recovery_step_index, 12);
-        assert_eq!(recovery.max_p95_latency_multiplier, 3);
-        let calibration = profile.vram_calibration.expect("S2 rate profile must opt into VRAM calibration");
-        assert_eq!(calibration.max_underclaim_bytes, 64 * 1024 * 1024);
-        assert_eq!(calibration.max_observed_to_claim_ratio_milli, 1_000);
-        assert_eq!(calibration.max_overclaim_bytes, 64 * 1024 * 1024);
-        assert_eq!(calibration.max_claim_to_observed_ratio_milli, 1_000);
-        assert_eq!(profile.graph_claim_calibration.is_some(), expects_graph_calibration, "{name}");
-        let plan = ArrivalPlan::plan(&profile.scheduling, 1, profile.session.shared_session_count).unwrap();
-        assert!(!plan.truncated_by_attempt_cap);
-        assert!(plan.arrivals.len() < 100_000);
-    }
-}
-
-#[test]
-fn s2_aggregate_profiles_reserve_the_observed_q01_working_set() {
-    // The 1 GiB aggregate domain failed with this attempt-exact allocation:
-    // 1,068,599,820 bytes live plus a 15,237,120-byte request.  Keep the
-    // immutable profile query limit above the actual reservation-limit witness,
-    // and do not mask the failure with runner retries.
-    const Q01_OBSERVED_LIVE_BYTES: u64 = 1_068_599_820;
-    const Q01_OBSERVED_REQUEST_BYTES: u64 = 15_237_120;
-    const Q01_DEFAULT_QUERY_LIMIT_BYTES: u64 = 1_342_177_280;
-    let sweep =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s2-sweep-aggregate-sf10.json").as_bytes())
-            .unwrap();
-    let generated = TestDirectory::new("generated-s2-aggregate");
-    generate_s2_profiles(generated.path(), 42);
-    let rate = read_generated_s2_profile(generated.path(), "stress-s2-rate-aggregate-sf10.json");
-
-    assert_eq!(sweep.backend.device_profiles, rate.backend.device_profiles);
-    assert_eq!(sweep.backend.native_execution, rate.backend.native_execution);
-    assert_eq!(sweep.backend.native_execution.device_budget_bytes, Q01_DEFAULT_QUERY_LIMIT_BYTES);
-    for device in &sweep.backend.device_profiles {
-        assert_eq!(device.default_query_limit_bytes, Q01_DEFAULT_QUERY_LIMIT_BYTES);
-        assert!(device.default_query_limit_bytes >= Q01_OBSERVED_LIVE_BYTES + Q01_OBSERVED_REQUEST_BYTES);
-        let managed_capacity = device.memory_limit_bytes - device.backend_reserve_bytes - device.cache_cap_bytes;
-        assert!(device.default_query_limit_bytes <= managed_capacity);
-    }
-}
-
-#[test]
-fn s7_same_key_probe_rejects_ambiguous_dblp_slice_queries() {
-    let mut profile =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s7-cache-same-key-sf1.json").as_bytes())
-            .unwrap();
+    profile.cache.mode = CacheMode::Enabled;
+    profile.cache.stress = Some(CacheStressProfile {
+        require_resident_quarantine: false,
+        required_per_device_cap_bytes: 64 * 1024 * 1024,
+        minimum_source_promoted_bytes: 0,
+        require_source_eviction: false,
+        require_source_coalescing: true,
+        require_bfs_singleflight: true,
+        require_explained_admission_delta: false,
+        same_key_probe: Some(CacheSameKeyProbeProfile {
+            target_device_ordinal: 0,
+            cohort_width: 2,
+            max_cohort_seconds: 30,
+            source: CacheSameKeyQueryProfile { kind: FixtureKind::Tpch, label: "q06".to_string() },
+            bfs: CacheSameKeyQueryProfile { kind: FixtureKind::Dblp, label: "bfs".to_string() },
+        }),
+    });
+    profile.validate().unwrap();
     profile.workloads.push(FixtureWorkloadProfile {
         kind: FixtureKind::Dblp,
         path: PathBuf::from("/fixtures/dblp/slices/source-hash-07/parquet"),
@@ -1939,30 +1841,25 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
 #[test]
 fn flight_sql_stress_reads_the_measured_run_artifact_this_runner_writes() {
     let root = TestDirectory::new("flight-stress-baseline");
-    let mut profile = measured_run_profile();
-    profile.workloads.truncate(1);
-    profile.workloads[0].queries = vec!["q06".to_string()];
-    profile.validate().unwrap();
-    let scheduling = profile.scheduling.clone();
+    let profile =
+        RunProfile::parse_bytes(include_str!("../../fixtures/stress/flight-baseline.json").as_bytes()).unwrap();
     let artifact_path = write_measured_run_artifact(profile, &root.path().join("run-artifacts"));
 
-    let mut flight_profile: Value =
-        serde_json::from_slice(include_bytes!("../../fixtures/stress/stress-s8-flight-pooled-sf1.flight-profile"))
-            .unwrap();
-    flight_profile["server"]["config_file"] = Value::from(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixture/stress/server-s8-s2-scan-sf1.toml").to_str().unwrap(),
-    );
-    flight_profile["load"]["clients"] = Value::from(scheduling.concurrency);
-    flight_profile["load"]["warmup_seconds"] = Value::from(scheduling.warmup_seconds);
-    flight_profile["load"]["measurement_seconds"] = Value::from(scheduling.measurement_seconds);
-    flight_profile["matched_in_process"] = serde_json::json!({
-        "run_artifact": artifact_path,
-        "workload": { "kind": "tpch", "query_label": "q06" },
-    });
-    let flight_profile_path = root.path().join("flight.flight-profile");
-    fs::write(&flight_profile_path, serde_json::to_vec(&flight_profile).unwrap()).unwrap();
+    for (name, source) in [
+        ("pooled", include_bytes!("../../fixtures/stress/flight-pooled.flight-profile").as_slice()),
+        ("churn", include_bytes!("../../fixtures/stress/flight-churn.flight-profile").as_slice()),
+    ] {
+        let mut flight_profile: Value = serde_json::from_slice(source).unwrap();
+        let server_config = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/stress")
+            .join(flight_profile["server"]["config_file"].as_str().unwrap());
+        flight_profile["server"]["config_file"] = Value::from(server_config.to_str().unwrap());
+        flight_profile["matched_in_process"]["run_artifact"] = Value::from(artifact_path.to_str().unwrap());
+        let flight_profile_path = root.path().join(format!("{name}.flight-profile"));
+        fs::write(&flight_profile_path, serde_json::to_vec(&flight_profile).unwrap()).unwrap();
 
-    read_stress_config(&flight_profile_path, root.path().join("flight-out")).unwrap();
+        read_stress_config(&flight_profile_path, root.path().join(format!("flight-{name}-out"))).unwrap();
+    }
 }
 
 /// A failed clause must flip the artifact status so a non-qualifying run can
