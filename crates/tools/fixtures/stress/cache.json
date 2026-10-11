@@ -1,0 +1,69 @@
+{
+  "schema": "algeon_tools.single_node_multi_gpu.run_profile",
+  "name": "stress-cache",
+  "completion_drain_grace_seconds": 30,
+  "scenario_requirements": { "require_all_device_progress": true },
+  "backend": {
+    "device_profiles": [
+      {
+        "ordinal": 0,
+        "ownership": "whole_device_exclusive",
+        "memory_limit_bytes": 101975851008,
+        "backend_reserve_bytes": 0,
+        "cache_cap_bytes": 6442450944,
+        "default_query_limit_bytes": 8589934592,
+        "source_work_per_attempt": 2,
+        "max_active_attempts": 2,
+        "installation": { "stream_pool_size": 6, "worker_count": 3, "lane_count": 2 }
+      }
+    ],
+    "queue": { "max_queued_attempts": 64, "max_queue_wait_ms": 30000 },
+    "native_execution": {
+      "device_budget_bytes": 8589934592,
+      "max_source_chunk_bytes": 1073741824,
+      "max_row_groups_per_chunk": 1024,
+      "max_retry_attempts": 3,
+      "min_retry_chunk_row_groups": 1
+    }
+  },
+  "session": { "shared_session_count": 2 },
+  "scheduling": {
+    "arrival_mode": "concurrency",
+    "concurrency": 4,
+    "seed": 20261011,
+    "warmup_seconds": 5,
+    "measurement_seconds": 60
+  },
+  "cache": {
+    "mode": "enabled",
+    "stress": {
+      "required_per_device_cap_bytes": 6442450944,
+      "require_source_coalescing": true,
+      "require_bfs_singleflight": true,
+      "require_explained_admission_delta": true,
+      "same_key_probe": {
+        "target_device_ordinal": 0,
+        "cohort_width": 2,
+        "max_cohort_seconds": 60,
+        "source": { "kind": "tpch", "label": "q06" },
+        "bfs": { "kind": "dblp", "label": "bfs" }
+      }
+    }
+  },
+  "workloads": [
+    {
+      "kind": "tpch",
+      "path": "fixture/tpc-h/data/sf10/parquet",
+      "scale": "sf10",
+      "preparation_command": "fixture/fixture.sh tpch generate --scale 10 --out-root fixture/tpc-h/data",
+      "queries": ["q06"]
+    },
+    {
+      "kind": "dblp",
+      "path": "fixture/demo/citation_network/v1/parquet",
+      "scale": "v12",
+      "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json fixture/demo/citation_network/raw/dblp.v12.json --out-root fixture/demo",
+      "queries": ["bfs"]
+    }
+  ]
+}

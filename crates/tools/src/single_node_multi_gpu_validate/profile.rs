@@ -117,9 +117,11 @@ const fn default_qps_min_gpu_reaching_completions_per_step() -> u64 {
     1
 }
 
-/// One rate-envelope recovery assertion.  The two named steps use the same
-/// offered rate; the recovery p95 total and queue wait must stay inside the
-/// profile-owned multiple of that baseline after the overload step.
+/// One rate-envelope recovery assertion. The named steps use the same offered
+/// rate. The service's cumulative queue high-watermark must remain below its
+/// nonzero configured limit through the baseline and reach that limit by an
+/// intervening step with a higher offered rate. Recovery p95 total and queue
+/// wait must stay inside the profile-owned multiple of the baseline.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct QpsEnvelopeRecoveryProfile {
@@ -771,12 +773,15 @@ impl RunProfile {
         if baseline_rate != recovery_rate {
             return Err("qps_envelope recovery step must use the baseline offered rate".into());
         }
-        if !steps[..recovery.recovery_step_index]
+        if !steps[recovery.baseline_step_index + 1..recovery.recovery_step_index]
             .iter()
             .filter_map(|step| step.arrival_rate_per_second)
             .any(|rate| rate > baseline_rate)
         {
-            return Err("qps_envelope recovery requires a prior offered rate above the baseline".into());
+            return Err(
+                "qps_envelope recovery requires a prior offered rate above the baseline between baseline and recovery"
+                    .into(),
+            );
         }
         if steps[recovery.recovery_step_index.saturating_add(1)..]
             .iter()
@@ -790,11 +795,6 @@ impl RunProfile {
 
     fn validate_vram_calibration(&self) -> ToolResult<()> {
         let Some(calibration) = self.vram_calibration else {
-            if self.qps_envelope.is_some() {
-                return Err(
-                    "qps_envelope requires vram_calibration; S2 claims must be checked against CUDA VRAM".into()
-                );
-            }
             return Ok(());
         };
         if calibration.max_observed_to_claim_ratio_milli < 1_000 {

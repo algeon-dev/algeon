@@ -1,0 +1,23 @@
+# Admission and native settings match flight-baseline.json.
+[admission]
+max_queued_attempts = 64
+max_queue_wait_ms = 30000
+
+[[admission.device_profiles]]
+device_ordinal = 0
+memory_limit_bytes = 101975851008
+backend_reserve_bytes = 0
+cache_cap_bytes = 0
+default_query_limit_bytes = 8589934592
+source_work_per_attempt = 2
+max_active_attempts = 4
+install_telemetry = true
+stream_pool_size = 12
+worker_count = 5
+lane_count = 4
+
+[native]
+max_source_chunk_bytes = 268435456
+max_row_groups_per_chunk = 1024
+max_retry_attempts = 3
+execution_mode = "native_required"

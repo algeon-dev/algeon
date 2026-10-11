@@ -1,3 +1,5 @@
+use serde_json::Value;
+
 use super::*;
 
 #[test]
@@ -191,13 +193,57 @@ install_telemetry = true
 
 #[test]
 fn shipped_stress_server_fixtures_parse_as_valid_server_config() {
-    for fixture in [
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixture/stress/server-s8-s2-scan-sf1.toml")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixture/stress/server-s8-s2-knee-sf10.toml")),
-    ] {
-        let config = load_toml(fixture).expect("shipped stress fixture");
-        assert_eq!(config.gpu_devices(), vec![0, 1, 2, 3]);
+    let fixture = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tools/fixtures/stress/server.toml"));
+    let config = load_toml(fixture).expect("shipped stress fixture");
+    assert_eq!(config.gpu_devices(), vec![0]);
+    assert_eq!(config.gpu_device_profiles[0].backend_reserve_bytes(), 0);
+    let baseline: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tools/fixtures/stress/flight-baseline.json"
+    )))
+    .expect("Flight baseline");
+    let devices = baseline["backend"]["device_profiles"].as_array().expect("device profiles");
+    assert_eq!(config.gpu_device_profiles.len(), devices.len());
+    for (server, device) in config.gpu_device_profiles.iter().zip(devices) {
+        let GpuDeviceMemoryLimit::Explicit { limit_bytes } = server.memory_limit() else {
+            panic!("Flight baseline requires an explicit device limit");
+        };
+        let installation = server.installation_bounds().expect("explicit installation");
+        assert_eq!(serde_json::json!(server.device_ordinal()), device["ordinal"]);
+        assert_eq!(serde_json::json!(limit_bytes), device["memory_limit_bytes"]);
+        assert_eq!(serde_json::json!(server.backend_reserve_bytes()), device["backend_reserve_bytes"]);
+        assert_eq!(serde_json::json!(server.cache_cap_bytes()), device["cache_cap_bytes"]);
+        assert_eq!(serde_json::json!(server.default_query_limit_bytes()), device["default_query_limit_bytes"]);
+        assert_eq!(serde_json::json!(server.source_work_per_attempt()), device["source_work_per_attempt"]);
+        assert_eq!(serde_json::json!(server.max_active_attempts()), device["max_active_attempts"]);
+        assert_eq!(serde_json::json!(server.install_telemetry()), device["install_telemetry"]);
+        assert_eq!(
+            serde_json::json!({
+                "stream_pool_size": installation.stream_pool_size,
+                "worker_count": installation.worker_count,
+                "lane_count": installation.lane_count
+            }),
+            device["installation"]
+        );
     }
+    assert_eq!(
+        serde_json::json!({
+            "max_queued_attempts": config.queue_policy.max_queued_attempts(),
+            "max_queue_wait_ms": config.queue_policy.max_queue_wait().as_millis()
+        }),
+        baseline["backend"]["queue"]
+    );
+    assert_eq!(config.native_optimizer_config.execution_mode(), AlgeonGpuExecutionMode::NativeRequired);
+    let chunking = config.native_optimizer_config.native_execution_config().source_chunking();
+    assert_eq!(
+        serde_json::json!({
+            "max_source_chunk_bytes": chunking.max_source_chunk_bytes.get(),
+            "max_row_groups_per_chunk": chunking.max_row_groups_per_chunk.get(),
+            "max_retry_attempts": chunking.max_retry_attempts.get(),
+            "min_retry_chunk_row_groups": chunking.min_retry_chunk_row_groups.get()
+        }),
+        baseline["backend"]["native_execution"]
+    );
 }
 
 #[test]

@@ -1145,7 +1145,10 @@ mod tests {
         sampler::{CalibrationClaimSnapshot, calibration_claim_stable_across_telemetry, reserve_snapshot_slot},
         *,
     };
-    use crate::single_node_multi_gpu_validate::aggregate::scenario_clauses_pass;
+    use crate::single_node_multi_gpu_validate::{
+        aggregate::scenario_clauses_pass,
+        profile::{ScheduleStepProfile, SchedulingProfile},
+    };
 
     #[test]
     fn calibration_claim_requires_identical_ledger_brackets() {
@@ -1305,31 +1308,27 @@ mod tests {
 
     #[test]
     fn a_step_schedule_requires_coverage_for_every_declared_phase() {
-        let profile =
-            RunProfile::parse_bytes(include_str!("../../../fixtures/stress/stress-s2-sweep-scan-sf10.json").as_bytes())
-                .unwrap();
-        let plan = ArrivalPlan::plan(
-            &profile.scheduling,
-            profile.selected_query_count(),
-            profile.session.shared_session_count,
-        )
-        .unwrap();
+        let scheduling = SchedulingProfile {
+            steps: [1, 2]
+                .into_iter()
+                .map(|concurrency| ScheduleStepProfile {
+                    concurrency: Some(concurrency),
+                    arrival_rate_per_second: None,
+                    measurement_seconds: 1,
+                    rate_overrun: None,
+                })
+                .collect(),
+            ..SchedulingProfile::default()
+        };
+        let plan = ArrivalPlan::plan(&scheduling, 1, 1).unwrap();
         let aggregate = MeasuredAggregate::reduce(&[], &[], &BTreeMap::new(), 1, 1);
         assert!(!every_configured_step_has_measurement_attempts(&plan, &aggregate));
     }
 
     #[test]
     fn an_implicit_single_phase_uses_the_measurement_guard_not_step_coverage() {
-        let profile = RunProfile::parse_bytes(
-            include_str!("../../../fixtures/stress/stress-s3-heterogeneous-sf1.json").as_bytes(),
-        )
-        .unwrap();
-        let plan = ArrivalPlan::plan(
-            &profile.scheduling,
-            profile.selected_query_count(),
-            profile.session.shared_session_count,
-        )
-        .unwrap();
+        let scheduling = SchedulingProfile { measurement_seconds: 1, ..SchedulingProfile::default() };
+        let plan = ArrivalPlan::plan(&scheduling, 1, 1).unwrap();
         let aggregate = MeasuredAggregate::reduce(&[], &[], &BTreeMap::new(), 0, 1);
         assert!(every_configured_step_has_measurement_attempts(&plan, &aggregate));
         assert!(!has_measurement_attempts(&aggregate));

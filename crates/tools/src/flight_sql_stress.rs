@@ -1366,6 +1366,9 @@ fn write_outputs(config: &StressConfig, records: &[AttemptRecord], wall: Duratio
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "single-node-multi-gpu-validate")]
+    use workloads::tpch::TPCH_QUERIES;
+
     use super::*;
 
     const BASELINE_SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -1373,10 +1376,10 @@ mod tests {
     fn profile_json() -> serde_json::Value {
         serde_json::json!({
             "schema": PROFILE_SCHEMA,
-            "name": "stress-s8-flight-sf1",
+            "name": "flight-pooled",
             "server": {
                 "url": "http://flight.example.com:5050",
-                "config_file": "server-s8-s2-scan-sf1.toml"
+                "config_file": "server.toml"
             },
             "statement": { "label": "q06", "sql": "SELECT 1" },
             "load": {
@@ -1402,7 +1405,7 @@ mod tests {
             "schema": SINGLE_NODE_RUN_ARTIFACT_SCHEMA,
             "status": "measured_run",
             "profile": {
-                "name": "stress-s1-embedded-sf1",
+                "name": "flight-baseline",
                 "sha256": BASELINE_SHA,
                 "scheduling": {
                     "arrival_mode": "concurrency",
@@ -1511,25 +1514,45 @@ mod tests {
     }
 
     #[test]
-    fn shipped_s8_profiles_and_server_companions_are_validated() {
-        for profile in [
-            include_bytes!("../fixtures/stress/stress-s8-flight-pooled-sf1.flight-profile").as_slice(),
-            include_bytes!("../fixtures/stress/stress-s8-flight-churn-sf1.flight-profile").as_slice(),
-            include_bytes!("../fixtures/stress/stress-s8-flight-pooled-knee-sf10.flight-profile").as_slice(),
-            include_bytes!("../fixtures/stress/stress-s8-flight-churn-knee-sf10.flight-profile").as_slice(),
+    fn shipped_flight_profiles_match_the_baseline_and_readable_server_companion() {
+        let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/stress");
+        let baseline_bytes = fs::read(fixture_dir.join("flight-baseline.json")).expect("baseline profile");
+        let baseline_profile: serde_json::Value = serde_json::from_slice(&baseline_bytes).expect("baseline JSON");
+        let mut artifact = baseline_json();
+        artifact["profile"] = baseline_profile.clone();
+        artifact["profile"]["sha256"] = serde_json::json!(sha256_bytes(&baseline_bytes));
+        artifact["execution"]["measurement"]["aggregate"]["throughput"]["measurement_seconds"] =
+            baseline_profile["scheduling"]["measurement_seconds"].clone();
+
+        let mut paired_profiles = Vec::new();
+        for (file, mode) in [
+            ("flight-pooled.flight-profile", ConnectionMode::Pooled),
+            ("flight-churn.flight-profile", ConnectionMode::Churn),
         ] {
-            FlightStressProfile::parse_bytes(profile).expect("shipped S8 profile");
+            let profile_bytes = fs::read(fixture_dir.join(file)).expect("Flight profile");
+            let profile = FlightStressProfile::parse_bytes(&profile_bytes).expect("shipped Flight profile");
+            assert_eq!(profile.load.connection_mode, mode);
+            let companion = fixture_dir.join(&profile.server.config_file);
+            let server_bytes = fs::read(&companion).expect("profile server companion");
+            ensure_redacted_server_config(&server_bytes).expect("redacted server companion");
+            matched_in_process_from_value(&artifact, "a".repeat(64), &profile.matched_in_process, &profile.load)
+                .expect("shipped baseline matches Flight workload and load");
+
+            #[cfg(feature = "single-node-multi-gpu-validate")]
+            {
+                let query = TPCH_QUERIES.iter().find(|query| query.id == profile.statement.label).expect("TPC-H query");
+                assert_eq!(
+                    profile.statement.sql.split_whitespace().collect::<Vec<_>>(),
+                    query.sql.split_whitespace().collect::<Vec<_>>()
+                );
+            }
+
+            let mut paired: serde_json::Value = serde_json::from_slice(&profile_bytes).expect("Flight JSON");
+            paired.as_object_mut().expect("profile object").remove("name");
+            paired["load"].as_object_mut().expect("load object").remove("connection_mode");
+            paired_profiles.push(paired);
         }
-        ensure_redacted_server_config(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../fixture/stress/server-s8-s2-scan-sf1.toml"
-        )))
-        .expect("S2 SF1 server companion");
-        ensure_redacted_server_config(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../fixture/stress/server-s8-s2-knee-sf10.toml"
-        )))
-        .expect("S2 server companion");
+        assert_eq!(paired_profiles[0], paired_profiles[1]);
     }
 
     #[test]
@@ -1539,7 +1562,7 @@ mod tests {
         let matched =
             matched_in_process_from_value(&baseline, "a".repeat(64), &profile.matched_in_process, &profile.load)
                 .expect("matched baseline");
-        assert_eq!(matched.profile_name, "stress-s1-embedded-sf1");
+        assert_eq!(matched.profile_name, "flight-baseline");
         assert_eq!(matched.application_qps, 3.0);
 
         let mut wrong_concurrency = baseline_json();

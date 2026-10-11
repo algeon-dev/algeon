@@ -1,9 +1,9 @@
 {
   "schema": "algeon_datafusion.flight_sql_stress.run_profile",
-  "name": "stress-s8-flight-churn-sf1",
+  "name": "flight-pooled",
   "server": {
     "url": "http://127.0.0.1:50051",
-    "config_file": "../../../../fixture/stress/server-s8-s2-scan-sf1.toml"
+    "config_file": "server.toml"
   },
   "statement": {
     "label": "q06",
@@ -11,17 +11,16 @@
   },
   "load": {
     "arrival_mode": "concurrency",
-    "clients": 8,
+    "clients": 4,
     "warmup_seconds": 5,
-    "measurement_seconds": 15,
-    "connection_mode": "churn"
+    "measurement_seconds": 30,
+    "connection_mode": "pooled"
   },
   "matched_in_process": {
-    "run_artifact": "../../../../target/stress/s2-sweep-scan-sf1/run-artifact.json",
+    "run_artifact": "../../../../target/stress/flight-baseline/run-artifact.json",
     "workload": {
       "kind": "tpch",
       "query_label": "q06"
-    },
-    "step_index": 3
+    }
   }
 }
