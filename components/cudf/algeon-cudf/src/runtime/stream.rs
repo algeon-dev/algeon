@@ -218,7 +218,7 @@ impl Drop for AttemptStreamProviderAlias {
 /// An owned CUDA stream.
 ///
 /// Wraps an `rmm::cuda_stream` via the C shim. The stream is destroyed when
-/// this value is dropped.
+/// the last clone is dropped.
 ///
 /// Each stream records the CUDA device it was created on. This provenance is
 /// used by [`crate::Runtime`] builder validation to reject cross-device
@@ -243,7 +243,9 @@ struct CudaStreamHandle {
 // SAFETY: CUDA streams are thread-safe by design; operations can be enqueued
 // from any thread. The handle is an opaque pointer to a CUDA runtime object
 // that supports concurrent access. Sync is safe because synchronize() and
-// is_ready() are read-only queries on stream state.
+// is_ready() can run from any thread while others enqueue work: synchronize()
+// blocks the calling thread until enqueued work completes, and is_ready()
+// queries stream state without blocking.
 unsafe impl Send for CudaStreamHandle {}
 unsafe impl Sync for CudaStreamHandle {}
 
@@ -278,8 +280,8 @@ impl CudaStream {
     /// blocking the host.
     ///
     /// The event orders after every operation already enqueued here. Waiting
-    /// on it later observes exactly that work, unlike synchronizing the
-    /// stream, which also waits for whatever the stream runs in between.
+    /// on it later observes that work only. Synchronizing the stream also waits
+    /// for work enqueued after the event was recorded.
     pub fn record_completion_event(&self) -> Result<CudaEvent> {
         let _entry = DeviceEntryGuard::enter(self.device(), "stream::record_completion_event")?;
         let event = CudaEvent::new_on(self.device())?;

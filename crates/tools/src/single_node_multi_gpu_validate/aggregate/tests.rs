@@ -258,7 +258,7 @@ fn four_device_progress_and_heterogeneity_are_asserted_from_resolved_envelopes()
     assert_eq!(status("one_ordinal_per_attempt"), ClauseStatus::Evidenced);
     assert_eq!(status("progress_on_all_eligible_devices"), ClauseStatus::Evidenced);
     assert_eq!(status("heterogeneous_ordinal_profiles"), ClauseStatus::Evidenced);
-    // Quarantine fallback is a declared gap, not a pass and not a failure.
+    // Quarantine fallback is a declared gap and stays not evidenced.
     assert_eq!(status("device_block_or_quarantine_fallback"), ClauseStatus::NotEvidenced);
     assert!(aggregate.placement.iter().all(|device| device.made_progress));
     assert!(scenario_clauses_pass(&aggregate.scenarios));
@@ -624,7 +624,7 @@ fn sequential_attempts_on_one_device_fail_the_overlap_clause() {
     assert_eq!(overlap.status, ClauseStatus::Failed);
     assert!(!scenario_clauses_pass(&aggregate.scenarios));
 
-    // A shared submit instant alone is not overlap either: zero-width
+    // A shared submit instant alone is not overlap either. A zero-width
     // intersection must not count.
     let touching = vec![
         attempt(0, 0, Some(10), Some(100), 1_000, 1_000, 0, SchedulePhase::Measurement),
@@ -643,7 +643,7 @@ fn sequential_attempts_on_one_device_fail_the_overlap_clause() {
     );
 }
 
-/// Equality must be falsifiable too: an attempt placed on an ordinal the
+/// Equality must be falsifiable too. An attempt placed on an ordinal the
 /// backend never reported breaks placement conservation.
 #[test]
 fn an_attempt_placed_on_an_unconfigured_ordinal_breaks_the_equality_check() {
@@ -769,7 +769,7 @@ fn quarantine_cycles_evidence_requires_every_configured_cycle_to_evidence() {
     assert_eq!(evidenced.cycles[0].target_ordinal, 0);
     assert_eq!(evidenced.cycles[1].device_health_generation, 1);
 
-    // Fewer cycles than configured is a failure, not a partial pass.
+    // Fewer cycles than configured is a failure. A partial pass does not count.
     let incomplete = QuarantineCyclesEvidence::from_cycle_evidence(3, vec![first]);
     assert!(!incomplete.is_evidenced());
     assert_eq!(incomplete.completed_cycles, 1);

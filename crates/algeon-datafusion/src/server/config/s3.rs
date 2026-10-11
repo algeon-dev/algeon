@@ -6,9 +6,9 @@ use crate::server::native_exec::S3SourceStorageProfile;
 pub const ALGEON_SERVER_S3_ENDPOINT_ENV: &str = "ALGEON_SERVER_S3_ENDPOINT";
 /// Region for every `s3://` source.
 pub const ALGEON_SERVER_S3_REGION_ENV: &str = "ALGEON_SERVER_S3_REGION";
-/// Path-style addressing (`true`) instead of virtual-hosted buckets.
+/// Path-style addressing when `true`; `false` selects virtual-hosted bucket addressing.
 pub const ALGEON_SERVER_S3_PATH_STYLE_ENV: &str = "ALGEON_SERVER_S3_PATH_STYLE";
-/// Unsigned requests (`true`) instead of the default AWS credential chain.
+/// Unsigned requests when `true`. Otherwise requests use the default AWS credential chain.
 pub const ALGEON_SERVER_S3_UNSIGNED_ENV: &str = "ALGEON_SERVER_S3_UNSIGNED";
 
 /// The S3 storage `[s3]` and the `ALGEON_SERVER_S3_*` variables describe, or

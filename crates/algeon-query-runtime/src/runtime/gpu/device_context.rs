@@ -46,7 +46,6 @@ struct DeviceContextInner {
 }
 
 impl DeviceContext {
-    /// Creates a per-device service context.
     #[expect(
         clippy::too_many_arguments,
         reason = "service construction inputs are distinct admission and ownership values"
@@ -191,7 +190,6 @@ impl DeviceContext {
         self.inner.device
     }
 
-    /// Service stream pool for this device.
     pub(crate) fn stream_pool(&self) -> &ServiceStreamPool {
         &self.inner.stream_pool
     }

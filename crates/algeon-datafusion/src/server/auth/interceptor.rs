@@ -2,10 +2,10 @@
 //!
 //! Following the reference pattern from arrow-rs's `flight_sql_server.rs`
 //! example, the server impl calls [`AuthInterceptor::check`] at the top
-//! of every non-handshake RPC. We do not use a tonic [`tonic::service::Interceptor`]
-//! because the handshake call shares the same tower service and an
-//! interceptor cannot reliably tell from the [`tonic::Request<()>`]
-//! alone which RPC it is gating.
+//! of every non-handshake RPC. The module does not use a tonic
+//! [`tonic::service::Interceptor`] because the handshake call shares the same
+//! tower service, and the [`tonic::Request<()>`] that an interceptor receives
+//! does not reliably identify which RPC it gates.
 
 use std::sync::Arc;
 

@@ -260,19 +260,19 @@ pub(super) fn parquet_source_budget_context(
     facts
 }
 
-/// Whether this chunk continues the previous chunk's reader input instead of
-/// opening its own.
+/// Whether this chunk continues the previous chunk's reader input. When it
+/// does not, the chunk opens its own reader input.
 ///
 /// Chunk planning splits one file into row-group chunks, so a batch repeats the
 /// same file once per chunk. Each reader input opens its own file handle and
 /// parses the footer again, so an unmerged batch consumes file descriptors and
-/// footer parses proportional to row groups rather than to files.
+/// footer parses in proportion to the number of row groups.
 ///
-/// Merging is exact rather than approximate: chunks of a file stay adjacent and
-/// ascending, and libcudf reads each input's selection in the given order, so
-/// the concatenated selection is the order the separate inputs would have
-/// produced. Whole-file chunks carry no selection to concatenate, and remote
-/// sources carry per-input read state, so both keep one input each.
+/// Merging is exact because chunks of a file stay adjacent and ascending, and
+/// libcudf reads each input's selection in the given order, so the concatenated
+/// selection is the order the separate inputs would have produced. Whole-file
+/// chunks carry no selection to concatenate, and remote sources carry per-input
+/// read state, so both keep one input each.
 pub(super) fn source_chunk_continues_previous_reader_input(
     chunk: &SourceChunk,
     previous_file_index: Option<usize>,

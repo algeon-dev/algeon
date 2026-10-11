@@ -119,8 +119,9 @@ pub struct PrecomputedWeights<'a, V: CugraphElement = i32, W: CugraphElement = f
 
 /// Initial guess of PageRank values.
 ///
-/// When provided, the solver starts from these values instead of the
-/// uniform `1/N` default. Useful for iterative refinement.
+/// When provided, the solver starts from these values. Without an initial
+/// guess, the solver starts from the uniform `1/N` default. Useful for
+/// iterative refinement.
 #[derive(Debug)]
 pub struct InitialGuess<'a, V: CugraphElement = i32, W: CugraphElement = f32> {
     /// Vertex ids for the initial guess.
@@ -146,9 +147,9 @@ enum PageRankCall {
 
 /// Compute PageRank on a graph.
 ///
-/// Prefer using [`Graph::pagerank`](crate::graph::Graph::pagerank) or
-/// [`Graph::pagerank_with`](crate::graph::Graph::pagerank_with) instead
-/// of calling this function directly.
+/// Callers use [`Graph::pagerank`](crate::graph::Graph::pagerank) or
+/// [`Graph::pagerank_with`](crate::graph::Graph::pagerank_with), which call
+/// this function.
 pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<Transposed>,

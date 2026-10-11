@@ -57,18 +57,17 @@ fn map_stream_dependency_error(kind: InteropErrorKind, operation: &'static str, 
 /// same-device borrowed overrides for that call.
 ///
 /// `Runtime` is therefore the canonical place to express a workflow's default
-/// execution placement. For query-style budgets, prefer
-/// a shared [`crate::QueryMemoryDomain`] member lease
-/// instead of constructing a separate memory resource. Create an explicit
-/// [`DeviceMemoryResource`] first only when you need an advanced allocator
-/// handle to reuse across runtimes or borrow through
-/// [`crate::Exec`] for one operation.
+/// execution placement. For query-style budgets, prefer a shared
+/// [`crate::QueryMemoryDomain`] member lease. An owned memory resource receives
+/// only output allocations; libcudf temporaries resolve through the device's
+/// long-lived memory domain. Create an explicit [`DeviceMemoryResource`] first
+/// only when you need an advanced allocator handle to reuse across runtimes or
+/// borrow through [`crate::Exec`] for one operation.
 ///
-/// **Multi-GPU execution guarantee:** when an operation is invoked through
-/// this runtime, the runtime's device is re-entered at the FFI boundary before
-/// any GPU work is enqueued. This ensures that compute runs on the correct
-/// device regardless of the calling thread's current CUDA device. The
-/// previous device is restored after each FFI call.
+/// When an operation is invoked through this runtime, the runtime's device is
+/// re-entered at the FFI boundary before any GPU work is enqueued. This ensures
+/// that compute runs on the correct device regardless of the calling thread's
+/// current CUDA device. The previous device is restored after each FFI call.
 #[derive(Clone)]
 pub struct Runtime {
     domain: Arc<ExecutionDomain>,
@@ -165,8 +164,8 @@ impl Runtime {
     /// event later observes the same completion as [`synchronize`](Self::synchronize), but the
     /// producing thread is free to return first while device-side consumers order through the
     /// retained provenance fences. A late GPU failure surfaces at the next synchronizing
-    /// observation of the event rather than here; the committer attributes it with its own
-    /// task facts instead of the producer's worker facts.
+    /// observation of the event. This call does not report it. The committer attributes
+    /// the failure with its own task facts. The producer's worker facts are not used.
     pub fn record_completion_event(&self) -> Result<CudaEvent> {
         self.stream().record_completion_event()
     }
@@ -528,16 +527,16 @@ impl RuntimeBuilder {
 
     /// Override the runtime's owned default device memory resource.
     ///
-    /// **Outputs-only semantics** (matching upstream libcudf's `mr`
-    /// parameter): the supplied handle receives the *output* allocations of
-    /// operations that execute in this runtime. Temporary allocations made
-    /// inside libcudf kernels always resolve through the device's long-lived
-    /// memory domain (the per-device current resource installed at domain
-    /// creation) and are accounted per stream; they are never routed into
-    /// this resource. Use this when output buffers must live on a specific
-    /// allocator (for example, interop buffers handed to an external system).
+    /// The supplied handle receives only the *output* allocations of operations
+    /// that execute in this runtime, matching upstream libcudf's `mr` parameter.
+    /// Temporary allocations made inside libcudf kernels always resolve through
+    /// the device's long-lived memory domain (the per-device current resource
+    /// installed at domain creation) and are accounted per stream; they are never
+    /// routed into this resource. Use this when output buffers must live on a
+    /// specific allocator (for example, interop buffers passed to an external
+    /// system).
     ///
-    /// For memory budgeting, do not reach for an owned resource: attach the
+    /// For memory budgeting, do not reach for an owned resource. Attach the
     /// runtime's stream to a [`QueryMemoryDomain`](crate::QueryMemoryDomain)
     /// through [`QueryMemoryDomain::reserve_stream`](crate::QueryMemoryDomain::reserve_stream);
     /// the domain caps outputs *and* temporaries for the pipeline.
@@ -556,14 +555,12 @@ impl RuntimeBuilder {
     /// resolved and entered, so this path does not depend on unrelated ambient
     /// current-device state at call time.
     ///
-    /// **Outputs-only semantics**: like
-    /// [`with_memory_resource`](Self::with_memory_resource), the pool receives
-    /// only output allocations; libcudf temporaries route through the
-    /// device's memory domain and are accounted per stream. An owned pool is
-    /// therefore not a budgeting tool; use the default device-level memory
-    /// manager plus a stream member of a
-    /// [`QueryMemoryDomain`](crate::QueryMemoryDomain) to bound a pipeline's
-    /// memory.
+    /// Like [`with_memory_resource`](Self::with_memory_resource), the pool receives
+    /// only output allocations. libcudf temporaries route through the device's
+    /// memory domain and are accounted per stream. An owned pool is therefore not
+    /// a budgeting tool. Use the default device-level memory manager plus a stream
+    /// member of a [`QueryMemoryDomain`](crate::QueryMemoryDomain) to bound a
+    /// pipeline's memory.
     ///
     /// - `initial_pool_size`: initial pool allocation in bytes.
     /// - `maximum_pool_size`: maximum pool size in bytes, or `None` for unbounded.
@@ -574,9 +571,9 @@ impl RuntimeBuilder {
 
     /// Use the device-level reservation-aware memory manager as this runtime's default allocator.
     ///
-    /// This is the query-backend path: the runtime keeps one explicit stream,
-    /// while allocator accounting is controlled by stream-bound reservation
-    /// leases rather than replacing the memory resource for each execution.
+    /// This is the query-backend path. The runtime keeps one explicit stream, and
+    /// allocator accounting is controlled by stream-bound reservation leases. The
+    /// memory resource is not replaced for each execution.
     pub fn with_device_memory_manager(mut self) -> Self {
         self.mr_selection = MemoryResourceSelection::DeviceMemoryManager;
         self
@@ -586,13 +583,13 @@ impl RuntimeBuilder {
     ///
     /// If [`with_device`](Self::with_device) was called, resources are created
     /// on that device.  Otherwise the device is inferred from supplied handles,
-    /// or defaults to the calling thread's current device.
+    /// or defaults to [`DeviceId::DEFAULT`].
     ///
-    /// The resulting runtime owns exactly one default stream and uses the
-    /// device-level reservation-aware memory manager as its default memory
-    /// resource. Borrowed per-operation overrides can temporarily replace
-    /// either handle for a supported call, but they do not mutate this owned
-    /// bundle.
+    /// The resulting runtime owns exactly one stream. Unless a memory resource
+    /// is selected, it uses the device-level reservation-aware memory manager as
+    /// its default memory resource. Borrowed per-operation overrides can
+    /// temporarily replace either handle for a supported call, but they do not
+    /// mutate this owned bundle.
     ///
     /// # Errors
     ///

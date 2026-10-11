@@ -1,9 +1,8 @@
-//! A named-column wrapper around GPU columns for ergonomic DataFrame operations.
+//! A named-column wrapper around GPU columns for DataFrame operations.
 //!
 //! [`DataFrame`] stores columns individually as `Arc<Column>`, enabling
 //! schema-only operations like rename, select, without_columns, and clone to
-//! share GPU memory via reference counting instead of deep-copying column
-//! data.
+//! share GPU memory via reference counting. Column data is not deep-copied.
 
 mod column_ops;
 mod concat_ops;

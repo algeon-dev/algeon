@@ -136,9 +136,9 @@ fn loaded_library_identity(file_name: &str) -> ToolResult<Option<FileIdentity>> 
 #[derive(Debug, Serialize)]
 pub(super) struct DirtyManifest {
     pub(super) format: &'static str,
-    /// Digest of the complete direct dirty source state. Unlike a
-    /// porcelain-only digest, changing a dirty file's contents changes this
-    /// value even when its status path does not.
+    /// Digest of the complete direct dirty source state. A change to a dirty
+    /// file's contents changes this value even when its status path stays the
+    /// same.
     pub(super) sha256: String,
     pub(super) entries: Vec<String>,
 }
@@ -175,10 +175,10 @@ fn dirty_content_sha256(
 ) -> ToolResult<String> {
     // These bytes are never persisted; the artifact carries only their
     // digest. The revision, porcelain state, final tracked diff, every
-    // untracked file together identify the actual source consumed by the
-    // release binary without leaking a patch. Nested worktrees retain their
-    // normal Git dirty entry: their build outputs are not source inputs to
-    // this release runner and can be arbitrarily large.
+    // untracked file together identify the source consumed by the release
+    // binary without leaking a patch. Nested worktrees retain their normal Git
+    // dirty entry, because their build outputs are not source inputs to this
+    // release runner and can be arbitrarily large.
     let mut source_state = Vec::new();
     append_record(&mut source_state, b"format", b"direct-worktree-content-v1");
     append_record(&mut source_state, b"status", status);

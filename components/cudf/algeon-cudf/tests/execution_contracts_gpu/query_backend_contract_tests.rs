@@ -1,8 +1,8 @@
 //! Query-backend substrate contract tests.
 //!
-//! These tests lock the current library-level execution and host/device
-//! boundary semantics before the execution resolver refactor centralizes the
-//! implementation.
+//! These tests lock the library-level execution and host/device boundary
+//! semantics that `runtime::execution_resolver` applies at each operation
+//! boundary.
 
 use std::{
     collections::HashMap,

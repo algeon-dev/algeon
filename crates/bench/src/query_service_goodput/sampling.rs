@@ -147,8 +147,8 @@ fn collect(
 /// Current and peak resident host memory of this process.
 ///
 /// Host memory is reported alongside device memory because bounded streaming
-/// moves device results through host Arrow buffers; an unbounded host
-/// footprint is a real cost of a concurrency configuration.
+/// moves device results through host Arrow buffers; unbounded host memory use
+/// is a cost of a concurrency configuration.
 fn host_memory_bytes() -> (u64, u64) {
     let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
         return (0, 0);

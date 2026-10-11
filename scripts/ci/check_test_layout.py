@@ -86,8 +86,9 @@ class LayoutScanner(CrateScanner):
     def parse_attrs(self, path, tokens, index, end):
         start = index
         attrs, stop = super().parse_attrs(path, tokens, index, end)
-        # Conditional path attributes need both module trees. Keep the
-        # supported cfg-selected form explicit instead of ignoring a branch.
+        # Conditional path attributes need both module trees. A cfg_attr that
+        # wraps #[path] is rejected; each branch is a separate #[cfg] and
+        # #[path] declaration that the scan visits.
         cursor = start
         while cursor < stop:
             opener = cursor + 1 + (tokens[cursor + 1].text == '!')

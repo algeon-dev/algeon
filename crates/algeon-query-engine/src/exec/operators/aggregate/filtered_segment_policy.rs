@@ -11,7 +11,6 @@ use std::cmp;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-/// Filtered aggregate scope for segmented execution policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec::operators::aggregate) enum FilteredAggregateScope {
     Global,

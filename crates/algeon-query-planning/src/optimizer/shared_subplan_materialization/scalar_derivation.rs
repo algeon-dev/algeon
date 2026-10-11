@@ -241,8 +241,8 @@ fn normalized_aggregate_argument_signature(plan: &QueryPlan, input: NodeId, expr
 
 /// Signature of the rows `node_id` produces, memoized per node across every
 /// candidate pair. A node reached again while its own signature is being
-/// computed is recorded as having none; plans are acyclic, so this guards
-/// the memo against a malformed input rather than a real cycle.
+/// computed is recorded as having none; plans are acyclic, so this check only
+/// triggers on a malformed input that contains a cycle.
 fn rowset_signature(
     plan: &QueryPlan,
     node_id: NodeId,

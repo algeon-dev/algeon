@@ -125,7 +125,8 @@ impl<'a> TableView<'a> {
         usize::try_from(out).map_err(|_| Self::foreign_negative_num_rows_error(out))
     }
 
-    /// Get a column view by index.
+    /// Returns the column view at `index`, or an `IndexOutOfBounds` error when
+    /// `index` is at least the column count.
     pub fn column(&self, index: usize) -> Result<ColumnView<'a>> {
         let num_columns = self.num_columns()?;
         if index >= num_columns {
@@ -156,8 +157,8 @@ impl<'a> TableView<'a> {
     ///
     /// # Cost
     ///
-    /// Zero-copy with respect to device data: this allocates only a new
-    /// table-view handle over the selected columns.
+    /// The selection is zero-copy with respect to device data. It allocates
+    /// only a new table-view handle over the selected columns.
     pub fn select_columns(&self, indices: &[usize]) -> Result<Self> {
         let num_columns = self.num_columns()?;
 

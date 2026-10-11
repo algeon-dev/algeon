@@ -180,8 +180,8 @@ fn cuda_architecture_contract_keeps_suffixed_targets_and_ignores_stub_sets() {
     let _ = fs::remove_dir_all(&root);
 
     assert!(output.status.success(), "fixture inspection failed: {}", String::from_utf8_lossy(&output.stderr));
-    // The `f` family suffix must survive the shell parser exactly as it does in
-    // build_support.rs; dropping it silently desynchronizes the two writers.
+    // The `f` family suffix must survive the shell parser the same way it does in
+    // build_support.rs; dropping it without an error desynchronizes the two writers.
     assert_eq!(String::from_utf8_lossy(&output.stdout), "100f;120a\n");
 }
 

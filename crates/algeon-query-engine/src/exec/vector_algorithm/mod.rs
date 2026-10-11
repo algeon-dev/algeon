@@ -1,7 +1,8 @@
 //! Vector-algorithm execution boundary.
 //!
-//! The feature-enabled path runs exact kNN through the runtime-bound safe cuVS
-//! crate. The disabled implementation is intentionally GPU-free.
+//! The feature-enabled path runs the vector algorithms (kNN, pairwise distance,
+//! Top-K, K-means and PCA) through the runtime-bound safe cuVS crate. The disabled
+//! implementation is intentionally GPU-free.
 
 #[cfg(feature = "cuvs")]
 mod assembly;

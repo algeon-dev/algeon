@@ -200,8 +200,8 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
     const GRANT_BYTES: u64 = 64 * 1024;
 
     // An explicit 64 KiB query cap makes the immutable attempt grant the
-    // domain ceiling and the root member's hard limit; the 4 MiB allocation
-    // must fail locally rather than becoming a device-health failure.
+    // domain ceiling and the root member's hard limit. The 4 MiB allocation
+    // must fail locally and must not count as a device-health failure.
     let handle = service
         .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(GRANT_BYTES))
         .unwrap()
@@ -263,7 +263,7 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
     assert_eq!(domain_after.peak_allocations, member_after.peak_allocations);
     // The root member rejects before an over-limit allocation reaches the
     // parent domain. The idle provider members contribute no live use, so the
-    // domain counters still exactly mirror the root member.
+    // domain counters still mirror the root member.
     assert_eq!(domain_after.failed_allocation_count, 0);
     assert_eq!(domain_after.largest_failed_allocation_bytes, 0);
 

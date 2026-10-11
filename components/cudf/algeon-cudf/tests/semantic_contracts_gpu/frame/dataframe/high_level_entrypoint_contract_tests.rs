@@ -1,5 +1,3 @@
-//! Tests for representative high-level DataFrame entrypoint contracts.
-//!
 //! These tests protect user-visible behavior for the high-level APIs that take
 //! `Series` or plain Rust values.
 use cudf::{DataFrame, Exec, TypeId, testing::prelude::*};
@@ -10,20 +8,11 @@ use crate::common::{
     reset_exec_observation, reset_sync_observation, sample_runtime, scalar, unnamed_nullable_series, unnamed_series,
 };
 
-// ===========================================================================
-// Helpers
-// ===========================================================================
-
-/// Build a 5-row DataFrame with id (i32) and score (f64) columns.
 fn sample_df() -> DataFrame {
     let ids = unnamed_series::<i32>(&[10, 20, 30, 40, 50]).unwrap();
     let scores = unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
 }
-
-// ===========================================================================
-// 1. gather(&Series)
-// ===========================================================================
 
 fn test_gather_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
@@ -66,10 +55,6 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
     assert_eq!(result.series("score").unwrap().to_optional_vec::<f64>().unwrap(), vec![Some(3.0), Some(1.0)]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
-
-// ===========================================================================
-// 2. filter_isin(&str, &Series)
-// ===========================================================================
 
 fn test_filter_isin_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
@@ -122,10 +107,6 @@ fn test_filter_isin_with_series_rejects_missing_column() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-// ===========================================================================
-// 3. fillna<T: CudfType>
-// ===========================================================================
-
 fn test_fillna_with_plain_value() {
     let ids = unnamed_nullable_series::<i32>(&[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
     let scores = unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
@@ -134,7 +115,6 @@ fn test_fillna_with_plain_value() {
     let filled = df.on(Exec::RETAINED).fillna::<i32>("id", 42).unwrap();
     assert_eq!(filled.num_rows(), 5);
     assert_eq!(filled.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 42, 30, 42, 50]);
-    // Other columns unchanged.
     assert_eq!(filled.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
 }
 
@@ -158,10 +138,6 @@ fn test_fillna_rejects_missing_column() {
 
     assert_missing_column_error(&err, "nonexistent");
 }
-
-// ===========================================================================
-// 4. factorize returns typed factorization results
-// ===========================================================================
 
 fn test_factorize_returns_typed_result() {
     let df = sample_df(); // id: 10,20,30,40,50
@@ -260,10 +236,6 @@ fn test_with_decoded_column_rejects_missing_input_column_with_canonical_context(
     assert_eq!(err.operation(), "dataframe::with_decoded_column");
     assert_eq!(error_context_value(&err, "input_column").as_deref(), None);
 }
-
-// ===========================================================================
-// 5. runtime.sequence(start, step, len)
-// ===========================================================================
 
 fn test_runtime_sequence_creates_device_side_fixed_width_series() {
     let rt = sample_runtime();

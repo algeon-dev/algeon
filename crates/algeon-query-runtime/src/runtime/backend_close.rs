@@ -11,17 +11,17 @@
 //! `close_and_wait_until` deadline never has to be known by the worker, a
 //! phase that finishes after some caller timed out is still recorded (as a
 //! late success), and process exit can stop the worker at a slice boundary.
-//! The phase order is fixed by dependency: the service closes admission and
+//! The phase order is fixed by dependency. The service closes admission and
 //! drains its pools while the construction journal still holds every GPU
-//! resource; the journal drains next; the GPU permit count must reach zero
-//! before the generation, and with it the owner lease, is released; only then
+//! resource. The journal drains next, and the GPU permit count must reach zero
+//! before the generation, and with it the owner lease, is released. Only then
 //! does the worker wait for observation permits, which may outlive the GPU
 //! resources by design.
 //!
 //! A cleanup that cannot prove completion fails closed. The generation is
-//! forgotten rather than dropped, so the live-backend lease stays claimed and
-//! no replacement backend can take the devices while GPU work of unknown state
-//! may still exist.
+//! forgotten, so its destructors never run and the live-backend lease stays
+//! claimed. No replacement backend can take the devices while GPU work of
+//! unknown state may still exist.
 
 use std::{
     any::Any,
@@ -267,7 +267,8 @@ impl CloseCoordinator {
             return;
         }
         let _ = handle.join();
-        // Same lock window as `join_after_quiescence`.
+        // Keep the join lock to the join itself; unregistering takes the
+        // registration and registry locks.
         drop(join);
         self.unregister_process_exit();
     }
@@ -432,9 +433,10 @@ fn wait_for_observation_forever(
     }
 }
 
-/// Holds the generation during cleanup and forgets it unless `release` is
-/// called. Forgetting keeps the owner lease claimed for the rest of the
-/// process, which is the fail-closed answer to GPU work of unknown state.
+/// Holds the generation during cleanup. Dropping this value without calling
+/// `release` passes the generation to `std::mem::forget`. Forgetting keeps the
+/// owner lease claimed for the rest of the process, which is the fail-closed
+/// answer to GPU work of unknown state.
 struct FailClosedGeneration {
     generation: Option<Arc<ResourceGeneration>>,
 }
@@ -453,6 +455,8 @@ impl FailClosedGeneration {
     }
 
     fn release(mut self) {
+        // Take the generation out before `self` drops. `Drop` passes any generation
+        // still held to `std::mem::forget`.
         drop(self.generation.take());
     }
 }
@@ -603,7 +607,7 @@ impl CloseCompletion {
         let mut state = super::deadline::mutex_lock_until(&self.wait, deadline).map_err(|error| match error {
             super::deadline::DeadlineMutexLockError::Poisoned => close_wait_poisoned_error(),
             // The phase lives behind the lock this wait could not take, so
-            // the error omits the quiescence facts instead of blocking on it.
+            // the error omits the quiescence facts and does not wait for that lock.
             super::deadline::DeadlineMutexLockError::TimedOut => self.timeout_error(None, lifecycle),
         })?;
         loop {
@@ -628,7 +632,7 @@ impl CloseCompletion {
             };
             // Every wakeup re-reads the full wait state at the top of the
             // loop, so a failure recorded during the wait is reported as a
-            // cleanup failure rather than a timeout.
+            // cleanup failure. A timeout is returned only when no failure is recorded.
             let (next, _) =
                 self.changed.wait_timeout(state, remaining).map_err(|_error| close_wait_poisoned_error())?;
             state = next;
@@ -663,13 +667,21 @@ impl CloseCompletion {
 /// permits still exist; at that point the device-owner lease has been released.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct GpuBackendCloseSnapshot {
+    /// Whether backend close has begun and new admission is closed.
     pub closing: bool,
+    /// Whether GPU resources and their generation ownership have been released.
     pub gpu_resource_quiescent: bool,
+    /// Whether pending report production and observation delivery have completed.
     pub observation_quiescent: bool,
+    /// GPU-resource users still retained at the sample.
     pub active_gpu_permits: usize,
+    /// Report or observation users still retained at the sample.
     pub active_observation_permits: usize,
+    /// Whether cleanup recorded a failure that prevents proven resource release.
     pub cleanup_failed: bool,
+    /// Cleanup phases that reached a wait deadline before proving completion.
     pub cleanup_deadline_elapsed_count: u64,
+    /// Previously timed-out cleanup phases that subsequently completed.
     pub cleanup_late_success_count: u64,
 }
 

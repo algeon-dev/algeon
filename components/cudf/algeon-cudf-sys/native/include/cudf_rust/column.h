@@ -184,7 +184,7 @@ cudf_status_t cudf_column_payload_size_ex(cudf_column_handle handle,
                                           cudf_exec_options_t const* options,
                                           size_t* out);
 
-/// Return the total device allocation footprint of this owning column.
+/// Return the total device allocation size of this owning column.
 ///
 /// This forwards to libcudf `column::alloc_size()` and includes padding.
 cudf_status_t cudf_column_device_allocated_size(cudf_column_handle handle, size_t* out);

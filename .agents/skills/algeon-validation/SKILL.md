@@ -6,7 +6,7 @@ description: Select focused checks for Algeon changes and diagnose validation fa
 # Algeon validation
 
 Use the [test guide](../../../website/docs/build/tests.md) for commands and
-[AGENTS.md](../../../AGENTS.md#validation-policy) for validation policy.
+[AGENTS.md](../../../AGENTS.md#validation) for when validation finishes.
 
 ## Select checks
 
@@ -15,13 +15,12 @@ Use the [test guide](../../../website/docs/build/tests.md) for commands and
   configuration to avoid unnecessary recompilation.
 - For Rust changes, run the relevant behavior tests and formatting/lint checks.
   For script changes, use the affected script's existing self-test. Prose-only
-  edits need a content/link review, without Cargo or GPU checks.
-- Finish once the relevant checks pass. Expand coverage only for a concrete
-  failure or an affected downstream contract. Neither `--fast` nor the full
-  gate is a routine follow-up to a passing focused check.
-- Run the full gate for pre-merge validation or an explicit request. Follow
-  the test guide's launch and monitoring instructions for long runs; inspect
-  the run's summary and failing phase logs before choosing a rerun.
+  edits need a content/link review.
+- Expand coverage only for a concrete failure or an affected downstream
+  contract. `--fast` is not a routine follow-up to a passing focused check.
+- For a full-gate run, follow the test guide's launch and monitoring
+  instructions; inspect the run's summary and failing phase logs before
+  choosing a rerun.
 
 ## Diagnose and report
 
@@ -30,7 +29,6 @@ Use the [test guide](../../../website/docs/build/tests.md) for commands and
 - For lock waits or compile delays, consult the relevant section of
   [harness maintenance](../../../scripts/test-harness.md). Check the selected
   native prefixes and loader paths before considering a native rebuild.
-  Preserve build caches; cleanup is never an implicit repair step.
 - Report the commands run, their outcomes, and any unverified behavior.
   Label focused, `--fast`, and failure-only runs as partial validation.
   For native checks, include the selected prefixes, loader paths and GPU

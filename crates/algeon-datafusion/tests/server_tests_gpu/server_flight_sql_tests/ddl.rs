@@ -525,7 +525,6 @@ async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
         parquet_path.to_string_lossy()
     );
 
-    // Prepare once; the client holds a single handle and re-uses it.
     let mut prepared = client.prepare(create_sql, None).await.unwrap();
     assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 0, "DDL prepared statements do not return rows");
 
@@ -570,7 +569,6 @@ async fn prepared_ddl_double_execute_is_deduplicated_on_query_channel() {
     let mut prepared = client.prepare(create_sql, None).await.unwrap();
     assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 0, "DDL prepared statements do not return rows");
 
-    // First execution on the query channel: getFlightInfo + do_get.
     let info1 = prepared.execute().await.unwrap();
     let ticket1 = info1.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let rows1: usize =

@@ -96,7 +96,7 @@ fn checked_num_keys(operation: &'static str, num_keys: usize) -> Result<i32> {
     i32::try_from(num_keys).map_err(|_| sort_key_count_limit_error(operation, num_keys))
 }
 
-/// Helper: convert Option slices to raw pointers.
+/// Raw pointers to the optional column order and null precedence slices for FFI sort calls.
 struct SortParams {
     column_order: *const cudf_sys::cudf_order_t,
     null_precedence: *const cudf_sys::cudf_null_order_t,
@@ -364,7 +364,7 @@ pub fn sorted_order_reservation_size_bytes_for_len(output_rows: usize) -> Result
 ///
 /// `descending` and `nulls_first` vectors must be either:
 /// - **empty**: meaning "use defaults for all sort keys", or
-/// - **exactly equal** in length to the number of sort-key columns.
+/// - **equal** in length to the number of sort-key columns.
 ///
 /// Any other length is rejected at sort time with
 /// `ErrorKind::Unsupported` plus `ErrorCode::UnsupportedOperation`.
@@ -425,7 +425,7 @@ impl SortOptions {
     /// returning `(Vec<Order>, Option<Vec<NullOrder>>)`.
     ///
     /// - Empty vectors are expanded to defaults for all keys.
-    /// - Non-empty vectors must match `num_keys` exactly.
+    /// - Non-empty vectors must match `num_keys`.
     pub(crate) fn resolve(
         &self,
         num_keys: usize,

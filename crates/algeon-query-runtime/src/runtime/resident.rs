@@ -48,8 +48,9 @@ use crate::{
 
 /// Local lookup table for GPU-resident inputs consumed by a query.
 ///
-/// Keys are plan-local input names, not global handles. All handles must be
-/// reusable by the same [`ExecutionContext`] that executes the consuming plan.
+/// Keys are plan-local input names and do not identify global handles. All
+/// handles must be reusable by the same [`ExecutionContext`] that executes the
+/// consuming plan.
 pub type GpuResidentInputMap = BTreeMap<String, GpuResultHandle>;
 
 /// Owned cuDF DataFrame plus the placement observed when it entered the engine.
@@ -137,7 +138,7 @@ impl GpuDataFrame {
         let resident_owner = match &source.resident_owner {
             Some(source_owner) if all_output_columns_alias_source => {
                 // Pure aliases, including column subsets, keep the source
-                // owner alive instead of remeasuring a partial owner set.
+                // owner alive without remeasuring a partial owner set.
                 Some(source_owner.clone())
             },
             // A frozen grant accepts no further owner charge, so the derived
@@ -1377,10 +1378,10 @@ mod tests {
         assert!(cursor.next_batch().unwrap().is_none());
     }
 
-    /// E3: the deferred host cursor prepares each bounded chunk inside the existing sink
+    /// The deferred host cursor prepares each bounded chunk inside the existing sink
     /// contract without declaring success early. Every prepared chunk materializes exactly
     /// once, the cursor reports more work until the final chunk drains, and dropping the
-    /// cursor after a partial drain releases its retained owners instead of leaking a grant.
+    /// cursor after a partial drain releases its retained owners and does not leak a grant.
     fn host_batch_cursor_prepares_each_chunk_without_early_success() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();

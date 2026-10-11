@@ -17,7 +17,7 @@ impl CompiledGpuTaskExecutor<'_> {
     }
 
     /// The strongest payload form the compiled contract lets this resource
-    /// carry. The producer may still hand over a weaker one.
+    /// carry. The producer may still supply a weaker form.
     pub(super) fn resource_data_form(&self, resource: ResidentResourceId) -> ResidentDataForm {
         self.pipeline
             .resources()

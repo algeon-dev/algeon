@@ -56,8 +56,8 @@ const DETAIL_CLASSES: [RuntimeObservationRecordClass; 5] = [
 impl RuntimeObservationHandle {
     /// Creates a query-bound session using a system monotonic clock.
     ///
-    /// A disabled config still allocates the session: it turns off trace
-    /// capture, not the query's metrics reduction. Only [`Self::disabled`]
+    /// A disabled config still allocates the session. Trace capture is off,
+    /// and the query's metrics reduction continues. Only [`Self::disabled`]
     /// produces a session with no recorder at all.
     pub(super) fn new(
         query_id: impl Into<QueryId>,
@@ -67,7 +67,6 @@ impl RuntimeObservationHandle {
         Self::with_clock(query_id, trace_id, config, Arc::new(SystemRuntimeObservationClock::new()))
     }
 
-    /// Creates a session using an injected clock.
     pub(super) fn with_clock(
         query_id: impl Into<QueryId>,
         trace_id: Option<TraceId>,
@@ -336,6 +335,7 @@ impl RuntimeObservationHandle {
                     observers: mem::take(&mut state.seal_observers),
                 };
                 inner.seal_published.notify_all();
+                // Observers may re-enter the session, which locks the recorder state.
                 drop(state);
                 deferred.invoke_observers();
                 panic::resume_unwind(panic);
@@ -383,7 +383,7 @@ impl RuntimeObservationHandle {
         let deferred = DeferredRuntimeObservationSeal { snapshot: Some(snapshot), observers };
         if let Some(panic) = provider_panic {
             // Observers run outside the state lock. The snapshot is already
-            // published, so a recovery seal returns it instead of waiting.
+            // published, so a recovery seal returns it without waiting.
             drop(state);
             deferred.invoke_observers();
             panic::resume_unwind(panic);
@@ -411,7 +411,7 @@ impl RuntimeObservationHandle {
         }
     }
 
-    /// Returns the sealed immutable snapshot when a terminal outcome already won.
+    /// Returns the sealed immutable snapshot when a terminal outcome was already fixed.
     pub fn sealed_snapshot(&self) -> Option<SealedRuntimeObservationSnapshot> {
         let inner = self.trace_inner()?;
         inner.lock_state().sealed_snapshot.clone()

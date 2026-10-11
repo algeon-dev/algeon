@@ -83,7 +83,7 @@ pub type cudf_groupby_scan_aggregation_handle = *mut cudf_groupby_scan_aggregati
 pub type cudf_prepared_groupby_handle = *mut cudf_prepared_groupby_handle_state;
 #[doc = " Aggregation kinds."]
 pub type cudf_aggregation_kind_t = core::ffi::c_uint;
-#[doc = " Null handling policy for groupby keys."]
+#[doc = " Null handling policy for groupby keys and for COUNT aggregations."]
 pub type cudf_null_policy_t = core::ffi::c_uint;
 pub type cudf_io_kvikio_compat_mode_t = core::ffi::c_uint;
 #[doc = " How to compare nulls in join keys."]
@@ -529,7 +529,7 @@ pub struct cudf_query_memory_domain_identity_t {
     pub generation: u64,
     pub reserved: [u64; 4usize],
 }
-#[doc = " One surviving allocation owned by a query memory domain.\n\n `device_pointer` is the base pointer the allocator registered, not an\n interior column pointer. Owner attestation compares published output\n buffers against these base allocations."]
+#[doc = " One surviving allocation owned by a query memory domain.\n\n `device_pointer` is the base pointer the allocator registered. It is not an\n interior column pointer. Owner attestation compares published output\n buffers against these base allocations."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_query_memory_domain_allocation_t {
@@ -862,7 +862,7 @@ unsafe extern "C" {
     pub fn cudf_stream_destroy(handle: cudf_stream_handle) -> cudf_status_t;
     #[doc = " Synchronize work already enqueued on a CUDA stream handle."]
     pub fn cudf_stream_synchronize(handle: cudf_stream_handle) -> cudf_status_t;
-    #[doc = " Synchronize work already enqueued on a raw borrowed CUDA stream pointer.\n\n `raw_stream` must be a valid borrowed `cudaStream_t` value. This does not\n take ownership and is intended for compatibility layers that carry raw CUDA\n stream identity rather than a `cudf_stream_handle`."]
+    #[doc = " Synchronize work already enqueued on a raw borrowed CUDA stream pointer.\n\n `raw_stream` must be a valid borrowed `cudaStream_t` value. This does not\n take ownership and is intended for compatibility layers that carry raw CUDA\n stream identity without a `cudf_stream_handle`."]
     pub fn cudf_raw_cuda_stream_synchronize(raw_stream: *mut core::ffi::c_void) -> cudf_status_t;
     #[doc = " Check whether work already enqueued on a CUDA stream handle has completed\n (1 ready, 0 not ready)."]
     pub fn cudf_stream_is_ready(handle: cudf_stream_handle, out: *mut i32) -> cudf_status_t;
@@ -878,7 +878,7 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Remove one attempt route after its streams have drained."]
     pub fn cudf_stream_provider_unregister_attempt(parent_stream: *mut core::ffi::c_void) -> cudf_status_t;
-    #[doc = " Attach another live attempt-member stream as a fork parent alias holding\n one auxiliary fork of the route for its lifetime.\n\n The route claims the lowest auxiliary fork index no live alias holds and\n confines every fork requested from `alias_stream` -- and from the fork it\n is served -- to it; the chosen index is written to\n `out_claimed_fork_index` when that pointer is non-null. The route chooses\n the index, atomically with the attach, because its live-claim table is the\n only record of which forks are taken. The claim is a property of the alias,\n not of the calling thread, so forks requested from the alias on any thread\n stay inside it, and detaching the alias releases it.\n\n The parent's reserved fork is never claimable, so an alias can never be\n served the stream the root runs on.\n\n The attach fails with `CUDF_ERROR_INVALID_OPERATION` when every auxiliary\n fork is already claimed. A caller holding a freshly obtained attempt\n auxiliary permit never sees that: live claims never outnumber the\n attempt's permit holders, which admission caps at the auxiliary fork\n count."]
+    #[doc = " Attach another live attempt-member stream as a fork parent alias holding\n one auxiliary fork of the route for its lifetime.\n\n The route claims the lowest auxiliary fork index no live alias holds and\n confines every fork requested from `alias_stream` (and from the fork it\n is served) to it; the chosen index is written to\n `out_claimed_fork_index` when that pointer is non-null. The route chooses\n the index, atomically with the attach, because its live-claim table is the\n only record of which forks are taken. The claim is a property of the alias,\n not of the calling thread, so forks requested from the alias on any thread\n stay inside it, and detaching the alias releases it.\n\n The parent's reserved fork is never claimable, so an alias can never be\n served the stream the root runs on.\n\n The attach fails with `CUDF_ERROR_INVALID_OPERATION` when every auxiliary\n fork is already claimed. A caller holding a freshly obtained attempt\n auxiliary permit never sees that: live claims never outnumber the\n attempt's permit holders, which admission caps at the auxiliary fork\n count."]
     pub fn cudf_stream_provider_attach_attempt_stream(
         parent_stream: *mut core::ffi::c_void,
         alias_stream: *mut core::ffi::c_void,
@@ -985,7 +985,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut cudf_scalar_handle,
     ) -> cudf_status_t;
-    #[doc = " Deep-copy a scalar with explicit execution options.\n\n Supports all scalar subtypes: numeric, boolean, string, timestamp,\n duration, fixed-point decimal, list, and struct.  Returns\n CUDF_ERROR_TYPE for DICTIONARY32 (no corresponding scalar class).\n `options` must name an explicit valid device and non-NULL stream/MR.\n This is a device-only operation: no stream synchronization is added\n before returning. `options->mr` must outlive the returned scalar."]
+    #[doc = " Deep-copy a scalar.\n\n Supports all scalar subtypes: numeric, boolean, string, timestamp,\n duration, fixed-point decimal, list, and struct.  Returns\n CUDF_ERROR_TYPE for DICTIONARY32 (no corresponding scalar class).\n `options` must name an explicit valid device and non-NULL stream/MR.\n This is a device-only operation: no stream synchronization is added\n before returning. `options->mr` must outlive the returned scalar."]
     pub fn cudf_scalar_copy_ex(
         src: cudf_scalar_handle,
         options: *const cudf_exec_options_t,
@@ -1001,13 +1001,13 @@ unsafe extern "C" {
         out_type_id: *mut cudf_type_id_t,
         out_scale: *mut i32,
     ) -> cudf_status_t;
-    #[doc = " Check if a scalar is valid (non-null) with explicit execution options.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n On success, `out` is ready to read when this call returns because libcudf\n performs synchronous host materialization internally. `options->mr` is\n ignored because this helper does not allocate device outputs, and this shim\n does not add an extra synchronization barrier beyond that materialization."]
+    #[doc = " Check if a scalar is valid (non-null).\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n On success, `out` is ready to read when this call returns because libcudf\n performs synchronous host materialization internally. `options->mr` is\n ignored because this helper does not allocate device outputs, and this shim\n does not add an extra synchronization barrier beyond that materialization."]
     pub fn cudf_scalar_is_valid_ex(
         handle: cudf_scalar_handle,
         out: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Get the raw value of a fixed-width scalar with explicit execution options.\n\n `out` must point to memory large enough for the scalar's physical\n representation. `options` must name an explicit valid device and non-NULL\n stream/MR.\n On success, `out` is ready to read when this call returns because libcudf\n performs synchronous host materialization internally. `options->mr` is\n ignored because this helper does not allocate device outputs, and this shim\n does not add an extra synchronization barrier beyond that materialization."]
+    #[doc = " Get the raw value of a fixed-width scalar.\n\n `out` must point to memory large enough for the scalar's physical\n representation. `options` must name an explicit valid device and non-NULL\n stream/MR.\n On success, `out` is ready to read when this call returns because libcudf\n performs synchronous host materialization internally. `options->mr` is\n ignored because this helper does not allocate device outputs, and this shim\n does not add an extra synchronization barrier beyond that materialization."]
     pub fn cudf_scalar_value_ex(
         handle: cudf_scalar_handle,
         out: *mut core::ffi::c_void,
@@ -1095,7 +1095,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut usize,
     ) -> cudf_status_t;
-    #[doc = " Return the total device allocation footprint of this owning column.\n\n This forwards to libcudf `column::alloc_size()` and includes padding."]
+    #[doc = " Return the total device allocation size of this owning column.\n\n This forwards to libcudf `column::alloc_size()` and includes padding."]
     pub fn cudf_column_device_allocated_size(handle: cudf_column_handle, out: *mut usize) -> cudf_status_t;
     #[doc = " Copy the base device pointers retained by this owning column.\n\n Pass `out == NULL` and `capacity == 0` to query the required count. Shared\n or nested buffers are returned once per owning column."]
     pub fn cudf_column_backing_allocation_pointers(
@@ -1257,7 +1257,7 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Destroy an AST expression handle. Ownership is consumed on call; success\n means cleanup completed and failure means the handle is quarantined."]
     pub fn cudf_ast_expression_destroy(handle: cudf_ast_expression_handle) -> cudf_status_t;
-    #[doc = " Binary operation: column op column with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Applies a binary operator to two columns.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_binary_operation_vv_ex(
         lhs: cudf_column_view_handle,
         rhs: cudf_column_view_handle,
@@ -1266,7 +1266,7 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Binary operation: column op scalar with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Applies a binary operator to a column and a scalar.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_binary_operation_vs_ex(
         lhs: cudf_column_view_handle,
         rhs: cudf_scalar_handle,
@@ -1275,7 +1275,7 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Binary operation: scalar op column with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Applies a binary operator to a scalar and a column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_binary_operation_sv_ex(
         lhs: cudf_scalar_handle,
         rhs: cudf_column_view_handle,
@@ -1329,7 +1329,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut usize,
     ) -> cudf_status_t;
-    #[doc = " Return the total device allocation footprint of this owning table.\n\n This forwards to libcudf `table::alloc_size()` and includes padding."]
+    #[doc = " Return the total device allocation size of this owning table.\n\n This forwards to libcudf `table::alloc_size()` and includes padding."]
     pub fn cudf_table_device_allocated_size(handle: cudf_table_handle, out: *mut usize) -> cudf_status_t;
     #[doc = " Destroy an owning table handle.\n\n Ownership is consumed on call, including on failure. CUDF_SUCCESS means\n cleanup completed; any error means the allocation was quarantined and the\n handle must not be reused or destroyed again."]
     pub fn cudf_table_destroy(handle: cudf_table_handle) -> cudf_status_t;
@@ -1375,14 +1375,14 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Free a heap-allocated array of column handles returned by APIs such as\n cudf_table_release_columns, cudf_groupby_aggregate, and\n cudf_dictionary_match_dictionaries.\n Does NOT destroy the individual columns; caller must do that first."]
     pub fn cudf_free_column_array(array: *mut cudf_column_handle);
-    #[doc = " Concatenate multiple columns into a single column with explicit execution context.\n\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned column."]
+    #[doc = " Concatenate multiple columns into a single column.\n\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned column."]
     pub fn cudf_concatenate_columns_ex(
         columns: *const cudf_column_view_handle,
         num_columns: i32,
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
-    #[doc = " Concatenate multiple tables into a single table with explicit execution context.\n\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned table."]
+    #[doc = " Concatenate multiple tables into a single table.\n\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned table."]
     pub fn cudf_concatenate_tables_ex(
         tables: *const cudf_table_view_handle,
         num_tables: i32,
@@ -1397,7 +1397,7 @@ unsafe extern "C" {
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact device allocation footprint of gathering `input` by\n `gather_map`.\n\n This executes libcudf gather through the selected stream/memory resource,\n observes the resulting table allocation size, and releases the temporary\n table before returning. The value is therefore the same allocation\n footprint that `cudf_gather_ex` would retain for the materialized output.\n `options` must name an explicit valid device and non-NULL stream/MR."]
+    #[doc = " Return the exact device allocation size of gathering `input` by\n `gather_map`.\n\n This executes libcudf gather through the selected stream/memory resource,\n observes the resulting table allocation size, and releases the temporary\n table before returning. The value is therefore the same allocation size\n that `cudf_gather_ex` would retain for the materialized output.\n `options` must name an explicit valid device and non-NULL stream/MR."]
     pub fn cudf_gather_device_allocated_size_ex(
         input: cudf_table_view_handle,
         gather_map: cudf_column_view_handle,
@@ -1429,21 +1429,21 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Extract a datetime component as an INT16 column with explicit execution\n context.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
+    #[doc = " Extract a datetime component as an INT16 column.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
     pub fn cudf_datetime_extract_component_ex(
         input: cudf_column_view_handle,
         component: cudf_datetime_component_t,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Floor datetimes to the requested frequency with explicit execution context.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
+    #[doc = " Floor datetimes to the requested frequency.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
     pub fn cudf_datetime_floor_ex(
         input: cudf_column_view_handle,
         frequency: cudf_datetime_rounding_frequency_t,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Add calendrical months to a timestamp column with explicit execution\n context.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
+    #[doc = " Add calendrical months to a timestamp column.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
     pub fn cudf_datetime_add_calendrical_months_scalar_ex(
         input: cudf_column_view_handle,
         months: i32,
@@ -1498,18 +1498,18 @@ unsafe extern "C" {
         size: usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Allocate `size` bytes of page-locked (pinned) host memory.\n\n The allocation is portable across CUDA devices (`cudaHostAllocPortable`).\n Pinned host memory is a scarce global resource: callers should retain and\n reuse allocations (e.g. as staging slabs) instead of allocating per\n operation.\n\n On success `*out` is a valid host pointer that must be released with\n `cudf_pinned_host_free`. `size` must be greater than zero."]
+    #[doc = " Allocate `size` bytes of page-locked (pinned) host memory.\n\n The allocation is portable across CUDA devices (`cudaHostAllocPortable`).\n Pinned host memory is a scarce global resource: callers should retain and\n reuse allocations (e.g. as staging slabs) and should not allocate per\n operation.\n\n On success `*out` is a valid host pointer that must be released with\n `cudf_pinned_host_free`. `size` must be greater than zero."]
     pub fn cudf_pinned_host_alloc(size: usize, out: *mut *mut core::ffi::c_void) -> cudf_status_t;
     #[doc = " Release pinned host memory allocated by `cudf_pinned_host_alloc`.\n Safe to call with NULL (no-op)."]
     pub fn cudf_pinned_host_free(ptr: *mut core::ffi::c_void) -> cudf_status_t;
-    #[doc = " Create a column by adopting (moving) an existing device buffer.\n Zero-copy: no device-to-device memcpy occurs.\n\n The buffer handle is consumed: after a successful call, the handle\n is no longer valid and must NOT be passed to\n cudf_device_buffer_destroy.\n\n On failure, the buffer handle remains valid (ownership is not\n transferred).\n\n `type_id` must be a fixed-width type.\n `row_count` is the number of elements (not bytes).\n Buffer byte size must equal `row_count * element_size_of(type_id)`.\n\n The resulting column has no null mask (null_count = 0)."]
+    #[doc = " Create a column by adopting (moving) an existing device buffer.\n The adoption is zero-copy, and no device-to-device memcpy occurs.\n\n The buffer handle is consumed. After a successful call, the handle\n is no longer valid and must NOT be passed to\n cudf_device_buffer_destroy.\n\n On failure, the buffer handle remains valid (ownership is not\n transferred).\n\n `type_id` must be a fixed-width type.\n `row_count` is measured in elements.\n Buffer byte size must equal `row_count * element_size_of(type_id)`.\n\n The resulting column has no null mask (null_count = 0)."]
     pub fn cudf_column_adopt_device_buffer(
         type_id: cudf_type_id_t,
         buffer: cudf_device_buffer_handle,
         row_count: i32,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
-    #[doc = " Create a nullable column by adopting data and null-mask buffers.\n Zero-copy: no device-to-device memcpy occurs.\n\n Both `data_buffer` and `null_mask_buffer` are consumed on success.\n On failure, both remain valid.\n\n `null_mask_buffer` must be at least\n bitmask_allocation_size_bytes(row_count) bytes.\n\n `null_count` must be in [0, row_count]."]
+    #[doc = " Create a nullable column by adopting data and null-mask buffers.\n The adoption is zero-copy, and no device-to-device memcpy occurs.\n\n Both `data_buffer` and `null_mask_buffer` are consumed on success.\n On failure, both remain valid.\n\n `null_mask_buffer` must be at least\n bitmask_allocation_size_bytes(row_count) bytes.\n\n `null_count` must be in [0, row_count]."]
     pub fn cudf_column_adopt_device_buffer_nullable(
         type_id: cudf_type_id_t,
         data_buffer: cudf_device_buffer_handle,
@@ -1518,14 +1518,14 @@ unsafe extern "C" {
         row_count: i32,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
-    #[doc = " Encode a column into a dictionary column with explicit execution context.\n\n The result is an owning column of type DICTIONARY32 whose children are:\n   - child 0: indices column (type `indices_type_id`, default INT32)\n   - child 1: keys column (unique, sorted values from the input)\n\n Example: [429, 111, 213, 111, 213, 429, 213]\n   keys:    [111, 213, 429]\n   indices: [2, 0, 1, 0, 1, 2, 1]\n\n The caller must free the result with `cudf_column_destroy`.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
+    #[doc = " Encode a column into a dictionary column.\n\n The result is an owning column of type DICTIONARY32 whose children are:\n   - child 0: indices column (type `indices_type_id`, default INT32)\n   - child 1: keys column (unique, sorted values from the input)\n\n For example, encoding [429, 111, 213, 111, 213, 429, 213] yields keys\n [111, 213, 429] and indices [2, 0, 1, 0, 1, 2, 1].\n\n The caller must free the result with `cudf_column_destroy`.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
     pub fn cudf_dictionary_encode_ex(
         input: cudf_column_view_handle,
         indices_type_id: cudf_type_id_t,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Decode a dictionary column back to a regular column with explicit execution\n context.\n\n The input must be a DICTIONARY32 column. The result is a regular column\n with the same type as the dictionary keys.\n\n The caller must free the result with `cudf_column_destroy`.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
+    #[doc = " Decode a dictionary column back to a regular column.\n\n The input must be a DICTIONARY32 column. The result is a regular column\n with the same type as the dictionary keys.\n\n The caller must free the result with `cudf_column_destroy`.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
     pub fn cudf_dictionary_decode_ex(
         dict_column: cudf_column_view_handle,
         out: *mut cudf_column_handle,
@@ -1541,14 +1541,14 @@ unsafe extern "C" {
         dict_column: cudf_column_view_handle,
         out: *mut cudf_column_view_handle,
     ) -> cudf_status_t;
-    #[doc = " Replace the keys of a dictionary column with explicit execution context.\n\n Any new elements found in `keys` are added; any existing keys not in\n `keys` are removed (rows that referenced removed keys become null).\n The indices are updated to reflect the new key positions.\n\n The caller must free the result with `cudf_column_destroy`.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
+    #[doc = " Replace the keys of a dictionary column.\n\n Any new elements found in `keys` are added; any existing keys not in\n `keys` are removed (rows that referenced removed keys become null).\n The indices are updated to reflect the new key positions.\n\n The caller must free the result with `cudf_column_destroy`.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
     pub fn cudf_dictionary_set_keys_ex(
         dict_column: cudf_column_view_handle,
         keys: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Align multiple dictionary columns to a shared key set with explicit\n execution context.\n\n The keys from all input dictionary columns are concatenated, deduplicated,\n and used to re-key each column via `set_keys`. After this call every\n output column shares the same key set, so their indices are directly\n comparable.\n\n `dict_columns` is an array of `num_columns` dictionary column views.\n `out_columns` receives a heap-allocated array of `out_count` column\n handles. Each matched column must be freed with `cudf_column_destroy`,\n then the array itself must be freed with `cudf_free_column_array`.\n\n Contract:\n - `num_columns` must be > 0\n - `dict_columns` must point to at least `num_columns` entries\n - `out_columns` must be non-NULL\n - `out_count` must be non-NULL\n - on failure, `*out_columns` is set to NULL and `*out_count` is set to 0\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive all returned columns."]
+    #[doc = " Align multiple dictionary columns to a shared key set.\n\n The keys from all input dictionary columns are concatenated, deduplicated,\n and used to re-key each column via `set_keys`. After this call every\n output column shares the same key set, so their indices are directly\n comparable.\n\n `dict_columns` is an array of `num_columns` dictionary column views.\n `out_columns` receives a heap-allocated array of `out_count` column\n handles. Each matched column must be freed with `cudf_column_destroy`,\n then the array itself must be freed with `cudf_free_column_array`.\n\n Preconditions:\n - `num_columns` must be > 0\n - `dict_columns` must point to at least `num_columns` entries\n - `out_columns` must be non-NULL\n - `out_count` must be non-NULL\n - on failure, `*out_columns` is set to NULL and `*out_count` is set to 0\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive all returned columns."]
     pub fn cudf_dictionary_match_dictionaries_ex(
         dict_columns: *const cudf_column_view_handle,
         num_columns: i32,
@@ -1580,33 +1580,33 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Borrow the underlying raw CUDA event pointer from an owning event handle.\n\n This does not transfer ownership. `*out` is valid only while `handle`\n remains alive."]
     pub fn cudf_event_raw(handle: cudf_event_handle, out: *mut *mut core::ffi::c_void) -> cudf_status_t;
-    #[doc = " Apply a unary operation element-wise with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Apply a unary operation element-wise.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_unary_operation_ex(
         input: cudf_column_view_handle,
         op: cudf_unary_operator_t,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Round values away from zero at half-way ties with explicit execution\n context. `options` must name an explicit valid device and non-NULL\n stream/MR. `options->mr` must outlive the returned column."]
+    #[doc = " Round values away from zero at half-way ties.\n `options` must name an explicit valid device and non-NULL\n stream/MR. `options->mr` must outlive the returned column."]
     pub fn cudf_round_half_up_ex(
         input: cudf_column_view_handle,
         decimal_places: i32,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return a boolean column: true where elements are null with explicit\n execution context. `options` must name an explicit valid device and\n non-NULL stream/MR. `options->mr` must outlive the returned column."]
+    #[doc = " Return a boolean column: true where elements are null.\n `options` must name an explicit valid device and\n non-NULL stream/MR. `options->mr` must outlive the returned column."]
     pub fn cudf_is_null_ex(
         input: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return a boolean column: true where elements are valid with explicit\n execution context. `options` must name an explicit valid device and\n non-NULL stream/MR. `options->mr` must outlive the returned column."]
+    #[doc = " Return a boolean column: true where elements are valid.\n `options` must name an explicit valid device and\n non-NULL stream/MR. `options->mr` must outlive the returned column."]
     pub fn cudf_is_valid_ex(
         input: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Cast a column with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Cast a column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_cast_ex(
         input: cudf_column_view_handle,
         output_type: cudf_data_type_handle,
@@ -1619,13 +1619,13 @@ unsafe extern "C" {
         to_type: cudf_data_type_handle,
         out: *mut i32,
     ) -> cudf_status_t;
-    #[doc = " Return a boolean column: true where elements are NaN with explicit execution\n context. `options` must name an explicit valid device and non-NULL\n stream/MR. `options->mr` must outlive the returned column."]
+    #[doc = " Return a boolean column: true where elements are NaN.\n `options` must name an explicit valid device and non-NULL\n stream/MR. `options->mr` must outlive the returned column."]
     pub fn cudf_is_nan_ex(
         input: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return a boolean column: true where elements are not NaN with explicit\n execution context. `options` must name an explicit valid device and\n non-NULL stream/MR. `options->mr` must outlive the returned column."]
+    #[doc = " Return a boolean column: true where elements are not NaN.\n `options` must name an explicit valid device and\n non-NULL stream/MR. `options->mr` must outlive the returned column."]
     pub fn cudf_is_not_nan_ex(
         input: cudf_column_view_handle,
         out: *mut cudf_column_handle,
@@ -1729,7 +1729,7 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Destroy a reusable groupby handle. Ownership is consumed on call; success\n means cleanup completed and failure means the handle remains quarantined."]
     pub fn cudf_prepared_groupby_destroy(handle: cudf_prepared_groupby_handle) -> cudf_status_t;
-    #[doc = " Prepare reusable grouping state and return stable cardinality facts.\n\n This calls cuDF's `groupby::get_groups` without value columns. The returned\n `out_num_groups` is derived from cuDF's group offsets after the handle's\n null-key policy is applied. `out_grouped_key_output_bytes` reports the exact\n device allocation footprint of the grouped-key table materialized by this\n call, and `out_max_group_size` is computed from cuDF's host group offsets.\n Temporary grouped-key output is released before this call returns; these are\n grouped-output facts, not retained prepared-handle state bytes. The prepared\n groupby handle remains reusable for subsequent aggregate calls."]
+    #[doc = " Prepare reusable grouping state and return stable cardinality facts.\n\n This calls cuDF's `groupby::get_groups` without value columns. The returned\n `out_num_groups` is derived from cuDF's group offsets after the handle's\n null-key policy is applied. `out_grouped_key_output_bytes` reports the exact\n device allocation size of the grouped-key table materialized by this call,\n and `out_max_group_size` is computed from cuDF's host group offsets.\n Temporary grouped-key output is released before this call returns. The\n reported byte count therefore covers only that output. The prepared groupby\n handle remains reusable for subsequent aggregate calls."]
     pub fn cudf_prepared_groupby_prepare_groups_ex(
         groupby: cudf_prepared_groupby_handle,
         out_num_groups: *mut i64,
@@ -1750,7 +1750,7 @@ unsafe extern "C" {
         out_total_columns: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Perform a groupby aggregation with explicit execution context.\n\n @param keys           Table view of grouping key columns.\n @param values         Array of column view handles for value columns.\n @param aggregations   Flat array of aggregation handles. For request `i`,\n                        the aggregations start at offset sum(agg_counts[0..i]).\n @param agg_counts     Array of length `num_requests`. `agg_counts[i]` is the\n                        number of aggregations for value column `i`.\n @param num_requests   Number of aggregation requests (length of values/agg_counts).\n @param num_aggregations Total length of the flat `aggregations` array. Must\n                        equal `sum(agg_counts)`.\n @param keys_null_policy  Null handling for keys (EXCLUDE or INCLUDE).\n @param out_keys       Output: table of unique key groups. Set to NULL on failure.\n @param out_values     Output: array of column handles for aggregation results.\n                        The array has `sum(agg_counts)` entries. When the\n                        total is zero, `*out_values` is NULL. Caller must\n                        free each column and then the array with cudf_free_column_array.\n @param out_total_columns  Output: total number of result columns. Set to 0 on failure.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned keys table and every returned\n result column."]
+    #[doc = " Perform a groupby aggregation.\n\n @param keys          Table view of grouping key columns.\n @param values         Array of column view handles for value columns.\n @param aggregations   Flat array of aggregation handles. For request `i`,\n                        the aggregations start at offset sum(agg_counts[0..i]).\n @param agg_counts     Array of length `num_requests`. `agg_counts[i]` is the\n                        number of aggregations for value column `i`.\n @param num_requests   Number of aggregation requests (length of values/agg_counts).\n @param num_aggregations Total length of the flat `aggregations` array. Must\n                        equal `sum(agg_counts)`.\n @param keys_null_policy  Null handling for keys (EXCLUDE or INCLUDE).\n @param out_keys       Output: table of unique key groups. Set to NULL on failure.\n @param out_values     Output: array of column handles for aggregation results.\n                        The array has `sum(agg_counts)` entries. When the\n                        total is zero, `*out_values` is NULL. Caller must\n                        free each column and then the array with cudf_free_column_array.\n @param out_total_columns  Output: total number of result columns. Set to 0 on failure.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned keys table and every returned\n result column."]
     pub fn cudf_groupby_aggregate_ex(
         keys: cudf_table_view_handle,
         values: *const cudf_column_view_handle,
@@ -1764,7 +1764,7 @@ unsafe extern "C" {
         out_total_columns: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Perform a groupby aggregation with explicit execution context and sorted-key\n contract.\n\n If `keys_are_sorted` is non-zero, the caller asserts that key columns are\n ascending with nulls after, matching cuDF's pre-sorted key contract.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned keys table and every returned\n result column."]
+    #[doc = " Perform a groupby aggregation with a sorted-key contract.\n\n If `keys_are_sorted` is non-zero, the caller asserts that key columns are\n ascending with nulls after, matching cuDF's pre-sorted key contract.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned keys table and every returned\n result column."]
     pub fn cudf_groupby_aggregate_with_keys_are_sorted_ex(
         keys: cudf_table_view_handle,
         values: *const cudf_column_view_handle,
@@ -1779,7 +1779,7 @@ unsafe extern "C" {
         out_total_columns: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Perform a grouped prefix scan with explicit execution context.\n\n The output has one result column per requested aggregation. If\n `keys_are_sorted` is non-zero, the grouped scan is constructed with cuDF's\n sorted-key contract and assumes ascending key columns with nulls after.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned keys table and every returned\n result column."]
+    #[doc = " Perform a grouped prefix scan.\n\n The output has one result column per requested aggregation. If\n `keys_are_sorted` is non-zero, the grouped scan is constructed with cuDF's\n sorted-key contract and assumes ascending key columns with nulls after.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned keys table and every returned\n result column."]
     pub fn cudf_groupby_scan_ex(
         keys: cudf_table_view_handle,
         values: *const cudf_column_view_handle,
@@ -1794,7 +1794,7 @@ unsafe extern "C" {
         out_total_columns: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Perform a per-group row shift with explicit execution context.\n\n Each value column is shifted by the corresponding `offsets[i]` positions\n within each group, and indeterminate output positions take `fill_values[i]`.\n libcudf returns a keys table and a values table with identical row counts.\n Within each group the rows of the values table appear in the input row\n order; the order of groups themselves is libcudf-defined and may differ\n across calls.\n\n `values`, `offsets`, and `fill_values` must all have length\n `num_value_columns`. Each `fill_values[i]` must have the same data type as\n the corresponding `values[i]` column. All value columns must have the same\n row count. libcudf rejects value columns whose data type is neither\n fixed-width nor string.\n\n If `keys_are_sorted` is non-zero, the caller asserts that the key columns\n are ascending with nulls after, matching cuDF's pre-sorted key contract.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned keys and values tables."]
+    #[doc = " Perform a per-group row shift.\n\n Each value column is shifted by the corresponding `offsets[i]` positions\n within each group, and indeterminate output positions take `fill_values[i]`.\n libcudf returns a keys table and a values table with identical row counts.\n Within each group the rows of the values table appear in the input row\n order; the order of groups themselves is libcudf-defined and may differ\n across calls.\n\n `values`, `offsets`, and `fill_values` must all have length\n `num_value_columns`. Each `fill_values[i]` must have the same data type as\n the corresponding `values[i]` column. All value columns must have the same\n row count. libcudf rejects value columns whose data type is neither\n fixed-width nor string.\n\n If `keys_are_sorted` is non-zero, the caller asserts that the key columns\n are ascending with nulls after, matching cuDF's pre-sorted key contract.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned keys and values tables."]
     pub fn cudf_groupby_shift_ex(
         keys: cudf_table_view_handle,
         values: *const cudf_column_view_handle,
@@ -1821,7 +1821,7 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Read a Parquet file into a table. `columns` is an optional array of\n null-terminated column name strings (pass NULL to read all columns).\n `num_columns` is the length of the `columns` array.\n\n `row_groups` is an optional array of zero-based row group indices to read\n (for the single source file). Pass NULL with `num_row_groups` = 0 to read\n all row groups. Cannot be combined with `skip_rows > 0` or `num_rows >= 0`.\n\n Read Parquet with explicit execution context.\n\n Contract:\n - `filepath` must be non-NULL\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `columns` must be non-NULL\n - `skip_rows` must be >= 0\n - `num_rows` must be >= -1 (`-1` means read all remaining rows)\n - if `num_row_groups > 0`, `row_groups` must be non-NULL\n - if `num_row_groups > 0`, `skip_rows` must be 0 and `num_rows` must be -1\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
+    #[doc = " Read a Parquet file into a table. `columns` is an optional array of\n null-terminated column name strings (pass NULL to read all columns).\n `num_columns` is the length of the `columns` array.\n\n `row_groups` is an optional array of zero-based row group indices to read\n (for the single source file). Pass NULL with `num_row_groups` = 0 to read\n all row groups. Cannot be combined with `skip_rows > 0` or `num_rows >= 0`.\n\n Preconditions:\n - `filepath` must be non-NULL\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `columns` must be non-NULL\n - `skip_rows` must be >= 0\n - `num_rows` must be >= -1 (`-1` means read all remaining rows)\n - if `num_row_groups > 0`, `row_groups` must be non-NULL\n - if `num_row_groups > 0`, `skip_rows` must be 0 and `num_rows` must be -1\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
     pub fn cudf_io_read_parquet_ex(
         filepath: *const core::ffi::c_char,
         columns: *mut *const core::ffi::c_char,
@@ -1846,7 +1846,7 @@ unsafe extern "C" {
         out: *mut cudf_table_handle,
         exec_options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Read a Parquet file, returning the table and column names.\n `out_names` is populated with `out_num_names` null-terminated strings.\n When `out_num_names` is zero, `*out_names` is NULL.\n The caller must free the names with `cudf_io_free_column_names()`.\n\n `row_groups` / `num_row_groups`; same semantics as `cudf_io_read_parquet_ex`.\n\n Read Parquet with metadata and explicit execution context.\n\n Contract:\n - `filepath` must be non-NULL\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `columns` must be non-NULL\n - `skip_rows` must be >= 0\n - `num_rows` must be >= -1 (`-1` means read all remaining rows)\n - if `num_row_groups > 0`, `row_groups` must be non-NULL\n - if `num_row_groups > 0`, `skip_rows` must be 0 and `num_rows` must be -1\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
+    #[doc = " Read a Parquet file, returning the table and column names.\n `out_names` is populated with `out_num_names` null-terminated strings.\n When `out_num_names` is zero, `*out_names` is NULL.\n The caller must free the names with `cudf_io_free_column_names()`.\n\n `row_groups` and `num_row_groups` have the same semantics as `cudf_io_read_parquet_ex`.\n\n Preconditions:\n - `filepath` must be non-NULL\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `columns` must be non-NULL\n - `skip_rows` must be >= 0\n - `num_rows` must be >= -1 (`-1` means read all remaining rows)\n - if `num_row_groups > 0`, `row_groups` must be non-NULL\n - if `num_row_groups > 0`, `skip_rows` must be 0 and `num_rows` must be -1\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
     pub fn cudf_io_read_parquet_with_metadata_ex(
         filepath: *const core::ffi::c_char,
         columns: *mut *const core::ffi::c_char,
@@ -1860,7 +1860,7 @@ unsafe extern "C" {
         out_num_names: *mut i32,
         exec_options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Read Parquet with metadata, explicit execution context, and an optional\n libcudf AST reader predicate.\n\n `predicate` may be NULL. When non-NULL, it must outlive this call.\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
+    #[doc = " Read Parquet with metadata and an optional libcudf AST reader predicate.\n\n `predicate` may be NULL. When non-NULL, it must outlive this call.\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
     pub fn cudf_io_read_parquet_with_metadata_filter_ex(
         filepath: *const core::ffi::c_char,
         columns: *mut *const core::ffi::c_char,
@@ -1894,7 +1894,7 @@ unsafe extern "C" {
         out_pruning_evidence: *mut cudf_io_parquet_pruning_evidence_t,
         exec_options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Read multiple Parquet files with metadata, explicit execution context, and\n an optional libcudf AST reader predicate.\n\n `filepaths` must contain `num_files` non-NULL path strings. Row order follows\n the file order and then each file's selected row-group order.\n\n Per-file row groups are represented by `row_group_offsets` and `row_groups`:\n `row_group_offsets` has `num_files + 1` entries and\n `row_groups[row_group_offsets[i]..row_group_offsets[i + 1]]` is the row-group\n selection for file `i`. Pass NULL offsets with zero row groups to read all\n row groups from every file.\n\n `predicate` may be NULL. When non-NULL, it must outlive this call.\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
+    #[doc = " Read multiple Parquet files with metadata and an optional libcudf AST reader\n predicate.\n\n `filepaths` must contain `num_files` non-NULL path strings. Row order follows\n the file order and then each file's selected row-group order.\n\n Per-file row groups are represented by `row_group_offsets` and `row_groups`:\n `row_group_offsets` has `num_files + 1` entries and\n `row_groups[row_group_offsets[i]..row_group_offsets[i + 1]]` is the row-group\n selection for file `i`. Pass NULL offsets with zero row groups to read all\n row groups from every file.\n\n `predicate` may be NULL. When non-NULL, it must outlive this call.\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
     pub fn cudf_io_read_parquet_multi_with_metadata_filter_ex(
         filepaths: *mut *const core::ffi::c_char,
         num_files: i32,
@@ -1931,7 +1931,7 @@ unsafe extern "C" {
         out_pruning_evidence: *mut cudf_io_parquet_pruning_evidence_t,
         exec_options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Read Parquet from a host buffer with metadata, explicit execution context,\n and an optional libcudf AST reader predicate.\n\n `host_buffer` is borrowed only for the duration of this call. The returned\n table must not retain a pointer into the host buffer. `host_buffer` must be\n non-NULL and `host_buffer_len` must be > 0. Other arguments have the same\n contract as `cudf_io_read_parquet_with_metadata_filter_ex`."]
+    #[doc = " Read Parquet from a host buffer with metadata and an optional libcudf AST\n reader predicate.\n\n `host_buffer` is borrowed only for the duration of this call. The returned\n table must not retain a pointer into the host buffer. `host_buffer` must be\n non-NULL and `host_buffer_len` must be > 0. Other arguments have the same\n contract as `cudf_io_read_parquet_with_metadata_filter_ex`."]
     pub fn cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
         host_buffer: *const core::ffi::c_void,
         host_buffer_len: usize,
@@ -1974,7 +1974,7 @@ unsafe extern "C" {
         preferred_read_size: i64,
         out: *mut cudf_io_datasource_probe_result_t,
     ) -> cudf_status_t;
-    #[doc = " Write a table to a Parquet file.\n `column_names` is an array of null-terminated strings (one per column).\n `row_group_size_rows` sets the maximum number of rows per row group.\n Pass 0 to use libcudf's default (1,000,000 rows).\n\n Contract:\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `column_names` must be non-NULL\n Write Parquet with explicit execution context.\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n libcudf's write_parquet surface accepts a stream but not an explicit MR; the\n shim installs `exec_options->mr` as the current device resource only for the\n duration of the libcudf writer call."]
+    #[doc = " Write a table to a Parquet file.\n `column_names` is an array of null-terminated strings (one per column).\n `row_group_size_rows` sets the maximum number of rows per row group.\n Pass 0 to use libcudf's default (1,000,000 rows).\n\n Preconditions:\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `column_names` must be non-NULL\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n libcudf's write_parquet surface accepts a stream and no explicit MR; the\n shim installs `exec_options->mr` as the current device resource only for the\n duration of the libcudf writer call."]
     pub fn cudf_io_write_parquet_ex(
         table: cudf_table_view_handle,
         filepath: *const core::ffi::c_char,
@@ -2024,7 +2024,7 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Consume ownership. Failure quarantines the handle and must not be retried."]
     pub fn cudf_mixed_left_join_state_destroy(state: cudf_mixed_left_join_state_handle) -> cudf_status_t;
-    #[doc = " Inner join with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned tables."]
+    #[doc = " Inner join of two key tables.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned tables."]
     pub fn cudf_inner_join_ex(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -2035,7 +2035,7 @@ unsafe extern "C" {
         out_right: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Left join with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned tables."]
+    #[doc = " Left join of two key tables.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned tables."]
     pub fn cudf_left_join_ex(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -2046,7 +2046,7 @@ unsafe extern "C" {
         out_right: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Full join with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned tables."]
+    #[doc = " Full join of two key tables.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned tables."]
     pub fn cudf_full_join_ex(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -2057,14 +2057,14 @@ unsafe extern "C" {
         out_right: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Cross join with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned table."]
+    #[doc = " Cross join of two tables.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned table."]
     pub fn cudf_cross_join_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Projected cross join with explicit input row counts and execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned table."]
+    #[doc = " Projected cross join of two selected tables with explicit row counts.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned table."]
     pub fn cudf_projected_cross_join_ex(
         left_selected: cudf_table_view_handle,
         right_selected: cudf_table_view_handle,
@@ -2082,7 +2082,7 @@ unsafe extern "C" {
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Inner join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Inner join indices of two key tables.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_inner_join_indices_ex(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -2091,7 +2091,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Left join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Left join indices of two key tables.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_left_join_indices_ex(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -2100,7 +2100,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Full join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Full join indices of two key tables.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_full_join_indices_ex(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -2109,7 +2109,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Left semi join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
+    #[doc = " Left semi join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
     pub fn cudf_left_semi_join_indices_ex(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -2117,7 +2117,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Left anti join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
+    #[doc = " Left anti join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
     pub fn cudf_left_anti_join_indices_ex(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -2125,7 +2125,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Conditional inner join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Conditional inner join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_conditional_inner_join_indices_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2134,7 +2134,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Conditional inner join indices with an exact output row count and explicit\n execution context."]
+    #[doc = " Conditional inner join indices with an exact output row count."]
     pub fn cudf_conditional_inner_join_indices_with_output_size_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2144,7 +2144,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact output row count for a conditional inner join with\n explicit execution context."]
+    #[doc = " Return the exact output row count for a conditional inner join."]
     pub fn cudf_conditional_inner_join_size_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2152,7 +2152,7 @@ unsafe extern "C" {
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Conditional left join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Conditional left join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_conditional_left_join_indices_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2161,7 +2161,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Conditional left join indices with an exact output row count and explicit\n execution context."]
+    #[doc = " Conditional left join indices with an exact output row count."]
     pub fn cudf_conditional_left_join_indices_with_output_size_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2171,7 +2171,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact output row count for a conditional left join with explicit\n execution context."]
+    #[doc = " Return the exact output row count for a conditional left join."]
     pub fn cudf_conditional_left_join_size_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2179,7 +2179,7 @@ unsafe extern "C" {
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Conditional full join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Conditional full join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_conditional_full_join_indices_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2188,7 +2188,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Compute and retain exact output-size data for a conditional full join with\n explicit execution context."]
+    #[doc = " Compute and retain exact output-size data for a conditional full join."]
     pub fn cudf_conditional_full_join_begin_size_data_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2215,14 +2215,14 @@ unsafe extern "C" {
         handle: cudf_conditional_full_join_size_data_handle,
         out: *mut usize,
     ) -> cudf_status_t;
-    #[doc = " Materialize conditional full join indices using retained exact output-size\n data and explicit execution context."]
+    #[doc = " Materialize conditional full join indices using retained exact output-size\n data."]
     pub fn cudf_conditional_full_join_size_data_materialize_indices_ex(
         size_data: cudf_conditional_full_join_size_data_handle,
         out_left_indices: *mut cudf_column_handle,
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Conditional left semi join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
+    #[doc = " Conditional left semi join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
     pub fn cudf_conditional_left_semi_join_indices_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2230,7 +2230,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Conditional left semi join indices with an exact output row count and\n explicit execution context."]
+    #[doc = " Conditional left semi join indices with an exact output row count."]
     pub fn cudf_conditional_left_semi_join_indices_with_output_size_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2239,7 +2239,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact output row count for a conditional left semi join with\n explicit execution context."]
+    #[doc = " Return the exact output row count for a conditional left semi join."]
     pub fn cudf_conditional_left_semi_join_size_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2247,7 +2247,7 @@ unsafe extern "C" {
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Conditional left anti join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
+    #[doc = " Conditional left anti join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
     pub fn cudf_conditional_left_anti_join_indices_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2255,7 +2255,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Conditional left anti join indices with an exact output row count and\n explicit execution context."]
+    #[doc = " Conditional left anti join indices with an exact output row count."]
     pub fn cudf_conditional_left_anti_join_indices_with_output_size_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2264,7 +2264,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact output row count for a conditional left anti join with\n explicit execution context."]
+    #[doc = " Return the exact output row count for a conditional left anti join."]
     pub fn cudf_conditional_left_anti_join_size_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2272,7 +2272,7 @@ unsafe extern "C" {
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Filter already-computed join-index pairs with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Filter already-computed join-index pairs.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_filter_join_indices_ex(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -2284,7 +2284,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Mixed inner join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Mixed inner join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_mixed_inner_join_indices_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2296,7 +2296,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Mixed left join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Mixed left join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_mixed_left_join_indices_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2308,7 +2308,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Mixed full join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Mixed full join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_mixed_full_join_indices_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2320,7 +2320,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Mixed left semi join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
+    #[doc = " Mixed left semi join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
     pub fn cudf_mixed_left_semi_join_indices_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2331,7 +2331,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Mixed left anti join indices with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
+    #[doc = " Mixed left anti join indices.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
     pub fn cudf_mixed_left_anti_join_indices_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2342,7 +2342,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Compute and retain exact output-size data for a mixed inner join with\n explicit execution context."]
+    #[doc = " Compute and retain exact output-size data for a mixed inner join."]
     pub fn cudf_mixed_inner_join_begin_size_data_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2353,7 +2353,7 @@ unsafe extern "C" {
         out: *mut cudf_mixed_join_size_data_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Compute and retain exact output-size data for a mixed left join with\n explicit execution context."]
+    #[doc = " Compute and retain exact output-size data for a mixed left join."]
     pub fn cudf_mixed_left_join_begin_size_data_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2364,7 +2364,7 @@ unsafe extern "C" {
         out: *mut cudf_mixed_join_size_data_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Compute and retain exact output-size data for a mixed full join with\n explicit execution context."]
+    #[doc = " Compute and retain exact output-size data for a mixed full join."]
     pub fn cudf_mixed_full_join_begin_size_data_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2375,7 +2375,7 @@ unsafe extern "C" {
         out: *mut cudf_mixed_join_size_data_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Compute and retain exact output-size data for a mixed left semi join with\n explicit execution context."]
+    #[doc = " Compute and retain exact output-size data for a mixed left semi join."]
     pub fn cudf_mixed_left_semi_join_begin_size_data_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2386,7 +2386,7 @@ unsafe extern "C" {
         out: *mut cudf_mixed_join_size_data_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Compute and retain exact output-size data for a mixed left anti join with\n explicit execution context."]
+    #[doc = " Compute and retain exact output-size data for a mixed left anti join."]
     pub fn cudf_mixed_left_anti_join_begin_size_data_ex(
         left_equality: cudf_table_view_handle,
         right_equality: cudf_table_view_handle,
@@ -2414,20 +2414,20 @@ unsafe extern "C" {
         handle: cudf_mixed_join_size_data_handle,
         out: *mut usize,
     ) -> cudf_status_t;
-    #[doc = " Materialize mixed join indices using retained exact output-size data and\n explicit execution context."]
+    #[doc = " Materialize mixed join indices using retained exact output-size data."]
     pub fn cudf_mixed_join_size_data_materialize_indices_ex(
         size_data: cudf_mixed_join_size_data_handle,
         out_left_indices: *mut cudf_column_handle,
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Materialize a single left gather map from retained mixed semi/anti size data\n with explicit execution context."]
+    #[doc = " Materialize a single left gather map from retained mixed semi/anti size data."]
     pub fn cudf_mixed_join_size_data_materialize_single_indices_ex(
         size_data: cudf_mixed_join_size_data_handle,
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Build a reusable distinct-hash-join artifact with explicit execution\n context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned join handle because libcudf\n retains build-time hash-table allocations in the handle."]
+    #[doc = " Build a reusable distinct-hash-join artifact.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned join handle because libcudf\n retains build-time hash-table allocations in the handle."]
     pub fn cudf_distinct_hash_join_create_ex(
         build: cudf_table_view_handle,
         null_equality: cudf_null_equality_t,
@@ -2436,14 +2436,14 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Destroy a reusable distinct-hash-join handle under its build-time device\n and memory resource. Ownership is consumed on call; success means cleanup\n completed and failure means the handle remains quarantined."]
     pub fn cudf_distinct_hash_join_destroy(handle: cudf_distinct_hash_join_handle) -> cudf_status_t;
-    #[doc = " Probe a reusable distinct-hash-join artifact with explicit execution\n context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
+    #[doc = " Probe a reusable distinct-hash-join artifact.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned index column."]
     pub fn cudf_distinct_hash_join_left_join_ex(
         join: cudf_distinct_hash_join_handle,
         probe: cudf_table_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Build a reusable filtered-join artifact with explicit execution context."]
+    #[doc = " Build a reusable filtered-join artifact."]
     pub fn cudf_filtered_join_create_ex(
         build: cudf_table_view_handle,
         null_equality: cudf_null_equality_t,
@@ -2451,7 +2451,7 @@ unsafe extern "C" {
         out: *mut cudf_filtered_join_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return exact retained filtered-join build bytes with explicit execution context."]
+    #[doc = " Return exact retained filtered-join build bytes."]
     pub fn cudf_filtered_join_pre_build_reservation_size_ex(
         build: cudf_table_view_handle,
         null_equality: cudf_null_equality_t,
@@ -2474,14 +2474,14 @@ unsafe extern "C" {
         handle: cudf_filtered_join_handle,
         out: *mut usize,
     ) -> cudf_status_t;
-    #[doc = " Begin a retained left semi probe with explicit execution context."]
+    #[doc = " Begin a retained left semi probe."]
     pub fn cudf_filtered_join_begin_left_semi_probe_ex(
         join: cudf_filtered_join_handle,
         probe: cudf_table_view_handle,
         out: *mut cudf_filtered_join_probe_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Begin a retained left anti probe with explicit execution context."]
+    #[doc = " Begin a retained left anti probe."]
     pub fn cudf_filtered_join_begin_left_anti_probe_ex(
         join: cudf_filtered_join_handle,
         probe: cudf_table_view_handle,
@@ -2500,27 +2500,27 @@ unsafe extern "C" {
         handle: cudf_filtered_join_probe_handle,
         out: *mut usize,
     ) -> cudf_status_t;
-    #[doc = " Materialize selected probe indices with explicit execution context."]
+    #[doc = " Materialize selected probe indices."]
     pub fn cudf_filtered_join_probe_materialize_indices_ex(
         handle: cudf_filtered_join_probe_handle,
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact row count for a left semi probe with explicit execution context."]
+    #[doc = " Return the exact row count for a left semi probe."]
     pub fn cudf_filtered_join_left_semi_join_size_ex(
         join: cudf_filtered_join_handle,
         probe: cudf_table_view_handle,
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact row count for a left anti probe with explicit execution context."]
+    #[doc = " Return the exact row count for a left anti probe."]
     pub fn cudf_filtered_join_left_anti_join_size_ex(
         join: cudf_filtered_join_handle,
         probe: cudf_table_view_handle,
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Probe a reusable filtered join for left semi gather indices with explicit execution context."]
+    #[doc = " Probe a reusable filtered join for left semi gather indices."]
     pub fn cudf_filtered_join_left_semi_join_with_output_size_ex(
         join: cudf_filtered_join_handle,
         probe: cudf_table_view_handle,
@@ -2528,7 +2528,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Probe a reusable filtered join for left anti gather indices with explicit execution context."]
+    #[doc = " Probe a reusable filtered join for left anti gather indices."]
     pub fn cudf_filtered_join_left_anti_join_with_output_size_ex(
         join: cudf_filtered_join_handle,
         probe: cudf_table_view_handle,
@@ -2536,7 +2536,7 @@ unsafe extern "C" {
         out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Build a reusable hash-join artifact with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR. The\n resolved memory resource is retained by the returned join handle for\n build-time hash-table allocations and destruction."]
+    #[doc = " Build a reusable hash-join artifact.\n\n `options` must name an explicit valid device and non-NULL stream/MR. The\n resolved memory resource is retained by the returned join handle for\n build-time hash-table allocations and destruction."]
     pub fn cudf_hash_join_create_ex(
         build: cudf_table_view_handle,
         nullable_join: cudf_nullable_join_t,
@@ -2545,7 +2545,7 @@ unsafe extern "C" {
         out: *mut cudf_hash_join_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return exact retained device bytes that must be reserved before building a\n reusable hash-join artifact with explicit execution context.\n\n The execution context is part of the contract surface so callers can use the\n same stream and memory-resource policy as the eventual build call. The call\n does not allocate device memory; exact flat nullable-string preprocessing is\n sized by inspecting existing offsets and null masks. Nested build-key tables\n fail with CUDF_ERROR_INVALID_ARGUMENT.\n\n `options` must name an explicit valid device and non-NULL stream/MR."]
+    #[doc = " Return exact retained device bytes that must be reserved before building a\n reusable hash-join artifact.\n\n Pass the same stream and memory-resource policy that the eventual build call\n uses. The call does not allocate device memory; exact flat nullable-string\n preprocessing is sized by inspecting existing offsets and null masks. Nested\n build-key tables fail with CUDF_ERROR_INVALID_ARGUMENT.\n\n `options` must name an explicit valid device and non-NULL stream/MR."]
     pub fn cudf_hash_join_pre_build_reservation_size_ex(
         build: cudf_table_view_handle,
         load_factor: f64,
@@ -2556,7 +2556,7 @@ unsafe extern "C" {
     pub fn cudf_hash_join_destroy(handle: cudf_hash_join_handle) -> cudf_status_t;
     #[doc = " Return device bytes retained by a reusable hash-join build artifact.\n\n This excludes the build table viewed by the handle and any per-probe\n output/index allocations."]
     pub fn cudf_hash_join_device_allocated_size(handle: cudf_hash_join_handle, out: *mut usize) -> cudf_status_t;
-    #[doc = " Probe a reusable hash-join artifact for inner-join gather indices with\n explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Probe a reusable hash-join artifact for inner-join gather indices.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_hash_join_inner_join_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
@@ -2564,7 +2564,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Probe a reusable hash-join artifact for inner-join gather indices with an\n exact output row count and explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Probe a reusable hash-join artifact for inner-join gather indices with an\n exact output row count.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_hash_join_inner_join_with_output_size_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
@@ -2573,14 +2573,14 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact row count for an inner probe with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR."]
+    #[doc = " Return the exact row count for an inner probe.\n\n `options` must name an explicit valid device and non-NULL stream/MR."]
     pub fn cudf_hash_join_inner_join_size_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Probe a reusable hash-join artifact for left-join gather indices with\n explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Probe a reusable hash-join artifact for left-join gather indices.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_hash_join_left_join_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
@@ -2588,7 +2588,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Probe a reusable hash-join artifact for left-join gather indices with an\n exact output row count and explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Probe a reusable hash-join artifact for left-join gather indices with an\n exact output row count.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_hash_join_left_join_with_output_size_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
@@ -2597,14 +2597,14 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact row count for a left probe with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR."]
+    #[doc = " Return the exact row count for a left probe.\n\n `options` must name an explicit valid device and non-NULL stream/MR."]
     pub fn cudf_hash_join_left_join_size_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Probe a reusable hash-join artifact for full-join gather indices with\n explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Probe a reusable hash-join artifact for full-join gather indices.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_hash_join_full_join_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
@@ -2612,7 +2612,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Probe a reusable hash-join artifact for full-join gather indices with an\n exact output row count and explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
+    #[doc = " Probe a reusable hash-join artifact for full-join gather indices with an\n exact output row count.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned index columns."]
     pub fn cudf_hash_join_full_join_with_output_size_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
@@ -2621,7 +2621,7 @@ unsafe extern "C" {
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact row count for a full probe with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR."]
+    #[doc = " Return the exact row count for a full probe.\n\n `options` must name an explicit valid device and non-NULL stream/MR."]
     pub fn cudf_hash_join_full_join_size_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
@@ -2763,7 +2763,7 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Replace null values in a column with corresponding values from another\n column using an explicit execution context.\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
+    #[doc = " Replace null values in a column with corresponding values from another\n column.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
     pub fn cudf_replace_nulls_column_ex(
         input: cudf_column_view_handle,
         replacement: cudf_column_view_handle,
@@ -2777,14 +2777,14 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Interleave equal-length columns into one row-major column with explicit\n execution context.\n\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned column."]
+    #[doc = " Interleave equal-length columns into one row-major column.\n\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned column."]
     pub fn cudf_interleave_columns_ex(
         columns: *const cudf_column_view_handle,
         num_columns: i32,
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
-    #[doc = " Copy a flat, non-null FLOAT32, FLOAT64, INT8, or UINT8 column into a dense matrix order.\n\n The input holds exactly `rows * columns` row-major values. `column_major`\n selects whether the returned flat column keeps that row-major order (`0`)\n or rearranges it into contiguous column-major order (`1`). All work uses\n the explicit stream and memory resource carried by `options`."]
+    #[doc = " Copy a flat, non-null FLOAT32, FLOAT64, INT8, or UINT8 column into a dense matrix order.\n\n The input holds `rows * columns` row-major values. `column_major`\n selects whether the returned flat column keeps that row-major order (`0`)\n or rearranges it into contiguous column-major order (`1`). All work uses\n the explicit stream and memory resource carried by `options`."]
     pub fn cudf_pack_flat_matrix_ex(
         input: cudf_column_view_handle,
         rows: i32,
@@ -2793,7 +2793,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
-    #[doc = " Copy a borrowed device-resident numeric span into a dense matrix order.\n\n `input` points at exactly `rows * columns` row-major values of `element` on the\n CUDA device selected by `options`. The caller retains the source allocation\n and must keep it alive until work enqueued on `options->stream` completes.\n The returned column performs exactly one output allocation and one payload\n copy/reorder on the explicit stream and memory resource."]
+    #[doc = " Copy a borrowed device-resident numeric span into a dense matrix order.\n\n `input` points at `rows * columns` row-major values of `element` on the\n CUDA device selected by `options`. The caller retains the source allocation\n and must keep it alive until work enqueued on `options->stream` completes.\n The returned column performs exactly one output allocation and one payload\n copy/reorder on the explicit stream and memory resource."]
     pub fn cudf_pack_borrowed_matrix_ex(
         input: *const core::ffi::c_void,
         element: i32,
@@ -2867,7 +2867,7 @@ unsafe extern "C" {
         out: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Drop rows from a table where key columns contain nulls with explicit\n execution context.\n\n `keys` is an array of column indices, `num_keys` is its length.\n `keep_threshold` is the minimum number of non-null key values required\n to keep a row.\n\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
+    #[doc = " Drop rows from a table when their non-null key count is below `keep_threshold`.\n\n `keys` is an array of column indices, `num_keys` is its length.\n `keep_threshold` is the minimum number of non-null key values required\n to keep a row.\n\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
     pub fn cudf_drop_nulls_ex(
         input: cudf_table_view_handle,
         keys: *const core::ffi::c_int,
@@ -2887,7 +2887,7 @@ unsafe extern "C" {
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Create a new table by removing consecutive duplicate rows with explicit\n execution context.\n\n Equal rows must already be adjacent for all duplicates to be removed.\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
+    #[doc = " Create a new table by removing consecutive duplicate rows.\n\n Equal rows must already be adjacent for all duplicates to be removed.\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
     pub fn cudf_unique_ex(
         input: cudf_table_view_handle,
         keys: *const core::ffi::c_int,
@@ -2907,40 +2907,40 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Convert string column to lowercase with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Convert string column to lowercase.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_to_lower_ex(
         input: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Convert string column to uppercase with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Convert string column to uppercase.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_to_upper_ex(
         input: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Element-wise literal substring containment with explicit execution context.\n Returns BOOL8 column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Element-wise literal substring containment.\n Returns BOOL8 column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_contains_ex(
         input: cudf_column_view_handle,
         target: cudf_scalar_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Element-wise starts-with with explicit execution context.\n Returns BOOL8 column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Element-wise starts-with.\n Returns BOOL8 column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_starts_with_ex(
         input: cudf_column_view_handle,
         target: cudf_scalar_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Element-wise ends-with with explicit execution context.\n Returns BOOL8 column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Element-wise ends-with.\n Returns BOOL8 column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_ends_with_ex(
         input: cudf_column_view_handle,
         target: cudf_scalar_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Element-wise SQL LIKE pattern match with explicit execution context.\n Returns BOOL8 column.\n\n `pattern` and `escape_character` are borrowed host byte ranges. Null\n pointers are accepted only when the corresponding length is zero. The\n escape range must be empty or contain exactly one byte.\n On success, synchronizes the selected stream before returning so borrowed\n `pattern` and `escape_character` host memory is no longer in use.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Element-wise SQL LIKE pattern match.\n Returns BOOL8 column.\n\n `pattern` and `escape_character` are borrowed host byte ranges. Null\n pointers are accepted only when the corresponding length is zero. The\n escape range must be empty or contain exactly one byte.\n On success, synchronizes the selected stream before returning so borrowed\n `pattern` and `escape_character` host memory is no longer in use.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_like_ex(
         input: cudf_column_view_handle,
         pattern: *const core::ffi::c_char,
@@ -2950,7 +2950,7 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Element-wise regex replacement with back-reference templates and explicit\n execution context. Returns STRING column.\n\n `pattern` and `replacement` are borrowed host byte ranges. Null pointers are\n accepted only when the corresponding length is zero.\n On success, synchronizes the selected stream before returning so borrowed\n `pattern` and `replacement` host memory is no longer in use.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Element-wise regex replacement with back-reference templates. Returns STRING column.\n\n `pattern` and `replacement` are borrowed host byte ranges. Null pointers are\n accepted only when the corresponding length is zero.\n On success, synchronizes the selected stream before returning so borrowed\n `pattern` and `replacement` host memory is no longer in use.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_replace_with_backrefs_ex(
         input: cudf_column_view_handle,
         pattern: *const core::ffi::c_char,
@@ -3001,7 +3001,7 @@ unsafe extern "C" {
     pub fn cudf_strings_prepared_replace_with_backrefs_destroy(
         handle: cudf_prepared_replace_with_backrefs_handle,
     ) -> cudf_status_t;
-    #[doc = " Slice each string with explicit execution context.\n Slices by character positions `[start, stop)` and `step`.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Slice each string.\n Slices by character positions `[start, stop)` and `step`.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_slice_ex(
         input: cudf_column_view_handle,
         start: i32,
@@ -3012,14 +3012,14 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Row-wise concatenate string columns with explicit execution context.\n Uses an empty separator. Null inputs are replaced with empty strings.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Row-wise concatenate string columns.\n Uses an empty separator. Null inputs are replaced with empty strings.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_concatenate_ex(
         columns: *const cudf_column_view_handle,
         num_columns: i32,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Strip characters from one or both sides of each string with explicit\n execution context.\n `to_strip` is a scalar string of characters to strip. If null scalar,\n strips whitespace.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Strip characters from one or both sides of each string.\n `to_strip` is a scalar string of characters to strip. If null scalar,\n strips whitespace.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_strip_ex(
         input: cudf_column_view_handle,
         side: cudf_strip_side_t,
@@ -3027,26 +3027,26 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Character count with explicit execution context.\n Counts characters, not bytes, and returns an INT32 column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Character count.\n Counts characters in each string and returns an INT32 column. Byte counts\n come from `cudf_strings_count_bytes_ex`.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_count_characters_ex(
         input: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Byte count with explicit execution context.\n Returns INT32 column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Byte count.\n Returns INT32 column.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_count_bytes_ex(
         input: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Try-cast strings to integers with explicit execution context.\n\n Converts a string column to integers with SQL `TRY_CAST` semantics: each\n element that does not parse as an integer that fits `output_type` produces\n a null row instead of an error. Null inputs propagate as null outputs.\n\n `output_type` must be an integral data type. Builds on\n `cudf::strings::is_integer(input, output_type)` to detect rows that parse\n cleanly and fit the target type, `cudf::strings::to_integers(input,\n output_type)` for the converted values, and `cudf::copy_if_else` to mask\n rejected rows to null.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Try-cast strings to integers.\n\n Converts a string column to integers with SQL `TRY_CAST` semantics: each\n element that does not parse as an integer that fits `output_type` produces\n a null row and does not raise an error. Null inputs propagate as null outputs.\n\n `output_type` must be an integral data type. Builds on\n `cudf::strings::is_integer(input, output_type)` to detect rows that parse\n cleanly and fit the target type, `cudf::strings::to_integers(input,\n output_type)` for the converted values, and `cudf::copy_if_else` to mask\n rejected rows to null.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_try_to_integers_ex(
         input: cudf_column_view_handle,
         output_type: cudf_data_type_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Formats an integer column as decimal strings with explicit execution context.\n\n `input` must be a non-boolean integral column. Each valid row becomes its\n plain base-10 text with a leading `-` for negative values and no padding;\n null rows stay null. Wraps `cudf::strings::from_integers`.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    #[doc = " Formats an integer column as decimal strings.\n\n `input` must be a non-boolean integral column. Each valid row becomes its\n plain base-10 text with a leading `-` for negative values and no padding;\n null rows stay null. Wraps `cudf::strings::from_integers`.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_from_integers_ex(
         input: cudf_column_view_handle,
         out: *mut cudf_column_handle,

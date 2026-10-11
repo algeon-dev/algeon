@@ -118,8 +118,8 @@ impl FragmentEvidence {
 struct Replacement {
     plan: Arc<dyn ExecutionPlan>,
     evidence: FragmentEvidence,
-    /// Whether the child lowered as one fragment, rather than being rebuilt
-    /// over fragments below it.
+    /// Whether the child lowered as one fragment. `false` means the child was
+    /// rebuilt over fragments below it.
     whole: bool,
 }
 

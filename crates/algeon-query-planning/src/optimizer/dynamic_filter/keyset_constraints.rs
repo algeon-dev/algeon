@@ -154,7 +154,7 @@ fn parent_constrains_or_carries_column(
                 )
             })
         },
-        // `Limit`/`Window` are intentionally rejected (not recursed): filtering the shared
+        // `Limit`/`Window` are intentionally rejected (not recursed). Filtering the shared
         // source in place removes rows before these order/position-dependent operators run, so
         // a `Limit(N)` above would select a different row set than the unfiltered plan even when a
         // further-downstream inner join would constrain the key. This mirrors `lineages_for_column`,

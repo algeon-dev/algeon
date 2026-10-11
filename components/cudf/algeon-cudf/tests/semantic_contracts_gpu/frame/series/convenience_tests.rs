@@ -1,10 +1,6 @@
-//! Integration tests for `Series` convenience methods.
-//!
 //! Methods under test: `astype`, `fillna`, `fillna_with_series`, `isin`,
 //! `unique`, `nunique`, `factorize`, `sort_values`, `is_null`, `is_not_null`,
 //! `log`.
-//!
-//! All tests require a GPU.
 use cudf::{
     DataType, ErrorCode, ErrorKind, Exec, SortOptions, TypeId,
     core::error::{FactKeyName, FactValue},
@@ -17,10 +13,6 @@ use crate::common::{
     last_sync_stream_value, lock_event_observation, nullable_series, reset_dependency_observation,
     reset_exec_observation, reset_sync_observation, sample_runtime, series,
 };
-
-// ===========================================================================
-// is_null / is_not_null
-// ===========================================================================
 
 fn test_is_null_all_valid() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -74,10 +66,6 @@ fn test_is_null_and_is_not_null_are_complementary() {
     }
 }
 
-// ===========================================================================
-// astype (cast)
-// ===========================================================================
-
 fn test_astype_i32_to_f64() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
     let casted = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
@@ -97,10 +85,6 @@ fn test_log_f64() {
     assert!((values[1] - 1.0).abs() < 1e-10);
     assert!((values[2] - 2.0).abs() < 1e-10);
 }
-
-// ===========================================================================
-// fillna (scalar)
-// ===========================================================================
 
 fn test_fillna_replaces_nulls_with_scalar() {
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
@@ -134,10 +118,6 @@ fn test_fillna_f64() {
     assert_eq!(filled.to_vec_strict::<f64>().unwrap(), vec![1.0, 999.0, 3.0]);
 }
 
-// ===========================================================================
-// fillna_with_series (column fill)
-// ===========================================================================
-
 fn test_fillna_with_series_replaces_nulls() {
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let fill = series::<i32>("fill", &[100, 200, 300]).unwrap();
@@ -155,10 +135,6 @@ fn test_fillna_with_series_no_nulls() {
 
     assert_eq!(filled.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
-
-// ===========================================================================
-// isin
-// ===========================================================================
 
 fn test_isin_basic() {
     let s = series::<i32>("x", &[1, 2, 3, 4, 5]).unwrap();
@@ -230,10 +206,6 @@ fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
-// ===========================================================================
-// unique
-// ===========================================================================
-
 fn test_unique_removes_duplicates() {
     let s = series::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
     let uniq = s.on(Exec::RETAINED).unique().unwrap();
@@ -270,10 +242,6 @@ fn test_unique_strings() {
     vals.sort();
     assert_eq!(vals, vec!["a", "b", "c"]);
 }
-
-// ===========================================================================
-// nunique
-// ===========================================================================
 
 fn test_nunique_basic() {
     let s = series::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
@@ -321,10 +289,6 @@ fn test_nunique_excludes_null_but_keeps_nan_distinctness() {
     assert_eq!(s.on(Exec::RETAINED).nunique().unwrap(), 2);
 }
 
-// ===========================================================================
-// factorize
-// ===========================================================================
-
 fn test_factorize_basic() {
     let s = series::<i32>("x", &[10, 20, 10, 30, 20]).unwrap();
     let factorized = s.on(Exec::RETAINED).factorize().unwrap();
@@ -334,18 +298,13 @@ fn test_factorize_basic() {
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(codes.len(), 5);
 
-    // Verify round-trip: same input values get same codes.
+    // Equal input values get equal codes.
     let code_vals = codes.to_vec_strict::<i32>().unwrap();
-    // codes[0] == codes[2] (both map to 10)
     assert_eq!(code_vals[0], code_vals[2]);
-    // codes[1] == codes[4] (both map to 20)
     assert_eq!(code_vals[1], code_vals[4]);
-    // codes[0] != codes[1] (10 != 20)
     assert_ne!(code_vals[0], code_vals[1]);
-    // codes[0] != codes[3] (10 != 30)
     assert_ne!(code_vals[0], code_vals[3]);
 
-    // Uniques should contain exactly {10, 20, 30}.
     let mut uniq_vals = keys.to_vec_strict::<i32>().unwrap();
     uniq_vals.sort();
     assert_eq!(uniq_vals, vec![10, 20, 30]);
@@ -364,7 +323,6 @@ fn test_factorize_strings() {
     assert_eq!(codes.len(), 4);
 
     let code_vals = codes.to_vec_strict::<i32>().unwrap();
-    // codes[0] == codes[2] (both map to "a")
     assert_eq!(code_vals[0], code_vals[2]);
 
     let mut uniq_vals = keys.to_strings_strict().unwrap();
@@ -601,10 +559,6 @@ fn test_empty_decimal_factorize_preserves_codebook_scale() {
     assert_eq!(factorized.row_codes().len(), 0);
 }
 
-// ===========================================================================
-// sort_values
-// ===========================================================================
-
 fn test_sort_values_ascending() {
     let s = series::<i32>("x", &[30, 10, 20]).unwrap();
     let sorted = s.on(Exec::RETAINED).sort_values(SortOptions::new()).unwrap();
@@ -694,14 +648,9 @@ fn test_sort_values_rejects_wrong_descending_len() {
     assert_eq!(error_context_value(&err, "descending_len").as_deref(), None);
 }
 
-// ===========================================================================
-// input preservation
-// ===========================================================================
-
 fn test_convenience_ops_preserve_input() {
     let s = nullable_series::<i32>("x", &[3, 0, 1], &[true, false, true]).unwrap();
 
-    // Run several ops and verify the original is unchanged.
     let _null_mask = s.on(Exec::RETAINED).is_null().unwrap();
     let _not_null_mask = s.on(Exec::RETAINED).is_not_null().unwrap();
     let _filled = s.on(Exec::RETAINED).fillna(0i32).unwrap();

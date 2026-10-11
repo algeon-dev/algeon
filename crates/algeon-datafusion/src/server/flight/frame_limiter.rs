@@ -23,7 +23,7 @@ use prost::Message;
 use super::*;
 
 /// Tonic's default encoded-message limit. Every DoGet path stays below this
-/// bound instead of increasing the transport limit.
+/// bound. The transport limit is not raised to fit larger frames.
 pub(super) const MAX_FLIGHT_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
 const _: () = assert!(MAX_FLIGHT_FRAME_BYTES == HostBatchCursorConfig::DEFAULT_MAX_MATERIALIZATION_BYTES);
@@ -180,11 +180,9 @@ fn select_compact_chunk_observed(
                 return Ok(candidate);
             }
             best_rows = probe_rows;
-            drop(candidate);
             probe_rows = probe_rows.saturating_mul(2).min(rows);
             continue;
         }
-        drop(candidate);
         if probe_rows == 1 {
             return Err(frame_too_large_error(encoded_bytes, max_frame_bytes, 1, batch.num_columns()));
         }
@@ -201,7 +199,6 @@ fn select_compact_chunk_observed(
             compact_bytes: compact_batch_memory_size(&candidate),
         });
         let encoded_bytes = probe_max_encoded_len(&candidate)?;
-        drop(candidate);
         if encoded_bytes <= max_frame_bytes {
             best_rows = middle;
             low = middle + 1;

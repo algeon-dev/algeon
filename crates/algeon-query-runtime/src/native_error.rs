@@ -41,10 +41,10 @@ pub fn cudf_query_error_without_source(
 /// Wraps a rejected Arrow-to-cuDF dtype conversion as
 /// [`QueryErrorCode::UnsupportedType`].
 ///
-/// Native type support reports unsupported Arrow types as `UnsupportedType`
-/// rather than the `CudfUnsupported` code [`query_error_code_for_cudf_error`]
-/// assigns to cuDF `UnsupportedDtype`. The `cudf_*` facts and source chain
-/// match [`cudf_query_error`], plus `cudf_reason` when cuDF attached one.
+/// Native type support reports unsupported Arrow types as `UnsupportedType`.
+/// [`query_error_code_for_cudf_error`] maps cuDF `UnsupportedDtype` to the
+/// `CudfUnsupported` code. The `cudf_*` facts and source chain match
+/// [`cudf_query_error`], plus `cudf_reason` when cuDF attached one.
 pub fn cudf_unsupported_type_error(
     operation: &'static str,
     message: impl Into<String>,

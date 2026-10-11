@@ -94,7 +94,7 @@ impl DimensionDerivedRowGroupPruningOptions {
         Self { enabled: false, max_dimension_rows: Self::DEFAULT_MAX_DIMENSION_ROWS }
     }
 
-    /// Validates internal consistency for dimension-derived pruning limits.
+    /// Returns an `InvalidConfiguration` error when `max_dimension_rows` is zero.
     pub fn validate(&self) -> Result<()> {
         if self.max_dimension_rows == 0 {
             return Err(QueryError::new(
@@ -128,12 +128,10 @@ pub struct DimensionDerivedRowGroupPruningDiagnostics {
 }
 
 impl DimensionDerivedRowGroupPruningDiagnostics {
-    /// Returns true when the pass produced no candidate evidence.
     pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -187,7 +185,7 @@ pub enum DimensionDerivedRowGroupPruningRejectedReason {
     SameSource,
     /// The target lineage crosses a reused DAG node and cannot be safely mutated in place.
     TargetLineageReusedInPlan,
-    /// The dimension source had no reader predicate to make the derived range selective evidence.
+    /// The dimension source has no reader predicate. Without one, no filtered dimension rows define the key range.
     DimensionPredicateAbsent,
     /// Dimension source metadata was unavailable or exceeded the configured row scan limit.
     DimensionScanNotAdmitted,
@@ -432,7 +430,7 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
 /// free of object-store dependencies.
 ///
 /// A request is only eligibility evidence. The resolver must still derive a
-/// non-empty key range, find target stats, and prove a real row-group reduction.
+/// non-empty key range, find target stats, and prove a row-group reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DimensionDerivedPruningRequest {
     /// Source node whose reader predicate, once evaluated, yields the join-key range.
@@ -737,7 +735,8 @@ pub(crate) fn apply_local_parquet_row_group_selections(
 ///
 /// The caller supplies one `Vec<Option<KeyRange>>` per source file, aligned with
 /// the file's current row-group selection. Kept positions are mapped back
-/// through that selection, so existing `row_groups` are narrowed, not replaced.
+/// through that selection, so an existing `row_groups` narrows to a subset of
+/// its physical ids.
 ///
 /// The rule matches `prune_target_source`: unknown stats are retained, pruning
 /// never empties a selection, and mismatches return the original plan with
@@ -774,9 +773,10 @@ pub fn apply_dimension_derived_pruning_with_stats(
         // The caller supplies one key range per CURRENTLY-SELECTED row group, in
         // selection order. Map the kept positions back to physical row-group ids
         // through the file's existing selection so a pre-existing `row_groups`
-        // (e.g. a frontend file-level selection) is narrowed, never replaced
-        // by raw positions. If the supplied stats do not align with the file's
-        // selection, skip entirely rather than risk an unsound remap.
+        // (e.g. a frontend file-level selection) is narrowed. Raw positions are
+        // never written as row-group ids. If the supplied stats do not align with
+        // the file's selection, the call returns the plan unchanged, because a
+        // misaligned position would map to the wrong physical row group.
         let candidates = file.selected_or_all_row_groups(row_group_key_ranges.len());
         if candidates.len() != row_group_key_ranges.len() {
             return unchanged(nodes);

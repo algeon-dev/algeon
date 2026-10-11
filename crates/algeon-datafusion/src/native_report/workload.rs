@@ -91,6 +91,9 @@ impl NativeDataFusionPlanningWorkloadItem {
         }
     }
 
+    /// Captures a planned physical plan while sharing its retained native planning diagnostics.
+    ///
+    /// The caller supplies the workload query identity; construction does not execute the plan.
     pub fn new_shared(
         query_id: impl Into<String>,
         planned_plan: Arc<dyn ExecutionPlan>,
@@ -166,6 +169,9 @@ impl NativeDataFusionExecutionWorkloadItem {
         }
     }
 
+    /// Captures a planned physical plan while sharing its retained native planning diagnostics.
+    ///
+    /// The caller supplies the workload query identity; construction does not execute the plan.
     pub fn new_shared(
         query_id: impl Into<String>,
         planned_plan: Arc<dyn ExecutionPlan>,
@@ -224,7 +230,7 @@ pub enum NativeDataFusionRuntime {
     NotStarted,
     /// Native runtime succeeded.
     ///
-    /// `output_bytes` is host Arrow batch memory, not device memory. `metrics`
+    /// `output_bytes` is host Arrow batch memory and does not measure device memory. `metrics`
     /// are the root-plan DataFusion metrics captured after execution.
     Succeeded {
         /// Number of host Arrow output batches.

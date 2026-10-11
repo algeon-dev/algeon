@@ -1,15 +1,10 @@
-//! Integration tests for `Series` constructor gap-fillers:
-//! `nulls`, `from_scalar`, `empty`.
-//!
-//! All tests require a GPU.
+//! Constructor gap-fillers covered here: `nulls`, `from_scalar`, `empty`.
 
 use cudf::{DataType, ErrorCode, ErrorKind, ScalarValue, Series, TypeId};
 
 use crate::common::{empty_series, error_context_value, null_series, scalar, series_opt};
 
-// ===========================================================================
-// Runtime unnamed-default constructor split
-// ===========================================================================
+// Runtime constructors create unnamed series.
 
 fn test_runtime_series_from_host_slice() {
     let rt = cudf::Runtime::new().unwrap();
@@ -85,10 +80,6 @@ fn test_runtime_sequence_rejects_size_over_i32_max_with_stable_contract() {
     assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce size to fit within i32::MAX"));
 }
 
-// ===========================================================================
-// series_opt
-// ===========================================================================
-
 fn test_from_optional_i32() {
     let s = series_opt("x", &[Some(10i32), None, Some(30)]).unwrap();
     assert_eq!(s.len(), 3);
@@ -109,10 +100,6 @@ fn test_from_optional_empty() {
     assert_eq!(s.null_count(), 0);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
 }
-
-// ===========================================================================
-// null_series
-// ===========================================================================
 
 fn test_nulls_i32_basic() {
     let s = null_series("x", TypeId::Int32, 5).unwrap();
@@ -160,10 +147,6 @@ fn test_nulls_decimal_preserve_scale() {
     assert_eq!(s.len(), 3);
     assert_eq!(s.null_count(), 3);
 }
-
-// ===========================================================================
-// Series::from_scalar
-// ===========================================================================
 
 fn test_from_scalar_i32() {
     let scalar = scalar(42i32).unwrap();
@@ -221,10 +204,6 @@ fn test_from_scalar_rejects_size_over_i32_max_with_stable_contract() {
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
     assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce size to fit within i32::MAX"));
 }
-
-// ===========================================================================
-// empty_series
-// ===========================================================================
 
 fn test_empty_i32() {
     let s = empty_series("x", TypeId::Int32).unwrap();

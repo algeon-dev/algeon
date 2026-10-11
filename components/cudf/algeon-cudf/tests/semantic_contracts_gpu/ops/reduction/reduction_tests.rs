@@ -1,5 +1,3 @@
-//! Tests for reduction and scan operations.
-
 use cudf::{DataType, Exec, TypeId};
 
 use crate::common::series;

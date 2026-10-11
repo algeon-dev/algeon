@@ -30,8 +30,8 @@ impl CapabilityContractReport {
 
     /// Builds a report from an admitted artifact.
     ///
-    /// The artifact is admitted by construction: the report projects that
-    /// status directly instead of re-deriving an envelope verdict. A pipeline
+    /// The artifact is admitted by construction, so the report projects that
+    /// status directly without re-deriving an envelope verdict. A pipeline
     /// admitted through the composed contracts selects no named envelope, so
     /// re-deriving would misreport its admission as a rejection.
     pub fn from_admission(_admission: &AdmittedPlan) -> Result<Self> {
@@ -85,14 +85,23 @@ impl CapabilityContractReport {
 /// One rejected capability decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityDecisionRow {
+    /// Envelope status shared by the report and its decision rows.
     pub execution_mode: CapabilityEnvelopeStatus,
+    /// Whether the rejected contract belongs to a node, edge or subgraph.
     pub scope: CapabilityScope,
+    /// Report-local identity combining the contract scope and row index.
     pub decision_id: CapabilityDecisionId,
+    /// Plan element responsible for the rejected contract.
     pub owner: RejectionOwner,
+    /// Rejection classification; rejected rows require a category.
     pub category: Option<CapabilityRejectionCategory>,
+    /// Nonempty stable name of the failed contract boundary.
     pub boundary: &'static str,
+    /// Nonempty machine-readable rejection reason.
     pub reason: &'static str,
+    /// Decision outcome; this report stores rejected decisions.
     pub status: CapabilityDecisionStatus,
+    /// Named diagnostic facts preserved from the typed rejection.
     pub facts: BTreeMap<&'static str, String>,
 }
 
@@ -114,6 +123,8 @@ impl CapabilityDecisionRow {
         Ok(row)
     }
 
+    /// Formats the decision identity and classification as a comma-separated
+    /// key/value row. Detailed `facts` are excluded from this projection.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
             "execution_mode={},scope={},decision_id={},owner={},category={},boundary={},reason={},status={}",
@@ -135,9 +146,12 @@ impl fmt::Display for CapabilityDecisionRow {
     }
 }
 
+/// Report-local decision identity, displayed as `capability:<scope>:<index>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CapabilityDecisionId {
+    /// Contract scope of the decision.
     pub scope: CapabilityScope,
+    /// Index supplied by the producer within this report.
     pub index: usize,
 }
 
@@ -147,8 +161,10 @@ impl fmt::Display for CapabilityDecisionId {
     }
 }
 
+/// Outcome represented by a capability decision row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityDecisionStatus {
+    /// The capability contract prevents admission.
     Rejected,
 }
 

@@ -1,5 +1,3 @@
-//! Cast API consistency tests.
-//!
 //! Verifies that all cast entry points accept `DataType` (the canonical type),
 //! while `TypeId` remains accepted via `Into<DataType>` for convenience.
 
@@ -9,10 +7,6 @@ use cudf::{
 };
 
 use crate::common::series;
-
-// ===========================================================================
-// Series::astype; accepts DataType directly
-// ===========================================================================
 
 fn series_astype_accepts_datatype() {
     let s = series::<i32>("x", &[100, 200, 300]).unwrap();
@@ -27,10 +21,6 @@ fn series_astype_accepts_typeid() {
     let result = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
 }
-
-// ===========================================================================
-// Expr::cast; accepts DataType directly
-// ===========================================================================
 
 fn expr_cast_accepts_datatype() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
@@ -51,10 +41,6 @@ fn expr_cast_accepts_typeid() {
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
-// ===========================================================================
-// Symmetry: series.astype(dt) == df.cast_column(col, dt)
-// ===========================================================================
-
 fn cast_symmetry() {
     let dt = DataType::new(TypeId::Float64);
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -68,20 +54,12 @@ fn cast_symmetry() {
     assert_eq!(via_series.len(), via_df_col.len());
 }
 
-// ===========================================================================
-// unary::is_supported_cast; already uses DataType (no change needed)
-// ===========================================================================
-
 fn is_supported_cast_uses_datatype() {
     let from = DataType::new(TypeId::Int32);
     let to = DataType::new(TypeId::Float64);
     let supported = is_supported_cast(&from, &to).unwrap();
     assert!(supported);
 }
-
-// ===========================================================================
-// From<TypeId> for DataType
-// ===========================================================================
 
 fn typeid_converts_to_datatype() {
     let dt: DataType = TypeId::Float64.into();

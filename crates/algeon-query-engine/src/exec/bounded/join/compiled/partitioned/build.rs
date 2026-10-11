@@ -120,7 +120,7 @@ pub(in crate::exec::bounded) fn consume_bounded_join_build_input_stream(
                 },
             };
             // A chunk that fails here is re-read in smaller pieces by the leaf
-            // stream, so the accumulator must still hold exactly the chunks
+            // stream, so the accumulator must still hold only the chunks
             // before it: nothing of this chunk is kept unless the whole step
             // succeeds.
             let observation = match &mut accumulator {
@@ -208,7 +208,7 @@ impl JoinBuildAccumulator {
 
     // Partitions every pending chunk plus `current`. The pending chunks share
     // their columns with the partitioner, so a cap rejection leaves them (and
-    // this accumulator) exactly as they were and drops only `current`, which
+    // this accumulator) as they were and drops only `current`, which
     // the leaf stream re-reads in smaller pieces.
     fn commit(
         &mut self,
@@ -461,10 +461,10 @@ impl PartitionedJoinBuildAccumulator {
                         .with_fact("build_rows", rows)
                         .with_fact("build_chunks", chunks)
                     })?;
-                    // The slices are dead once the partition frame exists; free
-                    // them before the next partition concatenates on the domain.
+                    // The slices are dead once the partition frame exists. Free them
+                    // before the next partition's concatenation allocates from the
+                    // same execution runtime's memory resource.
                     drop(partition_slices);
-                    drop(first);
                     output
                 },
             };

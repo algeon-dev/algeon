@@ -1,7 +1,7 @@
 //! Accounted lifecycle for one GPU-resident cache entry.
 //!
-//! A cache implementation owns its concrete GPU object, but not an independent
-//! byte counter. The only legal lifecycle is:
+//! A cache implementation owns its concrete GPU object. It does not keep an
+//! independent byte counter. The only legal lifecycle is:
 //!
 //! ```text
 //! AttemptOwned -> Evictable <-> Pinned -> Destroyed
@@ -135,7 +135,7 @@ impl CacheResidencyChargeTransaction {
     }
 
     /// Seals an unsafe prospective-cache teardown without returning its
-    /// precharge.  The caller must close admission before returning: concrete
+    /// precharge.  The caller must close admission before returning.  Concrete
     /// allocations may still survive native destruction, so automatic rollback
     /// would create an unowned physical-allocation window.
     #[cfg(feature = "cugraph")]
@@ -145,9 +145,10 @@ impl CacheResidencyChargeTransaction {
 
     /// Commits a rollback only after the caller has proved that every
     /// allocation routed through the prospective cache scope was destroyed.
-    /// A ledger failure keeps its existing charge but suppresses `Drop` retry:
-    /// callers close admission rather than risk releasing later without a new
-    /// teardown proof.
+    /// A ledger failure keeps its existing charge and suppresses the `Drop`
+    /// retry. Callers close admission in that case, because a later release
+    /// without a new teardown proof could drop the charge while allocations
+    /// remain.
     #[cfg(feature = "cugraph")]
     pub(crate) fn release_after_proven_empty(mut self) -> Result<()> {
         if !self.charged {
@@ -171,8 +172,8 @@ impl CacheResidencyChargeTransaction {
 impl Drop for CacheResidencyChargeTransaction {
     fn drop(&mut self) {
         if let Err(error) = self.rollback_inner() {
-            // A failed rollback must retain the ledger charge rather than
-            // risk under-accounting a potentially live allocation. The normal
+            // A failed rollback must retain the ledger charge, because releasing
+            // it could under-account a potentially live allocation. The normal
             // path is exact and infallible unless the ledger itself is broken.
             eprintln!("[query-engine] warning: failed to roll back resident-cache charge transaction: {error}");
         }
@@ -202,7 +203,6 @@ impl CacheResidency {
         Ok(Some(CacheResidencyChargeTransaction { ledger, bytes, charged: true }))
     }
 
-    /// Current lifecycle state.
     pub(crate) fn state(&self) -> Result<CacheResidencyState> {
         Ok(self.inner.lock("state")?.state)
     }
@@ -214,7 +214,7 @@ impl CacheResidency {
 
     /// Tries to pin this entry for a cache hit or preparation operation.
     ///
-    /// A final pin is refused after eviction begins or after destruction. The
+    /// A pin is refused after eviction begins or after destruction. The
     /// first pin moves the whole charge into the ledger's pinned field; later
     /// pins share that one charge until the final lease drops.
     pub(crate) fn try_pin(&self) -> Result<Option<CacheResidencyPin>> {
@@ -265,8 +265,8 @@ impl CacheResidency {
 /// entries.  This guard reserves that bounded in-use interval in the one
 /// ledger before the operation starts, then releases it only after the caller
 /// has destroyed every transient cache-domain object.  Dropping it without
-/// [`Self::release_after_destroy`] deliberately strands the charge rather than
-/// allowing an uncharged physical allocation.
+/// [`Self::release_after_destroy`] deliberately strands the charge so that no
+/// physical allocation goes uncharged.
 #[cfg(feature = "cugraph")]
 #[must_use = "transient cache-domain work must release its ledger charge only after physical destruction"]
 #[cfg(test)]
@@ -390,7 +390,7 @@ impl CacheResidencyDestruction {
 
     /// Seals a failed or unsafe destruction attempt without releasing bytes.
     ///
-    /// This is the quarantine path: callers must close the owning device
+    /// This is the quarantine path. Callers must close the owning device
     /// ledger before returning, because the charge remains while native memory
     /// may still be resident and the cache object is no longer reusable.
     pub(crate) fn retain_charge_after_failed_destruction(mut self) -> Result<()> {

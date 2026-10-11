@@ -19,7 +19,7 @@ pub enum GraphConstructionPolicy {
     /// Preserve the raw libcugraph graph-construction contract.
     ///
     /// Use this when you need the high-level cudf interop entry points to
-    /// behave exactly like the lower-level [`GraphBuilder`](crate::GraphBuilder) flags you specify.
+    /// behave like the lower-level [`GraphBuilder`](crate::GraphBuilder) flags you specify.
     RawLibcugraph,
     /// Match Python `cugraph.Graph.from_cudf_edgelist(...)` semantics for
     /// high-level cudf ingress workloads.

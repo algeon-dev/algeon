@@ -119,9 +119,9 @@ pub(in crate::exec) fn read_local_parquet_source(
 
     // The DataFusion exact-statistical-order implementation carries hidden
     // order columns whose presence depends on a thread-local execution scope.
-    // The resident value has a stable source schema, so bypass rather than
-    // cache a scope-dependent frame. This preserves the existing exact-order
-    // contract without teaching the cache a second schema producer.
+    // The resident value has a stable source schema, so a scope-dependent frame
+    // bypasses the cache. This preserves the existing exact-order contract
+    // without adding a second schema producer to the cache.
     let Some(cache) = resident_source_cache(context) else {
         return read_local_parquet_source_uncached(context, source_node_id, source, metrics);
     };
@@ -162,8 +162,8 @@ fn source_cache_frame_schema(source: &LocalParquetSource) -> Result<SchemaRef> {
     local_parquet_execution_frame_schema(source)
 }
 
-/// Finishes a leader-owned source read.  The cache always copies rather than
-/// transfers `frame`, so a skipped promotion leaves the current attempt as
+/// Finishes a leader-owned source read. The cache always copies `frame` and
+/// does not transfer it, so a skipped promotion leaves the current attempt as
 /// the sole owner and remains a successful query result.
 fn promote_source_cache_load(
     cache: &GpuLocalParquetSourceCache,
@@ -183,7 +183,6 @@ fn promote_source_cache_load(
     Ok(())
 }
 
-/// Import a literal host Arrow source into a GPU dataframe.
 pub(in crate::exec) fn read_literal_batch_source(
     context: &ExecutionContext,
     source: &LiteralBatchSource,
@@ -217,7 +216,7 @@ pub(in crate::exec) fn read_literal_batch_source(
 /// footer row count shapes an empty frame of the right height, and partition
 /// and missing-column materialization fill it. The scan limit is applied per
 /// file and the loop stops at the file that exhausts it. A `COUNT(*)` probe
-/// source produces one weight row per file instead of the file's rows.
+/// source produces one weight row per file, holding that file's row count.
 fn read_local_parquet_source_uncached(
     context: &ExecutionContext,
     source_node_id: NodeId,
@@ -396,7 +395,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     reader_dynamic_filter_count: usize,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
-    // Count probes and empty chunks are synthetic frames rather than decoded
+    // Count probes and empty chunks build synthetic frames without decoding
     // Parquet values. Keeping them out of the resident source cache avoids
     // charging a zero-value control path as a data-cache entry.
     let cacheable =
@@ -577,7 +576,7 @@ fn read_local_parquet_chunk_uncached(
     let frame = apply_source_chunk_scan_limit(context, chunk, frame, metrics)?;
     let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
     // Row-group metadata was unavailable when the chunk was planned, so the
-    // planned count missed these; this only adds the row groups, not a file.
+    // planned count missed these; this records the row groups with files set to zero.
     if chunk.reads_all_row_groups
         && chunk.row_group_indexes.is_empty()
         && chunk.known_read_row_group_count().is_none()
@@ -608,7 +607,7 @@ fn read_local_parquet_chunk_uncached(
 }
 
 /// One-row frame carrying `row_count` as the `COUNT(*)` probe weight, so the
-/// aggregate above sums weights instead of counting decoded rows.
+/// aggregate above sums weights and does not count decoded rows.
 /// `record_input_rows` is false on the whole-source path, which has already
 /// recorded the decoded rows as its input batch.
 fn count_star_probe_weight_frame(
@@ -715,10 +714,10 @@ pub(super) fn read_local_parquet_chunk_batch(
 
 /// The batch read itself.
 ///
-/// When the lakehouse cache holds an optimized file for this exact batch, it
-/// is read instead of the member files; a failure to read it deletes the file
-/// and falls through to the member files, since the optimized copy is only a
-/// cache. After a successful member read the batch frame is offered back to
+/// When the lakehouse cache holds an optimized file for this exact batch, that file
+/// is read and the member files are not opened unless that read fails. A failure to
+/// read it deletes the file and falls through to the member files, since the optimized
+/// copy is only a cache. After a successful member read the batch frame is offered back to
 /// the cache as a new optimized file; that publish is best effort and its
 /// error is dropped. Read pins for every member file are held through the
 /// cuDF call only.

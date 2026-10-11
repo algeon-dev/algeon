@@ -1091,7 +1091,7 @@ fn native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively() {
         rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     // S3 admits scalar distinct aggregation over a keyed anti join through the
-    // composed pipeline: the anti join executes with null-aware semantics and
+    // composed pipeline. The anti join executes with null-aware semantics, and
     // the scalar distinct count is exact.
     let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
     assert!(
@@ -1503,8 +1503,9 @@ fn windows_sharing_a_sort_keep_the_order_the_query_relies_on() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// An empty OVER clause aggregates the whole input: alone, beside a ranking
-/// window with its own ordering, and as the total a rank is compared with.
+/// An empty OVER clause aggregates the whole input. The aggregate may appear
+/// alone, beside a ranking window with its own ordering, or as the total a rank
+/// is compared with.
 #[test]
 fn whole_input_aggregate_windows_match_datafusion() {
     let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-whole-input");
@@ -1710,7 +1711,7 @@ fn native_preferred_keeps_an_admission_refusal_on_datafusion() {
 }
 
 /// The NativeRequired error names the refusal from the production admission
-/// decision, not only the coarse capability reason.
+/// decision, in addition to the coarse capability reason.
 fn native_required_rejection_names_the_admission_refusal() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-admission-refusal");
     let (plan, final_native) = admission_refused_stddev_plan(&dir, AlgeonGpuExecutionMode::NativeRequired);
@@ -1803,7 +1804,7 @@ fn windows_over_a_hash_join_match_datafusion() {
 }
 
 /// Branches of a UNION ALL that read one table, or one aggregate CTE, lower to
-/// one native node that the union reads through two inputs. Both inputs see
+/// one native node that the union reads through two inputs. Each input yields
 /// every row, so the result holds each row twice, as in DataFusion.
 #[test]
 fn unions_reading_one_producer_twice_match_datafusion() {

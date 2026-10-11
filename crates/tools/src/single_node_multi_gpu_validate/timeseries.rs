@@ -5,7 +5,8 @@
 //! pure reduction over them, so utilization balance and drift evidence are
 //! unit-testable without CUDA. The rows deliberately mirror fields the
 //! artifact already retains in the raw snapshot samples; this is a compact
-//! queryable projection of the same observation, never a second event store.
+//! queryable projection of the same observation and does not form a second
+//! event store.
 //!
 //! Only the measured run samples, so the CPU-only feature reaches these
 //! values from tests alone.
@@ -50,9 +51,9 @@ pub(super) struct DeviceSeriesRow {
     pub(super) memory_utilization_pct: Option<u32>,
     pub(super) cuda_free_bytes: Option<u64>,
     /// NVML's physical framebuffer usage. CUDA free bytes remain the primary
-    /// allocation-capacity signal; this independent device-wide measurement
-    /// is retained to expose scope differences instead of pretending the two
-    /// APIs measure the same allocator state.
+    /// allocation-capacity signal. This independent device-wide measurement is
+    /// retained to expose scope differences. The two APIs do not measure the
+    /// same allocator state.
     pub(super) nvml_used_bytes: Option<u64>,
     pub(super) active_attempts: usize,
     pub(super) managed_capacity_bytes: u64,
@@ -317,9 +318,10 @@ pub(super) struct OrdinalDriftSummary {
     pub(super) cache_resident_bytes_peak: u64,
     pub(super) allocation_failure_count_first: u64,
     pub(super) allocation_failure_count_last: u64,
-    /// Fragmentation canary: counter increments in the first versus the
-    /// second half of the run. An upward trend absent external pressure is a
-    /// drift finding, measured rather than judged here.
+    /// The fragmentation canary compares counter increments in the first half of
+    /// the run with those in the second half. An upward trend without external
+    /// pressure is a drift finding, and this reducer reports it without
+    /// classifying it.
     pub(super) allocation_failures_first_half: u64,
     pub(super) allocation_failures_second_half: u64,
 }
@@ -346,8 +348,8 @@ pub(super) enum VramCalibrationStatus {
 
 /// Per-ordinal comparison at the same sample where CUDA free memory was at
 /// its minimum. The cache claim uses the ledger-resident delta; the direct
-/// cache-domain physical delta is deliberately reported beside it rather
-/// than being folded into a second claim.
+/// cache-domain physical delta is deliberately reported beside it as a
+/// separate value.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct OrdinalVramCalibration {
     pub(super) device_ordinal: usize,
@@ -358,7 +360,7 @@ pub(super) struct OrdinalVramCalibration {
     pub(super) cuda_peak_offset_ns: Option<u64>,
     /// Whether the ledger claim remained unchanged across the telemetry pull
     /// that observed the physical CUDA peak. `Some(false)` is a fail-closed
-    /// sample, not permission to substitute a lower stable peak.
+    /// sample. The reducer never substitutes a lower stable peak for it.
     pub(super) cuda_peak_claim_snapshot_stable: Option<bool>,
     /// Count of post-baseline rows whose ledger claim was stable across the
     /// CUDA/NVML telemetry bracket.
@@ -374,7 +376,7 @@ pub(super) struct OrdinalVramCalibration {
     pub(super) nvml_used_bytes_max: Option<u64>,
     pub(super) nvml_used_delta_bytes: Option<u64>,
     /// Absolute difference between the CUDA-capacity and NVML-framebuffer
-    /// deltas. `None` means NVML was unavailable, never a fabricated zero.
+    /// deltas. `None` means NVML was unavailable, and the field does not report zero.
     pub(super) cuda_nvml_delta_abs_bytes: Option<u64>,
     pub(super) admission_claim_bytes_at_cuda_peak: Option<u64>,
     pub(super) cache_ledger_resident_delta_bytes_at_cuda_peak: Option<u64>,
@@ -412,7 +414,6 @@ impl VramCalibrationEvidence {
     }
 }
 
-/// Folds the per-device series into per-ordinal utilization statistics.
 pub(super) fn utilization_summary(rows: &[DeviceSeriesRow]) -> Vec<OrdinalUtilizationSummary> {
     per_ordinal(rows)
         .map(|(ordinal, rows)| {
@@ -452,7 +453,7 @@ pub(super) fn observation_pull_summary(rows: &[ProcessSeriesRow]) -> Observation
 }
 
 /// Folds the series into baseline-vs-end drift evidence. Halves are split at
-/// the median offset of the ordinal's own samples.
+/// the midpoint between the ordinal's first and last sample offsets.
 pub(super) fn drift_summary(rows: &[DeviceSeriesRow], process_rows: &[ProcessSeriesRow]) -> DriftSummary {
     let ordinals = per_ordinal(rows)
         .map(|(ordinal, rows)| {
@@ -499,10 +500,10 @@ pub(super) fn drift_summary(rows: &[DeviceSeriesRow], process_rows: &[ProcessSer
 /// Compares admission/cache accounting against the device-level CUDA delta.
 ///
 /// A baseline row is synchronously sampled before work submission, so each
-/// ordinal's first row is a real before-load observation rather than a race
-/// against the drive loop. Each later candidate brackets its CUDA/NVML pull
+/// ordinal's first row is a before-load observation that does not race the
+/// drive loop. Each later candidate brackets its CUDA/NVML pull
 /// with two ledger reads and is eligible only when the claim stayed unchanged;
-/// this is not a global atomic snapshot, so NVML remains an independent
+/// the samples form no global atomic snapshot, so NVML remains an independent
 /// cross-check and targeted Nsight runs remain the allocation-lifetime
 /// authority.
 pub(super) fn vram_calibration_evidence(
@@ -728,7 +729,7 @@ fn cache_ledger_bytes(row: &DeviceSeriesRow) -> u64 {
 
 /// Returns whether the sampler proved a stable logical claim across its
 /// telemetry bracket. The boolean is retained for readers, but the reducer
-/// re-checks both recorded sequences so a malformed row cannot quietly regain
+/// re-checks both recorded sequences so a malformed row cannot regain
 /// calibration eligibility.
 fn stable_claim_snapshot(row: &DeviceSeriesRow) -> bool {
     row.claim_snapshot_stable && row.claim_snapshot_end_sequence == Some(row.ledger_sequence)

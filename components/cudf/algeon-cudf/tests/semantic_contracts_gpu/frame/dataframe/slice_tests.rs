@@ -1,5 +1,3 @@
-//! Tests for DataFrame row slicing helpers.
-
 use cudf::{
     DataFrame, ErrorCode, ErrorKind, Exec, ExecutionBudgetRequest,
     testing::dataframe::{
@@ -12,16 +10,11 @@ use crate::common::{
     column_from_slice, dataframe_from_columns, error_context_value, execution_budget_token, with_test_runtime,
 };
 
-/// Helper: build a 5-row, 2-column DataFrame for slicing tests.
 fn sample_df() -> DataFrame {
     let ids = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let vals = column_from_slice(&[1.0f64, 2.0, 3.0, 4.0, 5.0]).unwrap();
     dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap()
 }
-
-// ---------------------------------------------------------------------------
-// head
-// ---------------------------------------------------------------------------
 
 fn test_head_basic() {
     let df = sample_df();
@@ -58,10 +51,6 @@ fn test_head_preserves_schema() {
     assert_eq!(h.column_index("val"), Some(1));
 }
 
-// ---------------------------------------------------------------------------
-// tail
-// ---------------------------------------------------------------------------
-
 fn test_tail_basic() {
     let df = sample_df();
     let t = df.on(Exec::RETAINED).tail(2).unwrap();
@@ -92,10 +81,6 @@ fn test_tail_preserves_schema() {
     let t = df.on(Exec::RETAINED).tail(3).unwrap();
     assert_eq!(t.column_names(), vec!["id", "val"]);
 }
-
-// ---------------------------------------------------------------------------
-// slice
-// ---------------------------------------------------------------------------
 
 fn test_slice_basic() {
     let df = sample_df();
@@ -159,8 +144,8 @@ fn test_slice_with_budget_reports_member_accounting_on_rejection() {
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "partition_slice");
-    // The member accounting this path previously dropped by taking a raw
-    // execution lease instead of the caller's budget token.
+    // Regression guard: the slice path must charge the caller's budget token. A raw
+    // execution lease would drop this member accounting.
     assert!(err.budget_exhaustion().and_then(|budget| budget.usage()).is_some(), "the member was sampled");
     assert_eq!(
         err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").failed_allocation_count,

@@ -143,7 +143,7 @@ pub struct NativeDataFusionExecutionMetrics {
     pub dynamic_filter_source_bytes_pruned: usize,
     /// Source rows selected before dynamic reader predicates were applied.
     ///
-    /// Counted once per source chunk, not once per dynamic-filter route.
+    /// Counted once per source chunk. Dynamic-filter routes do not add to the count.
     pub dynamic_filter_reader_predicate_rows_before: usize,
     /// Source rows materialized after dynamic reader predicates were applied.
     ///
@@ -579,7 +579,7 @@ impl NativeDataFusionExecutionMetrics {
         NativeDynamicFilterWorkAvoidanceStatus::Unknown
     }
 
-    /// Classifies the post-decode consumer stage that actually reduced rows.
+    /// Classifies the post-decode consumer stage that reduced rows.
     pub fn dynamic_filter_post_decode_reduction_stage(&self) -> NativeDynamicFilterPostDecodeReductionStage {
         if self.dynamic_filter_post_decode_rows_filtered == 0 {
             return NativeDynamicFilterPostDecodeReductionStage::None;

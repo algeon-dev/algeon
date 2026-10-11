@@ -15,7 +15,7 @@ use crate::{
     runtime::Runtime,
 };
 
-/// Options for reading Parquet into a low-level [`crate::core::table::Table`]..
+/// Options for reading Parquet into a low-level [`crate::core::table::Table`].
 ///
 /// The source must be exactly one of:
 ///
@@ -26,7 +26,7 @@ use crate::{
 /// call. The returned table owns device-resident decoded columns and does not
 /// retain a pointer into the host buffer.
 ///
-/// **Advanced.** Most users should prefer
+/// This is an advanced options type. Most users should prefer
 /// [`DataFrame::read_parquet`](crate::DataFrame::read_parquet).
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ParquetTableReadOptions<'a> {
@@ -54,7 +54,7 @@ pub struct ParquetTableReadOptions<'a> {
     _lifetime: PhantomData<&'a [u8]>,
 }
 
-/// Options for reading multiple Parquet paths into one low-level [`crate::core::table::Table`]..
+/// Options for reading multiple Parquet paths into one low-level [`crate::core::table::Table`].
 ///
 /// This is the multi-source counterpart to [`ParquetTableReadOptions`] for
 /// path-compatible reads. File order is preserved by libcudf. When row groups are

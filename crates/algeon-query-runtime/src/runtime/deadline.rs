@@ -24,7 +24,6 @@ pub(crate) enum DeadlineMutexLockError {
     TimedOut,
 }
 
-/// Returns whether an absolute monotonic deadline has been reached.
 pub(crate) fn deadline_expired(deadline: Instant) -> bool {
     Instant::now() >= deadline
 }
@@ -78,7 +77,7 @@ pub(crate) fn mutex_lock_recovering_until<T>(mutex: &Mutex<T>, deadline: Instant
 /// `deadline` passes.
 ///
 /// The future's wakers unpark this thread, so the wait ends when the awaited
-/// event fires instead of on a poll interval. The future must not depend on
+/// event fires, with no poll interval. The future must not depend on
 /// a Tokio timer; the deadline bounds the wait instead.
 ///
 /// GPU pool jobs call this inside a Tokio task, where every Tokio primitive

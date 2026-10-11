@@ -126,7 +126,7 @@ run_check() {
   local status=0
   : >"${log}"
   PATH="${tmp_dir}/bin:${PATH}" COMMAND_LOG="${log}" PUBLIC_API_SNAPSHOT_DIR="${snapshot_dir}" \
-    PUBLIC_API_SKIP_FACADE_POLICY=1 \
+    PUBLIC_API_SKIP_FACADE_POLICY=1 PUBLIC_API_SKIP_DOCUMENTATION_POLICY=1 \
     "$@" >"${output}" 2>&1 || status=$?
   printf '%s\n' "${status}" >"${tmp_dir}/${name}.status"
 }
@@ -202,7 +202,8 @@ assert_contains "${tmp_dir}/drift.output" "bash scripts/ci/check_public_api_surf
 assert_contains "${tmp_dir}/drift.output" "PASS: algeon-datafusion public API matches"
 echo "PASS: a reintroduced interop item fails closed with a useful diagnostic, without masking other crates' results"
 
-# 3. Missing snapshot file: fails closed with instructions, not a silent skip.
+# 3. Missing snapshot file: the check prints an error with the write command for
+# that crate and exits non-zero after checking the remaining crates.
 missing_dir="${tmp_dir}/snapshots/missing"
 write_clean_snapshots "${missing_dir}"
 rm -f "${missing_dir}/algeon-query-engine.txt"
@@ -212,8 +213,8 @@ assert_contains "${tmp_dir}/missing.output" "ERROR: missing public API snapshot"
 assert_contains "${tmp_dir}/missing.output" "algeon-query-engine.txt"
 echo "PASS: a missing snapshot fails closed instead of being silently skipped"
 
-# 4. The underlying tool itself failing (e.g. a build error) is reported, not
-# swallowed as an empty diff.
+# 4. A failing underlying tool (e.g. a build error) is reported as a failure, so the
+# check cannot treat it as an empty diff.
 tool_failure_dir="${tmp_dir}/snapshots/tool_failure"
 write_clean_snapshots "${tool_failure_dir}"
 run_check tool_failure "${tool_failure_dir}" env FAKE_TOOL_FAILS_FOR=algeon-query-engine \
@@ -223,8 +224,8 @@ assert_contains "${tmp_dir}/tool_failure.output" "ERROR: cargo public-api failed
 assert_contains "${tmp_dir}/tool_failure.output" "FAKE_CARGO_PUBLIC_API_FAILURE"
 echo "PASS: a failing underlying tool is reported per-crate rather than swallowed"
 
-# 5. `write` mode regenerates a snapshot that then passes `check`, so an
-# intentional API change has a real, reviewable approval path.
+# 5. `write` mode regenerates a snapshot that then passes `check`. An
+# intentional API change therefore has a reviewable approval path.
 write_dir="${tmp_dir}/snapshots/write_roundtrip"
 mkdir -p "${write_dir}"
 cp .config/policies/public-api/*-hidden.tsv "${write_dir}/"
@@ -243,8 +244,8 @@ echo "PASS: write mode regenerates snapshots (including the toolchain identity) 
 # 5b. A toolchain drift (nightly rustc or cargo-public-api version changed
 # since the snapshot was written) must fail closed with its own diagnostic
 # that names both identities, and must not fall through to a raw, misleading
-# item-level diff. This is the regression Problem 2 exists to catch: a
-# routine nightly bump must not look like an unreviewed API change.
+# item-level diff. This is the regression the toolchain identity check exists to
+# catch; a routine nightly bump must not look like an unreviewed API change.
 mismatch_rustc_dir="${tmp_dir}/snapshots/mismatch_rustc"
 write_clean_snapshots "${mismatch_rustc_dir}"
 run_check mismatch_rustc "${mismatch_rustc_dir}" env \
@@ -277,15 +278,15 @@ assert_contains "${tmp_dir}/mismatch_tool.output" "0.53.0-fake"
 assert_not_contains "${tmp_dir}/mismatch_tool.output" "PASS:"
 echo "PASS: a cargo-public-api tool-version drift also fails closed with a toolchain diagnostic"
 
-# 6. cargo-public-api missing entirely fails closed with an install hint,
-# rather than a confusing tool-not-found error from deep inside the script.
+# 6. A missing cargo-public-api fails closed with an install hint, before the
+# script reaches a tool-not-found error.
 run_check tool_missing "${clean_dir}" env PATH=/usr/bin:/bin bash "${CHECK_SCRIPT}" check --all-features
 assert_status tool_missing 2
 assert_contains "${tmp_dir}/tool_missing.output" "cargo-public-api is not installed"
 assert_contains "${tmp_dir}/tool_missing.output" "cargo install cargo-public-api --locked"
 echo "PASS: a missing cargo-public-api installation fails closed with an install hint"
 
-# 7. Unknown mode / missing mode argument are usage errors, not silent no-ops.
+# 7. An unknown mode or a missing mode argument is a usage error (exit status 2).
 run_check unknown_mode "${clean_dir}" "${CHECK_SCRIPT}" bogus-mode
 assert_status unknown_mode 2
 assert_contains "${tmp_dir}/unknown_mode.output" "unknown mode 'bogus-mode'"
@@ -656,7 +657,7 @@ assert_status hidden_stale 1
 assert_contains "${tmp_dir}/hidden_stale.output" "stale ledger entry fixture::engine::removed [cross-crate] matches no hidden site"
 echo "PASS: a ledger row without a site fails closed"
 
-# A hidden attribute the scanner cannot attach to an item must not pass silently.
+# A hidden attribute the scanner cannot attach to an item fails the check.
 mkdir -p "${hidden_dir}/macro/src"
 cat >"${hidden_dir}/macro/src/lib.rs" <<'RS'
 macro_rules! make {
@@ -743,7 +744,7 @@ echo "PASS: two hidden public paths to one definition fail closed"
 
 # The consumer column follows `prod: …; tools: …; tests: …; exposed-by: …`, a
 # test-hooks item has no production consumer, and a removal condition states
-# its own condition instead of citing an untracked plan.
+# its own condition without citing an untracked plan.
 write_clean_ledger_variant "${hidden_dir}/bad_consumer.tsv" ""
 sed -i 's/^fixture::Alpha\tcross-crate\towner\ttests: fixture-consumer/fixture::Alpha\tcross-crate\towner\ttests: b, a/' \
   "${hidden_dir}/bad_consumer.tsv"
@@ -801,5 +802,7 @@ assert_status hidden_seam_rows 1
 assert_contains "${tmp_dir}/hidden_seam_rows.output" "fixture::unlisted_hook compiles only with test-hooks but has no #[doc(hidden)] row"
 assert_not_contains "${tmp_dir}/hidden_seam_rows.output" "fixture::Probe::new"
 echo "PASS: a test-hooks item without a row fails, and a hidden type covers its members"
+
+python3 scripts/ci/tests/check_public_api_docs_tests.py
 
 echo "OK: public API surface snapshot check fault-injection tests passed."

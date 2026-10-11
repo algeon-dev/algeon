@@ -286,9 +286,9 @@ run_case source-observability-runtime-non-code 0 "dependency direction contracts
 run_case source-observability-inline-module 0 "dependency direction contracts OK" observability-inline-module "" ""
 run_case source-observability-path-module 0 "dependency direction contracts OK" observability-path-module "" ""
 
-# Planning's dependency closure, not just its declared edges: a helper crate
-# that pulls in a component, DataFusion, or a native sys crate is the way this
-# coupling reappears, and no direct-edge rule sees it.
+# Planning's dependency closure includes transitive edges as well as declared ones.
+# A helper crate that pulls in a component, DataFusion, or a native sys crate is the
+# way this coupling reappears, and no direct-edge rule sees it.
 run_case closure-planning-helper-only 0 "dependency direction contracts OK" clean \
   algeon-query-planning helper-crate present
 run_case closure-planning-transitive-component 1 \

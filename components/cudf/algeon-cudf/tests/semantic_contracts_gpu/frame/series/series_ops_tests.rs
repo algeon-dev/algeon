@@ -1,18 +1,12 @@
-//! Integration tests for `Series` arithmetic, negation, and logical-not.
-//!
 //! Covers `Series op Series` and `Series op scalar` through the named
 //! methods on `SeriesOps`, including dtype promotion, decimal scales,
 //! timestamp differences, and error reporting.
-//!
-//! All tests require a GPU.
 
 use cudf::{DataType, Exec, Series, TypeId};
 
 use crate::common::{error_context_value, host_export_i32_values, host_export_i64_values, nullable_series, series};
 
-// ===========================================================================
-// Series op Series; Result<Series> contract
-// ===========================================================================
+// Series-vs-Series operators return `Result<Series>`.
 
 fn test_series_add_returns_result() {
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
@@ -51,10 +45,6 @@ fn test_series_div_returns_result_f64() {
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(s.to_vec_strict::<f64>().unwrap(), vec![5.0, 5.0, 6.0]);
 }
-
-// -- output contract: Series formatting never exposes schema names --
-
-// -- dtype promotion --
 
 fn test_series_add_mixed_type_promotion() {
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
@@ -185,9 +175,7 @@ fn test_series_timestamp_minus_timestamp_returns_duration_days() {
     assert_eq!(host_export_i32_values(&result), vec![3, 7]);
 }
 
-// ===========================================================================
-// Series op scalar; Result<Series> contract
-// ===========================================================================
+// Series-scalar operators return `Result<Series>`.
 
 fn test_series_mul_scalar_f64() {
     let s = series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
@@ -221,11 +209,7 @@ fn test_series_div_scalar_f32() {
     assert_eq!(out.to_vec_strict::<f32>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
-// -- output contract: scalar ops also omit schema names in Series formatting --
-
-// ===========================================================================
-// Error handling; surfaces Err, not panic
-// ===========================================================================
+// Operator errors are returned as `Err` values.
 
 fn test_series_op_series_type_mismatch_returns_err() {
     let nums = series::<i32>("nums", &[1, 2, 3]).unwrap();
@@ -236,10 +220,6 @@ fn test_series_op_series_type_mismatch_returns_err() {
     assert_eq!(err.operation(), "series::add");
     assert_eq!(error_context_value(&err, "operator").as_deref(), Some("add"));
 }
-
-// ===========================================================================
-// Remaining integer scalar types
-// ===========================================================================
 
 fn test_series_scalar_ops_support_remaining_integer_types() {
     let u8s = series::<u8>("u8s", &[1, 2, 3]).unwrap();
@@ -260,9 +240,7 @@ fn test_series_scalar_ops_support_remaining_integer_types() {
     assert_eq!(series_div.to_vec_strict::<u64>().unwrap(), vec![2, 4, 6]);
 }
 
-// ===========================================================================
-// Rem (modulo); Series % Series and Series % scalar
-// ===========================================================================
+// Rem (modulo) covers `Series % Series` and `Series % scalar`.
 
 fn test_series_rem_i32() {
     let a = series::<i32>("a", &[10, 23, 17]).unwrap();
@@ -304,10 +282,6 @@ fn test_series_rem_scalar_f64() {
     assert!((vals[1] - 1.0).abs() < 1e-10);
 }
 
-// ===========================================================================
-// Negation
-// ===========================================================================
-
 fn test_series_neg_i32() {
     let s = series::<i32>("x", &[1, -2, 3]).unwrap();
 
@@ -323,10 +297,6 @@ fn test_series_neg_f64() {
 
     assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![-1.5, 2.5]);
 }
-
-// ===========================================================================
-// Logical not and boolean mask composition (Bool8)
-// ===========================================================================
 
 fn test_series_not_bool() {
     let s = series::<bool>("x", &[true, false, true]).unwrap();

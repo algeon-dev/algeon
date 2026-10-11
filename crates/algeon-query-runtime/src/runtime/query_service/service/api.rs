@@ -71,8 +71,8 @@ pub struct QueryServiceAdmissionSnapshot {
     /// Number of admissions currently waiting in the service queue.
     pub queued_queries: usize,
     /// Largest number of admissions queued concurrently since this service
-    /// was constructed. This is maintained by queue transitions, rather than
-    /// inferred from snapshot polling, and therefore remains available after
+    /// was constructed. This is maintained by queue transitions and is not
+    /// inferred from snapshot polling. It therefore remains available after
     /// the queue drains.
     pub queue_high_watermark: usize,
 }
@@ -82,15 +82,20 @@ pub struct QueryServiceAdmissionSnapshot {
 /// failure, and execution-pool reports are diagnostic cross-checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendDiagnostics {
+    /// Shared service admission queue state.
     pub admission: QueryServiceAdmissionSnapshot,
+    /// Authoritative device admission balances sampled under each ledger owner.
     pub ledgers: Vec<DeviceLedgerReport>,
     /// Physical allocation-domain usage and activity of each cache-enabled
     /// device.
     pub caches: Vec<DeviceCacheReport>,
     /// Bounded source-cache events from the cache owners, for correlation.
     pub cache_source_events: Vec<CacheSourceEventSnapshot>,
+    /// Device allocator failure counters used for diagnosis, independent of admission.
     pub memory_failures: Vec<DeviceMemoryFailureReport>,
+    /// Device execution-pool concurrency snapshots.
     pub execution_pools: Vec<GpuExecutionPoolSnapshot>,
+    /// Service-wide aggregate query-execution concurrency snapshot.
     pub execution_queries: GpuExecutionQuerySnapshot,
 }
 
@@ -303,7 +308,7 @@ mod outcome_tests {
         let cases = [
             (QueryErrorCode::MemoryReservationFailed, "capacity"),
             // An impossible cap is not queue pressure: the caller must change
-            // the cap or release resident owners, never simply back off.
+            // the cap or release resident owners, never back off.
             (QueryErrorCode::QueryBudgetUnavailable, "budget_unavailable"),
             (QueryErrorCode::UnsupportedPipelineContract, "capability"),
             (QueryErrorCode::InvalidPlan, "invalid"),
@@ -511,9 +516,9 @@ impl QueryAdmissionRequest {
         self.planned_capability_evidence.clone().or_else(|| self.attempt_requirement.clone())
     }
 
-    /// Returns the evidence that was actually submitted by planning for the
+    /// Returns the evidence that was submitted by planning for the
     /// execution-time coverage check.  Internal requirements still size and
-    /// place an admission, but must not impersonate a evidence for an arbitrary
+    /// place an admission, but must not serve as evidence for an arbitrary
     /// later-built plan.
     pub(in crate::runtime::query_service) fn submitted_plan_capability_evidence(
         &self,
@@ -542,8 +547,9 @@ impl QueryAdmissionRequest {
 
     /// Carries fallible adapter activity acquisition into native admission.
     ///
-    /// Coordinated callers must pass acquisition failure through this field so
-    /// admission rejects structurally instead of silently omitting the lease.
+    /// Coordinated callers must pass acquisition failure through this field.
+    /// Admission then rejects with that error, and no attempt runs without its
+    /// lease.
     #[cfg(test)]
     pub(crate) fn with_runtime_observation_activity_result(mut self, activity: Result<QueryActivityLease>) -> Self {
         self.runtime_observation_activity = Some(activity);

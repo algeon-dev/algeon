@@ -107,14 +107,14 @@ struct CacheAllocationDomainInner {
 
 /// One private, device-scoped allocation domain for GPU-resident caches.
 ///
-/// The configured capacity is a hard allocation ceiling, not an eager pool
-/// reservation. The domain creates no physical allocation until a lease uses
-/// it. Every lease uses the same tracked memory resource, so
-/// [`Self::usage`] is the authoritative aggregate for all source and graph
-/// cache allocations made through those leases.
+/// The configured capacity is a hard allocation ceiling that is not reserved
+/// eagerly. The domain creates no physical allocation until a lease uses it.
+/// Every lease uses the same tracked memory resource, so [`Self::usage`] is the
+/// authoritative aggregate for all source and graph cache allocations made
+/// through those leases.
 ///
-/// This type deliberately does not accept a caller-supplied reservation id:
-/// cache subdomains share the domain's allocator rather than minting private
+/// This type deliberately does not accept a caller-supplied reservation id.
+/// Cache subdomains share the domain's allocator and do not mint private
 /// stream-reservation ranges.
 #[derive(Clone, Debug)]
 pub struct CacheAllocationDomain {
@@ -182,8 +182,8 @@ impl CacheAllocationDomain {
     /// Return the shared memory resource used by every cache lease.
     ///
     /// Prefer [`Self::lease_runtime`] for cache work. This accessor exists for
-    /// native consumers that must receive an explicit memory-resource binding
-    /// rather than a `cudf` runtime.
+    /// native consumers that must receive an explicit memory-resource binding.
+    /// It does not return a `cudf` runtime.
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
         &self.inner.memory_resource
     }

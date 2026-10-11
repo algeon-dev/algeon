@@ -1,9 +1,9 @@
 //! Pure operability reductions over sealed public attempt reports.
 //!
 //! The stress program must say whether an embedding application can diagnose
-//! a non-success outcome from the report it already owns.  This module does
-//! not inspect engine state or error text: it reduces the bounded projection
-//! retained in [`AttemptObservation`] into per-attempt and run-wide evidence.
+//! a non-success outcome from the report it already owns.  This module reduces
+//! the bounded projection retained in [`AttemptObservation`] into per-attempt
+//! and run-wide evidence without inspecting engine state or error text.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
 use std::collections::BTreeMap;
@@ -19,7 +19,7 @@ use super::{
 
 /// The runner-owned, schema-only graph UDTF appended to a feature-off
 /// profile. Keeping this label outside user-selected catalog labels prevents
-/// another graph workload from silently becoming part of the cell.
+/// another graph workload from becoming part of the cell without a label change.
 pub(super) const FEATURE_OFF_CUGRAPH_QUERY_LABEL: &str = "feature_off_cugraph_pagerank";
 pub(super) const FEATURE_OFF_CUGRAPH_OPERATION: &str = "algeon_datafusion.cugraph_sql.execute";
 const FEATURE_OFF_CUGRAPH_ERROR_CODE: &str = "unsupported_operator";
@@ -29,7 +29,7 @@ const FEATURE_OFF_CUGRAPH_HOST_FALLBACK: &str = "disabled";
 
 /// The bounded, typed projection captured from the actual `DataFusionError`
 /// returned by the UDTF stream. It deliberately carries only equality facts
-/// for the stable public contract, never error display/source text.
+/// for the stable public contract, with no error display or source text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct FeatureOffCugraphSourceError {
     pub(super) source_error_observed: bool,
@@ -61,10 +61,9 @@ pub(super) struct FeatureOffCugraphAttemptEvidence {
     pub(super) within_measured_latency_bound: Option<bool>,
 }
 
-/// Feature-off cell evidence. This is a load-harness projection, not a
-/// unit-test result: it proves that every emitted UDTF request sealed an exact
-/// structured rejection while relational attempts continued to reach GPU work
-/// in the same measured window.
+/// Feature-off cell evidence, projected by the load harness. It proves that
+/// every emitted UDTF request sealed an exact structured rejection while
+/// relational attempts continued to reach GPU work in the same measured window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct FeatureOffCugraphEvidence {
     pub(super) status: ClauseStatus,
@@ -229,7 +228,7 @@ pub(super) struct AttemptAttribution {
     pub(super) complete: bool,
     pub(super) device_ordinal_required: bool,
     pub(super) allocator_event_required: bool,
-    /// Closed field names, never caller-controlled report text.
+    /// Entries are closed field names. Caller-controlled report text cannot appear here.
     pub(super) missing_fields: Vec<&'static str>,
 }
 
@@ -243,7 +242,7 @@ pub(super) struct OutcomeAttributionSummary {
 }
 
 /// Count of one specifically absent report field.  A missing field is a
-/// product finding, not an inferred cause.
+/// product finding, and no cause is inferred from it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct MissingAttributionField {
     pub(super) field: &'static str,
@@ -345,8 +344,8 @@ impl OtlpExportEvidence {
 
 impl AttributionCompleteness {
     /// Reduces only canonical sealed report projections.  A run with no
-    /// non-success outcomes cannot prove attribution completeness, but it is
-    /// not misreported as a failed observability result.
+    /// non-success outcomes cannot prove attribution completeness and has status
+    /// `NotEvidenced`.
     pub(super) fn from_observations(observations: &[AttemptObservation]) -> Self {
         let mut by_outcome: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         let mut missing_fields = BTreeMap::<&'static str, u64>::new();
@@ -398,8 +397,8 @@ impl AttributionCompleteness {
         }
     }
 
-    /// An observed missing field is a qualification failure; no observations
-    /// remain explicitly `not_evidenced` until a fault-bearing cell is run.
+    /// An observed missing field is a qualification failure. A run with no
+    /// non-success attempt stays `not_evidenced`, which passes.
     pub(super) fn passes(&self) -> bool {
         self.status != ClauseStatus::Failed
     }
@@ -424,8 +423,8 @@ pub(super) fn attribution_for(observation: &AttemptObservation) -> AttemptAttrib
         missing_fields.push("outcome");
     }
     // `primary_failure` is the sealed structured cause.  A cancellation
-    // without one remains visible as an observability gap rather than being
-    // reverse-engineered from runner control flow.
+    // without one remains an observability gap, and no cause is reconstructed
+    // from runner control flow.
     if observation.failure.is_none() {
         missing_fields.push("cause");
     }
@@ -444,11 +443,11 @@ pub(super) fn attribution_for(observation: &AttemptObservation) -> AttemptAttrib
     }
 }
 
-/// A device ordinal applies once a device-backed attempt has actually been
-/// admitted, including an attempt that later failed after an evidence block
-/// was emitted. A native plan is not itself a device placement: pre-admission
-/// rejections and explicitly unplanned cancellations are intentionally not
-/// forced to invent an ordinal.
+/// A device ordinal applies once a device-backed attempt has been admitted,
+/// including an attempt that later failed after an evidence block was emitted.
+/// A native plan alone does not make a device placement. Pre-admission
+/// rejections and explicitly unplanned cancellations are not required to report
+/// an ordinal.
 fn report_owns_device(observation: &AttemptObservation) -> bool {
     (matches!(observation.disposition.as_str(), "Native" | "PartialNative") && observation.admission_sequence.is_some())
         || observation.terminal_evidence.native_fault_evidence.is_some()
@@ -457,7 +456,7 @@ fn report_owns_device(observation: &AttemptObservation) -> bool {
 
 /// Determines whether a memory failure needs an exact cuDF allocator-ring
 /// event. `MemoryReservationFailed` is already a sealed native-controller
-/// cause; it is not evidence that the cuDF callback ran. A typed cuGraph
+/// cause and does not show that the cuDF callback ran. A typed cuGraph
 /// allocation label names the throwing API boundary but cannot replace a
 /// cache-scope allocator record: a resident scope now publishes every
 /// allocation failure class with its immutable scope identity.

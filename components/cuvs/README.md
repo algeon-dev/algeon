@@ -1,5 +1,11 @@
 # cuVS component
 
+`algeon-cuvs` and `algeon-cuvs-sys` are published implementation
+dependencies of Algeon. Applications use
+[`algeon-datafusion`](https://docs.rs/algeon-datafusion); the APIs below serve
+workspace component consumers. See the
+[API documentation boundary](https://algeon.dev/design#api-documentation).
+
 `components/cuvs` is the Algeon Rust vector integration component
 built around [`libcuvs`](https://github.com/algeon-dev/cuvs). It is part of the
 root Cargo workspace, not a second repository or workspace.
@@ -18,7 +24,7 @@ behavior explicit enough for service-side integration.
 
 ## Workspace
 
-- `components/cuvs/algeon-cuvs/` - the safe public Rust API crate, published as `cuvs` (import `cuvs`).
+- `components/cuvs/algeon-cuvs/` - the safe public Rust API crate, published as `algeon-cuvs` (import `cuvs`).
 - `components/cuvs/algeon-cuvs-sys/` - generated low-level bindings and native build discovery for `libcuvs` (import `cuvs_sys`).
 - `components/cuvs/cuvs/` - the pinned **[forked cuVS](https://github.com/algeon-dev/cuvs)** source submodule used to build `libcuvs`.
 - `scripts/build/bootstrap_cuvs.sh` and `scripts/build/build_libcuvs.sh` - root-owned native build entry points.

@@ -47,7 +47,7 @@ pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &
 /// Set-operation guard for left-anti joins.
 ///
 /// An anti build against a dedup aggregate claims EXCEPT DISTINCT, so an
-/// aggregate build must really be one: a grouped aggregate with measures or
+/// aggregate build must be one: a grouped aggregate with measures or
 /// distinct state is EXCEPT ALL, which the bounded engine cannot do with
 /// multiplicity. Sources, filters, and joins keep ordinary anti semantics,
 /// which the engine executes directly, so only aggregate builds are policed.

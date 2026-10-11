@@ -179,8 +179,8 @@ fn validate_inputs(
 
 /// Contract columns are matched by unqualified name, so a relation child that
 /// exposes the same name under two qualifiers (for example `a.weight` and
-/// `b.weight` from a join) has no single binding and is rejected here rather
-/// than silently bound to the first match.
+/// `b.weight` from a join) has no single binding. This function rejects such a
+/// child and does not bind the column to the first match.
 fn validate_contract_column_uniqueness(
     algorithm: CugraphAlgorithm,
     inputs: &[LogicalPlan],

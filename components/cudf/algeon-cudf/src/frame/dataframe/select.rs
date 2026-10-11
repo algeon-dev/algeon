@@ -46,7 +46,7 @@ impl DataFrame {
 
     /// Probe for a column by name, returning `Ok(None)` on miss.
     ///
-    /// Use this when a missing column is a normal case, not an error.
+    /// Use this when a missing column is an expected case. No error is reported on a miss.
     /// For strict access that errors on miss, use [`series()`](Self::series).
     ///
     /// # Cost

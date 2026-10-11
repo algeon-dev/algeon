@@ -122,7 +122,6 @@ pub(in crate::exec) struct PartialAggregateInputEvidence {
     pub(in crate::exec) source_chunk_fingerprint: Option<u64>,
     /// True when this partial aggregate consumes output from source-local stages.
     pub(in crate::exec) source_adjacent_partial: bool,
-    /// Row groups assigned to the source chunk feeding this partial aggregate.
     pub(in crate::exec) source_chunk_row_group_count: u64,
     /// True when the source chunk represents a whole file with unknown row groups.
     pub(in crate::exec) source_chunk_reads_all_row_groups: bool,
@@ -244,8 +243,8 @@ pub(in crate::exec) fn execute_aggregate(
     // Lowering AVG through libcudf's groupby `MEAN` (`GroupByAgg::Mean`) keeps
     // the result scale equal to the source scale on `fixed_point` columns and
     // truncates the division remainder, so a `Decimal128(7, 2)` input averaged
-    // to a `Decimal128(11, 6)` output rounds e.g. `34.65 / 2` to `17.32`
-    // instead of `17.325`. Route AVG through explicit `sum + count + finalize`
+    // to a `Decimal128(11, 6)` output truncates `34.65 / 2` to `17.32`; the
+    // exact quotient is `17.325`. Route AVG through explicit `sum + count + finalize`
     // state even in single-stage grouped execution, while keeping non-mergeable
     // aggregates such as MEDIAN on their true single-stage cuDF operators.
     let aggregate = lower_single_stage_grouped_aggregate_spec(&spec)?;

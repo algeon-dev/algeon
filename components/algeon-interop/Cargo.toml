@@ -12,6 +12,8 @@ documentation = "https://docs.rs/algeon-interop"
 keywords = ["cuda", "gpu", "interop", "rapids"]
 categories = ["api-bindings", "science"]
 
+readme = "README.md"
+
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
 targets = []

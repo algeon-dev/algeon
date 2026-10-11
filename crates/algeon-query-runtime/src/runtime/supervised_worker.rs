@@ -9,13 +9,13 @@
 //! but it never signals the work's cancellation token, so a worker that polls
 //! that token would block the drain indefinitely. This supervisor closes that
 //! gap: it cancels first, then joins, so a worker that has not yet entered
-//! device-bound work exits instead of starting CUDA during process exit.
+//! device-bound work exits before starting CUDA during process exit.
 //!
 //! Workers run on the device executor's bounded blocking lane, never on the
 //! fixed-width async workers and never on a second private thread pool:
 //! admission rides the pool's execution-class permit, completion returns
 //! through a permit-free channel, and pool shutdown resolves every
-//! outstanding join with a typed cancellation instead of hanging.
+//! outstanding join with a typed cancellation. No outstanding join is left waiting.
 
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -73,9 +73,8 @@ impl<T: Send + 'static> SupervisedWorker<T> {
         F: FnOnce() -> T + Send + 'static,
     {
         let supervisor = SupervisedWorkerSupervisor::new(cancellation);
-        // Register before submitting, not after: `std::process::exit` may
-        // otherwise take its registry snapshot while this worker is already
-        // executing CUDA.
+        // Register before submitting: `std::process::exit` may otherwise take
+        // its registry snapshot while this worker is already executing CUDA.
         supervisor.activate_process_exit();
         supervisor.spawn_on(executor, observation, worker)
     }
@@ -129,6 +128,7 @@ impl<T> SupervisedWorkerSupervisor<T> {
     fn request_process_exit(&self) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.process_exit_started = true;
+        // Release the state lock before cancel(), which wakes every cancellation waiter.
         drop(state);
         // Workers check this token before entering device-bound work. It
         // cannot interrupt a CUDA call already in flight, so the subsequent
@@ -149,6 +149,7 @@ impl<T> SupervisedWorkerSupervisor<T> {
         state.joining = false;
         state.joined = true;
         self.state_changed.notify_all();
+        // Release the state lock before unregistering so the notified waiters can re-lock it.
         drop(state);
         // Keep the registry entry live until the worker has completed. This
         // is also safe when the process-exit snapshot already owns the entry.
@@ -222,6 +223,7 @@ impl<T: Send + 'static> SupervisedWorkerSupervisor<T> {
         // CUDA-capable worker may begin.
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.process_exit_started {
+            // Unregistering takes the registry locks; keep it out of the state lock window.
             drop(state);
             self.unregister_process_exit();
             return Err(QueryError::new(
@@ -234,13 +236,13 @@ impl<T: Send + 'static> SupervisedWorkerSupervisor<T> {
         let work = match executor.submit_blocking(GpuExecutionJobKind::AttemptWork, observation, worker) {
             Ok(work) => work,
             Err(error) => {
+                // Unregistering takes the registry locks; keep it out of the state lock window.
                 drop(state);
                 self.unregister_process_exit();
                 return Err(error);
             },
         };
         state.worker = Some(work);
-        drop(state);
         Ok(SupervisedWorker { supervisor: Arc::clone(self) })
     }
 }

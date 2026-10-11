@@ -52,8 +52,9 @@ fn native_semijoin_reduction_keeps_row_parity_once_both_candidates_execute() {
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
     // S3 admits both the original and the rewritten candidate through the
-    // composed pipeline, so the gate keeps the rewrite and this test pins row
-    // parity between the two executable candidates instead of a rejection.
+    // composed pipeline, so the gate keeps the rewrite. This test pins row
+    // parity between the two executable candidates and does not expect a
+    // rejection.
     let context = backend_context();
     let mut outputs = Vec::new();
     for candidate in [&plan, &optimizer_result.plan] {

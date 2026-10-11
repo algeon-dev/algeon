@@ -1,20 +1,12 @@
-//! Specification tests: edge cases for Series and DataFrame operations.
-//!
 //! These tests lock down behavior for:
 //! - Empty Series through various operations
 //! - Single-element Series behavior
 //! - Type coercion edge cases in astype/cast
 //! - Null-aware convenience ops (unique, isin, factorize, fillna with nulls)
-//!
-//! All tests require a GPU.
 
 use cudf::{DataType, Exec, TypeId, frame::dataframe::DropNaOptions};
 
 use crate::common::{nullable_series, series};
-
-// ===========================================================================
-// Empty Series through arithmetic
-// ===========================================================================
 
 fn test_add_empty_series() {
     let a = series::<i32>("a", &[]).unwrap();
@@ -42,10 +34,6 @@ fn test_neg_empty_series() {
     assert!(result.is_empty());
 }
 
-// ===========================================================================
-// Empty Series through reductions
-// ===========================================================================
-
 fn test_min_empty_series() {
     let s = series::<i32>("x", &[]).unwrap();
     let result = s.on(Exec::RETAINED).min().unwrap();
@@ -65,10 +53,6 @@ fn test_mean_empty_series() {
     // mean of empty = null (no elements to average)
     assert!(!result.is_valid().unwrap());
 }
-
-// ===========================================================================
-// Single-element edge cases
-// ===========================================================================
 
 fn test_sort_single_element() {
     use cudf::SortOptions;
@@ -95,10 +79,6 @@ fn test_factorize_single_element() {
     assert_eq!(factorized.row_codes().len(), 1);
     assert_eq!(factorized.codebook().len(), 1);
 }
-
-// ===========================================================================
-// Type coercion edge cases in astype
-// ===========================================================================
 
 fn test_astype_bool_to_int() {
     // true -> 1, false -> 0
@@ -129,10 +109,6 @@ fn test_astype_i8_to_i64() {
     assert_eq!(vals, vec![i8::MAX as i64, i8::MIN as i64, 0]);
 }
 
-// ===========================================================================
-// Null-aware convenience operations
-// ===========================================================================
-
 fn test_unique_with_nulls() {
     // [1, null, 2, null, 1] -> unique should keep {1, 2, null}
     let s = nullable_series::<i32>("x", &[1, 0, 2, 0, 1], &[true, false, true, false, true]).unwrap();
@@ -144,13 +120,12 @@ fn test_unique_with_nulls() {
 }
 
 fn test_nunique_with_nulls() {
-    // [1, null, 2, null, 1] -> nunique excludes nulls -> 2 (just 1 and 2)
+    // [1, null, 2, null, 1] -> nunique excludes nulls -> 2 (1 and 2)
     let s = nullable_series::<i32>("x", &[1, 0, 2, 0, 1], &[true, false, true, false, true]).unwrap();
     assert_eq!(s.on(Exec::RETAINED).nunique().unwrap(), 2);
 }
 
 fn test_isin_with_null_in_source() {
-    // source: [10, null, 30], values: [10, 30]
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let vals = series::<i32>("vals", &[10, 30]).unwrap();
     let result = s.on(Exec::RETAINED).isin(&vals).unwrap();
@@ -162,7 +137,6 @@ fn test_isin_with_null_in_source() {
 }
 
 fn test_fillna_with_series_both_have_nulls() {
-    // source: [10, null, null], fill: [0, 20, null]
     // Expected: [10, 20, null]  (null in fill at position 2 means it stays null)
     let s = nullable_series::<i32>("x", &[10, 0, 0], &[true, false, false]).unwrap();
     let fill = nullable_series::<i32>("f", &[0, 20, 0], &[true, true, false]).unwrap();
@@ -196,10 +170,6 @@ fn test_factorize_with_nulls() {
     assert!(keys.len() >= 2);
 }
 
-// ===========================================================================
-// Sort with all nulls
-// ===========================================================================
-
 fn test_sort_all_null() {
     use cudf::SortOptions;
     let s = nullable_series::<i32>("x", &[0, 0, 0], &[false, false, false]).unwrap();
@@ -208,15 +178,10 @@ fn test_sort_all_null() {
     assert_eq!(result.null_count(), 3);
 }
 
-// ===========================================================================
-// DataFrame empty edge cases
-// ===========================================================================
-
 fn test_dataframe_filter_empty_result() {
     use cudf::DataFrame;
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([("a", a)]).unwrap();
-    // Filter with all-false mask
     let mask = series::<bool>("mask", &[false, false, false]).unwrap();
     let result = df.on(Exec::RETAINED).filter(&mask).unwrap();
     assert_eq!(result.num_rows(), 0);
@@ -239,13 +204,8 @@ fn test_dataframe_slice_empty() {
     assert_eq!(result.num_rows(), 0);
 }
 
-// ===========================================================================
-// Null-aware DataFrame operations
-// ===========================================================================
-
 fn test_dataframe_dropna_with_mixed_nulls() {
     use cudf::DataFrame;
-    // col a: [1, null, 3], col b: [null, 5, 6]
     let a = nullable_series::<i32>("a", &[1, 0, 3], &[true, false, true]).unwrap();
     let b = nullable_series::<i32>("b", &[0, 5, 6], &[false, true, true]).unwrap();
     let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();

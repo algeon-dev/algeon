@@ -65,7 +65,7 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
     assert_eq!(lowered.selected_count(), 1, "{:?}", lowered.report.outcomes());
     assert!(!lowered.selected_plan().advisory_outputs().is_empty(), "q03 lowering attaches frontend statistics");
 
-    // The estimate is composed over the schedule that actually executes, so the
+    // The estimate is composed over the schedule that executes, so the
     // advisory volumes must survive the optimizer rewrites that produce it.
     let native = &optimize_query_plan(
         lowered.selected_plan().clone(),
@@ -100,8 +100,8 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
     }
 
     // Local Parquet decode and every operator workspace still lack a component
-    // allocation model, so the composed peak stays unknown with its reason
-    // instead of reporting an invented zero.
+    // allocation model, so the composed query-owned peak stays unknown with its
+    // reason, and no zero is reported for it.
     assert!(
         estimate.pipeline.resources.iter().any(|resource| matches!(
             &resource.model.bytes,

@@ -2,20 +2,20 @@
 //!
 //! One admitted attempt owns its ledger grant, attempt lane, root stream
 //! (Root permit class), allocation domain with the root stream member, and
-//! device worker scope as a single transaction. The envelope is built after
-//! the ledger transaction commits (inside the admission mutex) but while the
-//! admission mutex is released, so a bounded stream wait never blocks queue
-//! maintenance or cleanup. It is built on the placed device's GPU pool as a
-//! `ContextSetup` lifecycle job, which is the bounded waiter the admission
-//! contract allows for. Admission is published (the `Admitted` lifecycle fact
-//! and the `QueryHandle`) only after every component validates.
+//! device worker scope as a single transaction. The ledger transaction commits
+//! under the admission mutex. The envelope is built after that mutex is
+//! released, so a bounded stream wait never blocks queue maintenance or
+//! cleanup. It is built on the placed device's GPU pool as a `ContextSetup`
+//! lifecycle job, the bounded waiter the admission contract permits. Admission
+//! is published (the `Admitted` lifecycle fact and the `QueryHandle`) only
+//! after every component validates.
 //!
 //! Rollback drops components in reverse acquisition order (member, domain,
 //! stream, lane, grant), preserves the primary error, and restores every
-//! admission counter to its prior value. When a root stream was already acquired, the
-//! terminal owners are parked behind that stream's cleanup fence so capacity
-//! returns only after the stream has synchronized. Fault injection via
-//! [`AdmissionTransactionProbe`] proves both properties at every step.
+//! admission counter to its prior value. When a root stream was already
+//! acquired, the terminal owners are parked behind that stream's cleanup fence
+//! so capacity returns only after the stream has synchronized. Fault injection
+//! via [`AdmissionTransactionProbe`] proves both properties at every step.
 
 #[cfg(test)]
 use std::sync::mpsc;
@@ -352,10 +352,10 @@ struct EnvelopePhysical {
 
 /// One stage in a typed teardown sequence.
 ///
-/// Each stage owns exactly one resource and the only valid continuation after
-/// that resource is released. Its destructor explicitly releases the current
-/// stage before Rust can descend into `then`, so changing field declaration
-/// order cannot weaken the sequence.
+/// Each stage owns exactly one resource, and `then` is the only valid
+/// continuation after that resource is released. The destructor releases the current stage
+/// before Rust can descend into `then`. Changing field declaration order
+/// therefore cannot weaken the sequence.
 struct TeardownStep<T, Next> {
     release: Option<T>,
     then: Next,
@@ -363,8 +363,8 @@ struct TeardownStep<T, Next> {
 
 impl<T, Next> Drop for TeardownStep<T, Next> {
     fn drop(&mut self) {
-        // This release must precede descent into `then`: admission capacity
-        // is reusable only after every earlier stage has completed.
+        // This release must precede descent into `then`. Admission capacity is
+        // reusable only after every earlier stage has completed.
         drop(self.release.take());
     }
 }
@@ -374,8 +374,8 @@ type AdmissionTerminalSequence = TeardownStep<
     TeardownStep<MemoryGrant, TeardownStep<GpuResourcePermit, TeardownStep<AdmissionTicket, ()>>>,
 >;
 
-/// Terminal admission resources encoded as a release chain rather than
-/// independent envelope fields. The type fixes lane → grant → backend permit
+/// Terminal admission resources are encoded as a release chain. No envelope
+/// field holds them directly. The type fixes lane → grant → backend permit
 /// → lifecycle-ticket destruction regardless of enclosing field order.
 struct AdmissionTerminalTeardown {
     sequence: AdmissionTerminalSequence,
@@ -460,14 +460,13 @@ impl Drop for AdmissionTeardown {
         // Physical CUDA state must disappear before the terminal release
         // chain can return capacity or clear lifecycle quiescence.
         drop(self.physical.take());
-        drop(self.terminal.take());
     }
 }
 
 /// One admitted attempt's resource envelope.
 ///
 /// Owned by the `QueryHandleLifetime` after publication and dropped by the
-/// release after the report commit. Its drop is the capacity release: the
+/// release after the report commit. Its drop is the capacity release. The
 /// typed teardown returns the lane, grant, backend-generation permit, and
 /// lifecycle ticket in that order, and the grant's ledger observer wakes the
 /// admission queue. The drop therefore never runs under the admission mutex.
@@ -555,19 +554,19 @@ fn defer_rollback_capacity_release(
     let installed = root_stream.install_cleanup_completion(
         |_| {},
         move || {
+            // Drop the typed terminal sequence before notifying. Its lifecycle
+            // ticket is the final stage, which makes the notify below the
+            // precise quiescence edge.
             drop(release_after_quiescence.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take());
-            // Notify only after the typed terminal sequence has dropped: its
-            // lifecycle ticket is the final stage, making this the precise
-            // quiescence edge.
             service_for_notification.admission.notify_admission_available();
         },
     );
     if !installed {
         eprintln!("[query-engine] warning: provisional admission stream cleanup completion was already installed");
         if let Some(retention) = retention.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            // Releasing capacity without a cleanup fence would permit a
-            // replacement to overlap unknown GPU work. Leak closed on this
-            // unreachable invariant violation instead.
+            // Releasing capacity without a cleanup fence would let a
+            // replacement overlap unknown GPU work. This unreachable invariant
+            // violation leaks the retention, which keeps the capacity held.
             std::mem::forget(retention);
         }
     }
@@ -579,7 +578,7 @@ impl Drop for EnvelopeBuilder {
         if let Some(ticket) = lifecycle_ticket.as_mut() {
             let _ = ticket.transition_to_cleanup();
         }
-        // Release the stream reservation lease before reclaiming the allocation domain.
+        // Free the stream reservation lease, then the allocation domain, before capacity returns.
         drop(self.root_member.take());
         drop(self.domain.take());
         let root_stream = self.root_stream.take();
@@ -595,9 +594,9 @@ impl Drop for EnvelopeBuilder {
 
         let Some(root_stream) = root_stream else {
             // No stream cleanup fence exists yet. Release capacity explicitly
-            // before the local lifecycle ticket drops; otherwise a concurrent
-            // close could observe lifecycle quiescence while this builder
-            // still holds an attempt lane or immutable grant.
+            // before the local lifecycle ticket drops. Dropping the ticket first
+            // would let a concurrent close observe lifecycle quiescence while
+            // this builder still holds an attempt lane or immutable grant.
             drop(terminal);
             return;
         };
@@ -628,7 +627,7 @@ pub(super) fn check_publication_cancellation(
 
 /// Optional rendezvous for the interval after rollback ownership is counted
 /// and the admission mutex is released, but before dropping the envelope can
-/// begin physical cleanup. Production's default probe makes this a no-op.
+/// begin physical cleanup. Production passes no probe, which makes this a no-op.
 pub(super) fn pause_after_rollback_accounting(probe: Option<&AdmissionTransactionProbe>) {
     if let Some(probe) = probe
         && let Err(error) = probe.pause_after_rollback_accounting()
@@ -687,7 +686,6 @@ impl AdmissionEnvelope {
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::AfterLanePermit))?;
         check_admission_boundary(cancellation)?;
 
-        // (2) Root stream (Root permit class).
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::BeforeRootStream))?;
         check_admission_boundary(cancellation)?;
         let stream_lease = device.stream_pool().acquire_observed_with_cancellation_and_class(
@@ -711,7 +709,7 @@ impl AdmissionEnvelope {
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::AfterRootStream))?;
         check_admission_boundary(cancellation)?;
 
-        // (3) Allocation domain: grant == ceiling, domain_id == grant_id.
+        // (2) Allocation domain: grant == ceiling, domain_id == grant_id.
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::BeforeAllocationDomain))?;
         check_admission_boundary(cancellation)?;
         let runtime = builder.root_stream.as_ref().expect("root stream present").shared_runtime()?;
@@ -730,14 +728,13 @@ impl AdmissionEnvelope {
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::AfterAllocationDomain))?;
         check_admission_boundary(cancellation)?;
 
-        // (4) Root stream member of the attempt domain.
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::BeforeRootMember))?;
         check_admission_boundary(cancellation)?;
         builder.root_member = Some(builder.domain.as_ref().expect("domain present").create_member(runtime.stream())?);
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::AfterRootMember))?;
         check_admission_boundary(cancellation)?;
 
-        // (5) Device worker scope: identity evidence, non-blocking.
+        // (3) Device worker scope: identity evidence, non-blocking.
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::BeforeWorkerScope))?;
         check_admission_boundary(cancellation)?;
         let pool = resources.gpu_execution_pool_for_device(device_ordinal)?;
@@ -776,7 +773,7 @@ impl AdmissionEnvelope {
         self.teardown.terminal().memory_grant()
     }
 
-    /// Atomically hands an unpublished envelope's lifecycle ticket from
+    /// Atomically moves an unpublished envelope's lifecycle ticket from
     /// provisional admission to rollback cleanup. The caller holds the
     /// service admission mutex while installing the idempotence guard.
     pub(crate) fn preaccount_rollback_cleanup(&mut self, _state: &mut AdmissionState) {
@@ -822,7 +819,7 @@ impl AdmissionEnvelope {
     }
 
     /// Moves the binding to the post-cleanup report commit. The binding is
-    /// consumed exactly once, so envelope destruction cannot discard an
+    /// consumed exactly once. Envelope destruction then cannot discard an
     /// already-retired attempt window.
     pub(crate) fn take_allocator_domain_attempt(&mut self) -> Option<AllocatorDomainAttempt> {
         self.allocator_domain_attempt.take()
@@ -840,7 +837,7 @@ impl AdmissionEnvelope {
     }
 
     /// Adds the backend-generation permit at publication. It is intentionally
-    /// not exposed again: the envelope releases it together with the admitted
+    /// not exposed again. The envelope releases it together with the admitted
     /// attempt's other terminal resources.
     pub(crate) fn retain_gpu_resource_permit(&mut self, gpu_resource_permit: Option<GpuResourcePermit>) {
         self.teardown.terminal_mut().retain_gpu_resource_permit(gpu_resource_permit);
@@ -871,7 +868,7 @@ impl AdmissionEnvelope {
     }
 
     /// Takes the root stream binding for the first context acquisition.
-    /// Exactly one call succeeds per envelope.
+    /// Exactly one call succeeds per envelope. Later calls return an error.
     pub(crate) fn take_root_binding(&self) -> Result<RootStreamBinding> {
         let operation = "query_engine.query_service.admission_transaction";
         let physical = self.teardown.physical.as_ref().ok_or_else(|| {

@@ -20,12 +20,19 @@ pub struct DeviceMemoryManagerFailureCallbackState {
 /// owns a device memory manager installation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeviceMemoryManagerInstallationIdentity {
+    /// Opaque fingerprint identifying the process-lifetime callback owner.
     pub owner_fingerprint: [u8; 16],
+    /// Callback contract revision included in identity comparisons for installation reuse.
     pub callback_version: u32,
+    /// Opaque fingerprint identifying the immutable memory partition declaration.
     pub partition_fingerprint: [u8; 16],
 }
 
 impl DeviceMemoryManagerInstallationIdentity {
+    /// Constructs a caller-declared installation identity without acquiring resources.
+    ///
+    /// Explicit installation compares the identity with the existing process-lifetime
+    /// manager before reuse; construction does not validate the fingerprints.
     pub const fn new(owner_fingerprint: [u8; 16], callback_version: u32, partition_fingerprint: [u8; 16]) -> Self {
         Self { owner_fingerprint, callback_version, partition_fingerprint }
     }
@@ -70,10 +77,15 @@ fn installation_identity_from_sys(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DeviceMemoryManagerInstallationStatus {
+    /// No process-local memory manager exists for the device.
     Uninstalled,
+    /// A manager exists, but its device-current resource installation is incomplete or was replaced.
     Incomplete,
+    /// An identified manager and its failure callback are installed as the current device resource.
     Owned,
+    /// A manager exists without the identity or failure callback required for owned reuse.
     Unidentified,
+    /// The retained failure callback panicked and the manager is permanently unusable.
     CallbackPanicked,
 }
 
@@ -81,9 +93,13 @@ pub enum DeviceMemoryManagerInstallationStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DeviceMemoryManagerInstallationRetry {
+    /// No manager exists and a new installation can be attempted.
     Installable,
+    /// The current-resource switch can be retried with the retained manager and callback binding.
     Retryable,
+    /// The installed manager can be reused with matching options, identity, and callback binding.
     Reusable,
+    /// The observed installation cannot be repaired or replaced through another install call.
     PermanentlyUnusable,
 }
 
@@ -91,29 +107,48 @@ pub enum DeviceMemoryManagerInstallationRetry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DeviceMemoryManagerInstallationCause {
+    /// No additional installation failure or incompatibility was recorded.
     None,
+    /// The native device-current resource switch failed.
     CurrentResourceInstallFailed,
+    /// Another resource replaced the manager after its current-resource installation.
     CurrentResourceReplaced,
+    /// The process-lifetime failure callback panicked.
     FailureCallbackPanicked,
+    /// The existing manager has no required failure callback.
     FailureCallbackMissing,
+    /// The existing manager has no identified callback owner and memory partition.
     IdentityMissing,
+    /// Requested physical-base or allocation-limit settings conflict with the installed manager.
     OptionsMismatch,
+    /// Requested owner or memory-partition identity differs from the installed identity.
     IdentityMismatch,
+    /// Requested callback function or argument differs from the retained process-lifetime binding.
     CallbackBindingMismatch,
 }
 
 /// Atomic inspection of a device's native manager and Rust callback owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceMemoryManagerInstallationState {
+    /// Process-visible CUDA ordinal inspected by this installation transaction.
     pub device_ordinal: usize,
+    /// Authoritative native installation and callback-health classification.
     pub status: DeviceMemoryManagerInstallationStatus,
+    /// Whether a subsequent explicit installation can create, retry, or reuse the manager.
     pub retry: DeviceMemoryManagerInstallationRetry,
+    /// Reason for the recorded disposition or the rejected installation request.
     pub cause: DeviceMemoryManagerInstallationCause,
+    /// Immutable settings of the existing manager, or `None` when no manager exists.
     pub effective_options: Option<DeviceMemoryManagerOptions>,
+    /// Retained callback-owner and partition identity, or `None` for an unidentified installation.
     pub identity: Option<DeviceMemoryManagerInstallationIdentity>,
+    /// Native creation generation, or `None` when no generation was recorded.
     pub installation_generation: Option<u64>,
+    /// Whether the manager retains a process-lifetime allocation-failure callback.
     pub failure_callback_installed: bool,
+    /// Whether the manager is currently installed as the device-current resource.
     pub current_resource_installed: bool,
+    /// Whether the retained callback has recorded a panic.
     pub failure_callback_panicked: bool,
 }
 

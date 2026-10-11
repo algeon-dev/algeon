@@ -2,7 +2,7 @@
 //!
 //! Both values are validated once, by `GpuBackendConfig::validate`, before a
 //! backend claims any process-wide state. Device-local capacity lives in the
-//! device profile (see `website/docs/design/admission.mdx`).
+//! device profile (see `website/docs/design/admission.mdx#device-profiles-and-grants`).
 
 use std::time::{Duration, Instant};
 

@@ -14,8 +14,11 @@ use crate::error::QueryErrorCode;
 /// The part of an operator the backend cannot execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnsupportedPart {
+    /// The operation or execution strategy is unsupported.
     Operator,
+    /// An input/output dtype or physical representation is unsupported.
     DataType,
+    /// An expression family or expression shape is unsupported.
     Expression,
 }
 
@@ -44,82 +47,155 @@ impl UnsupportedPart {
 /// Labels are report contracts: planning reports, TSV families and tests match
 /// on them, so a variant is renamed only together with every consumer. A new
 /// variant needs an `as_str` and a `category` arm, and a `boundary` arm when it
-/// is a pipeline, validation, or execution-mode refusal rather than a
-/// capability analysis result.
+/// is a pipeline, validation, or execution-mode refusal. Capability analysis
+/// reasons take their boundary from the owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reason {
+    /// The backend cannot execute the requested grouping sets.
     UnsupportedAggregateGroupingSetsCapability,
+    /// The aggregate node has no supported native execution strategy.
     UnsupportedAggregateNodeCapability,
+    /// The join form cannot be bound to a native strategy.
     UnsupportedJoinNodeCapability,
+    /// The sort node cannot be bound to a native strategy.
     UnsupportedSortNodeCapability,
+    /// A post-join residual predicate requires the one-shot equijoin path.
     PostJoinResidualFilterRequiresOneShotEquiJoin,
+    /// The keyed hash build exceeds the admitted strategy bounds.
     LargeKeyedHashJoinStrategyUnsupported,
+    /// Edge normalization was rejected for the supplied operation, type or expression.
     UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart),
+    /// A graph algorithm was rejected for the supplied operation, type or expression.
     UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart),
+    /// A vector algorithm was rejected for the supplied operation, type or expression.
     UnsupportedVectorAlgorithmNodeCapability(UnsupportedPart),
+    /// An ML algorithm was rejected for the supplied operation, type or expression.
     UnsupportedMlAlgorithmNodeCapability(UnsupportedPart),
+    /// An aggregate expression cannot be evaluated by the backend.
     UnsupportedAggregateExpressionCapability,
+    /// A filter predicate cannot be evaluated by the backend.
     UnsupportedFilterExpressionCapability,
+    /// A grouping-key expression cannot be evaluated by the backend.
     UnsupportedAggregateGroupExpressionCapability,
+    /// A residual join expression cannot be evaluated by the backend.
     UnsupportedJoinResidualExpressionCapability,
+    /// A sort-key expression cannot be evaluated by the backend.
     UnsupportedSortExpressionCapability,
+    /// The anti-join build lacks the required deduplicating aggregate.
     LeftAntiBuildRequiresDedupAggregate,
+    /// The anti-join probe lacks proof that its input is deduplicated.
     LeftAntiProbeRequiresDedupProvenInput,
+    /// The producer referenced by an execution edge is absent from the plan.
     MissingEdgeProducer,
+    /// A shared aggregate producer has a consumer outside the aggregate contract.
     AggregateSharedProducerConsumerNotAggregate,
+    /// The shared aggregate producer's input columns lack resolved lineage.
     AggregateSharedProducerInputLineageUnresolved,
+    /// The shared-producer invariant references an absent aggregate.
     AggregateSharedProducerMissingAggregate,
+    /// A node required by the shared aggregate producer is absent.
     AggregateSharedProducerMissingNode,
+    /// Shared aggregate consumers do not have the required dataflow identity.
     AggregateSharedProducerRequiresDataflowIdentity,
+    /// The shared aggregate input lacks the required lineage proof.
     AggregateSharedProducerRequiresInputLineage,
+    /// An expression references an input column whose lineage cannot be resolved.
     ExpressionLineageRequiresResolvedInputColumn,
+    /// An aggregate output field index exceeds its output schema.
     OutputLineageAggregateFieldIndexOutOfRange,
+    /// An output field index exceeds the node schema.
     OutputLineageFieldIndexOutOfRange,
+    /// A join output column cannot be traced to either input.
     OutputLineageJoinOutputColumnResolution,
+    /// A join projection references an output field outside its schema.
     OutputLineageJoinProjectionIndexOutOfRange,
+    /// Output lineage traversal references an absent plan node.
     OutputLineageMissingNode,
+    /// A projected column cannot be resolved against its input.
     OutputLineageProjectionColumnResolution,
+    /// A projection field index exceeds the expression list.
     OutputLineageProjectionFieldIndexOutOfRange,
+    /// Window output lineage cannot resolve the window input.
     OutputLineageWindowMissingInput,
+    /// A residency-transparent edge has a consumer that is not a projection.
     ProjectionTransparentResidencyConsumerNotProjection,
+    /// The producer of a residency-transparent projection is absent.
     ProjectionTransparentResidencyMissingProducer,
+    /// The projection named by a residency invariant is absent.
     ProjectionTransparentResidencyMissingProjection,
+    /// A producer-consumer edge cannot satisfy the resident lifetime contract.
     ResidentLifetimeEdgeRejected,
+    /// A node named by a resident unary-chain invariant is absent.
     ResidentUnaryChainMissingNode,
+    /// The producer of a resident unary chain is absent.
     ResidentUnaryChainMissingProducer,
+    /// The resident unary-chain nodes do not form the required connected path.
     ResidentUnaryChainRequiresConnectedNodes,
+    /// A resident unary chain contains an operation other than filter or projection.
     ResidentUnaryChainRequiresFilterProjectionNodes,
+    /// A residual predicate lacks column references to one of the join inputs.
     ResidualDoesNotReferenceBothInputs,
+    /// An edge in the shared resident subplan violates its ownership contract.
     SharedResidentSubplanEdgeRejected,
+    /// The shared resident subplan lacks an edge required by its invariant.
     SharedResidentSubplanMissingEdge,
+    /// A compiled join lacks its required build/probe task group.
     CompiledPipelineRequiresJoinTaskGroup,
+    /// A compiled join task group omits a required execution stage.
     CompiledPipelineJoinTaskGroupIncomplete,
+    /// A shared producer uses a task kind outside the compiled sharing contract.
     CompiledPipelineSharedProducerTaskKindUnsupported,
+    /// A task occurs in a position its compiled stage does not admit.
     CompiledPipelineStageTaskPositionUnsupported,
+    /// A compiled shared producer lacks proof of common input lineage.
     CompiledPipelineSharedProducerLineageUnproven,
+    /// Tasks grouped as one join refer to different plan nodes.
     CompiledPipelineJoinTaskGroupPlanNodeMismatch,
+    /// A scheduled task kind is outside the supported compiled contract.
     CompiledTaskKindOutsideContract,
+    /// The plan cannot be represented by the supported task/resource graph.
     CompiledPipelineGraphNotConstructible,
+    /// A consumer requires exclusive input ownership that sharing cannot provide.
     ConsumerRequiresExclusiveInput,
+    /// A compiled task identity is duplicated or inconsistent with its graph position.
     CompiledPipelineTaskIdentityInvalid,
+    /// A compiled edge identity is duplicated or inconsistent with its graph position.
     CompiledPipelineEdgeIdentityInvalid,
+    /// A compiled barrier identity is duplicated or inconsistent with its graph position.
     CompiledPipelineBarrierIdentityInvalid,
+    /// A compiled resource identity is duplicated or inconsistent with its graph position.
     CompiledPipelineResourceIdentityInvalid,
+    /// A task dependency refers to a task absent from the schedule.
     CompiledPipelineTaskDependencyMissing,
+    /// Compiled task dependencies contain a cycle.
     CompiledPipelineDependencyCycle,
+    /// A task or edge refers to an absent compiled resource.
     CompiledPipelineResourceReferenceMissing,
+    /// A resource's producer and consumers violate the compiled dataflow contract.
     CompiledPipelineResourceFlowInvalid,
+    /// The sink output does not retain the lifetime required for result delivery.
     CompiledPipelineSinkOutputLifetimeInvalid,
+    /// A barrier does not order all tasks required by its completion contract.
     CompiledPipelineBarrierDominanceInvalid,
+    /// A task has an unsupported number of input or output resources.
     CompiledPipelineTaskResourceArityInvalid,
+    /// A compiled stage boundary omits a required dependency or resource binding.
     CompiledPipelineStageBoundaryIncomplete,
+    /// A join probe lacks the required dependency on completion of its build.
     CompiledPipelineJoinBuildBeforeProbeMissing,
+    /// The fused top-k stage is not bound to the required limit node.
     CompiledPipelineFusedTopkLimitBindingInvalid,
+    /// The result sink has no corresponding input task in the schedule.
     CompiledPipelineSinkInputTaskMissing,
+    /// The window input lacks the ordering required by its window expressions.
     WindowInputOrderingNotEstablished,
+    /// Plan validation rejected an operation, type or expression before compilation.
     PlanValidation(UnsupportedPart),
+    /// The exact statistical aggregate mode cannot cover the indicated contract.
     DatafusionExactStatisticalAggregateUnsupported(UnsupportedPart),
+    /// A grouping-key type is outside the exact statistical aggregate contract.
     DatafusionExactStatisticalGroupKeyUnsupported,
+    /// Ungrouped floating SUM or AVG cannot preserve the required DataFusion evaluation order.
     DatafusionExactUngroupedFloatSumUnsupported,
 }
 
@@ -406,7 +482,12 @@ pub enum RejectionOwner {
     /// One native plan node.
     Node(NodeId),
     /// One producer-consumer boundary.
-    Edge { producer: NodeId, consumer: EdgeConsumer },
+    Edge {
+        /// Node supplying the rejected edge.
+        producer: NodeId,
+        /// Node or result sink consuming the edge.
+        consumer: EdgeConsumer,
+    },
     /// One subgraph invariant.
     Invariant(InvariantId),
     /// The whole plan: compiled pipeline, validation, or admission gates
@@ -462,10 +543,13 @@ pub struct Rejection {
 }
 
 impl Rejection {
+    /// Collects diagnostic facts for one typed rejection. Duplicate fact names
+    /// retain the last value; facts do not change its classification.
     pub fn new(owner: RejectionOwner, reason: Reason, facts: impl IntoIterator<Item = (&'static str, String)>) -> Self {
         Self { owner, reason, facts: facts.into_iter().collect() }
     }
 
+    /// Classification determined by the rejection reason.
     pub const fn category(&self) -> CapabilityRejectionCategory {
         self.reason.category()
     }

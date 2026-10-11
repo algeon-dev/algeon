@@ -1,5 +1,9 @@
 //! Shared interop contract for RAPIDS Rust crates.
 //!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion). See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
+//!
 //! Producers and consumers import these types through the `rapids_interop`
 //! library name; `cudf` re-exports them from `cudf::interop::contract`.
 //!

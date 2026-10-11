@@ -3,12 +3,16 @@ use std::fmt;
 use super::{common::MlRelationBinding, definition::CumlOperation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Rule for selecting clusters from the HDBSCAN hierarchy.
 pub enum MlClusterSelectionMethod {
+    /// Selects clusters by excess of mass.
     Eom,
+    /// Selects leaf clusters in the hierarchy.
     Leaf,
 }
 
 impl MlClusterSelectionMethod {
+    /// Canonical lowercase option value accepted by the SQL operation.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Eom => "eom",
@@ -24,12 +28,16 @@ impl fmt::Display for MlClusterSelectionMethod {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Initial coordinates used before UMAP embedding optimization.
 pub enum MlUmapInit {
+    /// Initializes coordinates from a spectral embedding.
     Spectral,
+    /// Initializes coordinates randomly using the configured seed.
     Random,
 }
 
 impl MlUmapInit {
+    /// Canonical lowercase option value accepted by the SQL operation.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Spectral => "spectral",
@@ -45,18 +53,30 @@ impl fmt::Display for MlUmapInit {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Query-local HDBSCAN bindings and cluster-selection parameters.
 pub struct MlHdbscanParams {
+    /// Dense rows fitted and clustered by this invocation.
     pub input: MlRelationBinding,
+    /// Minimum core-distance neighborhood size; must be below nonempty input row count.
     pub min_samples: usize,
+    /// Minimum selected cluster size, in rows.
     pub min_cluster_size: usize,
+    /// Maximum selected cluster size, in rows; zero disables this bound.
     pub max_cluster_size: usize,
+    /// Nonnegative distance threshold used when selecting clusters.
     pub cluster_selection_epsilon: f64,
+    /// Positive scale applied to mutual-reachability distances.
     pub alpha: f64,
+    /// Whether one selected cluster may cover all input rows.
     pub allow_single_cluster: bool,
+    /// Rule for extracting clusters from the fitted hierarchy.
     pub cluster_selection_method: MlClusterSelectionMethod,
 }
 
 impl MlHdbscanParams {
+    /// Uses the operation registry's defaults for the supplied input binding.
+    ///
+    /// The constructor does not validate the input schema or data-dependent limits.
     pub fn new(input: MlRelationBinding) -> Self {
         let descriptor = CumlOperation::Hdbscan.descriptor();
         let integer = |name| {
@@ -82,23 +102,40 @@ impl MlHdbscanParams {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Query-local UMAP bindings and embedding-optimization parameters.
 pub struct MlUmapParams {
+    /// Dense rows fitted and embedded by this invocation.
     pub input: MlRelationBinding,
+    /// Number of output embedding dimensions.
     pub n_components: usize,
+    /// Neighborhood size used to construct the manifold.
     pub n_neighbors: usize,
+    /// Optimization epoch count; zero selects the native default.
     pub n_epochs: usize,
+    /// Positive rate used to update embedding coordinates.
     pub learning_rate: f64,
+    /// Minimum embedded point distance; must not exceed `spread`.
     pub min_dist: f64,
+    /// Positive scale for embedded point distances.
     pub spread: f64,
+    /// Fuzzy-set intersection/union mix, in `[0, 1]`.
     pub set_op_mix_ratio: f64,
+    /// Nonnegative adjustment to local neighborhood connectivity.
     pub local_connectivity: f64,
+    /// Nonnegative weight of repulsive forces during optimization.
     pub repulsion_strength: f64,
+    /// Number of negative samples per positive graph edge.
     pub negative_sample_rate: usize,
+    /// Initial coordinate construction method.
     pub init: MlUmapInit,
+    /// Seed passed to embedding initialization.
     pub random_state: u64,
 }
 
 impl MlUmapParams {
+    /// Uses the operation registry's defaults for the supplied input binding.
+    ///
+    /// The constructor does not validate the input schema or data-dependent limits.
     pub fn new(input: MlRelationBinding) -> Self {
         let descriptor = CumlOperation::Umap.descriptor();
         let integer = |name| {

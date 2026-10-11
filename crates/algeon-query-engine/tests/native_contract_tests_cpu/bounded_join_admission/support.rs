@@ -103,7 +103,7 @@ fn bounded_offset_only_limit_runs_below_a_full_sort() {
 fn bounded_sort_strategy_records_fused_binding_once() {
     // The fused top-k decision is recorded in exactly one place; the sort
     // task's strategy; with the consuming limit task and plan node bound to
-    // it; readers use the recorded value instead of re-deriving fusion.
+    // it; readers use the recorded value and do not re-derive fusion.
     let mut builder = QueryPlanBuilder::new();
     let join = compositional_inner_join_base(&mut builder);
     let sort =
@@ -389,8 +389,9 @@ fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
 
 #[test]
 fn bounded_admission_refuses_a_plan_with_an_unreachable_node_as_malformed() {
-    // A detached aggregate is not part of the plan the sink reads. Admission
-    // validates the plan, so the IR itself is the error instead of a decision.
+    // A detached aggregate is not part of the plan the sink reads. `finish_with_host_sink` rejects
+    // the graph with `query_engine.plan.graph` before any plan exists. Admission never runs, and no
+    // capability decision is recorded.
     let mut builder = QueryPlanBuilder::new();
     let join = compositional_inner_join_base(&mut builder);
     let detached_schema = Arc::new(Schema::new(vec![

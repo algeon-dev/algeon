@@ -1,8 +1,8 @@
 //! Capability-analysis model for native query admission.
 //!
 //! This module is the public vocabulary for local node, edge, and subgraph
-//! capabilities. Rejection reasons and fact keys are report-facing stable strings;
-//! add new labels instead of reusing old whole-plan family names.
+//! capabilities. Rejection reasons and fact keys are report-facing stable strings.
+//! New cases get new labels, and old whole-plan family names are not reused.
 use std::collections::BTreeMap;
 
 use super::{
@@ -86,7 +86,7 @@ pub struct NodeCapability {
     /// Whether this node is executable before considering downstream edges.
     pub executable: CapabilityDecision,
     /// Aggregate state contract, set on aggregate nodes with a classifiable
-    /// spec; edges consult it instead of re-deriving setop/dedup proofs.
+    /// spec. Edges consult it, and no edge re-derives setop/dedup proofs.
     pub aggregate_state: Option<AggregateStateContract>,
     /// Rows this node emits at most, when the operator alone bounds it
     /// (scalar aggregate, ≤1 fetch limit, ≤1 bounded source).
@@ -160,7 +160,10 @@ pub enum NodeOperator {
         algorithm: VectorAlgorithm,
     },
     /// cuML dimensionality reduction over resident relations.
-    MlAlgorithm { algorithm: MlAlgorithm },
+    MlAlgorithm {
+        /// Algorithm family whose parameter contract must be supported.
+        algorithm: MlAlgorithm,
+    },
 }
 
 /// Source format capability known by the native engine.
@@ -185,7 +188,7 @@ pub enum AggregateGrouping {
     GroupingSets,
 }
 
-/// Whether a node establishes an ordering.
+/// Whether the plan requires an operator or edge to establish an ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderingRequirement {
     /// The operator or edge must establish an ordered output.
@@ -273,7 +276,10 @@ pub enum EdgeContractKind {
         role: VectorInputRole,
     },
     /// cuML relation-input residency contract.
-    MlAlgorithmInput { role: MlRelationRole },
+    MlAlgorithmInput {
+        /// Relation role identifying the algorithm input.
+        role: MlRelationRole,
+    },
     /// Final result materialization boundary.
     ExplicitSinkMaterialization,
 }
@@ -322,7 +328,10 @@ pub enum InputRole {
         role: VectorInputRole,
     },
     /// Input consumed by a cuML node.
-    MlAlgorithmInput { role: MlRelationRole },
+    MlAlgorithmInput {
+        /// Relation role identifying the algorithm input.
+        role: MlRelationRole,
+    },
     /// Input consumed by a limit node.
     LimitInput,
     /// Build-side input consumed by a join node.
@@ -399,7 +408,10 @@ impl VectorInputRole {
 /// Stable identifier for an invariant inside one analysis result. Its index is
 /// the invariant's position in `CapabilityAnalysis::invariants`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InvariantId(pub usize);
+pub struct InvariantId(
+    /// Zero-based position in the capability analysis invariant list.
+    pub usize,
+);
 
 impl InvariantId {
     /// Returns the zero-based index within one capability analysis.
@@ -461,7 +473,8 @@ pub enum SubgraphInvariantKind {
     /// produces a resident frame.
     ResidentUnaryChainPreservesResidency,
     /// The residual predicate on the join references both join inputs, so the
-    /// residual is a true join condition rather than a single-side filter.
+    /// residual is a join condition. A residual that reads one input is a
+    /// single-side filter.
     ResidualUsesBothInputs {
         /// Join whose residual predicate is being checked.
         join_id: NodeId,

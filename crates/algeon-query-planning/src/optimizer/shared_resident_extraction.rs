@@ -59,7 +59,7 @@ pub enum SharedResidentExtractionReason {
     /// An enclosing selected subtree already contains the candidate.
     NestedUnderSelectedSubplan,
     /// The candidate root does not reduce rows, so each consumer recomputes
-    /// the subplan instead of retaining its result.
+    /// the subplan and does not retain its result.
     RootDoesNotReduceRows,
     /// Admission refused the resident producer or a plan rewritten to read
     /// it, so every consumer keeps computing the subplan.
@@ -190,8 +190,8 @@ pub fn extract_shared_resident_fragments(fragments: Vec<QueryPlan>) -> Result<Sh
     extract_shared_resident_subplans(fragments, FragmentLabels::AttemptFragments)
 }
 
-/// Whether a shared subplan is retained as one resident result rather than
-/// recomputed by each consumer.
+/// Whether a shared subplan is retained as one resident result. A subplan that is
+/// not retained is recomputed by each consumer.
 ///
 /// Native planning has no cardinality estimates. A retained result holds
 /// grant memory until its last consumer finishes, while recomputing a chain
@@ -201,10 +201,9 @@ pub fn extract_shared_resident_fragments(fragments: Vec<QueryPlan>) -> Result<Sh
 /// one row per group, and a limit with a fetch emits at most that many rows.
 /// Every other root is recomputed.
 ///
-/// The stage used to require a hard output row bound. That bound priced
-/// resident sources for bounded composition admission, which no longer
-/// predicts memory, and Parquet footer row counts give almost every scan
-/// chain one, so it did not separate the two cases.
+/// A hard output row bound does not decide retention. Parquet footer row
+/// counts give almost every scan chain such a bound, so it would not separate
+/// retained results from recomputed ones.
 fn retains_resident_result(subplan: &QueryPlan) -> bool {
     match &subplan.root_node().kind {
         PlanNode::Aggregate(_) => true,

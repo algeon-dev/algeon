@@ -13,8 +13,12 @@ use super::{CuvsLogicalNode, CuvsOperation, options::dense_relation_function};
 use crate::gpu_functions::dense_relation::table_function_name;
 
 #[derive(Debug, Default)]
+/// DataFusion SQL relation planner that binds named cuVS function arguments.
+///
+/// Unrecognized relations retain their original DataFusion planning path.
 pub struct CuvsRelationPlanner;
 
+/// Creates a shared cuVS relation planner for installation on a session builder.
 pub fn cuvs_relation_planner() -> Arc<dyn RelationPlanner> {
     Arc::new(CuvsRelationPlanner)
 }

@@ -51,9 +51,9 @@ pub(crate) struct ProcessExitRegistration {
 }
 
 impl ProcessExitRegistration {
-    /// Removes a worker that has already stopped. This is deliberately
-    /// explicit rather than a `Drop` side effect: the registration must stay
-    /// live while the worker owns the last ordinary runtime reference.
+    /// Removes a worker that has already stopped. This is an explicit call. The
+    /// registration must stay live while the worker owns the last ordinary
+    /// runtime reference, so removal does not run on `Drop`.
     pub(crate) fn unregister(self) {
         if let Some(id) = self.id {
             global_registry().unregister(id);
@@ -139,8 +139,8 @@ fn global_registry() -> &'static ProcessExitRegistry {
         // libcudart is linked through the native cuDF runtime before any
         // engine-owned CUDA worker is created. Registering this hook lazily
         // therefore gives it LIFO priority over libcudart's process teardown.
-        // A failure to register means we cannot uphold the worker-lifetime
-        // contract, so fail during construction instead of silently detaching.
+        // A failure to register leaves the worker-lifetime contract unenforced,
+        // so the assertion below panics during construction.
         // SAFETY: `process_exit_shutdown` has the required C ABI, does not
         // unwind, and the process-lifetime static registry outlives it.
         let status = unsafe { atexit(process_exit_shutdown) };

@@ -92,17 +92,18 @@ struct AdmissionPublication {
 
 impl QueryService {
     /// Shared admission-commit tail. The caller has selected and placed the
-    /// request, removed it from the queue, and provisionally
-    /// counted it as admitting; the admission mutex is not held. Builds the
-    /// admission envelope; lane, root stream, allocation domain, root
-    /// member, worker scope; while the mutex is released, then publishes
-    /// admission. Any failure restores the provisional count exactly, releases
-    /// every envelope component in reverse order outside the mutex, and
-    /// finishes the request with the primary error. The envelope's root
-    /// stream, allocation domain, and root member are built in a
-    /// context-setup job on the placed device's GPU pool, so the caller's
-    /// Tokio worker neither waits on the stream pool nor creates CUDA state.
-    /// Production passes no probe.
+    /// request, removed it from the queue, and provisionally counted it as
+    /// admitting; the admission mutex is not held. Builds the admission
+    /// envelope (lane, root stream, allocation domain, root member, worker
+    /// scope) while the mutex is released, then publishes admission. Any
+    /// failure restores the provisional count, releases every envelope
+    /// component in reverse order outside the mutex, and finishes the request
+    /// with the primary error.
+    ///
+    /// The envelope's root stream, allocation domain, and root member are
+    /// built in a context-setup job on the placed device's GPU pool, so the
+    /// caller's Tokio worker neither waits on the stream pool nor creates
+    /// CUDA state. Production passes no probe.
     pub(in crate::runtime::query_service) async fn commit_placed_admission_async(
         &self,
         commit: PlacedAdmission,
@@ -274,6 +275,7 @@ impl QueryService {
             );
         }
         self.inner.admission.notify_admission_available();
+        // Completion observers may take the admission mutex; release it first.
         drop(state);
         if primary.fact_value("reason") == Some("queue_wait_elapsed") {
             completion.finish_timeout(&primary);
@@ -323,8 +325,10 @@ impl QueryService {
                 None,
             );
             self.inner.admission.notify_admission_available();
+            // The grant release observer takes the admission mutex; release the guard first.
             drop(state);
             pause_after_rollback_accounting(probe.as_deref());
+            // Release or park the envelope's capacity before the notify and the completion below.
             drop(envelope);
             self.inner.admission.notify_admission_available();
             completion.finish_error(&error);
@@ -346,10 +350,12 @@ impl QueryService {
                 None,
             );
             self.inner.admission.notify_admission_available();
+            // The grant release observer takes the admission mutex; release the guard first.
             drop(state);
             // Reverse-order component release happens outside the admission
-            // mutex: the grant drop invokes the ledger release hook.
+            // mutex because the grant drop invokes the ledger release hook.
             pause_after_rollback_accounting(probe.as_deref());
+            // Release or park the envelope's capacity before the notify and the completion below.
             drop(envelope);
             self.inner.admission.notify_admission_available();
             completion.finish_error(&error);
@@ -358,8 +364,10 @@ impl QueryService {
         if let Err(error) = envelope.activate_lifecycle_ticket() {
             envelope.preaccount_rollback_cleanup(&mut state);
             self.inner.admission.notify_admission_available();
+            // The grant release observer takes the admission mutex; release the guard first.
             drop(state);
             pause_after_rollback_accounting(probe.as_deref());
+            // Release or park the envelope's capacity before the notify and the completion below.
             drop(envelope);
             self.inner.admission.notify_admission_available();
             completion.finish_error(&error);
@@ -390,8 +398,10 @@ impl QueryService {
                 None,
             );
             self.inner.admission.notify_admission_available();
+            // The grant release observer takes the admission mutex; release the guard first.
             drop(state);
             pause_after_rollback_accounting(probe.as_deref());
+            // Release or park the envelope's capacity before the notify and the completion below.
             drop(envelope);
             self.inner.admission.notify_admission_available();
             completion.finish_error(&error);

@@ -15,7 +15,8 @@ use crate::{
 };
 
 /// `cugraph_leiden` accepts a refinement `theta` and drops it (`c_api/leiden.cpp`),
-/// so the wrapper passes a fixed value instead of exposing a parameter with no effect.
+/// so the wrapper passes a fixed value and does not expose the ignored
+/// parameter.
 const LIBCUGRAPH_IGNORED_THETA: f64 = 1.0;
 
 /// Parameters for the Leiden community-detection algorithm.

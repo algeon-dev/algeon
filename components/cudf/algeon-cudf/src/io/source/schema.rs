@@ -162,9 +162,10 @@ pub enum SourceColumnRole {
 pub enum SourceColumnRef {
     /// Decoded read projection ordinal.
     ///
-    /// This index points into [`LocalParquetSource::read_columns`], not into
-    /// the original Parquet file schema. Callers that start from file-schema
-    /// ordinals must translate them into decoded read-projection ordinals.
+    /// This index points into [`LocalParquetSource::read_columns`]. It does not
+    /// refer to the original Parquet file schema. Callers that start from
+    /// file-schema ordinals must translate them into decoded read-projection
+    /// ordinals.
     ReadColumn(usize),
     /// Partition-column ordinal in [`LocalParquetSource::partition_columns`].
     Partition(usize),

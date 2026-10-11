@@ -56,13 +56,13 @@ impl Series {
     /// If the scalar is null, all elements will be null.
     ///
     /// # Cost
-    /// GPU-allocating: one device allocation of `size` elements.
+    /// Makes one device allocation of `size` elements.
     pub fn from_scalar(scalar: &Scalar, size: usize) -> Result<Self> {
         let column = Column::from_scalar(scalar, size)?;
         Self::from_column(column)
     }
 
-    /// Private helper: wrap a `Column` and read its cached metadata.
+    /// Wrap a `Column` and read its cached metadata.
     pub(super) fn from_column_with_cache(column: Column) -> Result<Self> {
         let (cached_len, cached_null_count) = {
             let cv = column.view()?;

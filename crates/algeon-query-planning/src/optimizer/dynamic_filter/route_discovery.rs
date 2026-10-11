@@ -9,8 +9,8 @@
 //! source-level route only under the `keyset_constraints` proof; otherwise one
 //! join-probe route stands in for all of them. Every orientation is recorded
 //! once in the diagnostics with its reason, so `considered_count` counts
-//! orientations and residual candidates rather than joins. Route ids are
-//! positions in the returned list.
+//! orientations and residual candidates. A join with an unsupported shape counts
+//! once. Route ids are positions in the returned list.
 
 use super::{
     AggregateGroupKeyLineage, AnalysisContext, DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DynamicFilterConsumer,

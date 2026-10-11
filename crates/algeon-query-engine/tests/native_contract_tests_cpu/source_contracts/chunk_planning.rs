@@ -970,9 +970,9 @@ fn source_chunk_planning_rejects_selected_row_groups_outside_metadata() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-// Reads a fixture's real footer the same way source preparation does, so
-// dynamic-filter tests exercise real row-group pruning against
-// `SourceFooterFacts` rather than the conservative "no footer supplied" path.
+// Reads a fixture's footer the same way source preparation does, so
+// dynamic-filter tests exercise row-group pruning against `SourceFooterFacts`
+// and do not take the conservative "no footer supplied" path.
 fn local_parquet_footer(path: &Path) -> ParquetMetaData {
     use parquet::file::reader::FileReader;
     SerializedFileReader::try_from(path).unwrap().metadata().clone()

@@ -1,5 +1,9 @@
 //! Backend-neutral native query planning, proof, and admission contracts.
 //!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion) and its re-exports.
+//! See the [API documentation boundary](https://algeon.dev/design#api-documentation).
+//!
 //! This crate depends on neither DataFusion nor any RAPIDS component: its
 //! resolved dependency closure under the union of every feature contains
 //! neither, which `scripts/ci/check_dependency_direction.py` enforces.

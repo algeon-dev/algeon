@@ -14,7 +14,7 @@ use query_planning::execution_contracts::MemoryControlPolicy;
 ///
 /// These targets control how bounded execution splits large aggregate and join
 /// work into GPU-sized pieces. They are intentionally not exposed as
-/// user-facing knobs; public resource control remains the bounded memory policy.
+/// user-facing settings; public resource control remains the bounded memory policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec::bounded) struct BoundedPartitionTargetPolicy {
     aggregate_partition_min_target_bytes: u64,
@@ -62,11 +62,12 @@ impl BoundedPartitionTargetPolicy {
     /// Output bytes one materialized slice of a reusable hash join may produce.
     ///
     /// The clamped policy share is further limited to a fraction of
-    /// `remaining_bytes` when that is nonzero. Both callers pass the attempt's
-    /// immutable cap rather than a live remainder, so in practice this second
-    /// term lowers the slice below the policy floor only for small caps. The
-    /// slice is sized on output bytes because the build table stays resident
-    /// across every slice and the gathered output is the part that varies.
+    /// `remaining_bytes` when that is nonzero. The caller passes the attempt's
+    /// immutable device budget as `remaining_bytes`. That value is not a live
+    /// remainder, so in practice this second term lowers the slice below the
+    /// policy floor only for small caps. The slice is sized on output bytes
+    /// because the build table stays resident across every slice and the
+    /// gathered output is the part that varies.
     pub(in crate::exec::bounded) fn reusable_hash_join_stream_target_output_bytes(
         self,
         memory_policy: MemoryControlPolicy,

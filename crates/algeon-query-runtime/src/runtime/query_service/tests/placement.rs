@@ -50,8 +50,8 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
 
     // Keep the only healthy device occupied. Normal ranking has no runnable
     // candidate, so the fallback must select the healthy saturated ordinal
-    // for its memory-wait taxonomy instead of retrying the physically faulty
-    // ordinal zero and terminally rejecting this waiter.
+    // for its memory-wait taxonomy. It must not retry the physically faulty
+    // ordinal zero or terminally reject this waiter.
     let mut active_waiter = service.enqueue_admission().expect("active request enters the shared queue");
     let active =
         active_waiter.try_admit().expect("healthy placement succeeds").expect("device one admits the active request");
@@ -66,8 +66,8 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
     drop(active);
     // `finish` schedules destruction of the device-backed envelope on its
     // selected GPU executor. The immutable grant becomes reusable only after
-    // that cleanup commits, so wait on the service's semantic quiescence
-    // fence rather than racing the asynchronous cleanup job.
+    // that cleanup commits. The test waits on the service's semantic
+    // quiescence fence. It does not race the asynchronous cleanup job.
     service
         .wait_for_stream_pools_idle(Duration::from_secs(10))
         .expect("active healthy admission cleanup completes before re-admission");

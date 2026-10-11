@@ -47,7 +47,7 @@
 //!
 //! `filter_join_indices_in` follows the same split, but uses the left index
 //! column as the primary input because it transforms already-computed join
-//! gather maps rather than building equality matches itself.
+//! gather maps and does not build equality matches itself.
 
 use std::{
     fmt,

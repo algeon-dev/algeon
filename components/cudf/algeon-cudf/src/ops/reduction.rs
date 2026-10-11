@@ -57,16 +57,17 @@ pub enum ReduceAgg {
 
 /// Aggregation type for scan (prefix) operations.
 ///
-/// Only a subset of aggregations are supported for scan.
+/// Only a subset of aggregations are supported for scan. Inclusive or exclusive
+/// output is selected by the `ScanType` passed alongside the aggregation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanAgg {
-    /// Inclusive or exclusive cumulative sum.
+    /// Cumulative sum.
     Sum,
-    /// Inclusive or exclusive cumulative minimum.
+    /// Cumulative minimum.
     Min,
-    /// Inclusive or exclusive cumulative maximum.
+    /// Cumulative maximum.
     Max,
-    /// Inclusive or exclusive cumulative product.
+    /// Cumulative product.
     Product,
 }
 
@@ -226,7 +227,6 @@ unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<cudf_sys::cudf_scan_agg
     Ok(handle)
 }
 
-/// Reduce a column to a single scalar value.
 pub(crate) fn reduce(input: &ColumnView<'_>, agg: &ReduceAgg, output_type: &DataType) -> Result<Scalar> {
     let ctx = Exec::RETAINED;
     let execution = ResolvedExecution::unary(input.execution_domain(), ctx, "reduction::reduce")?;

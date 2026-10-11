@@ -124,8 +124,8 @@ impl PlanMetrics {
 
 /// Evidence-preserving result of one observed native execution.
 ///
-/// Unlike `Result<QueryExecutionResult, QueryError>`, this outcome retains
-/// the plan's metrics and the sealed observation snapshot when execution fails.
+/// This outcome retains the plan's metrics and the sealed observation snapshot
+/// when execution fails.
 pub struct QueryExecutionOutcome {
     result: std::result::Result<QueryOutput, QueryError>,
     metrics: PlanMetrics,
@@ -141,7 +141,6 @@ impl QueryExecutionOutcome {
         Self { result, metrics, observation }
     }
 
-    /// Borrows the structured output-or-error result.
     #[cfg(test)]
     pub(crate) fn result(&self) -> std::result::Result<&QueryOutput, &QueryError> {
         self.result.as_ref()

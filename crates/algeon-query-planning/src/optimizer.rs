@@ -214,7 +214,8 @@ pub struct NativeOptimizerResult {
     /// Closed repeated fragments extracted behind resident sources.
     #[doc(hidden)]
     pub shared_resident_producers: Vec<SharedResidentProducerPlan>,
-    /// Whether any pass changed the plan.
+    /// Whether any pass changed the plan, or shared-resident extraction produced
+    /// at least one producer.
     pub change: NativeOptimizerChange,
     /// Rule diagnostics collected while optimizing.
     pub diagnostics: NativeOptimizerDiagnostics,
@@ -251,7 +252,7 @@ pub struct NativeOptimizerDiagnostics {
     pub stream_fanout_replay: StreamFanoutReplayDiagnostics,
     /// Diagnostics from the local Parquet source reuse pass.
     pub local_parquet_source_reuse: LocalParquetSourceReuseDiagnostics,
-    /// Diagnostics from the shared-subplan materialization discovery pass.
+    /// Diagnostics from the shared-subplan materialization and scalar derivation passes.
     pub shared_subplan_materialization: SharedSubplanMaterializationDiagnostics,
     /// Diagnostics from the shared-resident extraction stage.
     pub shared_resident_extraction: SharedResidentExtractionDiagnostics,

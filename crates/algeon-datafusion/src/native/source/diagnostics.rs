@@ -134,8 +134,8 @@ pub(in crate::native) struct SourceRead {
 
 /// Builds native diagnostics for a DataFusion local Parquet scan.
 ///
-/// This mirrors the validation path but records dispositions and rejection
-/// feature codes instead of returning the first fallback reason.
+/// This mirrors the validation path and records dispositions plus every rejection
+/// feature code. Validation returns only the first fallback reason.
 pub(in crate::native) fn local_parquet_source_diagnostics(
     file_scan: &FileScanConfig,
     parquet_source: &ParquetSource,

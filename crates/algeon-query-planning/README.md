@@ -1,5 +1,10 @@
 # query-planning
 
+`algeon-query-planning` is a published implementation dependency of Algeon.
+Applications use [`algeon-datafusion`](https://docs.rs/algeon-datafusion)
+and its re-exported types. This page describes the workspace owner API; see
+the [API documentation boundary](https://algeon.dev/design#api-documentation).
+
 `query-planning` is the backend-neutral owner of native planning, proof,
 and admission contracts. Its resolved dependency closure, under the union of
 every feature, contains neither DataFusion nor any RAPIDS component, nor

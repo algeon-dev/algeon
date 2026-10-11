@@ -43,9 +43,8 @@ pub(super) struct AttemptOutcome {
 
 /// Runs one query as one attempt and drains its result stream.
 ///
-/// The completion receiver is taken before planning so a rejection during
-/// admission still yields the immutable report rather than a client-side
-/// error alone.
+/// The completion receiver is taken before planning, so a rejection during
+/// admission yields the immutable report in addition to any client-side error.
 pub(super) async fn run_attempt(
     backend: &AlgeonGpuBackend,
     ctx: &SessionContext,
@@ -79,8 +78,8 @@ pub(super) async fn run_attempt(
     let timed_out = drained.is_err();
     if timed_out {
         // A harness-side timeout is not a service outcome. Cancel so the
-        // attempt reaches its own terminal state and returns its capacity
-        // instead of being abandoned mid-execution.
+        // attempt reaches its own terminal state and returns its capacity. The
+        // attempt is not abandoned mid-execution.
         attempt.cancellation().cancel();
     }
     let (output, failure) = match drained {
@@ -88,6 +87,8 @@ pub(super) async fn run_attempt(
         Ok(Err(error)) => (None, Some(error)),
         Err(_) => (None, None),
     };
+    // Dropping the attempt commits a terminal report when no result stream took
+    // its owner. The wait below needs that report to be published.
     drop(attempt);
     let report = completion.wait_timeout(config.query_timeout);
     let finished = Instant::now();
@@ -204,12 +205,12 @@ fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<St
 
 /// Renders one value for the output fingerprint.
 ///
-/// Floating-point columns are rendered at a fixed significant-digit precision
-/// rather than exactly. A reduction over millions of rows is not required to
-/// keep its summation order between runs, so two correct executions can differ
-/// in the last bits; comparing at full precision would report those as wrong
-/// results. The retained precision is far above the reordering noise, which
-/// for a sum of N terms grows like sqrt(N) machine epsilons.
+/// Floating-point columns are rendered at a fixed significant-digit precision.
+/// A reduction over millions of rows is not required to keep its summation
+/// order between runs, so two correct executions can differ in the last bits;
+/// comparing at full precision would report those as wrong results. The
+/// retained precision is far above the reordering noise, which for a sum of N
+/// terms grows like sqrt(N) machine epsilons.
 fn render_value(column: &dyn Array, row: usize) -> Result<String, ArrowError> {
     match column.data_type() {
         DataType::Float64 => {

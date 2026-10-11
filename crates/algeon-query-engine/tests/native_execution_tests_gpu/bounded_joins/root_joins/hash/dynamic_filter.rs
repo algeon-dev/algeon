@@ -884,7 +884,7 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         // are pruned set-aware, leaving only the [1,1] row group. The deferred
         // post-decode filter therefore sees 2 rows that already match and filters
         // none; the deferral still fires (asserted above), but row-group pruning now
-        // removes the non-matching rows upstream instead of post-decode.
+        // removes the non-matching rows upstream of the post-decode stage.
         assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_before).sum::<u64>(), 2);
         assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_after).sum::<u64>(), 2);
         assert_eq!(deferred_rows.iter().map(|row| row.post_decode_rows_filtered).sum::<u64>(), 0);

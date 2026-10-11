@@ -151,7 +151,7 @@ pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
     validate_query_plan(plan, rapids_analysis_context(PlanningPolicy::default()))
 }
 
-/// Admits the executable plan once and hands the artifact to the caller.
+/// Admits the executable plan once and returns the artifact to the caller.
 ///
 /// Callers that build a plan where it executes (graph, vector and ML relation
 /// plans, tools, tests) admit it here; execution takes only the artifact. A
@@ -399,8 +399,8 @@ fn execute_query_plan_output(
 
 /// Materialize a GPU-resident result handle to host Arrow and record boundary metrics.
 ///
-/// The handle outlives its plan execution, so this reports into the caller's
-/// detached metrics value rather than an execution's metrics owner.
+/// The handle outlives its plan execution, so this reports into the detached
+/// metrics value the caller passes in.
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {

@@ -54,7 +54,7 @@ impl BackendMetricsOtlpExporter {
     /// Builds the direct OTLP histogram request for one coherent snapshot.
     ///
     /// `start_time_unix_nano` belongs to the embedding application's exporter
-    /// lifecycle (and should reset when it observes a new backend generation).
+    /// lifecycle (and should reset when the backend generation changes).
     /// `time_unix_nano` is the common collection timestamp for every point in
     /// this request.
     pub fn histogram_request(
@@ -130,7 +130,7 @@ fn observe_scalar_samples(
     let Ok(samples) = snapshot_source.as_ref()().project_backend_metric(descriptor) else {
         // A canonical descriptor can only fail if a corrupted snapshot violates
         // its core-owned histogram contract. The callback cannot return an
-        // error, so it fails closed rather than inventing a measurement.
+        // error, so it fails closed and records no measurement.
         return;
     };
     for sample in samples {

@@ -160,7 +160,7 @@ cudf_status_t cudf_float32_non_finite_count_ex(cudf_column_view_handle input,
 
     auto device_view = cudf::column_device_view::create_with_mr(*view, exec->stream, *exec->mr);
     // The factory's owning pointer is host-resident; copy the device view into
-    // the kernel transform instead of passing that pointer to device code.
+    // the kernel transform. Device code does not receive that pointer.
     auto const transform = column_non_finite_count_transform<float>{*device_view};
     *out_non_finite_count = count_invalid_values(view->size(), transform, *exec);
     cudf_record_synchronized_stream(exec->stream);

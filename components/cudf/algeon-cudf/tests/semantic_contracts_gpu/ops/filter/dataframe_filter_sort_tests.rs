@@ -1,4 +1,4 @@
-//! Tests for DataFrame high-level filter, filter_isin, sort, deduplicate.
+//! Tests for DataFrame high-level filter, filter_isin, sort, drop_duplicates.
 use cudf::{
     DataFrame, DuplicateKeepOption, ErrorKind, Exec, SortOptions,
     frame::dataframe::{DropDuplicatesOptions, DropNaOptions},
@@ -11,10 +11,6 @@ use crate::common::{
     lock_event_observation, reset_dependency_observation, reset_exec_observation, reset_sync_observation, sample_df,
     sample_runtime, series,
 };
-
-// ---------------------------------------------------------------------------
-// filter
-// ---------------------------------------------------------------------------
 
 fn test_filter_basic() {
     let df = sample_df();
@@ -36,10 +32,6 @@ fn test_filter_preserves_schema() {
     assert_eq!(filtered.column_index("id"), Some(0));
     assert_eq!(filtered.column_index("score"), Some(1));
 }
-
-// ---------------------------------------------------------------------------
-// filter_isin
-// ---------------------------------------------------------------------------
 
 fn test_filter_isin_basic() {
     let df = sample_df(); // ids: 3,1,4,1,5
@@ -132,10 +124,6 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
-// ---------------------------------------------------------------------------
-// sort
-// ---------------------------------------------------------------------------
-
 fn test_sort_by_subset_of_columns() {
     // Sort by id ascending, then score descending within each id group.
     let ids = column_from_slice(&[2i32, 1, 2, 1]).unwrap();
@@ -166,10 +154,6 @@ fn test_sort_mismatched_descending_count() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
 }
 
-// ---------------------------------------------------------------------------
-// nlargest / nsmallest
-// ---------------------------------------------------------------------------
-
 fn test_nlargest() {
     let df = sample_df(); // ids: 3,1,4,1,5  scores: 30,10,40,15,50
     let top2 = df.on(Exec::RETAINED).nlargest(2, "score").unwrap();
@@ -191,10 +175,6 @@ fn test_nlargest_nonexistent_column() {
     let err = df.on(Exec::RETAINED).nlargest(2, "missing").unwrap_err();
     assert_missing_column_error(&err, "missing");
 }
-
-// ---------------------------------------------------------------------------
-// drop_duplicates
-// ---------------------------------------------------------------------------
 
 fn test_drop_duplicates_by_single_column() {
     // Duplicate ids: 3,1,4,1,5 → distinct ids should be {1,3,4,5}
@@ -227,10 +207,6 @@ fn test_drop_duplicates_nonexistent_column() {
         .unwrap_err();
     assert_missing_column_error(&err, "nope");
 }
-
-// ---------------------------------------------------------------------------
-// dropna
-// ---------------------------------------------------------------------------
 
 fn test_dropna_basic() {
     let ids = column_from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();

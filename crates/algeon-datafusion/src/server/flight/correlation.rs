@@ -517,10 +517,10 @@ mod correlation_tests {
         );
         let handoff = CoordinatorReportHandoffTerminal::execution(Arc::clone(&terminal));
 
-        // This drives the observer's invariant-failure branch directly. A
-        // real attempt can never reach it without violating report-before-
-        // snapshot publication, so constructing a malformed attempt would
-        // test an impossible public contract instead of the Flight gate.
+        // This drives the observer's invariant-failure branch directly. A real
+        // attempt can reach it only by violating report-before-snapshot
+        // publication. Constructing such an attempt would test an impossible
+        // public contract, so the test drives the Flight gate itself.
         terminal.finish_success("stream");
         DatafusionAlgeonFlightSqlService::finish_missing_attempt_report_handoff(&handoff, QUERY_ID);
 
@@ -672,8 +672,8 @@ mod correlation_tests {
             render_coordinator.query_stats_result(QUERY_ID).expect("held render completes")
         });
 
-        // The handler must wait rather than render itself, so it only runs
-        // once the other render is already in flight.
+        // The handler waits for the other render and does not render itself, so it only runs
+        // once that render is already in flight.
         loop {
             if entered_rx.try_recv().is_ok() {
                 break;
@@ -748,7 +748,7 @@ mod correlation_tests {
             .expect("attempt-owned runtime artifact fixture registers");
         let key = planning.key().clone();
         // Stands in for the statement's attempt, which records into its own
-        // observation and hands the sealed snapshot to the coordinator.
+        // observation and passes the sealed snapshot to the coordinator.
         let attempt_observation =
             RuntimeObservationOwner::new(QueryId::new(QUERY_ID), None, service.runtime_observation_config);
         let observation = attempt_observation.handle();

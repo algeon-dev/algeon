@@ -10,7 +10,7 @@
 //! attempt. A failure attributed to the probe side bisects the probe rows of
 //! that partition when the join shape permits; a failure attributed to the
 //! build side repartitions the partition pair into two by key hash. Both are
-//! bounded by the policy's attempt count, a row floor derived from
+//! bounded by the policy's attempt count, a minimum row count derived from
 //! `min_retry_chunk_row_groups`, and a fixed logical partition ceiling. Outputs
 //! are appended in partition order and, within a split, left range before
 //! right range, so the concatenated result order does not depend on which
@@ -32,10 +32,10 @@ use crate::exec::retry::{
 };
 
 // Retry subdivision constants are deliberately fixed because they describe the
-// deterministic shape of already-admitted partitioned-join work, not a new
-// admission policy or report surface. Runtime knobs still bound the retry depth;
+// deterministic shape of already-admitted partitioned-join work. They add no
+// admission policy or report surface. Runtime settings still bound the retry depth;
 // these values keep each refinement predictable and independent of memory
-// estimates that may have just proven too optimistic.
+// estimates that may have proven too optimistic.
 //
 // Repartition retry always bisects a failed partition. A fixed fan-out of two
 // matches the source-chunk retry shape, limits live retry state, and preserves a
@@ -45,9 +45,9 @@ const PARTITIONED_JOIN_RETRY_REPARTITION_COUNT: usize = 2;
 // partition planning. Keeping this cap fixed prevents runaway repartition trees
 // while preserving the established bounded partition-count contract.
 const PARTITIONED_JOIN_MAX_LOGICAL_PARTITIONS: usize = 1024;
-// `min_retry_chunk_row_groups` is a source-row-group knob. Joins split resident
-// row ranges, so this fixed row unit maps that existing knob onto a row floor
-// without adding another public policy field.
+// `min_retry_chunk_row_groups` is a source-row-group setting. Joins split resident
+// row ranges, so this fixed row unit maps that existing setting onto a minimum
+// row count without adding another public policy field.
 const PARTITIONED_JOIN_MIN_PROBE_ROWS_PER_RETRY_UNIT: usize = 1024;
 
 pub(super) const PARTITIONED_HASH_EQUI_STRATEGY: PartitionedJoinStrategy = PartitionedJoinStrategy {
@@ -70,7 +70,7 @@ pub(super) struct PartitionedJoinStrategy {
     residual_predicate: bool,
 }
 
-// Immutable inputs and strategy knobs for one partitioned join run.
+// Immutable inputs and strategy settings for one partitioned join run.
 #[derive(Clone, Copy)]
 pub(super) struct PartitionedJoinDriverPlan<'a> {
     pub(super) node_id: NodeId,
@@ -131,11 +131,12 @@ struct PartitionedJoinRetryPolicy {
 /// The chunk starts as a single row range. When hash-partitioning a range
 /// fails with a retryable resource error, the range is bisected and both
 /// halves are queued in order; the consumer sees the halves as separate
-/// partitioned inputs. The queue holds ranges rather than sliced frames so the
-/// chunk never owns more than one partitioned copy at a time.
+/// partitioned inputs. The queue holds row ranges, and a range is sliced only
+/// when it is partitioned, so the chunk never owns more than one partitioned
+/// copy at a time.
 pub(super) struct PartitionedJoinProbeChunk {
     input: BoundedJoinSideFrame,
-    // Queue ranges, not allocated children, so a recovered chunk can be
+    // Children stay as ranges until popped, so a recovered chunk can be
     // consumed before its sibling needs device memory.
     pending: VecDeque<(PartitionedJoinRowRange, usize)>,
 }
@@ -154,7 +155,7 @@ impl PartitionedJoinProbeChunk {
     /// byte counts, or `None` once the chunk is drained.
     ///
     /// A retryable failure splits the range and retries after the backoff; a
-    /// range at the row floor or past the attempt bound turns the failure into
+    /// range at the minimum row count or past the attempt bound turns the failure into
     /// a terminal error with `resume_boundary=partitioned_join_probe`. A
     /// non-retryable error is returned as is. Cancellation is checked before
     /// each range.
@@ -238,7 +239,7 @@ impl PartitionedJoinProbeChunk {
 /// One unit of partition work in the retry tree.
 ///
 /// `partition` indexes the partitioned sides currently in scope, which after a
-/// repartition are the two-way children rather than the original sides;
+/// repartition are the two-way children of the failed slice;
 /// `root_partition` stays the original index for error facts and metrics.
 /// `logical_partition_count` is the width the tree would have if every
 /// partition had been split as deep as this one, and it bounds further
@@ -423,7 +424,7 @@ where
 /// In order: the attempt bound ends the retry; a probe-side failure on a
 /// shape whose probe rows are independent bisects the probe range; any other
 /// failure repartitions the pair two ways while the logical ceiling and the
-/// row floor allow; otherwise the original error is returned with a
+/// minimum row count allow; otherwise the original error is returned with a
 /// `retry_action` naming the exhausted option. A repartition whose children
 /// fail again on a resource error is reported as `partition_repartition_retry_failed`
 /// so the report distinguishes it from a first failure. Every refinement

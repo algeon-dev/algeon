@@ -188,8 +188,6 @@ impl DataFrame {
         self.materialize_join_indices_in_context(&indices, self.column_names_owned(), ctx, "dataframe::left_anti_join")
     }
 
-    // -- Joins (merge) -------------------------------------------------------
-
     fn merge_impl(
         &self,
         right: &DataFrame,
@@ -199,7 +197,6 @@ impl DataFrame {
     ) -> Result<Self> {
         let operation: &'static str = operation;
 
-        // Resolve key names from options.
         let (left_on_strs, right_on_strs, shared_keys) =
             resolve_join_keys(options.on_keys(), options.left_on_keys(), options.right_on_keys(), operation)?;
 
@@ -214,7 +211,6 @@ impl DataFrame {
             JoinSplitCall { join_type, null_equality: options.null_eq(), forced_output_domain, operation },
         )?;
 
-        // Reassemble with high-level suffix logic.
         merge_join_result_with_suffixes(
             split,
             &left_on_refs,
@@ -322,7 +318,6 @@ impl DataFrame {
             .map_err(|e| e.reanchor(operation))
     }
 
-    /// Internal split-join dispatch with configurable null equality.
     fn join_split_on_impl_with_null_eq_and_context(
         &self,
         right: &DataFrame,
@@ -340,7 +335,6 @@ impl DataFrame {
         )?;
         let output_domain = Arc::clone(execution.output_domain());
 
-        // Resolve key column names in both sides.
         let left_key_indices = resolve_column_names(self.columns_map(), keys.left_on, operation)?;
         let right_key_indices = resolve_column_names(right.columns_map(), keys.right_on, operation)?;
 
@@ -348,7 +342,6 @@ impl DataFrame {
         let left_payload_indices = payload_indices(self.columns_map(), &left_key_indices);
         let right_payload_indices = payload_indices(right.columns_map(), &right_key_indices);
 
-        // Build borrowed key and payload table views over the existing columns.
         let lk_table = build_borrowed_table_view_from_columns(self.columns_map(), &left_key_indices)?;
         let rk_table = build_borrowed_table_view_from_columns(right.columns_map(), &right_key_indices)?;
         let lp_table = build_borrowed_table_view_from_columns(self.columns_map(), &left_payload_indices)?;
@@ -366,7 +359,6 @@ impl DataFrame {
             join::JoinCallContext::new(&output_domain, execution.exec_options(), operation),
         )?;
 
-        // Build schemas: left side uses left key names, right side uses right key names.
         let left_schema_names = build_join_schema_names(self.columns_map(), &left_key_indices, &left_payload_indices);
         let right_schema_names =
             build_join_schema_names(right.columns_map(), &right_key_indices, &right_payload_indices);

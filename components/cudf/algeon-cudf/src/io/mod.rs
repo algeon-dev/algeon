@@ -9,14 +9,14 @@
 //! - [`parquet`] exposes file-format readers and writers over low-level owned
 //!   [`Table`] values.
 //! - Host-copy Arrow `RecordBatch` interop lives under
-//!   [`crate::interop::arrow_host`], not under `cudf::io`, because it is an
-//!   external data interchange boundary rather than a file-format reader or
-//!   writer.
+//!   [`crate::interop::arrow_host`], outside `cudf::io`, because it is an
+//!   external data interchange boundary. That module does not read or write
+//!   file formats.
 //!
 //! # Naming and Ownership
 //!
-//! Low-level file readers return [`TableReadOutput`] instead of a bare
-//! [`Table`] because `Table` itself is unnamed.
+//! Low-level file readers return [`TableReadOutput`], which pairs the
+//! [`Table`] with optional schema names, because `Table` itself is unnamed.
 //! When a format can report schema names, they are returned separately via
 //! `column_names` so callers can decide whether to rebuild a named
 //! [`crate::DataFrame`] or keep working at the low-level table boundary.
@@ -167,9 +167,9 @@ fn resolve_write_execution(
 ///
 /// Local filesystem and parser IO failures are classified as
 /// `ErrorCode::IoFailure` regardless of whether the underlying `std::io`
-/// error kind was `NotFound` or another flavor: the caller is performing
-/// local file I/O, and the failure surface is I/O-shaped, not a
-/// missing-named-resource contract failure. The exact underlying cause
+/// error kind was `NotFound` or another flavor. The caller performs local
+/// file I/O, so the failure surface is I/O-shaped, and the error kind is
+/// `DependencyFailure` even for a missing file. The exact underlying cause
 /// stays reachable through the standard source chain.
 fn map_path_io_error(
     source: impl StdError + Send + Sync + 'static,
@@ -213,9 +213,8 @@ fn validate_input_path(path: &Path, operation: &'static str) -> Result<()> {
 fn path_to_cstring(path: &Path, operation: &'static str) -> Result<CString> {
     let path_str = path.to_str().ok_or_else(|| {
         // Local-IO precondition failure: the filesystem path cannot be
-        // presented to libcudf's C API. Classified as a domestic
-        // `IoFailure` rather than a foreign or invariant bucket because
-        // the boundary is our own local file I/O contract.
+        // presented to libcudf's C API. The boundary is this crate's local
+        // file I/O contract, so the failure is a domestic `IoFailure`.
         Error::new_with(ErrorCode::IoFailure, operation, "path is not valid UTF-8")
             .with_detail("resource", "path")
             .with_detail("reason", "invalid_utf8")

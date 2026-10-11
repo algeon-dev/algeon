@@ -258,10 +258,9 @@ impl FilteredJoin {
     /// Probe with left semi semantics using a borrowed execution override and
     /// an exact caller-supplied output row count.
     ///
-    /// The supplied size is a validation hint, not a retained-probe bounded
-    /// memory contract. Bounded callers must use
-    /// [`Self::begin_left_semi_probe_in`] and materialize indices from the
-    /// returned probe state.
+    /// The supplied size is a validation hint. It does not bound the memory of a
+    /// retained probe. Bounded callers must use [`Self::begin_left_semi_probe_in`]
+    /// and materialize indices from the returned probe state.
     pub fn left_semi_join_indices_with_output_size_in(
         &self,
         probe_keys: &TableView<'_>,
@@ -280,10 +279,9 @@ impl FilteredJoin {
     /// Probe with left anti semantics using a borrowed execution override and
     /// an exact caller-supplied output row count.
     ///
-    /// The supplied size is a validation hint, not a retained-probe bounded
-    /// memory contract. Bounded callers must use
-    /// [`Self::begin_left_anti_probe_in`] and materialize indices from the
-    /// returned probe state.
+    /// The supplied size is a validation hint. It does not bound the memory of a
+    /// retained probe. Bounded callers must use [`Self::begin_left_anti_probe_in`]
+    /// and materialize indices from the returned probe state.
     pub fn left_anti_join_indices_with_output_size_in(
         &self,
         probe_keys: &TableView<'_>,

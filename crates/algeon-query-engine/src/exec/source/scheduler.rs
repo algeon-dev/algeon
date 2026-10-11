@@ -11,7 +11,8 @@
 //! optional read ahead of the required one, and only when `max_source_reads_in_flight` exceeds 1;
 //! for an admitted attempt, its auxiliary permits also bound the worker arm. The worker does not
 //! host-synchronize the decode; see `ReadinessEvent`. Design owner:
-//! `website/docs/design/data-path.mdx` and `website/docs/design/admission.mdx`.
+//! `website/docs/design/data-path.mdx` and
+//! `website/docs/design/admission.mdx#device-profiles-and-grants`.
 
 use std::{
     sync::{
@@ -90,8 +91,8 @@ struct ScheduledLocalParquetReadResult {
 
 /// Device-side readiness for one decoded source chunk.
 ///
-/// The worker records this on its own stream after the last decode enqueue instead of
-/// host-synchronizing, so the worker thread recycles while decode drains. The consumer
+/// The worker records this on its own stream after the last decode enqueue and does not
+/// host-synchronize, so the worker thread recycles while decode drains. The consumer
 /// synchronizes the event at its join point before committing the chunk; cross-stream
 /// consumers additionally order device-side through the retained provenance fences, and
 /// host-visible uses (D2H, scalars) keep their own stream synchronizes.
@@ -136,7 +137,7 @@ impl ReadinessEvent {
 /// Observes one discarded read's readiness without consuming its frame.
 ///
 /// Abandonment releases the frame, but a late decode failure must still be attributed to its
-/// chunk instead of surfacing at an unrelated later fence. Failures are secondary to the
+/// chunk and must not surface at an unrelated later fence. Failures are secondary to the
 /// abandonment itself, so they are recorded as cleanup failures, never raised.
 fn observe_abandoned_readiness(
     result: Result<(GpuDataFrame, Option<ReadinessEvent>)>,
@@ -358,7 +359,7 @@ fn read_local_parquet_chunk_worker(
         let frame = read_local_parquet_chunk(&context, &source, &chunk, budget_bytes, budget_boundary, &metrics)
             .and_then(|frame| {
                 // Device-side consumers order through the frame's retained provenance fences;
-                // the worker records readiness instead of blocking on its stream so the pool
+                // the worker records readiness and does not block on its stream, so the pool
                 // slot recycles while decode drains. When the event cannot be recorded, the
                 // record failure is reported on stderr and the worker host-fences its stream
                 // before the frame ships, so success is never reported for an unverified frame.
@@ -382,8 +383,9 @@ fn read_local_parquet_chunk_worker(
                     },
                 }
             });
-        // A pure function of the chunk's own metadata, not a metrics counter
-        // delta: the read succeeded only when `frame` is `Ok`.
+        // Comes from the chunk's metadata, or from the local file footer when the chunk reads
+        // every row group; no metrics counter delta is involved.
+        // The read succeeded only when `frame` is `Ok`.
         let observed_row_group_count =
             frame.is_ok().then(|| observed_chunk_row_group_count(&chunk)).flatten().map(|count| count as u64);
         let read_duration_ns = read_started_at.elapsed().as_nanos() as u64;
@@ -628,7 +630,7 @@ impl ScheduledLocalParquetRead {
                 // The worker already reported its read to the plan execution;
                 // an abandoned read's frame is discarded unconsumed, but its
                 // readiness is still observed so a late decode failure is
-                // attributed instead of leaking to an unrelated later fence.
+                // attributed to its chunk and does not leak to an unrelated later fence.
                 if let Some(SupervisedWorkerJoin::Completed(result)) = worker.join() {
                     observe_abandoned_readiness(result.frame, &chunk, execution);
                 }

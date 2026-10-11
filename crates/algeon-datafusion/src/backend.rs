@@ -52,9 +52,9 @@ use crate::{
 
 /// Process-scoped native GPU backend shared by one or more DataFusion sessions.
 ///
-/// Cloning a backend yields another shared handle to the same backend generation,
-/// not an independent backend instance. When any clone signals close, all clones
-/// and installed sessions observe the same closing gate immediately.
+/// Cloning a backend yields another shared handle to the same backend generation.
+/// When any clone signals close, all clones and installed sessions observe the
+/// same closing gate immediately.
 ///
 /// Installed [`SessionState`] instances retain only a session capability that
 /// cannot extend GPU resource ownership. An idle [`datafusion::prelude::SessionContext`]
@@ -85,7 +85,7 @@ pub struct AlgeonGpuBackend {
 /// Queue-only policy for the shared admission queue.
 ///
 /// Device-local capacity, query-limit, concurrency, and source-work settings belong
-/// exclusively to [`AlgeonGpuDeviceProfile`].  Keeping this policy queue-only
+/// exclusively to [`AlgeonGpuDeviceProfile`]. Keeping this policy queue-only
 /// prevents a scalar from being implicitly broadcast to heterogeneous devices.
 ///
 /// Values are constructed from [`Default`] and adjusted through the `with_*`
@@ -183,8 +183,8 @@ impl AlgeonGpuBackend {
     /// Probes declarable capacity for one CUDA device without building a backend.
     ///
     /// This never claims the process owner lease and never installs a memory
-    /// manager, so callers can pick an explicit limit before `build()`
-    /// instead of binary-searching it through repeated build failures.
+    /// manager, so callers can pick an explicit limit from the probe result before
+    /// `build()`, which avoids a search through repeated build failures.
     /// Declare at most the probe's `max_declarable_limit_bytes` and the
     /// build will not refuse on capacity grounds. The probe reports both the
     /// CUDA-visible total (the comparison basis for ownership and limits)
@@ -258,7 +258,7 @@ impl AlgeonGpuBackend {
 
     /// Returns one coherent, fixed-cardinality backend metrics snapshot.
     ///
-    /// Applications own any exporter or retention policy.  This facade only
+    /// Applications own any exporter or retention policy. This facade only
     /// exposes the backend generation snapshot produced by the engine; it
     /// does not install an exporter or create an HTTP metrics endpoint.
     pub fn backend_metrics_snapshot(&self) -> BackendMetricsSnapshot {
@@ -278,7 +278,7 @@ impl AlgeonGpuBackend {
         &self.queue_policy
     }
 
-    /// Returns diagnostic CUDA/NVML samples, never admission state.
+    /// Returns diagnostic CUDA/NVML samples. The samples carry no admission state.
     pub fn device_telemetry_snapshots(&self) -> Result<Vec<DeviceTelemetrySnapshot>> {
         self.session.device_telemetry_snapshots().map_err(|error| {
             Error::from_native(
@@ -352,8 +352,8 @@ impl AlgeonGpuBackend {
             .max()
             .expect("a published backend has a startup record for each validated device");
         // Keep this as the unadmitted planning template. Every execution
-        // context is instead materialized from the device selected by the
-        // per-device ledger and its immutable grant.
+        // context is materialized from the device selected by the per-device
+        // ledger and its immutable grant.
         let execution_config = validated
             .optimizer_config
             .native_execution_config()
@@ -369,8 +369,8 @@ impl AlgeonGpuBackend {
 /// Construction refuses with its structured cause (`reason` plus the byte
 /// counts the caller needs to pick a declarable capacity) attached as native
 /// facts. This wrapper folds that cause into the adapter message so consumers
-/// that only print the outermost error still see the actionable numbers
-/// instead of a bare "initialization failed".
+/// that only print the outermost error still see the actionable numbers.
+/// Without the fold, such a consumer sees only the adapter message.
 fn backend_core_build_error(message: &'static str, source: QueryError) -> Error {
     Error::from_native_with_blocking_diagnostics("algeon_datafusion.backend.gpu_core", message, source)
 }
@@ -418,7 +418,7 @@ fn validated_backend_construction(
     Ok(ValidatedBackendConstruction { optimizer_config, queue_policy, core_config })
 }
 
-/// Test fixture for paths that genuinely execute an installed GPU backend. The
+/// Test fixture for paths that execute an installed GPU backend. The
 /// process lease remains production-exclusive; tests serialize construction
 /// and deterministically close the backend before releasing the fixture lock.
 #[cfg(test)]

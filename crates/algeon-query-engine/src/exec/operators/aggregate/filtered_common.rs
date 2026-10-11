@@ -70,7 +70,7 @@ pub(super) fn filtered_inputs_per_segment_for_budget(
 }
 
 /// cuDF null-mask allocation bytes for `rows`, saturating on overflow like the
-/// other terms of the filtered-aggregate footprint estimate.
+/// other terms of the filtered-aggregate size estimate.
 pub(super) fn null_mask_bytes(rows: u64) -> u64 {
     usize::try_from(rows)
         .ok()

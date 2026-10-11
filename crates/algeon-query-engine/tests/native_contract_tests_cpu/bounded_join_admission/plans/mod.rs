@@ -34,7 +34,7 @@ pub(crate) enum KeylessInputSubplanVariant {
     /// Swaps the left-anti input subplan for an unsupported ordinary join input.
     InnerJoinInput,
     /// Adds a join below the left-anti input, which would make the input subplan
-    /// recursively multi-join instead of a bounded anti-join leaf.
+    /// recursively multi-join and remove its bounded anti-join leaf shape.
     NestedJoinInput,
 }
 

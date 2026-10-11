@@ -25,7 +25,8 @@ pub enum JoinStrategy {
     /// partition-sized work units.
     PartitionedHashEqui,
     /// Partition a keyed join whose residual predicate is evaluated within the
-    /// mixed keyed/residual path instead of as a reusable equi hash join.
+    /// mixed keyed/residual path. Such a join does not run as a reusable equi
+    /// hash join.
     PartitionedMixedKeyedResidual,
     /// Keyed semi, anti, or mark join that builds a key set from its right
     /// side and filters the left; the only executor of null-aware anti joins.
@@ -170,8 +171,8 @@ impl JoinStrategyEvidence {
                 options.max_small_probe_left_one_shot_build_bytes_threshold.to_string(),
             ),
         ]);
-        // An unknown fact is omitted rather than written as a placeholder, so
-        // consumers distinguish "not measured" from any measured value.
+        // An unknown fact is omitted and no placeholder is written, so consumers
+        // distinguish "not measured" from any measured value.
         let optional = [
             ("estimated_build_rows", input.estimated_build_rows.map(|rows| rows.to_string())),
             ("observed_build_rows", input.observed_build_rows.map(|rows| rows.to_string())),

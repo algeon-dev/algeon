@@ -56,9 +56,9 @@ pub(super) struct DeviceMemoryResourceHandle {
 /// Streams that have submitted work through one destructible memory-resource
 /// lineage.
 ///
-/// The set lives with the resource handle rather than an execution domain:
-/// domains can borrow another stream or share a pool across runtimes, while
-/// only the final native resource destruction needs a retirement fence. Each
+/// The set lives with the resource handle. Execution domains do not own it
+/// because they can borrow another stream or share a pool across runtimes.
+/// Only the final native resource destruction needs a retirement fence. Each
 /// entry retains its stream owner so field-drop order cannot destroy the stream
 /// before the resource has been fenced.
 #[derive(Default)]
@@ -501,8 +501,8 @@ impl Drop for DeviceMemoryResourceHandle {
             if !self._failure_callbacks.is_empty() {
                 // Native destroy can be rejected when the resource is installed
                 // as current. In that case the native adaptor may still call
-                // `callback_arg`, so leak only the callback states instead of
-                // leaving dangling Rust pointers behind.
+                // `callback_arg`, so leak only the callback states. Dropping them
+                // would leave dangling Rust pointers behind.
                 std::mem::forget(std::mem::take(&mut self._failure_callbacks));
             }
             if let Some(status) = status {

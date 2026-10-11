@@ -45,7 +45,7 @@ pub(crate) fn footer_parses_on_this_thread() -> usize {
 }
 
 /// Footers keyed by path, size, and modification time, so a file rewritten
-/// during the scope is parsed again instead of served stale.
+/// during the scope misses the cache and is parsed again.
 #[derive(Debug)]
 pub(crate) struct FooterCache {
     state: Mutex<CacheState>,

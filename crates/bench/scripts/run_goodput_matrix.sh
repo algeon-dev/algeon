@@ -42,7 +42,7 @@ WINDOW_SECONDS="${ALGEON_GOODPUT_WINDOW_SECONDS:-300}"
 SEED="${ALGEON_GOODPUT_SEED:-20260910}"
 # Independent per-request cap assignment. Calibration reads the same manifest
 # as the measured runs, so both arms of a paired comparison are judged against
-# deadlines frozen at the caps they actually request.
+# deadlines frozen at the caps they request.
 REQUEST_CAP_MANIFEST="${ALGEON_GOODPUT_REQUEST_CAP_MANIFEST:-}"
 # P4b sweeps several seeds and load intensities so one favourable draw cannot
 # carry the comparison.
@@ -83,7 +83,7 @@ worktree_digest() {
   } | sha256sum | cut -c1-16
 }
 
-# Digest of the executable that will actually run, or `unbuilt` before the
+# Digest of the executable that will run, or `unbuilt` before the
 # first build. It is the one fact that distinguishes two runs directly, without
 # reasoning about which edits reached the binary.
 binary_digest() {
@@ -207,8 +207,8 @@ collect_matrix() {
 # nearly all of it. The fixed-cap model forbids a declared capacity above
 # physical memory, so the ledger can never over-promise; this group tests
 # whether real allocations plus pool overhead can still exceed the device while
-# the ledger believes there is room. It is not a goodput comparison: the
-# declared capacity differs from every other group, so it is reported alone.
+# the ledger reports room. It is not a goodput comparison; the declared
+# capacity differs from every other group, so it is reported alone.
 group_saturation() {
   local cd=$((92 * 1024 * 1024 * 1024))
   local cap=$((30 * 1024 * 1024 * 1024))
@@ -238,7 +238,7 @@ group_g2b() {
 }
 
 # One query with a large seed batch versus several queries with small seed
-# batches, compared on completed work units rather than completed queries.
+# batches, compared on completed work units. Completed queries are not compared.
 # The split configuration runs at max_active=2 because a single betweenness
 # query with 64 seeds already peaks above C_d/4.
 group_g3() {
@@ -255,7 +255,7 @@ group_g4() {
 # Managed capacity, request caps, arrival trace, seed, window and request set
 # are all pinned; concurrency is the only varied factor. Every request carries
 # its own cap from the manifest, so the mixed arm overlaps differently sized
-# grants rather than repeating one cap.
+# grants.
 group_p4b() {
   [[ -n "${REQUEST_CAP_MANIFEST}" ]] || {
     echo "p4b requires ALGEON_GOODPUT_REQUEST_CAP_MANIFEST" >&2

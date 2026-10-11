@@ -9,7 +9,7 @@ use query_runtime::observability::RuntimeExecutionObservationScope;
 use super::{source::record_bounded_parquet_source_metrics, *};
 use crate::rapids_backend::rapids_analysis_context;
 
-// Bounded execution ownership boundary:
+// Bounded execution ownership is divided among the modules below.
 // - pipeline: the bounded execution facade.
 // - compiled: the shared compiled pipeline runtime.
 // - remaining modules: bounded runtime/operator support; none owns a separate

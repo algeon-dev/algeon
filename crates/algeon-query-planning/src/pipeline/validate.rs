@@ -4,7 +4,7 @@
 //! `compile_pipeline` is expected to produce structures that already
 //! satisfy these checks. Violations surface as
 //! [`QueryErrorCode::InvalidPlan`](crate::error::QueryErrorCode::InvalidPlan) and
-//! are bugs in the producer, not user errors.
+//! are bugs in the producer; they are not user errors.
 //!
 //! Each check guards a specific execution failure: id checks let the executor
 //! index tasks and resources by position; dependency and acyclicity checks
@@ -32,7 +32,7 @@ const OPERATION: &str = "query_engine.pipeline.validate";
 /// A violated compiled-pipeline schedule contract.
 ///
 /// `reason` is the stable snake-case name of the contract that failed, so
-/// admission can report the specific conflict instead of classifying the
+/// admission can report the specific conflict. Admission does not classify the
 /// error by its operation string.
 #[derive(Debug)]
 pub(super) struct ScheduleRejection {
@@ -693,7 +693,7 @@ fn validate_stage_boundary_coverage(pipeline: &CompiledPipeline) -> Result<()> {
 
 /// A probe reads retained build state, so the build task must complete before
 /// it starts. The compiler emits the barrier from the join task group; this
-/// check proves the emitted schedule actually carries it.
+/// check proves the emitted schedule carries it.
 fn validate_join_build_before_probe(pipeline: &CompiledPipeline) -> Result<()> {
     for probe in pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinProbe) {
         let build = pipeline

@@ -139,7 +139,7 @@ impl<'a> ColumnView<'a> {
     /// Returns the data type of this column.
     pub fn data_type(&self) -> Result<DataType> {
         // Raw discriminant: validated by `DataType::from_raw_parts` so an
-        // unmirrored libcudf type id stays a recoverable error, not UB.
+        // unmirrored libcudf type id stays a recoverable error and does not cause UB.
         let mut raw_id: cudf_sys::cudf_type_id_t = 0;
         let mut scale = 0;
         // SAFETY: self.handle is valid (NonNull from construction/from_raw).
@@ -557,8 +557,7 @@ impl<'a> ColumnView<'a> {
 
         let size = self.len().map_err(|e| e.reanchor(operation))?;
         let mask_bytes = size.div_ceil(8);
-        // Ensure we allocate at least the bitmask alignment size that cudf expects.
-        // cudf pads to 64-byte boundaries, so allocate enough.
+        // cudf pads null masks to 64-byte boundaries; round the allocation up to that boundary.
         let alloc_bytes = mask_bytes.div_ceil(64) * 64;
         let mut mask = vec![0u8; alloc_bytes];
 
@@ -588,8 +587,8 @@ impl<'a> ColumnView<'a> {
     /// Returns `None` if the column has no null mask (all elements valid).
     ///
     /// The returned bytes are packed least-significant-bit first and trimmed to
-    /// the active range (`len().div_ceil(8)` bytes), not cuDF's internal padded
-    /// allocation size.
+    /// the active range (`len().div_ceil(8)` bytes). The trimming drops the
+    /// padding that cuDF adds to its internal allocation.
     ///
     /// # Synchronization
     /// This materializes null-mask bytes into host memory and may synchronize
@@ -620,7 +619,7 @@ impl<'a> ColumnView<'a> {
     ///
     /// The column's type must be `TypeId::String`.
     ///
-    /// This is a lossy conversion: nulls and genuinely empty strings become
+    /// This is a lossy conversion: nulls and empty strings become
     /// indistinguishable. Use [`to_optional_strings`](Self::to_optional_strings)
     /// when null fidelity matters.
     ///
@@ -759,8 +758,8 @@ impl<'a> ColumnView<'a> {
     /// and [`offset()`](Self::offset). The returned `DeviceSlice` already accounts
     /// for the column's offset; no manual pointer arithmetic needed.
     ///
-    /// This is an advanced raw-pointer helper for code that already knows how
-    /// to consume a device pointer + length pair. For external cross-crate
+    /// This is an advanced raw-pointer helper for callers that already consume a
+    /// device pointer + length pair. For external cross-crate
     /// interop, prefer [`Self::try_prepare_device_column_export`], which
     /// preserves null-mask and execution-binding semantics in addition to the
     /// data pointer.
@@ -801,8 +800,7 @@ impl<'a> ColumnView<'a> {
         let len = self.len()?;
         let elem_size = std::mem::size_of::<T>();
 
-        // Compute the offset-adjusted pointer. This encapsulates the pointer
-        // arithmetic that would otherwise leak into application code.
+        // The pointer arithmetic is encapsulated here so it does not leak into application code.
         // SAFETY: base_ptr is a device pointer returned by FFI. The add() is
         // pointer arithmetic within the column's device buffer; the result is
         // never dereferenced on the host.

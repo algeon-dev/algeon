@@ -80,9 +80,9 @@ async fn aborting_server_future_never_blocks_current_thread_runtime_drop() {
     assert!(error.is_cancelled());
 
     // The aborted build may already hold the device-owner lease; its close
-    // and rollback release it asynchronously. Wait for that release instead
-    // of assuming it already happened: the race between the first yield and
-    // the ownership claim is environment-dependent.
+    // and rollback release it asynchronously. The race between the first yield
+    // and the ownership claim depends on the environment, so the loop below
+    // polls for that release.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let replacement = loop {
         match backend_from_server_config(&replacement_config) {
@@ -157,7 +157,8 @@ async fn flight_sql_datafusion_baseline_statement_never_enters_gpu_ledger() {
 
     // Case-insensitive LIKE remains a structured native expression rejection.
     // Keep this independent of regexp_replace lowering coverage so the test
-    // continues to exercise DataFusion-baseline execution, not the GPU ledger.
+    // continues to exercise DataFusion-baseline execution that never enters the
+    // GPU ledger.
     let attempts_before = backend.attempt_counters_snapshot().attempts_begun;
     let flight_info = client.execute("select 'ABC' ilike 'a%' as label_match".to_string(), None).await.unwrap();
     assert_eq!(

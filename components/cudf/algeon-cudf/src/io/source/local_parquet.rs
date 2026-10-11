@@ -98,10 +98,10 @@ impl PartialEq for LocalParquetSource {
 impl LocalParquetSource {
     /// Build a normal local Parquet data source.
     ///
-    /// `SourceColumnRef::ReadColumn(index)` values point into `read_columns`
-    /// after projection, not into the original file schema. Planner adapters
-    /// that start from file-schema ordinals must translate them before calling
-    /// this constructor.
+    /// `SourceColumnRef::ReadColumn(index)` values index `read_columns` after
+    /// projection. The indexes do not refer to the original file schema. Planner
+    /// adapters that start from file-schema ordinals must translate them before
+    /// calling this constructor.
     pub fn data<I, R, O, Q, P>(
         files: I,
         schema: SourceSchema,
@@ -713,7 +713,7 @@ impl LocalParquetSourceKind {
 /// Footer proof for the value encoding family used by a variable-width column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParquetVariableWidthEncodingProof {
-    /// No row group is selected, so the payload is exactly zero bytes.
+    /// No row group is selected, so the payload is zero bytes.
     Empty,
     /// Every selected chunk has a PLAIN value encoding.
     Plain,
@@ -844,7 +844,7 @@ impl LocalParquetFile {
     ///
     /// Currently this admits `s3://...` URIs because libcudf/kvikIO owns the
     /// lower remote read implementation. Unsupported schemes are rejected
-    /// here instead of being represented as local paths.
+    /// here and are never represented as local paths.
     pub fn object_store_uri<U, S, V>(uri: U, stable_id: S, partition_values: V) -> Result<Self>
     where
         U: Into<String>,
@@ -1019,7 +1019,7 @@ impl LocalParquetFile {
         Ok(self)
     }
 
-    /// Local filesystem path.
+    /// Local filesystem path, or the object-store URI for an object-store file.
     pub fn path(&self) -> &Path {
         &self.path
     }

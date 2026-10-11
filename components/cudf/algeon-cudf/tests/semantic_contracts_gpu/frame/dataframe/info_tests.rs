@@ -1,4 +1,3 @@
-//! Integration tests for DataFrame metadata snapshots via `info()`.
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::{

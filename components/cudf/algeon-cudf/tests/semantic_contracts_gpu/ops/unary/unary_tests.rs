@@ -1,5 +1,3 @@
-//! Tests for unary operations.
-
 use cudf::{DataType, Exec, TypeId, ops::unary};
 
 use crate::common::{error_context_value, series};

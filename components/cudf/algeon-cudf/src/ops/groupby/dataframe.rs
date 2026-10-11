@@ -179,7 +179,8 @@ pub struct GroupByOps<'a> {
 /// The value retains the input [`DataFrame`] so the key columns borrowed by
 /// the underlying cuDF groupby handle remain alive. Preparing this value calls
 /// cuDF's sort-backed `get_groups` path; callers should treat it as an
-/// explicit `prepared_sort_groupby` strategy, not as a free diagnostic probe.
+/// explicit `prepared_sort_groupby` strategy and account for that preparation
+/// cost.
 pub struct PreparedDataFrameGroupBy {
     df: DataFrame,
     keys: Vec<String>,
@@ -392,10 +393,11 @@ impl<'a> GroupBy<'a> {
     /// Build explicit prepared sort-groupby state under a hard execution
     /// budget.
     ///
-    /// This is a reusable execution strategy object, not a transparent
-    /// diagnostic probe: construction calls cuDF's `get_groups({})` path to
-    /// initialize sort-backed grouping state and records exact grouped-key
-    /// output facts. The grouped-key output is released before this returns.
+    /// This is a reusable execution strategy object. Construction calls cuDF's
+    /// `get_groups({})` path to initialize sort-backed grouping state and
+    /// records exact grouped-key output facts. Construction does not run as a
+    /// read-only diagnostic. The grouped-key output is released before this
+    /// returns.
     pub fn prepare_sort_groupby_with_budget(
         &self,
         token: &ExecutionBudgetToken,
@@ -417,13 +419,10 @@ impl<'a> GroupBy<'a> {
         Ok(BudgetedExecutionOutcome::new(prepared, report))
     }
 
-    /// Execute the groupby with a borrowed per-operation execution override.
     pub(crate) fn agg_in_context(&self, specs: &[AggSpec], ctx: Exec<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
         self.agg_impl(specs, output_domain, "groupby::GroupBy::agg")
     }
-    /// Prepare reusable grouping state using a borrowed per-operation
-    /// execution override.
     pub(crate) fn prepare_groups_in_context(&self, ctx: Exec<'_>) -> Result<PreparedGroupByFacts> {
         self.prepare_groups_impl(ctx, "groupby::GroupBy::prepare_groups")
     }
@@ -632,8 +631,6 @@ impl<'a> GroupBy<'a> {
         DataFrame::new(schema_names, final_cols)
     }
 
-    /// Apply a per-group row shift with a borrowed per-operation execution
-    /// override.
     pub(crate) fn shift_in_context(&self, specs: &[ShiftSpec], ctx: Exec<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
         self.shift_impl(specs, output_domain, false, "groupby::GroupBy::shift")
@@ -840,32 +837,32 @@ impl GroupByOps<'_> {
     /// ascending with nulls after.
     ///
     /// Use this when keys come from a prior sort step so libcudf can skip its
-    /// internal key sort. Passing keys that are not actually sorted produces
+    /// internal key sort. Passing keys that are not sorted produces
     /// undefined output ordering within groups.
     pub fn shift_sorted(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
         self.groupby.shift_sorted_in_context(specs, self.ctx)
     }
 
     groupby_shortcuts!(
-        /// Shortcut: compute the sum of each named column per group.
+        /// Shortcut for the sum of each named column per group.
         fn sum(columns) => GroupByAgg::Sum;
 
-        /// Shortcut: compute the mean of each named column per group.
+        /// Shortcut for the mean of each named column per group.
         fn mean(columns) => GroupByAgg::Mean;
 
-        /// Shortcut: count non-null values of each named column per group.
+        /// Shortcut for counting non-null values of each named column per group.
         fn count(columns) => GroupByAgg::Count { include_nulls: false };
 
-        /// Shortcut: compute the median of each named column per group.
+        /// Shortcut for the median of each named column per group.
         fn median(columns) => GroupByAgg::Median;
 
-        /// Shortcut: count unique non-null values of each named column per group.
+        /// Shortcut for counting unique non-null values of each named column per group.
         fn nunique(columns) => GroupByAgg::NUnique;
 
-        /// Shortcut: compute the sample standard deviation (ddof=1) of each named column per group.
+        /// Shortcut for the sample standard deviation (ddof=1) of each named column per group.
         fn std(columns) => GroupByAgg::Std { ddof: 1 };
 
-        /// Shortcut: compute the sample variance (ddof=1) of each named column per group.
+        /// Shortcut for the sample variance (ddof=1) of each named column per group.
         fn var(columns) => GroupByAgg::Variance { ddof: 1 };
     );
 }

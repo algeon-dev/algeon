@@ -22,9 +22,9 @@ pub(crate) enum KeyedHashJoinResidentSubplanPipelineVariant {
     ScalarAggregateNotMax,
     /// Breaks the max-over-sum shape at the grouped aggregate.
     GroupedAggregateNotSum,
-    /// Builds an isomorphic aggregate from a different node; admission requires
-    /// actual shared identity after common-subexpression elimination, not
-    /// structural equivalence.
+    /// Builds an isomorphic aggregate from a different node. Admission requires a
+    /// shared node identity after common-subexpression elimination, and structural
+    /// equivalence alone does not satisfy it.
     StructurallyEquivalentGroupedAggregate,
 }
 

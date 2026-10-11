@@ -375,12 +375,13 @@ fn cold_read_column_widths(source: &LocalParquetSource, read_columns: &[String])
     })
 }
 
-/// One completed raw source batch, as observed rather than estimated.
+/// One completed raw source batch, as observed.
 ///
 /// Decoded bytes come from the reader's output frame and staged bytes from the
 /// frame after the source-adjacent filter and projections. The next batch uses
-/// these observations to account for decoded working-set expansion. Partial rows are known only when the batch produced partial output;
-/// partition occupancy is known only when the batch was hash-partitioned.
+/// these observations to account for decoded working-set expansion. Partial rows
+/// are known only when the batch produced partial output; partition occupancy is
+/// known only when the batch was hash-partitioned.
 #[derive(Debug, Default, Clone, Copy)]
 struct SourceAdjacentRawBatchSample {
     rows: u64,
@@ -1178,8 +1179,8 @@ fn source_adjacent_partition_batch_observed_device_bytes(inputs: &[SourceAdjacen
 
 /// Aggregates one partition's pending slices into partials. The slices are
 /// taken out of `inputs` first and concatenated into one frame, so a failure
-/// leaves the partition empty rather than half consumed; the caller treats
-/// the error as terminal for the batch.
+/// leaves the partition empty. The caller treats the error as terminal for the
+/// batch.
 fn execute_source_adjacent_partition_aggregate_batch(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,

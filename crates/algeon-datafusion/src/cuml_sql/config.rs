@@ -21,8 +21,12 @@ pub struct CumlModelStoreConfig {
 }
 
 impl CumlModelStoreConfig {
+    /// Default maximum model-file size in bytes (256 MiB).
     pub const DEFAULT_MAX_MODEL_BYTES: u64 = 256 * 1024 * 1024;
 
+    /// Declares a model directory with [`Self::DEFAULT_MAX_MODEL_BYTES`] as its file-size limit.
+    ///
+    /// Directory and model-file validation occurs when model-backed SQL is planned.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into(), max_model_bytes: Self::DEFAULT_MAX_MODEL_BYTES }
     }

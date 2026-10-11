@@ -44,8 +44,8 @@ const OPERATION: &str = "query_engine.pipeline.compile";
 /// Outcome of compiling one plan into a validated bounded pipeline.
 ///
 /// A plan the compiler or the schedule validator refuses is a structured
-/// rejection, not an error: admission reports it with the contract that
-/// failed. Malformed inputs the compiler cannot classify stay `Err`.
+/// rejection that admission reports with the contract that failed. Malformed
+/// inputs the compiler cannot classify stay `Err`.
 #[derive(Debug)]
 pub(crate) enum PipelineCompilation {
     /// The plan compiled into a schedule that satisfies every pipeline contract.
@@ -57,8 +57,8 @@ pub(crate) enum PipelineCompilation {
 /// Compile a native plan and matching capability analysis into a symbolic pipeline.
 ///
 /// `analysis` must cover the same reachable plan graph. Any local node, edge,
-/// or invariant rejection is returned as an error instead of being converted to
-/// a report-family fallback. The resulting graph is consumed by the one
+/// or invariant rejection is returned as an error and is not converted into a
+/// report-family fallback. The resulting graph is consumed by the one
 /// capability-first bounded executor.
 pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<CompiledPipeline> {
     let pipeline = match compile_pipeline_graph(plan, analysis)? {
@@ -73,7 +73,7 @@ pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Resu
 ///
 /// An `InvalidPlan` error from graph construction becomes a
 /// `CompiledPipelineGraphNotConstructible` rejection, because admission reports
-/// it against the plan instead of failing the query. Any other error code is a
+/// it against the plan and the query does not fail. Any other error code is a
 /// defect in the compiler's inputs and propagates.
 pub(crate) fn compile_pipeline_outcome(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<PipelineCompilation> {
     let pipeline = match compile_pipeline_graph(plan, analysis) {
@@ -669,8 +669,8 @@ fn build_resources(
         }
         // A consumer is listed once per input that reads the resource, so a task
         // that feeds two inputs from one producer (UNION ALL of identical
-        // branches) makes the resource shared instead of moving its payload
-        // into the first read.
+        // branches) makes the resource shared. Its payload is then not moved into
+        // the first read.
         consumers.sort_unstable();
         let lifetime = if consumers.is_empty()
             && matches!(plan.sink(), ResultSink::GpuResident { input } | ResultSink::DeferredHostArrow { input, .. } if *input == *node_id)

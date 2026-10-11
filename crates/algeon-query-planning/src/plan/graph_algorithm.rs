@@ -57,29 +57,53 @@ pub use traversal::{
 /// Algorithm-specific parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphAlgorithmParams {
+    /// PageRank damping, convergence tolerance, and iteration cap.
     PageRank(GraphPageRankParams),
+    /// PageRank solver options with a relation-backed personalization vector.
     PersonalizedPageRank(GraphPersonalizedPageRankParams),
+    /// Breadth-first traversal source, depth bound, predicates, and optional path output.
     Bfs(Box<GraphBfsParams>),
+    /// Louvain modularity optimization controls.
     Louvain(GraphLouvainParams),
+    /// Power-iteration tolerance and cap for vertex eigenvector scores.
     EigenvectorCentrality(GraphEigenvectorCentralityParams),
+    /// Attenuation, constant contribution, and convergence controls for Katz scores.
     KatzCentrality(GraphKatzCentralityParams),
+    /// Convergence controls and optional normalization for hub and authority scores.
     Hits(GraphHitsParams),
+    /// Vertex betweenness seed selection, normalization, and endpoint inclusion.
     BetweennessCentrality(GraphBetweennessCentralityParams),
+    /// Edge betweenness seed selection and normalization.
     EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams),
+    /// Single-source weighted shortest-path source and optional distance cutoff.
     Sssp(GraphSsspParams),
+    /// Request both incoming and outgoing degree counts for every vertex.
     DegreesAll(GraphDegreesAllParams),
+    /// Request incoming degree counts for every vertex.
     InDegreesAll(GraphInDegreesAllParams),
+    /// Request outgoing degree counts for every vertex.
     OutDegreesAll(GraphOutDegreesAllParams),
+    /// Label vertices connected when edge direction is ignored.
     WeaklyConnectedComponents(GraphWccParams),
+    /// Label vertices mutually reachable along directed edges.
     StronglyConnectedComponents(GraphSccParams),
+    /// Count triangles incident to every vertex.
     TriangleCountAll(GraphTriangleCountAllParams),
+    /// Select the degree convention used to compute vertex core numbers.
     CoreNumber(GraphCoreNumberParams),
+    /// Select the minimum core degree and degree convention for the returned edge list.
     KCore(GraphKCoreParams),
+    /// Request a minimum-weight spanning edge list without additional solver options.
     MinimumSpanningTree(GraphMstParams),
+    /// Leiden community resolution, iteration bound, and random seed.
     Leiden(GraphLeidenParams),
+    /// Ensemble clustering weights, ensemble size, modularity controls, and random seed.
     Ecg(GraphEcgParams),
+    /// Spectral clustering count, eigensolver tolerance, and random seed.
     SpectralModularityMaximization(GraphSpectralClusteringParams),
+    /// ForceAtlas2 iteration controls and optional per-vertex attributes and initial positions.
     ForceAtlas2(GraphForceAtlas2Params),
+    /// Explicit vertex-pair relation shared by Jaccard, Sorensen, overlap, and cosine metrics.
     Similarity(GraphSimilarityParams),
 }
 
@@ -155,6 +179,10 @@ pub struct GraphAlgorithmSpec {
 
 impl GraphAlgorithmSpec {
     /// Create a graph algorithm spec with an explicit output schema.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `params` does not support `algorithm`.
     pub fn new(
         algorithm: GraphAlgorithm,
         edge_columns: GraphEdgeColumnBindings,
@@ -166,13 +194,17 @@ impl GraphAlgorithmSpec {
         Self { algorithm, edge_columns, graph_options, edge_normalize_inserted: false, params, output_schema }
     }
 
-    /// Mark this spec as consuming an explicit edge-normalize input.
+    /// Sets whether this spec consumes an explicit edge-normalize input.
     pub fn with_edge_normalize_inserted(mut self, inserted: bool) -> Self {
         self.edge_normalize_inserted = inserted;
         self
     }
 
     /// Create a graph algorithm spec using this crate's stable result schema.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `params` does not support `algorithm`.
     pub fn with_stable_schema(
         algorithm: GraphAlgorithm,
         edge_columns: GraphEdgeColumnBindings,
@@ -352,7 +384,7 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
 
 /// Expected graph result schema after algorithm-specific output options.
 ///
-/// Most graph algorithms use [`stable_graph_result_schema`] exactly. BFS can
+/// Most graph algorithms use [`stable_graph_result_schema`] without change. BFS can
 /// opt into target metadata columns through [`GraphBfsParams::return_target_info`].
 pub fn graph_result_schema_for_params(algorithm: GraphAlgorithm, params: &GraphAlgorithmParams) -> SchemaRef {
     algorithm.definition().result_schema_for_params(params)

@@ -290,7 +290,7 @@ impl GoodputConfig {
         Ok(())
     }
 
-    /// Stream lane count required so `max_active_attempts` can actually run
+    /// Stream lane count required so `max_active_attempts` can run
     /// concurrently. Backend construction rejects a smaller lane count.
     pub(super) fn lane_count(&self) -> usize {
         self.max_active_attempts

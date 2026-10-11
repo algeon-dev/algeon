@@ -18,7 +18,7 @@ const fn metric(
 }
 
 /// DataFusion metrics projected from adapter-owned admission, cache, and
-/// sealed-attempt state rather than from `QueryMetrics`.
+/// sealed-attempt state. These descriptors do not come from `QueryMetrics`.
 #[cfg(test)]
 const DATAFUSION_PROJECTION_METRIC_DESCRIPTORS: &[MetricDescriptor] = &[
     metric(
@@ -254,9 +254,9 @@ macro_rules! define_contract {
 
         /// Generated recording identifiers for labelled summary rows.
         ///
-        /// Recorders use these accessors instead of repeating public metric-name literals.
+        /// Recorders call these accessors and do not repeat public metric-name literals.
         /// The ordered macro emits one accessor per public metric; only the labelled-row
-        /// recorders read them today.
+        /// recorders read them.
         #[expect(dead_code, reason = "macro emits one accessor per contract entry; subset is referenced")]
         pub(super) mod metric_name {
             $(

@@ -2,10 +2,11 @@
 //!
 //! The estimate is a diagnostic artifact and never an admission input: the
 //! query domain's allocator enforces allocation limits during execution
-//! (`website/docs/design/admission.mdx`). Overlap is derived from the edge
-//! relation alone. Two tasks neither of which reaches the other may run at
-//! the same time, so their workspaces and live resources are summed; the
-//! envelope therefore bounds a schedule the executor may never produce.
+//! (`website/docs/design/admission.mdx#allocation-enforcement`). Overlap is
+//! derived from the edge relation alone. Two tasks neither of which reaches the
+//! other may run at the same time, so their workspaces and live resources are
+//! summed; the envelope therefore bounds a schedule the executor may never
+//! produce.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,21 +21,32 @@ use crate::{
 #[serde(tag = "precision", rename_all = "snake_case")]
 pub enum ShadowBytes {
     /// A size with the name of the component model that produced it.
-    Estimated { bytes: u64, model: String },
+    Estimated {
+        /// Modeled allocation size in bytes.
+        bytes: u64,
+        /// Identity of the component allocation model.
+        model: String,
+    },
     /// No model covers the quantity. Any sum or maximum that includes an
     /// unknown is itself unknown.
-    Unknown { reason: String },
+    Unknown {
+        /// Why no model can supply this quantity.
+        reason: String,
+    },
 }
 
 impl ShadowBytes {
+    /// Records a byte estimate together with its component-model identity.
     pub fn estimated(bytes: u64, model: impl Into<String>) -> Self {
         Self::Estimated { bytes, model: model.into() }
     }
 
+    /// Records missing size evidence without substituting a numeric estimate.
     pub fn unknown(reason: impl Into<String>) -> Self {
         Self::Unknown { reason: reason.into() }
     }
 
+    /// Returns estimated bytes, or `None` when the size is unknown.
     pub const fn value(&self) -> Option<u64> {
         match self {
             Self::Estimated { bytes, .. } => Some(*bytes),
@@ -48,30 +60,38 @@ impl ShadowBytes {
 pub struct ShadowMemoryModels {
     /// Additional simultaneous allocation beyond the task's retained outputs.
     pub task_workspace: Vec<ShadowBytes>,
+    /// Allocation models in compiled resource index order.
     pub resources: Vec<ShadowResourceModel>,
 }
 
+/// Allocation estimate and ownership attribution for one compiled resource.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowResourceModel {
     /// Borrowed resident allocations belong to an external owner and are
     /// excluded from the query's allocation envelope.
     pub borrowed: bool,
+    /// Estimated allocation bytes, preserving unknown quantities.
     pub bytes: ShadowBytes,
 }
 
+/// Resource model paired with the producer and consumers that determine lifetime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowResourceLifetime {
     pub(crate) resource: usize,
     pub(crate) producer: usize,
     pub(crate) consumers: Vec<usize>,
     pub(crate) sink_output: bool,
+    /// Component allocation model for this resource.
     pub model: ShadowResourceModel,
 }
 
-/// One possible-overlap envelope, not a simulated execution trace.
+/// One possible-overlap envelope derived from the edge relation. It does not
+/// simulate an execution trace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowTaskEnvelope {
+    /// Zero-based task index within the compiled graph.
     pub task: usize,
+    /// Native plan-node index, or `None` for a task without a plan node.
     pub plan_node: Option<usize>,
     /// Resources that may be resident while this task runs: produced by a
     /// task this one does not precede, and not yet released because some
@@ -80,7 +100,9 @@ pub struct ShadowTaskEnvelope {
     /// This task and every task unordered relative to it, whose workspace may
     /// be allocated at the same time.
     pub overlapping_workspaces: Vec<usize>,
+    /// Combined query-owned bytes in this possible-overlap envelope.
     pub query_owned_bytes: ShadowBytes,
+    /// Combined externally owned resident bytes in this envelope.
     pub borrowed_resident_bytes: ShadowBytes,
 }
 
@@ -89,10 +111,15 @@ pub struct ShadowTaskEnvelope {
 pub struct ShadowPipelineEstimate {
     pub(crate) schema: String,
     pub(crate) execution_scope: String,
+    /// Maximum modeled query-owned envelope; unknown if any contributing size is unknown.
     pub query_owned_peak: ShadowBytes,
+    /// Maximum modeled externally owned resident envelope.
     pub borrowed_resident_peak: ShadowBytes,
+    /// Workspace allocation estimates in compiled task index order.
     pub task_workspace: Vec<ShadowBytes>,
+    /// Resource estimates paired with their compiled lifetimes.
     pub resources: Vec<ShadowResourceLifetime>,
+    /// Possible-overlap estimates in compiled task order.
     pub envelopes: Vec<ShadowTaskEnvelope>,
 }
 

@@ -429,7 +429,8 @@ impl Default for DataFrameHashJoinOptions {
 }
 
 impl DataFrameHashJoinOptions {
-    /// Create conservative hash-join build options.
+    /// Create hash-join build options that assume build and probe key columns
+    /// may contain nulls, compare null keys as equal, and use a load factor of 0.5.
     pub fn new() -> Self {
         Self { null_eq: NullEquality::Equal, nullable_join: NullableJoin::MaybeNull, load_factor: 0.5 }
     }
@@ -579,8 +580,8 @@ impl DataFrameJoinIndices {
 
     /// Retained execution placement of the device-side gather map.
     ///
-    /// This describes the index buffer itself, not the source left DataFrame
-    /// that the indices may later gather from.
+    /// This describes the index buffer itself. The source left DataFrame that the
+    /// indices may later gather from is not covered.
     pub fn placement(&self) -> ExecutionPlacement {
         self.indices.placement()
     }
@@ -678,15 +679,15 @@ impl DataFrameJoinPairIndices {
         self.left.is_empty()
     }
 
-    /// Retained execution placement of the device-side gather maps.
+    /// Retained execution placement of the left device-side gather map.
     ///
-    /// This describes the index buffers themselves, not either source
-    /// DataFrame that the indices may later gather from.
+    /// This describes the left index buffer only. The right gather map and the
+    /// source DataFrames that the indices may later gather from are not covered.
     pub fn placement(&self) -> ExecutionPlacement {
         self.left.placement()
     }
 
-    /// The CUDA device of the gather maps.
+    /// The CUDA device of the left gather map.
     pub fn device(&self) -> DeviceId {
         self.left.device()
     }
@@ -909,7 +910,7 @@ impl DataFrameHashJoin {
     /// Return exact bytes that must be reserved for a reusable hash-join probe
     /// result with `output_rows` probe/build INT32 gather-map pairs.
     ///
-    /// This ergonomic helper delegates to
+    /// This method delegates to
     /// [`DataFrameHashJoinPairIndices::reservation_size_bytes_for_len`]. The
     /// retained build metadata does not affect per-probe gather-map bytes, and
     /// this method does not probe the hash table or allocate either gather map.

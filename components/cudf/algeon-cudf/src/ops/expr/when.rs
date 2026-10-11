@@ -2,7 +2,7 @@ use super::*;
 
 /// `when(cond).then(x).otherwise(y)`.
 ///
-/// The result is a row-aligned column; not a scalar branch selector.
+/// The result is a row-aligned column. The condition is evaluated for each row.
 /// `IfElse` does not inherit an output name, so `.alias()` is required
 /// when used inside [`FrameOps::with_columns`](crate::FrameOps::with_columns).
 ///

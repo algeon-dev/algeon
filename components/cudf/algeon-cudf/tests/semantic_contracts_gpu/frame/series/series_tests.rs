@@ -1,14 +1,8 @@
-//! Integration tests for `Series`; the Arc-shared GPU column wrapper.
-//!
-//! All tests require a GPU.
+//! `Series` is an Arc-shared GPU column wrapper.
 
 use cudf::{Exec, Series, TypeId, testing::prelude::*};
 
 use crate::common::{column_from_slice, nullable_series, series};
-
-// ---------------------------------------------------------------------------
-// Constructors preserve dtype and length
-// ---------------------------------------------------------------------------
 
 fn test_new_i32_preserves_dtype_and_len() {
     let s = series::<i32>("ids", &[1, 2, 3]).unwrap();
@@ -60,9 +54,7 @@ fn test_new_nullable_strs_rejects_mismatched_validity_length() {
     assert_eq!(err.operation(), "column::from_strs_nullable_with_runtime");
 }
 
-// ---------------------------------------------------------------------------
-// clone is cheap (same Arc)
-// ---------------------------------------------------------------------------
+// Clone is cheap (same Arc).
 
 fn test_clone_shares_gpu_data() {
     let s = series::<f64>("vals", &[10.0, 20.0]).unwrap();
@@ -72,13 +64,8 @@ fn test_clone_shares_gpu_data() {
     let ptr_cloned = cloned.testing_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr_s, ptr_cloned);
 
-    // Both are independently usable.
     assert_eq!(cloned.len(), 2);
 }
-
-// ---------------------------------------------------------------------------
-// from_column / from_column_arc round-trip
-// ---------------------------------------------------------------------------
 
 fn test_from_column_round_trip() {
     let col = column_from_slice(&[5i32, 10, 15]).unwrap();
@@ -86,7 +73,6 @@ fn test_from_column_round_trip() {
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(s.len(), 3);
 
-    // Access the underlying column.
     let view = s.as_column().testing_view().unwrap();
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![5, 10, 15]);
 }
@@ -97,17 +83,12 @@ fn test_from_column_shares_data() {
 
     let s = Series::from_column(col).unwrap();
 
-    // The Series should share the same device pointer.
     let ptr_series = s.testing_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr_orig, ptr_series);
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int64);
     assert_eq!(s.len(), 2);
 }
-
-// ---------------------------------------------------------------------------
-// view() returns a valid ColumnView
-// ---------------------------------------------------------------------------
 
 fn test_view_matches_column_data() {
     let s = series::<i32>("x", &[100, 200, 300]).unwrap();
@@ -116,10 +97,6 @@ fn test_view_matches_column_data() {
     assert_eq!(view.len().unwrap(), 3);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![100, 200, 300]);
 }
-
-// ===========================================================================
-// Minimal scalar comparison ops
-// ===========================================================================
 
 fn test_gt_scalar_i32() {
     let s = series::<i32>("x", &[1, 5, 10]).unwrap();
@@ -183,13 +160,8 @@ fn test_gt_scalar_preserves_input() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
     let _mask = s.on(Exec::RETAINED).gt_scalar(2i32).unwrap();
 
-    // Original series is unchanged.
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
-
-// ===========================================================================
-// Extended scalar comparison ops
-// ===========================================================================
 
 fn test_ne_scalar_i32() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -214,10 +186,6 @@ fn test_le_scalar_i32() {
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
 }
-
-// ===========================================================================
-// Column-vs-column comparison ops
-// ===========================================================================
 
 fn test_eq_series() {
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
@@ -282,10 +250,6 @@ fn test_comparison_mixed_types_f64_i32() {
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
-
-// ===========================================================================
-// Arithmetic ops
-// ===========================================================================
 
 fn test_add_series() {
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();

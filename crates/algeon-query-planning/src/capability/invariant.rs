@@ -130,7 +130,7 @@ pub(super) fn append_shared_resident_subplan_invariants(
 
 /// One invariant per scalar aggregate whose input, after peeling projections,
 /// is a shared producer. The compiled pipeline may evaluate such an aggregate
-/// over the shared resident frame instead of re-reading its subtree, which is
+/// over the shared resident frame without re-reading its subtree. That is
 /// correct only when every measure reads fields of that frame; the solver
 /// checks that lineage.
 pub(super) fn append_aggregate_derivation_invariants(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {

@@ -174,7 +174,8 @@ def fake_environment(
 
     # The smoke executables stand in for Cargo build scripts. Give the one
     # NVTX-enabled build script the same target and hermetic toolkit contract
-    # that Cargo supplies, rather than resolving a host CUDA installation.
+    # that Cargo supplies. CUDAToolkit_ROOT points at the fixture, and no host CUDA
+    # installation is resolved.
     environment: dict[str, str] = {
         "TARGET": "x86_64-unknown-linux-gnu",
         "CUDAToolkit_ROOT": str(root / "cuda"),

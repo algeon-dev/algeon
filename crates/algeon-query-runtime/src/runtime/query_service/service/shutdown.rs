@@ -30,8 +30,8 @@ impl QueryService {
     /// to leave the service.
     ///
     /// This is the synchronous teardown boundary used when an async server
-    /// future is cancelled: returning guarantees no query cleanup still owns
-    /// service runtime resources, so the owning resource aggregate can be
+    /// future is cancelled. Returning guarantees that no query cleanup still
+    /// owns service runtime resources, so the owning resource aggregate can be
     /// destroyed. The process-wide backend owner remains attached to that
     /// aggregate until its resources are dropped.
     #[cfg(any(test, feature = "test-hooks"))]
@@ -43,8 +43,8 @@ impl QueryService {
     /// Closes admission and waits for complete cleanup under one caller-owned
     /// absolute deadline.
     ///
-    /// Time spent acquiring the admission lock or closing the service consumes
-    /// this same deadline instead of starting a second grace period.
+    /// Time spent acquiring the admission lock or closing the service counts
+    /// against this same deadline. No second grace period starts.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn close_and_wait_for_quiescence_until(&self, deadline: Instant) -> Result<()> {
         self.close_drain_step_until(deadline).into_result()
@@ -66,8 +66,8 @@ impl QueryService {
         if !admission_is_quiescent {
             // Query-handle release schedules ordered CUDA destruction on the
             // device execution pool. A bounded wait may expire while an
-            // outward context still owns the final query anchor, so closing
-            // that pool here would make the later release impossible to run.
+            // outward context still owns the final query anchor. Closing that
+            // pool here would make the later release impossible to run.
             // Report every dependent phase as pending and let the next drain
             // pass enter them after admission cleanup has finished.
             phases.push(dependent_drain_phase_pending(

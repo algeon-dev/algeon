@@ -542,7 +542,7 @@ fn compiled_partial_merge_basis_bytes(partial: &CommittedPartial) -> u64 {
 
 /// Runs one attempt at a whole merge level with the given fan-in.
 ///
-/// `partials` is borrowed. A group of one partial is carried by index instead of copied; the
+/// `partials` is borrowed. A group of one partial is carried by its index, with no copy; the
 /// returned items are enough to build the next level (`commit_compiled_final_merge_level`). A
 /// failed group ends the attempt and drops the groups merged so far.
 fn execute_compiled_final_merge_level_attempt(
@@ -763,8 +763,8 @@ pub(super) fn execute_compiled_final_aggregate_projection(
         },
     };
     // Empty grouping-set finalization is a full single-stage shrink (including
-    // AVG finalize). Skip the usual partial-state final-projection path so we
-    // do not look for missing AVG state aliases on an already-final frame.
+    // AVG finalize). Skip the usual partial-state final-projection path, which would
+    // look for missing AVG state aliases on an already-final frame.
     let empty_grouping_sets = aggregate.spec.grouping_sets.is_some() && input.frame.num_rows() == 0;
     let frame = if empty_grouping_sets {
         execute_aggregate_with_budget(

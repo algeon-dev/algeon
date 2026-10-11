@@ -1,12 +1,16 @@
 # cuGraph component
 
+`algeon-cugraph` and `algeon-cugraph-sys` are published implementation
+dependencies of Algeon. Applications use
+[`algeon-datafusion`](https://docs.rs/algeon-datafusion); the APIs below serve
+workspace component consumers. See the
+[API documentation boundary](https://algeon.dev/design#api-documentation).
+
 `components/cugraph` is the Algeon Rust graph integration component
 built around [`libcugraph`](https://github.com/algeon-dev/cugraph). It is
 part of the root Cargo workspace, not a second repository or workspace.
 It exists only to support the native backend of
 [Algeon](https://github.com/algeon-dev/algeon/tree/main/components/cugraph).
-Its Rust package and import names are workspace contracts, not an external
-semantic-versioning or publication promise.
 
 ## Focus
 
@@ -17,7 +21,7 @@ semantic-versioning or publication promise.
 
 ## Workspace
 
-- `components/cugraph/algeon-cugraph/` - the internal safe execution crate, packaged as `cugraph` (import `cugraph`).
+- `components/cugraph/algeon-cugraph/` - the internal safe execution crate, packaged as `algeon-cugraph` (import `cugraph`).
 - `components/cugraph/algeon-cugraph-sys/` - low-level FFI bindings around the cuGraph C API (import `cugraph_sys`).
 - `components/cugraph/cugraph/` - the pinned **[forked cuGraph](https://github.com/algeon-dev/cugraph)** source submodule used to build `libcugraph`.
 

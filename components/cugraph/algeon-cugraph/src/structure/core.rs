@@ -78,8 +78,8 @@ impl Default for KCoreParams {
 
 /// Compute core numbers for all vertices in a graph.
 ///
-/// Prefer using [`Graph::core_number`](crate::graph::Graph::core_number)
-/// instead of calling this function directly.
+/// Prefer using [`Graph::core_number`](crate::graph::Graph::core_number),
+/// which calls this function.
 pub(crate) fn core_number<T>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<T>,

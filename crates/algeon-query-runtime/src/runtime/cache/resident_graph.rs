@@ -333,7 +333,6 @@ impl GpuResidentGraphCache {
             .with_fact("cache_device_ordinal", self.device().ordinal()));
         }
         if self.lock()?.closed {
-            drop(charge);
             return Ok(None);
         }
         Ok(Some(GpuResidentGraphInsertTransaction {
@@ -424,15 +423,8 @@ impl GpuResidentGraphCache {
                 pin
             },
         };
-        let graph = match entry.take_graph() {
-            Ok(graph) => graph,
-            Err(error) => {
-                drop(pin);
-                return Err(error);
-            },
-        };
+        let graph = entry.take_graph()?;
         let Some(parked) = T::take_entry(graph) else {
-            drop(pin);
             return Err(QueryError::new(
                 QueryErrorCode::Internal,
                 OPERATION,
@@ -510,6 +502,7 @@ impl GpuResidentGraphCache {
                     .with_fact("reason", "resident_graph_cache_drain_mutex_poisoned")
             })?;
             state = next;
+            // Discard the re-acquired guard; the next iteration locks the cache state again.
             drop(state);
         }
     }
@@ -579,9 +572,10 @@ impl GpuResidentGraphInsertTransaction {
         Arc::new(self.allocation_scope.runtime().clone())
     }
 
-    /// Opens an allocator-event correlation window for this prospective cache
-    /// entry. The caller must finish it only after all scope-owned temporaries
-    /// have been destroyed, while this transaction still keeps the scope alive.
+    /// Returns the scope that the caller passes to `begin_cache_scope_allocator_correlation`
+    /// for this prospective cache entry. The caller must finish that correlation window
+    /// only after all scope-owned temporaries have been destroyed, while this transaction
+    /// still keeps the scope alive.
     #[doc(hidden)]
     pub fn allocation_scope(&self) -> Arc<cudf::CacheAllocationScope> {
         Arc::clone(&self.allocation_scope)
@@ -948,8 +942,8 @@ where T: GpuResidentGraphTransposition
 
     /// Extracts the parked graph for a cuGraph execution. The caller must
     /// return it with [`Self::return_parked`]; dropping the checkout after an
-    /// extraction conservatively leaves the shared charge pinned and prevents
-    /// shutdown from claiming the bytes were drained.
+    /// extraction conservatively leaves the shared charge pinned, so the cache
+    /// drain cannot finish.
     #[doc(hidden)]
     pub fn take_parked(&mut self) -> ParkedGraph<T> {
         self.parked.take().expect("resident graph checkout already consumed")
@@ -964,6 +958,7 @@ where T: GpuResidentGraphTransposition
         let expected_device = self.entry.allocation_scope.device().ordinal();
         let graph_device = parked.device();
         if graph_device != i32::try_from(expected_device).unwrap_or(i32::MAX) {
+            // Destroy the native graph before escape_without_graph may release the pin on error.
             drop(parked);
             self.escape_without_graph()?;
             return Err(QueryError::new(
@@ -1004,6 +999,7 @@ where T: GpuResidentGraphTransposition
                 self.cache.changed.notify_all();
                 self.completed = true;
                 let pin = self.pin.take();
+                // Release the cache state first: the pin drop can run ledger transition observers.
                 drop(state);
                 drop(pin);
                 return Ok(());
@@ -1014,6 +1010,7 @@ where T: GpuResidentGraphTransposition
         };
         self.completed = true;
         let pin = self.pin.take();
+        // Unpin the entry: destroy_entry_after_graph_drop begins eviction only when unpinned.
         drop(pin);
         debug_assert!(closed);
         let outcome = destroy_entry_after_graph_drop(&self.cache, Arc::clone(&self.entry), T::into_entry(parked));

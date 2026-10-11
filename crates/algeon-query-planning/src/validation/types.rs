@@ -127,8 +127,8 @@ pub(crate) fn require_arithmetic_type(data_type: &ArrowDataType, context: &'stat
 
 /// Operands of arithmetic, `IN` lists and `CASE` branches may differ only by
 /// an implicit cast the backend supports in either direction. The carry and
-/// timezone rejections come first so their `reason` fact names the family
-/// instead of a generic incompatibility.
+/// timezone rejections come first, so their `reason` fact names the family.
+/// Other mismatches carry no `reason` fact.
 pub(crate) fn require_compatible_types(
     left: &ArrowDataType,
     right: &ArrowDataType,
@@ -231,8 +231,8 @@ fn carry_operand_rejection_reason(
 /// when the operands are not temporal, and an error for a temporal combination
 /// native evaluation does not run.
 ///
-/// Every accepted combination has a libcudf operation on exactly its operand
-/// types: a timezone-free timestamp plus or minus a duration of the same unit,
+/// Every accepted combination has a libcudf operation for its operand types:
+/// a timezone-free timestamp plus or minus a duration of the same unit,
 /// a duration plus such a timestamp, and the difference of two timestamps of
 /// one unit. libcudf has no `Date32` plus a second-or-finer duration, and
 /// Arrow rejects `Date32` plus or minus a duration outright. DataFusion casts a

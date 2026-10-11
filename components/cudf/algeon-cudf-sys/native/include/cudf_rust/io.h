@@ -61,10 +61,6 @@ typedef enum {
   CUDF_IO_KVIKIO_COMPAT_MODE_OFF  = 2,
 } cudf_io_kvikio_compat_mode_t;
 
-// ---------------------------------------------------------------------------
-// Parquet
-// ---------------------------------------------------------------------------
-
 /// Read a Parquet file into a table. `columns` is an optional array of
 /// null-terminated column name strings (pass NULL to read all columns).
 /// `num_columns` is the length of the `columns` array.
@@ -73,9 +69,7 @@ typedef enum {
 /// (for the single source file). Pass NULL with `num_row_groups` = 0 to read
 /// all row groups. Cannot be combined with `skip_rows > 0` or `num_rows >= 0`.
 ///
-/// Read Parquet with explicit execution context.
-///
-/// Contract:
+/// Preconditions:
 /// - `filepath` must be non-NULL
 /// - `num_columns` must be >= 0
 /// - if `num_columns > 0`, `columns` must be non-NULL
@@ -120,11 +114,9 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(void const* host_buffer,
 /// When `out_num_names` is zero, `*out_names` is NULL.
 /// The caller must free the names with `cudf_io_free_column_names()`.
 ///
-/// `row_groups` / `num_row_groups`; same semantics as `cudf_io_read_parquet_ex`.
+/// `row_groups` and `num_row_groups` have the same semantics as `cudf_io_read_parquet_ex`.
 ///
-/// Read Parquet with metadata and explicit execution context.
-///
-/// Contract:
+/// Preconditions:
 /// - `filepath` must be non-NULL
 /// - `num_columns` must be >= 0
 /// - if `num_columns > 0`, `columns` must be non-NULL
@@ -147,8 +139,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(char const* filepath,
                                                     int32_t* out_num_names,
                                                     cudf_exec_options_t const* exec_options);
 
-/// Read Parquet with metadata, explicit execution context, and an optional
-/// libcudf AST reader predicate.
+/// Read Parquet with metadata and an optional libcudf AST reader predicate.
 ///
 /// `predicate` may be NULL. When non-NULL, it must outlive this call.
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
@@ -187,8 +178,8 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
   cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   cudf_exec_options_t const* exec_options);
 
-/// Read multiple Parquet files with metadata, explicit execution context, and
-/// an optional libcudf AST reader predicate.
+/// Read multiple Parquet files with metadata and an optional libcudf AST reader
+/// predicate.
 ///
 /// `filepaths` must contain `num_files` non-NULL path strings. Row order follows
 /// the file order and then each file's selected row-group order.
@@ -242,8 +233,8 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
   cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
   cudf_exec_options_t const* exec_options);
 
-/// Read Parquet from a host buffer with metadata, explicit execution context,
-/// and an optional libcudf AST reader predicate.
+/// Read Parquet from a host buffer with metadata and an optional libcudf AST
+/// reader predicate.
 ///
 /// `host_buffer` is borrowed only for the duration of this call. The returned
 /// table must not retain a pointer into the host buffer. `host_buffer` must be
@@ -310,13 +301,12 @@ cudf_status_t cudf_io_probe_remote_parquet_datasource(
 /// `row_group_size_rows` sets the maximum number of rows per row group.
 /// Pass 0 to use libcudf's default (1,000,000 rows).
 ///
-/// Contract:
+/// Preconditions:
 /// - `num_columns` must be >= 0
 /// - if `num_columns > 0`, `column_names` must be non-NULL
-/// Write Parquet with explicit execution context.
 ///
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
-/// libcudf's write_parquet surface accepts a stream but not an explicit MR; the
+/// libcudf's write_parquet surface accepts a stream and no explicit MR; the
 /// shim installs `exec_options->mr` as the current device resource only for the
 /// duration of the libcudf writer call.
 cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,

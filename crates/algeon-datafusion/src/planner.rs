@@ -4,14 +4,15 @@
 //! inserts it in two optimizer stages: a count-only probe before DataFusion aggregate
 //! statistics and the final native rewrite immediately before final plan
 //! validation. Native candidate misses preserve the DataFusion baseline plan.
-//! A reject DataFusion CPU policy, when configured, is the last step of the
-//! final rewrite and inspects the plan that rewrite produced; it never
-//! triggers a second plan.
+//! Under `AlgeonGpuExecutionMode::NativeRequired`, the last step of the final
+//! rewrite rejects a completed plan whose disposition is not `Native`, except a
+//! feature-disabled cuGraph plan, which runs no operator. That step inspects the
+//! plan the rewrite produced and never triggers a second plan.
 //!
 //! [`FinalPlanDisposition`] describes one completed executable plan only
 //! (`DataFusion`, `Native`, or `Mixed`); planning failures have no disposition.
 //! [`FinalPlanCoverage`] carries the single physical-plan walk behind that
-//! verdict, and [`classify_final_plan`] reads the same coverage instead of
+//! verdict, and [`classify_final_plan`] reads the same coverage without
 //! reclassifying. Candidate decisions stay per-candidate under
 //! [`crate::report::CandidateOutcome`].
 
@@ -101,8 +102,8 @@ impl AlgeonGpuExecutionMode {
 ///
 /// The classifier intentionally recognizes only runtime nodes whose execution
 /// ownership is known at this adapter boundary. Unknown wrappers or operators
-/// around native fragments are conservative [`FinalPlanDisposition::Mixed`]
-/// plans rather than being treated as native-only.
+/// around native fragments are classified conservatively as
+/// [`FinalPlanDisposition::Mixed`]; they are never reported as native-only.
 pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
     observe_final_plan(plan).disposition()
 }
@@ -195,7 +196,7 @@ impl AlgeonNativeOptimizerConfig {
     /// Defaults to [`StatisticalAggregateExecutionMode::GpuNativeTolerant`],
     /// whose results can differ from DataFusion in floating-point bits. Select
     /// [`StatisticalAggregateExecutionMode::DataFusionExactHostWelford`] when
-    /// results must match DataFusion exactly. In that mode a candidate whose
+    /// results must be identical to DataFusion's. In that mode a candidate whose
     /// statistical aggregate input DataFusion reads through more than one
     /// partition stays on DataFusion, whose own result then depends on the
     /// order partitions deliver rows.

@@ -58,7 +58,7 @@ fn native_route_registry_accepts_aliases_and_drains_by_parent() {
 
 /// A route registered with fewer than two forks has no auxiliary fork to
 /// serve any alias, only a reserved parent fork, so it is rejected at
-/// registration rather than admitting a caller it cannot isolate.
+/// registration and admits no caller that it cannot isolate.
 #[test]
 fn a_route_without_an_auxiliary_fork_is_refused() {
     let parent = 0x1a000usize as *mut std::ffi::c_void;
@@ -99,7 +99,7 @@ fn fork(stream: *mut std::ffi::c_void, count: usize) -> Vec<usize> {
 /// each alias only the auxiliary fork the route claimed for it, and a fork
 /// stream only itself, so a nested libcudf fork stays inside the caller that
 /// owns it. Nothing resolves to a fork another live caller may be launching
-/// kernels on. Detaching releases exactly that alias's index for the next
+/// kernels on. Detaching releases that alias's index for the next
 /// claim.
 #[test]
 fn every_caller_owns_one_fixed_disjoint_fork() {
@@ -158,7 +158,7 @@ fn every_caller_owns_one_fixed_disjoint_fork() {
 }
 
 /// An attach onto a route whose auxiliary forks are all claimed fails typed
-/// rather than handing a second caller a fork a live one already owns. Only a
+/// and does not give a second caller a fork a live one already owns. Only a
 /// caller without a fresh attempt auxiliary permit can reach that state, since
 /// live claims never outnumber permit holders.
 #[test]

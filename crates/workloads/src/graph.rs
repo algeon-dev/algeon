@@ -75,8 +75,9 @@ pub struct DblpTableMetadata {
 }
 
 /// Generator-attested identity for one independently discoverable DBLP graph
-/// slice. The hash is over the logical source-sorted edge rows, not Parquet
-/// bytes, so it identifies the graph rowset across writer implementations.
+/// slice. The hash covers the logical source-sorted edge rows and does not
+/// cover Parquet bytes. Writer implementations therefore produce the same
+/// identity for the same graph rowset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DblpMultiGraphSliceMetadata {
     pub partition: String,
@@ -372,9 +373,9 @@ fn validate_canonical_v12_manifest(manifest: &Value) -> WorkloadResult<()> {
 }
 
 /// Verifies the graph-cardinality source contract before the runner accepts a
-/// full fixture. The footer belongs to each concrete edge file, rather than a
-/// detached manifest/config value, so the planner can use it only when the
-/// physical scan still denotes that whole rowset.
+/// full fixture. The footer is bound to each concrete edge file, and a detached
+/// manifest or config value would not be. The planner can use the footer only
+/// while the physical scan still denotes that whole rowset.
 fn validate_canonical_edge_vertex_footer_bounds(layout: &DblpFixtureLayout, manifest: &Value) -> WorkloadResult<()> {
     let expected = required_u64(manifest, &["counts", "papers"], "manifest paper count")?;
     for table in ["edges_by_src", "edges_by_dst"] {
@@ -412,9 +413,9 @@ fn parse_graph_vertex_upper_bound_footer(metadata: Option<&Vec<KeyValue>>, table
 }
 
 /// Verifies the edge-topology contract shared by canonical DBLP and its
-/// source-hash slices. The certificate belongs to the physical edge files,
-/// rather than a manifest claim, so source registration and graph lowering see
-/// the same rowset-bound fact.
+/// source-hash slices. The certificate is bound to the physical edge files, and a
+/// manifest claim would not be. Source registration and graph lowering see the
+/// same rowset-bound fact.
 fn validate_simple_directed_edge_topology_footer(layout: &DblpFixtureLayout) -> WorkloadResult<()> {
     for table in ["edges_by_src", "edges_by_dst"] {
         let path = layout.parquet_root.join(format!("{table}.parquet"));

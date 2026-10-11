@@ -580,9 +580,9 @@ fn align_include_edges(
     }
 
     // include_edges is a relational filter: a null src/dst/edge-id cannot identify
-    // any allowed edge, so dropping the row preserves user intent. Decide on the
-    // actual values (null_count), never schema nullability. Dtype is still
-    // validated (it must match the graph vertex dtype for the semi-join keys).
+    // any allowed edge, so dropping the row preserves user intent. The decision uses
+    // the actual values (null_count); schema nullability is not consulted. Dtype is
+    // still validated (it must match the graph vertex dtype for the semi-join keys).
     for (role, column) in &predicate_columns {
         let series = predicate_series_for_column(&frame, input.input, column, role)?;
         validate_predicate_series_dtype(&series, input.input, column, role, vertex_type)?;
@@ -668,7 +668,7 @@ fn align_include_edges(
 /// a key column, returning the cleaned whitelist frame and the dropped-row count.
 ///
 /// Mirrors [`super::edge_null_filter::filter_null_edge_rows`]: the reject-vs-drop
-/// axis is the actual `null_count`, not schema nullability.
+/// axis is the actual `null_count`; schema nullability is not consulted.
 fn drop_null_include_edge_rows(
     context: &ExecutionContext,
     input: usize,
@@ -1253,9 +1253,8 @@ fn source_vertex_series(
 ///
 /// These predicates are set constraints the user explicitly enumerated, so a
 /// null id is an unknown set member and is rejected on the actual *values*
-/// (`null_count() > 0`), never on schema nullability. Schema nullability is
-/// accepted at planning time; the reject decision happens here, where the data
-/// is materialized.
+/// (`null_count() > 0`). Schema nullability is accepted at planning time; the
+/// reject decision happens here, where the data is materialized.
 fn validate_predicate_series(
     frame: &DataFrame,
     input: usize,

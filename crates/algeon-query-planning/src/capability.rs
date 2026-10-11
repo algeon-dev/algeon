@@ -3,18 +3,17 @@
 //! `analyze_query_capabilities` walks a `QueryPlan` and returns a
 //! `CapabilityAnalysis` that classifies every node, expression, edge, and
 //! subgraph invariant. Rejections are local and structured (missing operator,
-//! expression, Arrow type, edge contract, or invariant); they use canonical
-//! capability report keys rather than
-//! execution-family labels.
+//! expression, Arrow type, edge contract, or invariant). They use canonical
+//! capability report keys, and they do not use execution-family labels.
 //!
-//! "Capable" is a structural claim: a node, expression, Arrow type, edge
+//! "Capable" is a structural claim. A node, expression, Arrow type, edge
 //! contract, or subgraph invariant has a native executor whose semantics match
 //! the SQL contract. It says nothing about memory. A missing size estimate
 //! cannot reject a candidate; the query domain's allocator enforces limits
-//! during execution (`website/docs/design/admission.mdx`). The analysis itself
-//! cannot fail: every node receives a classification, and a rejection carries
-//! the first unmet contract with the facts that identify the blocking element;
-//! planning reports name that element.
+//! during execution (`website/docs/design/admission.mdx#allocation-enforcement`).
+//! The analysis itself cannot fail: every node receives a classification, and a
+//! rejection carries the first unmet contract with the facts that identify the
+//! blocking element; planning reports name that element.
 
 use crate::{
     error::QueryError,

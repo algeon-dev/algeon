@@ -1,4 +1,3 @@
-//! Tests for `DataFrame::merge_split`.
 use cudf::{
     DataFrame, ErrorCode, ErrorKind, Exec, MergeOptions, NullEquality, frame::dataframe::DataFrameJoinSides,
     testing::prelude::*,

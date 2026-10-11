@@ -184,6 +184,7 @@ impl BindingExtensions {
                 candidate
             }
         };
+        // Destroy the losing candidate outside the type-map lock (released above).
         drop(losing_candidate);
         Ok(winner)
     }
@@ -315,6 +316,7 @@ where T: Any + Send + Sync
             match &*lifecycle {
                 Lifecycle::Vacant => {
                     *lifecycle = Lifecycle::Initializing { owner: current_thread };
+                    // Release the lifecycle lock before the factory; a re-entrant lookup locks it.
                     drop(lifecycle);
 
                     let mut attempt = InitializationAttempt::new(Arc::clone(&self), current_thread);
@@ -333,7 +335,6 @@ where T: Any + Send + Sync
                         Ok(generation_id) => generation_id,
                         Err(error) => {
                             attempt.poison("binding_extension_generation_identity_exhausted");
-                            drop(value);
                             return Err(BindingExtensionInitError::Lifecycle(error));
                         },
                     };
@@ -344,9 +345,9 @@ where T: Any + Send + Sync
                     match &*lifecycle {
                         Lifecycle::Initializing { owner } if *owner == current_thread => {},
                         _ => {
+                            // Release the lifecycle lock before poison, which locks it again.
                             drop(lifecycle);
                             attempt.poison("binding_extension_initialization_state_changed");
-                            drop(generation);
                             return Err(BindingExtensionInitError::Lifecycle(BindingExtensions::lifecycle_error(
                                 operation,
                                 "binding extension initialization state changed unexpectedly",
@@ -356,6 +357,7 @@ where T: Any + Send + Sync
                     }
                     *lifecycle = Lifecycle::Live { generation_id, generation: Arc::downgrade(&generation) };
                     attempt.complete();
+                    // Release the lifecycle lock before notify_all; woken waiters re-lock it.
                     drop(lifecycle);
                     self.lifecycle_changed.notify_all();
                     return Ok(BindingExtensionLease { generation: Some(generation), slot: self, domain });
@@ -375,6 +377,7 @@ where T: Any + Send + Sync
                             "initializing",
                         )));
                     }
+                    // Discard the re-acquired guard; the next iteration locks the lifecycle again.
                     drop(
                         self.wait_for_lifecycle_change(lifecycle, operation)
                             .map_err(BindingExtensionInitError::Lifecycle)?,
@@ -383,6 +386,7 @@ where T: Any + Send + Sync
                 Lifecycle::Live { generation_id, generation } => {
                     let Some(generation) = generation.upgrade() else {
                         *lifecycle = Lifecycle::Poisoned { reason: "binding_extension_live_generation_missing" };
+                        // Release the lifecycle lock before notify_all; woken waiters re-lock it.
                         drop(lifecycle);
                         self.lifecycle_changed.notify_all();
                         return Err(BindingExtensionInitError::Lifecycle(BindingExtensions::lifecycle_error(
@@ -393,6 +397,7 @@ where T: Any + Send + Sync
                     };
                     if generation.id != *generation_id {
                         *lifecycle = Lifecycle::Poisoned { reason: "binding_extension_generation_identity_mismatch" };
+                        // Release the lifecycle lock before notify_all; woken waiters re-lock it.
                         drop(lifecycle);
                         self.lifecycle_changed.notify_all();
                         return Err(BindingExtensionInitError::Lifecycle(BindingExtensions::lifecycle_error(
@@ -402,6 +407,7 @@ where T: Any + Send + Sync
                         )));
                     }
                     generation.external_leases.fetch_add(1, Ordering::Relaxed);
+                    // The guard borrows the slot, so release it before the lease takes `self`.
                     drop(lifecycle);
                     return Ok(BindingExtensionLease { generation: Some(generation), slot: self, domain });
                 },
@@ -420,6 +426,7 @@ where T: Any + Send + Sync
                             "destroying",
                         )));
                     }
+                    // Discard the re-acquired guard; the next iteration locks the lifecycle again.
                     drop(
                         self.wait_for_lifecycle_change(lifecycle, operation)
                             .map_err(BindingExtensionInitError::Lifecycle)?,
@@ -441,6 +448,7 @@ where T: Any + Send + Sync
         if matches!(&*lifecycle, Lifecycle::Initializing { owner: active } if *active == owner) {
             *lifecycle = Lifecycle::Poisoned { reason };
         }
+        // Release the lifecycle lock before notify_all; woken waiters re-lock it.
         drop(lifecycle);
         self.lifecycle_changed.notify_all();
     }
@@ -455,9 +463,9 @@ where T: Any + Send + Sync
             Ok(prior_leases) => prior_leases,
             Err(_) => {
                 *lifecycle = Lifecycle::Poisoned { reason: "binding_extension_lease_count_underflow" };
+                // Release the lifecycle lock before notify_all; woken waiters re-lock it.
                 drop(lifecycle);
                 self.lifecycle_changed.notify_all();
-                drop(generation);
                 return;
             },
         };
@@ -474,6 +482,7 @@ where T: Any + Send + Sync
         } else {
             *lifecycle = Lifecycle::Poisoned { reason: "binding_extension_release_state_mismatch" };
         }
+        // Release the lifecycle lock before the user value drops; a re-entrant lookup locks it.
         drop(lifecycle);
 
         let mut completion = DestructionCompletion::new(Arc::clone(self), generation.id, current_thread);
@@ -481,6 +490,8 @@ where T: Any + Send + Sync
         // the type-map and lifecycle locks while the slot remains Destroying.
         let destructor_phase = BindingExtensionUserPhaseGuard::enter(BindingExtensionUserPhase::Destructor);
         drop(generation);
+        // The destructor phase covers only the user value's drop; the completion
+        // below runs outside it.
         drop(destructor_phase);
         completion.complete();
     }
@@ -503,6 +514,7 @@ where T: Any + Send + Sync
                 },
             };
         }
+        // Release the lifecycle lock before notify_all; woken waiters re-lock it.
         drop(lifecycle);
         self.lifecycle_changed.notify_all();
     }
@@ -531,6 +543,7 @@ where T: Any + Send + Sync
             *lifecycle = Lifecycle::Poisoned { reason: "binding_extension_factory_error_state_changed" };
         }
         self.armed = false;
+        // Release the lifecycle lock before notify_all; woken waiters re-lock it.
         drop(lifecycle);
         self.slot.lifecycle_changed.notify_all();
     }

@@ -21,7 +21,6 @@
 
 set -euo pipefail
 
-# --- Resolve DuckDB binary ---------------------------------------------------
 DUCKDB_BIN="${1:-${DUCKDB:-}}"
 if [[ -z "${DUCKDB_BIN}" ]]; then
   if [[ -x "${HOME}/bin/duckdb" ]]; then
@@ -42,7 +41,6 @@ fi
 DUCKDB_BIN_ABS="$(readlink -f "${DUCKDB_BIN}")"
 DUCKDB_VERSION="$("${DUCKDB_BIN}" --version | head -1)"
 
-# --- Resolve repo paths ------------------------------------------------------
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 OUT_FILE="${REPO_ROOT}/crates/workloads/src/tpcds/catalog.rs"
 
@@ -53,11 +51,10 @@ else
   GIT_TREE="clean"
 fi
 
-# Any future compatibility rewrites get appended here. Keep this exact string
-# in sync with what the assembler stamps into the generated file.
+# Describes every compatibility rewrite this script applies. The assembler
+# stamps this string into the generated header verbatim.
 REWRITE_APPLIED="trailing semicolon and trailing whitespace stripped per query; otherwise vendored verbatim"
 
-# --- Stage extraction --------------------------------------------------------
 WORK_DIR="$(mktemp -d -t tpcds_extract.XXXXXX)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
@@ -74,7 +71,6 @@ TMPDB="${WORK_DIR}/extract.duckdb"
 echo "[extract_tpcds_queries] running DuckDB extraction (${DUCKDB_VERSION})" >&2
 echo "${EXTRACT_SQL}" | "${DUCKDB_BIN}" "${TMPDB}" > /dev/null
 
-# --- Assemble crates/workloads/src/tpcds/catalog.rs --------------------------------------
 EXTRACT_CMD_DESC="duckdb <tmpdb> -c \"INSTALL tpcds; LOAD tpcds; COPY (SELECT query FROM tpcds_queries() WHERE query_nr = N) TO 'qNN.sql' (HEADER false, QUOTE '', DELIMITER '');\" for N in 1..99"
 
 DUCKDB_BIN_ABS="${DUCKDB_BIN_ABS}" \

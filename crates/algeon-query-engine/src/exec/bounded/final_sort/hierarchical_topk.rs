@@ -124,7 +124,7 @@ impl FinalSortExecutor<'_, '_, '_> {
         // Size fan-out chunks against a per-lane share of the remaining
         // budget: each lane sorts its chunk concurrently, so the serial
         // single-chunk sizing would admit roughly `width` times the live
-        // work. The serial path below keeps the original sizing exactly.
+        // work. The serial path below keeps the original sizing.
         let (ranges, rows_per_chunk) = if sort_lane_fan_out(self.dispatch, ranges.len(), initial_attempt) {
             let width = self.dispatch.expect("sort lane fan-out requires a lane dispatcher").width().max(1);
             let rows_per_chunk = final_sort_rows_per_chunk(input_rows, bytes_per_row, available / width as u64);
@@ -138,10 +138,10 @@ impl FinalSortExecutor<'_, '_, '_> {
             match self.lane_frame_candidates(dispatch, &input, keep_rows, ranges, initial_attempt) {
                 Ok(candidates) => Ok(candidates),
                 // The frame input is intact (candidates borrowed it), so a
-                // retryable fan-out failure retries serially at attempt 2:
-                // one live chunk instead of `width`. A serial attempt-1
-                // failure has nothing narrower to fall back to and fails
-                // directly through the shared wrapper below.
+                // retryable fan-out failure retries serially at attempt 2,
+                // which keeps one chunk live where the fan-out held `width`.
+                // A serial attempt-1 failure has nothing narrower to fall
+                // back to and fails directly through the shared wrapper below.
                 Err(error)
                     if is_retryable_final_sort_error(&error) && initial_attempt <= 1 && self.max_attempts > 1 =>
                 {

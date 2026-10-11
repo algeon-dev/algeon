@@ -108,14 +108,21 @@ pub struct QueryMetrics {
     /// Token-routed operations without a report-returning cuDF API may still attach budget failure
     /// facts on errors, but they do not synthesize success events here.
     pub budgeted_execution_events: Vec<BudgetedExecutionEvent>,
+    /// Source chunks produced by native source planning.
     pub source_chunks_planned: u64,
     /// Includes both first attempts and retries.
     pub source_chunks_attempted: u64,
+    /// Source chunks whose native read committed successfully.
     pub source_chunks_committed: u64,
+    /// Additional source chunk attempts after recoverable resource failures.
     pub source_chunks_retried: u64,
+    /// Source prefetch jobs submitted to workers.
     pub source_read_prefetches_started: u64,
+    /// Source prefetch jobs that returned completed read results.
     pub source_read_prefetches_completed: u64,
+    /// Source prefetch opportunities skipped before a job was started.
     pub source_read_prefetches_skipped: u64,
+    /// Started source prefetches abandoned before their result was consumed.
     pub source_read_prefetches_abandoned: u64,
     /// Row groups planned across source chunks.
     pub row_groups_planned: u64,
@@ -129,10 +136,13 @@ pub struct QueryMetrics {
     pub partial_aggregate_rows: u64,
     /// Peak retained bytes from partial aggregate outputs.
     pub partial_aggregate_retained_bytes: u64,
+    /// Native final aggregate merge attempts, including bounded retries.
     pub final_merge_attempts: u64,
+    /// Aggregate merge levels executed over retained partial results.
     pub final_merge_levels: u64,
     /// Largest fan-in observed across final-merge levels.
     pub final_merge_max_fan_in: u64,
+    /// Bounded native execution retries recorded by their owning operators.
     pub retry_count: u64,
     /// Retries caused by lower-level resource exhaustion.
     pub retry_resource_exhausted_count: u64,
@@ -144,11 +154,13 @@ pub struct QueryMetrics {
     pub one_shot_join_count: u64,
     /// Unique device bytes retained by reusable cuDF hash-join build artifacts.
     ///
-    /// This is recorded when an artifact is constructed, not when it is reused.
+    /// The value is recorded when an artifact is constructed. Reusing an artifact
+    /// does not record it again.
     pub hash_join_hash_table_bytes: u64,
     /// Unique device bytes retained by reusable cuDF filtered-join build artifacts.
     ///
-    /// This is recorded when an artifact is constructed, not when it is reused.
+    /// The value is recorded when an artifact is constructed. Reusing an artifact
+    /// does not record it again.
     pub filtered_join_hash_table_bytes: u64,
     /// Unique device bytes retained by filtered-join probe states.
     pub filtered_join_probe_state_bytes: u64,
@@ -205,8 +217,8 @@ pub struct QueryMetrics {
     pub dynamic_filter_source_bytes_pruned: u64,
     /// Source rows selected before dynamic reader predicates were applied.
     ///
-    /// Counted once per source chunk, not once per dynamic-filter route, so
-    /// multiple merged reader predicates do not duplicate query-level evidence.
+    /// Counted once per source chunk even when several dynamic-filter routes
+    /// merge into one reader predicate; query-level totals do not double count.
     pub dynamic_filter_reader_predicate_rows_before: u64,
     /// Source rows materialized after dynamic reader predicates were applied.
     ///
@@ -257,6 +269,7 @@ pub struct MetricsProjection {
     pub(crate) revision: Option<u64>,
     /// Whether that checkpoint's owner had already sealed.
     pub(crate) sealed: bool,
+    /// Capture and retention completeness inherited from the source checkpoint.
     pub completeness: MetricsCompleteness,
 }
 
@@ -300,14 +313,15 @@ impl QueryMetrics {
         self.stamp_existing_rows_with_query_id();
     }
 
-    /// Returns a copy of this metrics value with a query id assigned.
+    /// Consumes this metrics value, assigns the query id as `set_query_id` does, and returns it.
     #[must_use]
     pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
         self.set_query_id(query_id);
         self
     }
 
-    /// Returns a copy of this metrics value with a frontend shape attached to plan/task mappings.
+    /// Sets the frontend shape on this value and on each plan/task mapping row that has
+    /// none. An empty shape is ignored.
     #[must_use]
     pub fn with_plan_task_mapping_datafusion_shape(mut self, shape: impl Into<String>) -> Self {
         let shape = shape.into();
@@ -513,7 +527,7 @@ impl QueryMetrics {
             .saturating_add(other.dynamic_filter_join_probe_post_decode_rows_filtered);
         self.join_gather_map_bytes = self.join_gather_map_bytes.saturating_add(other.join_gather_map_bytes);
         // A side with no projection contributed no owner-projected metrics, so
-        // it is the identity here rather than an unknown that erases the other.
+        // it is the identity here. An absent projection does not erase the other.
         self.projection = match (self.projection, other.projection) {
             (Some(left), Some(right)) => Some(left.merged(right)),
             (left, right) => left.or(right),

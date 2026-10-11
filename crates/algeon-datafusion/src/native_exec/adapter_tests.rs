@@ -347,8 +347,9 @@ async fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
         .unwrap(),
     ) as Arc<dyn ExecutionPlan>;
     // Source payload is 72 bytes; final Arrow buffer capacity is 256 bytes.
-    // The limit intentionally lies between them to lock pre-D2H destination
-    // accounting rather than source-payload accounting.
+    // The limit intentionally lies between them, so the test pins pre-D2H
+    // destination accounting. Source-payload accounting would fit under the limit
+    // and admit the copy.
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(128, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
 

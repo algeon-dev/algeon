@@ -7,7 +7,7 @@ use cugraph::{
 
 use crate::test_handle;
 
-/// Helper: build a vertex -> betweenness map from a BetweennessCentralityResult.
+/// Builds a vertex -> betweenness map from a BetweennessCentralityResult.
 fn betweenness_map(
     handle: &EnteredContext<'_>,
     result: &BetweennessCentralityResult,

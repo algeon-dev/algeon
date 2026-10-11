@@ -35,8 +35,8 @@ pub(crate) enum AggregateOverJoinSubplanTopKVariant {
     /// Drops the fetch from the final TopK so the final-sort contract is not
     /// bounded by a row count.
     MissingFetchLimit,
-    /// Inserts a single-output keyed filtering join above the root; this is an
-    /// admitted post-root stage, not a second root.
+    /// Inserts a single-output keyed filtering join above the root. The join is an
+    /// admitted post-root stage and does not introduce a second root.
     PostRootFilteringJoin,
     /// Replaces the grouped aggregate subplan with a scalar aggregate, removing
     /// the grouping key needed by this proof.
@@ -45,7 +45,8 @@ pub(crate) enum AggregateOverJoinSubplanTopKVariant {
     /// topology.
     ShallowMultiJoinSide,
     /// Keeps the shape close while forcing admission to report the unsupported
-    /// projection expression instead of a generic topology failure.
+    /// projection expression. A generic topology failure must not be the
+    /// reported reason.
     UnsupportedPostRootProjectionExpression,
 }
 
@@ -989,8 +990,8 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     /// Removes the grouped aggregate fragment so generic fallback must not mask
     /// the root TopK-specific shape miss.
     MissingGroupedAggregateFragment,
-    /// Uses `LIMIT 0, None` instead of a fetch limit; TopK admission requires a
-    /// real fetch bound.
+    /// Uses `LIMIT 0, None`, which sets no fetch limit. TopK admission requires a
+    /// fetch bound.
     MissingFetchLimit,
     // Distinct aggregate fixtures cover the explicit distinct subcontract
     // and the unsafe variants that would need unmodeled distinct state.
@@ -1040,11 +1041,11 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     /// admitted just as well when no such projection appears (q53/q63).
     AggregateWindowFilterTopK,
     /// Same composition as `AggregateWindowFilterTopK`, but the window is an
-    /// ordered rank fed directly from the (unsorted) aggregate instead of from a
-    /// `Sort`, and the join fragment uses the keyless conditional subcontract so
-    /// no generic envelope admits the plan. Pins that this near-miss keeps its
-    /// own `root_topk_join_aggregate_requires_ordered_window_input` diagnosis
-    /// rather than falling back to the generic pre-window rejection.
+    /// ordered rank fed directly from the (unsorted) aggregate, with no `Sort`
+    /// between them. The join fragment uses the keyless conditional subcontract
+    /// so no generic envelope admits the plan. Pins that this near-miss keeps its
+    /// own `root_topk_join_aggregate_requires_ordered_window_input` diagnosis. It
+    /// does not fall back to the generic pre-window rejection.
     AggregateWindowFilterTopKMissingInputSort,
     /// Two grouped-aggregate branches, each followed by a sort and a cumulative
     /// window, joined by a keyed FULL OUTER join retaining both sides, then
@@ -1414,7 +1415,7 @@ fn root_topk_aggregate_window_filter_topk_plan(variant: RootTopKJoinAggregateVar
     let filter = if missing_input_sort {
         // Ordered window fed directly from the aggregate, without an input sort:
         // pins that this near-miss keeps its own `requires_ordered_window_input`
-        // diagnosis instead of the generic pre-window rejection.
+        // diagnosis. The generic pre-window rejection is not reported.
         let window = rank_window(&mut builder, grouped);
         builder
             .add_filter(

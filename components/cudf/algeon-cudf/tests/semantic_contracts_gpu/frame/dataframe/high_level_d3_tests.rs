@@ -1,9 +1,5 @@
-//! Integration tests for high-level DataFrame methods.
-//!
 //! Methods under test: `dropna`, `fillna`, `drop_duplicates`.
 //! Option types under test: `DropNaOptions`, `DropDuplicatesOptions`, `FillNaValue`.
-//!
-//! All tests require a GPU.
 
 use cudf::{
     DataFrame, DuplicateKeepOption, ErrorCode, ErrorKind, Exec,
@@ -13,10 +9,6 @@ use cudf::{
 };
 
 use crate::common::{assert_missing_column_error, error_context_value, nullable_series, scalar, series};
-
-// ===========================================================================
-// Helpers
-// ===========================================================================
 
 /// Build a 5-row DataFrame:
 ///   id:    [1, 2,    3,    4, 5]      (i32, no nulls)
@@ -39,28 +31,20 @@ fn sample_df_with_dupes() -> DataFrame {
     DataFrame::from_series([("a", a), ("b", b)]).unwrap()
 }
 
-// ===========================================================================
-// dropna; default (any, all columns)
-// ===========================================================================
-
 fn test_dropna_default_drops_any_null_row() {
     let df = sample_df_with_nulls();
     // Default: how=any, subset=all columns.
     let result = df.on(Exec::RETAINED).dropna(Default::default()).unwrap();
 
     // Rows 1,2,3,4 have at least one null → only row 0 survives.
-    // Wait: row 0 = (1, 10.0, "a"); all valid.
-    //       row 1 = (2, null, "b"); null in score → dropped
-    //       row 2 = (3, 30.0, null); null in tag → dropped
-    //       row 3 = (4, null, "d"); null in score → dropped
-    //       row 4 = (5, 50.0, null); null in tag → dropped
+    // Row 0 = (1, 10.0, "a"); all valid.
+    // Row 1 = (2, null, "b"); null in score → dropped
+    // Row 2 = (3, 30.0, null); null in tag → dropped
+    // Row 3 = (4, null, "d"); null in score → dropped
+    // Row 4 = (5, 50.0, null); null in tag → dropped
     assert_eq!(result.num_rows(), 1);
     assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
 }
-
-// ===========================================================================
-// dropna; how = all
-// ===========================================================================
 
 fn test_dropna_all_mode_keeps_partial_nulls() {
     let df = sample_df_with_nulls();
@@ -71,10 +55,6 @@ fn test_dropna_all_mode_keeps_partial_nulls() {
     // No row has ALL three columns null, so all 5 rows survive.
     assert_eq!(result.num_rows(), 5);
 }
-
-// ===========================================================================
-// dropna; subset
-// ===========================================================================
 
 fn test_dropna_subset_single_column() {
     let df = sample_df_with_nulls();
@@ -95,13 +75,9 @@ fn test_dropna_subset_multiple_columns() {
     assert_eq!(result.num_rows(), 1);
 }
 
-// ===========================================================================
-// dropna; threshold
-// ===========================================================================
-
 fn test_dropna_threshold() {
     let df = sample_df_with_nulls();
-    // thresh=2 on subset ["score","tag"] means: keep row if at least 2 of the
+    // thresh=2 on subset ["score","tag"] keeps a row when at least 2 of the
     // subset columns are non-null.
     let opts = DropNaOptions::builder().subset(&["score", "tag"]).thresh(2).build();
     let result = df.on(Exec::RETAINED).dropna(opts).unwrap();
@@ -117,17 +93,13 @@ fn test_dropna_threshold() {
 
 fn test_dropna_threshold_one_keeps_most_rows() {
     let df = sample_df_with_nulls();
-    // thresh=1 on subset ["score","tag"] means: keep row if at least 1 is non-null.
+    // thresh=1 on subset ["score","tag"] keeps a row when at least 1 is non-null.
     let opts = DropNaOptions::builder().subset(&["score", "tag"]).thresh(1).build();
     let result = df.on(Exec::RETAINED).dropna(opts).unwrap();
 
     // All 5 rows have at least 1 non-null in {score, tag}.
     assert_eq!(result.num_rows(), 5);
 }
-
-// ===========================================================================
-// dropna; error cases
-// ===========================================================================
 
 fn test_dropna_invalid_column_name() {
     let df = sample_df_with_nulls();
@@ -171,10 +143,6 @@ fn test_dropna_subset_count_limit_uses_canonical_contract() {
     assert_eq!(error_context_value(&err, "subset_count").as_deref(), None);
 }
 
-// ===========================================================================
-// dropna; empty result preserves schema
-// ===========================================================================
-
 fn test_dropna_empty_result_preserves_schema() {
     // All rows have nulls in some column.
     let a = nullable_series::<i32>("a", &[0, 0], &[false, false]).unwrap();
@@ -186,10 +154,6 @@ fn test_dropna_empty_result_preserves_schema() {
     assert_eq!(result.column_names(), vec!["a", "b"]);
 }
 
-// ===========================================================================
-// drop_duplicates; basic (all columns)
-// ===========================================================================
-
 fn test_drop_duplicates_default() {
     let df = sample_df_with_dupes();
     let result = df.on(Exec::RETAINED).drop_duplicates(Default::default()).unwrap();
@@ -197,10 +161,6 @@ fn test_drop_duplicates_default() {
     // 3 distinct rows: (1,10), (2,20), (3,30)
     assert_eq!(result.num_rows(), 3);
 }
-
-// ===========================================================================
-// drop_duplicates; subset
-// ===========================================================================
 
 fn test_drop_duplicates_subset() {
     let df = sample_df_with_dupes();
@@ -210,10 +170,6 @@ fn test_drop_duplicates_subset() {
     // 3 distinct values of "a": 1, 2, 3
     assert_eq!(result.num_rows(), 3);
 }
-
-// ===========================================================================
-// drop_duplicates; keep options
-// ===========================================================================
 
 fn test_drop_duplicates_keep_first() {
     let a = series::<i32>("a", &[1, 1, 2]).unwrap();
@@ -271,20 +227,12 @@ fn test_drop_duplicates_keep_none() {
     assert_eq!(result.series("a").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
 }
 
-// ===========================================================================
-// drop_duplicates; error on invalid column
-// ===========================================================================
-
 fn test_drop_duplicates_invalid_column() {
     let df = sample_df_with_dupes();
     let opts = DropDuplicatesOptions::builder().subset(&["nonexistent"]).build();
     let err = df.on(Exec::RETAINED).drop_duplicates(opts).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
 }
-
-// ===========================================================================
-// drop_duplicates; preserves all columns
-// ===========================================================================
 
 fn test_drop_duplicates_preserves_schema() {
     let df = sample_df_with_dupes();
@@ -293,10 +241,6 @@ fn test_drop_duplicates_preserves_schema() {
 
     assert_eq!(result.column_names(), vec!["a", "b"]);
 }
-
-// ===========================================================================
-// fillna; scalar, single column
-// ===========================================================================
 
 fn test_fillna_scalar_single_column() {
     let df = sample_df_with_nulls();
@@ -307,13 +251,8 @@ fn test_fillna_scalar_single_column() {
     let scores = result.series("score").unwrap().to_vec_strict::<f64>().unwrap();
     assert_eq!(scores, vec![10.0, 999.0, 30.0, 999.0, 50.0]);
 
-    // Other columns untouched.
     assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
 }
-
-// ===========================================================================
-// fillna; with Series
-// ===========================================================================
 
 fn test_fillna_with_series_single_column() {
     let df = sample_df_with_nulls();
@@ -323,10 +262,6 @@ fn test_fillna_with_series_single_column() {
     let scores = result.series("score").unwrap().to_vec_strict::<f64>().unwrap();
     assert_eq!(scores, vec![10.0, 20.0, 30.0, 40.0, 50.0]);
 }
-
-// ===========================================================================
-// fillna; error cases
-// ===========================================================================
 
 fn test_fillna_invalid_column() {
     let df = sample_df_with_nulls();
@@ -342,10 +277,6 @@ fn test_fillna_with_series_invalid_column() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-// ===========================================================================
-// fillna; preserves schema and other columns
-// ===========================================================================
-
 fn test_fillna_preserves_schema() {
     let df = sample_df_with_nulls();
     let fill = scalar(0.0f64).unwrap();
@@ -355,30 +286,16 @@ fn test_fillna_preserves_schema() {
     assert_eq!(result.num_rows(), 5);
 }
 
-// ===========================================================================
-// DropNaOptions builder API
-// ===========================================================================
-
 fn test_dropna_options_builder_chaining() {
-    // Verify that builder methods can be chained.
     let _opts = DropNaOptions::builder().subset(&["a", "b"]).how(DropNaHow::All).thresh(2).build();
 
-    // thresh takes precedence over how, so this should behave like thresh=2
     let df = sample_df_with_nulls();
     let subset_opts = DropNaOptions::builder().subset(&["score"]).how(DropNaHow::All).build();
     let result = df.on(Exec::RETAINED).dropna(subset_opts).unwrap();
-    // how=all on just "score": drop only when score is null.
+    // how=all on "score" alone drops a row only when score is null.
     // score null at rows 1,3 → 3 rows survive.
     assert_eq!(result.num_rows(), 3);
 }
-
-// ===========================================================================
-// DropDuplicatesOptions builder API
-// ===========================================================================
-
-// ===========================================================================
-// High-level DataFrame option types
-// ===========================================================================
 
 pub(super) const CASES: &[(&str, fn())] = &[
     ("high_level_d3_tests::test_dropna_default_drops_any_null_row", test_dropna_default_drops_any_null_row),

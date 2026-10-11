@@ -28,7 +28,7 @@ fn server_config_accepts_cugraph_env_without_cugraph_feature() {
 #[cfg(not(feature = "cugraph"))]
 #[test]
 fn server_config_accepts_explicit_cugraph_disabled_without_cugraph_feature() {
-    // One env file must be able to serve both artifact flavors: an explicit
+    // One env file must be able to serve both artifact flavors. An explicit
     // `false` requests no capability, so a no-cugraph build accepts it.
     let env = BTreeMap::from([(ALGEON_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string())]);
     let config = server_config_with_default_device_profile(env).unwrap();

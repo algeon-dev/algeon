@@ -57,8 +57,8 @@ fn class_capacities_are_reported_and_release_on_completion() {
     pool.spawn(GpuExecutionJobKind::AttemptWork, async {}).unwrap();
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
     pool.wait_for_drain_until(deadline).unwrap();
-    // The class permit drops after the job counters, so poll for the
-    // permits to return instead of racing the task teardown.
+    // The class permit drops after the job counters, so the permits can still
+    // be held when the drain wait returns. Poll until they come back.
     while Instant::now() < deadline {
         let snapshot = pool.snapshot();
         if snapshot.root_jobs_available == 2 && snapshot.aux_jobs_available == 6 {

@@ -5,8 +5,8 @@ use crate::{
     frame::dataframe::{self, DataFrame, GpuRecordBatch},
 };
 
-/// Testing-only: build the canonical `DataFrame::new` column-count mismatch
-/// error shape used by integration-test helpers.
+/// Builds the canonical `DataFrame::new` column-count mismatch error shape for
+/// integration-test helpers.
 pub fn new_column_length_mismatch_error_for_test(column_name_count: usize, table_column_count: usize) -> Error {
     column_name_count_mismatch_error(
         "dataframe::new",

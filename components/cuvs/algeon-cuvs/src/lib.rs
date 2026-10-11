@@ -1,5 +1,9 @@
-//! Runtime-bound safe Rust integration for the scoped cuVS surface used by
-//! Algeon.
+//! Runtime-bound safe Rust integration for the scoped cuVS surface used by Algeon.
+//!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion); workspace code
+//! uses this crate for its component contracts. See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
 
 mod brute_force;
 mod cagra;

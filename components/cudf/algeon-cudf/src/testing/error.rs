@@ -1,7 +1,7 @@
 use crate::{BudgetExhaustionDetail, CudfErrorDetail, Error, ErrorCode, core::error::testing_hooks};
 
-/// Testing-only: construct a truthful `cudf::Error` without exposing the
-/// crate-internal write surface on the primary API.
+/// Constructs a truthful `cudf::Error` without exposing the crate-internal write
+/// surface on the primary API.
 pub fn new_with_for_test(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Error {
     testing_hooks::new_with_for_test(code, operation, message)
 }
@@ -44,26 +44,26 @@ pub fn with_budget_exhaustion_for_test(error: Error, detail: BudgetExhaustionDet
     testing_hooks::with_budget_exhaustion_for_test(error, detail)
 }
 
-/// Testing-only: invoke the crate-internal `InteropError -> cudf::Error`
-/// translator so integration tests can lock down boundary translation
-/// contracts without exposing a public construction helper.
+/// Invokes the crate-internal `InteropError -> cudf::Error` translator so
+/// integration tests can lock down boundary translation contracts without
+/// exposing a public construction helper.
 pub fn from_interop_in_for_test(error: rapids_interop::InteropError, operation: &'static str) -> Error {
     testing_hooks::from_interop_in_for_test(error, operation)
 }
 
-/// Testing-only: re-anchor an error at a new `&'static str` operation.
+/// Re-anchors an error at a new `&'static str` operation. Intended for tests.
 #[must_use]
 pub fn reanchor_for_test(err: Error, operation: &'static str) -> Error {
     testing_hooks::reanchor_for_test(err, operation)
 }
 
-/// Testing-only: build the canonical foreign invariant contract error shape.
+/// Builds the canonical foreign invariant contract error shape. Intended for tests.
 pub fn foreign_invariant_violation_for_test() -> Error {
     testing_hooks::foreign_invariant_violation_for_test()
 }
 
-/// Testing-only: fill missing foreign invariant contract details without
-/// overwriting existing payload.
+/// Fills missing foreign invariant contract details without overwriting an
+/// existing payload.
 pub fn annotate_foreign_invariant_contract_if_absent_for_test() -> Error {
     testing_hooks::annotate_foreign_invariant_contract_if_absent_for_test()
 }

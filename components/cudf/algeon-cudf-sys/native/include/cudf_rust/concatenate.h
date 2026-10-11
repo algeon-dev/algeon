@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-/// Concatenate multiple columns into a single column with explicit execution context.
+/// Concatenate multiple columns into a single column.
 ///
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned column.
@@ -21,7 +21,7 @@ cudf_status_t cudf_concatenate_columns_ex(cudf_column_view_handle const* columns
                                           cudf_exec_options_t const* options,
                                           cudf_column_handle* out);
 
-/// Concatenate multiple tables into a single table with explicit execution context.
+/// Concatenate multiple tables into a single table.
 ///
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.

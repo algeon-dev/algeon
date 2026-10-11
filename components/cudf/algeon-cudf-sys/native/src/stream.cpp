@@ -44,7 +44,7 @@ struct attempt_stream_route {
   // Live auxiliary-fork claims, keyed by the alias that owns them. This is the
   // only place a claim is recorded: fork streams' own registry entries are
   // never mutated, so two aliases can never race to set or clear one another's
-  // confinement, and a detach releases exactly the claim it made.
+  // confinement, and a detach releases only the claim it made.
   std::unordered_map<cudaStream_t, std::size_t> alias_fork_claims;
   std::size_t execution_scopes = 0;
   bool persistent_registration = true;
@@ -76,7 +76,7 @@ std::unordered_map<cudaStream_t, attempt_stream_route_entry> attempt_stream_rout
 //
 // There is no unclaimed-set computation and no whole-pool fallback: a caller
 // that could be served a fork another live caller is launching kernels on
-// would be exactly the defect this routing exists to prevent.
+// would be the defect this routing exists to prevent.
 cudaStream_t resolve_fork_stream(attempt_stream_route const& route, cudaStream_t stream)
 {
   auto const claimed = route.alias_fork_claims.find(stream);
@@ -215,15 +215,15 @@ void exit_execution_stream_route(rmm::cuda_stream_view parent) noexcept
 // Lowest auxiliary fork index of `route` that no live alias claims, or
 // `auxiliary_fork_count()` when every auxiliary fork is claimed.
 //
-// The route, not the caller, picks the index: `alias_fork_claims` is the only
-// record of which forks are live, so a caller could only guess, and two callers
-// guessing the same free index would race. Choosing here, under the routes
+// The route picks the index. `alias_fork_claims` is the only record of which
+// forks are live, so a caller could only guess, and two callers guessing the
+// same free index would race. Choosing here, under the routes
 // mutex and in the same critical section as the attach, makes the claim atomic.
 //
 // A caller holding a freshly obtained attempt auxiliary permit always finds
 // one. Every claim is backed by one such permit and nothing else claims, so
 // live claims never exceed the attempt's permit holders, which admission caps
-// at `S_d` -- the auxiliary fork count. The caller's own permit is one of
+// at `S_d` (the auxiliary fork count). The caller's own permit is one of
 // those, so at most `S_d - 1` forks can be claimed when it asks.
 std::size_t lowest_unclaimed_fork(attempt_stream_route const& route)
 {
@@ -342,7 +342,6 @@ std::shared_ptr<void> cudf_stream_lifetime_from_handle(cudf_stream_handle handle
 }
 
 extern "C" {
-/// Create a new CUDA stream.
 cudf_status_t cudf_stream_create(cudf_stream_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -360,7 +359,6 @@ cudf_status_t cudf_stream_create(cudf_stream_handle* out)
   CUDF_RUST_CATCH
 }
 
-/// Destroy a CUDA stream handle.
 cudf_status_t cudf_stream_destroy(cudf_stream_handle handle)
 {
   try {
@@ -508,7 +506,7 @@ cudf_status_t cudf_stream_provider_detach_attempt_stream(void* alias_stream)
 }
 
 #ifdef CUDF_RUST_ENABLE_TEST_HOOKS
-/// Serve `count` forks for `stream` exactly as the installed provider does.
+/// Serve `count` forks for `stream` as the installed provider does.
 ///
 /// The route registry is the only state read; the returned raw values are
 /// never dereferenced, so this observes routing without CUDA work.

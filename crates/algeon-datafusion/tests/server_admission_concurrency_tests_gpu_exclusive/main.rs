@@ -138,8 +138,8 @@ async fn cancelling_a_streaming_flight_query_fails_it_whole_and_returns_its_capa
     let mut stream = client.do_get(ticket).await.expect("streaming DoGet");
 
     // Taking one batch first makes the cancellation land on a query that is
-    // provably executing and already delivering results, rather than racing
-    // admission.
+    // provably executing and already delivering results, so the cancellation
+    // does not race admission.
     let delivered = stream.try_next().await.expect("first batch").expect("the query delivers before cancellation");
     assert!(delivered.num_rows() > 0);
     server.wait_for_admission(1, 0).await;
@@ -172,7 +172,7 @@ async fn cancelling_a_streaming_flight_query_fails_it_whole_and_returns_its_capa
     assert_eq!(status.code(), Code::Cancelled);
 
     // Cancellation does not preempt launched kernels, but cleanup must still
-    // drain and hand the whole cap back before the ledger reports it free.
+    // drain and release the whole cap before the ledger reports it free.
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
@@ -206,7 +206,7 @@ async fn a_slow_flight_consumer_keeps_the_query_cap_until_its_stream_drains() {
         rows += batch.num_rows();
         batches += 1;
         // Read deliberately slowly so the server's bounded output channel has
-        // to apply backpressure instead of buffering the whole result.
+        // to apply backpressure and does not buffer the whole result.
         sleep(Duration::from_millis(20)).await;
         let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
         if report.live_grants_bytes == QUERY_CAP_BYTES {
@@ -240,7 +240,7 @@ async fn a_backlog_of_failing_queries_never_lets_the_ledger_over_issue_capacity(
         ConcurrencyServer::spawn_with(OVERSIZED_SORT_ROWS, SMALL_MANAGED_CAPACITY_BYTES, SMALL_QUERY_CAP_BYTES).await;
 
     // Sample the ledger throughout: a grant released before its attempt's
-    // report sealed, or a cleaning attempt whose cap was handed out again,
+    // report sealed, or a cleaning attempt whose cap was issued again,
     // would show up here as an over-issue.
     let watcher_backend = server.backend.clone();
     let watcher_stop = CancellationToken::new();

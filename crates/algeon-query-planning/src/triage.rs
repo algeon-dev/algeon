@@ -16,22 +16,39 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TriageCode {
+    /// Execution ended after a cancellation request.
     Cancelled,
+    /// A supported native candidate was left on DataFusion by cost policy.
     NotSelectedByCost,
+    /// The physical plan shape cannot be lowered as a native candidate.
     UnsupportedPlanShape,
+    /// An operation has no supported native implementation.
     UnsupportedOperator,
+    /// An expression cannot be evaluated by the native backend.
     UnsupportedExpression,
+    /// A dtype or physical representation is unsupported.
     UnsupportedType,
+    /// The source cannot satisfy the native reader contract.
     UnsupportedSource,
+    /// Caller-supplied data or configuration violates a required constraint.
     InvalidInput,
+    /// The plan violates an execution or IR invariant.
     InvalidPlan,
+    /// Capability validation prevents bounded native execution.
     CapabilityEnvelopeRejected,
+    /// Admission could not reserve the requested memory capacity.
     MemoryReservationDenied,
+    /// Execution exhausted an enforced or available resource.
     ResourceExhausted,
+    /// A bounded service queue or execution capacity is saturated.
     ServiceOverloaded,
+    /// Source access or reading failed.
     SourceFailure,
+    /// A native or external dependency reported a failure.
     DependencyFailure,
+    /// Execution violated an ownership, provenance or consistency invariant.
     InvariantViolation,
+    /// An internal failure has no more specific triage classification.
     Internal,
 }
 
@@ -75,14 +92,19 @@ impl From<QueryErrorCode> for TriageCode {
 
 /// Query-level triage verdict.
 ///
-/// `Failed` is reserved for a query that returned an error; a query that
-/// completed with warning signals is `Degraded`, and a native candidate that
-/// ran on the CPU by cost is `NotSelected` rather than any failure.
+/// `Failed` is reserved for a query that returned an error. A query that
+/// completed with warning signals is `Degraded`. A native candidate that ran on
+/// the CPU by cost is `NotSelected`, and that choice does not count as a
+/// failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TriageVerdict {
+    /// The query completed without warning signals.
     Healthy,
+    /// The query completed with warning signals.
     Degraded,
+    /// The query returned an error.
     Failed,
+    /// Cost policy retained CPU execution for a native candidate.
     NotSelected,
 }
 
@@ -107,8 +129,11 @@ impl std::fmt::Display for TriageVerdict {
 /// Triage signal severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TriageSeverity {
+    /// Informational evidence that does not itself indicate a failure.
     Info,
+    /// A condition requiring attention without a query error.
     Warning,
+    /// A signal associated with a failed query.
     Error,
 }
 
@@ -157,7 +182,6 @@ impl TriageEvidenceRef {
         self
     }
 
-    /// Adds a compiled task id.
     pub(crate) fn with_compiled_task_id(mut self, compiled_task_id: impl Into<CompiledTaskId>) -> Self {
         self.compiled_task_id = Some(compiled_task_id.into());
         self
@@ -185,6 +209,7 @@ impl TriageEvidenceRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TriageSignal {
     pub(crate) severity: TriageSeverity,
+    /// Machine-readable cause shared across planning and runtime diagnostics.
     pub code: TriageCode,
     pub(crate) message: String,
     pub(crate) evidence: Option<TriageEvidenceRef>,
@@ -216,7 +241,9 @@ impl TriageSignal {
 /// Compact top-level diagnostic summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TriageSummary {
+    /// Overall query outcome represented by this summary.
     pub verdict: TriageVerdict,
+    /// Ordered diagnostic signals contributing to the summary.
     pub signals: Vec<TriageSignal>,
 }
 
@@ -247,9 +274,10 @@ impl TriageSummary {
 impl QueryError {
     /// Builds a compact triage summary for this error.
     ///
-    /// Evidence prefers structured context over facts: the error's own query
-    /// id and boundary node id win, and the `query_id`, `node_id` and
-    /// `compiled_task_id` facts fill in only when the context lacks them.
+    /// Structured context takes precedence over facts. The error's own query id
+    /// and boundary node id are used first, and the `query_id` and `node_id`
+    /// facts fill in only when the context lacks them. The `compiled_task_id`
+    /// fact is used whenever it is present.
     pub fn triage_summary(&self) -> TriageSummary {
         let mut evidence = TriageEvidenceRef::new("query_error");
         if let Some(query_id) = self.query_id().cloned().or_else(|| self.fact_value("query_id").map(QueryId::new)) {

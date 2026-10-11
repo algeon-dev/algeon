@@ -480,8 +480,8 @@ fn bounded_native_query_stops_recovery_at_the_next_cancellation_boundary() {
     let input_schema = write_uncompressed_row_grouped_input_parquet(&path, row_groups, rows_per_row_group);
     let plan = cap_recovery_plan(&path, &input_schema);
     let context = backend_context_with_memory_control_policy(cap_recovery_policy(1024 * 1024, row_groups));
-    // Warm the reader and kernels so the deadline below elapses inside the
-    // recovery tree rather than during first-use initialization.
+    // Warm the reader and kernels first. The deadline below then elapses inside
+    // the recovery tree, after first-use initialization has finished.
     let warm = backend_context_with_memory_control_policy(cap_recovery_policy(64 * 1024 * 1024, row_groups));
     let warm_result = execute_query_plan(&warm, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = warm_result.output() else {

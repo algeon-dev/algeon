@@ -29,9 +29,9 @@ fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
     let usage = admitted_context.context().attempt_allocation_domain_usage().unwrap().unwrap();
     assert_eq!(usage.domain_id, grant.grant_id());
 
-    // One member per stream for the attempt: sequential stage tokens share
-    // it instead of attaching a second member, and their outputs stay valid
-    // after the producing token drops.
+    // One member per stream for the attempt. Sequential stage tokens share it
+    // and do not attach a second member, and their outputs stay valid after
+    // the producing token drops.
     let outcome = token
         .run("runtime::series_from_value", |exec| {
             admitted_context.context().runtime().unwrap().on(exec)?.series_from_value(7i32, 1024)

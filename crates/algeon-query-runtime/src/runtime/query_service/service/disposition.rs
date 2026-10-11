@@ -4,7 +4,7 @@
 //! disposition, and commits health BEFORE the observation seal publishes the
 //! report; capacity is exposed only afterwards and only for healthy reuse.
 //!
-//! Rules (normative): OOM or grant exhaustion alone never quarantines a
+//! Normative rules follow. OOM or grant exhaustion alone never quarantines a
 //! device; a persistent CUDA fault (device health evidence) closes new
 //! admission on that device before report publication; when fault isolation
 //! is unknown the whole backend is marked unhealthy.
@@ -27,7 +27,7 @@ use crate::{
 /// One terminal release decision and its bounded native-health projection.
 ///
 /// The decision owns the only device-health reads for this release path. The
-/// finalizer receives the resulting evidence directly instead of reconstructing
+/// finalizer receives the resulting evidence directly. It does not reconstruct
 /// a fault from a later CUDA status or a report-side sample.
 #[derive(Debug)]
 pub(crate) struct CapacityCommitDecision {
@@ -45,12 +45,12 @@ pub(crate) enum CapacityCommitDisposition {
     /// The active query cap was atomically replaced by a measured frozen
     /// resident charge. New admissions may use the remaining capacity.
     FrozenResident { resident_bytes: u64 },
-    /// Device-local persistent fault: the device ledger closes before the
-    /// report is published. The attempt's bytes return but the closed ledger
+    /// A device-local persistent fault closes the device ledger before the
+    /// report is published. The attempt's bytes return, but the closed ledger
     /// admits nothing new.
     DeviceQuarantine { reason: String },
-    /// Fault isolation is unknown: new GPU submissions are rejected for the
-    /// whole backend while in-flight attempts finish.
+    /// Fault isolation is unknown. New GPU submissions are rejected for the
+    /// whole backend while attempts that already started finish.
     BackendUnhealthy { reason: String },
 }
 
@@ -92,7 +92,7 @@ pub(crate) fn decide_capacity_disposition(
     (decision.disposition, decision.usage)
 }
 
-/// Produces the actual release decision used by finalization.
+/// Produces the release decision used by finalization.
 pub(crate) fn decide_capacity_commit(
     device_ordinal: usize,
     domain: Option<&AttemptAllocationDomain>,
@@ -172,8 +172,8 @@ pub(crate) fn decide_capacity_commit(
     };
     // The sample can itself race a cuDF/cuGraph fault on the same device. A
     // second terminal snapshot makes that race a device-local quarantine
-    // before capacity or a report becomes visible, rather than reusing the
-    // earlier healthy read.
+    // before capacity or a report becomes visible. The earlier healthy read is
+    // not reused.
     let health_after_sample = device_health_snapshot(device);
     if health_after_sample.status() == DeviceHealthStatus::Unhealthy {
         return device_quarantine_decision(device_ordinal, cleanup_evidence, health_after_sample, Some(usage));

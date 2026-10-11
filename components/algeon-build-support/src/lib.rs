@@ -1,5 +1,9 @@
 //! Shared Cargo build-script support for RAPIDS runtime libraries.
 //!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion). See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
+//!
 //! Every Algeon package whose build script links RAPIDS native libraries depends
 //! on this crate as a build-dependency, so the published `.crate` archives stay
 //! self-contained and one implementation owns the policy.
@@ -726,8 +730,9 @@ fn cuda_toolkit_roots(environment: &CudaEnvironment) -> Vec<PathBuf> {
     roots
 }
 
-/// CUDA names Linux target directories by architecture and OS rather than
-/// Cargo's full target triple (for example, `x86_64-linux`).
+/// CUDA names Linux target directories by architecture and OS, for example
+/// `x86_64-linux`, and does not use Cargo's full target triple such as
+/// `x86_64-unknown-linux-gnu`.
 fn cuda_target_directory(target: &str) -> Option<String> {
     let architecture = target.split('-').next()?;
     target.contains("-linux").then(|| format!("{architecture}-linux"))

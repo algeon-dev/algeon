@@ -6,7 +6,7 @@ use super::{DimensionKeyFilter, Expr, KeyRange, LocalParquetSource};
 /// filtered-scalar-range derivation.
 ///
 /// Mirrors [`super::super::LakehouseFooterPruningResolver`] for the sync,
-/// local-path-only case the passes in this module actually need: no async
+/// local-path-only case the passes in this module need: no async
 /// runtime and no object store, because every rewrite decision (candidate
 /// discovery, admission, row-group selection) stays in this crate. An
 /// implementation answers only "what does this file/row group contain."
@@ -14,7 +14,7 @@ use super::{DimensionKeyFilter, Expr, KeyRange, LocalParquetSource};
 /// Every method already follows the "no facts ⇒ no rewrite, never a wrong
 /// rewrite" rule the pre-resolver code had: a resolver that cannot answer
 /// returns `false`/`None`, and every caller in this module already treats
-/// that as "skip this candidate" rather than synthesizing an answer.
+/// that as "skip this candidate" and does not synthesize an answer.
 pub trait LocalParquetPruningResolver {
     /// Whether the currently-selected row groups across `source.files` sum to
     /// at most `max_dimension_rows`. `false` also covers "could not be
@@ -61,9 +61,9 @@ pub trait LocalParquetPruningResolver {
 
 /// A resolver that supplies no facts.
 ///
-/// For callers that do not want dimension-derived pruning or filtered-range
-/// derivation to read anything: every method answers "unknown," so every
-/// pass in this module skips rather than applying a rewrite built on nothing.
+/// For callers that disable dimension-derived pruning and filtered-range
+/// derivation so that they read nothing: every method answers "unknown," so
+/// every pass in this module skips and does not apply a rewrite built on nothing.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoDimensionPruningFacts;

@@ -4,7 +4,7 @@
 //! side structure keyed by [`NodeId`](super::NodeId) must follow the same
 //! mapping. [`NodeRemap`] is that mapping: advisory bindings and
 //! dynamic-filter routes translate through it, and entries whose node is gone
-//! are dropped instead of re-hung on whatever node reuses the old index.
+//! are dropped and are not re-hung on whatever node reuses the old index.
 
 use std::collections::BTreeMap;
 
@@ -57,7 +57,7 @@ impl NodeRemap {
     /// Rewrites a source-plan node's input edges through the mapping.
     ///
     /// Returns `None` when any referenced input has no image, so callers fail
-    /// closed instead of comparing against a partially translated node.
+    /// closed and do not compare against a partially translated node.
     pub(crate) fn try_translate_inputs(&self, kind: &PlanNode) -> Option<PlanNode> {
         let mut missing = false;
         let translated = clone_plan_node_with_inputs(kind, |input| {

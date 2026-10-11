@@ -109,7 +109,7 @@ fn native_cuml_context(schema: Arc<Schema>) -> SessionContext {
         .build();
     let ctx = SessionContext::new_with_state(state);
     // One row: an empty table lowers to a zero-row literal, which DataFusion
-    // keeps by cost instead of a native input producer.
+    // keeps by cost, so no native input producer is created.
     let zero = Int64Array::from(vec![0]);
     let columns = schema.fields().iter().map(|field| cast(&zero, field.data_type()).unwrap()).collect();
     let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();

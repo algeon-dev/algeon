@@ -1,15 +1,16 @@
 //! Workspace-internal safe libcudf execution component for Algeon.
 //!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion); workspace code
+//! uses this crate for its component contracts. See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
+//!
 //! Algeon integrations start with [`Runtime`] execution provenance and the
 //! prepared contracts in [`interop`]. Operations retain device, stream,
 //! memory-resource, and owner identity; allocation-capable paths expose local
 //! preflight facts; failures cross the component boundary as structured
 //! [`Error`] values. [`DataFrame`] and [`Series`] are the physical GPU frame
 //! owners used by the query engine.
-//!
-//! The package name `cudf` and Rust import name `cudf` are workspace
-//! contracts. This crate is not published as a general-purpose cuDF SDK and
-//! does not make an external semantic-versioning promise.
 //!
 //! # Quick Start
 //!
@@ -104,8 +105,8 @@
 //! without depending on `cudf`.
 //!
 //! [`interop::arrow_host`] is the host-copy `RecordBatch` path. Device-resident
-//! data leaves `cudf` through the prepared RAPIDS exports above, not through
-//! Arrow.
+//! data leaves `cudf` through the prepared RAPIDS exports above. Arrow is not
+//! part of that path.
 //!
 //! # Concurrency Model: Device Memory Domains
 //!
@@ -117,7 +118,7 @@
 //!   (cuda resource → pool → reservation-aware adaptor). The adaptor is
 //!   installed as RMM's per-device current resource when the domain is
 //!   created and **never changes afterwards**. libcudf temporaries
-//!   deliberately resolve through this long-lived adaptor and are accounted
+//!   resolve through this long-lived adaptor and are accounted
 //!   to the stream they allocate on. Device domains share no allocator or
 //!   pool state with one another; the only cross-device state is a
 //!   registry-lookup lock that never spans GPU work. cudf owns the
@@ -130,7 +131,7 @@
 //!   share its direct allocation resource without changing the cap.
 //! - **Operation**: every operation executes with explicit
 //!   device + stream + memory resource. The memory resource governs
-//!   **outputs only**, exactly like upstream libcudf's `mr` parameter;
+//!   **outputs only**, as upstream libcudf's `mr` parameter does;
 //!   temporaries belong to the device domain and are charged to the
 //!   operation's stream.
 //!
@@ -189,9 +190,9 @@
 //! cross-runtime inputs and require explicit relocation first via
 //! [`DataFrame::copy_into_runtime`] or [`Series::copy_into_runtime`].
 //!
-//! This automatic ordering remains a correctness fallback, not a throughput
-//! feature. For maximum GPU concurrency and the clearest mental model, keep
-//! collaborating objects in the same [`Runtime`].
+//! This automatic ordering is a correctness fallback that does not improve
+//! throughput. Keep collaborating objects in the same [`Runtime`] to avoid the
+//! cross-runtime event ordering described above.
 //!
 //! # Multi-GPU
 //!

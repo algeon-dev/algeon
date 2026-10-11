@@ -219,7 +219,7 @@ feature_isolation() {
   return "${status}"
 }
 
-# Lints the shipped server exactly as packaged: only the algeon_server binary
+# Lints the shipped server as packaged: only the algeon_server binary
 # with server.features from the packaging policy. Selecting no tests, examples,
 # or other members keeps dev-dependencies from enabling test-hooks, which the
 # --all-features lanes always enable.

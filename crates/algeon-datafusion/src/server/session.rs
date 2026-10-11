@@ -64,9 +64,8 @@ pub(crate) fn build_session_config(config: &ServerConfig) -> ServerResult<Sessio
             // Under the GPU-only requirement no query can execute on the CPU,
             // so DataFusion-side parallelism is unreachable. Single-group
             // scan planning keeps sort-declared fixtures (the source-sorted
-            // DBLP layout) eligible for native lowering: a declared scan
-            // ordering cannot be reproduced across parallel byte-range
-            // groups.
+            // DBLP layout) eligible for native lowering. A declared scan
+            // ordering cannot be reproduced across parallel byte-range groups.
             if gpu_only { session_config.with_target_partitions(1) } else { session_config }
         })
         .map_err(|error| ServerError::session("failed to build DataFusion session config from environment", error))

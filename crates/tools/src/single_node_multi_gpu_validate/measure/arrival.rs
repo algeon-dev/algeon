@@ -89,9 +89,9 @@ pub(super) async fn drive_overload_fairness(
 
 /// Drives an unbounded-duration closed-loop profile without first allocating a
 /// speculative arrival vector. Each round is constructed only after the
-/// preceding one drains; the wall-clock step deadline, not an arbitrary
-/// planning cap, ends the step. Fixed cohorts continue through the stored
-/// plan so their exact attempt shape remains frozen.
+/// preceding one drains. The wall-clock step deadline ends the step, and no
+/// planning cap does. Fixed cohorts continue through the stored plan so their
+/// exact attempt shape remains frozen.
 pub(super) async fn drive_duration_paced_concurrency(
     backend: &AlgeonGpuBackend,
     sessions: &SessionPool,
@@ -156,8 +156,8 @@ pub(super) async fn drive_duration_paced_concurrency(
             }
             // The duration-paced relational cohort is the service-rate
             // denominator.  Keep the feature-off control-plane sample exact,
-            // but inject it beside a live relational round rather than using
-            // a finite round cap to manufacture its phase boundary.
+            // but inject it beside a live relational round. The phase boundary
+            // comes from the warmup deadline.
             if let Some(probe) = feature_off_cugraph_probe {
                 let probe_count = if !warmup_feature_off_probes_submitted && Instant::now() < timing.warmup_deadline {
                     Some((probe.warmup_probe_attempts, &mut warmup_feature_off_probes_submitted))
@@ -335,7 +335,7 @@ pub(super) async fn drive_with_queue_observation(
         if !submissions_open {
             break;
         }
-        // Steps are sequential phases inside one run: a step change drains
+        // Steps are sequential phases inside one run. A step change drains
         // the previous step's in-flight work before the next step's cohort
         // starts, so per-step aggregates are cleanly attributable.
         if arrival.step_index != current_step {
@@ -361,10 +361,10 @@ pub(super) async fn drive_with_queue_observation(
             break;
         }
         if closed_loop {
-            // The step window, not the plan length, ends a closed-loop step:
-            // rounds are planned generously and pacing is observed. Drain the
-            // previous round so `concurrency` bounds in-flight attempts
-            // instead of becoming an offered arrival rate.
+            // The step window ends a closed-loop step; the plan length does not.
+            // Rounds are planned generously and pacing is observed. Drain the
+            // previous round so `concurrency` bounds in-flight attempts. The
+            // drain keeps `concurrency` from becoming an offered arrival rate.
             if arrival.round != current_round {
                 drain_with_feature_off_cugraph_capture(
                     &mut tasks,
@@ -384,9 +384,9 @@ pub(super) async fn drive_with_queue_observation(
         } else {
             let planned = started + Duration::from_nanos(arrival.offset_ns);
             match Instant::now().checked_duration_since(planned) {
-                // Late by more than the tolerance: rate mode may abandon it
-                // rather than convert the offered rate into a closed loop.
-                // The policy is read from the arrival: rate steps may mix
+                // Late by more than the tolerance. Rate mode may abandon it,
+                // which keeps the offered rate from turning into a closed loop.
+                // The policy is read from each arrival, so rate steps may mix
                 // `delay` and `drop` phases inside one run.
                 Some(late) if late > RATE_OVERRUN_TOLERANCE => {
                     if arrival.rate_overrun == RateOverrunPolicy::Drop {
@@ -492,7 +492,7 @@ pub(super) fn step_submission_deadline(started: Instant, plan: &ArrivalPlan, ste
 }
 
 /// Joins every storm canceller and counts the cancellation actions that
-/// actually fired. Cancellers own no resources; joining only makes their
+/// fired. Cancellers own no resources; joining only makes their
 /// requested timestamps deterministic.
 pub(super) async fn finish_storm_cancellers(cancellers: Vec<PendingCancellationBarrier>) -> u64 {
     let mut requested = 0_u64;
@@ -531,9 +531,9 @@ pub(super) async fn observe_queue_peak(
 /// Drives a two-cohort controlled-quarantine scenario through the ordinary
 /// public attempt API. The first closed-loop round is intentionally kept live
 /// until the target ledger exposes a grant or query job. Only after the
-/// synchronous controller acknowledgement do we release the remaining rounds.
+/// synchronous controller acknowledgement are the remaining rounds released.
 ///
-/// This is not a second scheduler or a backend mode: the sole state change is
+/// This is not a second scheduler or a backend mode. The sole state change is
 /// `GpuBackendFaultInjector::quarantine_device`, which owns the same fleet
 /// admission gate as normal placement. The runner merely orders public calls
 /// and records the barrier they establish.
@@ -570,7 +570,7 @@ pub(super) async fn drive_concurrent_quarantine(
     let mut begin_failures = 0_u64;
     let mut join_failures = 0_u64;
     let mut cancellation_barrier = None;
-    // Dedicated probes never arm deadline/cancellation storms; the knob set stays disabled.
+    // Dedicated probes never arm deadline/cancellation storms; they pass `StormKnobs::default()`.
     let mut storm_cancellers = Vec::new();
 
     for arrival in &plan.arrivals[..first_post_ack_index] {
@@ -614,7 +614,7 @@ pub(super) async fn drive_concurrent_quarantine(
         .is_some_and(|report| report.health == "closed");
 
     // The initial transition from round 0 to round 1 deliberately does not
-    // drain `tasks`: the post-ack cohort must contend with, and then prove
+    // drain `tasks`. The post-ack cohort must contend with, and then prove
     // release of, the work admitted before the quarantine acknowledgement.
     let mut current_round = 0;
     let mut post_ack_sequences = BTreeSet::new();
@@ -696,17 +696,17 @@ pub(super) async fn drive_concurrent_quarantine(
     })
 }
 
-/// Drives the repeated-quarantine scenario: one controlled quarantine per
-/// cycle against a rotation of configured ordinals while sustained closed-loop
-/// load runs. Each cycle reuses the single-quarantine barrier semantics; live-work
-/// witness, synchronous injector acknowledgement, zero post-ack placements on
-/// the target, healthy progress on the remaining ordinals; so a cycle is
-/// exactly as falsifiable as the single-quarantine probe.
+/// Drives the repeated-quarantine scenario. Each cycle applies one controlled
+/// quarantine to a rotation of configured ordinals while sustained closed-loop
+/// load runs. Each cycle reuses the single-quarantine barrier semantics: a
+/// live-work witness, a synchronous injector acknowledgement, zero post-ack
+/// placements on the target, and healthy progress on the remaining ordinals.
+/// A cycle is as falsifiable as the single-quarantine probe.
 ///
 /// Quarantine is a terminal per-device transition, so the rotation targets a
 /// distinct ordinal per cycle; each target's own health-generation increment
 /// is recorded on its cycle row. Profile preflight keeps one ordinal open, so
-/// stabilization between cycles is real fleet progress, not a drained fleet.
+/// stabilization between cycles is fleet progress. The fleet is not drained.
 pub(super) async fn drive_quarantine_cycles(
     backend: &AlgeonGpuBackend,
     sessions: &SessionPool,
@@ -740,8 +740,8 @@ pub(super) async fn drive_quarantine_cycles(
     let warmup_deadline = timing.warmup_deadline;
     let submission_deadline = timing.submission_deadline;
     let run_deadline = timing.completion_deadline;
-    // Cycle boundaries at defined window offsets: cycle k fires once the run
-    // crosses (k + 1) / (cycles + 1) of the measurement window.
+    // Cycle boundaries sit at defined window offsets. Cycle k fires once the
+    // run crosses (k + 1) / (cycles + 1) of the measurement window.
     let cycle_interval_ns = plan.measurement_ns / (cycles as u64 + 1);
     let mut tasks = Vec::new();
     let mut observations = Vec::new();
@@ -1047,8 +1047,8 @@ pub(super) async fn drive_close_under_load(
         }
     }
 
-    // The close boundary: public admission facts first, then the public
-    // close transition. No further submissions happen after this point.
+    // Public admission facts are read first, then the public close
+    // transition runs. No further submissions happen after this point.
     let (admitted_at_close, queued_at_close) = wait_for_close_under_load_cohort(backend, run_deadline).await?;
     let close_requested_offset_ns = elapsed_ns(started);
     let close_initiated = backend.close();
@@ -1250,7 +1250,7 @@ pub(super) fn is_typed_backend_closing(observation: &AttemptObservation) -> bool
 /// evidence after public snapshots first witness an immutable admission
 /// envelope. The deadline remains the normal attempt contract: no runner task
 /// is aborted and a CUDA call already in flight may finish before the next
-/// native safe boundary observes expiry.
+/// native safe boundary records the expiry.
 pub(super) async fn drive_deadline_after_admission(
     backend: &AlgeonGpuBackend,
     sessions: &SessionPool,
@@ -1277,7 +1277,7 @@ pub(super) async fn drive_deadline_after_admission(
     let mut join_failures = 0_u64;
     let mut begin_failures = 0_u64;
     let mut cancellation_barrier = None;
-    // Dedicated probes never arm deadline/cancellation storms; the knob set stays disabled.
+    // Dedicated probes never arm deadline/cancellation storms; they pass `StormKnobs::default()`.
     let mut storm_cancellers = Vec::new();
 
     let first = plan.arrivals[0];
@@ -1389,8 +1389,8 @@ pub(super) struct TargetLiveWorkWitness {
 }
 
 /// Waits only on public pull snapshots. A target qualifies once an immutable
-/// grant has been published or a native query job is live; the artifact keeps
-/// both counts rather than pretending a configured slot proves execution.
+/// grant has been published or a native query job is live. The artifact keeps
+/// both counts, and a configured slot does not prove execution.
 pub(super) async fn wait_for_target_live_work(
     backend: &AlgeonGpuBackend,
     target_ordinal: usize,
@@ -1428,9 +1428,9 @@ pub(super) async fn wait_for_target_live_work(
     }
 }
 
-/// Picks the actual device that first exposes a live immutable grant or
-/// native query job. The deadline scenario intentionally does not introduce
-/// caller device affinity; its artifact records the controller's real choice.
+/// Picks the device that first exposes a live immutable grant or native
+/// query job. The deadline scenario intentionally does not introduce caller
+/// device affinity. Its artifact records the controller's choice.
 pub(super) async fn wait_for_any_live_work(
     backend: &AlgeonGpuBackend,
     started: Instant,
@@ -1488,8 +1488,8 @@ pub(super) async fn wait_for_target_release(
 }
 
 /// The attempt report preserves `deadline_expired` in its bounded reason
-/// vocabulary. Inspect only that JSON projection: never rehydrate arbitrary
-/// error text or infer a timeout from the runner clock.
+/// vocabulary. This check reads only that JSON projection. It never rehydrates
+/// arbitrary error text or infers a timeout from the runner clock.
 pub(super) fn is_typed_deadline_cancellation(observation: &AttemptObservation) -> bool {
     observation.outcome == "cancelled"
         && observation.terminal_evidence.primary_failure.as_ref().is_some_and(|failure| {

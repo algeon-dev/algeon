@@ -140,8 +140,8 @@ impl JoinSpec {
 
     /// Assigns a durable reusable-build cache id.
     ///
-    /// The value must identify the complete build artifact contract, not just a
-    /// table name. Validation rejects empty ids.
+    /// The value must identify the complete build artifact contract. A table name
+    /// alone is insufficient. Validation rejects empty ids.
     pub fn with_build_artifact_id(mut self, id: impl Into<String>) -> Self {
         self.build_artifact_id = Some(HashJoinBuildArtifactId::new(id));
         self
@@ -168,8 +168,6 @@ impl JoinSpec {
     }
 }
 
-/// Durable identifier for reusable hash-join build state.
-///
 /// Execution-context cache key for reusable hash-join build artifacts.
 ///
 /// Frontends must change it when any build-affecting property changes.
@@ -201,7 +199,7 @@ impl fmt::Display for HashJoinBuildArtifactId {
 ///
 /// `left` is resolved against the semantic left input and `right` against the
 /// semantic right input. Non-equality conditions belong in
-/// [`JoinSpec::residual_predicate`], not in this list.
+/// [`JoinSpec::residual_predicate`]. This list holds equality keys only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinKey {
     /// Column from the semantic left input.
@@ -211,6 +209,7 @@ pub struct JoinKey {
 }
 
 impl JoinKey {
+    /// Pairs columns from the semantic left and right inputs as an equality key.
     pub fn new(left: ColumnRef, right: ColumnRef) -> Self {
         Self { left, right }
     }
@@ -232,14 +231,17 @@ pub struct JoinOutputColumn {
 }
 
 impl JoinOutputColumn {
+    /// Selects an input-side column and its output field name.
     pub fn new(side: JoinSide, column: ColumnRef, output_name: impl Into<String>) -> Self {
         Self { side, column, output_name: output_name.into() }
     }
 
+    /// Selects a column from the semantic left input with the given output name.
     pub fn left(column: ColumnRef, output_name: impl Into<String>) -> Self {
         Self::new(JoinSide::Left, column, output_name)
     }
 
+    /// Selects a column from the semantic right input with the given output name.
     pub fn right(column: ColumnRef, output_name: impl Into<String>) -> Self {
         Self::new(JoinSide::Right, column, output_name)
     }
@@ -261,7 +263,7 @@ pub enum JoinType {
     Inner,
     /// Keep every left row, with nullable right columns when unmatched.
     Left,
-    /// Keep every row from both sides, with nullable columns for unmatched side.
+    /// Keep every row from both sides, with nullable columns on the side that has no match.
     Full,
     /// Keep left rows that have a match; output only left-side columns.
     ///
@@ -340,7 +342,7 @@ impl fmt::Display for JoinNullEquality {
 ///
 /// In [`JoinNode::inputs`], left is index 0 and right is index 1. The same enum
 /// is also used for physical build-side selection; in that context it names
-/// which semantic side is built, not a new logical orientation.
+/// which semantic side is built and does not introduce a new logical orientation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JoinSide {
     /// Semantic left input.

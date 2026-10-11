@@ -1,4 +1,4 @@
-//! Similarity algorithms and vertex-pair plumbing.
+//! Similarity algorithms and the owned vertex-pair collection (`VertexPairs`).
 //!
 //! cuGraph similarity algorithms require symmetric graphs. This module leaves
 //! graph-property validation to the native library so callers get the same

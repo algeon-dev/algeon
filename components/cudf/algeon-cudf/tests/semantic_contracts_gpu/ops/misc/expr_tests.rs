@@ -1,11 +1,7 @@
-//! Integration tests for the expression layer.
-//!
 //! Tests cover: `col()` / `lit()`, arithmetic operators, comparisons,
 //! unary ops (`is_null`, `is_not_null`, `cast`, `Not`), `.alias()`,
 //! `DataFrame::with_columns`, null fill, cumulative, aggregation, string ops,
 //! and conditional (`when`/`then`/`otherwise`).
-//!
-//! All tests require a GPU.
 
 use std::sync::Arc;
 
@@ -27,10 +23,6 @@ use cudf::{
 use rapids_interop::{ColumnLayout, DataType as InteropDataType, Placement};
 
 use crate::common::{error_context_value, execution_budget_token, nullable_series, series};
-
-// ===========================================================================
-// Helpers
-// ===========================================================================
 
 /// Build a simple 3-row DataFrame with columns "x" (i32) and "y" (i32).
 fn xy_df() -> DataFrame {
@@ -202,10 +194,6 @@ fn assert_output_name(expr: Expr, expected: Option<&str>) {
     assert_eq!(expr.output_name(), expected);
 }
 
-// ===========================================================================
-// col / lit basics
-// ===========================================================================
-
 fn col_resolves_existing_column() {
     let df = xy_df();
     let result = eval(col("x"), &df);
@@ -374,10 +362,6 @@ fn alias_sets_output_name_without_materializing_series_metadata() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-// ===========================================================================
-// Arithmetic operators
-// ===========================================================================
-
 fn add_col_col() {
     let df = xy_df();
     assert_eq!(eval_i32((col("x") + col("y")).alias("sum"), &df), vec![11, 22, 33]);
@@ -400,7 +384,6 @@ fn add_scalar_lhs_without_lit() {
 
 fn compound_expr_add_mul() {
     let df = xy_df();
-    // (x + y) * lit(2)
     assert_eq!(eval_i32(((col("x") + col("y")) * lit(2i32)).alias("r"), &df), vec![22, 44, 66]);
 }
 
@@ -699,10 +682,6 @@ fn round_builder_supports_decimal128() {
     assert_eq!(host_export_i128_values(&result), vec![1235, 1234, -1235]);
 }
 
-// ===========================================================================
-// Comparisons
-// ===========================================================================
-
 fn gt_lit_produces_bool() {
     let df = xy_df();
     let result = eval(col("x").gt(lit(15i32)).alias("big"), &df);
@@ -852,10 +831,6 @@ fn timestamp_expr_datetime_namespace_extracts_components() {
     assert_output_name(col("ts").dt().year(), Some("ts"));
 }
 
-// ===========================================================================
-// Unary ops
-// ===========================================================================
-
 fn is_null_expr() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let result = eval(col("v").is_null().alias("nulls"), &df);
@@ -927,10 +902,6 @@ fn not_operator() {
     let df = bool_df("mask", &[true, false, true]);
     assert_eq!(eval_bool((!col("mask")).alias("inv"), &df), vec![false, true, false]);
 }
-
-// ===========================================================================
-// DataFrame::with_columns
-// ===========================================================================
 
 fn with_columns_adds_new_column() {
     let df = xy_df();
@@ -1023,10 +994,6 @@ fn with_columns_bare_col_uses_column_name() {
     assert_eq!(df2.num_columns(), 2);
 }
 
-// ===========================================================================
-// Output name propagation for single-input nodes
-// ===========================================================================
-
 fn output_name_propagates_through_cast() {
     assert_output_name(col("x").cast(TypeId::Float64), Some("x"));
 }
@@ -1118,10 +1085,6 @@ fn exp_expr() {
     assert_eq!(values[2], 0.0);
 }
 
-// ===========================================================================
-// Null fill and cumulative expressions
-// ===========================================================================
-
 fn fillna_scalar_replaces_nulls() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let result = eval(col("v").fillna(0i32).alias("filled"), &df);
@@ -1198,10 +1161,7 @@ fn with_columns_cumsum_no_alias_needed() {
     assert_eq!(df2.series("x").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3, 6]);
 }
 
-// ===========================================================================
-// Aggregation expressions with broadcast results
-// ===========================================================================
-
+// Aggregate results are broadcast to every input row.
 fn agg_sum() {
     let df = i32_df("x", &[10, 20, 30]);
     let result = eval(col("x").agg().sum().alias("s"), &df);
@@ -1298,10 +1258,6 @@ fn with_columns_reduce_requires_alias_or_explicit_name() {
     assert_eq!(df2.series("x_total").unwrap().to_vec_strict::<i64>().unwrap(), vec![60, 60, 60]);
 }
 
-// ===========================================================================
-// String expressions
-// ===========================================================================
-
 fn str_lower_expr() {
     let df = str_df("s", &["Hello", "WORLD", "Foo"]);
     let result = eval(col("s").str().lower().alias("lo"), &df);
@@ -1378,10 +1334,6 @@ fn with_columns_str_lower_no_alias() {
     let df2 = df.on(Exec::RETAINED).with_columns([col("s").str().lower()]).unwrap();
     assert_eq!(df2.series("s").unwrap().dtype().unwrap().id(), TypeId::String);
 }
-
-// ===========================================================================
-// Conditional expressions
-// ===========================================================================
 
 fn when_then_otherwise_basic() {
     let df = i32_df("x", &[1, 2, 3]);

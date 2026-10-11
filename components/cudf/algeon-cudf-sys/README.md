@@ -1,9 +1,10 @@
-# cudf-sys
+# algeon-cudf-sys
 
-`cudf-sys` (`cudf_sys`) is the Linux-only raw C ABI for the cuDF shim
+`algeon-cudf-sys` (`cudf_sys`) is the Linux-only raw C ABI for the cuDF shim
 library, `libcudf_rust`. It exposes nominal opaque handles and C-compatible
-types; every raw call is unsafe. Applications should use the safe owner,
-runtime, and DataFrame APIs in [`cudf`](../README.md) instead.
+types; every raw call is unsafe. Applications use [`algeon-datafusion`](https://docs.rs/algeon-datafusion).
+Workspace component code uses the safe owner, runtime and DataFrame APIs in
+[`algeon-cudf`](../README.md).
 
 The safe crate owns lifetime, execution, and error-policy decisions. This
 crate owns the namespaced C headers, generated raw Rust declarations, and the

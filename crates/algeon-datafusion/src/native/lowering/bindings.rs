@@ -27,7 +27,7 @@ pub(super) struct LoweredNativeInput {
     /// Adapter-side mapping from the DataFusion physical output schema to the
     /// executable native schema above.
     pub(super) bindings: Vec<FieldBinding>,
-    /// The node emits row-count weights instead of the input's rows, which
+    /// The node emits row-count weights in place of the input's rows, which
     /// only a parent that demanded the row count alone reads.
     pub(super) row_count_weights: bool,
 }
@@ -87,7 +87,7 @@ pub(in crate::native) struct Demand {
     /// satisfy it.
     pub(super) row_limit: Option<usize>,
     /// The parent selects `fields` from its input itself, so the input may
-    /// also emit fields the parent does not read instead of adding a
+    /// also emit fields the parent does not read. This avoids adding a
     /// projection that only drops them.
     pub(super) extra_fields_allowed: bool,
     /// The parent reads the input's rows in the order DataFusion reports for

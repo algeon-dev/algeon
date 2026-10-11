@@ -2,7 +2,7 @@
 //!
 //! Iterates [`CUGRAPH_PARITY_SPECS`] and invokes
 //! `fixture/graph/cugraph_oracle.py` for each generated-oracle row. Python
-//! cuGraph is optional per row: exit code 77 is reported as "oracle unavailable".
+//! cuGraph is optional per row. Exit code 77 is reported as "oracle unavailable".
 //! Generated JSON lives under `fixture/graph/cugraph/oracle/`.
 //!
 //! Recommended invocation:
@@ -17,7 +17,7 @@
 //! - `--all`: refresh every parity row's oracle JSON slot.
 //! - `--algorithm <name>` / `--dataset <name>`: restrict the run to
 //!   matching specs.
-//! - `--force`: overwrite drifted JSON instead of writing a sibling preview.
+//! - `--force`: overwrite drifted JSON. Without it, a drifted row writes a sibling preview.
 //! - `--check`: verify local JSON matches a fresh regeneration without writing.
 
 use std::{
@@ -151,12 +151,12 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
     let mut exit_code = 0i32;
     // Refresh every generated-oracle row regardless of `truth_source`.
     // RefCsv-truth rows (e.g. Katz) still carry a secondary
-    // `oracle_relpath` slot for the per-vertex score cross-check, and
-    // the previous truth-source filter caused
-    // `refresh_cugraph_oracle --algorithm katz_centrality --check` to
-    // silently report nothing; letting CI miss a missing secondary
-    // oracle. The runtime parity comparator still consults
-    // `truth_source` to pick the primary truth at compare time.
+    // `oracle_relpath` slot for the per-vertex score cross-check. A
+    // truth-source filter would make
+    // `refresh_cugraph_oracle --algorithm katz_centrality --check` report
+    // nothing without an error, and CI would miss a missing secondary oracle. The
+    // runtime parity comparator still consults `truth_source` to pick the
+    // primary truth at compare time.
     for spec in CUGRAPH_PARITY_SPECS {
         if !spec_matches(&opts, spec) {
             continue;

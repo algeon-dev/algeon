@@ -40,7 +40,7 @@ impl RelationalExecutionSelection {
 
     /// Applies this selection to a native optimizer configuration.
     ///
-    /// `None` is intentional for CPU baselines: callers must construct a
+    /// `None` is intentional for CPU baselines. Callers must construct a
     /// DataFusion session without a relational native rule in that case.
     pub fn configure_native_optimizer(
         self,

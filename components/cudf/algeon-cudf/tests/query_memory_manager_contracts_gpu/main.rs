@@ -633,9 +633,8 @@ fn frozen_query_domain_retains_live_output_and_rejects_new_allocations() {
     .unwrap();
     let error =
         consumer.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(29i32, 1)).unwrap_err();
-    // Allocating into a frozen domain is a routing/lifetime invariant
-    // violation, not caller input: the producer was supposed to stop
-    // allocating before its output was published.
+    // Allocating into a frozen domain is a routing/lifetime invariant violation.
+    // The producer was supposed to stop allocating before its output was published.
     assert_eq!(error.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(error.kind(), ErrorKind::InvariantViolation);
     assert!(error.message().contains("frozen"), "unexpected error: {error}");

@@ -30,16 +30,16 @@ pub const JOIN_BUILD_SIDE_SELECTION_RULE_NAME: &str = "join_build_side_selection
 pub struct JoinBuildSideSelectionOptions {
     /// Whether the pass is allowed to change join build-side orientation.
     pub enabled: bool,
-    /// Byte threshold under which a side is treated as a small build candidate.
+    /// Byte threshold at or below which a side is treated as a small build candidate.
     pub small_build_side_bytes: u64,
-    /// Row threshold under which a side is treated as a small build candidate.
+    /// Row threshold at or below which a side is treated as a small build candidate.
     pub small_build_side_rows: u64,
 }
 
 impl JoinBuildSideSelectionOptions {
-    /// Default byte threshold under which a side is treated as a small build candidate.
+    /// Default byte threshold at or below which a side is treated as a small build candidate.
     pub const DEFAULT_SMALL_BUILD_SIDE_BYTES: u64 = 64 * 1024 * 1024;
-    /// Default row threshold under which a side is treated as a small build candidate.
+    /// Default row threshold at or below which a side is treated as a small build candidate.
     pub const DEFAULT_SMALL_BUILD_SIDE_ROWS: u64 = 1_000_000;
 
     /// Returns options with the pass disabled and default thresholds preserved.
@@ -51,7 +51,7 @@ impl JoinBuildSideSelectionOptions {
         }
     }
 
-    /// Validates internal consistency for build-side selection thresholds.
+    /// Returns an `InvalidConfiguration` error when either small build-side threshold is zero.
     pub fn validate(&self) -> Result<()> {
         validate_nonzero_join_build_side_option("small_build_side_bytes", self.small_build_side_bytes)?;
         validate_nonzero_join_build_side_option("small_build_side_rows", self.small_build_side_rows)?;
@@ -100,7 +100,6 @@ impl JoinBuildSideSelectionDiagnostics {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -135,9 +134,9 @@ pub struct JoinBuildSideSelectionCandidateDiagnostics {
     pub left_advisory_bytes: Option<u64>,
     /// Frontend advisory bytes on the right input, if the frontend estimated them.
     pub(crate) right_advisory_bytes: Option<u64>,
-    /// Configured byte threshold under which a side is treated as a small build candidate.
+    /// Configured byte threshold at or below which a side is treated as a small build candidate.
     pub(crate) small_build_side_bytes: u64,
-    /// Configured row threshold under which a side is treated as a small build candidate.
+    /// Configured row threshold at or below which a side is treated as a small build candidate.
     pub(crate) small_build_side_rows: u64,
     /// Evidence that decided the selected side, when a side was selected.
     pub selection_basis: Option<JoinBuildSideSelectionBasis>,

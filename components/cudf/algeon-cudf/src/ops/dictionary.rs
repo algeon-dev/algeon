@@ -1,8 +1,8 @@
 //! GPU-accelerated dictionary encoding (factorize / categorize).
 //!
 //! Dictionary encoding maps a column's values to dense integer indices backed
-//! by a sorted, unique key set; equivalent to `pandas.factorize()` or
-//! `pandas.Categorical`.
+//! by a sorted, unique key set, similar to `pandas.Categorical` and to
+//! `pandas.factorize(sort=True)`.
 //!
 //! The returned indices are row-aligned with the encoded input. They are not,
 //! by themselves, a reusable key-to-code dictionary for some separately
@@ -19,8 +19,8 @@
 //! let series = rt.series(&[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
 //! let factorized = series.on(rt.exec()).factorize().unwrap();
 //!
-//! // For a reusable lookup mapping, pair keys with explicit positional codes
-//! // instead of reusing the row-aligned codes.
+//! // A reusable lookup mapping pairs keys with explicit positional codes; the
+//! // row-aligned codes are not a key-to-code mapping.
 //! assert_eq!(factorized.codebook().keys().len(), 3);
 //! assert_eq!(factorized.row_codes().len(), 7);
 //! ```

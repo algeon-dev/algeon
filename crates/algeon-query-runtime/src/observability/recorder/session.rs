@@ -104,7 +104,6 @@ impl QueryCleanupSealDelivery {
         self
     }
 
-    /// Runs observer delivery, returning the sealed snapshot.
     pub(crate) fn deliver(self) -> Option<SealedRuntimeObservationSnapshot> {
         let Some(deferred) = self.deferred else { return self.already_sealed };
         if let Some(owner) = self.owner {
@@ -270,7 +269,8 @@ impl RuntimeObservationSession {
         self.handle.live_snapshot()
     }
 
-    /// Fixes the first terminal outcome and returns the same immutable snapshot to authorized racers.
+    /// Fixes the first terminal outcome and returns the same immutable snapshot
+    /// to every later or concurrent seal.
     pub fn seal(&self, outcome: RuntimeTerminalOutcome) -> Option<SealedRuntimeObservationSnapshot> {
         self.handle.seal_owned(outcome)
     }
@@ -284,8 +284,8 @@ impl RuntimeObservationSession {
     }
 
     /// Seals this session with `outcome` and the report `report` builds,
-    /// deferring observer delivery to the returned value. A seal that loses
-    /// to an earlier one returns that seal's snapshot and delivers nothing.
+    /// deferring observer delivery to the returned value. A seal that follows
+    /// an earlier seal returns that seal's snapshot and delivers nothing.
     ///
     /// A panic while sealing marks the session degraded, seals it as
     /// `Panicked`, delivers its observers, and resumes unwinding.
@@ -323,7 +323,7 @@ impl RuntimeObservationSession {
         }
     }
 
-    /// Returns the sealed immutable snapshot when a terminal outcome already won.
+    /// Returns the sealed immutable snapshot when a terminal outcome was already fixed.
     pub fn sealed_snapshot(&self) -> Option<SealedRuntimeObservationSnapshot> {
         self.handle.sealed_snapshot()
     }

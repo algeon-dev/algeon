@@ -5,10 +5,10 @@
 //! sets the attempt's auxiliary fork pool, hence its execution width) and
 //! runs a two-branch union sort/top-k through the public SQL attempt path,
 //! so every cell exercises DataFusion lowering, compiled admission, and the
-//! lane dispatcher exactly as production does. A backend cannot change its
-//! frozen profile mid-process, so widths run as separate backends in the
-//! configured order; the report carries per-width variance instead of
-//! claiming an interleaved comparison.
+//! lane dispatcher as production does. A backend cannot change its frozen
+//! profile mid-process, so widths run as separate backends in the configured
+//! order; the report carries per-width variance and does not claim an
+//! interleaved comparison.
 //!
 //! The union branches read distinct files, so the fused top-k consumes a
 //! two-frame stream and expands one candidate per frame onto lanes. union
@@ -82,7 +82,8 @@ where T::Err: std::fmt::Display {
 }
 
 /// Deterministic 64-bit linear congruential generator. The dataset needs a
-/// fixed seed, not statistical quality; the standard library carries no RNG.
+/// fixed seed, and statistical quality is not a requirement. The standard
+/// library carries no RNG.
 struct Lcg(u64);
 
 impl Lcg {
@@ -212,7 +213,9 @@ fn gpu_exec_ms(report: &QueryAttemptReport) -> Option<f64> {
 }
 
 /// Order-sensitive fingerprint: the sweep asserts a global order, so row
-/// sequence is content, not incidental batching.
+/// sequence is hashed as content. Each batch is hashed column by column, so for
+/// outputs with more than one column, a different batch split can change the
+/// fingerprint.
 fn fingerprint_ordered(batches: &[RecordBatch]) -> Result<String, Box<dyn Error>> {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("algeon-bench-sort-sweep-ordered-v1");
@@ -289,6 +292,7 @@ async fn run_query(
         Ok::<_, Box<dyn Error>>((rows, fingerprint))
     })
     .await;
+    // If planning failed or timed out, dropping `attempt` commits the report waited on below.
     drop(attempt);
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
     let report = completion.wait_timeout(query_timeout);
@@ -543,7 +547,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         );
     }
     // Cancel probe: a heavy attempt cancelled mid-flight must reach a
-    // terminal cancelled report with cleaned resources, not hang or leak.
+    // terminal cancelled report with cleaned resources, without hanging or leaking.
     // The cancel races execution; a completed-before-cancel attempt records
     // no latency instead of failing.
     {

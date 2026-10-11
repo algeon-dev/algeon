@@ -508,8 +508,9 @@ impl AlgeonNativeExec {
                     move |gpu_stream_scope| async move {
                         let context = context_lease.context().with_runtime_gpu_stream_scope(gpu_stream_scope);
                         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-                        // Once native execution starts, the attempt is terminal: errors are surfaced with stable
-                        // facts by `native_query_runtime_error` and are not replayed through DataFusion.
+                        // Once native execution starts, the attempt is terminal. Errors are surfaced
+                        // with stable facts by `native_query_runtime_error` and are not replayed
+                        // through DataFusion.
                         let outcome = execute_query_plan(&context, QueryExecutionRequest::admitted(&admitted));
                         let (output, deferred_metrics) = metrics
                             .finalize_query_outcome_for_deferred_host(outcome, context_lease)
@@ -614,8 +615,8 @@ fn result_sink_label(sink: &ResultSink) -> &'static str {
     }
 }
 
-/// Checks that the producer children supply exactly the GPU-resident sources
-/// the plan declares, each under a distinct input name.
+/// Checks that the producer children supply the GPU-resident sources the plan
+/// declares and no others, each under a distinct input name.
 fn validate_gpu_inputs(plan: &QueryPlan, gpu_inputs: &[Arc<dyn ExecutionPlan>], operation: &'static str) -> Result<()> {
     let required_inputs = gpu_resident_source_names(plan);
     if gpu_inputs.is_empty() {

@@ -269,7 +269,7 @@ fn explicit_query_cap_is_preserved_across_admissions() {
         .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(70))
         .unwrap()
         .expect("explicit cap should admit");
-    // An explicit cap is never clamped: the admission issues exactly what the
+    // An explicit cap is never clamped: the admission issues the amount the
     // request asked for.
     assert_eq!(raised.device_budget_bytes(), 70);
     let second = service.try_admit_query().unwrap().expect("remaining capacity admits unconstrained query");

@@ -343,10 +343,11 @@ pub(super) fn list_child_import_device_bytes(
 /// Conservatively estimate the Arrow buffer capacity retained by a host-copy
 /// export before any device values are copied to host.
 ///
-/// The estimate follows the final external Arrow schema rather than the cuDF
-/// source representation. In particular, narrow decimals retain their 4-byte
-/// or 8-byte logical width, booleans become bit-packed, and string/list offset
-/// widths follow Utf8/LargeUtf8 and List/LargeList respectively. Every logical
+/// The estimate follows the final external Arrow schema. The cuDF source
+/// representation contributes only the string character byte count. In
+/// particular, narrow decimals retain their 4-byte or 8-byte logical width,
+/// booleans become bit-packed, and string/list offset widths follow
+/// Utf8/LargeUtf8 and List/LargeList respectively. Every logical
 /// Arrow buffer is rounded to Arrow's 64-byte mutable-buffer allocation
 /// quantum, making the result an upper bound for the capacities counted by
 /// DataFusion's `get_record_batch_memory_size`.
@@ -368,8 +369,8 @@ pub(crate) fn estimate_arrow_host_record_batch_memory_bytes(
     // Native operators may represent an empty string/list column without the
     // offset buffers that exist in a non-empty cuDF column. No values can be
     // copied in this case, so size the typed Arrow destination directly from
-    // its validated external schema instead of inferring character bytes by
-    // subtracting cuDF structural payloads that are legitimately absent.
+    // its validated external schema. Subtracting cuDF structural payloads
+    // cannot work here, because those payloads are legitimately absent.
     if frame.num_rows() == 0 {
         return schema.fields().iter().try_fold(0usize, |total, field| {
             let column_bytes = estimate_empty_arrow_host_column_memory_bytes(field.arrow_data_type(), operation)?;

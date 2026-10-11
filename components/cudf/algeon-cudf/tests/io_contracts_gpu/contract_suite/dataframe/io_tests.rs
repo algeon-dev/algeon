@@ -1,4 +1,3 @@
-//! Tests for DataFrame I/O integration.
 use std::fs;
 
 use cudf::{
@@ -75,7 +74,6 @@ fn test_read_parquet_with_options() {
     let write_opts = ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
     write_parquet(&table, &write_opts).unwrap();
 
-    // Read with column selection and row limit.
     let opts = ParquetReadOptions::builder().filepath(&path).columns(&["b"]).num_rows(3).with_runtime(&rt).build();
     let df = DataFrame::read_parquet(opts, Exec::RETAINED).unwrap();
 
@@ -171,7 +169,6 @@ fn test_write_parquet_preserves_schema() {
 
     df.write_parquet(&path).unwrap();
 
-    // Read back and verify schema preserved.
     let df2 = DataFrame::read_parquet(
         ParquetReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
         Exec::RETAINED,
@@ -192,7 +189,6 @@ fn test_roundtrip_create_write_read() {
     let path = dir.path().join("roundtrip.parquet");
     let rt = sample_runtime();
 
-    // Create DataFrame -> write -> read -> verify identical.
     let c1 = column_from_slice(&[10i64, 20, 30]).unwrap();
     let c2 = column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
     let c3 = column_from_slice(&[7i32, 8, 9]).unwrap();

@@ -40,7 +40,6 @@ macro_rules! define_type_ids {
                 $(Self::$variant,)+
             ];
 
-            /// Convert to the raw FFI type_id enum.
             pub(crate) const fn to_raw(self) -> cudf_sys::cudf_type_id_t {
                 self as cudf_sys::cudf_type_id_t
             }
@@ -51,7 +50,7 @@ macro_rules! define_type_ids {
             /// Generated bindings expose the FFI value as a raw integer alias. This
             /// validates that integer discriminant before it becomes a Rust enum, so
             /// a libcudf type id this binding does not mirror yet stays a recoverable
-            /// error instead of materializing an invalid Rust enum value.
+            /// error and does not materialize an invalid Rust enum value.
             pub(crate) fn from_raw(raw: i32) -> Result<Self> {
                 match raw {
                     $(value if value == cudf_sys::$raw_id as i32 => Ok(Self::$variant),)+
@@ -204,7 +203,6 @@ impl TypeId {
         matches!(self, TypeId::Float32 | TypeId::Float64)
     }
 
-    /// Returns `true` if this is a signed or unsigned integer type.
     pub(crate) fn is_integral(self) -> bool {
         self.is_signed_int() || self.is_unsigned_int()
     }
@@ -536,7 +534,7 @@ impl TimestampResolution {
     }
 }
 
-/// Helper to create a bitmask from an iterator of validity flags.
+/// Helper to create a bitmask from a slice of validity flags.
 ///
 /// cudf uses LSB-first bitmask packing (bit 0 of byte 0 = element 0).
 pub(crate) fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
@@ -565,7 +563,6 @@ pub(crate) fn count_nulls(validity: &[bool]) -> i32 {
     validity.iter().filter(|&&v| !v).count() as i32
 }
 
-// Internal helpers for FFI handle round-tripping of DataType.
 impl DataType {
     /// Create a C shim data_type handle from this DataType with operation context.
     pub(crate) fn to_raw_handle_for(self, operation: &'static str) -> Result<cudf_sys::cudf_data_type_handle> {
@@ -603,8 +600,8 @@ mod tests {
 
     #[test]
     fn type_id_from_raw_rejects_unmirrored_discriminants() {
-        // NUM_TYPE_IDS (one past the last mirrored id) is exactly what a newer
-        // libcudf would hand back for a type this binding does not mirror yet.
+        // NUM_TYPE_IDS (one past the last mirrored id) is what a newer
+        // libcudf would return for a type this binding does not mirror yet.
         let one_past_last = TypeId::ALL.len() as i32;
         for raw in [one_past_last, -1, i32::MAX] {
             let err = TypeId::from_raw(raw).expect_err("unmirrored type id must be rejected");

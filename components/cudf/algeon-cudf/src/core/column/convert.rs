@@ -30,10 +30,9 @@ pub(crate) fn copy_view_to_owned(cv: &ColumnView<'_>) -> Result<Column> {
 
 /// Deep-copy a `ColumnView` into an owned `Column` on the output domain.
 ///
-/// Same-dtype casts use this instead of copying on the input domain and
-/// relabeling: the copy executes on the output stream and memory resource,
-/// so later output-stream reads are ordered after it, teardown frees on the
-/// right stream, and the charge lands on the budgeting resource.
+/// Same-dtype casts use this path. The copy executes on the output stream and
+/// memory resource. Later output-stream reads are ordered after it, teardown
+/// frees on the right stream, and the charge lands on the budgeting resource.
 pub(crate) fn copy_view_in(
     cv: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,

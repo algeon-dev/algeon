@@ -42,7 +42,7 @@ pub enum SourceReadFact {
     InputBatch { rows: u64 },
     /// Parquet source work, as explicit increments. Recording sites add
     /// different subsets of these; a re-read that only learns its row-group
-    /// count adds no file; so each carries exactly what it adds.
+    /// count adds no file. Each field carries only what its recording site adds.
     ParquetSource { files: u64, known_bytes: u64, selected_row_groups: u64, read_columns: u64 },
     /// Time spent loading source metadata.
     MetadataLoadTime(Duration),
@@ -57,8 +57,11 @@ pub enum SourceReadFact {
 pub struct SourceReadTotals {
     pub(crate) input_batches: u64,
     pub(crate) input_rows: u64,
+    /// Parquet file counts added by source recording sites.
     pub parquet_files: u64,
+    /// Sum of known compressed Parquet byte counts reported by source sites.
     pub parquet_bytes_known: u64,
+    /// Sum of selected Parquet row groups reported by source sites.
     pub row_groups_selected: u64,
     pub(crate) read_columns: u64,
     pub(crate) source_chunks_planned: u64,
@@ -72,6 +75,7 @@ pub struct SourceReadTotals {
     pub(crate) source_read_prefetches_skipped: u64,
     pub(crate) source_read_prefetches_abandoned: u64,
     pub(crate) source_metadata_load_time: Duration,
+    /// Cumulative source-worker queue wait duration.
     pub source_read_queue_wait_time: Duration,
     pub(crate) parquet_read_time: Duration,
     pub(crate) source_read_time: Duration,
@@ -112,8 +116,8 @@ impl SourceReadTotals {
     }
 }
 
-// `&` rather than `&&` throughout `apply`: every counter in a fact must be
-// updated even after an earlier one saturates.
+// `apply` combines results with the non-short-circuit `&` operator. Every
+// counter in a fact must be updated even after an earlier one saturates.
 fn add_u64(counter: &mut u64, value: u64) -> bool {
     match counter.checked_add(value) {
         Some(next) => {
@@ -143,6 +147,7 @@ fn add_duration(total: &mut Duration, value: Duration) -> bool {
 /// Exact query metrics reduction kept by the observation owner.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryMetricsSummary {
+    /// Exact source totals reduced independently of bounded detail retention.
     pub source_read: SourceReadTotals,
 }
 
@@ -210,6 +215,7 @@ pub struct QueryMetricsCheckpoint {
     pub(crate) revision: u64,
     /// Whether the owner has sealed, so no later revision will follow.
     pub(crate) sealed: bool,
+    /// Exact reductions sampled under the same owner lock as retained details.
     pub summary: QueryMetricsSummary,
     /// Retained source-read detail rows, in recording order.
     pub source_read_rows: Vec<SourceReadRuntimeMetrics>,

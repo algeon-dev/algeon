@@ -13,7 +13,7 @@ use crate::source::SourceNode;
 pub(crate) enum RowBoundProvenance {
     /// The bound is an exact row count.
     PlanExact,
-    /// The bound is a hard upper bound, not necessarily exact.
+    /// The bound is a hard upper bound and may exceed the exact row count.
     PlanHardUpperBound,
 }
 
@@ -32,7 +32,7 @@ pub(crate) fn query_plan_node_hard_row_upper_bound(plan: &QueryPlan, node_id: No
     hard_row_upper_bound_for_plan_node(plan, node_id).map(|(rows, _)| rows)
 }
 
-/// Derive only mathematically hard cardinality evidence.  This deliberately
+/// Derives only mathematically hard cardinality evidence. This deliberately
 /// does not reuse descriptive output-row estimates, whose contract is
 /// descriptive and unsuitable for bounded admission.
 pub(crate) fn hard_row_upper_bound_for_plan_node(

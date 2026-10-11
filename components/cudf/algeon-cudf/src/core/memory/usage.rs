@@ -64,23 +64,36 @@ impl From<cudf_sys::cudf_memory_pool_usage_t> for DeviceMemoryPoolUsage {
 /// been detached from its stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReservationUsage {
+    /// Native identity of this query-domain stream member.
     pub reservation_id: u64,
+    /// Whether the member remains attached to its stream; detached allocations can remain retained.
     pub attached: bool,
     /// Allocations made through a query-domain member's direct resource.
     pub direct_total_allocations: u64,
     /// Allocations routed from the device-current resource into a query-domain
     /// member.
     pub routed_total_allocations: u64,
+    /// Enforced live allocation limit in bytes, charged using aligned allocation sizes.
     pub allocation_limit_bytes: u64,
+    /// Requested bytes in allocations still retained at this snapshot.
     pub current_bytes: u64,
+    /// Largest observed sum of requested bytes in simultaneously retained allocations.
     pub peak_bytes: u64,
+    /// Cumulative requested bytes across successful allocations, including allocations later released.
     pub total_bytes: u64,
+    /// Live allocation charge in bytes after alignment.
     pub current_aligned_bytes: u64,
+    /// Largest observed live allocation charge in bytes after alignment.
     pub peak_aligned_bytes: u64,
+    /// Cumulative count of successful allocations, including allocations later released.
     pub total_allocations: u64,
+    /// Number of allocations still retained at this snapshot.
     pub current_allocations: u64,
+    /// Largest observed number of simultaneously retained allocations.
     pub peak_allocations: u64,
+    /// Number of allocation requests rejected by a limit or the upstream allocator.
     pub failed_allocation_count: u64,
+    /// Largest failed allocation request in bytes; zero when no allocation failure was recorded.
     pub largest_failed_allocation_bytes: u64,
 }
 
@@ -99,20 +112,35 @@ pub struct QueryMemoryDomainIdentity {
 /// Usage counters for an opt-in query memory domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryMemoryDomainUsage {
+    /// Caller-supplied query-memory-domain identity.
     pub domain_id: u64,
+    /// Whether the domain remains active for allocation.
     pub active: bool,
+    /// Number of stream members currently attached to the domain.
     pub active_members: u64,
+    /// Immutable logical ceiling declared when this domain was created, in bytes.
     pub ceiling_bytes: u64,
+    /// Enforced live allocation limit in bytes, charged using aligned allocation sizes.
     pub allocation_limit_bytes: u64,
+    /// Requested bytes in allocations still retained at this snapshot.
     pub current_bytes: u64,
+    /// Largest observed sum of requested bytes in simultaneously retained allocations.
     pub peak_bytes: u64,
+    /// Cumulative requested bytes across successful allocations, including allocations later released.
     pub total_bytes: u64,
+    /// Live allocation charge in bytes after alignment.
     pub current_aligned_bytes: u64,
+    /// Largest observed live allocation charge in bytes after alignment.
     pub peak_aligned_bytes: u64,
+    /// Cumulative count of successful allocations, including allocations later released.
     pub total_allocations: u64,
+    /// Number of allocations still retained at this snapshot.
     pub current_allocations: u64,
+    /// Largest observed number of simultaneously retained allocations.
     pub peak_allocations: u64,
+    /// Number of allocation requests rejected by a limit or the upstream allocator.
     pub failed_allocation_count: u64,
+    /// Largest failed allocation request in bytes; zero when no allocation failure was recorded.
     pub largest_failed_allocation_bytes: u64,
 }
 

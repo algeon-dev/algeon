@@ -1,4 +1,9 @@
 //! Raw C bindings to the cuML native shim. Prefer the safe `cuml` crate.
+//!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion); workspace code
+//! uses this crate for its component contracts. See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, clippy::all)]
 
 include!("bindings.rs");
@@ -28,9 +33,9 @@ impl std::error::Error for RuntimeVersionError {}
 
 /// Validate the cuML version compiled into `libcuml_rust.so` from `CUML_VERSION_*` headers.
 ///
-/// This reports the version the shim was built against, not a version queried
-/// from loaded `libcuml.so`. Build-support pins that library to the same cuML
-/// install through rpath and direct NEEDED entries.
+/// This reports the version the shim was built against. It does not query the
+/// loaded `libcuml.so`. Build-support pins that library to the same cuML install
+/// through rpath and direct NEEDED entries.
 pub fn validate_runtime_version() -> Result<(u16, u16, u16), RuntimeVersionError> {
     let mut major = 0;
     let mut minor = 0;

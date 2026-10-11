@@ -25,7 +25,7 @@ const OPERATION: &str = "query_engine.plan.builder";
 /// inputs already exist, which keeps ids stable and prevents forward references.
 /// A [`NodeId`] is a plan-local index: an id taken from another builder or plan
 /// that happens to be in range is not detected. Frontends should use this
-/// builder instead of constructing [`QueryPlan`] directly.
+/// builder and avoid constructing [`QueryPlan`] directly.
 #[derive(Debug, Clone, Default)]
 pub struct QueryPlanBuilder {
     /// Every node already validated against its predecessors; the output
@@ -119,8 +119,8 @@ impl QueryPlanBuilder {
 
     /// Adds a limit node that preserves input ordering facts.
     ///
-    /// A fetch-only limit over an identical limit returns the input id: the
-    /// second limit would pass every row through. An advisory binding on the
+    /// A fetch-only limit over an identical limit returns the input id, because
+    /// the second limit would pass every row through. An advisory binding on the
     /// input moves to the new node with its row estimate clipped by the limit;
     /// its byte estimate is dropped because the frontend's byte model gives no
     /// per-row figure to scale it by.

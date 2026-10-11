@@ -118,11 +118,11 @@ impl DataFrame {
     /// Minimum hard execution budget worth attempting for a local Parquet
     /// source chunk read.
     ///
-    /// This is not an exact decoded-output preflight contract. It is a lower
-    /// bound for the member-enforced execution budget of a single-chunk
-    /// [`read_parquet_source`](Self::read_parquet_source), covering small
-    /// lower-level allocations that happen before retained output bytes can
-    /// be observed.
+    /// This is a lower bound for the member-enforced execution budget of a
+    /// single-chunk [`read_parquet_source`](Self::read_parquet_source), covering
+    /// small lower-level allocations that happen before retained output bytes
+    /// can be observed. It does not provide an exact decoded-output preflight
+    /// contract.
     pub fn minimum_parquet_source_read_budget_bytes() -> usize {
         PARQUET_SOURCE_MINIMUM_HARD_BUDGET_BYTES
     }
@@ -130,8 +130,8 @@ impl DataFrame {
     /// Return a source-read byte preflight when cudf can prove the retained
     /// output bytes before execution.
     ///
-    /// The current coverage is intentionally narrow: every output column in
-    /// the requested source mode must be fixed width and the planned chunk must
+    /// The current coverage is intentionally narrow. Every output column in the
+    /// requested source mode must be fixed width, and the planned chunk must
     /// carry exact row-count metadata. Variable-width columns or missing
     /// row-count metadata return `Ok(None)` so callers can keep their existing
     /// fallback contract.
@@ -183,7 +183,7 @@ impl DataFrame {
     /// Performs host file I/O (or decodes the borrowed host buffer), allocates
     /// new GPU-backed columns for the decoded result, and copies decoded
     /// column data into device memory. Column names are recovered from Parquet
-    /// schema metadata rather than synthesized heuristically.
+    /// schema metadata and are not synthesized heuristically.
     pub fn read_parquet(options: ParquetReadOptions<'_>, exec: Exec<'_>) -> Result<Self> {
         let operation = "dataframe::read_parquet";
         validate_parquet_projection(options.columns.as_deref(), operation)?;
@@ -197,8 +197,8 @@ impl DataFrame {
     /// Files are read in the order of `filepaths` with the same projection,
     /// then concatenated on device. All files must return the same schema
     /// names and compatible column dtypes after projection. Glob expansion is
-    /// intentionally not performed: each path is treated as a literal
-    /// filesystem path, and directories are not enumerated.
+    /// intentionally not performed. Each path is treated as a literal filesystem
+    /// path, and directories are not enumerated.
     ///
     /// # Cost
     /// Performs host file I/O for each file, allocates GPU-backed columns for
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(unbounded.num_rows(), row_count);
 
         // Well under the ~320 KB of decoded i64 data, so the read spans several
-        // passes rather than one.
+        // passes.
         let bounded_options =
             ParquetReadOptions::builder().filepath(&path).with_runtime(&runtime).pass_read_limit(64 * 1024).build();
         let bounded = DataFrame::read_parquet(bounded_options, Exec::RETAINED).unwrap();

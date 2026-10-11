@@ -19,8 +19,8 @@ pub(in crate::native_exec::metrics) enum NativeMetricRecordingKind {
 /// Compile-time recording contract for one ordered metric descriptor.
 ///
 /// The ordered descriptor macro calls this trait for every marker. Adding a
-/// descriptor without an implementation is therefore a compile error instead
-/// of a silently registered metric that is never populated.
+/// descriptor without an implementation is therefore a compile error. Without
+/// that check, the metric would be registered and never populated.
 trait NativeMetricRecording<Marker> {
     #[cfg(test)]
     const KIND: NativeMetricRecordingKind;
@@ -333,7 +333,7 @@ impl_noop_recording! {
 
 // The report becomes available only at the attempt owner's seal point, after
 // native wrappers have already recorded their `QueryMetrics`. Its row is
-// emitted directly by the elected root metric target rather than inferred
+// emitted directly by the elected root metric target. The row is not inferred
 // from a pre-seal execution result.
 impl_noop_recording! {
     Attempt;

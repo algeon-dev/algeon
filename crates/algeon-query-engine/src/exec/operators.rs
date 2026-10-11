@@ -1040,10 +1040,9 @@ fn execute_lag_lead_window(
             cudf_query_error("query_engine.window.lag_lead.sort", "failed to sort LAG / LEAD window input", error)
         })?;
 
-    // Build fill scalars. The shifted value's fill is the user-supplied
-    // default (or NULL of the output type). The row_index column is shifted
-    // by 0, so its fill value is never observed; we still construct a
-    // matching Int32 scalar so libcudf sees a well-typed pair.
+    // The shifted value's fill is the user-supplied default (or NULL of the
+    // output type). The row_index column is shifted by 0, so its fill value
+    // is never observed; the Int32 scalar still gives libcudf a well-typed pair.
     let value_fill = build_lag_lead_value_fill_scalar(context, default, &output_arrow_dtype)?;
     let row_index_fill = context.runtime()?.scalar(0i32).map_err(|error| {
         cudf_query_error(
@@ -1083,12 +1082,12 @@ fn execute_lag_lead_window(
     };
 
     // Per-group shift of the value column. The row_index column rides along
-    // with offset 0 so we can re-sort by it to recover input order.
+    // with offset 0 so the result can be re-sorted by it to recover input order.
     //
-    // SQL `PARTITION BY` groups NULL keys together, so we have to request
-    // `include_null_keys` from cudf explicitly: `DataFrame::groupby`
-    // defaults to excluding null keys, which would drop those rows from the
-    // shift output and break the row-index based reattach below.
+    // SQL `PARTITION BY` groups NULL keys together, so `include_null_keys` must
+    // be requested from cudf explicitly: `DataFrame::groupby` defaults to
+    // excluding null keys, which would drop those rows from the shift output
+    // and break the row-index based reattach below.
     let shift_specs = [
         CudfShiftSpec::new(value_name.as_str(), signed_offset, value_fill),
         CudfShiftSpec::new(row_index_name.as_str(), 0, row_index_fill),
@@ -1317,7 +1316,7 @@ mod tests {
 
     /// The legacy cuGraph algorithms number their vertex codebook as Int32, so
     /// a window input with more rows than Int32 holds must fail with a typed
-    /// size error instead of wrapping to negative ids.
+    /// size error and must not wrap to negative ids.
     #[test]
     fn row_number_capacity_follows_the_signed_output_type() {
         let int32_limit = usize::try_from(i32::MAX).unwrap();

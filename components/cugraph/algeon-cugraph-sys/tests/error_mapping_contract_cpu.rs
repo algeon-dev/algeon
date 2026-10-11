@@ -94,8 +94,8 @@ fn assert_allocator_failures_map_to_alloc_error(source: &str, label: &str) {
 }
 
 /// These collectives allocate before graph dispatch, so each one must sit inside
-/// a `run_with_error_boundary` lambda rather than ahead of it: a failure raised
-/// before the boundary opens escapes the C API as an unclassified exception.
+/// a `run_with_error_boundary` lambda. A failure raised before the boundary opens
+/// escapes the C API as an unclassified exception.
 fn assert_allocator_guarded_call(source: &str, call: &str) {
     let matches = source.match_indices(call).map(|(index, _)| index).collect::<Vec<_>>();
     assert!(!matches.is_empty(), "{call} should appear in graph_mg.cpp");

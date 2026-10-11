@@ -4,16 +4,16 @@ use super::GraphPredicateInput;
 
 /// PageRank parameters.
 ///
-/// `alpha` is the damping factor, `epsilon` is the positive convergence
-/// tolerance, and `max_iterations` is the positive iteration cap. Defaults
-/// match the pinned local `cugraph` crate defaults.
+/// Defaults use damping factor 0.85, convergence tolerance 1e-5, and at most
+/// 100 iterations. Values are checked when the plan is validated or lowered;
+/// constructing this payload does not validate them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphPageRankParams {
-    /// Damping factor.
+    /// Finite damping factor in [0, 1]; the default is 0.85.
     pub alpha: f64,
-    /// Positive convergence tolerance.
+    /// Positive convergence tolerance; the default is 1e-5.
     pub epsilon: f64,
-    /// Positive iteration cap.
+    /// Positive iteration cap; the default is 100.
     pub max_iterations: u32,
 }
 
@@ -25,6 +25,9 @@ impl Default for GraphPageRankParams {
 }
 
 /// Personalized PageRank parameters.
+///
+/// The default binds input 1 using columns `vertex` and `value`, with default
+/// PageRank solver options. The caller must provide that side input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphPersonalizedPageRankParams {
     /// Shared PageRank solver options.

@@ -239,8 +239,6 @@ fn nested_series(rt: &Runtime, name: &str, array: ArrayRef) -> Series {
     nested_dataframe(rt, vec![(name, array)]).series(name).unwrap()
 }
 
-// ── Timestamp / Duration ────────────────────────────────────────────
-
 fn copy_into_domain_timestamp_microseconds() {
     let rt = sample_runtime();
     let s = common_series::<i64>("t", &[1_000_000]).unwrap();
@@ -391,8 +389,6 @@ fn series_from_scalar_cross_runtime_copy_waits_on_target_stream() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42]);
 }
 
-// ── Decimal ─────────────────────────────────────────────────────────
-
 fn copy_into_domain_decimal64() {
     let rt = sample_runtime();
     let s = common_series::<i64>("d", &[100]).unwrap();
@@ -448,8 +444,6 @@ fn copy_into_domain_decimal128_raw_scalar_preserves_dtype_scale_and_value() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-// ── Regression: numeric and string ──────────────────────────────────
-
 fn copy_into_domain_numeric_i32_regression() {
     let rt = sample_runtime();
     let scalar = scalar(42i32).unwrap();
@@ -466,8 +460,6 @@ fn copy_into_domain_string_regression() {
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     assert_eq!(result.to_strings_strict().unwrap(), vec!["hello".to_string(), "hello".to_string()]);
 }
-
-// ── End-to-end: scalar copy → DataFrame round-trip ──────────────────
 
 fn scalar_copy_dataframe_round_trip() {
     let rt = sample_runtime();
@@ -497,8 +489,6 @@ fn scalar_copy_dataframe_round_trip() {
     assert_eq!(retrieved.dtype().unwrap().id(), TypeId::TimestampMicroseconds);
     assert_series_host_export_equivalent(&expected, &retrieved);
 }
-
-// ── List / Struct ────────────────────────────────────────────────────
 
 fn copy_into_domain_list_scalar() {
     let rt = sample_runtime();

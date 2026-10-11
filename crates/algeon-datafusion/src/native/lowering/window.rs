@@ -344,10 +344,9 @@ fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &Schema
             if standard.order_by().is_empty() {
                 return Err(missing_order_by());
             }
-            // Parsing the offset / default literals here keeps validation
-            // and lowering in sync. We do not commit a fallback reason for
-            // parse failures because lowering will surface a structured
-            // rejection if the literal arguments are not constant.
+            // Parsing the offset and default literals here keeps validation and
+            // lowering in sync. A parse failure returns the structured window
+            // rejection that lowering would return for the same arguments.
             let _ = parse_lag_lead_args(standard, input_schema)?;
             Ok(())
         },
@@ -390,8 +389,8 @@ struct LagLeadArgs {
 /// `lag` / `lead` window UDF.
 ///
 /// DataFusion expands missing `lag`/`lead` arguments to typed null literals.
-/// `offset` must be a non-negative integer literal fitting `u32`, or null for
-/// SQL's default `1`; `default` must be a scalar literal.
+/// `offset` must be a non-negative integer literal no greater than `i32::MAX`, or
+/// null for SQL's default `1`; `default` must be a scalar literal.
 ///
 /// Use `WindowUDFExpr::args()` because
 /// [`StandardWindowFunctionExpr::expressions`](datafusion::physical_expr::window::StandardWindowFunctionExpr::expressions)
@@ -481,9 +480,9 @@ fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, LoweringFa
 /// Reject offsets outside libcudf's signed shift range.
 ///
 /// libcudf's `groupby::shift` uses `cudf::size_type` (`int32`), and the
-/// engine negates the offset for `LEAD`, so the supported window is
-/// `[0, i32::MAX]`. Rejecting larger offsets here means the plan falls back
-/// to CPU DataFusion instead of admitting a native plan that would error at
+/// engine negates the offset for `LEAD`. The supported range is therefore
+/// `[0, i32::MAX]`. A larger offset is rejected here and the plan falls back to
+/// CPU DataFusion; admitting it would produce a native plan that errors at
 /// execute time.
 fn offset_from_i64(value: i64) -> Result<u32, LoweringFailure> {
     if value < 0 {
@@ -525,12 +524,11 @@ fn parse_lag_lead_default(
     if &lowered.data_type() != value_type {
         return Err(CapabilityReason::UnsupportedExpression.into());
     }
-    // Mirror the literal families that the engine's
-    // `build_lag_lead_value_fill_scalar` can lower to a cudf Scalar today.
-    // Decimal, date, timestamp, duration, and interval literals still need a
-    // cudf fill-scalar contract before the adapter can admit them; until
-    // then we reject so the query falls back to CPU instead of failing at
-    // execute time.
+    // These literal families match those the engine's `build_lag_lead_value_fill_scalar`
+    // can lower to a cudf Scalar. Decimal, date, timestamp, duration, and interval
+    // literals need a cudf fill-scalar contract before the adapter can admit them.
+    // They are rejected and the query falls back to CPU; admitting them would fail
+    // at execute time.
     match &lowered {
         NativeLiteralValue::Boolean(_)
         | NativeLiteralValue::Int8(_)

@@ -66,7 +66,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
         let plan = keyed_hash_join_resident_subplan_pipeline_plan(variant);
 
         // S3 admits the structurally equivalent aggregate through the compiled
-        // contracts: without shared identity it simply compiles to two
+        // contracts: without shared identity it compiles to two
         // separate aggregate tasks, so only the residual variants below stay
         // rejected.
         if matches!(variant, KeyedHashJoinResidentSubplanPipelineVariant::StructurallyEquivalentGroupedAggregate) {
@@ -160,8 +160,8 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_variants_follow_compiled_
 
     // A side too shallow for the multi-join proof is still executable: the shape
     // (keyed joins, a grouped aggregate over a join subplan, projection, sort,
-    // fetch) is admitted; capacity is the allocator's, enforced as a typed cap
-    // failure at runtime, not an admission gate.
+    // fetch) is admitted. Capacity is the allocator's and is enforced as a typed cap
+    // failure at runtime; admission does not check it.
     let plan = aggregate_over_join_subplan_topk_variant_plan(AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide);
     assert!(
         bounded_pipeline_admission(&plan).expect("bounded admission should not fail").is_some(),
@@ -338,8 +338,8 @@ fn root_full_sort_shared_keyed_join_fanout_plan(shared_join_type: JoinType, inte
 #[test]
 fn bounded_root_full_sort_join_aggregate_admits_shared_keyed_join_fanout() {
     // Pins that a shared keyed-hash join producer consumed by two downstream
-    // keyed joins is admitted through the SharedResidentFanout subcontract
-    // instead of being rejected as an unsupported shared producer.
+    // keyed joins is admitted through the SharedResidentFanout subcontract. The
+    // producer is accepted as a shared producer and is not reported as unsupported.
     let plan = root_full_sort_shared_keyed_join_fanout_plan(JoinType::Inner, false);
 
     assert!(
@@ -352,7 +352,7 @@ fn bounded_root_full_sort_join_aggregate_admits_shared_keyed_join_fanout() {
 fn bounded_root_full_sort_join_aggregate_admits_shared_keyed_semi_join_fanout() {
     // A keyed filtered semi join is a member of the admitted fragment and its output is
     // an ordinary resident frame, so sharing it is admitted on the same contract as a
-    // keyed-hash producer. TPC-DS q64's shared producer is exactly this shape.
+    // keyed-hash producer. TPC-DS q64's shared producer has this shape.
     let plan = root_full_sort_shared_keyed_join_fanout_plan(JoinType::LeftSemi, false);
 
     assert!(

@@ -486,9 +486,9 @@ pub(super) fn runtime_test_service_with_profiles(
 }
 
 /// Runtime-backed service tests must install the same explicit per-device
-/// contract their assertions exercise.  Host-derived construction silently
-/// forces one active attempt and makes capacity assertions depend on the
-/// machine running the test.
+/// contract their assertions exercise. Host-derived construction forces one
+/// active attempt and makes capacity assertions depend on the machine running
+/// the test.
 pub(super) fn runtime_test_device_profile(max_active_attempts_per_device: usize) -> GpuBackendDeviceConfig {
     const CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
 

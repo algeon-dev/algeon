@@ -132,7 +132,6 @@ pub struct NativePlanCostFacts {
 }
 
 impl NativePlanCostFacts {
-    /// Builds cost facts from a native query plan.
     pub(crate) fn from_plan(plan: &QueryPlan) -> Self {
         let mut facts = Self {
             node_count: plan.node_count(),
@@ -238,17 +237,9 @@ impl NativePlanCostFacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativePlanCostDecision {
     /// Native execution remains selected.
-    ContinueNative {
-        /// Facts used to make the decision.
-        facts: NativePlanCostFacts,
-    },
+    ContinueNative { facts: NativePlanCostFacts },
     /// A native-capable plan was not selected by cost.
-    NotSelectedByCost {
-        /// Stable cost-selection reason.
-        reason: NativePlanCostReason,
-        /// Facts used to make the decision.
-        facts: NativePlanCostFacts,
-    },
+    NotSelectedByCost { reason: NativePlanCostReason, facts: NativePlanCostFacts },
 }
 
 impl NativePlanCostDecision {
@@ -358,8 +349,8 @@ fn passes_host_literals_through(plan: &QueryPlan) -> bool {
 }
 
 /// Folds one source into the plan facts. Zero selected row groups is read as
-/// missing metadata rather than an empty scan, because a source without footer
-/// facts reports zero and the two cases cannot be told apart here.
+/// missing metadata. It is not read as an empty scan, because a source without
+/// footer facts reports zero and the two cases cannot be told apart here.
 fn accumulate_local_parquet_source_facts(facts: &mut NativePlanCostFacts, source: &LocalParquetSource) {
     let row_groups = source.selected_row_group_count();
     if row_groups == 0 {

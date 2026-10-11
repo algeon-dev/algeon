@@ -39,8 +39,8 @@ use tonic::transport::{Channel, Endpoint};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const DEVICE_CAPACITY_BYTES: u64 = 8 * GIB;
-/// Deliberately unequal per-device query caps: a device must issue its own
-/// configured limit rather than a fleet-wide one.
+/// Deliberately unequal per-device query caps. Each device must issue its own
+/// configured limit.
 const DEVICE_QUERY_CAPS: [u64; 2] = [8 * GIB, 2 * GIB];
 
 const PLACEMENT_SQL: &str = "select value from placement_rows order by value desc limit 4";
@@ -239,7 +239,7 @@ async fn a_waiting_flight_query_runs_on_whichever_eligible_device_frees_first() 
     server.wait_for_admission(2, 1).await;
 
     // Freeing exactly one device leaves the waiter a single eligible choice,
-    // so the device it lands on is observable rather than a race.
+    // so the device it lands on is determined and observable.
     drop(second);
     let batches = timeout(Duration::from_secs(120), queued)
         .await

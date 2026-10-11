@@ -1,5 +1,3 @@
-//! Tests for Column, ColumnView, and DeviceSlice.
-
 use cudf::{
     DataType, ErrorCode, TypeId,
     testing::{
@@ -284,27 +282,21 @@ fn test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_r
 }
 
 fn test_various_numeric_types() {
-    // i8
     let col = column_from_slice(&[1i8, -1, 127]).unwrap();
     assert_eq!(col.testing_view().unwrap().to_vec::<i8>().unwrap(), vec![1i8, -1, 127]);
 
-    // i16
     let col = column_from_slice(&[1i16, -1, 32767]).unwrap();
     assert_eq!(col.testing_view().unwrap().to_vec::<i16>().unwrap(), vec![1i16, -1, 32767]);
 
-    // u16
     let col = column_from_slice(&[0u16, 1000, 65535]).unwrap();
     assert_eq!(col.testing_view().unwrap().to_vec::<u16>().unwrap(), vec![0u16, 1000, 65535]);
 
-    // u32
     let col = column_from_slice(&[0u32, 42, u32::MAX]).unwrap();
     assert_eq!(col.testing_view().unwrap().to_vec::<u32>().unwrap(), vec![0u32, 42, u32::MAX]);
 
-    // u64
     let col = column_from_slice(&[0u64, 99]).unwrap();
     assert_eq!(col.testing_view().unwrap().to_vec::<u64>().unwrap(), vec![0u64, 99]);
 
-    // f32
     let col = column_from_slice(&[1.0f32, -0.5, 3.125]).unwrap();
     let vals = col.testing_view().unwrap().to_vec::<f32>().unwrap();
     assert!((vals[2] - 3.125).abs() < 0.001);
@@ -451,8 +443,6 @@ fn test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract() {
     assert_eq!(error_context_value(&err, "len").as_deref(), None);
 }
 
-// --- DeviceSlice tests ---
-
 fn test_device_slice_i32() {
     let col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let view = col.testing_view().unwrap();
@@ -521,7 +511,6 @@ fn test_device_slice_split_at() {
     assert_eq!(left.type_id(), TypeId::Int32);
     assert_eq!(right.type_id(), TypeId::Int32);
 
-    // Left pointer should equal the original pointer.
     assert_eq!(left.as_ptr(), slice.as_ptr());
 
     // Right pointer should be offset by 2 elements = 8 bytes.
@@ -556,7 +545,7 @@ fn test_device_slice_split_at_out_of_bounds() {
     let view = col.testing_view().unwrap();
     let slice = view.device_slice::<i32>().unwrap();
 
-    slice.split_at(4); // should panic
+    slice.split_at(4);
 }
 
 fn test_device_slice_empty_column() {
@@ -568,11 +557,7 @@ fn test_device_slice_empty_column() {
     assert!(slice.is_empty());
 }
 
-// --- from_device_ptr tests ---
-
 fn test_from_device_ptr_i32_roundtrip() {
-    // Create a column from host data, get its device pointer, then create a
-    // new column from that device pointer. Verify the data survives the round-trip.
     let original_data = vec![10i32, 20, 30, 40, 50];
     let src_col = column_from_slice(&original_data).unwrap();
     let src_view = src_col.testing_view().unwrap();
@@ -634,7 +619,6 @@ fn test_from_device_ptr_independent_of_source() {
         // src_col is dropped here
     };
 
-    // The new column should still be readable.
     let host_data = new_col.testing_view().unwrap().to_vec::<i32>().unwrap();
     assert_eq!(host_data, original_data);
 }
@@ -663,7 +647,6 @@ fn test_from_device_ptr_null_pointer_with_zero_len() {
 }
 
 fn test_from_device_ptr_null_pointer_with_nonzero_len() {
-    // Null pointer with len > 0 should fail.
     let result = unsafe { column_from_device_ptr(std::ptr::null(), 5, TypeId::Int32) };
     assert!(result.is_err());
     let err = result.err().unwrap();
@@ -682,7 +665,6 @@ fn test_from_device_ptr_null_pointer_with_nonzero_len() {
 }
 
 fn test_from_device_ptr_various_types() {
-    // i8
     let data_i8 = vec![1i8, -1, 127];
     let col = column_from_slice(&data_i8).unwrap();
     let v = col.testing_view().unwrap();
@@ -690,7 +672,6 @@ fn test_from_device_ptr_various_types() {
         unsafe { column_from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Int8).unwrap() };
     assert_eq!(new_col.testing_view().unwrap().to_vec::<i8>().unwrap(), data_i8);
 
-    // u32
     let data_u32 = vec![0u32, 42, u32::MAX];
     let col = column_from_slice(&data_u32).unwrap();
     let v = col.testing_view().unwrap();
@@ -698,7 +679,6 @@ fn test_from_device_ptr_various_types() {
         unsafe { column_from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::UInt32).unwrap() };
     assert_eq!(new_col.testing_view().unwrap().to_vec::<u32>().unwrap(), data_u32);
 
-    // f32
     let data_f32 = vec![1.0f32, -0.5, 3.125];
     let col = column_from_slice(&data_f32).unwrap();
     let v = col.testing_view().unwrap();
@@ -724,8 +704,6 @@ fn test_from_device_ptr_rejects_non_fixed_width_type() {
         Some("use a fixed-width type when importing a raw device pointer as a cudf column"),
     );
 }
-
-// --- null_column() tests ---
 
 fn test_nulls_int32_empty() {
     let col = null_column(TypeId::Int32, 0).unwrap();

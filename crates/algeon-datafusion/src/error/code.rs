@@ -11,8 +11,8 @@ macro_rules! error_codes {
         ///
         /// Codes describe the closest adapter-level cause. [`ErrorKind`] and
         /// [`ErrorStatus`] are derived from the code by [`ErrorCode::kind`]
-        /// and [`ErrorCode::status`]; consumers should treat those methods as
-        /// the policy contract rather than inferring behavior from variant
+        /// and [`ErrorCode::status`]. Consumers should treat those methods as
+        /// the policy contract and should not infer behavior from variant
         /// names.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         #[non_exhaustive]
@@ -112,8 +112,8 @@ error_codes! {
     UnsupportedType => "unsupported_type", Unsupported, Permanent;
     /// A DataFusion physical plan is invalid for the adapter boundary.
     ///
-    /// Use this for malformed or inconsistent plans, not for well-formed plans
-    /// that are merely outside the supported capability catalogue.
+    /// Use this only for malformed or inconsistent plans. A well-formed plan
+    /// outside the supported capability catalogue is reported as unsupported.
     InvalidExecutionPlan => "invalid_execution_plan", Planning, Permanent;
     /// An execution plan had an impossible child count for the adapter node.
     InvalidChildCount => "invalid_child_count", Internal, Permanent;
@@ -251,7 +251,8 @@ impl fmt::Display for ErrorKind {
 
 /// Retry and remediation status for adapter errors.
 ///
-/// This is a coarse source classification, not attempt retry advice.
+/// This is a coarse source classification. Attempt retry advice is derived only
+/// after terminal evidence is sealed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorStatus {
     /// The same request will not succeed without changing its query, input,
@@ -264,8 +265,8 @@ pub enum ErrorStatus {
     /// continue. Stop automatic retries and escalate or wait for intervention.
     ///
     /// This remains distinct from [`Self::Permanent`] because it records a
-    /// continuing dependency failure rather than a request that must change;
-    /// neither status alone is retry advice.
+    /// continuing dependency failure, while `Permanent` records a request that
+    /// must change. Neither status alone is retry advice.
     Persistent,
 }
 

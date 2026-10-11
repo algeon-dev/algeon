@@ -53,8 +53,8 @@ impl CaptureLossKind {
 /// One query's deterministic server-capture envelope.
 ///
 /// All retained free-form strings enter through this type. Replacements first
-/// release the old logical charge, so the counters describe live retained
-/// capture rather than cumulative traffic.
+/// release the old logical charge, so `retained_bytes` tracks only the live
+/// retained capture.
 #[derive(Debug, Clone)]
 struct CaptureBudget {
     max_bytes: u64,
@@ -294,14 +294,14 @@ const SQL_OPTION_VALUE_MASK: &str = "***";
 /// see which option was set. `sql` with no `OPTIONS` clause is returned
 /// byte-identical.
 ///
-/// This is a plain left-to-right scan over the token stream, not a SQL
-/// parser: it tracks only string-literal boundaries (so `OPTIONS` inside a
+/// This is a plain left-to-right scan over the token stream. It does not
+/// parse SQL: it tracks only string-literal boundaries (so `OPTIONS` inside a
 /// string, or a quote inside a value, is never misread) and the `OPTIONS (
 /// ... )` key/value shape from `datafusion-sql`'s grammar (`'key' 'value',
 /// key2 value2, ...`; no `=`). An `OPTIONS (` clause that never reaches its
-/// closing `)` (or a value literal that is never closed) masks to the end of
-/// input rather than emit the unscanned tail, so a truncated or malformed
-/// statement fails closed.
+/// closing `)` (or a value literal that is never closed) masks everything to
+/// the end of input. The unscanned tail is never emitted, so a truncated or
+/// malformed statement fails closed.
 fn redact_sql_options(sql: &str) -> Cow<'_, str> {
     if !contains_options_keyword(sql) {
         return Cow::Borrowed(sql);
@@ -1347,8 +1347,8 @@ mod tests {
         let sql = "CREATE EXTERNAL TABLE t STORED AS CSV OPTIONS ('aws.secret_access_key' 'super-secret";
         let redacted = redact_sql_options(sql);
         assert!(!redacted.contains("super-secret"), "{redacted}");
-        // An unterminated clause masks to end of input rather than emit any
-        // unscanned tail verbatim.
+        // An unterminated clause masks to end of input. No unscanned tail is
+        // emitted verbatim.
         assert!(redacted.ends_with(SQL_OPTION_VALUE_MASK), "{redacted}");
     }
 

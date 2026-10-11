@@ -1,7 +1,7 @@
 //! Aggregate and report execution-mode labels (wire DTOs).
 //!
 //! These labels describe aggregate evaluation contracts and preserved report
-//! vocabulary, not admission or product modes; the bounded resource
+//! vocabulary. They are not admission or product modes. The bounded resource
 //! controller owns the single bounded execution path. Result placement is
 //! carried by the plan's `ResultSink`. The plan-coverage modes
 //! (`native_required`, `native_preferred`, `functions_only`) described in
@@ -20,8 +20,8 @@ use std::{fmt, str::FromStr};
 /// [`Self::DataFusionExactHostWelford`] requires the supported DataFusion
 /// aggregate semantics and a validated input-order and evaluation contract.
 /// Bit-for-bit equivalence is claimed only for that contract. If the required
-/// contract is unavailable, planning rejects the native candidate; it never
-/// infers exactness from the surrounding join or final sort.
+/// contract is unavailable, planning rejects the native candidate, and a
+/// surrounding join or final sort does not supply exactness.
 /// [`Self::GpuNativeTolerant`] remains the default and does not promise
 /// bit-for-bit equivalence with DataFusion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,15 +33,15 @@ pub enum StatisticalAggregateExecutionMode {
     /// semantics. Planning rejects group-key and aggregate types that this
     /// host kernel does not cover, and ungrouped floating `SUM` and `AVG`,
     /// which DataFusion adds batch by batch, so those plans stay on
-    /// DataFusion. A NaN result matches as a NaN, not bit for bit: an add of
-    /// two NaN operands keeps the sign of the operand the compiler places
-    /// first, in DataFusion and in this kernel alike.
+    /// DataFusion. A NaN result matches as a NaN, with no bit-for-bit equality.
+    /// An add of two NaN operands keeps the sign of the operand the compiler
+    /// places first, in DataFusion and in this kernel alike.
     DataFusionExactHostWelford,
     /// Use libcudf's native grouped/scalar statistical kernels with each
     /// aggregate's declared degrees of freedom. This is the default.
     ///
-    /// Variance is derived from sum and sum-of-squares moments rather than
-    /// DataFusion's Welford updates, so floating-point results can differ from
+    /// Variance is derived from sum and sum-of-squares moments, while
+    /// DataFusion uses Welford updates. Floating-point results can differ from
     /// DataFusion, and precision degrades when values are large relative to
     /// their spread.
     #[default]
@@ -112,7 +112,7 @@ impl std::error::Error for StatisticalAggregateExecutionModeParseError {}
 /// mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StatisticalAggregateToleranceContract {
-    /// Results are expected to match the compatibility contract exactly.
+    /// Results are expected to be identical to the compatibility contract.
     Exact,
     /// Results are floating-point equivalent under a declared tolerance.
     FloatTolerant,

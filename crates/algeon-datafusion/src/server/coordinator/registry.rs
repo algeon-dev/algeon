@@ -301,7 +301,7 @@ impl QueryCoordinator {
 
     /// Attach the report published by the single execution-attempt owner,
     /// with the native execution metrics sealed at the same point.
-    /// This is a retained read-only projection: the coordinator has no
+    /// This is a retained read-only projection. The coordinator has no
     /// terminalization or observation-sealing authority over the report.
     pub(crate) fn attach_attempt_report(
         &self,
@@ -348,6 +348,7 @@ impl QueryCoordinator {
         record.attempt_report = Some(report);
         record.attempt_snapshot = snapshot;
         Self::bump_capture_version(record);
+        // Release the state lock before finalize_ready, which locks the state again.
         drop(state);
         self.finalize_ready();
         Ok(())
@@ -355,8 +356,9 @@ impl QueryCoordinator {
 
     /// Allows a begin-attempt rejection to finalize its coordinator record.
     /// No attempt exists in that one backend-closing/error window, so there is
-    /// no immutable completion to await; the retained artifact is explicitly
-    /// marked unavailable instead of waiting forever.
+    /// no immutable completion to await. Clearing `requires_attempt_report`
+    /// lets finalization proceed without a report. The record then has no
+    /// attempt snapshot, so its retained artifact is unavailable.
     pub(crate) fn allow_missing_attempt_report(&self, query_id: &str) {
         let mut state = self.lock_state();
         let Some(key) = state.current.get(query_id).cloned() else { return };
@@ -475,8 +477,9 @@ impl QueryCoordinator {
         record.ticket.as_ref()?.attempt.as_ref().map(AlgeonAttempt::cancellation)
     }
 
-    /// Close registration, record a server-shutdown cancellation cause, and
-    /// request cancellation for every ticketed or executing native query.
+    /// Applies a terminal outcome to the record's captured stats. A cancelled
+    /// query that still requires an attempt report is captured as a failure.
+    /// Otherwise it is captured as a cancellation.
     pub(crate) fn apply_terminal_to_capture(record: &mut QueryRecord, terminal: &mut QueryTerminal, now: Instant) {
         match terminal {
             QueryTerminal::Succeeded => {

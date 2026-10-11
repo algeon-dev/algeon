@@ -29,10 +29,10 @@ use crate::{
 };
 
 /// A plan that passed validation, capability analysis, compilation and the
-/// compiled contracts exactly once.
+/// compiled contracts, each checked exactly once.
 ///
 /// Only [`admit`] and [`AdmittedPlan::with_pruned_sources`] construct it.
-/// Execution and reporting read this artifact instead of deciding again; it
+/// Execution and reporting read this artifact and do not decide again. It
 /// owns the plan it admitted, so no other plan, sink or mode can reach the
 /// pipeline it carries.
 #[derive(Debug)]
@@ -150,8 +150,9 @@ impl AdmissionRejection {
         &self.rejection
     }
 
-    /// Whether the requested statistical aggregate execution mode, rather than
-    /// a compiled contract, refuses the plan.
+    /// Whether the requested statistical aggregate execution mode refuses the
+    /// plan. A compiled-contract refusal and a validation refusal both return
+    /// `false`.
     pub fn is_execution_mode_refusal(&self) -> bool {
         matches!(self.cause, RejectionCause::ExecutionMode)
     }
@@ -253,9 +254,9 @@ pub fn admit(
 ///
 /// Only [`StatisticalAggregateExecutionMode::DataFusionExactHostWelford`]
 /// narrows support: its host kernel reproduces DataFusion's accumulators for a
-/// fixed set of group-key and aggregate types, so a frontend that may fall
-/// back keeps the other types on DataFusion instead of failing during
-/// execution.
+/// fixed set of group-key and aggregate types. A frontend that may fall back
+/// keeps the other types on DataFusion, and rejecting at admission lets that
+/// fallback happen before execution starts.
 fn statistical_aggregate_execution_mode_rejection(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
@@ -419,8 +420,8 @@ fn compiled_bounded_pipeline_required_error(
             .with_fact("compiled_sink_kind", pipeline.sink().kind().as_str());
     }
 
-    // Rejection facts may repeat pipeline-derived keys; the pipeline values
-    // above are authoritative, so only absent keys are added here.
+    // Rejection facts may repeat pipeline-derived keys. The pipeline values
+    // above are authoritative; only absent keys are added here.
     for (key, value) in &rejection.facts {
         error = error.with_fact_if_absent(key, value.as_str());
     }

@@ -76,8 +76,9 @@ impl RuntimeExecutionObservationScope {
         &self.metrics
     }
 
-    /// Reports this plan execution's metrics to `metrics` instead of the trace
-    /// session, for an execution whose metrics owner is bound separately.
+    /// Reports this plan execution's metrics to `metrics`, and the trace session
+    /// does not receive them. Use this for an execution whose metrics owner is
+    /// bound separately.
     #[must_use]
     pub fn with_metrics(mut self, metrics: MetricsRecorder) -> Self {
         self.metrics = metrics;

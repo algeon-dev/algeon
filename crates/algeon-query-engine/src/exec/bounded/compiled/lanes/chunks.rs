@@ -105,11 +105,11 @@ struct ReadyLaneOutput<O> {
 impl<O> Drop for ChunkFlights<O> {
     fn drop(&mut self) {
         // A panic or early error must drain before the enclosing run returns
-        // its lane leases. Joined outputs are completion-observed before release so a late
-        // lane failure is still attributed instead of surfacing at an unrelated later fence;
-        // uncommitted outputs are released after each join. `join` blocks the
-        // coordinator but holds no pool permit, so the workers it waits for
-        // can always finish.
+        // its lane leases. Joined outputs are completion-observed before release.
+        // A late lane failure is then attributed to its own chunk and does not
+        // surface at an unrelated later fence. Uncommitted outputs are released
+        // after each join. `join` blocks the coordinator but holds no pool permit,
+        // so the workers it waits for can always finish.
         while let Some((ordinal, flight)) = self.jobs.pop_first() {
             let result = flight.handle.join().and_then(|result| result);
             match result {
@@ -150,8 +150,8 @@ fn chunk_readiness_error(ordinal: usize, lane: usize, fork: Option<usize>, sync_
 /// Observes every completed-but-uncommitted output during an abort without committing any.
 ///
 /// Cancellation and commit failures drop the reorder buffer; each entry's readiness is still
-/// synchronized first so late lane failures are attributed to their ordinal instead of
-/// leaking to an unrelated later fence. Outputs release with their entries.
+/// synchronized first. Late lane failures are then attributed to their ordinal and do not
+/// leak to an unrelated later fence. Outputs release with their entries.
 fn drain_ready_on_abort<O>(
     ready: BTreeMap<usize, ReadyLaneOutput<O>>,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
@@ -198,7 +198,7 @@ impl AggregateLaneDispatch {
     }
 
     /// Runs legacy aggregate subplans through the same work protocol. A
-    /// worker already holding a lane executes inline instead of nesting an
+    /// worker already holding a lane executes inline without nesting an
     /// attempt permit; a coordinator takes only currently available leases.
     pub(in crate::exec::bounded) fn with_available_lanes<R>(
         execution: &mut BoundedExecutionAttempt<'_>,

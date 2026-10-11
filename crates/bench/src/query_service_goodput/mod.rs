@@ -18,8 +18,8 @@
 //!
 //! Correctness is not assumed: every completed query is compared against an
 //! output fingerprint frozen by a single-flight calibration run, and the SLO
-//! deadlines come from that same frozen calibration rather than from the
-//! configuration under test.
+//! deadlines come from that same frozen calibration, measured in a separate run
+//! from the configuration under test.
 //!
 //! Everything is environment-variable driven. GPU runs must be wrapped in
 //! `flock /tmp/cudf-gpu.lock`.
@@ -397,7 +397,7 @@ async fn measure(
         })
         .unwrap_or_else(|_| "unavailable".to_string());
     // Every attempt has waited for its report by now, so this delta counts
-    // reports that never published rather than reports still in flight.
+    // reports that never published. No report is still in flight.
     let attempt_counters = backend.attempt_counters_snapshot();
     let report = RunReport {
         config,
@@ -528,7 +528,7 @@ impl ReportFacts {
             // means no final sample completed, never a zero peak.
             attempt_peak_aligned_bytes: report.final_domain_usage.map(|usage| usage.peak_aligned_bytes),
             // Provenance of the engine's separate pre-cleanup terminal sample.
-            // It qualifies that sample, not the peak above.
+            // It qualifies that sample. It does not qualify the peak above.
             attempt_terminal_usage_provenance: evidence.map_or_else(
                 || "unavailable".to_string(),
                 |evidence| label(&evidence.outcome_terminal_usage.provenance),
@@ -580,9 +580,8 @@ fn build_record(
     );
     let submit_offset_ms = duration_ms(outcome.started.duration_since(origin));
     let scheduled_offset_ms = duration_ms(arrival.offset);
-    // Response time is measured from the scheduled arrival, not from the
-    // moment the harness got around to submitting, so any harness scheduling
-    // delay counts against the configuration instead of being hidden.
+    // Response time is measured from the scheduled arrival. Harness scheduling
+    // delay therefore counts against the configuration and is not hidden.
     let end_to_end_ms = (duration_ms(outcome.finished.duration_since(origin)) - scheduled_offset_ms).max(0.0);
     let slo_deadline_ms = calibration.map(|row| row.p50_ms * config.slo_multiplier);
     let mut record = AttemptRecord {
@@ -632,8 +631,8 @@ fn build_record(
 ///
 /// This is used only for the closed enums that have no entry in
 /// `SealedAttemptLabels` (evidence provenance, failure status and operation,
-/// failure fact values). It reads the declared rename rather than restating a
-/// mapping, so it does not create a second label source.
+/// failure fact values). It reads the declared rename and does not restate a
+/// mapping, so no second label source exists.
 fn label<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(text)) => text,

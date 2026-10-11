@@ -85,8 +85,7 @@ cudf_status_t cudf_mixed_left_join_state_materialize_indices_ex(
 /// Consume ownership. Failure quarantines the handle and must not be retried.
 cudf_status_t cudf_mixed_left_join_state_destroy(cudf_mixed_left_join_state_handle state);
 
-/// Inner join with explicit execution context.
-///
+/// Inner join of two key tables.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned tables.
 cudf_status_t cudf_inner_join_ex(cudf_table_view_handle left_keys,
@@ -98,8 +97,7 @@ cudf_status_t cudf_inner_join_ex(cudf_table_view_handle left_keys,
                                  cudf_table_handle* out_right,
                                  cudf_exec_options_t const* options);
 
-/// Left join with explicit execution context.
-///
+/// Left join of two key tables.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned tables.
 cudf_status_t cudf_left_join_ex(cudf_table_view_handle left_keys,
@@ -111,8 +109,7 @@ cudf_status_t cudf_left_join_ex(cudf_table_view_handle left_keys,
                                 cudf_table_handle* out_right,
                                 cudf_exec_options_t const* options);
 
-/// Full join with explicit execution context.
-///
+/// Full join of two key tables.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned tables.
 cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
@@ -124,8 +121,7 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
                                 cudf_table_handle* out_right,
                                 cudf_exec_options_t const* options);
 
-/// Cross join with explicit execution context.
-///
+/// Cross join of two tables.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned table.
 cudf_status_t cudf_cross_join_ex(cudf_table_view_handle left,
@@ -133,8 +129,7 @@ cudf_status_t cudf_cross_join_ex(cudf_table_view_handle left,
                                  cudf_table_handle* out,
                                  cudf_exec_options_t const* options);
 
-/// Projected cross join with explicit input row counts and execution context.
-///
+/// Projected cross join of two selected tables with explicit row counts.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned table.
 cudf_status_t cudf_projected_cross_join_ex(cudf_table_view_handle left_selected,
@@ -157,8 +152,7 @@ cudf_status_t cudf_projected_cross_join_device_allocated_size_ex(
   size_t* out,
   cudf_exec_options_t const* options);
 
-/// Inner join indices with explicit execution context.
-///
+/// Inner join indices of two key tables.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
 cudf_status_t cudf_inner_join_indices_ex(cudf_table_view_handle left_keys,
@@ -168,8 +162,7 @@ cudf_status_t cudf_inner_join_indices_ex(cudf_table_view_handle left_keys,
                                          cudf_column_handle* out_right_indices,
                                          cudf_exec_options_t const* options);
 
-/// Left join indices with explicit execution context.
-///
+/// Left join indices of two key tables.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
 cudf_status_t cudf_left_join_indices_ex(cudf_table_view_handle left_keys,
@@ -179,8 +172,7 @@ cudf_status_t cudf_left_join_indices_ex(cudf_table_view_handle left_keys,
                                         cudf_column_handle* out_right_indices,
                                         cudf_exec_options_t const* options);
 
-/// Full join indices with explicit execution context.
-///
+/// Full join indices of two key tables.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
 cudf_status_t cudf_full_join_indices_ex(cudf_table_view_handle left_keys,
@@ -190,8 +182,7 @@ cudf_status_t cudf_full_join_indices_ex(cudf_table_view_handle left_keys,
                                         cudf_column_handle* out_right_indices,
                                         cudf_exec_options_t const* options);
 
-/// Left semi join indices with explicit execution context.
-///
+/// Left semi join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned index column.
 cudf_status_t cudf_left_semi_join_indices_ex(cudf_table_view_handle left_keys,
@@ -200,8 +191,7 @@ cudf_status_t cudf_left_semi_join_indices_ex(cudf_table_view_handle left_keys,
                                              cudf_column_handle* out_indices,
                                              cudf_exec_options_t const* options);
 
-/// Left anti join indices with explicit execution context.
-///
+/// Left anti join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned index column.
 cudf_status_t cudf_left_anti_join_indices_ex(cudf_table_view_handle left_keys,
@@ -210,8 +200,7 @@ cudf_status_t cudf_left_anti_join_indices_ex(cudf_table_view_handle left_keys,
                                              cudf_column_handle* out_indices,
                                              cudf_exec_options_t const* options);
 
-/// Conditional inner join indices with explicit execution context.
-///
+/// Conditional inner join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
 cudf_status_t cudf_conditional_inner_join_indices_ex(cudf_table_view_handle left,
@@ -221,8 +210,7 @@ cudf_status_t cudf_conditional_inner_join_indices_ex(cudf_table_view_handle left
                                                      cudf_column_handle* out_right_indices,
                                                      cudf_exec_options_t const* options);
 
-/// Conditional inner join indices with an exact output row count and explicit
-/// execution context.
+/// Conditional inner join indices with an exact output row count.
 cudf_status_t cudf_conditional_inner_join_indices_with_output_size_ex(
   cudf_table_view_handle left,
   cudf_table_view_handle right,
@@ -232,16 +220,14 @@ cudf_status_t cudf_conditional_inner_join_indices_with_output_size_ex(
   cudf_column_handle* out_right_indices,
   cudf_exec_options_t const* options);
 
-/// Return the exact output row count for a conditional inner join with
-/// explicit execution context.
+/// Return the exact output row count for a conditional inner join.
 cudf_status_t cudf_conditional_inner_join_size_ex(cudf_table_view_handle left,
                                                   cudf_table_view_handle right,
                                                   cudf_ast_expression_handle predicate,
                                                   size_t* out,
                                                   cudf_exec_options_t const* options);
 
-/// Conditional left join indices with explicit execution context.
-///
+/// Conditional left join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
 cudf_status_t cudf_conditional_left_join_indices_ex(cudf_table_view_handle left,
@@ -251,8 +237,7 @@ cudf_status_t cudf_conditional_left_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_column_handle* out_right_indices,
                                                     cudf_exec_options_t const* options);
 
-/// Conditional left join indices with an exact output row count and explicit
-/// execution context.
+/// Conditional left join indices with an exact output row count.
 cudf_status_t cudf_conditional_left_join_indices_with_output_size_ex(
   cudf_table_view_handle left,
   cudf_table_view_handle right,
@@ -262,16 +247,14 @@ cudf_status_t cudf_conditional_left_join_indices_with_output_size_ex(
   cudf_column_handle* out_right_indices,
   cudf_exec_options_t const* options);
 
-/// Return the exact output row count for a conditional left join with explicit
-/// execution context.
+/// Return the exact output row count for a conditional left join.
 cudf_status_t cudf_conditional_left_join_size_ex(cudf_table_view_handle left,
                                                  cudf_table_view_handle right,
                                                  cudf_ast_expression_handle predicate,
                                                  size_t* out,
                                                  cudf_exec_options_t const* options);
 
-/// Conditional full join indices with explicit execution context.
-///
+/// Conditional full join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
 cudf_status_t cudf_conditional_full_join_indices_ex(cudf_table_view_handle left,
@@ -281,8 +264,7 @@ cudf_status_t cudf_conditional_full_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_column_handle* out_right_indices,
                                                     cudf_exec_options_t const* options);
 
-/// Compute and retain exact output-size data for a conditional full join with
-/// explicit execution context.
+/// Compute and retain exact output-size data for a conditional full join.
 cudf_status_t cudf_conditional_full_join_begin_size_data_ex(
   cudf_table_view_handle left,
   cudf_table_view_handle right,
@@ -310,15 +292,14 @@ cudf_status_t cudf_conditional_full_join_size_data_gather_map_size(
   cudf_conditional_full_join_size_data_handle handle, size_t* out);
 
 /// Materialize conditional full join indices using retained exact output-size
-/// data and explicit execution context.
+/// data.
 cudf_status_t cudf_conditional_full_join_size_data_materialize_indices_ex(
   cudf_conditional_full_join_size_data_handle size_data,
   cudf_column_handle* out_left_indices,
   cudf_column_handle* out_right_indices,
   cudf_exec_options_t const* options);
 
-/// Conditional left semi join indices with explicit execution context.
-///
+/// Conditional left semi join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned index column.
 cudf_status_t cudf_conditional_left_semi_join_indices_ex(cudf_table_view_handle left,
@@ -327,8 +308,7 @@ cudf_status_t cudf_conditional_left_semi_join_indices_ex(cudf_table_view_handle 
                                                          cudf_column_handle* out_indices,
                                                          cudf_exec_options_t const* options);
 
-/// Conditional left semi join indices with an exact output row count and
-/// explicit execution context.
+/// Conditional left semi join indices with an exact output row count.
 cudf_status_t cudf_conditional_left_semi_join_indices_with_output_size_ex(
   cudf_table_view_handle left,
   cudf_table_view_handle right,
@@ -337,16 +317,14 @@ cudf_status_t cudf_conditional_left_semi_join_indices_with_output_size_ex(
   cudf_column_handle* out_indices,
   cudf_exec_options_t const* options);
 
-/// Return the exact output row count for a conditional left semi join with
-/// explicit execution context.
+/// Return the exact output row count for a conditional left semi join.
 cudf_status_t cudf_conditional_left_semi_join_size_ex(cudf_table_view_handle left,
                                                       cudf_table_view_handle right,
                                                       cudf_ast_expression_handle predicate,
                                                       size_t* out,
                                                       cudf_exec_options_t const* options);
 
-/// Conditional left anti join indices with explicit execution context.
-///
+/// Conditional left anti join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned index column.
 cudf_status_t cudf_conditional_left_anti_join_indices_ex(cudf_table_view_handle left,
@@ -355,8 +333,7 @@ cudf_status_t cudf_conditional_left_anti_join_indices_ex(cudf_table_view_handle 
                                                          cudf_column_handle* out_indices,
                                                          cudf_exec_options_t const* options);
 
-/// Conditional left anti join indices with an exact output row count and
-/// explicit execution context.
+/// Conditional left anti join indices with an exact output row count.
 cudf_status_t cudf_conditional_left_anti_join_indices_with_output_size_ex(
   cudf_table_view_handle left,
   cudf_table_view_handle right,
@@ -365,15 +342,14 @@ cudf_status_t cudf_conditional_left_anti_join_indices_with_output_size_ex(
   cudf_column_handle* out_indices,
   cudf_exec_options_t const* options);
 
-/// Return the exact output row count for a conditional left anti join with
-/// explicit execution context.
+/// Return the exact output row count for a conditional left anti join.
 cudf_status_t cudf_conditional_left_anti_join_size_ex(cudf_table_view_handle left,
                                                       cudf_table_view_handle right,
                                                       cudf_ast_expression_handle predicate,
                                                       size_t* out,
                                                       cudf_exec_options_t const* options);
 
-/// Filter already-computed join-index pairs with explicit execution context.
+/// Filter already-computed join-index pairs.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
@@ -387,8 +363,7 @@ cudf_status_t cudf_filter_join_indices_ex(cudf_table_view_handle left,
                                           cudf_column_handle* out_right_indices,
                                           cudf_exec_options_t const* options);
 
-/// Mixed inner join indices with explicit execution context.
-///
+/// Mixed inner join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
 cudf_status_t cudf_mixed_inner_join_indices_ex(cudf_table_view_handle left_equality,
@@ -401,8 +376,7 @@ cudf_status_t cudf_mixed_inner_join_indices_ex(cudf_table_view_handle left_equal
                                                cudf_column_handle* out_right_indices,
                                                cudf_exec_options_t const* options);
 
-/// Mixed left join indices with explicit execution context.
-///
+/// Mixed left join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
 cudf_status_t cudf_mixed_left_join_indices_ex(cudf_table_view_handle left_equality,
@@ -415,8 +389,7 @@ cudf_status_t cudf_mixed_left_join_indices_ex(cudf_table_view_handle left_equali
                                               cudf_column_handle* out_right_indices,
                                               cudf_exec_options_t const* options);
 
-/// Mixed full join indices with explicit execution context.
-///
+/// Mixed full join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
 cudf_status_t cudf_mixed_full_join_indices_ex(cudf_table_view_handle left_equality,
@@ -429,8 +402,7 @@ cudf_status_t cudf_mixed_full_join_indices_ex(cudf_table_view_handle left_equali
                                               cudf_column_handle* out_right_indices,
                                               cudf_exec_options_t const* options);
 
-/// Mixed left semi join indices with explicit execution context.
-///
+/// Mixed left semi join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned index column.
 cudf_status_t cudf_mixed_left_semi_join_indices_ex(cudf_table_view_handle left_equality,
@@ -442,8 +414,7 @@ cudf_status_t cudf_mixed_left_semi_join_indices_ex(cudf_table_view_handle left_e
                                                    cudf_column_handle* out_indices,
                                                    cudf_exec_options_t const* options);
 
-/// Mixed left anti join indices with explicit execution context.
-///
+/// Mixed left anti join indices.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned index column.
 cudf_status_t cudf_mixed_left_anti_join_indices_ex(cudf_table_view_handle left_equality,
@@ -455,8 +426,7 @@ cudf_status_t cudf_mixed_left_anti_join_indices_ex(cudf_table_view_handle left_e
                                                    cudf_column_handle* out_indices,
                                                    cudf_exec_options_t const* options);
 
-/// Compute and retain exact output-size data for a mixed inner join with
-/// explicit execution context.
+/// Compute and retain exact output-size data for a mixed inner join.
 cudf_status_t cudf_mixed_inner_join_begin_size_data_ex(cudf_table_view_handle left_equality,
                                                        cudf_table_view_handle right_equality,
                                                        cudf_table_view_handle left_conditional,
@@ -466,8 +436,7 @@ cudf_status_t cudf_mixed_inner_join_begin_size_data_ex(cudf_table_view_handle le
                                                        cudf_mixed_join_size_data_handle* out,
                                                        cudf_exec_options_t const* options);
 
-/// Compute and retain exact output-size data for a mixed left join with
-/// explicit execution context.
+/// Compute and retain exact output-size data for a mixed left join.
 cudf_status_t cudf_mixed_left_join_begin_size_data_ex(cudf_table_view_handle left_equality,
                                                       cudf_table_view_handle right_equality,
                                                       cudf_table_view_handle left_conditional,
@@ -477,8 +446,7 @@ cudf_status_t cudf_mixed_left_join_begin_size_data_ex(cudf_table_view_handle lef
                                                       cudf_mixed_join_size_data_handle* out,
                                                       cudf_exec_options_t const* options);
 
-/// Compute and retain exact output-size data for a mixed full join with
-/// explicit execution context.
+/// Compute and retain exact output-size data for a mixed full join.
 cudf_status_t cudf_mixed_full_join_begin_size_data_ex(cudf_table_view_handle left_equality,
                                                       cudf_table_view_handle right_equality,
                                                       cudf_table_view_handle left_conditional,
@@ -488,8 +456,7 @@ cudf_status_t cudf_mixed_full_join_begin_size_data_ex(cudf_table_view_handle lef
                                                       cudf_mixed_join_size_data_handle* out,
                                                       cudf_exec_options_t const* options);
 
-/// Compute and retain exact output-size data for a mixed left semi join with
-/// explicit execution context.
+/// Compute and retain exact output-size data for a mixed left semi join.
 cudf_status_t cudf_mixed_left_semi_join_begin_size_data_ex(cudf_table_view_handle left_equality,
                                                            cudf_table_view_handle right_equality,
                                                            cudf_table_view_handle left_conditional,
@@ -499,8 +466,7 @@ cudf_status_t cudf_mixed_left_semi_join_begin_size_data_ex(cudf_table_view_handl
                                                            cudf_mixed_join_size_data_handle* out,
                                                            cudf_exec_options_t const* options);
 
-/// Compute and retain exact output-size data for a mixed left anti join with
-/// explicit execution context.
+/// Compute and retain exact output-size data for a mixed left anti join.
 cudf_status_t cudf_mixed_left_anti_join_begin_size_data_ex(cudf_table_view_handle left_equality,
                                                            cudf_table_view_handle right_equality,
                                                            cudf_table_view_handle left_conditional,
@@ -529,23 +495,20 @@ cudf_status_t cudf_mixed_join_size_data_device_allocated_size(
 cudf_status_t cudf_mixed_join_size_data_gather_map_size(cudf_mixed_join_size_data_handle handle,
                                                         size_t* out);
 
-/// Materialize mixed join indices using retained exact output-size data and
-/// explicit execution context.
+/// Materialize mixed join indices using retained exact output-size data.
 cudf_status_t cudf_mixed_join_size_data_materialize_indices_ex(
   cudf_mixed_join_size_data_handle size_data,
   cudf_column_handle* out_left_indices,
   cudf_column_handle* out_right_indices,
   cudf_exec_options_t const* options);
 
-/// Materialize a single left gather map from retained mixed semi/anti size data
-/// with explicit execution context.
+/// Materialize a single left gather map from retained mixed semi/anti size data.
 cudf_status_t cudf_mixed_join_size_data_materialize_single_indices_ex(
   cudf_mixed_join_size_data_handle size_data,
   cudf_column_handle* out_indices,
   cudf_exec_options_t const* options);
 
-/// Build a reusable distinct-hash-join artifact with explicit execution
-/// context.
+/// Build a reusable distinct-hash-join artifact.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned join handle because libcudf
@@ -560,8 +523,7 @@ cudf_status_t cudf_distinct_hash_join_create_ex(cudf_table_view_handle build,
 /// completed and failure means the handle remains quarantined.
 cudf_status_t cudf_distinct_hash_join_destroy(cudf_distinct_hash_join_handle handle);
 
-/// Probe a reusable distinct-hash-join artifact with explicit execution
-/// context.
+/// Probe a reusable distinct-hash-join artifact.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned index column.
@@ -570,14 +532,14 @@ cudf_status_t cudf_distinct_hash_join_left_join_ex(cudf_distinct_hash_join_handl
                                                    cudf_column_handle* out,
                                                    cudf_exec_options_t const* options);
 
-/// Build a reusable filtered-join artifact with explicit execution context.
+/// Build a reusable filtered-join artifact.
 cudf_status_t cudf_filtered_join_create_ex(cudf_table_view_handle build,
                                            cudf_null_equality_t null_equality,
                                            double load_factor,
                                            cudf_filtered_join_handle* out,
                                            cudf_exec_options_t const* options);
 
-/// Return exact retained filtered-join build bytes with explicit execution context.
+/// Return exact retained filtered-join build bytes.
 cudf_status_t cudf_filtered_join_pre_build_reservation_size_ex(cudf_table_view_handle build,
                                                                cudf_null_equality_t null_equality,
                                                                double load_factor,
@@ -600,13 +562,13 @@ cudf_status_t cudf_filtered_join_destroy(cudf_filtered_join_handle handle);
 cudf_status_t cudf_filtered_join_device_allocated_size(cudf_filtered_join_handle handle,
                                                        size_t* out);
 
-/// Begin a retained left semi probe with explicit execution context.
+/// Begin a retained left semi probe.
 cudf_status_t cudf_filtered_join_begin_left_semi_probe_ex(cudf_filtered_join_handle join,
                                                           cudf_table_view_handle probe,
                                                           cudf_filtered_join_probe_handle* out,
                                                           cudf_exec_options_t const* options);
 
-/// Begin a retained left anti probe with explicit execution context.
+/// Begin a retained left anti probe.
 cudf_status_t cudf_filtered_join_begin_left_anti_probe_ex(cudf_filtered_join_handle join,
                                                           cudf_table_view_handle probe,
                                                           cudf_filtered_join_probe_handle* out,
@@ -624,25 +586,25 @@ cudf_status_t cudf_filtered_join_probe_output_size(cudf_filtered_join_probe_hand
 cudf_status_t cudf_filtered_join_probe_device_allocated_size(cudf_filtered_join_probe_handle handle,
                                                              size_t* out);
 
-/// Materialize selected probe indices with explicit execution context.
+/// Materialize selected probe indices.
 cudf_status_t cudf_filtered_join_probe_materialize_indices_ex(
   cudf_filtered_join_probe_handle handle,
   cudf_column_handle* out_indices,
   cudf_exec_options_t const* options);
 
-/// Return the exact row count for a left semi probe with explicit execution context.
+/// Return the exact row count for a left semi probe.
 cudf_status_t cudf_filtered_join_left_semi_join_size_ex(cudf_filtered_join_handle join,
                                                         cudf_table_view_handle probe,
                                                         size_t* out,
                                                         cudf_exec_options_t const* options);
 
-/// Return the exact row count for a left anti probe with explicit execution context.
+/// Return the exact row count for a left anti probe.
 cudf_status_t cudf_filtered_join_left_anti_join_size_ex(cudf_filtered_join_handle join,
                                                         cudf_table_view_handle probe,
                                                         size_t* out,
                                                         cudf_exec_options_t const* options);
 
-/// Probe a reusable filtered join for left semi gather indices with explicit execution context.
+/// Probe a reusable filtered join for left semi gather indices.
 cudf_status_t cudf_filtered_join_left_semi_join_with_output_size_ex(
   cudf_filtered_join_handle join,
   cudf_table_view_handle probe,
@@ -650,7 +612,7 @@ cudf_status_t cudf_filtered_join_left_semi_join_with_output_size_ex(
   cudf_column_handle* out_indices,
   cudf_exec_options_t const* options);
 
-/// Probe a reusable filtered join for left anti gather indices with explicit execution context.
+/// Probe a reusable filtered join for left anti gather indices.
 cudf_status_t cudf_filtered_join_left_anti_join_with_output_size_ex(
   cudf_filtered_join_handle join,
   cudf_table_view_handle probe,
@@ -658,7 +620,7 @@ cudf_status_t cudf_filtered_join_left_anti_join_with_output_size_ex(
   cudf_column_handle* out_indices,
   cudf_exec_options_t const* options);
 
-/// Build a reusable hash-join artifact with explicit execution context.
+/// Build a reusable hash-join artifact.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR. The
 /// resolved memory resource is retained by the returned join handle for
@@ -671,13 +633,12 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
                                        cudf_exec_options_t const* options);
 
 /// Return exact retained device bytes that must be reserved before building a
-/// reusable hash-join artifact with explicit execution context.
+/// reusable hash-join artifact.
 ///
-/// The execution context is part of the contract surface so callers can use the
-/// same stream and memory-resource policy as the eventual build call. The call
-/// does not allocate device memory; exact flat nullable-string preprocessing is
-/// sized by inspecting existing offsets and null masks. Nested build-key tables
-/// fail with CUDF_ERROR_INVALID_ARGUMENT.
+/// Pass the same stream and memory-resource policy that the eventual build call
+/// uses. The call does not allocate device memory; exact flat nullable-string
+/// preprocessing is sized by inspecting existing offsets and null masks. Nested
+/// build-key tables fail with CUDF_ERROR_INVALID_ARGUMENT.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handle build,
@@ -695,8 +656,7 @@ cudf_status_t cudf_hash_join_destroy(cudf_hash_join_handle handle);
 /// output/index allocations.
 cudf_status_t cudf_hash_join_device_allocated_size(cudf_hash_join_handle handle, size_t* out);
 
-/// Probe a reusable hash-join artifact for inner-join gather indices with
-/// explicit execution context.
+/// Probe a reusable hash-join artifact for inner-join gather indices.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
@@ -707,7 +667,7 @@ cudf_status_t cudf_hash_join_inner_join_ex(cudf_hash_join_handle join,
                                            cudf_exec_options_t const* options);
 
 /// Probe a reusable hash-join artifact for inner-join gather indices with an
-/// exact output row count and explicit execution context.
+/// exact output row count.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
@@ -718,7 +678,7 @@ cudf_status_t cudf_hash_join_inner_join_with_output_size_ex(cudf_hash_join_handl
                                                             cudf_column_handle* out_right_indices,
                                                             cudf_exec_options_t const* options);
 
-/// Return the exact row count for an inner probe with explicit execution context.
+/// Return the exact row count for an inner probe.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 cudf_status_t cudf_hash_join_inner_join_size_ex(cudf_hash_join_handle join,
@@ -726,8 +686,7 @@ cudf_status_t cudf_hash_join_inner_join_size_ex(cudf_hash_join_handle join,
                                                 size_t* out,
                                                 cudf_exec_options_t const* options);
 
-/// Probe a reusable hash-join artifact for left-join gather indices with
-/// explicit execution context.
+/// Probe a reusable hash-join artifact for left-join gather indices.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
@@ -738,7 +697,7 @@ cudf_status_t cudf_hash_join_left_join_ex(cudf_hash_join_handle join,
                                           cudf_exec_options_t const* options);
 
 /// Probe a reusable hash-join artifact for left-join gather indices with an
-/// exact output row count and explicit execution context.
+/// exact output row count.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
@@ -749,7 +708,7 @@ cudf_status_t cudf_hash_join_left_join_with_output_size_ex(cudf_hash_join_handle
                                                            cudf_column_handle* out_right_indices,
                                                            cudf_exec_options_t const* options);
 
-/// Return the exact row count for a left probe with explicit execution context.
+/// Return the exact row count for a left probe.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 cudf_status_t cudf_hash_join_left_join_size_ex(cudf_hash_join_handle join,
@@ -757,8 +716,7 @@ cudf_status_t cudf_hash_join_left_join_size_ex(cudf_hash_join_handle join,
                                                size_t* out,
                                                cudf_exec_options_t const* options);
 
-/// Probe a reusable hash-join artifact for full-join gather indices with
-/// explicit execution context.
+/// Probe a reusable hash-join artifact for full-join gather indices.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
@@ -769,7 +727,7 @@ cudf_status_t cudf_hash_join_full_join_ex(cudf_hash_join_handle join,
                                           cudf_exec_options_t const* options);
 
 /// Probe a reusable hash-join artifact for full-join gather indices with an
-/// exact output row count and explicit execution context.
+/// exact output row count.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned index columns.
@@ -780,7 +738,7 @@ cudf_status_t cudf_hash_join_full_join_with_output_size_ex(cudf_hash_join_handle
                                                            cudf_column_handle* out_right_indices,
                                                            cudf_exec_options_t const* options);
 
-/// Return the exact row count for a full probe with explicit execution context.
+/// Return the exact row count for a full probe.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 cudf_status_t cudf_hash_join_full_join_size_ex(cudf_hash_join_handle join,

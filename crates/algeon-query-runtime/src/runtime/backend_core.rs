@@ -7,8 +7,8 @@
 //! configured devices, installs the query service and its GPU resources behind
 //! a resource generation, and publishes the core only after every device's
 //! startup record agrees with its validated profile. Two facades enforce
-//! ownership afterwards. `GpuBackendCore` is a counted public handle: its
-//! handles keep the generation live and the last drop closes it.
+//! ownership afterwards. `GpuBackendCore` is a counted public handle. Its
+//! handles keep the generation live, and the last drop closes it.
 //! `GpuBackendSession` holds only a `Weak` to the resource core and can never
 //! keep device ownership alive past close.
 //!
@@ -18,7 +18,8 @@
 //! owner lease only after the service has drained and every such holder is
 //! gone. The gate itself lives in `backend_lifecycle`; the close worker that
 //! consumes the generation lives in `backend_close`. The admission contract
-//! these facades implement is `website/docs/design/admission.mdx`; the thread
+//! these facades implement is
+//! `website/docs/design/admission.mdx#from-capability-validation-to-admission`; the thread
 //! and runtime ownership is `website/docs/design/index.mdx#runtimes-and-threads`.
 
 use std::{
@@ -73,7 +74,10 @@ pub enum GpuMemoryOwnership {
     /// Algeon is the exclusive allocator owner for the complete visible device.
     WholeDeviceExclusive,
     /// Algeon is constrained by an immutable process-manager allocation limit.
-    StaticPartition { allocation_limit_bytes: u64 },
+    StaticPartition {
+        /// Immutable process-manager allocator limit in bytes.
+        allocation_limit_bytes: u64,
+    },
 }
 
 impl GpuMemoryOwnership {
@@ -87,8 +91,8 @@ impl GpuMemoryOwnership {
 
 /// Pre-build capacity probe for one CUDA device.
 ///
-/// Answers "how much may I declare here" without acquiring the process owner
-/// lease or installing any allocator: the CUDA-visible totals, the NVML
+/// Reports the declarable capacity of one device without acquiring the process
+/// owner lease or installing any allocator: the CUDA-visible totals, the NVML
 /// physical total when reported, the owned capacity for the requested
 /// ownership, and the managed capacity left after the backend reserve.
 /// Build-time resolution stays the enforcement authority; this probe only
@@ -103,14 +107,17 @@ pub struct GpuDeviceCapacityProbe {
     /// driver-reserved framebuffer.
     pub(crate) physical_total_bytes: Option<u64>,
     /// CUDA-visible allocation capacity. Ownership and explicit limits are
-    /// compared against this, not against the NVML total.
+    /// compared against this value. The NVML total plays no part in that comparison.
     pub cuda_total_bytes: u64,
+    /// CUDA-visible free allocation bytes sampled by the probe; not an admission balance.
     pub cuda_free_bytes: u64,
+    /// CUDA-visible total or the promised static-partition limit, in bytes.
     pub owned_capacity_bytes: u64,
     /// Largest explicit managed-capacity limit this ownership accepts,
     /// before the backend reserve is subtracted.
     pub max_declarable_limit_bytes: u64,
     pub(crate) backend_reserve_bytes: u64,
+    /// Owned capacity minus backend reserve, in bytes.
     pub max_managed_capacity_bytes: u64,
 }
 
@@ -205,8 +212,21 @@ fn resolve_probe_capacities(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum GpuDeviceMemoryLimit {
-    Automatic { headroom_bytes: u64, fallback_bytes: u64, fraction: Option<GpuMemoryFraction> },
-    Explicit { limit_bytes: u64 },
+    /// Discovers admission capacity from the promised owned device capacity.
+    /// The default reserves 500 MiB, falls back to 256 MiB and applies no fraction.
+    Automatic {
+        /// Bytes subtracted from owned capacity before resolving the limit.
+        headroom_bytes: u64,
+        /// Positive byte limit used when subtraction leaves no capacity.
+        fallback_bytes: u64,
+        /// Optional further cap on the share of owned capacity.
+        fraction: Option<GpuMemoryFraction>,
+    },
+    /// Declares an immutable byte limit checked against owned device capacity.
+    Explicit {
+        /// Admission capacity in bytes before backend reserve is subtracted.
+        limit_bytes: u64,
+    },
 }
 
 impl Default for GpuDeviceMemoryLimit {
@@ -216,12 +236,15 @@ impl Default for GpuDeviceMemoryLimit {
 }
 
 /// Validated automatic-capacity fraction retained unresolved until post-claim
-/// device discovery. The private bit representation makes `Eq`/`Hash` sound:
+/// device discovery. The private bit representation makes `Eq`/`Hash` sound.
 /// NaN, infinities, zero, and out-of-range values cannot be constructed.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GpuMemoryFraction(u64);
 
 impl GpuMemoryFraction {
+    /// Validates a capacity fraction in `(0, 1]`.
+    /// Returns `InvalidConfiguration` for zero, negative values, values above
+    /// one, NaN or infinity.
     pub fn new(value: f64) -> Result<Self> {
         if !value.is_finite() || value <= 0.0 || value > 1.0 {
             return Err(invalid_config("memory_limit.fraction", "must be greater than zero and at most one")
@@ -230,6 +253,7 @@ impl GpuMemoryFraction {
         Ok(Self(value.to_bits()))
     }
 
+    /// Returns the validated fraction without applying it to a device capacity.
     pub fn value(self) -> f64 {
         f64::from_bits(self.0)
     }
@@ -249,8 +273,11 @@ impl fmt::Debug for GpuMemoryFraction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GpuBackendDeviceInstallationBounds {
+    /// Installed streams, covering root and auxiliary slots for active attempts.
     pub stream_pool_size: usize,
+    /// Worker threads, covering active attempts plus the reserved lifecycle worker.
     pub worker_count: usize,
+    /// Execution lanes, at least the maximum active-attempt count.
     pub lane_count: usize,
 }
 
@@ -283,8 +310,8 @@ pub struct GpuBackendDeviceProfile {
 }
 
 impl GpuBackendDeviceProfile {
-    /// Absence asks the engine to use the installed device's managed capacity
-    /// as the default query limit.
+    /// Absence derives the default grant from the resolved query share
+    /// divided by the maximum active-attempt count.
     pub(crate) const DEFAULT_QUERY_LIMIT_BYTES: Option<u64> = None;
     /// One auxiliary source-work slot is reserved for each active attempt by
     /// default.
@@ -310,6 +337,8 @@ impl GpuBackendDeviceProfile {
         }
     }
 
+    /// Sets the admission capacity policy. Validation and device discovery
+    /// resolve the policy before managed capacity is installed.
     pub fn with_memory_limit(mut self, memory_limit: GpuDeviceMemoryLimit) -> Self {
         self.memory_limit = memory_limit;
         self
@@ -325,6 +354,8 @@ impl GpuBackendDeviceProfile {
         self
     }
 
+    /// Sets bytes reserved outside managed query and cache capacity.
+    /// Backend construction rejects a reserve that leaves no managed capacity.
     pub fn with_backend_reserve_bytes(mut self, backend_reserve_bytes: u64) -> Self {
         self.backend_reserve_bytes = backend_reserve_bytes;
         self
@@ -336,12 +367,14 @@ impl GpuBackendDeviceProfile {
         self
     }
 
+    /// Returns the accounted resident-cache ceiling in bytes. The default is zero.
     pub fn cache_cap_bytes(&self) -> u64 {
         self.cache_cap_bytes
     }
 
     /// Sets the immutable default memory limit for each query on this device.
-    /// When unset, it resolves to the device's managed capacity.
+    /// When unset, it resolves to the query share divided by the maximum
+    /// active-attempt count, rounded down to whole bytes.
     pub fn with_default_query_limit_bytes(mut self, default_query_limit_bytes: u64) -> Self {
         self.default_query_limit_bytes = Some(default_query_limit_bytes);
         self
@@ -356,6 +389,8 @@ impl GpuBackendDeviceProfile {
         self
     }
 
+    /// Sets the device admission concurrency bound. Zero is rejected by
+    /// backend validation; existing explicit installation bounds remain in force.
     pub fn with_max_active_attempts(mut self, max_active_attempts: usize) -> Self {
         self.max_active_attempts = max_active_attempts;
         self
@@ -385,11 +420,14 @@ impl GpuBackendDeviceProfile {
         self
     }
 
+    /// Enables or disables installation of diagnostic device telemetry.
+    /// Telemetry does not participate in query admission accounting.
     pub fn with_telemetry(mut self, install_telemetry: bool) -> Self {
         self.install_telemetry = install_telemetry;
         self
     }
 
+    /// Returns the CUDA device ordinal selected by this declaration.
     pub fn device_ordinal(&self) -> usize {
         self.device_ordinal
     }
@@ -399,26 +437,35 @@ impl GpuBackendDeviceProfile {
         &self.device_capabilities
     }
 
+    /// Returns the unresolved admission capacity policy, resolved at device discovery.
     pub fn memory_limit(&self) -> GpuDeviceMemoryLimit {
         self.memory_limit
     }
 
+    /// Returns bytes reserved outside managed query and cache capacity. The default is zero.
     pub fn backend_reserve_bytes(&self) -> u64 {
         self.backend_reserve_bytes
     }
 
+    /// Returns the explicit default query grant in bytes. `None` requests
+    /// `floor((managed_capacity_bytes - cache_cap_bytes) / max_active_attempts)`
+    /// after device capacity resolution.
     pub fn default_query_limit_bytes(&self) -> Option<u64> {
         self.default_query_limit_bytes
     }
 
+    /// Returns auxiliary source-work slots reserved for each active attempt. The default is one.
     pub fn source_work_per_attempt(&self) -> usize {
         self.source_work_per_attempt
     }
 
+    /// Returns the maximum simultaneously admitted attempts on this device. The default is two.
     pub fn max_active_attempts(&self) -> usize {
         self.max_active_attempts
     }
 
+    /// Returns the explicit installation bounds. `None` requests the values
+    /// returned by [`Self::derived_installation_bounds`].
     pub fn installation_bounds(&self) -> Option<GpuBackendDeviceInstallationBounds> {
         self.installation_bounds
     }
@@ -444,6 +491,7 @@ impl GpuBackendDeviceProfile {
         Ok(GpuBackendDeviceInstallationBounds::new(stream_pool_size, worker_count, self.max_active_attempts))
     }
 
+    /// Returns whether device telemetry is installed. New profiles enable it.
     pub fn install_telemetry(&self) -> bool {
         self.install_telemetry
     }
@@ -484,14 +532,18 @@ impl GpuBackendDeviceConfig {
             .collect()
     }
 
+    /// Binds a device profile to the deployment ownership promise.
+    /// Validation occurs when the backend builder validates or builds this config.
     pub fn new(profile: GpuBackendDeviceProfile, memory_ownership: GpuMemoryOwnership) -> Self {
         Self { profile, memory_ownership }
     }
 
+    /// Returns the device-local construction policy bound to this ownership promise.
     pub fn profile(&self) -> &GpuBackendDeviceProfile {
         &self.profile
     }
 
+    /// Returns the CUDA device ordinal selected by this declaration.
     pub fn device_ordinal(&self) -> usize {
         self.profile.device_ordinal
     }
@@ -501,41 +553,51 @@ impl GpuBackendDeviceConfig {
         &self.profile.device_capabilities
     }
 
+    /// Returns the deployment ownership promised by the process owner.
     pub fn memory_ownership(&self) -> GpuMemoryOwnership {
         self.memory_ownership
     }
 
+    /// Returns the unresolved admission capacity policy, resolved at device discovery.
     pub fn memory_limit(&self) -> GpuDeviceMemoryLimit {
         self.profile.memory_limit
     }
 
+    /// Returns bytes reserved outside managed query and cache capacity. The default is zero.
     pub fn backend_reserve_bytes(&self) -> u64 {
         self.profile.backend_reserve_bytes
     }
 
+    /// Returns the accounted resident-cache ceiling in bytes. The default is zero.
     pub fn cache_cap_bytes(&self) -> u64 {
         self.profile.cache_cap_bytes
     }
 
+    /// Returns the explicit default query grant in bytes. `None` requests
+    /// `floor((managed_capacity_bytes - cache_cap_bytes) / max_active_attempts)`
+    /// after device capacity resolution.
     pub fn default_query_limit_bytes(&self) -> Option<u64> {
         self.profile.default_query_limit_bytes
     }
 
+    /// Returns auxiliary source-work slots reserved for each active attempt. The default is one.
     pub fn source_work_per_attempt(&self) -> usize {
         self.profile.source_work_per_attempt
     }
 
+    /// Returns the maximum simultaneously admitted attempts on this device. The default is two.
     pub fn max_active_attempts(&self) -> usize {
         self.profile.max_active_attempts
     }
 
+    /// Returns whether device telemetry is installed. New profiles enable it.
     pub fn install_telemetry(&self) -> bool {
         self.profile.install_telemetry
     }
 }
 
-/// Backend construction input: the device set, the execution and queue policy,
-/// and the optional attempt completion queue.
+/// Backend construction input for the device set, the execution and queue
+/// policy, and the optional attempt completion queue.
 ///
 /// [`Self::validate`] is the only way to obtain the
 /// [`ValidatedGpuBackendConfig`] that [`GpuBackendCore::new`] accepts, so
@@ -927,7 +989,7 @@ impl GpuBackendCore {
     /// so a panic or early return cannot drop it from this stack while
     /// installed resources are still live. The close coordinator is spawned
     /// before the first device install because from that point the
-    /// coordinator, rather than this function, is the rollback owner.
+    /// coordinator is the rollback owner and this function is not.
     /// Process-exit registration happens after the service install because
     /// that install is what initializes CUDA, and the registration must
     /// follow libcudart's own `atexit` handler to run before it.
@@ -988,11 +1050,10 @@ impl GpuBackendCore {
             let service =
                 generation.service().expect("resource service is available immediately after successful installation");
 
-            // The startup records are cross-checked against the validated
-            // profiles rather than copied from them: a device whose installed
-            // worker count or allocation limit differs from its profile means
-            // the service installed something other than what validation
-            // approved, and the backend fails closed instead of publishing.
+            // The startup records are cross-checked against the validated profiles. They
+            // are not copied from them. A device whose installed worker count or allocation
+            // limit differs from its profile means the service installed something other
+            // than what validation approved, and the backend fails closed without publishing.
             let devices = config.validated_devices();
             let observed = service.backend_device_startup_facts();
             let worker_pools = service.gpu_execution_pool_reports();
@@ -1130,27 +1191,39 @@ impl GpuBackendCore {
 /// owns the device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuBackendDeviceStartupRecord {
+    /// CUDA ordinal associated with this immutable installation record.
     pub device_ordinal: usize,
     /// NVML product name captured with the immutable device inventory facts.
     pub model_name: Option<String>,
     /// NVML UUID captured with the immutable device inventory facts.
     pub uuid: Option<String>,
-    /// NVML-reported physical framebuffer capacity captured with the immutable device inventory facts.
+    /// NVML-reported physical framebuffer capacity captured with the immutable
+    /// device inventory facts.
     pub physical_total_bytes: Option<u64>,
+    /// Device facts sampled during backend construction.
     pub facts: DeviceFacts,
     /// Managed capacity the ledger commits grants against: the resolved
     /// [`GpuDeviceMemoryLimit`] minus `backend_reserve_bytes`.
     pub capacity_bytes: u64,
     /// Full ordinal-local resource-controller profile frozen after discovery.
     pub resource_profile: DeviceResourceProfile,
+    /// Deployment ownership promise used to resolve installed capacity.
     pub memory_ownership: GpuMemoryOwnership,
+    /// Admission capacity policy used for this device installation.
     pub memory_limit: GpuDeviceMemoryLimit,
+    /// Bytes excluded from managed query and cache capacity.
     pub backend_reserve_bytes: u64,
+    /// Maximum simultaneous device-backed admitted attempts.
     pub max_active_attempts: usize,
+    /// Installed CUDA stream-pool capacity.
     pub stream_pool_size: usize,
+    /// Installed execution-worker thread count, including lifecycle workers.
     pub worker_count: usize,
+    /// Installed device execution-lane count.
     pub lane_count: usize,
+    /// Whether diagnostic telemetry was requested for this installation.
     pub install_telemetry: bool,
+    /// Native memory-manager installation status recorded during construction.
     pub memory_manager_installation: DeviceMemoryManagerInstallationState,
     /// Persistent engine health epoch bound to this device installation.
     pub device_health_generation: u64,
@@ -1171,7 +1244,7 @@ pub struct GpuBackendCoreIdentity {
 
 /// One process-owned GPU backend core.
 ///
-/// Every value of this type is a public handle: clones mint a new
+/// Every value of this type is a public handle. Clones mint a new
 /// `PublicHandleLease`, and dropping the last lease signals close the same
 /// way [`Self::close`] does. Dropping all handles therefore never leaks the device
 /// owner, but neither does it wait for cleanup; callers that need to know when
@@ -1192,9 +1265,9 @@ pub struct GpuBackendCore {
 /// Explicit capability for controlled fault validation on one live backend.
 ///
 /// Constructing or holding this value does not alter backend behavior. Only
-/// [`Self::quarantine_device`] changes state, and it transitions the existing
-/// per-device admission ledger rather than introducing a separate validation
-/// or production scheduler mode.
+/// [`Self::quarantine_device`] changes state. It transitions the existing
+/// per-device admission ledger and introduces no separate validation or
+/// production scheduler mode.
 #[cfg(feature = "qualification")]
 #[derive(Clone, Debug)]
 pub struct GpuBackendFaultInjector {
@@ -1354,9 +1427,9 @@ impl GpuBackendSession {
 
     /// Returns whether the backend close gate has been signalled.
     ///
-    /// An attempt that won the begin gate observes this to terminalize
-    /// `unplanned` with `backend_closing` evidence instead of starting
-    /// planning; the begin gate itself remains the only linearization point.
+    /// An attempt that won the begin gate reads this flag and terminalizes
+    /// `unplanned` with `backend_closing` evidence. Planning does not start in
+    /// that case. The begin gate itself remains the only linearization point.
     pub fn is_closing(&self) -> bool {
         self.observation_core.lifecycle.is_closing()
     }
@@ -1522,7 +1595,7 @@ fn register_backend_attempt_metrics_sink(owner: &AttemptOwner, backend_metrics: 
 /// release order; see the field comment.
 pub(crate) struct GpuResourcePermit {
     generation: Arc<ResourceGeneration>,
-    // Declare this last: this keep-alive guard is never read, but its `Drop`
+    // Declare this last. This keep-alive guard is never read, but its `Drop`
     // releases the GPU lifecycle count, and that release must happen only
     // after `generation` (declared above) so close waiters never observe a
     // zero count while a generation is still retained. Reordering the fields
@@ -1577,9 +1650,9 @@ pub(crate) struct ObservationCore {
 /// `GpuResourcePermit`, so the service and journal cannot be dropped while an
 /// admitted attempt or a service read still references them. The close worker
 /// drops the last reference after the service has drained and the GPU permit
-/// count has reached zero; a cleanup panic forgets it instead, which keeps the
-/// owner lease and prevents a replacement backend from claiming devices with
-/// unknown outstanding GPU work.
+/// count has reached zero. A cleanup panic passes it to `std::mem::forget`.
+/// Forgetting keeps the owner lease claimed, which prevents a replacement
+/// backend from claiming devices with unknown outstanding GPU work.
 #[derive(Debug)]
 pub(crate) struct ResourceGeneration {
     /// Set once, after the service install succeeds. `None` only during the
@@ -1892,7 +1965,7 @@ mod tests {
         let first = backend.backend_metrics_snapshot();
         assert_eq!(first.attempts.completed(BackendAttemptDisposition::Unplanned, BackendAttemptOutcome::Succeeded), 1,);
 
-        // The owner drop is idempotent after report-ready: a peer sink panic
+        // The owner drop is idempotent after report-ready. A peer sink panic
         // cannot duplicate or lose the engine-owned exact terminal update.
         drop(begin);
         let second = backend.backend_metrics_snapshot();

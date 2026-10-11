@@ -1,5 +1,3 @@
-//! Tests for the DataFrame wrapper.
-
 use cudf::{
     DataFrame, ErrorCode, ErrorKind, Exec,
     core::Table,
@@ -10,10 +8,6 @@ use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, dataframe_from_columns,
     error_context_value, series,
 };
-
-// ---------------------------------------------------------------------------
-// Construction and column-by-name access
-// ---------------------------------------------------------------------------
 
 fn test_new_from_named_columns() {
     let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -126,7 +120,6 @@ fn test_column_accessor_validates_data() {
 }
 
 fn test_from_table_round_trip() {
-    // Build a Table directly, then wrap it in a DataFrame.
     let c1 = column_from_slice(&[10i32, 20, 30]).unwrap();
     let c2 = column_from_slice(&[1.5f64, 2.5, 3.5]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
@@ -212,10 +205,6 @@ fn test_empty_dataframe() {
     assert_eq!(df.num_columns(), 0);
     assert!(df.column_names().is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// dataframe! macro
-// ---------------------------------------------------------------------------
 
 fn test_dataframe_macro_basic() {
     let x = series::<i32>("source_x", &[1, 2, 3]).unwrap();

@@ -26,8 +26,8 @@ impl std::fmt::Debug for GpuLocalParquetSourceCacheKey {
 
 impl GpuLocalParquetSourceCacheKey {
     /// Complete canonical identity used only as input to a one-way cache
-    /// observation fingerprint.  Callers must not surface this string: it
-    /// contains the private source contract that the cache key protects.
+    /// observation fingerprint. Callers must not surface this string. It contains
+    /// the private source contract that the cache key protects.
     pub(crate) fn event_fingerprint_source(&self) -> &str {
         &self.fingerprint
     }
@@ -47,7 +47,7 @@ impl GpuLocalParquetSourceCacheKey {
     ///
     /// Bounded execution cannot reuse the unbounded scan key: a single source
     /// is split into independently scheduled row-group ranges, each of which
-    /// can carry a different visible row limit.  The full source contract plus
+    /// can carry a different visible row limit. The full source contract plus
     /// the executed chunk boundary is therefore the cache identity.
     #[doc(hidden)]
     pub fn from_chunk(source: &LocalParquetSource, chunk: &SourceChunk) -> Self {
@@ -63,7 +63,7 @@ impl GpuLocalParquetSourceCacheKey {
     /// Build a key for one bounded physical read containing adjacent chunks.
     ///
     /// A batch has one decoded output frame, so it must retain its ordered
-    /// child identities as one value.  Treating the children as independent
+    /// child identities as one value. Treating the children as independent
     /// entries would let a later batched read consume a frame with the wrong
     /// concat/row-order contract.
     #[doc(hidden)]
@@ -118,7 +118,7 @@ fn push_complete_source_contract(output: &mut String, source: &LocalParquetSourc
             file.pure_filter_row_group_uncompressed_bytes.as_deref(),
         );
         push_optional_u64_vec(output, format!("file.{index}.row_group_rows"), file.row_group_rows.as_deref());
-        // This footer fact is part of the complete source contract.  It does
+        // This footer fact is part of the complete source contract. It does
         // not change decoded rows, but it may change a graph admission
         // decision for this exact edge rowset, so reusing a cache identity
         // across different values would detach pricing from its source.

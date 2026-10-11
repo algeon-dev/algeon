@@ -77,7 +77,7 @@ pub struct CurrentResourceRouteLease {
 
 /// Lease routing current-resource allocations on a caller-owned raw CUDA stream.
 ///
-/// The stream is borrowed, not retained. The caller must keep it alive until
+/// The stream is borrowed and is not retained. The caller must keep it alive until
 /// this lease is dropped. Allocations made through the route retain their target
 /// resource until deallocation.
 #[must_use = "dropping the lease removes the raw stream route for future current-RMM allocations"]

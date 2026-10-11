@@ -56,6 +56,7 @@ impl QueryCoordinator {
         };
         state.ticketed_count = state.ticketed_count.checked_sub(1).expect("consumed ticket count underflow");
         if expired {
+            // Release the state lock before finalize_ready, which locks the state again.
             drop(state);
             self.finalize_ready();
             return Err(QueryCoordinatorError::new(QueryCoordinatorErrorKind::TicketExpired, "query ticket expired"));
@@ -136,9 +137,9 @@ impl QueryCoordinator {
     /// real attempt cannot race terminal publication; this path is the one
     /// explicit exception before an attempt handoff has been registered.
     ///
-    /// This is deliberately distinct from `abandon_attempt_report_delivery`:
-    /// there is no sealed report and therefore no delivery failure or
-    /// canonical attempt outcome to preserve.
+    /// This is deliberately distinct from `abandon_attempt_report_delivery`.
+    /// There is no sealed report, so there is no delivery failure or canonical
+    /// attempt outcome to preserve.
     pub(crate) fn finish_planning_without_attempt_report(&self, key: &QueryKey, mut terminal: QueryTerminal) {
         let should_finalize = {
             let mut state = self.lock_state();
@@ -175,7 +176,7 @@ pub(crate) struct QueryPlanningLease {
     /// The runtime observation this query's attempt records: the configured
     /// capture, or none when the active capture budget could not hold it.
     pub(crate) observation_config: RuntimeObservationConfig,
-    /// Set exactly when a native attempt has registered its immutable report
+    /// Set if and only if a native attempt has registered its immutable report
     /// handoff. Until then a planning failure is not allowed to leave the
     /// coordinator waiting for an attempt that was never created.
     pub(crate) attempt_report_handoff_registered: Cell<bool>,

@@ -26,6 +26,9 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+/// DataFusion logical extension for a statically validated cuVS relation call.
+///
+/// Input schemas and options determine its output schema before GPU execution.
 pub struct CuvsLogicalNode {
     operation: CuvsOperation,
     inputs: Vec<LogicalPlan>,
@@ -37,6 +40,11 @@ pub struct CuvsLogicalNode {
 }
 
 impl CuvsLogicalNode {
+    /// Validates relation count, option JSON, input schemas, and known cardinalities.
+    ///
+    /// Inputs follow the operation descriptor's relation-role order. Invalid options,
+    /// missing columns, unsupported types, or incompatible cardinalities return typed
+    /// Algeon errors through the DataFusion error boundary.
     pub fn try_new(operation: CuvsOperation, inputs: Vec<LogicalPlan>, options_json: &str) -> DataFusionResult<Self> {
         let descriptor = operation.descriptor();
         if inputs.len() != descriptor.relation_roles.len() {
@@ -78,14 +86,17 @@ impl CuvsLogicalNode {
         &self.input_orderings
     }
 
+    /// Returns the registered operation represented by this logical node.
     pub fn operation(&self) -> CuvsOperation {
         self.operation
     }
 
+    /// Borrows options parsed and validated during node construction.
     pub fn validated_options(&self) -> &CuvsValidatedOptions {
         &self.options
     }
 
+    /// Returns the Arrow result schema established by call validation.
     pub fn output_schema(&self) -> SchemaRef {
         Arc::clone(self.schema.inner())
     }

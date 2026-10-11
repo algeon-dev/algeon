@@ -43,7 +43,7 @@ try:
 except ImportError:
     HAVE_RICH = False
 
-# The TSV header is frozen for downstream compatibility, but its values are
+# The TSV header is frozen for downstream compatibility. Its values are
 # FinalPlanDisposition labels: datafusion, native, mixed, or rejected.
 FINAL_DISPOSITION_TSV_COLUMN = "post_native_execution_path"
 

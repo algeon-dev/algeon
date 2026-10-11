@@ -436,7 +436,7 @@ fn native_edge_source_with_root(
     native_edge_producer(builder.finish_with_host_sink(root).unwrap(), config)
 }
 
-/// A native edge relation in the form planning hands it to a graph: a
+/// A native edge relation in the form planning passes to a graph: a
 /// GPU-resident producer holding its admitted artifact.
 fn native_edge_producer(plan: QueryPlan, config: &AlgeonNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
     let admitted = admit_for_test(&plan.clone_with_gpu_resident_sink(), config).unwrap();
@@ -1707,7 +1707,7 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
             }) as Arc<dyn ExecutionPlan>
         })
         .collect::<Vec<_>>();
-    // The edge source as planning hands it to the graph: a composed producer
+    // The edge source as planning passes it to the graph: a composed producer
     // that holds its admitted GPU-resident artifact.
     let composed_edge_source = |consumer_plan: &QueryPlan, task_context: Arc<TaskContext>| {
         let admitted =

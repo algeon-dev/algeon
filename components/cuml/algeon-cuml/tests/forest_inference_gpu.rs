@@ -141,8 +141,8 @@ fn double_threshold_forest_keeps_float32_inputs_on_the_exact_branch() {
     assert_eq!(forest.info().precision, ForestPrecision::Double);
     let rows = input("lgb_threshold_boundary");
     assert_eq!(rows[0], vec![1.0_f32]);
-    // The threshold 1 - 2^-26 rounds to 1.0 in Float32; a single-precision
-    // forest would send input 1.0 left (-1) instead of right (+1).
+    // The threshold 1 - 2^-26 rounds to 1.0 in Float32. A single-precision forest
+    // would route input 1.0 to the left leaf (-1); the expected output is the right leaf (+1).
     let actual = predict(&resources, &forest, &rows).unwrap();
     assert_eq!(actual, csv("lgb_threshold_boundary.expected.csv"));
     assert_eq!(actual[0], vec![1.0]);

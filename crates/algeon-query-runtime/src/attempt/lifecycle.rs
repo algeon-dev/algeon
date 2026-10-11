@@ -11,7 +11,7 @@
 //! `Claimed` and `Admitted`; a request rejected or cancelled in the queue
 //! skips `Admitted`. `Terminal` fixes the outcome and every later phase
 //! carries that same value. `Ready` is absorbing. The design contract lives in
-//! `website/docs/design/admission.mdx`.
+//! `website/docs/design/admission.mdx#from-capability-validation-to-admission`.
 
 use std::{error::Error, fmt};
 
@@ -304,8 +304,8 @@ impl AttemptLifecycle {
         self.rejects_gpu_boundary("admission_requested")?;
         if self.disposition.is_none() {
             // The final plan is always classified before GPU admission can be
-            // requested; reaching the queue without a disposition is a caller
-            // contract violation, not a synthesizable state.
+            // requested. Reaching the queue without a disposition is a caller
+            // contract violation, and the lifecycle does not synthesize one.
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admission_requested",
                 reason: "disposition_not_set",
@@ -675,7 +675,7 @@ impl AttemptLifecycle {
 
     /// Consumes the owner-held finalizer for an attempt that never acquired an
     /// admission grant. This is deliberately separate from an admitted
-    /// terminal commit: no cleanup, capacity, health, or domain facts exist.
+    /// terminal commit. No cleanup, capacity, health, or domain facts exist.
     pub(crate) fn finalize_not_admitted(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         if self.phase.admitted().is_some() {
             return Err(AttemptLifecycleError::InvalidOrder {
@@ -1067,7 +1067,6 @@ mod tests {
         let mut lifecycle = AttemptLifecycle::new(0);
         lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 1).unwrap();
         assert_eq!(lifecycle.terminalize(failed(), 2), Err(AttemptLifecycleError::DoubleTerminalization));
-        // The first outcome is preserved.
         assert_eq!(lifecycle.terminal_outcome(), Some(&RuntimeTerminalOutcome::Succeeded));
         assert_eq!(lifecycle.timestamps().outcome_terminal_ns, 1);
     }

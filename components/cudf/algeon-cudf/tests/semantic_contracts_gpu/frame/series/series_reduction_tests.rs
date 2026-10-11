@@ -1,7 +1,3 @@
-//! Integration tests for `Series` reduction, scan, and unary methods.
-//!
-//! All tests require a GPU.
-
 use cudf::{
     ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ReduceAgg, TypeId,
     core::error::{FactKeyName, FactValue},
@@ -23,10 +19,6 @@ fn expect_cudf_err<T>(result: cudf::Result<T>, message: &str) -> cudf::Error {
         Err(error) => error,
     }
 }
-
-// ===========================================================================
-// sum
-// ===========================================================================
 
 fn test_sum_i32() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
@@ -69,10 +61,6 @@ fn test_sum_string_reports_series_operation_on_type_error() {
     assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
     assert_eq!(error_context_value(&err, "input_type").as_deref(), None);
 }
-
-// ===========================================================================
-// min / max
-// ===========================================================================
 
 fn test_min_i32() {
     let s = series::<i32>("x", &[30, 10, 20]).unwrap();
@@ -243,10 +231,6 @@ fn test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details(
     assert_no_budget_error_details(&err);
 }
 
-// ===========================================================================
-// mean / median
-// ===========================================================================
-
 fn test_mean_i32() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
     let m = s.on(Exec::RETAINED).mean().unwrap();
@@ -269,10 +253,6 @@ fn test_median_i32() {
     assert_eq!(m.data_type().unwrap().id(), TypeId::Float64);
     assert_eq!(m.value::<f64>().unwrap(), 20.0);
 }
-
-// ===========================================================================
-// std / var
-// ===========================================================================
 
 fn test_std_f64() {
     let s = series::<f64>("x", &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]).unwrap();
@@ -328,10 +308,6 @@ fn test_var_ddof_above_i32_max_uses_series_operation_contract() {
     );
 }
 
-// ===========================================================================
-// any / all
-// ===========================================================================
-
 fn test_any_true() {
     let s = series::<bool>("x", &[false, true, false]).unwrap();
     let result = s.on(Exec::RETAINED).any().unwrap();
@@ -361,10 +337,6 @@ fn test_all_false() {
     assert!(!result.value::<bool>().unwrap());
 }
 
-// ===========================================================================
-// product
-// ===========================================================================
-
 fn test_product_i32() {
     let s = series::<i32>("x", &[2, 3, 4]).unwrap();
     let result = s.on(Exec::RETAINED).product().unwrap();
@@ -381,10 +353,6 @@ fn test_product_f64() {
     assert_eq!(result.value::<f64>().unwrap(), 24.0);
 }
 
-// ===========================================================================
-// minmax
-// ===========================================================================
-
 fn test_minmax_i32() {
     let s = series::<i32>("x", &[30, 10, 20]).unwrap();
     let (min, max) = s.on(Exec::RETAINED).minmax().unwrap();
@@ -400,10 +368,6 @@ fn test_minmax_f64() {
     assert_eq!(min.value::<f64>().unwrap(), 1.0);
     assert_eq!(max.value::<f64>().unwrap(), 3.0);
 }
-
-// ===========================================================================
-// cumsum / cummin / cummax / cumprod
-// ===========================================================================
 
 fn test_cumsum_i32() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
@@ -436,10 +400,6 @@ fn test_cumprod_i32() {
     assert_eq!(cp.to_vec_strict::<i32>().unwrap(), vec![2, 6, 24]);
 }
 
-// ===========================================================================
-// is_nan / is_not_nan
-// ===========================================================================
-
 fn test_is_nan_f64() {
     let s = series::<f64>("x", &[1.0, f64::NAN, 3.0]).unwrap();
     let mask = s.on(Exec::RETAINED).is_nan().unwrap();
@@ -452,10 +412,6 @@ fn test_is_not_nan_f64() {
     let mask = s.on(Exec::RETAINED).is_not_nan().unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
-
-// ===========================================================================
-// abs
-// ===========================================================================
 
 fn test_abs_i32() {
     let s = series::<i32>("x", &[-3, -1, 0, 2]).unwrap();
@@ -470,10 +426,6 @@ fn test_abs_f64() {
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![3.0, 1.5, 0.0, 2.5]);
 }
 
-// ===========================================================================
-// neg
-// ===========================================================================
-
 fn test_neg_i32() {
     let s = series::<i32>("x", &[1, -2, 3]).unwrap();
     let result = s.on(Exec::RETAINED).neg().unwrap();
@@ -486,10 +438,6 @@ fn test_neg_f64() {
 
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![-1.5, 2.5]);
 }
-
-// ===========================================================================
-// logical_not
-// ===========================================================================
 
 fn test_logical_not_bool() {
     let s = series::<bool>("x", &[true, false, true]).unwrap();

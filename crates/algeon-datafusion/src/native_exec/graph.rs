@@ -12,19 +12,20 @@ use crate::{
     native_exec::SealedAttemptMetricsTarget,
 };
 
-/// Frontend-neutral graph-model diagnostics exposed by a graph execution node.
+/// Frontend-neutral interface a graph execution node exposes to the adapter core.
 ///
-/// Capability evidence issuance remains in the adapter planner after it has
-/// recognized this crate-private execution type; graph frontends do not get a
-/// caller-controlled evidence SPI.
+/// The adapter planner recognizes this crate-private execution type, calls
+/// `graph_execution_capability_evidence` while it collects the attempt's
+/// evidence, and adds the result to that aggregate. Graph frontends implement
+/// the method. The planner decides when it runs.
 pub(crate) trait GraphExecutionPlan: Send + Sync {
     /// Issues capability evidence for the exact native graph fragment this
     /// execution node submits after staging its GPU-resident inputs.
     fn graph_execution_capability_evidence(&self) -> Result<AttemptCapabilityEvidence>;
 
-    /// Returns the one fixed-cardinality post-seal metric target for this
+    /// Returns the single fixed-cardinality post-seal metric target for this
     /// graph execution root. The adapter discovers it through this neutral
-    /// SPI, so core execution does not depend on a graph frontend.
+    /// SPI. Core execution therefore has no dependency on a graph frontend.
     fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget;
 
     /// Returns a typed rejection when this graph root intentionally owns its

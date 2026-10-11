@@ -32,7 +32,6 @@ pub struct ProjectionNode {
 }
 
 impl ProjectionNode {
-    /// Create a projection and derive its output schema from `outputs`.
     pub(crate) fn new(input: NodeId, outputs: Vec<ProjectionOutput>) -> Self {
         let output_schema = projection_output_schema(&outputs);
         Self { input, outputs, output_schema }

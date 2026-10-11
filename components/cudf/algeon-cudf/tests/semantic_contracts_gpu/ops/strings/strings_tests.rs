@@ -1,18 +1,6 @@
-//! Integration tests for GPU string operations.
-//!
-//! Methods under test: `str().contains`, `str().starts_with`,
-//! `str().ends_with`, `str().upper`, `str().lower`, `str().strip`,
-//! `str().lstrip`, `str().rstrip`, `str().len`, `str().byte_count`.
-//!
-//! All tests require a GPU.
-
 use cudf::{DataType, Exec, StringSliceOptions, StripSide, TypeId};
 
 use crate::common::{execution_budget_token, nullable_series, series};
-
-// ===========================================================================
-// Case conversion
-// ===========================================================================
 
 fn test_str_lower() {
     let s = series("s", &["Hello", "WORLD", "Foo123"]).unwrap();
@@ -41,10 +29,6 @@ fn test_str_lower_empty() {
     assert!(result.is_empty());
 }
 
-// ===========================================================================
-// Contains
-// ===========================================================================
-
 fn test_str_contains_basic() {
     let s = series("s", &["hello world", "goodbye", "hello there"]).unwrap();
     let result = s.on(Exec::RETAINED).str().contains("hello").unwrap();
@@ -65,10 +49,6 @@ fn test_str_contains_preserves_nulls() {
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
-
-// ===========================================================================
-// SQL LIKE
-// ===========================================================================
 
 fn test_str_like_sql_wildcards_empty_pattern_escape_and_nulls() {
     let s = nullable_series(
@@ -110,10 +90,6 @@ fn test_str_like_escape_rejects_multi_character_escape() {
     assert_eq!(err.code(), cudf::ErrorCode::ForeignInvalidArgument);
 }
 
-// ===========================================================================
-// Starts with / ends with
-// ===========================================================================
-
 fn test_str_startswith_basic() {
     let s = series("s", &["hello", "help", "world"]).unwrap();
     let result = s.on(Exec::RETAINED).str().starts_with("hel").unwrap();
@@ -141,10 +117,6 @@ fn test_str_endswith_preserves_nulls() {
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(false), None, Some(true)]);
 }
-
-// ===========================================================================
-// Slice strings
-// ===========================================================================
 
 fn test_str_slice_zero_based_unicode_open_ended_step_and_nulls() {
     let s =
@@ -175,10 +147,6 @@ fn test_str_slice_rejects_zero_step() {
     let err = s.on(Exec::RETAINED).str().slice(StringSliceOptions::new(None, None).with_step(0)).unwrap_err();
     assert_eq!(err.code(), cudf::ErrorCode::ForeignInvalidArgument);
 }
-
-// ===========================================================================
-// Strip
-// ===========================================================================
 
 fn test_str_strip_whitespace() {
     let s = series(
@@ -224,10 +192,6 @@ fn test_str_strip_preserves_nulls() {
     assert_eq!(vals, vec![Some("hi".to_string()), None, Some("there".to_string())]);
 }
 
-// ===========================================================================
-// String length
-// ===========================================================================
-
 fn test_str_len_basic() {
     let s = series("s", &["hello", "hi", ""]).unwrap();
     let result = s.on(Exec::RETAINED).str().len().unwrap();
@@ -240,7 +204,7 @@ fn test_str_len_utf8() {
     let s = series("s", &["abc", "\u{4F60}\u{597D}"]).unwrap(); // "你好"
     let result = s.on(Exec::RETAINED).str().len().unwrap();
     let vals = result.to_vec_strict::<i32>().unwrap();
-    assert_eq!(vals, vec![3, 2]); // character count, not byte count
+    assert_eq!(vals, vec![3, 2]); // Counts characters; the next test checks byte counts.
 }
 
 fn test_str_byte_count_utf8() {
@@ -263,10 +227,6 @@ fn test_str_len_empty() {
     assert!(result.is_empty());
 }
 
-// ===========================================================================
-// replace_with_backrefs size preflight
-// ===========================================================================
-
 fn test_replace_with_backrefs_output_size_matches_executed_column() {
     use cudf::{DataFrame, REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT, ops::expr::col};
 
@@ -288,10 +248,6 @@ fn test_replace_with_backrefs_output_size_matches_executed_column() {
     assert!(preflight.requested_bytes_upper_bound() >= preflight.retained_output_bytes());
     assert!(preflight.required_budget_bytes() > 0);
 }
-
-// ===========================================================================
-// prepared replace_with_backrefs prepare / execute
-// ===========================================================================
 
 fn test_prepared_replace_with_backrefs_semantics_and_facts() {
     let s = nullable_series(
@@ -424,10 +380,7 @@ fn test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance() {
     assert_eq!(err.operation(), "series::prepared_replace_with_backrefs::execute_with_budget");
 }
 
-// ===========================================================================
-// try_to_integers (SQL TRY_CAST string -> integer)
-// ===========================================================================
-
+// SQL TRY_CAST from string to integer.
 fn test_str_try_to_integers_int32_parses_valid_rejects_invalid() {
     // Valid, valid, parse-failure (alpha), overflow (> i32::MAX), negative.
     let s = series("s", &["42", "0", "abc", "2147483648", "-17"]).unwrap();

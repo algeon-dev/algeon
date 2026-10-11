@@ -41,15 +41,14 @@ pub struct SourceMetadataCache {
 
 impl SourceMetadataCache {
     /// Returns the number of cached footer entries.
-    ///
-    /// Local-cache misses are not cached while the cache file is absent or
-    /// unreadable, because fill-before-read may make the footer available to a
-    /// later planning pass that reuses this cache.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn cached_footer_count(&self) -> usize {
         self.footers.len()
     }
 
+    /// Local-cache misses are not cached while the cache file is absent or
+    /// unreadable, because fill-before-read may make the footer available to a
+    /// later planning pass that reuses this cache.
     pub(super) fn footer_metadata(
         &mut self,
         source: &LocalParquetSource,
@@ -616,10 +615,11 @@ pub(super) fn read_parquet_metadata(
 ///
 /// A `None` slot means no footer is available for that file (a non-local file
 /// with no context, or a load miss), and callers that consume footers treat it
-/// as "skip the footer-dependent decision for this file" rather than an error.
+/// as "skip the footer-dependent decision for this file". Such a slot is not an error.
 /// Reuses [`SourceMetadataCache::footer_metadata`] so this shares the same
 /// cache entries, requirement handling, and load-time accounting as ordinary
-/// chunk-planning footer loads instead of loading footers a second time.
+/// chunk-planning footer loads. A footer that the cache already holds is
+/// returned without another load.
 pub(crate) fn source_footer_metadata(
     source: &LocalParquetSource,
     cache: &mut SourceMetadataCache,

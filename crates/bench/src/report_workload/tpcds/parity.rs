@@ -102,8 +102,9 @@ pub async fn tpcds_parity_workload_items(
 
 /// Build parity workload items using distinct CPU and native session configs.
 ///
-/// This is useful for tests that want a more parallel CPU oracle while keeping
-/// native physical-plan coverage pinned to the report surface's shape contract.
+/// Separate CPU and native configs let a test run a more parallel CPU oracle
+/// while native physical-plan coverage stays pinned to the report surface's
+/// shape contract.
 pub async fn tpcds_parity_workload_items_with_session_configs(
     root: &Path,
     cpu_session_config: SessionConfig,
@@ -125,10 +126,10 @@ pub async fn tpcds_parity_workload_items_with_session_configs(
 
 /// Build TPC-DS parity items and optionally run external oracles.
 ///
-/// `query_filter` matches exact query ids and silently skips unknown ids.
+/// `query_filter` matches exact query ids and skips unknown ids.
 /// External engines write one SQL file and one Parquet result per selected
-/// query under `scratch_dir`; failures are captured in the workload item rather
-/// than aborting the whole run.
+/// query under `scratch_dir`. Failures are recorded in the workload item and do
+/// not abort the run.
 pub async fn tpcds_parity_workload_items_with_external_oracles(
     root: &Path,
     session_config: SessionConfig,

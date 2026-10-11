@@ -400,7 +400,7 @@ fn source_reader_literal_type_mismatch<T>(literal: &SourceReaderPredicateLiteral
 /// Converts an integer literal to the integer dtype of the predicate column.
 ///
 /// The cudf AST compares operands of one dtype, so a value that the column
-/// type cannot hold is refused instead of wrapped.
+/// type cannot hold fails with [`ErrorCode::ValueOutOfRange`].
 fn source_reader_integer_literal<T>(literal: &SourceReaderPredicateLiteral, target_type: DataType) -> Result<T>
 where T: TryFrom<i64> + TryFrom<u64> {
     let converted = match literal {
@@ -583,7 +583,7 @@ fn parquet_reader_decimal_dtype(path: &Path, read_column: &str, read_index: usiz
 
 fn parquet_descriptor_matches_column(descriptor: &ColumnDescriptor, column_name: &str) -> bool {
     // `column_name` is a top-level schema column, so it may only match a leaf
-    // whose full dotted path is exactly that name (depth 1). Matching on leaf
+    // whose full dotted path is that name (depth 1). Matching on leaf
     // name alone would let a nested leaf like `s.id` shadow top-level `id`.
     let parts = descriptor.path().parts();
     parts.len() == 1 && parts[0] == column_name

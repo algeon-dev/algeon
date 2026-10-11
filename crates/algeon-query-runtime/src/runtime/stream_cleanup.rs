@@ -9,8 +9,9 @@
 //! owns one thread, `algeon-stream-cleanup-d{device}-p{pool}`, that receives
 //! `StreamCleanupJob`s over a channel, synchronizes, and either idles or
 //! destroys the runtime. The release row of the admission table in
-//! `website/docs/design/admission.mdx` names this thread as the place where
-//! `cudaStreamSynchronize` runs for each leased stream.
+//! `website/docs/design/admission.mdx#from-capability-validation-to-admission`
+//! names this thread as the place where `cudaStreamSynchronize` runs for each
+//! leased stream.
 //!
 //! Fail-closed means every path that cannot prove a stream was synchronized
 //! sets the pool's `closed` flag and destroys the idle set: a failed
@@ -249,8 +250,8 @@ impl StreamCleanupCompletion {
     /// The receiver can discard queued cleanup jobs when a prior job panics.
     /// Complete every remaining handoff while unwinding so that the typed
     /// resource and observation permits cannot be stranded. Callback panics
-    /// are intentionally suppressed here: the originating supervisor failure
-    /// remains the fail-closed result and a second unwind from `Drop` would
+    /// are intentionally suppressed here. The originating supervisor failure
+    /// remains the fail-closed result, and a second unwind from `Drop` would
     /// abort the process.
     fn run_remaining_after_abandonment(&mut self) {
         if let Some(completion) = self.before_quiescence.take() {
@@ -272,9 +273,8 @@ impl Drop for StreamCleanupCompletion {
 ///
 /// This is deliberately separate from external completion delivery. Its only
 /// responsibilities are synchronization, CUDA runtime destruction, and pool
-/// accounting. A clean shutdown is not inferred from stream counters: the
-/// owner must first request shutdown, observe this thread's terminal state,
-/// and reclaim its join handle.
+/// accounting. A clean shutdown requires the owner to request shutdown first,
+/// observe this thread's terminal state, and then reclaim its join handle.
 pub(super) struct StreamCleanupSupervisor {
     pub(super) device: cudf::DeviceId,
     pub(super) pool_id: u64,
@@ -544,7 +544,7 @@ impl StreamCleanupSupervisor {
     }
 
     /// Commit an already-finished worker before an idle/quiescence caller
-    /// reports success. A healthy worker remains untouched: only a finished
+    /// reports success. A healthy worker remains untouched. Only a finished
     /// handle or a join already in progress can enter the terminal path.
     #[cfg(test)]
     pub(super) fn finalize_if_finished_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
@@ -570,7 +570,7 @@ impl StreamCleanupSupervisor {
                 continue;
             }
 
-            // Holding control state while we inspect the handle prevents a
+            // Holding control state while the join handle is inspected prevents a
             // competing caller from electing itself between the finished
             // observation and this caller's election. The joiner never holds
             // the join mutex while acquiring control state.
@@ -868,7 +868,7 @@ impl ServiceStreamPool {
         if self.inner.process_exit_started.load(Ordering::Acquire) {
             // The process-exit owner has already joined (or is joining) the
             // only thread allowed to destroy service runtimes. Leaking this
-            // terminal payload is intentional: process exit will reclaim the
+            // terminal payload is intentional. Process exit will reclaim the
             // address space, whereas dropping it could race libcudart's later
             // atexit handler.
             std::mem::forget(runtime);
@@ -892,6 +892,7 @@ impl ServiceStreamPool {
             // The runtime is destroyed before the epoch releases the service
             // generation its memory manager belongs to.
             drop(runtime);
+            // Release the epoch before the completion callbacks report quiescence.
             drop(resource_epoch);
             if let Some(completion) = completion.as_mut() {
                 completion.run_before_quiescence(StreamCleanupOutcome::from_synchronized(synchronized));
@@ -946,8 +947,8 @@ impl ServiceStreamPool {
 
 /// Owns one queued stream cleanup until both resource accounting and the
 /// external completion handoff have finished. If a prior cleanup panics, the
-/// receiver drops queued jobs; this guard turns that drop into fail-closed
-/// resource cleanup rather than silently losing permits or completion work.
+/// receiver drops queued jobs. This guard turns that drop into fail-closed
+/// resource cleanup that releases the permits and completes the handoff.
 pub(super) struct DeferredStreamCleanup {
     pool: ServiceStreamPool,
     runtime: Option<Arc<cudf::Runtime>>,
@@ -1088,6 +1089,7 @@ impl DeferredStreamCleanup {
         // the pool mutex and before the epoch releases the service generation.
         drop(self.runtime.take());
         drop(idle_to_drop);
+        // Release the epoch before `run` invokes the completion callbacks.
         drop(self.resource_epoch.take());
     }
 
@@ -1114,6 +1116,7 @@ impl DeferredStreamCleanup {
             // Destroyed before the epoch releases the service generation.
             drop(runtime);
         }
+        // Release the epoch before the completion callbacks below run.
         drop(self.resource_epoch.take());
         if let Some(completion) = self.completion.as_mut() {
             completion.run_before_quiescence(StreamCleanupOutcome::StreamSynchronizationFailed);
@@ -1134,6 +1137,7 @@ impl DeferredStreamCleanup {
             // Destroyed before the epoch releases the service generation.
             drop(runtime);
         }
+        // Release the epoch before the completion callbacks below run.
         drop(self.resource_epoch.take());
 
         let mut idle_to_drop = Vec::new();
@@ -1254,7 +1258,7 @@ fn stream_cleanup_supervisor_panic_message(panic: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
-// Control jobs are a test-only probe channel: production only ever enqueues
+// Control jobs are a test-only probe channel. Production only ever enqueues
 // runtime cleanups and shutdown.
 #[cfg(test)]
 pub(super) trait StreamCleanupControlJob: Send {

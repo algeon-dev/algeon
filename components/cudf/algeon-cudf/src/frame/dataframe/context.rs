@@ -87,8 +87,8 @@ impl FrameOps<'_> {
 
     /// Factorize a named column into row-aligned encoded indices plus a reusable codebook.
     ///
-    /// This is equivalent to `pandas.factorize()` but returns a typed
-    /// [`Factorized`] result instead of a raw `(codes, uniques)` tuple.
+    /// This is equivalent to `pandas.factorize()`. The result is a typed
+    /// [`Factorized`] value, and no raw `(codes, uniques)` tuple is returned.
     ///
     /// # Errors
     ///
@@ -105,8 +105,8 @@ impl FrameOps<'_> {
     ///
     /// # Cost
     ///
-    /// GPU-allocating: deep-copies every column to a new `Table`. Each column
-    /// gets its own fresh device allocation.
+    /// This allocates on the GPU. It deep-copies every column to a new `Table`.
+    /// Each column gets its own fresh device allocation.
     pub fn to_table_copy(&self) -> Result<Table> {
         let operation = "dataframe::to_table_copy";
         let output_domain = self.ctx.resolve_output_domain(&self.df.domain)?;
@@ -132,10 +132,9 @@ impl FrameOps<'_> {
     /// use [`with_column`](Self::with_column) (single) or
     /// [`DataFrame::assign`] (batch).
     ///
-    /// All expressions are evaluated against the **original** state of `self`,
-    /// not an incrementally mutated copy. This ensures that expressions can
-    /// reference columns that other expressions will overwrite, and the order
-    /// of evaluation does not matter.
+    /// All expressions are evaluated against the **original** state of `self`.
+    /// This ensures that expressions can reference columns that other expressions
+    /// in the same call overwrite, and the order of evaluation does not matter.
     ///
     /// Each item must resolve to an output name. You can provide either:
     ///
@@ -266,8 +265,9 @@ impl FrameOps<'_> {
     /// [`DataFramePreparedSort::materialize`].
     ///
     /// This contract covers the retained sorted-order bytes and the
-    /// materialized gather output sizing, and retains the unresolved
-    /// libcudf sort temporary-workspace contract.
+    /// materialized gather output sizing. It does not cover the libcudf sort
+    /// temporary workspace used while producing the sorted order. That workspace
+    /// contract remains unresolved.
     pub fn prepare_sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<DataFramePreparedSort>
     where
         I: IntoIterator<Item = S>,
@@ -349,31 +349,31 @@ impl FrameOps<'_> {
         self.df.materialize_join_indices_in_context(indices, columns, self.ctx, "dataframe::materialize_join_indices")
     }
 
-    /// Return the exact retained device allocation footprint of
+    /// Return the exact retained device allocation size of
     /// [`materialize_join_indices`](Self::materialize_join_indices) for the
     /// selected payload columns.
     ///
     /// This is a lower-level reservation contract for bounded engines. It is
     /// implemented in the cuDF layer by materializing non-empty projected
-    /// gather results, observing the table allocation footprint, and releasing
+    /// gather results, observing the bytes the table allocates, and releasing
     /// the temporary result before returning. Empty gather maps return zero
     /// without executing the gather. Callers should reserve the returned byte
     /// count before performing the durable materialization.
     ///
-    /// Cost note: unlike
+    /// Unlike
     /// [`hash_join_pre_build_reservation_size_bytes`](Self::hash_join_pre_build_reservation_size_bytes),
     /// this contract executes the non-empty gather end-to-end and discards the
     /// result. Its cost is comparable to
     /// [`materialize_join_indices`](Self::materialize_join_indices) itself, so
     /// reserve-then-materialize roughly doubles the gather work.
     ///
-    /// Doc-only deprecation: this helper is retained for legacy callers that
-    /// need an exact post-gather allocation measurement. It is an executable
-    /// preflight, not a closed-form bound, and can allocate the full gather
-    /// working set before the caller has reserved the returned bytes. New
-    /// bounded execution paths should prefer an explicit closed-form
-    /// reservation contract and then reconcile the observed retained size after
-    /// materialization.
+    /// This helper is deprecated in documentation only. It is retained for legacy
+    /// callers that need an exact post-gather allocation measurement. It is an
+    /// executable preflight. It does not compute a closed-form bound, and it can
+    /// allocate the full gather working set before the caller has reserved the
+    /// returned bytes. New bounded execution paths should prefer an explicit
+    /// closed-form reservation contract and then reconcile the observed retained
+    /// size after materialization.
     pub fn materialize_join_indices_reservation_size_bytes<I, S>(
         &self,
         indices: &DataFrameJoinIndices,
@@ -830,8 +830,8 @@ impl FrameOps<'_> {
         /// Merge (join) two DataFrames, returning split left/right results.
         ///
         /// Like [`merge`](Self::merge) but returns a [`DataFrameJoinSides`] with
-        /// separate left and right `DataFrame`s instead of merging columns into one.
-        /// Each side contains `[key_columns..., payload_columns...]`.
+        /// separate left and right `DataFrame`s. The columns are not merged into
+        /// one frame. Each side contains `[key_columns..., payload_columns...]`.
         ///
         /// # Errors
         ///

@@ -91,6 +91,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 return Err(status);
             },
         };
+        // An entered span must not stay active across an await; `.instrument` carries it.
         drop(_query_enter);
         let descriptor = request.into_inner();
         let info_result = if let Some(explain_gpu) = explain_gpu {
@@ -199,6 +200,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             prepared_statement_handle = handle.as_str(),
             "planning Flight SQL prepared statement"
         );
+        // An entered span must not stay active across an await; `.instrument` carries it.
         drop(_query_enter);
         let info = match self
             .statement_flight_info(
@@ -237,7 +239,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         self.check_auth(&request)?;
         let descriptor = request.into_inner();
         // `CommandGetCatalogs` is a unit message; the builder produces a
-        // static schema, and we echo the (Copy) command back as the ticket.
+        // static schema, and the (Copy) command is echoed back as the ticket.
         let schema = GetCatalogsBuilder::new().schema();
         Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
     }
@@ -651,8 +653,8 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
 
         // DataGrip-class clients may re-run the held handle after executing a
         // DDL through executeUpdate. A no-result-set DDL handle that already
-        // executed once is a no-op on re-execution rather than an "already
-        // exists" rejection.
+        // executed once is a no-op on re-execution and does not return an
+        // "already exists" rejection.
         if already_executed {
             tracing::info!(
                 query_id,
@@ -720,6 +722,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         let execution_domain = parsed_statement
             .as_ref()
             .map_or(StatementExecutionDomain::Data, |statement| self.classify_statement_candidate(statement));
+        // An entered span must not stay active across an await; `.instrument` carries it.
         drop(_query_enter);
         let logical_plan = tokio::select! {
             result = async {
@@ -867,9 +870,9 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         let handle = std::str::from_utf8(&query.prepared_statement_handle)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let caller = self.authorize_id(&request, handle)?;
-        // Closing an unknown handle is not an error: arrow-flight clients
-        // may retry close, and the handle may have been swept by a prior
-        // close on the same connection. Trace-log the no-op so client
+        // Closing an unknown handle is not an error. Arrow-flight clients may
+        // retry a close, and the handle may have been swept by a prior close on
+        // the same connection. Trace-log the no-op so client
         // lifecycle bugs (e.g. double-close, close-after-eviction) are
         // observable without breaking the idempotent contract.
         if self.prepared_statements.remove(handle, &caller) {

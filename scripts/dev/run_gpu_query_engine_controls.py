@@ -254,7 +254,7 @@ def preflight() -> None:
 
 
 def environment(item_id: str, slo_path: Path, run_id: str, family: str) -> dict[str, str]:
-    # Do not let an inherited ALGEON_GOODPUT_* setting silently change the
+    # Do not let an inherited ALGEON_GOODPUT_* setting change the
     # frozen-cap, arrival, or dataset contract of an isolated control.
     result = {key: value for key, value in os.environ.items() if not key.startswith("ALGEON_GOODPUT_")}
     result.update(

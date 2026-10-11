@@ -15,7 +15,7 @@
 
 // layout_algorithms.h cannot be included alongside algorithms.h because both
 // tree_algorithms.h and layout_algorithms.h define cugraph_layout_result_t.
-// Instead, we forward-declare the functions we need from layout_algorithms.h.
+// Instead, this header forward-declares the functions it needs from layout_algorithms.h.
 // The struct cugraph_layout_result_t is already defined via tree_algorithms.h
 // (pulled in by algorithms.h).
 

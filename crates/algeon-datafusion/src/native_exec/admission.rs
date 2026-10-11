@@ -292,8 +292,8 @@ impl TicketAdmissionContext {
 }
 
 /// Resolves an in-flight admission whose claiming fragment stopped waiting
-/// for it. The attempt has no second claim, so the fragments waiting on that
-/// admission get its abandonment rather than a claim of their own.
+/// for it. The attempt has no second claim. The fragments waiting on that
+/// admission therefore receive its abandonment and do not claim one of their own.
 struct TicketAdmissionGuard {
     ticket: Arc<QueryAdmissionTicket>,
     resolved: bool,

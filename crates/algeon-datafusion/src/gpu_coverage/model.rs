@@ -13,11 +13,16 @@ use crate::{
 /// Single sum type representing whether GPU planning produced an executable plan or was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryGpuPlanningOutcome {
+    /// Planning produced an executable physical plan with the attached coverage.
     Planned(FinalPlanCoverage),
+    /// Planning failed before producing an executable physical plan.
     Rejected(QueryGpuPlanningRejection),
 }
 
 impl QueryGpuPlanningOutcome {
+    /// Serializes planning status and client-visible coverage or rejection details.
+    ///
+    /// Trusted source-chain diagnostics are excluded from this projection.
     pub fn to_json(&self) -> Value {
         match self {
             Self::Planned(plan) => json!({
@@ -49,10 +54,12 @@ impl QueryGpuPlanningOutcome {
 /// Plan-time rejection details when planning fails before an executable physical plan is produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuPlanningRejection {
+    /// Stage at which parsing, planning, or native validation failed.
     pub phase: QueryGpuRejectionPhase,
     /// The error code that executing the statement returns, or the stable
     /// code of a rejection only the validator makes.
     pub reason_code: String,
+    /// Stable status of a typed source error, or `None` when no source status exists.
     pub source_error_status: Option<String>,
     /// The status message that executing the statement returns to its client,
     /// without the closing pointer to `EXPLAIN GPU` that a blocking plan
@@ -76,11 +83,17 @@ pub struct QueryGpuPlanningRejection {
 /// `"confidence": "plan_time_only"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuCoverage {
+    /// Executable final-plan coverage or the rejection that prevented a plan.
     pub planning_outcome: QueryGpuPlanningOutcome,
+    /// Native candidate decisions in optimizer discovery order.
     pub candidate_outcomes: Vec<QueryGpuCandidateOutcome>,
+    /// Explicit cuGraph calls discovered during physical-plan validation.
     pub cugraph_calls: Vec<QueryGpuCugraphCall>,
+    /// Execution requirements that planning alone does not verify.
     pub runtime_caveats: Vec<QueryGpuRuntimeCaveat>,
+    /// Whether validation performed I/O while planning.
     pub planning_did_io: bool,
+    /// Session and optimizer context captured for this validation pass.
     pub validated_under: QueryGpuValidatedUnder,
     /// Root captured from the authoritative DataFusion physical plan before
     /// the native optimizer attempted replacement.
@@ -159,10 +172,12 @@ impl QueryGpuCoverage {
         }
     }
 
+    /// Borrows the planning success or rejection recorded by this validation pass.
     pub fn planning_outcome(&self) -> &QueryGpuPlanningOutcome {
         &self.planning_outcome
     }
 
+    /// Returns final-plan coverage on planning success, or `None` after rejection.
     pub fn final_plan_coverage(&self) -> Option<&FinalPlanCoverage> {
         match &self.planning_outcome {
             QueryGpuPlanningOutcome::Planned(coverage) => Some(coverage),
@@ -170,6 +185,7 @@ impl QueryGpuCoverage {
         }
     }
 
+    /// Returns the rejection evidence when planning failed, or `None` on success.
     pub fn rejection(&self) -> Option<&QueryGpuPlanningRejection> {
         match &self.planning_outcome {
             QueryGpuPlanningOutcome::Planned(_) => None,
@@ -177,6 +193,9 @@ impl QueryGpuCoverage {
         }
     }
 
+    /// Returns the report label `native`, `partial_native`, `cpu`, or `rejected`.
+    ///
+    /// The label describes plan-time coverage; it makes no runtime completion claim.
     pub fn gpu_path(&self) -> &'static str {
         match &self.planning_outcome {
             QueryGpuPlanningOutcome::Planned(coverage) => match coverage.disposition() {
@@ -207,15 +226,22 @@ impl QueryGpuCoverage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Planning stage at which validation stopped before obtaining an executable plan.
 pub enum QueryGpuRejectionPhase {
+    /// SQL text could not be parsed into a supported statement.
     Parsing,
+    /// Logical plan construction or optimization failed.
     LogicalPlanning,
+    /// DataFusion physical plan construction failed.
     PhysicalPlanning,
+    /// Validation required planning I/O that its metadata-only contract disallows.
     PlanningIo,
+    /// Native lowering or the requested final-plan coverage contract failed.
     NativeLowering,
 }
 
 impl QueryGpuRejectionPhase {
+    /// Returns the stable snake-case label used in coverage JSON and report rows.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Parsing => "parsing",
@@ -230,15 +256,22 @@ impl QueryGpuRejectionPhase {
 /// Reason category for a candidate selection result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryGpuCandidateReasonKind {
+    /// A physical operator has no supported native representation.
     Operator,
+    /// A physical expression has no supported native representation.
     Expression,
+    /// An Arrow type or representation is unsupported.
     ArrowType,
+    /// Source metadata or access semantics cannot be lowered.
     Source,
+    /// The combined layout or semantics of plan nodes is unsupported.
     PlanShape,
+    /// A native-capable candidate was declined by cost selection.
     Cost,
 }
 
 impl QueryGpuCandidateReasonKind {
+    /// Returns the stable snake-case label used in coverage JSON and report rows.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Operator => "operator",
@@ -254,6 +287,7 @@ impl QueryGpuCandidateReasonKind {
 /// Candidate selection diagnostic retained independently from final coverage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuCandidateOutcome {
+    /// Whether the native optimizer selected, declined capability, or declined cost.
     pub selection: CandidateOutcomeKind,
     /// Stable family derived from the native candidate shape.
     pub candidate_family: String,
@@ -261,6 +295,7 @@ pub struct QueryGpuCandidateOutcome {
     pub reason_code: Option<String>,
     /// Present only when a capability or cost decision has a reason category.
     pub reason_kind: Option<QueryGpuCandidateReasonKind>,
+    /// Human-readable evidence explaining this candidate decision.
     pub detail: String,
     /// Triage category for an unselected candidate, when available.
     pub category: Option<String>,
@@ -268,6 +303,7 @@ pub struct QueryGpuCandidateOutcome {
     pub remedy: Option<QueryGpuRemedy>,
     /// What blocked a not-supported candidate, when the producing site knew it.
     pub blocking: Option<Blocking>,
+    /// Cost facts for a cost decline, or `None` for other candidate outcomes.
     pub cost_evidence: Option<NativeCandidateCostEvidence>,
 }
 
@@ -292,13 +328,18 @@ impl QueryGpuCandidateOutcome {
 /// Stable category for a prescribed action after a candidate was not selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryGpuRemedyKind {
+    /// Changing the query or input data can address the candidate reason.
     UserAction,
+    /// Changing a supported session or backend setting can address the reason.
     ConfigAction,
+    /// The native implementation lacks the required contract.
     EngineGap,
+    /// Cost selection favors retaining DataFusion execution.
     CpuPreferred,
 }
 
 impl QueryGpuRemedyKind {
+    /// Returns the stable snake-case label used in coverage JSON and report rows.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::UserAction => "user_action",
@@ -312,25 +353,35 @@ impl QueryGpuRemedyKind {
 /// Stable remedy code and human-readable guidance for a candidate reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryGpuRemedy {
+    /// Stable identifier of the prescribed action.
     pub code: &'static str,
+    /// Category identifying who or what can address the candidate reason.
     pub kind: QueryGpuRemedyKind,
+    /// Human-readable action guidance included in the coverage projection.
     pub guidance: &'static str,
 }
 
 impl QueryGpuRemedy {
+    /// Constructs guidance with its stable code and action category.
+    ///
+    /// The supplied strings become report content without validation or rewriting.
     pub const fn new(code: &'static str, kind: QueryGpuRemedyKind, guidance: &'static str) -> Self {
         Self { code, kind, guidance }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Static validation and input-residency evidence for an explicit cuGraph call.
 pub struct QueryGpuCugraphCall {
+    /// Stable cuGraph algorithm code discovered in the plan.
     pub algorithm: String,
+    /// Whether input schemas and options passed static validation.
     pub statically_valid: bool,
     /// Whether every input relation reaches the graph as a native GPU-resident
     /// producer. `false` means at least one input runs on DataFusion and is
     /// staged through host Arrow.
     pub inputs_native: bool,
+    /// Planning observations that qualify this call's coverage.
     pub notes: Vec<String>,
 }
 
@@ -346,8 +397,11 @@ impl QueryGpuCugraphCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Runtime condition that plan-time coverage cannot establish.
 pub struct QueryGpuRuntimeCaveat {
+    /// Stable identifier for the unverified runtime condition.
     pub code: String,
+    /// Human-readable explanation of the condition.
     pub detail: String,
 }
 
@@ -365,13 +419,24 @@ impl QueryGpuRuntimeCaveat {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Session, optimizer, and catalog context used to derive one coverage verdict.
+///
+/// Fingerprints identify this context for diagnostics; they do not reserve
+/// resources or guarantee a later planning pass produces the same plan.
 pub struct QueryGpuValidatedUnder {
+    /// Whether the session has an installed Algeon native optimizer.
     pub native_optimizer_rule_installed: bool,
+    /// Label identifying whether optimizer settings came from the session or validation options.
     pub optimizer_config_source: String,
+    /// Configured execution-mode label, or `None` without an installed native optimizer.
     pub execution_mode: Option<String>,
+    /// Requested final-plan coverage restrictions used for validation.
     pub final_plan_requirements: Vec<String>,
+    /// Fingerprint of the relevant DataFusion session configuration.
     pub session_config_fingerprint: String,
+    /// Fingerprint of the relevant native optimizer configuration.
     pub optimizer_fingerprint: String,
+    /// Diagnostic description of the catalog snapshot used during planning.
     pub catalog_snapshot: String,
 }
 

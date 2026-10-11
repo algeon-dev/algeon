@@ -24,14 +24,10 @@ pub struct NativeShadowEstimate {
     pub frontend_outputs: Vec<serde_json::Value>,
 }
 
-/// Collects available component models against the already compiled schedule.
-/// Decode, hash, gather, aggregate, and sink-copy costs currently remain unknown.
-/// Literal import uses cuDF's existing aligned allocation model; resident input
-/// handles are borrowed and their unknown size never increases query-owned bytes.
 /// Serializes the plan's frontend advisory volumes for a diagnostic artifact.
 ///
-/// A plan without a compiled schedule still reports this group, so the record
-/// shape belongs to the advisory signal rather than to the pipeline estimate.
+/// A plan without a compiled schedule still reports this group. The record shape comes from
+/// the advisory signal and does not read the pipeline estimate.
 pub fn frontend_output_records(plan: &QueryPlan) -> Vec<serde_json::Value> {
     plan.advisory_outputs()
         .iter()
@@ -51,6 +47,10 @@ pub fn frontend_output_records(plan: &QueryPlan) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Collects available component models against the already compiled schedule.
+/// Decode, hash, gather, aggregate, and sink-copy costs currently remain unknown.
+/// Literal import uses cuDF's existing aligned allocation model; resident input
+/// handles are borrowed and their unknown size never increases query-owned bytes.
 pub fn estimate_compiled_pipeline(plan: &QueryPlan, pipeline: &CompiledPipeline) -> Result<NativeShadowEstimate> {
     let started = Instant::now();
     let task_workspace = pipeline

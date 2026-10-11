@@ -18,9 +18,9 @@ use crate::{
 };
 
 /// The single logical table exposed by the ClickBench fixture. Upstream uses
-/// `hits` as the canonical view name; we register the raw Parquet under
-/// [`CLICKBENCH_RAW_TABLE`] and surface the cast `EventDate` projection through
-/// `hits` so the upstream queries.sql works verbatim.
+/// `hits` as the canonical view name. The raw Parquet is registered under
+/// [`CLICKBENCH_RAW_TABLE`], and the `hits` view surfaces the cast `EventDate`
+/// projection so the upstream queries.sql works verbatim.
 pub const CLICKBENCH_TABLE: &str = "hits";
 
 /// Raw table name used for the Parquet listing before the `hits` view applies
@@ -31,8 +31,9 @@ pub const CLICKBENCH_RAW_TABLE: &str = "hits_raw";
 pub const ALGEON_CLICKBENCH_GENERATION_COMMAND_ENV: &str = "ALGEON_CLICKBENCH_GENERATION_COMMAND";
 /// Truthy flag requesting a content-fingerprint pass.
 ///
-/// Accepted truthy values are `1`, `true`, `yes`, and `on`. The env value is
-/// not used as the fingerprint; it only decides whether to scan file bytes.
+/// Accepted truthy values are `1`, `true`, `yes`, and `on`. A truthy value makes
+/// the content fingerprint scan the file bytes. The env value is not part of the
+/// fingerprint itself.
 pub const ALGEON_CLICKBENCH_CONTENT_FINGERPRINT_ENV: &str = "ALGEON_CLICKBENCH_CONTENT_FINGERPRINT";
 
 /// In-repo default for the single-file ClickBench fixture. Used when no env
@@ -49,15 +50,12 @@ pub const DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR: &str = "./fixture/clickbench
 
 /// Discovered ClickBench fixture layout.
 ///
-/// Mixed single-file and shard layouts are rejected so reports cannot silently
-/// benchmark a different fixture than the caller intended.
+/// Mixed single-file and shard layouts are rejected, so reports cannot benchmark
+/// a fixture other than the one the caller intended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClickbenchLayout {
     /// One canonical Parquet file, usually `hits.parquet`.
-    Single {
-        /// Path to the canonical ClickBench Parquet file.
-        file: PathBuf,
-    },
+    Single { file: PathBuf },
     /// Canonical `hits_<N>.parquet` shards under one directory.
     ///
     /// Discovery admits only numeric-suffix shards, sorts them by suffix, and
@@ -72,7 +70,7 @@ pub enum ClickbenchLayout {
 
 impl ClickbenchLayout {
     /// Path used to register the table in DataFusion. Single layouts point at
-    /// the canonical `hits.parquet`; partitioned layouts point at the
+    /// the discovered Parquet file; partitioned layouts point at the
     /// containing directory (DataFusion's `register_parquet` handles directory
     /// roots when every file shares a schema).
     pub fn register_path(&self) -> &Path {
@@ -236,11 +234,10 @@ fn ensure_parquet_extension(path: &Path) -> WorkloadResult<()> {
 
 /// Collect canonical partitioned shards. The upstream
 /// `download-hits-parquet-partitioned` script always names shards
-/// `hits_<u32>.parquet`, so we admit only that pattern and silently drop any
-/// other Parquet file in the directory; e.g. user samples, user-managed exports,
-/// or `.parquet.tmp` half-writes. Anything that does not match is ignored
-/// rather than rejected, since `partitioned/` directories are routinely
-/// shared with unrelated data on staging volumes.
+/// `hits_<u32>.parquet`. Only that pattern is admitted. Other files in the
+/// directory, such as user samples, user-managed exports, or `.parquet.tmp`
+/// half-writes, are ignored without an error, since `partitioned/` directories
+/// are routinely shared with unrelated data on staging volumes.
 fn collect_hits_shards(dir: &Path) -> WorkloadResult<Vec<PathBuf>> {
     let mut shards = Vec::new();
     for entry in fs::read_dir(dir)? {

@@ -2,7 +2,7 @@
 //!
 //! These are descriptive admission / optimizer signals only; they must not
 //! be treated as exact runtime cardinalities. Unknown estimates return
-//! `None` rather than zero so callers can distinguish "missing evidence"
+//! `None` and never zero, so callers can distinguish "missing evidence"
 //! from "empty".
 //!
 //! The `advisory_*` functions expose a frontend's own output estimates
@@ -42,8 +42,8 @@ pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option
             },
             // A generic GPU-resident handle has no plan-time cardinality, but
             // a frontend may attach a proved hard upper bound. Preserve that
-            // evidence for all admission and optimizer consumers instead of
-            // making graph-specific callers inspect source internals.
+            // evidence for all admission and optimizer consumers, so
+            // graph-specific callers do not inspect source internals.
             SourceNode::GpuResident(source) => source.row_count_upper_bound,
             SourceNode::LiteralBatch(source) => Some(source.row_count() as u64),
         },
@@ -131,11 +131,11 @@ fn selected_local_parquet_source_bytes(source: &LocalParquetSource) -> Option<u6
 /// Returns the sum of selected local-Parquet source bytes reachable from the
 /// plan sink when every reachable source has a known local-Parquet estimate.
 ///
-/// This is a plan-level working-set signal, not an output-size estimate: an
-/// aggregate can reduce its output to one row while still retaining a large
-/// input during execution.  It deliberately refuses mixed or unknown source
-/// plans rather than manufacturing a partial target from only the sources
-/// that happened to retain byte metadata.
+/// This is a plan-level working-set signal. It does not estimate output size:
+/// an aggregate can reduce its output to one row while still retaining a large
+/// input during execution. It refuses mixed or unknown source plans and does
+/// not build a partial total from only the sources that happened to retain
+/// byte metadata.
 #[doc(hidden)]
 #[cfg(test)]
 pub fn estimated_reachable_local_parquet_source_bytes(plan: &QueryPlan) -> Option<u64> {

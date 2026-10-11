@@ -19,7 +19,7 @@
 //! Use [`.alias()`](Expr::alias) or an explicit `(name, expr)` pair when you
 //! want to materialize the broadcast result as a named column.
 //!
-//! If you want an actual scalar reduction, use the [`Series`] reduction APIs
+//! If you want a scalar reduction, use the [`Series`] reduction APIs
 //! such as [`SeriesOps::sum`](crate::SeriesOps::sum) or
 //! [`SeriesOps::sum_value`](crate::SeriesOps::sum_value) instead.
 //!

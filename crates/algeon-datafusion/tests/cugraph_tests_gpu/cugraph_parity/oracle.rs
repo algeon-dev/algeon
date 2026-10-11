@@ -10,19 +10,18 @@ use algeon_datafusion::cugraph_sql::parity::{OracleLookup, ParityManifest, Parit
 /// The manifest is passed through so the oracle's
 /// `header.dataset_sha256` is cross-checked against the currently
 /// prepared local dataset bytes; a stale oracle generated from older bytes
-/// surfaces as a `Mismatch` rather than silently passing.
+/// surfaces as a `Mismatch`.
 pub fn lookup(data_root: &Path, manifest: &ParityManifest, spec: &ParitySpec) -> OracleLookup {
     load_oracle(data_root, spec, Some(manifest))
 }
 
 /// Render the refresh command for a parity row so a skipped test still
-/// tells the operator exactly how to populate the oracle JSON.
+/// tells the operator how to populate the oracle JSON.
 ///
 /// The binary derives parameters from the parity spec registry, so the
-/// command only carries the `--algorithm` / `--dataset` selectors that
-/// `refresh_cugraph_oracle` actually accepts; the target path is
-/// printed on a separate line so a copy-paste of the command line is
-/// shell-runnable as-is.
+/// command carries only the `--algorithm` / `--dataset` selectors that
+/// `refresh_cugraph_oracle` accepts. The target path is printed on a
+/// separate line so a copy-paste of the command line is shell-runnable as-is.
 pub fn refresh_hint(data_root: &Path, spec: &ParitySpec) -> String {
     let oracle = oracle_path(data_root, spec)
         .expect("refresh hints are only rendered for parity rows with a generated oracle path");

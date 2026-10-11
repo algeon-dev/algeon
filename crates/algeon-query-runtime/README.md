@@ -1,5 +1,10 @@
 # query-runtime
 
+`algeon-query-runtime` is a published implementation dependency of Algeon.
+Applications use [`algeon-datafusion`](https://docs.rs/algeon-datafusion)
+and its re-exported types. This page describes the workspace owner API; see
+the [API documentation boundary](https://algeon.dev/design#api-documentation).
+
 `query-runtime` is the native owner of attempt lifecycle
 and GPU resource admission. It depends on `query-planning` contracts and
 does not depend on `query-engine` execution.

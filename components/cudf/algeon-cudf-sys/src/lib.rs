@@ -1,5 +1,10 @@
 //! Low-level FFI bindings to the cuDF C shim library (`libcudf_rust`).
 //!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion); workspace code
+//! uses this crate for its component contracts. See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
+//!
 //! This crate provides raw `extern "C"` function declarations matching the
 //! C shim layer that wraps cuDF's C++ API, plus borrowed runtime-handle
 //! adapters and typed `_ex` option builders. It is not intended to be used

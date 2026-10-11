@@ -575,7 +575,7 @@ pub(in crate::exec::bounded::compiled::execution_tests) fn root_join_sort_limit_
 /// Join → Sort → Limit → Filter over the same fixtures as
 /// [`root_join_sort_limit_data_plan`]. The trailing filter keeps every row the
 /// fused top-k emits, so the result is deterministic and proves the filter runs
-/// after the limit instead of being pushed below it.
+/// after the limit and is not pushed below it.
 pub(in crate::exec::bounded::compiled::execution_tests) fn root_join_sort_limit_filter_data_plan(
     left_path: &Path,
     right_path: &Path,
@@ -638,7 +638,7 @@ pub(in crate::exec::bounded::compiled::execution_tests) fn root_join_sort_limit_
 /// Join → Sort → Limit with skip and fetch over the same fixtures as
 /// [`root_join_sort_limit_data_plan`]. Descending sort plus skip 1 fetch 1
 /// keeps `(2, 200)`, which pins that the fused top-k applies the offset
-/// exactly once instead of dropping it or applying it twice.
+/// exactly once. The offset is not dropped and is not applied twice.
 pub(in crate::exec::bounded::compiled::execution_tests) fn root_join_sort_limit_offset_data_plan(
     left_path: &Path,
     right_path: &Path,

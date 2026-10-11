@@ -34,7 +34,6 @@ fn test_parquet_roundtrip() {
     let path = dir.path().join("test.parquet");
     let rt = sample_runtime();
 
-    // Write
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
@@ -43,7 +42,6 @@ fn test_parquet_roundtrip() {
         parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["ids", "values"]).build();
     parquet::write_parquet(&table, &write_opts).unwrap();
 
-    // Read back
     let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
     let read_view = result.table.testing_view().unwrap();
@@ -121,7 +119,6 @@ fn test_parquet_column_selection() {
         parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b", "c"]).build();
     parquet::write_parquet(&table, &write_opts).unwrap();
 
-    // Read only column "b"
     let read_opts =
         parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["b"]).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
@@ -146,7 +143,6 @@ fn test_parquet_row_limits() {
     let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&table, &write_opts).unwrap();
 
-    // Read only first 10 rows
     let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).num_rows(10).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
     let read_view = result.table.testing_view().unwrap();
@@ -186,7 +182,6 @@ fn test_parquet_read_returns_column_names_in_shared_result() {
     let path = dir.path().join("test_meta.parquet");
     let rt = sample_runtime();
 
-    // Write a parquet file with known column names
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let c3 = column_from_slice(&[100i64, 200, 300]).unwrap();
@@ -196,14 +191,11 @@ fn test_parquet_read_returns_column_names_in_shared_result() {
         parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["alpha", "beta", "gamma"]).build();
     parquet::write_parquet(&table, &write_opts).unwrap();
 
-    // Read back with metadata
     let read_opts = parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
 
-    // Verify column names
     assert_eq!(result.column_names, Some(vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]));
 
-    // Verify table data is intact
     let read_view = result.table.testing_view().unwrap();
     assert_eq!(read_view.num_columns().unwrap(), 3);
     assert_eq!(read_view.num_rows().unwrap(), 3);
@@ -232,12 +224,10 @@ fn test_parquet_read_column_selection_preserves_projected_names() {
         parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x", "y", "z"]).build();
     parquet::write_parquet(&table, &write_opts).unwrap();
 
-    // Read only columns "x" and "z"
     let read_opts =
         parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["x", "z"]).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();
 
-    // Only the selected columns should appear
     assert_eq!(result.column_names, Some(vec!["x".to_string(), "z".to_string()]));
     let read_view = result.table.testing_view().unwrap();
     assert_eq!(read_view.num_columns().unwrap(), 2);

@@ -63,8 +63,8 @@ pub(crate) mod defaults {
 /// A strictly positive iteration count.
 ///
 /// Wraps a [`NonZeroU32`] to guarantee that iteration-count parameters (like
-/// `max_iter`) are always at least 1. This prevents silent no-ops from passing
-/// zero iterations to algorithm functions.
+/// `max_iter`) are always at least 1. This prevents no-ops that finish without an
+/// error from passing zero iterations to algorithm functions.
 ///
 /// # Construction
 ///

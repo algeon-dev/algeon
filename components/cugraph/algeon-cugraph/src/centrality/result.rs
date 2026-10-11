@@ -161,12 +161,12 @@ impl Drop for CentralityResult {
 
 /// Result of a betweenness centrality computation.
 ///
-/// Wraps [`CentralityResult`] rather than returning it directly: cuGraph's C
-/// API builds the betweenness result through the same constructor as the
-/// iterative algorithms, which defaults `num_iterations` to 0 and `converged`
-/// to false. Betweenness centrality is not iterative and never overwrites
-/// those fields, so they would read as "did not converge" if exposed; this
-/// wrapper hides them. Freed on drop.
+/// Wraps [`CentralityResult`] and hides its `num_iterations` and `converged`
+/// fields. cuGraph's C API builds the betweenness result through the same
+/// constructor as the iterative algorithms, which defaults `num_iterations` to
+/// 0 and `converged` to false. Betweenness centrality is not iterative and
+/// never overwrites those fields, so they would read as "did not converge" if
+/// exposed. Freed on drop.
 pub struct BetweennessCentralityResult(CentralityResult);
 
 impl std::fmt::Debug for BetweennessCentralityResult {

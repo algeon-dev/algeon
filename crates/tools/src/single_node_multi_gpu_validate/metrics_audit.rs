@@ -43,8 +43,8 @@ pub(super) struct MetricAuditClause {
 /// Explicit delivery accounting for the pull-only backend-metric store.
 ///
 /// The measured runner reads a public snapshot directly and does not install
-/// an exporter or delivery queue. Saying that directly is preferable to
-/// fabricating a zero-loss exporter result.
+/// an exporter or delivery queue. The record therefore names the pull-only mode
+/// and carries no loss count.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct DeliveryLossEvidence {
     pub(super) mode: &'static str,
@@ -69,8 +69,8 @@ impl MetricsAudit {
     ///
     /// `reported_attempts` comes from the artifact's retained report rows,
     /// while `terminal_completed` comes from the backend-metric store. They intentionally
-    /// take different paths so a dropped report or metric projection cannot
-    /// hide in one shared accumulator.
+    /// take different paths so a dropped report or metric projection cannot be
+    /// masked by one shared accumulator.
     pub(super) fn from_snapshots(
         snapshots: &[MetricSnapshotObservation],
         expected_device_ordinals: &[usize],
@@ -99,10 +99,10 @@ impl MetricsAudit {
     }
 
     /// A metric audit is blocking only when a projection-integrity clause
-    /// fails. Histogram saturation is an audit usability finding: it must stay
+    /// fails. Histogram saturation is an audit usability finding. It must stay
     /// explicit in the artifact, but it cannot turn a bounded, otherwise
-    /// coherent workload into a false negative simply because the metric
-    /// cannot estimate that workload's p99.
+    /// coherent workload into a false negative because the metric cannot
+    /// estimate that workload's p99.
     /// The delivery field is intentionally not a synthetic success claim.
     pub(super) fn passes(&self) -> bool {
         [&self.snapshot_cadence, &self.fixed_cardinality, &self.report_to_metric_equality]

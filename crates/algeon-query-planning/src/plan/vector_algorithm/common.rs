@@ -26,6 +26,7 @@ impl VectorRowIdBinding {
     }
 }
 
+/// Binds one input relation of a vector algorithm to its row identity and dense vector.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorRelationBinding {
     /// Position of the relation among the algorithm node inputs.

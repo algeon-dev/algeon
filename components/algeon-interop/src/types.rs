@@ -204,7 +204,7 @@ impl CudaStreamHandle<'_> {
 // CUDA; it only copies and compares the address. Sending or sharing the handle
 // therefore cannot race inside this crate. `from_raw_on_device` accepts any
 // lifetime, so `'a` does not prove that the stream is alive: the producer
-// guarantees that. Code that hands the pointer to CUDA relies on that
+// guarantees that. Code that passes the pointer to CUDA relies on that
 // guarantee and on CUDA accepting a stream from any host thread.
 unsafe impl Send for CudaStreamHandle<'_> {}
 unsafe impl Sync for CudaStreamHandle<'_> {}

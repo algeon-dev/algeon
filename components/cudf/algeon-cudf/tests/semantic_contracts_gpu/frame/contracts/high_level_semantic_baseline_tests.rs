@@ -1,12 +1,8 @@
-//! High-Level API Semantic Baseline Tests (FC-AUDIT)
-//!
 //! These tests lock down the current borrow/share/copy semantics of every
 //! public accessor and conversion on `DataFrame` and `Series` during naming
 //! refactors. They serve as a regression gate: if a refactor
-//! silently changes a zero-copy path into a deep-copy path (or vice versa),
+//! changes a zero-copy path into a deep-copy path (or vice versa),
 //! a test here will fail.
-//!
-//! All tests require a GPU.
 
 use std::sync::Arc;
 
@@ -17,22 +13,12 @@ use crate::common::{
     fail_next_column_view_metadata_read, series,
 };
 
-// ===========================================================================
-// Helpers
-// ===========================================================================
-
-/// Build a 3-row, 2-column DataFrame.
 fn sample_df() -> DataFrame {
     let ids = series::<i32>("id", &[1, 2, 3]).unwrap();
     let scores = series::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
     DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
 }
 
-// ===========================================================================
-// 1. DataFrame::series(): returns owned Series with Arc-shared Column
-// ===========================================================================
-
-/// `series()` returns an owned `Series` with correct metadata.
 fn df_series_returns_owned_series() {
     let df = sample_df();
     let s = df.series("id").unwrap();
@@ -41,7 +27,6 @@ fn df_series_returns_owned_series() {
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-/// Two `series()` calls return Series backed by the same GPU buffer.
 fn df_series_shares_device_pointer() {
     let df = sample_df();
     let ptr1 = df.series("id").unwrap().as_column().device_data_ptr().unwrap();
@@ -50,15 +35,13 @@ fn df_series_shares_device_pointer() {
     assert_eq!(ptr1, ptr2);
 }
 
-/// `series()` produces an owned value that can outlive the DataFrame.
-/// This proves it is worker-thread portable.
+/// Outliving the DataFrame shows the owned Series is worker-thread portable.
 fn df_series_outlives_dataframe() {
     let s = {
         let df = sample_df();
         df.series("id").unwrap()
         // df dropped here
     };
-    // Series is still usable
     assert_eq!(s.len(), 3);
     assert_eq!(s.as_column().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
@@ -75,10 +58,6 @@ fn df_series_two_calls_share_arc() {
     let ptr2 = s2.as_column().device_data_ptr().unwrap();
     assert_eq!(ptr1, ptr2);
 }
-
-// ===========================================================================
-// 2. DataFrame::get() / contains(): probe and existence check
-// ===========================================================================
 
 /// `get()` returns `None` on miss, `Some(Series)` on hit.
 fn df_get_probe_access() {
@@ -129,7 +108,6 @@ fn df_contains_check() {
     assert!(!df.contains("nonexistent"));
 }
 
-/// `iter_series()` yields series in schema order without copying.
 fn df_iter_series_preserves_schema_order_and_shares_gpu_data() {
     let df = sample_df();
     let items: Vec<_> = df.iter_series().collect::<cudf::Result<Vec<_>>>().unwrap();
@@ -161,11 +139,6 @@ fn df_iter_series_yields_per_item_errors_without_reordering() {
     assert_eq!(second.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
-// ===========================================================================
-// 3. DataFrame::to_table(): deep-copies GPU data
-// ===========================================================================
-
-/// `to_table()` produces a new table with independent GPU memory.
 fn df_to_table_deep_copies() {
     let df = sample_df();
     let table = df.on(Exec::RETAINED).to_table_copy().unwrap();
@@ -174,13 +147,11 @@ fn df_to_table_deep_copies() {
     assert_eq!(table.num_rows().unwrap(), 3);
     let table_columns = table.into_columns().unwrap();
 
-    // The table's column 0 ("id") must have a DIFFERENT device pointer
     let table_col0 = &table_columns[0];
     let table_ptr = table_col0.device_data_ptr().unwrap();
     let df_ptr = dataframe_device_ptr(&df, "id");
     assert_ne!(table_ptr, df_ptr, "to_table() must deep-copy; pointers should differ");
 
-    // Data values should still match
     assert_eq!(table_col0.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
@@ -189,14 +160,9 @@ fn df_to_table_source_still_usable() {
     let df = sample_df();
     let _table = df.on(Exec::RETAINED).to_table_copy().unwrap();
 
-    // DataFrame is still fully readable
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(df.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
-
-// ===========================================================================
-// 4. DataFrame::into_table(): conditional deep-copy
-// ===========================================================================
 
 /// When the DataFrame is the sole owner of all columns (Arc strong
 /// count == 1), `into_table()` can unwrap without copying.
@@ -248,11 +214,6 @@ fn df_into_table_values_preserved() {
     assert_eq!(columns[1].to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
-// ===========================================================================
-// 5. Schema-only DataFrame metadata ops remain zero-copy
-// ===========================================================================
-
-/// `filter(&Series)` produces a new GPU allocation.
 fn filter_allocates_new_gpu_data() {
     let df = sample_df();
     let original_ptr = dataframe_device_ptr(&df, "id");
@@ -264,7 +225,6 @@ fn filter_allocates_new_gpu_data() {
     assert_ne!(original_ptr, filtered_ptr);
 }
 
-/// `sort_values` produces consistent results across calls.
 fn sort_values_consistent_results() {
     let df1 = sample_df();
     let df2 = sample_df();
@@ -302,12 +262,6 @@ fn rename_column_shares_arc() {
     assert_eq!(original_ptr, renamed_ptr);
 }
 
-// ===========================================================================
-// 6. Series accessor semantics
-// ===========================================================================
-
-/// `Series::as_column()` returns a `Column` reference that points to the
-/// same device data across repeated access.
 fn series_as_column_same_device_ptr_on_repeated_access() {
     let s = series::<i32>("x", &[1, 2]).unwrap();
     let col = s.as_column();
@@ -351,10 +305,6 @@ fn series_arc_accessor_shares_arc_without_consuming() {
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-// ===========================================================================
-// Supplementary: clone semantics
-// ===========================================================================
-
 /// `Series::clone()` is a cheap Arc bump; same device pointer.
 fn series_clone_shares_gpu_data() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -365,11 +315,6 @@ fn series_clone_shares_gpu_data() {
     assert_eq!(ptr1, ptr2);
 }
 
-// ===========================================================================
-// Supplementary: high-level methods' GPU-allocating nature
-// ===========================================================================
-
-/// `filter()` with a Series mask produces a new GPU allocation.
 fn df_filter_gpu_allocates() {
     let df = sample_df();
     let mask = series::<bool>("mask", &[true, false, true]).unwrap();
@@ -382,7 +327,6 @@ fn df_filter_gpu_allocates() {
     assert_ne!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&filtered, "id"));
 }
 
-/// `head()` / `tail()` / `slice()` all produce new GPU allocations.
 fn df_slicing_ops_gpu_allocate() {
     let df = sample_df();
     let original_ptr = dataframe_device_ptr(&df, "id");
@@ -397,7 +341,6 @@ fn df_slicing_ops_gpu_allocate() {
     assert_ne!(original_ptr, dataframe_device_ptr(&s, "id"));
 }
 
-/// GPU-allocating unary ops on Series produce new columns.
 fn series_ops_gpu_allocate() {
     let s = series::<i32>("v", &[1, 2, 3]).unwrap();
     let original_ptr = s.as_column().device_data_ptr().unwrap();

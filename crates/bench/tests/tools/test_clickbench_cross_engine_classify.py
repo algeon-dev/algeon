@@ -47,8 +47,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.m = load_module()
 
-    # --- all_engines_same ---
-
     def test_all_engines_same_when_all_fingerprints_match(self) -> None:
         rows = [
             make_row("q18", "duckdb", 1, "fp-abc"),
@@ -71,8 +69,6 @@ class ClassifyQueryTest(unittest.TestCase):
         result = self.m.classify_query("q25", rows)
         self.assertEqual(result.classification, "all_engines_same")
         self.assertEqual(result.engine_instability, "false")
-
-    # --- tie_divergence ---
 
     def test_tie_divergence_for_waiver_query_different_fingerprints_same_count(self) -> None:
         rows = [
@@ -106,8 +102,6 @@ class ClassifyQueryTest(unittest.TestCase):
         self.assertEqual(result.classification, "unexpected_mismatch")
         self.assertEqual(result.row_count_agreement, "false")
 
-    # --- float_variance ---
-
     def test_float_variance_q04_same_row_count_different_fingerprints(self) -> None:
         rows = [
             make_row("q04", "duckdb", 1, "fp-duckdb", row_count="1"),
@@ -119,9 +113,9 @@ class ClassifyQueryTest(unittest.TestCase):
         self.assertEqual(result.row_count_agreement, "true")
 
     def test_q10_is_no_longer_a_float_variance_waiver(self) -> None:
-        # q10 was removed from the float-variance waiver set: a mismatch must
-        # surface as unexpected_mismatch instead of being masked, mirroring the
-        # Rust PARITY_WAIVERS contract (q04 only).
+        # Only q04 has a float-variance waiver. A q10 mismatch must surface as
+        # unexpected_mismatch and must not be masked, mirroring the Rust
+        # PARITY_WAIVERS contract.
         rows = [
             make_row("q10", "cpu_datafusion", 1, "fp-cpu", row_count="10"),
             make_row("q10", "algeon_datafusion", 1, "fp-native", row_count="10"),
@@ -136,8 +130,6 @@ class ClassifyQueryTest(unittest.TestCase):
         ]
         result = self.m.classify_query("q04", rows)
         self.assertEqual(result.classification, "unexpected_mismatch")
-
-    # --- engine_instability ---
 
     def test_engine_instability_when_engine_returns_different_fingerprints(self) -> None:
         rows = [
@@ -169,8 +161,6 @@ class ClassifyQueryTest(unittest.TestCase):
         result = self.m.classify_query("q26", rows)
         self.assertNotEqual(result.classification, "engine_instability")
         self.assertEqual(result.engine_instability, "false")
-
-    # --- correctness_bug (q23) ---
 
     def test_correctness_bug_when_reference_engines_agree_and_native_differs(self) -> None:
         rows = [
@@ -222,8 +212,6 @@ class ClassifyQueryTest(unittest.TestCase):
         self.assertEqual(result.classification, "insufficient_data")
         self.assertEqual(result.algeon_datafusion_fingerprint, "none")
 
-    # --- insufficient_data ---
-
     def test_insufficient_data_when_only_one_engine_succeeded(self) -> None:
         rows = [make_row("q18", "duckdb", 1, "fp-only")]
         result = self.m.classify_query("q18", rows)
@@ -238,8 +226,6 @@ class ClassifyQueryTest(unittest.TestCase):
         ]
         result = self.m.classify_query("q18", rows)
         self.assertEqual(result.classification, "insufficient_data")
-
-    # --- failed iteration exclusion ---
 
     def test_failed_iteration_not_counted_when_other_succeeds(self) -> None:
         rows = [
@@ -260,8 +246,6 @@ class ClassifyQueryTest(unittest.TestCase):
         self.assertNotEqual(result.classification, "engine_instability")
         self.assertEqual(result.engine_instability, "false")
 
-    # --- mismatched_engines tracking ---
-
     def test_mismatched_engines_identifies_outlier(self) -> None:
         rows = [
             make_row("q32", "duckdb", 1, "fp-majority"),
@@ -280,8 +264,6 @@ class ClassifyQueryTest(unittest.TestCase):
         ]
         result = self.m.classify_query("q33", rows)
         self.assertEqual(result.mismatched_engines, "none")
-
-    # --- reference_fingerprint field ---
 
     def test_reference_fingerprint_is_consensus_when_refs_agree(self) -> None:
         rows = [
@@ -307,8 +289,6 @@ class ClassifyQueryTest(unittest.TestCase):
         ]
         result = self.m.classify_query("q18", rows)
         self.assertEqual(result.reference_fingerprint, "none")
-
-    # --- TSV/JSONL round-trip ---
 
     def test_write_and_read_tsv(self) -> None:
         m = self.m
@@ -356,8 +336,6 @@ class ClassifyQueryTest(unittest.TestCase):
         from dataclasses import fields
         field_names = [f.name for f in fields(m.ClassificationRow)]
         self.assertEqual(field_names, m.OUTPUT_HEADER)
-
-    # --- load_input ---
 
     def test_load_tsv_input(self) -> None:
         m = self.m

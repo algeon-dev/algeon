@@ -9,7 +9,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/algeon-query-runtime"
-readme = "../../README.md"
+readme = "README.md"
 keywords = ["datafusion", "gpu", "cuda", "runtime", "rapids"]
 categories = ["database"]
 

@@ -31,7 +31,7 @@ cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle);
 ///
 /// `raw_stream` must be a valid borrowed `cudaStream_t` value. This does not
 /// take ownership and is intended for compatibility layers that carry raw CUDA
-/// stream identity rather than a `cudf_stream_handle`.
+/// stream identity without a `cudf_stream_handle`.
 cudf_status_t cudf_raw_cuda_stream_synchronize(void* raw_stream);
 
 /// Check whether work already enqueued on a CUDA stream handle has completed
@@ -73,8 +73,8 @@ cudf_status_t cudf_stream_provider_unregister_attempt(void* parent_stream);
 /// one auxiliary fork of the route for its lifetime.
 ///
 /// The route claims the lowest auxiliary fork index no live alias holds and
-/// confines every fork requested from `alias_stream` -- and from the fork it
-/// is served -- to it; the chosen index is written to
+/// confines every fork requested from `alias_stream` (and from the fork it
+/// is served) to it; the chosen index is written to
 /// `out_claimed_fork_index` when that pointer is non-null. The route chooses
 /// the index, atomically with the attach, because its live-claim table is the
 /// only record of which forks are taken. The claim is a property of the alias,

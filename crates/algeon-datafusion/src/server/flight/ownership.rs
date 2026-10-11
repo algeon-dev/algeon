@@ -1,8 +1,8 @@
 //! Per-principal ownership of the ids the Flight SQL server hands to clients.
 //!
 //! Authentication establishes *who* is calling; this registry establishes
-//! *what they may name*. Every id the server returns to a client; a
-//! per-execution `query_id` and a prepared-statement handle; is an opaque
+//! *what they may name*. Every id the server returns to a client (a
+//! per-execution `query_id` and a prepared-statement handle) is an opaque
 //! bearer reference: any authenticated caller that guesses or observes one
 //! could otherwise redeem another user's ticket, cancel their query, read
 //! their retained SQL and runtime artifact, or close their prepared
@@ -13,7 +13,7 @@
 //!
 //! Under [`crate::server::auth::AuthMode::Disabled`] there is no principal, so every
 //! caller shares one anonymous owner and all checks pass. That preserves the
-//! existing trusted-network behavior exactly: ownership narrows what an
+//! existing trusted-network behavior: ownership narrows what an
 //! authenticated deployment exposes and never adds a new rejection to a
 //! deployment that never authenticated in the first place.
 
@@ -58,9 +58,9 @@ impl QueryOwnership {
     ///
     /// An unregistered id is authorized: ids are registered as they are
     /// issued, and the lookup that follows this check is the authority on
-    /// whether the id exists at all. Failing closed here would instead turn
-    /// every genuinely unknown id into a permission error, which tells a
-    /// caller that an id it guessed is unknown rather than merely not theirs.
+    /// whether the id exists at all. Failing closed here would turn every
+    /// unknown id into a permission error, so a never-issued id would report
+    /// "not accessible" and the lookup would never run.
     pub(super) fn authorize(&self, id: &str, caller: &Owner) -> Result<(), Status> {
         match self.owners.get(id) {
             Some(owner) if owner.value() != caller => {
@@ -84,14 +84,14 @@ impl QueryOwnership {
     /// Ownership must not become a second lifetime authority: it has no way
     /// to know when a query id stops being resolvable, so it borrows that
     /// answer from whoever owns the id. Sweeping on the existing maintenance
-    /// pass keeps the registry bounded by the live id count rather than by
-    /// the number of ids ever issued.
+    /// pass keeps the registry bounded by the live id count. Without the
+    /// sweep, the registry would grow with the number of ids ever issued.
     pub(super) fn retain_live(&self, is_live: impl Fn(&str) -> bool) {
         self.owners.retain(|id, _| is_live(id));
     }
 
-    /// Live owner records. Test-only hook for asserting that ids are
-    /// released rather than accumulating.
+    /// Live owner records. Test-only hook for asserting that released ids do
+    /// not accumulate.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.owners.len()

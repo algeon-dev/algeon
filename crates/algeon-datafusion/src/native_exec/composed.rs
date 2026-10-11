@@ -98,7 +98,7 @@ fn prepared_producer_capability_evidence(
 
 /// Issues the one engine-owned evidence for a prepared composed GPU island.
 ///
-/// The caller supplies the exact consumer plan that will run and the
+/// The caller supplies the consumer plan that will run and the
 /// top-level producer occurrences in execution order. Nested producer
 /// fragments stay behind each top-level evidence; they are not flattened
 /// into a second occurrence manifest.

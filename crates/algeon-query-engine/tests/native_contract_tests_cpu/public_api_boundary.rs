@@ -18,9 +18,8 @@ fn acquire_admitted_context(session: &GpuBackendSession) -> Result<()> {
 }
 
 fn supported_admitted_context_path_compiles() {
-    // Never invoked with a real session: this is a compile-time proof (a
-    // fn-pointer coercion) that the signature composes, matching the former
-    // trybuild `pass` fixture's own `fn main`, which also never called it.
+    // Never invoked with a real session. This is a compile-time proof (a
+    // fn-pointer coercion) that the signature composes.
     let _supported_admitted_context: fn(&GpuBackendSession) -> Result<()> = acquire_admitted_context;
 }
 

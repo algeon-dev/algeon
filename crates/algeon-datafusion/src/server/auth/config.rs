@@ -65,8 +65,8 @@ impl AuthMode {
     }
 
     /// Validate the config; unique usernames, non-empty fields, hash
-    /// shape sanity. Catches obvious config-file mistakes at load time
-    /// rather than at handshake time.
+    /// shape sanity. Catches obvious config-file mistakes at load time.
+    /// The checks run before any handshake.
     pub fn validate(&self) -> Result<()> {
         match self {
             AuthMode::Disabled => Ok(()),
@@ -114,6 +114,7 @@ impl AuthMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StaticUserConfig {
+    /// Nonempty login name, unique within the configured static-user list.
     pub username: String,
     /// Argon2 PHC string (`$argon2id$v=19$...`). Plain passwords are
     /// rejected at load time.

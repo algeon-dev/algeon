@@ -1,8 +1,8 @@
 //! Stable DataFusion metric contracts and native-execution metric translation.
 //!
-//! Responsibility-specific implementation lives in the sibling modules. This
-//! facade keeps the adapter's metric boundary explicit without retaining a
-//! second implementation path.
+//! Implementation lives in the sibling modules `capture`, `contract`, `record`,
+//! and `registry`. This facade re-exports the metric types and metric names the
+//! rest of the adapter uses.
 
 mod capture;
 mod contract;
@@ -18,6 +18,9 @@ pub use record::{
     GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, SealedAttemptGraphClaimCalibrationSnapshot,
 };
 
+/// DataFusion counter name for server runtime-artifact capture loss.
+///
+/// Each execution wrapper records one when its bounded runtime-artifact capture loses rows.
 pub const SERVER_CAPTURE_LOSS_METRIC_NAME: &str = "algeon_server_capture_loss";
 
 #[cfg(test)]

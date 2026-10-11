@@ -11,14 +11,20 @@ use serde_json::{Value, json};
 /// cuVS output/gather paths are only defined for these five stable SQL types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RelationIdType {
+    /// Signed 32-bit integer identifiers.
     Int32,
+    /// Signed 64-bit integer identifiers.
     Int64,
+    /// UTF-8 string identifiers with 32-bit offsets.
     Utf8,
+    /// UTF-8 string identifiers with 64-bit offsets.
     LargeUtf8,
+    /// UTF-8 identifiers stored as Arrow string views.
     Utf8View,
 }
 
 impl RelationIdType {
+    /// Returns the supported binding type, or `None` for other Arrow types.
     pub fn from_data_type(data_type: &DataType) -> Option<Self> {
         match data_type {
             DataType::Int32 => Some(Self::Int32),
@@ -43,13 +49,18 @@ pub const RELATION_ID_TYPES: &[RelationIdType] = &[
 /// Vector element types for dense relation descriptors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VectorElementType {
+    /// Single-precision floating-point vector elements.
     Float32,
+    /// Double-precision floating-point vector elements.
     Float64,
+    /// Signed 8-bit vector elements.
     Int8,
+    /// Unsigned 8-bit vector elements.
     UInt8,
 }
 
 impl VectorElementType {
+    /// Returns the supported binding type, or `None` for other Arrow types.
     pub fn from_data_type(data_type: &DataType) -> Option<Self> {
         match data_type {
             DataType::Float32 => Some(Self::Float32),
@@ -60,6 +71,7 @@ impl VectorElementType {
         }
     }
 
+    /// Arrow-compatible type label used in option schemas and diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Float32 => "Float32",
@@ -74,34 +86,53 @@ impl VectorElementType {
 /// validation in the DataFusion adapter.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GpuOptionKind {
+    /// Object that names an ID column and a supported dense-vector binding.
     RelationBinding,
+    /// Unsigned integer constrained by inclusive bounds.
     Integer {
+        /// Inclusive lower bound.
         minimum: u64,
+        /// Inclusive upper bound.
         maximum: u64,
+        /// Value inserted when an optional key is absent; `None` leaves it absent.
         default: Option<u64>,
     },
+    /// Finite floating-point value greater than or equal to zero.
     NonnegativeNumber {
+        /// Value inserted when an optional key is absent.
         default: f64,
     },
+    /// Finite floating-point value strictly greater than zero.
     PositiveNumber {
+        /// Value inserted when an optional key is absent.
         default: f64,
     },
+    /// Finite floating-point value in the inclusive interval `[0, 1]`.
     UnitInterval {
+        /// Value inserted when an optional key is absent.
         default: f64,
     },
+    /// Finite floating-point value in the interval `(0, 1]`.
     Fraction {
+        /// Value inserted when an optional key is absent.
         default: f64,
     },
+    /// JSON boolean with an optional default.
     Boolean {
+        /// Value inserted when an optional key is absent; `None` leaves it absent.
         default: Option<bool>,
     },
+    /// String selected from the declared values.
     Enum {
+        /// Accepted strings, matched case-sensitively.
         values: &'static [&'static str],
+        /// Value inserted when an optional key is absent; `None` leaves it absent.
         default: Option<&'static str>,
     },
     /// Non-empty string of at most `max_chars` Unicode scalar values, the unit
     /// JSON Schema `maxLength` counts.
     Text {
+        /// Maximum Unicode scalar values in the string.
         max_chars: usize,
     },
 }
@@ -144,10 +175,12 @@ impl GpuOptionKind {
 /// share.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GpuOptionDefinition {
+    /// Case-sensitive key accepted in the option object.
     pub name: &'static str,
     /// A missing required option is an error; a missing optional one takes
     /// the kind's default when it has one and is otherwise left absent.
     pub required: bool,
+    /// Value constraints used by both validation and JSON schema generation.
     pub kind: GpuOptionKind,
     /// User-facing semantics projected through the unified GPU descriptor.
     pub description: &'static str,
@@ -156,11 +189,15 @@ pub struct GpuOptionDefinition {
 /// One documented output field in a GPU relational result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuOutputFieldDefinition {
+    /// Output field name or repeated-field template used to construct the result schema.
     pub name: &'static str,
+    /// SQL type label for the generated reference and descriptor.
     pub data_type: &'static str,
+    /// Whether the result field permits nulls.
     pub nullable: bool,
     /// Literal option that determines how many physical output fields exist.
     pub repeats: Option<&'static str>,
+    /// Meaning of the output field in the generated descriptor.
     pub description: &'static str,
 }
 
@@ -175,6 +212,7 @@ pub struct GpuOptionValidationError {
 }
 
 impl GpuOptionValidationError {
+    /// Stable error code for adapter classification.
     pub fn code(&self) -> &'static str {
         self.code
     }
@@ -189,6 +227,7 @@ impl GpuOptionValidationError {
         self
     }
 
+    /// Human-readable explanation of the invalid option.
     pub fn message(&self) -> &str {
         &self.message
     }

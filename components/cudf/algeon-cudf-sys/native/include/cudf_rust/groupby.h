@@ -37,7 +37,7 @@ typedef enum {
   CUDF_AGG_VARIANCE,
 } cudf_aggregation_kind_t;
 
-/// Null handling policy for groupby keys.
+/// Null handling policy for groupby keys and for COUNT aggregations.
 typedef enum {
   CUDF_NULL_POLICY_EXCLUDE = 0,
   CUDF_NULL_POLICY_INCLUDE = 1,
@@ -89,11 +89,11 @@ cudf_status_t cudf_prepared_groupby_destroy(cudf_prepared_groupby_handle handle)
 /// This calls cuDF's `groupby::get_groups` without value columns. The returned
 /// `out_num_groups` is derived from cuDF's group offsets after the handle's
 /// null-key policy is applied. `out_grouped_key_output_bytes` reports the exact
-/// device allocation footprint of the grouped-key table materialized by this
-/// call, and `out_max_group_size` is computed from cuDF's host group offsets.
-/// Temporary grouped-key output is released before this call returns; these are
-/// grouped-output facts, not retained prepared-handle state bytes. The prepared
-/// groupby handle remains reusable for subsequent aggregate calls.
+/// device allocation size of the grouped-key table materialized by this call,
+/// and `out_max_group_size` is computed from cuDF's host group offsets.
+/// Temporary grouped-key output is released before this call returns. The
+/// reported byte count therefore covers only that output. The prepared groupby
+/// handle remains reusable for subsequent aggregate calls.
 cudf_status_t cudf_prepared_groupby_prepare_groups_ex(cudf_prepared_groupby_handle groupby,
                                                       int64_t* out_num_groups,
                                                       size_t* out_grouped_key_output_bytes,
@@ -117,9 +117,9 @@ cudf_status_t cudf_prepared_groupby_aggregate_ex(cudf_prepared_groupby_handle gr
                                                  int32_t* out_total_columns,
                                                  cudf_exec_options_t const* options);
 
-/// Perform a groupby aggregation with explicit execution context.
+/// Perform a groupby aggregation.
 ///
-/// @param keys           Table view of grouping key columns.
+/// @param keys          Table view of grouping key columns.
 /// @param values         Array of column view handles for value columns.
 /// @param aggregations   Flat array of aggregation handles. For request `i`,
 ///                        the aggregations start at offset sum(agg_counts[0..i]).
@@ -150,8 +150,7 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
                                         int32_t* out_total_columns,
                                         cudf_exec_options_t const* options);
 
-/// Perform a groupby aggregation with explicit execution context and sorted-key
-/// contract.
+/// Perform a groupby aggregation with a sorted-key contract.
 ///
 /// If `keys_are_sorted` is non-zero, the caller asserts that key columns are
 /// ascending with nulls after, matching cuDF's pre-sorted key contract.
@@ -172,7 +171,7 @@ cudf_status_t cudf_groupby_aggregate_with_keys_are_sorted_ex(
   int32_t* out_total_columns,
   cudf_exec_options_t const* options);
 
-/// Perform a grouped prefix scan with explicit execution context.
+/// Perform a grouped prefix scan.
 ///
 /// The output has one result column per requested aggregation. If
 /// `keys_are_sorted` is non-zero, the grouped scan is constructed with cuDF's
@@ -193,7 +192,7 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
                                    int32_t* out_total_columns,
                                    cudf_exec_options_t const* options);
 
-/// Perform a per-group row shift with explicit execution context.
+/// Perform a per-group row shift.
 ///
 /// Each value column is shifted by the corresponding `offsets[i]` positions
 /// within each group, and indeterminate output positions take `fill_values[i]`.

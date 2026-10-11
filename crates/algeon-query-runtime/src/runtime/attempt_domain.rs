@@ -6,7 +6,7 @@
 //! both equal the grant bytes, which `create` verifies against the cudf domain
 //! it built. The fork streams libcudf's `fork_streams` provider creates are
 //! members of the same domain, so their allocations count against the grant.
-//! The allocation path contract is in `website/docs/design/admission.mdx`.
+//! The allocation path contract is in `website/docs/design/admission.mdx#allocation-enforcement`.
 
 use std::sync::{
     Arc,
@@ -50,8 +50,8 @@ impl AttemptStreamProviderRoute {
     /// the route's `S_d`, excluding the parent's reserved fork.
     ///
     /// The pool is fixed at admission and holds exactly as many auxiliary
-    /// forks as the attempt has auxiliary permits, and every alias -- lane,
-    /// source worker, or auxiliary fragment context alike -- holds one of them
+    /// forks as the attempt has auxiliary permits, and every alias (lane,
+    /// source worker, or auxiliary fragment context alike) holds one of them
     /// alone for its lifetime. Claims therefore never exceed permit holders,
     /// which never exceed `lane_capacity()`, so a caller holding a fresh
     /// permit always finds a free fork and no two callers are ever served the
@@ -113,7 +113,7 @@ impl AttemptStreamProviderRoute {
 impl AttemptAllocationDomain {
     /// Creates the domain with `grant == ceiling == immutable ledger grant`.
     ///
-    /// Construction is restricted to the runtime's admission envelope.  The
+    /// Construction is restricted to the runtime's admission envelope. The
     /// envelope is the sole owner of this hard resource; contexts receive
     /// clones of that owned value and member leases, never a rediscovered
     /// domain keyed by grant identity.
@@ -162,10 +162,10 @@ impl AttemptAllocationDomain {
 
     /// Binds `stream` as a new member of this attempt's domain.
     ///
-    /// Callers own the lease lifetime: one member exists per execution
-    /// stream for the attempt and the shared lease is cloned into per-stage
-    /// budget tokens, which never attach a second member to the stream. The
-    /// member detaches only when every clone drops.
+    /// Callers own the lease lifetime. One member exists per execution stream
+    /// for the attempt, and the shared lease is cloned into per-stage budget
+    /// tokens, which never attach a second member to the stream. The member
+    /// detaches only when every clone drops.
     pub(crate) fn create_member(&self, stream: &CudaStream) -> Result<cudf::StreamReservationLease> {
         if stream.device().ordinal() != self.device_ordinal() {
             return Err(QueryError::new(

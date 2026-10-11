@@ -71,7 +71,7 @@ impl AttemptAuxiliarySlots {
     ///
     /// A holder of an attempt auxiliary permit must never block on another
     /// permit of the same attempt, so work that already owns one takes what
-    /// is left over instead of waiting for it.
+    /// is left over and does not wait for it.
     pub(crate) fn try_acquire(self: &Arc<Self>, operation: &'static str) -> Result<Option<AttemptAuxiliaryPermit>> {
         match Arc::clone(&self.permits).try_acquire_owned() {
             Ok(permit) => Ok(Some(AttemptAuxiliaryPermit { _permit: permit })),

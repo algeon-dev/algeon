@@ -1,9 +1,9 @@
 //! Parquet footers supplied to planning by whoever read them.
 //!
 //! Planning consumes footers; it does not open the files they came from. The
-//! caller; source preparation, which already loads and caches these footers;
-//! passes what it has, so a footer is read once per source rather than once per
-//! decision that happens to need it.
+//! caller (source preparation, which already loads and caches these footers)
+//! passes what it has. A footer is therefore read once per source, and each
+//! decision that needs one reuses that read.
 
 use parquet::file::metadata::ParquetMetaData;
 
@@ -11,7 +11,7 @@ use parquet::file::metadata::ParquetMetaData;
 /// [`LocalParquetSource`](super::LocalParquetSource), in `files` order.
 ///
 /// A `None` slot means the caller has no footer for that file, and every
-/// decision that needs one skips rather than guessing. That keeps the
+/// decision that needs one skips without guessing. That keeps the
 /// conservative outcome the previous in-planning read produced for a source it
 /// could not open: the optimization does not apply, and the plan stays correct.
 /// Whether an unreadable file is an error at all is source preparation's call,

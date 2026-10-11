@@ -36,7 +36,6 @@
 #include <string_view>
 #include <vector>
 
-// Helper: cast a column_view handle to strings_column_view.
 // Caller must guarantee the column is of type STRING.
 static cudf::strings_column_view to_strings_view(cudf_column_view_handle h)
 {
@@ -44,7 +43,6 @@ static cudf::strings_column_view to_strings_view(cudf_column_view_handle h)
   return cudf::strings_column_view{*view};
 }
 
-// Helper: validate that a scalar handle is a string scalar.
 // Returns CUDF_SUCCESS on success, CUDF_ERROR_TYPE on type mismatch.
 static cudf_status_t check_string_scalar(cudf_scalar_handle handle, cudf::string_scalar** out)
 {
@@ -114,10 +112,6 @@ static std::size_t checked_add_reservation_bytes(std::size_t left, std::size_t r
 }
 
 extern "C" {
-// ---------------------------------------------------------------------------
-// Case conversion
-// ---------------------------------------------------------------------------
-
 cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
                                        cudf_column_handle* out,
                                        cudf_exec_options_t const* options)
@@ -161,10 +155,6 @@ cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
   }
   CUDF_RUST_CATCH
 }
-
-// ---------------------------------------------------------------------------
-// Find / contains / starts_with / ends_with (scalar target)
-// ---------------------------------------------------------------------------
 
 cudf_status_t cudf_strings_contains_ex(cudf_column_view_handle input,
                                        cudf_scalar_handle target,
@@ -250,10 +240,6 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
   CUDF_RUST_CATCH
 }
 
-// ---------------------------------------------------------------------------
-// LIKE
-// ---------------------------------------------------------------------------
-
 cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
                                    char const* pattern,
                                    int32_t pattern_len,
@@ -288,10 +274,6 @@ cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
   }
   CUDF_RUST_CATCH
 }
-
-// ---------------------------------------------------------------------------
-// Regex replace
-// ---------------------------------------------------------------------------
 
 cudf_status_t cudf_strings_replace_with_backrefs_ex(cudf_column_view_handle input,
                                                     char const* pattern,
@@ -417,7 +399,7 @@ cudf_status_t destroy_consumed_prepared_replace_owner(
 {
   auto const provenance = owner->provenance;
   // A non-success status deliberately leaves the consumed owner unreachable:
-  // its retained GPU allocations are quarantined rather than destroyed on an
+  // its retained GPU allocations are quarantined and not destroyed on an
   // unverified ambient device.
   return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
@@ -576,10 +558,6 @@ cudf_status_t cudf_strings_prepared_replace_with_backrefs_destroy(
   return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
 
-// ---------------------------------------------------------------------------
-// Slice
-// ---------------------------------------------------------------------------
-
 cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
                                     int32_t start,
                                     int32_t start_valid,
@@ -617,10 +595,6 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
   }
   CUDF_RUST_CATCH
 }
-
-// ---------------------------------------------------------------------------
-// Concatenate
-// ---------------------------------------------------------------------------
 
 cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns,
                                           int32_t num_columns,
@@ -666,10 +640,6 @@ cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns
   CUDF_RUST_CATCH
 }
 
-// ---------------------------------------------------------------------------
-// Strip / trim
-// ---------------------------------------------------------------------------
-
 cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
                                     cudf_strip_side_t side,
                                     cudf_scalar_handle to_strip,
@@ -706,10 +676,6 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
   }
   CUDF_RUST_CATCH
 }
-
-// ---------------------------------------------------------------------------
-// Attributes
-// ---------------------------------------------------------------------------
 
 cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
                                                cudf_column_handle* out,
@@ -756,10 +722,7 @@ cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
   CUDF_RUST_CATCH
 }
 
-// ---------------------------------------------------------------------------
-// Numeric conversion (null-on-failure / TRY_CAST contract)
-// ---------------------------------------------------------------------------
-
+// Numeric conversion uses the null-on-failure TRY_CAST contract.
 cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
                                               cudf_data_type_handle output_type,
                                               cudf_column_handle* out,

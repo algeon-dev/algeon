@@ -13,6 +13,10 @@ use tokio::{task::JoinHandle, time::sleep};
 use super::*;
 use crate::single_node_multi_gpu_validate::schedule::ScheduledArrival;
 
+/// Profile-owned schedule for the feature-off graph probe. The runner issues
+/// the declared warmup and measurement probes beside live relational attempts.
+/// Fixed plans and duration-paced rounds select only the original workload
+/// queries; this schedule exclusively submits the appended probe query.
 #[derive(Clone, Copy)]
 pub(super) struct FeatureOffCugraphProbeSchedule {
     pub(super) query_index: usize,
@@ -20,9 +24,9 @@ pub(super) struct FeatureOffCugraphProbeSchedule {
     pub(super) measurement_probe_attempts: usize,
 }
 
-/// Adds the runner-owned feature-off graph request after the relational set. The caller
+/// Adds the runner-owned feature-off graph request after the workload set. The caller
 /// retains its index for the dedicated probe schedule, while normal arrivals
-/// are planned against the pre-append relational count.
+/// rotate through the pre-append workload set.
 pub(super) fn append_feature_off_cugraph_probe(
     profile: &RunProfile,
     queries: &mut Vec<SelectedQuery>,
@@ -44,7 +48,7 @@ pub(super) fn append_feature_off_cugraph_probe(
 }
 
 /// A normal graph qualification profile must be built with the explicit
-/// cugraph-enabled runner feature. The base runner admits exactly its profile
+/// cugraph-enabled runner feature. The base runner admits only its profile
 /// owned feature-off probe; accepting arbitrary graph labels there would turn
 /// a missing build feature into generic failed workload rows.
 pub(in crate::single_node_multi_gpu_validate) fn validate_cugraph_runner_mode(
@@ -72,7 +76,7 @@ pub(in crate::single_node_multi_gpu_validate) fn validate_cugraph_runner_mode(
 /// Runs the serial, public-SQL domain-cap probe. The profile preflight
 /// pins the two-attempt shape (`q01` followed by `edge_scan`) and the single
 /// static partition. This driver deliberately reuses ordinary submission and
-/// drain logic: no runner-created error substitutes for allocator evidence.
+/// drain logic. No runner-created error substitutes for allocator evidence.
 pub(super) async fn drive_domain_exhaustion_probe(
     backend: &AlgeonGpuBackend,
     sessions: &SessionPool,
@@ -128,7 +132,7 @@ pub(super) async fn drive_physical_allocator_pressure(
     let mut begin_failures = 0_u64;
     let mut join_failures = 0_u64;
     let mut cancellation_barrier = None;
-    // Dedicated probes never arm deadline/cancellation storms; the knob set stays disabled.
+    // Dedicated probes never arm deadline/cancellation storms; they pass `StormKnobs::default()`.
     let mut storm_cancellers = Vec::new();
     match spawn_attempt_task(
         backend,
@@ -158,7 +162,7 @@ pub(super) async fn drive_physical_allocator_pressure(
 
     // This consuming call synchronizes and drops every sidecar buffer before
     // the recovery attempt begins; a failed verification is a hard runner
-    // error rather than a manufactured recovery claim.
+    // error, and no recovery claim is made from it.
     let release = lease.release_and_verify().map_err(|error| {
         format!("--physical-allocator-pressure could not verify external pressure release before recovery: {error}")
     })?;
@@ -223,8 +227,8 @@ pub(super) fn project_physical_pressure_facts(facts: PhysicalMemoryPressureFacts
 /// Produces the public attempt contract for one bounded measured window.
 ///
 /// The engine propagates this deadline through planning, admission, stream
-/// acquisition, GPU safe boundaries, and result drain.  We deliberately do
-/// not wrap the task in `tokio::time::timeout`: aborting the task could skip
+/// acquisition, GPU safe boundaries, and result drain. The runner deliberately
+/// does not wrap the task in `tokio::time::timeout`. Aborting the task could skip
 /// the linear attempt finalizer that returns a grant and seals its report.
 pub(super) fn attempt_options(run_deadline: Instant) -> AttemptOptions {
     AttemptOptions { deadline: Some(run_deadline), ..AttemptOptions::default() }
@@ -269,7 +273,7 @@ pub(super) fn spawn_feature_off_cugraph_probes(
             offset_ns: 0,
             // `spawn_attempt_task` records the observed closed-loop phase at
             // submission, which is the only phase evidence the feature-off reducer
-            // trusts. This placeholder is therefore never artifact-visible.
+            // uses. This placeholder is therefore never artifact-visible.
             phase: SchedulePhase::Warmup,
             rate_overrun: RateOverrunPolicy::Delay,
             query_index: probe.query_index,
@@ -326,7 +330,7 @@ pub(super) fn spawn_attempt_task(
 }
 
 /// The normal runner deliberately lets the public attempt API mint its own
-/// query id. The exact-key cache probe is the narrow exception: it supplies a
+/// query id. The exact-key cache probe is the narrow exception. It supplies a
 /// unique id whose one-way fingerprint can be matched against cache-owner and
 /// BFS-coordinator observations without retaining the raw id in the artifact.
 #[expect(clippy::too_many_arguments, reason = "probe-harness expansion; parameters are the independent probe axes")]
@@ -344,8 +348,8 @@ pub(super) fn spawn_attempt_task_with_query_id(
     storm_cancellers: &mut Vec<PendingCancellationBarrier>,
     query_id: Option<String>,
 ) -> Result<AttemptTask, ()> {
-    // Per-attempt deadline: each attempt carries its own caller deadline, never
-    // later than the shared window deadline.
+    // Each attempt carries its own caller deadline, which is never later than
+    // the shared window deadline.
     let attempt_deadline = storm
         .attempt_deadline_ms
         .map_or(attempt_deadline, |ms| attempt_deadline.min(Instant::now() + Duration::from_millis(ms)));
@@ -371,8 +375,8 @@ pub(super) fn spawn_attempt_task_with_query_id(
         *cancellation_barrier =
             Some(PendingCancellationBarrier { attempt_sequence: arrival.sequence, requested_after, requested, task });
     }
-    // Per-attempt cancellation: every Nth attempt gets its own cooperative
-    // canceller through the same public cancellation handle.
+    // Every Nth attempt gets its own cooperative canceller through the same
+    // public cancellation handle.
     if let Some(every_n) = storm.cancel_every_n
         && arrival.sequence % every_n == every_n - 1
     {
@@ -410,9 +414,10 @@ pub(super) fn spawn_attempt_task_with_query_id(
             if Instant::now() < warmup_deadline { SchedulePhase::Warmup } else { SchedulePhase::Measurement };
     }
     Ok(tokio::spawn(async move {
-        // A failing statement is a measured outcome, not a runner error: the
-        // sealed report still describes what happened. Qualification drains
-        // result streams without inspecting or retaining output rows.
+        // A failing statement is a measured outcome and does not count as a
+        // runner error. The sealed report still describes what happened.
+        // Qualification drains result streams without inspecting or retaining
+        // output rows.
         let feature_off_cugraph_probe = query.label == FEATURE_OFF_CUGRAPH_QUERY_LABEL;
         let mut capture = OutputCapture::default();
         match attempt.sql(&ctx, &query.sql).await {
@@ -439,7 +444,7 @@ pub(super) fn spawn_attempt_task_with_query_id(
         }
         // The optional sink deliberately serializes the public completion
         // receiver. The permit remains live through `.completion().await`,
-        // so a saturated sink can exert the real handoff backpressure that a
+        // so a saturated sink can exert handoff backpressure that a
         // per-task sleep before this point would miss.
         let completion_sink = query.completion_sink().cloned();
         let _completion_sink_permit = if let Some(sink) = completion_sink.as_ref() {

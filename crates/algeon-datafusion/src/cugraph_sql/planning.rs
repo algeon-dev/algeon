@@ -145,8 +145,8 @@ impl ExecutionPlan for CugraphFeatureDisabledExec {
         _task_context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         // Flight SQL has already issued a ticket when physical execution
-        // starts. Keep the feature-gate error on that ticket's result stream
-        // rather than rejecting stream construction, while still performing
+        // starts. The feature-gate error stays on that ticket's result stream,
+        // and stream construction does not reject it. The stream still performs
         // no source scan, staging, or GPU work.
         let schema = self.schema();
         let error = super::feature_disabled(self.algorithm);

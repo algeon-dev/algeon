@@ -30,7 +30,9 @@ impl MemoryControlPolicy {
     pub const DEFAULT_MAX_SOURCE_CHUNK_BYTES: u64 = u64::MAX;
     /// Individual row groups remain retryable units within coalesced reads.
     pub const DEFAULT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
+    /// Default retry limit for splitting a source chunk after allocation failure.
     pub const DEFAULT_MAX_RETRY_ATTEMPTS: usize = 3;
+    /// Default minimum retry chunk of one row group.
     pub const DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 
     /// Rejects a zero in any field; the error names the field in its `field`
@@ -66,6 +68,7 @@ pub enum SourceChunkPlanningMode {
 }
 
 impl SourceChunkPlanningMode {
+    /// Stable source-planning mode label used in reports and configuration.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Conservative => "conservative",

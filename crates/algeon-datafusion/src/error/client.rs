@@ -15,7 +15,8 @@ use super::{
     datafusion_error_human_message, truncate_with_marker,
 };
 
-/// Operation of the temporary error that projects a foreign DataFusion error without an Algeon identity.
+/// Operation of the temporary error that projects a foreign DataFusion error
+/// without an Algeon identity.
 const FOREIGN_FAILURE_OPERATION: &str = "algeon_datafusion.error.client_failure";
 
 /// Status message of the failure kinds whose raw text stays server-side. The
@@ -82,7 +83,7 @@ pub(crate) fn client_failure(error: &DataFusionError, statement: FailedStatement
 
 fn client_status_message(error: &Error) -> String {
     match error.code() {
-        // The native layer that knows the algorithm names the parameters to change in `remedy`.
+        // The native layer supplies `remedy` with the parameters to change for the algorithm.
         ErrorCode::AlgorithmDidNotConverge => format!(
             "{} did not converge after {} iterations (max_iterations={}, epsilon={}); {} and retry",
             error.fact_value("algorithm").unwrap_or("native algorithm"),
@@ -108,9 +109,9 @@ fn client_status_message(error: &Error) -> String {
         // Resource messages never promise that an unchanged retry will
         // succeed: only confirmed admission overload (above) describes queue
         // pressure. Cap, shape, and physical failures name the change the
-        // caller must make; execution failures point at the sealed attempt
-        // report instead of synthesizing retry permission from the
-        // `Temporary` status or the gRPC `RESOURCE_EXHAUSTED` code.
+        // caller must make. Execution failures point at the sealed attempt
+        // report and grant no retry permission from the `Temporary` status or
+        // the gRPC `RESOURCE_EXHAUSTED` code.
         ErrorCode::QueryMemoryLimitExceeded => format!(
             "query memory cap exceeded{}. Reduce what the failing operation holds (filter or project earlier, split the query) or raise the query memory cap; resubmitting the request unchanged fails again",
             memory_failure_detail(error).unwrap_or_else(|| format!(": {}", error.message()))

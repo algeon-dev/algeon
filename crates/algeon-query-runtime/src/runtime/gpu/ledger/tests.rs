@@ -162,9 +162,11 @@ fn frozen_resident_transition_moves_budget_to_resident_and_preserves_cap_boundar
     assert_eq!(released.live_grants_bytes, 0);
 }
 
-/// The capacity invariant holds across the whole device, not just pairwise:
-/// frozen resident bytes plus every simultaneously committed query cap stay
-/// within the managed capacity, and the ledger refuses the first byte past it.
+/// The capacity invariant holds across all committed grants together. Checking
+/// pairs of grants does not establish it, because the bound applies to the sum
+/// of every committed cap. Frozen resident bytes plus every simultaneously
+/// committed query cap stay within the managed capacity, and the ledger refuses
+/// the first byte past it.
 #[test]
 fn frozen_resident_bytes_plus_every_committed_cap_stay_within_managed_capacity() {
     const MANAGED_CAPACITY_BYTES: u64 = 1_000;
@@ -622,8 +624,8 @@ fn frozen_resident_returns_grant_minus_resident_in_query_share_terms() {
 fn failed_attempt_capacity_returns_only_after_cleanup_while_survivors_hold_theirs() {
     use std::sync::{Arc, Barrier};
 
-    // M = 1_000, K = 400, Q = 600, N = 3, default 300: two defaults exactly
-    // fill the query share beside a full cache.
+    // M = 1_000, K = 400, Q = 600, N = 3, default 300: two defaults equal the
+    // query share, beside a full cache.
     let ledger = Arc::new(DeviceLedger::new(cache_profile(1_000, 300, 3, 400)));
     assert!(ledger.try_reserve_evictable_bytes(400).unwrap(), "cache fills first");
     let survivor = ledger.try_admit(request(1), None).unwrap().expect("survivor admits");

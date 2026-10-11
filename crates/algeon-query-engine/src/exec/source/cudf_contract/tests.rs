@@ -322,7 +322,7 @@ fn local_test_file(path: &str, stable_id: &str, row_group_count: usize) -> Local
 fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     // The same path appears as two source files with distinct identities; the
-    // batch must keep them apart instead of merging by path.
+    // batch must keep them apart and must not merge them by path.
     let source = local_test_source(vec![
         local_test_file("/tmp/lineitem-a.parquet", "a", 3),
         local_test_file("/tmp/lineitem-b.parquet", "b", 2),

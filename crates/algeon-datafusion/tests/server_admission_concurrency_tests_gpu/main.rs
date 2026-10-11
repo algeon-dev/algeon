@@ -21,7 +21,8 @@ async fn flight_queries_execute_concurrently_on_one_device_with_independent_gran
     let server = ConcurrencyServer::spawn(4_000_000).await;
 
     // Pin two slots so the third, real Flight query is guaranteed to execute
-    // while two other query domains are live rather than racing to overlap.
+    // while two other query domains are live. The overlap does not depend on
+    // timing.
     let holders = vec![server.hold_one_slot().await, server.hold_one_slot().await];
     server.wait_for_admission(2, 0).await;
 
@@ -36,8 +37,8 @@ async fn flight_queries_execute_concurrently_on_one_device_with_independent_gran
 
     // The million-row result exceeds the bounded Flight channel. Holding the
     // client stream after its first batch keeps the server-side attempt live,
-    // so this observes all three grants directly instead of sampling a short
-    // query and hoping a timer catches it.
+    // so this observes all three grants directly. It does not sample a short
+    // query and rely on a timer to catch the overlap.
     server.wait_for_admission(MAX_ACTIVE_ATTEMPTS, 0).await;
     let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
     assert_eq!(report.grants.len(), MAX_ACTIVE_ATTEMPTS, "both holders and the Flight query own grants: {report:?}");
@@ -156,7 +157,7 @@ async fn three_simultaneous_query_caps_fill_the_device_and_the_fourth_query_wait
     assert_eq!(report.available_bytes, 0);
 
     // A fourth query has neither an active slot nor spare capacity, so it
-    // waits instead of being issued a smaller cap.
+    // waits, and no smaller cap is issued.
     let mut client = server.client().await;
     let flight_info = client.execute(CONCURRENCY_SQL.to_string(), None).await.expect("plan fourth query");
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("ticket");

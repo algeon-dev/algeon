@@ -1,5 +1,3 @@
-//! Multi-GPU integration tests.
-//!
 //! Run these ignored tests explicitly on hosts with at least two visible GPUs.
 use cudf::testing::prelude::*;
 
@@ -458,7 +456,6 @@ fn columns_from_different_devices_have_different_domains() {
         device0.ordinal()
     );
 
-    // Create a column on the secondary device via a pinned runtime.
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     common::reset_exec_observation();
     let s1 = rt1.series(&[4, 5, 6]).unwrap();
@@ -469,7 +466,6 @@ fn columns_from_different_devices_have_different_domains() {
         device1.ordinal()
     );
 
-    // Mixing columns from different devices into one DataFrame must fail.
     let result = DataFrame::from_series([("x", s0), ("y", s1)]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
 }
@@ -603,12 +599,8 @@ fn runtime_adopted_nullable_device_buffer_rejects_cross_device_runtime() {
     assert_eq!(error_context_value(&err, "buffer_device").as_deref(), None);
 }
 
-// ---------------------------------------------------------------------------
-// Device-pinned execution observation tests
-//
-// These tests verify that runtime-first high-level factories actually execute
-// on the runtime's pinned device, not just the calling thread's current CUDA device.
-// ---------------------------------------------------------------------------
+// These tests verify that runtime-first high-level factories execute on the
+// runtime's pinned device, independent of the calling thread's current CUDA device.
 
 #[test]
 #[ignore = "requires at least 2 GPUs"]
@@ -617,18 +609,15 @@ fn runtime_pinned_device_is_used_for_execution() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Ensure the calling thread starts on the primary device.
     let current_device = DeviceId::current().unwrap();
     assert_eq!(current_device, device0, "test setup should begin on the primary device");
 
-    // Create a runtime pinned to the secondary device.
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
-    // Reset observation, then create a column through the runtime.
     common::reset_exec_observation();
     let _series = rt1.series(&[10, 20, 30]).unwrap();
 
-    // The FFI should have executed on the runtime's device, not the calling thread's current device.
+    // The FFI runs on the runtime's device, which differs from the thread's current device.
     let observed = common::last_exec_device();
     assert_eq!(
         observed,
@@ -637,7 +626,6 @@ fn runtime_pinned_device_is_used_for_execution() {
         device1.ordinal()
     );
 
-    // The calling thread's current device should still be the primary device.
     let after = DeviceId::current().unwrap();
     assert_eq!(after, device0, "runtime leaked device state to the calling thread");
 }
@@ -819,10 +807,6 @@ fn shared_runtime_concurrent_access() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Handle device provenance tests
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "requires at least 2 GPUs"]
 fn stream_records_creation_device() {
@@ -830,7 +814,6 @@ fn stream_records_creation_device() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Create a stream on the current primary device.
     let stream0 = CudaStream::new().unwrap();
     assert_eq!(stream0.device(), device0, "stream should record the current device");
 
@@ -846,7 +829,6 @@ fn memory_resource_records_creation_device() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Create an MR on the current primary device.
     let mr0 = DeviceMemoryResource::cuda().unwrap();
     assert_eq!(mr0.device(), device0, "MR should record the current device");
 
@@ -916,10 +898,6 @@ fn explicit_device_memory_resource_constructors_ignore_ambient_device() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// RuntimeBuilder cross-device validation tests
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "requires at least 2 GPUs"]
 fn builder_rejects_cross_device_stream() {
@@ -927,11 +905,9 @@ fn builder_rejects_cross_device_stream() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Create a stream on the primary device.
     let stream0 = CudaStream::new().unwrap();
     assert_eq!(stream0.device(), device0);
 
-    // Try to build a runtime on the secondary device with the primary-device stream.
     let result = Runtime::builder().with_device(device1).with_stream(stream0).build();
 
     assert!(result.is_err(), "builder should reject cross-device stream");
@@ -945,11 +921,9 @@ fn builder_rejects_cross_device_mr() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Create an MR on the primary device.
     let mr0 = DeviceMemoryResource::cuda().unwrap();
     assert_eq!(mr0.device(), device0);
 
-    // Try to build a runtime on the secondary device with the primary-device MR.
     let result = Runtime::builder().with_device(device1).with_memory_resource(mr0).build();
 
     assert!(result.is_err(), "builder should reject cross-device MR");
@@ -963,10 +937,8 @@ fn builder_rejects_mismatched_handle_devices() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Create a stream on the primary device and an MR on the secondary device.
     let stream0 = CudaStream::new().unwrap();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
-    // Clone the MR from the secondary device's runtime.
     let mr1 = rt1.memory_resource().clone();
 
     let result = Runtime::builder().with_stream(stream0).with_memory_resource(mr1).build();
@@ -980,7 +952,6 @@ fn builder_rejects_mismatched_handle_devices() {
 fn builder_infers_device_from_handles() {
     let (_, device1) = first_two_test_devices();
 
-    // Create handles on the secondary device through a runtime.
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let stream1 = rt1.stream().clone();
     let mr1 = rt1.memory_resource().clone();
@@ -991,10 +962,6 @@ fn builder_infers_device_from_handles() {
     assert_eq!(rt.device(), device1, "builder should infer the device from the supplied handles");
 }
 
-// ---------------------------------------------------------------------------
-// ExecutionDomain provenance and borrowed override tests
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "requires at least 2 GPUs"]
 fn same_provenance_differs_by_device() {
@@ -1002,11 +969,9 @@ fn same_provenance_differs_by_device() {
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
-    // Columns created on different devices should have different provenance.
     let s0 = rt0.series(&[1, 2]).unwrap();
     let s1 = rt1.series(&[3, 4]).unwrap();
 
-    // Attempting to build a DataFrame from columns on different devices should fail.
     let result = DataFrame::from_series([("x", s0), ("y", s1)]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
 }
@@ -1329,10 +1294,6 @@ fn hash_join_probe_without_relocation_rejects_cross_device_runtime_inputs() {
         &["dataframe::hash_join::inner_probe", "hash_join::inner_join_indices_in"],
     );
 }
-
-// ---------------------------------------------------------------------------
-// Additional runtime-seeding regression probes
-// ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "requires at least 2 GPUs"]

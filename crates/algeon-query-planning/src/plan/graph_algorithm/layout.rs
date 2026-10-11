@@ -49,9 +49,9 @@ pub struct GraphForceAtlas2Params {
     pub lin_log_mode: bool,
     /// Prevent nodes from overlapping.
     ///
-    /// Currently rejected by the native executor because ForceAtlas2 overlap
-    /// prevention requires per-vertex radius side input that the native graph
-    /// plan does not expose yet.
+    /// Plan validation rejects `true` unless `vertex_attributes` binds a radius
+    /// column, because ForceAtlas2 overlap prevention requires per-vertex radius
+    /// side input.
     pub prevent_overlapping: bool,
     /// Repulsion scaling for overlapping nodes. Must be > 0.
     pub overlap_scaling_ratio: f64,

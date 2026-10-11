@@ -76,10 +76,11 @@ pub use workspace::{
     ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, WorkspaceOverlayConfig,
 };
 
-// The resource-only admission contract has one configuration surface. These
-// historical environment switches must fail closed instead of silently starting a deployment with
-// different defaults. Keep this list centrally adjacent to the first env
-// read so every server configuration path applies the same migration gate.
+// The resource-only admission contract has one configuration surface. A
+// deployment that still sets one of these removed switches is rejected at
+// load time, so it never starts with different defaults. Keep this list
+// centrally adjacent to the first env read so every server configuration path
+// applies the same migration gate.
 const REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
     "ALGEON_SERVER_ADMISSION_MAX_ACTIVE_ATTEMPTS_PER_DEVICE",
     "ALGEON_SERVER_ADMISSION_ATTEMPT_FLOOR_BYTES",
@@ -332,8 +333,8 @@ impl ServerConfig {
         .with_fact("max_live_queries", max_live_queries))
     }
 
-    /// Prove that the public config struct still carries one profile for each
-    /// selected ordinal.  `from_env_get` already applies this check while
+    /// Checks that the public config struct still carries one profile for each
+    /// selected ordinal. `from_env_get` already applies this check while
     /// parsing TOML, but callers can construct `ServerConfig` directly before
     /// injecting or constructing a Flight backend.
     pub(crate) fn validate_gpu_device_profiles(&self) -> Result<()> {

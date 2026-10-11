@@ -361,8 +361,8 @@ fn interop_error_with_cudf_source_preserves_cudf_kind_and_status() {
 
     let err = from_interop_in_for_test(interop, "test::interop_boundary");
 
-    // Truthful path: code/kind/status derive purely from the interop kind, not
-    // from the nested cudf error.
+    // Truthful path: code/kind/status derive purely from the interop kind; the
+    // nested cudf error does not affect them.
     assert_eq!(err.code(), ErrorCode::ExecutionBindingUnavailable);
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.status(), ErrorStatus::Permanent);

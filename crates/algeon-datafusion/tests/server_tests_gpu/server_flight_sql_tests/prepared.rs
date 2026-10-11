@@ -29,8 +29,8 @@ async fn prepared_statement_round_trip_executes_select() {
 // SQL planning types a UNION from its first branch until the analyzer's type
 // coercion widens it. FlightInfo, prepared metadata, and the DoGet encoder
 // must all declare the widened type; the encoder casts every batch to the
-// schema it is given, so a narrower schema silently rounds the DOUBLE branch
-// to Float32 and fails on an Int64 value outside Int32.
+// schema it is given. A narrower schema rounds the DOUBLE branch to Float32
+// with no error raised, and an Int64 value outside Int32 fails.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn union_result_schema_uses_coerced_branch_types() {
     let (listener, addr) = free_local_addr();
@@ -166,7 +166,8 @@ async fn prepared_statement_close_is_idempotent_via_raw_action() {
     let mut client = connect_with_retry(addr).await;
 
     // Send a Close action for a handle that was never created. The server
-    // must treat this as a no-op (Ok) rather than UNIMPLEMENTED or an error.
+    // must treat this as a no-op and return Ok. The test panics on
+    // UNIMPLEMENTED or any other error status.
     use arrow_flight::sql::{ActionClosePreparedStatementRequest, ProstMessageExt};
     use prost::Message;
     let action_body = ActionClosePreparedStatementRequest { prepared_statement_handle: Bytes::from_static(b"ghost") };

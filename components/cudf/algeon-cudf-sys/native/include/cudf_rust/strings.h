@@ -20,29 +20,21 @@ typedef enum {
   CUDF_STRIP_BOTH  = 2,
 } cudf_strip_side_t;
 
-// ---------------------------------------------------------------------------
-// Case conversion
-// ---------------------------------------------------------------------------
-
-/// Convert string column to lowercase with explicit execution context.
+/// Convert string column to lowercase.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
                                        cudf_column_handle* out,
                                        cudf_exec_options_t const* options);
 
-/// Convert string column to uppercase with explicit execution context.
+/// Convert string column to uppercase.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
                                        cudf_column_handle* out,
                                        cudf_exec_options_t const* options);
 
-// ---------------------------------------------------------------------------
-// Find / contains / starts_with / ends_with (scalar target)
-// ---------------------------------------------------------------------------
-
-/// Element-wise literal substring containment with explicit execution context.
+/// Element-wise literal substring containment.
 /// Returns BOOL8 column.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
@@ -51,7 +43,7 @@ cudf_status_t cudf_strings_contains_ex(cudf_column_view_handle input,
                                        cudf_column_handle* out,
                                        cudf_exec_options_t const* options);
 
-/// Element-wise starts-with with explicit execution context.
+/// Element-wise starts-with.
 /// Returns BOOL8 column.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
@@ -60,7 +52,7 @@ cudf_status_t cudf_strings_starts_with_ex(cudf_column_view_handle input,
                                           cudf_column_handle* out,
                                           cudf_exec_options_t const* options);
 
-/// Element-wise ends-with with explicit execution context.
+/// Element-wise ends-with.
 /// Returns BOOL8 column.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
@@ -69,7 +61,7 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
                                         cudf_column_handle* out,
                                         cudf_exec_options_t const* options);
 
-/// Element-wise SQL LIKE pattern match with explicit execution context.
+/// Element-wise SQL LIKE pattern match.
 /// Returns BOOL8 column.
 ///
 /// `pattern` and `escape_character` are borrowed host byte ranges. Null
@@ -87,8 +79,7 @@ cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
                                    cudf_column_handle* out,
                                    cudf_exec_options_t const* options);
 
-/// Element-wise regex replacement with back-reference templates and explicit
-/// execution context. Returns STRING column.
+/// Element-wise regex replacement with back-reference templates. Returns STRING column.
 ///
 /// `pattern` and `replacement` are borrowed host byte ranges. Null pointers are
 /// accepted only when the corresponding length is zero.
@@ -187,11 +178,7 @@ cudf_status_t cudf_strings_execute_replace_with_backrefs_ex(
 cudf_status_t cudf_strings_prepared_replace_with_backrefs_destroy(
   cudf_prepared_replace_with_backrefs_handle handle);
 
-// ---------------------------------------------------------------------------
-// Slice
-// ---------------------------------------------------------------------------
-
-/// Slice each string with explicit execution context.
+/// Slice each string.
 /// Slices by character positions `[start, stop)` and `step`.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
@@ -204,11 +191,7 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
                                     cudf_column_handle* out,
                                     cudf_exec_options_t const* options);
 
-// ---------------------------------------------------------------------------
-// Concatenate
-// ---------------------------------------------------------------------------
-
-/// Row-wise concatenate string columns with explicit execution context.
+/// Row-wise concatenate string columns.
 /// Uses an empty separator. Null inputs are replaced with empty strings.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
@@ -217,12 +200,7 @@ cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns
                                           cudf_column_handle* out,
                                           cudf_exec_options_t const* options);
 
-// ---------------------------------------------------------------------------
-// Strip / trim
-// ---------------------------------------------------------------------------
-
-/// Strip characters from one or both sides of each string with explicit
-/// execution context.
+/// Strip characters from one or both sides of each string.
 /// `to_strip` is a scalar string of characters to strip. If null scalar,
 /// strips whitespace.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
@@ -233,19 +211,16 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
                                     cudf_column_handle* out,
                                     cudf_exec_options_t const* options);
 
-// ---------------------------------------------------------------------------
-// Attributes
-// ---------------------------------------------------------------------------
-
-/// Character count with explicit execution context.
-/// Counts characters, not bytes, and returns an INT32 column.
+/// Character count.
+/// Counts characters in each string and returns an INT32 column. Byte counts
+/// come from `cudf_strings_count_bytes_ex`.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
                                                cudf_column_handle* out,
                                                cudf_exec_options_t const* options);
 
-/// Byte count with explicit execution context.
+/// Byte count.
 /// Returns INT32 column.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
@@ -253,15 +228,11 @@ cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
                                           cudf_column_handle* out,
                                           cudf_exec_options_t const* options);
 
-// ---------------------------------------------------------------------------
-// Numeric conversion (null-on-failure / TRY_CAST contract)
-// ---------------------------------------------------------------------------
-
-/// Try-cast strings to integers with explicit execution context.
+/// Try-cast strings to integers.
 ///
 /// Converts a string column to integers with SQL `TRY_CAST` semantics: each
 /// element that does not parse as an integer that fits `output_type` produces
-/// a null row instead of an error. Null inputs propagate as null outputs.
+/// a null row and does not raise an error. Null inputs propagate as null outputs.
 ///
 /// `output_type` must be an integral data type. Builds on
 /// `cudf::strings::is_integer(input, output_type)` to detect rows that parse
@@ -275,7 +246,7 @@ cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
                                               cudf_column_handle* out,
                                               cudf_exec_options_t const* options);
 
-/// Formats an integer column as decimal strings with explicit execution context.
+/// Formats an integer column as decimal strings.
 ///
 /// `input` must be a non-boolean integral column. Each valid row becomes its
 /// plain base-10 text with a leading `-` for negative values and no padding;

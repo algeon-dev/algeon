@@ -30,7 +30,7 @@ use crate::{
 /// Synthetic output column used for Parquet plans that only need a row count.
 ///
 /// A zero-column count source reads no physical columns and produces row counts
-/// from file or row-group metadata instead of projecting normal source columns.
+/// from file or row-group metadata. It projects no normal source columns.
 pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__algeon_native_zero_column_row_count";
 
 /// Parquet-footer key for a graph vertex upper bound tied to the complete edge
@@ -52,8 +52,8 @@ pub const GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY: &str = "alge
 
 /// Footer-proven topology needed to skip Python-compatible edge normalization.
 ///
-/// This is deliberately a narrow source contract. It says nothing about graph
-/// algorithms or their workspace: it only proves that filtering null endpoints
+/// This is deliberately a narrow source contract. It does not cover graph
+/// algorithms or their workspace. It proves only that filtering null endpoints
 /// and deduplicating a directed edge list are semantic no-ops for these two
 /// physical Parquet columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +94,7 @@ pub struct PartitionColumn {
 }
 
 impl PartitionColumn {
+    /// Declares a synthetic partition column with its exposed Arrow type and nullability.
     pub fn new(name: impl Into<String>, data_type: DataType, nullable: bool) -> Self {
         Self { name: name.into(), data_type, nullable }
     }
@@ -115,6 +116,8 @@ pub struct MissingColumn {
 }
 
 impl MissingColumn {
+    /// Declares a missing logical column; source validation checks whether
+    /// typed-null materialization is permitted by its nullability.
     pub fn new(name: impl Into<String>, data_type: DataType, nullable: bool) -> Self {
         Self { name: name.into(), data_type, nullable }
     }
@@ -132,6 +135,7 @@ pub enum ParquetReaderDecimalTypeId {
 }
 
 impl ParquetReaderDecimalTypeId {
+    /// Stable label for the decimal storage width in reader diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Decimal32 => "decimal32",
@@ -153,6 +157,7 @@ pub struct ParquetReaderDecimalType {
 }
 
 impl ParquetReaderDecimalType {
+    /// Declares the reader storage width and cuDF scale for one decoded column.
     pub fn new(column_name: impl Into<String>, type_id: ParquetReaderDecimalTypeId, cudf_scale: i32) -> Self {
         Self { column_name: column_name.into(), type_id, cudf_scale }
     }
@@ -180,7 +185,7 @@ pub enum SourceColumnRef {
 pub struct LocalParquetSource {
     /// Local Parquet files to scan, including per-file metadata and pruning.
     pub files: Vec<LocalParquetFile>,
-    /// Emitted source schema: read file columns followed by partition columns.
+    /// Schema of the emitted source output. Read file columns come first, then partition columns.
     pub schema: SchemaRef,
     /// Optional schema exposed to the query plan when execution transforms the
     /// physical read frame before yielding source output.
@@ -282,10 +287,13 @@ impl LocalParquetSource {
         }
     }
 
+    /// Declares a single-file source with the supplied output schema and read columns.
     pub fn new(path: impl Into<PathBuf>, schema: SchemaRef, read_columns: Vec<String>) -> Self {
         Self::from_files(vec![LocalParquetFile::new(path)], schema, read_columns)
     }
 
+    /// Attaches sets of columns proven unique by the caller. No data scan is
+    /// performed to verify these claims.
     pub fn with_unique_key_columns(mut self, unique_key_columns: Vec<BTreeSet<String>>) -> Self {
         self.unique_key_columns = unique_key_columns;
         self
@@ -295,7 +303,7 @@ impl LocalParquetSource {
     ///
     /// Zero-column count sources read no physical or partition columns. They use
     /// `ZERO_COLUMN_COUNT_COLUMN` as the synthetic output field and mark the
-    /// diagnostics as represented only when the frontend has proven the shape is
+    /// diagnostics as represented. The caller must have proven that the shape is
     /// safe to answer from file or row-group metadata.
     pub fn zero_column_count(mut files: Vec<LocalParquetFile>) -> Self {
         for file in &mut files {
@@ -403,14 +411,14 @@ impl LocalParquetSource {
         self
     }
 
-    /// Adds partition columns represented as synthetic source columns.
+    /// Replaces the partition columns, which are represented as synthetic source columns.
     pub fn with_partition_columns(mut self, partition_columns: Vec<PartitionColumn>) -> Self {
         self.partition_columns = partition_columns;
         self.refresh_diagnostics();
         self
     }
 
-    /// Adds nullable logical columns represented as typed null source columns.
+    /// Replaces the missing columns, which are represented as typed null source columns.
     pub fn with_missing_columns(mut self, missing_columns: Vec<MissingColumn>) -> Self {
         self.missing_columns = missing_columns;
         self.refresh_diagnostics();
@@ -471,6 +479,8 @@ impl LocalParquetSource {
         reader_predicate_references_decimal_column(self, predicate)
     }
 
+    /// Recomputes source diagnostics from current files and column roles,
+    /// preserving reader-predicate and metadata-only count dispositions.
     pub fn refresh_diagnostics(&mut self) {
         let zero_column_count_represented = self.is_zero_column_count_source();
         self.diagnostics = SourceDiagnostics::for_local_parquet_files(&self.files, self.diagnostic_columns());
@@ -516,10 +526,12 @@ impl LocalParquetSource {
             self.diagnostics.rejected_features.is_empty() && files_have_proven_direct_device_read(&self.files);
     }
 
+    /// Number of file entries represented by the source.
     pub fn file_count(&self) -> usize {
         self.files.len()
     }
 
+    /// Number of physical columns selected for decoding.
     pub fn read_column_count(&self) -> usize {
         self.read_columns.len()
     }
@@ -570,7 +582,7 @@ impl LocalParquetSource {
     ///
     /// A graph vertex count belongs to the exact source rowset that produced
     /// it. A scan limit, reader predicate, or selected row-group subset
-    /// changes that rowset, so this deliberately refuses to carry the
+    /// changes that rowset, so the method returns `None` and does not carry the
     /// file-level value across such a transformation. Multiple whole files are
     /// safe to sum: duplicate vertices only make the result more conservative.
     pub fn graph_vertex_upper_bound(&self) -> Option<u64> {
@@ -585,8 +597,9 @@ impl LocalParquetSource {
     /// denotes complete, unfiltered edge-file rowsets.
     ///
     /// Edge normalization retains this raw source frame while its normalized
-    /// graph frame is live. The count therefore belongs to the source rowset,
-    /// not to a transformed graph operator or a caller-provided estimate.
+    /// graph frame is live. The count therefore belongs to the source rowset. It
+    /// does not transfer to a transformed graph operator or to a caller-provided
+    /// estimate.
     pub(crate) fn graph_raw_edge_row_count(&self) -> Option<u64> {
         self.has_complete_untransformed_graph_rowset().then(|| self.exact_selected_row_count()).flatten()
     }
@@ -595,10 +608,10 @@ impl LocalParquetSource {
     /// the two requested physical file columns.
     ///
     /// A file footer cannot prove that endpoint pairs are unique *across*
-    /// several files, so this deliberately accepts exactly one complete local
-    /// Parquet file. Column roles must resolve directly to physical file
-    /// columns, which prevents aliases, partitions, or materialized nulls from
-    /// borrowing the proof.
+    /// several files, so this accepts a single complete local Parquet file.
+    /// Column roles must resolve directly to physical file columns, which
+    /// excludes aliases, partition columns, and materialized null columns from
+    /// the proof.
     pub fn has_simple_directed_edge_topology(&self, source_column: &str, destination_column: &str) -> bool {
         if !self.has_complete_untransformed_graph_rowset() || self.files.len() != 1 {
             return false;
@@ -623,6 +636,7 @@ impl LocalParquetSource {
         self.diagnostics.direct_device_read
     }
 
+    /// Number of synthetic partition columns in the source schema.
     pub fn partition_column_count(&self) -> usize {
         self.partition_columns.len()
     }
@@ -652,7 +666,7 @@ impl LocalParquetSource {
         }
     }
 
-    /// Resolves a logical source column to a physical file or partition column.
+    /// Resolves a logical source column to a file, partition, or missing-null column reference.
     pub fn source_column_ref(&self, column: &str) -> Option<SourceColumnRef> {
         if let Some(index) = self.projected_output_columns.iter().position(|output_column| output_column == column) {
             return self.projected_output_column_source_refs.get(index).copied();
@@ -683,7 +697,7 @@ impl LocalParquetSource {
 ///
 /// Byte vectors are aligned with the selected row groups when `row_groups` is
 /// present, otherwise with the frontend's represented row-group order. `None`
-/// means the metadata is unavailable, not zero.
+/// means the metadata is unavailable; it does not mean zero.
 #[derive(Clone, PartialEq)]
 pub struct LocalParquetFile {
     /// Explicit source location for the Parquet file.
@@ -704,8 +718,8 @@ pub struct LocalParquetFile {
     /// Selected Parquet row-group indices.
     ///
     /// `None` means no explicit row-group selection was represented. `Some`
-    /// limits the scan to the listed row groups, so `Some(vec![])` selects
-    /// zero row groups (a source proven empty), never every row group.
+    /// limits the scan to the listed row groups. `Some(vec![])` selects zero row
+    /// groups, which marks a source proven empty.
     pub row_groups: Option<Vec<usize>>,
     /// Estimated or known byte sizes for selected row groups.
     pub row_group_bytes: Option<Vec<u64>>,
@@ -742,9 +756,9 @@ pub struct LocalParquetFile {
     pub(crate) graph_simple_directed_edge_topology: Option<GraphSimpleDirectedEdgeTopology>,
     /// Per-file-column null counts by row group, keyed by physical root column index.
     ///
-    /// Inner vectors are indexed by physical row-group number, not selected
-    /// row-group position. `None` means the footer did not prove a null count
-    /// for that column chunk.
+    /// Inner vectors are indexed by physical row-group number. They are not
+    /// indexed by selected row-group position. `None` means the footer did not
+    /// prove a null count for that column chunk.
     pub row_group_null_counts: BTreeMap<usize, Vec<Option<u64>>>,
     /// Per-read-column decimal storage types proven from Parquet metadata.
     pub reader_decimal_types: Vec<ParquetReaderDecimalType>,
@@ -915,8 +929,8 @@ impl LocalParquetFile {
     ///
     /// Frontend code should populate this only by reading
     /// [`GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY`] from this file's
-    /// Parquet footer. It stays on the file descriptor so source identity and
-    /// graph admission cannot accidentally borrow a detached query setting.
+    /// Parquet footer. The bound stays on the file descriptor, so it travels with
+    /// the file it describes and cannot come from a detached query setting.
     pub fn with_graph_vertex_upper_bound(mut self, graph_vertex_upper_bound: u64) -> Self {
         self.graph_vertex_upper_bound = Some(graph_vertex_upper_bound);
         self

@@ -3,7 +3,7 @@ use std::time::Duration;
 /// Internal policy for lakehouse cache admission, layout, and sidecar locks.
 ///
 /// These values shape lakehouse cache files and lock retry behavior. They are
-/// not exposed as user-facing query knobs; production controls remain the
+/// not exposed as user-facing query settings; production controls remain the
 /// lakehouse cache configuration and cache-fill resource policies.
 ///
 /// The optimized batch cache rewrites a batch of cache-served chunks into one Parquet file. This

@@ -1,9 +1,8 @@
 //! Native query plan IR.
 //!
-//! [`QueryPlan`] is the native IR that
-//! `execute_query_plan` runs.
-//! Builder, node, expression-spec, facts, and graph-algorithm modules are
-//! re-exported from here as the engine's public plan surface.
+//! [`QueryPlan`] is the native IR that `execute_query_plan` runs.
+//! Builder, node, facts, and graph-algorithm items are re-exported from here
+//! as the engine's public plan surface.
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 

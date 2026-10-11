@@ -24,13 +24,19 @@ fn attempt_id_seed() -> u64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Opaque execution-attempt identity minted by the runtime.
+/// Display and serialization use `attempt-` followed by 32 hexadecimal digits.
+/// The identity is independent of caller query and trace correlations.
 pub struct AttemptId([u8; 16]);
 
 impl AttemptId {
+    /// Returns the opaque 16-byte identity without its display prefix.
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
 
+    /// Mints a process-local execution-attempt correlation identity independent
+    /// of caller-supplied query and trace identifiers.
     pub fn mint() -> Self {
         let counter = NEXT_ATTEMPT_ID.fetch_add(1, Ordering::Relaxed).to_be_bytes();
         let seed = attempt_id_seed().to_be_bytes();
@@ -76,28 +82,50 @@ impl<'de> Deserialize<'de> for AttemptId {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
+/// One producer occurrence in a composed execution memory schedule.
 pub struct AttemptComposedScheduleOccurrence {
+    /// Producer occurrence identity within the composed schedule.
     pub occurrence_id: String,
+    /// Fingerprint of the producer's isolated execution scope.
     pub execution_scope_fingerprint: String,
+    /// Peak capacity required by this producer's isolated scope, in bytes.
     pub isolated_peak_bytes: u64,
+    /// Producer output bytes that remain owned after its scope completes.
     pub retained_output_bytes: u64,
+    /// Peak scheduled capacity for this occurrence, including previously retained outputs.
     pub stage_peak_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
+/// Immutable composed memory schedule bound to an admitted attempt.
+///
+/// The projection records producer order, retained outputs and the complete
+/// capacity requirement. It cannot grant capacity or change the selected device.
 pub struct AttemptComposedScheduleProjection {
+    /// Composed-schedule schema label checked by the content fingerprint validator.
     pub schema: String,
+    /// Attempt that owns this immutable composed schedule.
     pub attempt_id: AttemptId,
+    /// CUDA device selected by the admission grant.
     pub device_ordinal: usize,
+    /// Immutable ledger grant identity to which the schedule is bound.
     pub grant_id: u64,
+    /// Immutable admitted query capacity in bytes.
     pub grant_bytes: u64,
+    /// Capacity required for the entire attempt outside individual scope peaks, in bytes.
     pub attempt_wide_fixed_bytes: u64,
+    /// Producer occurrences in their committed execution order.
     pub producer_occurrences: Vec<AttemptComposedScheduleOccurrence>,
+    /// Fingerprint of the final consumer's execution scope.
     pub consumer_scope_fingerprint: String,
+    /// Consumer capacity beyond retained producer inputs, in bytes.
     pub consumer_additional_peak_bytes: u64,
+    /// Consumer stage peak including retained producer outputs, in bytes.
     pub consumer_stage_peak_bytes: u64,
+    /// Largest stage capacity required by the complete composed schedule, in bytes.
     pub complete_peak_bytes: u64,
+    /// Deterministic content fingerprint of memory quantities and scope order.
     pub fingerprint: String,
 }
 
@@ -129,6 +157,9 @@ impl AttemptComposedScheduleProjection {
         projection
     }
 
+    /// Checks the schema label and deterministic memory-schedule fingerprint.
+    /// Attempt identity, device ordinal and grant binding are excluded from the
+    /// fingerprint; this check does not validate the admission grant.
     pub fn fingerprint_matches_contents(&self) -> bool {
         self.schema == COMPOSED_SCHEDULE_PROJECTION_SCHEMA
             && self.fingerprint

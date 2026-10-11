@@ -1,9 +1,9 @@
 //! Row-count partitioning bounds for bounded joins and source-adjacent aggregates.
 //!
 //! Byte targets (`partition_target_policy`) size a partition by its input bytes.
-//! Some cuDF operations allocate per input row or per key match rather than per
-//! byte, and this module supplies the row-based bounds those operations need.
-//! Like the byte targets, these values shape work; the query domain's allocator
+//! Some cuDF operations allocate per input row or per key match, and a byte target does
+//! not bound those allocations. This module supplies the row-based bounds those operations
+//! need. Like the byte targets, these values shape work; the query domain's allocator
 //! alone enforces the cap.
 
 use query_planning::execution_contracts::MemoryControlPolicy;

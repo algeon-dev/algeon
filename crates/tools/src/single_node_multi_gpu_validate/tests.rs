@@ -686,7 +686,7 @@ fn fixture_preflight_rejects_a_self_consistent_noncanonical_dblp_fixture_before_
     let dblp_root = root.join("citation_network").join("v1");
     // Give the otherwise self-consistent miniature fixture the complete-edge
     // footer shape. Canonical preflight must then reject its non-V12 counts,
-    // rather than merely stopping earlier at missing provenance.
+    // so the test does not pass by failing on missing provenance.
     write_dblp_fixture(&dblp_root, Some("3"));
     let profile = fixture_preflight_profile(&tpch_root, &dblp_root);
     let out_dir = root.join("run-artifacts");
@@ -993,9 +993,9 @@ fn sample_provenance() -> Provenance {
     }
 }
 
-/// A measured-run profile that selects queries but supplies no device profile,
-/// no measurement window, or no queries must be refused before any fixture,
-/// backend, or artifact work begins.
+/// A measured-run profile that supplies no selected queries, no device profile,
+/// or no measurement window must be refused before any fixture, backend, or
+/// artifact work begins.
 #[test]
 fn measured_run_preflight_rejects_an_incomplete_profile_before_touching_a_fixture() {
     let base = measured_run_profile();
@@ -1180,7 +1180,7 @@ fn close_under_load_preflight_requires_a_queued_cohort_at_close() {
         measured_run_preflight(&profile, None, None, false, false, false, false, None, true).unwrap_err().to_string();
     assert!(error.contains("above the fleet active-attempt capacity"), "{error}");
 
-    // Storm knobs conflict with the close probe's own outcome accounting.
+    // Storm settings conflict with the close probe's own outcome accounting.
     profile.scheduling.concurrency = 8;
     profile.scheduling.cancel_every_n = Some(2);
     let error =
@@ -1425,8 +1425,8 @@ fn storm_knobs_validate_their_shapes() {
 }
 
 /// Every directly runnable shipped stress-suite profile must parse and
-/// validate, so a broken library entry fails here rather than
-/// mid-qualification. Templates and generator bases are instantiated by their
+/// validate, so a broken library entry fails here, before qualification starts.
+/// Templates and generator bases are instantiated by their
 /// deterministic generators before use.
 #[test]
 fn shipped_stress_profiles_parse_and_validate() {
@@ -1438,7 +1438,8 @@ fn shipped_stress_profiles_parse_and_validate() {
             if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
                 continue;
             }
-            // This is a qualification manifest; its referenced profiles and committed hashes have a separate owner test.
+            // This is a qualification manifest. Its referenced profiles and
+            // committed hashes have a separate owner test.
             if path.file_name().and_then(|name| name.to_str()) == Some("cache-off-production.json") {
                 continue;
             }
@@ -1553,7 +1554,7 @@ fn s2_aggregate_profiles_reserve_the_observed_q01_working_set() {
     // The 1 GiB aggregate domain failed with this attempt-exact allocation:
     // 1,068,599,820 bytes live plus a 15,237,120-byte request.  Keep the
     // immutable profile query limit above the actual reservation-limit witness,
-    // instead of attempting to hide it with runner retries.
+    // and do not mask the failure with runner retries.
     const Q01_OBSERVED_LIVE_BYTES: u64 = 1_068_599_820;
     const Q01_OBSERVED_REQUEST_BYTES: u64 = 15_237_120;
     const Q01_DEFAULT_QUERY_LIMIT_BYTES: u64 = 1_342_177_280;
@@ -1593,7 +1594,7 @@ fn s7_same_key_probe_rejects_ambiguous_dblp_slice_queries() {
 }
 
 /// The fixture paths in `measured_run_profile` do not exist, so preflight must
-/// fail with the structured fixture reason rather than proceeding.
+/// stop with the structured fixture reason.
 #[test]
 fn measured_run_preflight_reports_a_missing_fixture_with_a_structured_reason() {
     let error = measured_run_preflight(&measured_run_profile(), None, None, false, false, false, false, None, false)
@@ -1667,8 +1668,8 @@ fn profile_accepts_explicit_repeated_workload_queries_and_rejects_unknown_labels
     assert!(select_queries(&profile.workloads).unwrap_err().to_string().contains("unknown tpch query label"));
 }
 
-/// The shipped profile no longer selects static partitioning, so keep the
-/// ownership variant's parse and validation path covered here.
+/// `measured_run_profile` uses whole-device ownership. This test covers the
+/// `static_partition` ownership variant's parse and validation path.
 #[test]
 fn profile_accepts_static_partition_ownership_and_rejects_a_zero_allocation_limit() {
     let mut profile = measured_run_profile();
@@ -1896,14 +1897,14 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
     assert_eq!(measurement["aggregate"]["attempts"][0]["admission_requested_ns"], 0);
     assert_eq!(measurement["aggregate"]["attempts"][0]["admitted_ns"], 1);
 
-    // Streams are recorded as profile-derived accounting and Nsight is cited,
-    // never claimed by this runner.
+    // Streams are recorded as profile-derived accounting. The runner cites Nsight
+    // and does not claim its result.
     let occupancy = &measurement["aggregate"]["scenarios"]["logical_slot_occupancy"];
     assert_eq!(occupancy["basis"], "profile_derived_logical_slots");
     assert_eq!(occupancy["proves_gpu_overlap"], false);
     assert_eq!(measurement["trace"]["captured_by_runner"], false);
 
-    // The two clauses this phase cannot evidence are declared, not passed.
+    // The two clauses this phase cannot evidence are declared as not_evidenced.
     let clause = |section: &str, name: &str| -> String {
         measurement["aggregate"]["scenarios"][section]
             .as_array()
@@ -1924,7 +1925,7 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
     assert_eq!(clause("multiple_devices", "device_block_or_quarantine_fallback"), "not_evidenced");
 
     ensure_redacted_json(&value, "").unwrap();
-    // No raw SQL reaches the artifact, only query identity.
+    // The artifact records query identity, and no raw SQL reaches it.
     assert!(
         !String::from_utf8(fs::read_to_string(out_dir.join("run-artifact.json")).unwrap().into_bytes())
             .unwrap()
@@ -2321,8 +2322,8 @@ fn measured_run_profile() -> RunProfile {
     let mut profile = RunProfile::parse_bytes(valid_profile_json().as_bytes()).unwrap();
     profile.backend.device_profiles = vec![
         measured_device_profile(0, 1 << 30, 2),
-        // A deliberately different envelope, so heterogeneity is evidenced
-        // rather than assumed.
+        // A deliberately different envelope, so the reducer must evidence
+        // heterogeneity from the data.
         measured_device_profile(1, 2 << 30, 4),
     ];
     profile.scheduling = SchedulingProfile {

@@ -1,4 +1,3 @@
-//! Tests for groupby operations.
 use cudf::{
     AggSpec, ErrorCode, ErrorKind, Exec, GroupByAgg, GroupByOptions,
     testing::groupby::{

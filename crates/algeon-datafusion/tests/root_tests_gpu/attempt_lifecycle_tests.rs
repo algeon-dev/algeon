@@ -268,7 +268,6 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
         "retry advice cannot appear in DataFusion metrics before the attempt seals"
     );
 
-    // The planning attempt executes its own plan.
     let mut stream = planner.execute_physical_plan(std::sync::Arc::clone(&plan), &ctx).unwrap();
     while let Some(batch) = stream.next().await {
         batch.unwrap();
@@ -325,7 +324,7 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
         "an execute-only attempt does not synthesize planning boundaries"
     );
 
-    // A third invocation reuses the SQL text and still mints a fresh id.
+    // A third attempt begins without executing the plan and still mints a fresh id.
     let third = backend.begin_attempt(AttemptOptions::default()).unwrap();
     assert_ne!(third.attempt_id(), planner_id);
     assert_ne!(third.attempt_id(), second_id);
@@ -546,8 +545,8 @@ async fn idle_installed_context_does_not_block_close_and_reports_outlive_quiesce
     // An idle installed SessionContext does not block close or quiescence:
     let close = backend.close_and_wait(std::time::Duration::from_secs(10)).expect("close completes");
     assert!(close.gpu_resource_quiescent);
-    // The published report remains readable after GPU-resource quiescence:
-    // observation state never retains the device lease.
+    // The published report remains readable after GPU-resource quiescence.
+    // Observation state never retains the device lease.
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert!(report.timestamps.cleanup_complete_ns.is_some());
 
@@ -561,7 +560,7 @@ async fn idle_installed_context_does_not_block_close_and_reports_outlive_quiesce
 async fn cancellation_before_execute_and_mid_drain_are_cooperative() {
     let backend = backend();
     let cpu_ctx = cpu_only_context(&backend);
-    // Cancellation before execution starts: no physical start boundary.
+    // Cancellation before execution starts records no physical start boundary.
     let planned = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let plan = planned.plan_sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
     planned.cancellation().cancel();
@@ -587,8 +586,9 @@ async fn cancellation_before_execute_and_mid_drain_are_cooperative() {
 
     // Flight cancellation may discard the response stream before its next
     // poll. Once cancellation has propagated, `AttemptStream::drop` must
-    // retain the cancelled terminal outcome instead of rewriting it as a
-    // client-drop outcome.
+    // keep the cancelled terminal outcome. The drop finds the token already
+    // cancelled and records `Cancelled`, so a client drop cannot overwrite it
+    // with `Dropped`.
     let cancelled_then_dropped = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let stream = cancelled_then_dropped.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
     cancelled_then_dropped.cancellation().cancel();
@@ -600,7 +600,7 @@ async fn cancellation_before_execute_and_mid_drain_are_cooperative() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_invocation_and_partial_drain_drop_terminalize() {
     let backend = backend();
-    // DataFrame path: same lifecycle coverage through the explicit adapter.
+    // The DataFrame path has the same lifecycle coverage through the explicit adapter.
     let ctx = cpu_only_context(&backend);
     let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let df = ctx.sql("SELECT approx_distinct(v) FROM cpu_rows").await.expect("aggregate dataframe");
@@ -627,7 +627,7 @@ async fn dataframe_invocation_and_partial_drain_drop_terminalize() {
 async fn deadline_expiry_cancels_planning_and_drain_with_typed_reason() {
     let backend = backend();
     let cpu_ctx = cpu_only_context(&backend);
-    // Expired before planning: the attempt terminalizes cancelled, unplanned.
+    // An attempt that expires before planning terminalizes as cancelled and unplanned.
     let expired = backend
         .begin_attempt(AttemptOptions {
             deadline: Some(std::time::Instant::now() - std::time::Duration::from_millis(1)),
@@ -678,7 +678,7 @@ async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() 
     let ctx = native_context(&backend).await;
 
     // Hold both admission slots with live suspended executions so the
-    // attempt's admission must queue and time out instead of being placed.
+    // attempt's admission must queue and time out without being placed.
     // Each holder stream is polled once to admit, then left suspended: the
     // slots stay occupied until the streams are dropped, never reaching EOF.
     let holder = backend.begin_attempt(AttemptOptions::default()).expect("slot holder admits");
@@ -861,7 +861,7 @@ async fn concurrent_plain_executions_on_one_context_run_one_attempt_each() {
 async fn plans_that_read_no_column_data_begin_no_attempt_unless_native_is_required() {
     // A DDL result's empty relation, `SELECT 1`'s placeholder row, and a
     // relation DataFusion folds to empty carry no column data a GPU could
-    // accelerate, so NativePreferred keeps them on DataFusion instead of
+    // accelerate, so NativePreferred keeps them on DataFusion without
     // queueing for a grant.
     {
         let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
@@ -1169,7 +1169,7 @@ async fn internal_attempt_holds_its_grant_until_the_root_stream_ends() {
 
 /// Under NativeRequired the CTAS result relation, a zero-column literal, is
 /// native as well. It is planned after the inner plan claimed the attempt's
-/// admission, so it joins that grant rather than claiming a second one.
+/// admission and runs under that same admission.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_required_ctas_result_joins_the_inner_plans_grant() {
     let backend = BackendFixture::with_execution_mode(

@@ -306,8 +306,8 @@ fn cache_fill_byte_budget_grow_reports_saturation_without_waiting() {
     let mut first = budget.try_acquire(768).unwrap().unwrap();
     let _second = budget.try_acquire(256).unwrap().unwrap();
 
-    // The budget is fully held: growth fails immediately instead of waiting
-    // for the other holder, and the permit keeps its original charge.
+    // The budget is fully held. Growth fails immediately and does not wait for the other holder,
+    // and the permit keeps its original charge.
     assert!(!first.try_grow(1024).unwrap());
     assert_eq!(first.bytes(), 768);
     // Shrinking or re-stating the current charge always succeeds.

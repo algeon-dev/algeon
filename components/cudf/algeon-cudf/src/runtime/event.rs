@@ -1,7 +1,7 @@
 //! CUDA event wrapper.
 //!
 //! This is an owned CUDA event used for explicit device-side ordering,
-//! readiness queries, and interop completion handoff.
+//! readiness queries, and interop completion.
 
 use std::{
     ptr::{self, NonNull},

@@ -52,23 +52,18 @@ pub enum GroupByAgg {
     },
 }
 
-/// A single aggregation request: which column to aggregate and how.
 pub(crate) struct AggregationRequest<'a> {
-    /// The values column to aggregate.
     pub values: &'a ColumnView<'a>,
     /// One or more aggregations to apply to this column.
     pub aggregations: &'a [GroupByAgg],
 }
 
-/// A single grouped scan request: which column to scan and how.
 pub(crate) struct GroupByScanRequest<'a> {
-    /// The values column to scan.
     pub values: &'a ColumnView<'a>,
     /// One or more cumulative aggregations to apply to this column.
     pub aggregations: &'a [ScanAgg],
 }
 
-/// Output payload of a low-level groupby aggregation.
 pub(crate) struct GroupByAggregationOutput {
     /// The unique key groups.
     pub keys: Table,
@@ -77,7 +72,6 @@ pub(crate) struct GroupByAggregationOutput {
     pub results: Vec<Vec<Column>>,
 }
 
-/// Output payload of a low-level grouped scan.
 pub(crate) struct GroupByScanOutput {
     /// Scan results, one `Vec<Column>` per request. Each inner vec has one
     /// column per scan aggregation in the corresponding request.
@@ -95,8 +89,8 @@ pub struct PreparedGroupByFacts {
     /// Number of key groups after the prepared handle's null-key policy is
     /// applied.
     pub num_groups: usize,
-    /// Device allocation footprint of the grouped-key table materialized
-    /// during preparation.
+    /// Device allocation size of the grouped-key table materialized during
+    /// preparation.
     pub grouped_key_output_bytes: usize,
     /// Maximum input rows represented by any one prepared group.
     pub max_group_size: usize,
@@ -133,7 +127,7 @@ impl<'keys> PreparedGroupBy<'keys> {
     /// Build reusable grouping state and return cuDF-reported cardinality.
     ///
     /// This may allocate temporary grouped-key output internally. The returned
-    /// facts include the exact grouped-key output footprint, but no retained
+    /// facts include the exact grouped-key output allocation size, but no retained
     /// internal groupby-state memory estimate is inferred.
     pub fn prepare_groups(&self) -> Result<PreparedGroupByFacts> {
         prepared_groupby_facts_raw(self.handle.as_ptr(), &self.keys_domain, "groupby::PreparedGroupBy::prepare_groups")
@@ -587,7 +581,7 @@ pub(crate) fn groupby_scan_impl(
     Ok(GroupByScanOutput { results })
 }
 
-/// Create a C-side aggregation handle from an [`GroupByAgg`] enum.
+/// Create a C-side aggregation handle from a [`GroupByAgg`] enum.
 ///
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_aggregation_destroy`.

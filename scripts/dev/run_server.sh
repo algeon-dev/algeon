@@ -33,32 +33,25 @@ if [[ ! -x "${BINARY}" ]]; then
     exit 1
 fi
 
-# ---------------------------------------------------------------------------
 # Server core
 # ALGEON_SERVER_BIND              host:port to listen on (default: 0.0.0.0:50051)
 # ALGEON_SERVER_LOG               tracing filter: "info", "debug", "warn,datafusion=info"
-# ---------------------------------------------------------------------------
 export ALGEON_SERVER_BIND="${ALGEON_SERVER_BIND:-0.0.0.0:50051}"
 export ALGEON_SERVER_LOG="${ALGEON_SERVER_LOG:-info}"
 
-# ---------------------------------------------------------------------------
 # cuGraph SQL DSL
 #
 # ALGEON_SERVER_CUGRAPH_ENABLED              true | false (unset = enabled)
 # ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY  python_cugraph | raw_libcugraph
 #
-# No default is exported here: the server configuration defaults to enabled.
+# No default is exported here; the server configuration defaults to enabled.
 # Set ALGEON_SERVER_CUGRAPH_ENABLED=false before calling this script to hide the
 # frontend.
-# ---------------------------------------------------------------------------
-# export ALGEON_SERVER_CUGRAPH_ENABLED=true
-# export ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY=python_cugraph
 
-# ---------------------------------------------------------------------------
 # Native GPU execution controls
 #
 # ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
-#   Max bytes read per Parquet source chunk (4 GiB = rg1024/32GiB profile).
+#   Max bytes read per Parquet source chunk.
 #
 # ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
 #   Max Parquet row groups per source chunk (rg1024 profile).
@@ -74,19 +67,16 @@ export ALGEON_SERVER_LOG="${ALGEON_SERVER_LOG:-info}"
 #
 # ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
 #   gpu_native_tolerant (default) | datafusion_exact_host_welford
-# ---------------------------------------------------------------------------
 export ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS="${ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS:-3}"
 export ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT="${ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT:-2}"
 export ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE="${ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE:-conservative}"
 export ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE:-gpu_native_tolerant}"
 
-# ---------------------------------------------------------------------------
 # DataFusion session
 #
 # SessionConfig::from_env() maps each option key to an env var by upper-casing
-# and replacing "." with "_", so `datafusion.execution.target_partitions`
-# becomes `DATAFUSION_EXECUTION_TARGET_PARTITIONS` (single underscores, NOT
-# double).
+# and replacing "." with "_". For example, `datafusion.execution.target_partitions`
+# becomes `DATAFUSION_EXECUTION_TARGET_PARTITIONS` (each dot becomes one underscore).
 # These variables are consumed by DataFusion itself; algeon-datafusion only
 # enables catalog discovery on the resulting SessionConfig.
 #
@@ -95,12 +85,9 @@ export ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${ALGEON_SERVE
 # DATAFUSION_EXECUTION_BATCH_SIZE         Arrow record-batch size for
 #                                         DataFusion/fallback operators. Native
 #                                         cudf source chunking is controlled by
-#                                         ALGEON_SERVER_NATIVE_* budget knobs.
-# ---------------------------------------------------------------------------
-# export DATAFUSION_EXECUTION_TARGET_PARTITIONS=16
+#                                         ALGEON_SERVER_NATIVE_* budget settings.
 export DATAFUSION_EXECUTION_BATCH_SIZE="${DATAFUSION_EXECUTION_BATCH_SIZE:-8192}"
 
-# ---------------------------------------------------------------------------
 # S3 region
 #
 # AWS_DEFAULT_REGION   REQUIRED for KvikIO S3 (reads ONLY this var;
@@ -108,17 +95,14 @@ export DATAFUSION_EXECUTION_BATCH_SIZE="${DATAFUSION_EXECUTION_BATCH_SIZE:-8192}
 # AWS_REGION           Read by the query engine for S3 source metadata; set both.
 #
 # Real AWS credentials, when used, must be passed from the host environment.
-# ---------------------------------------------------------------------------
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 
-# AWS credentials forwarded from host environment (short-lived STS tokens).
+# AWS credentials are inherited from the host environment (short-lived STS tokens).
 # Nothing to export here: they are already in the environment when set via
 # `export AWS_ACCESS_KEY_ID=...` before calling this script.
 
-# ---------------------------------------------------------------------------
 # Run or dry-run
-# ---------------------------------------------------------------------------
 if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo "Binary: ${BINARY}"
     echo ""

@@ -29,8 +29,7 @@ typedef enum {
   CUDF_DATETIME_ROUNDING_NANOSECOND  = 6,
 } cudf_datetime_rounding_frequency_t;
 
-/// Extract a datetime component as an INT16 column with explicit execution
-/// context.
+/// Extract a datetime component as an INT16 column.
 ///
 /// `options` must be non-NULL, name an explicit valid device, provide a
 /// non-NULL stream, and provide a non-NULL memory resource. `options->mr` must
@@ -40,7 +39,7 @@ cudf_status_t cudf_datetime_extract_component_ex(cudf_column_view_handle input,
                                                  cudf_column_handle* out,
                                                  cudf_exec_options_t const* options);
 
-/// Floor datetimes to the requested frequency with explicit execution context.
+/// Floor datetimes to the requested frequency.
 ///
 /// `options` must be non-NULL, name an explicit valid device, provide a
 /// non-NULL stream, and provide a non-NULL memory resource. `options->mr` must
@@ -50,8 +49,7 @@ cudf_status_t cudf_datetime_floor_ex(cudf_column_view_handle input,
                                      cudf_column_handle* out,
                                      cudf_exec_options_t const* options);
 
-/// Add calendrical months to a timestamp column with explicit execution
-/// context.
+/// Add calendrical months to a timestamp column.
 ///
 /// `options` must be non-NULL, name an explicit valid device, provide a
 /// non-NULL stream, and provide a non-NULL memory resource. `options->mr` must

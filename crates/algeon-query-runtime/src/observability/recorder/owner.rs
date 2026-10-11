@@ -304,10 +304,9 @@ impl RuntimeObservationOwner {
     }
 
     /// Records cleanup completion and seals the recorder state so the report
-    /// is published, returning the
-    /// deferred observer delivery. Capacity release may proceed once this
-    /// returns; [`QueryCleanupSealDelivery::deliver`] runs afterwards and
-    /// never gates reuse.
+    /// is published, returning the deferred observer delivery. Capacity release
+    /// may proceed once this returns. [`QueryCleanupSealDelivery::deliver`] runs
+    /// afterwards and never gates reuse.
     pub(crate) fn seal_query_cleanup(&self, fallback: RuntimeTerminalOutcome) -> QueryCleanupSealDelivery {
         self.seal_query_cleanup_with(CleanupSeal::Recorded { fallback: Some(fallback) })
     }
@@ -370,8 +369,9 @@ impl RuntimeObservationOwner {
     /// Completes a query that has no admitted handle responsible for cleanup.
     ///
     /// `None` is reserved for coordinator-owned records that have no attempt
-    /// lifecycle. Their observation still seals, but its terminal field stays
-    /// absent rather than minting an engine attempt outcome from delivery data.
+    /// lifecycle. Their observation still seals, and its terminal field stays
+    /// absent. The seal does not synthesize an engine attempt outcome from
+    /// delivery data.
     pub fn finish_query(&self, outcome: Option<RuntimeTerminalOutcome>) -> Option<SealedRuntimeObservationSnapshot> {
         match outcome {
             Some(outcome) => {
@@ -387,7 +387,7 @@ impl RuntimeObservationOwner {
         self.session.live_snapshot()
     }
 
-    /// Returns the immutable sealed snapshot after a terminal wins.
+    /// Returns the immutable sealed snapshot once the first terminal outcome is fixed.
     pub fn sealed_snapshot(&self) -> Option<SealedRuntimeObservationSnapshot> {
         self.session.sealed_snapshot()
     }
@@ -436,7 +436,6 @@ impl RuntimeObservationOwner {
         self.complete_observer_delivery(deferred)
     }
 
-    /// Seals the recorder state and returns the deferred observer delivery.
     fn seal_owner_terminal<F>(
         &self,
         outcome: Option<RuntimeTerminalOutcome>,

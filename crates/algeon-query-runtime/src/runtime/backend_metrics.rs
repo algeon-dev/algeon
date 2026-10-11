@@ -39,9 +39,13 @@ pub const BACKEND_ATTEMPT_DURATION_BUCKET_COUNT: usize = BACKEND_ATTEMPT_DURATIO
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[repr(usize)]
 pub enum BackendAttemptDisposition {
+    /// No classified physical plan was obtained.
     Unplanned = 0,
+    /// The plan used DataFusion execution without native operators.
     CpuFallback = 1,
+    /// The plan combined native and DataFusion execution.
     PartialNative = 2,
+    /// The plan had native execution coverage.
     Native = 3,
 }
 
@@ -80,10 +84,15 @@ impl BackendAttemptDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[repr(usize)]
 pub enum BackendAttemptOutcome {
+    /// Execution completed successfully.
     Succeeded = 0,
+    /// A classified error ended execution.
     Failed = 1,
+    /// Caller cancellation or deadline expiry ended execution.
     Cancelled = 2,
+    /// The attempt or stream was dropped before another terminal outcome.
     Dropped = 3,
+    /// An unwind ended execution.
     Panicked = 4,
 }
 
@@ -125,9 +134,13 @@ impl BackendAttemptOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[repr(usize)]
 pub enum BackendAttemptDuration {
+    /// Submission to report readiness, including cleanup.
     Total = 0,
+    /// Planning start to planning finish.
     Planning = 1,
+    /// Admission request to immutable grant publication.
     QueueWait = 2,
+    /// Physical execution start to terminal outcome.
     PhysicalExecution = 3,
 }
 
@@ -156,8 +169,8 @@ impl BackendAttemptDuration {
 /// Explicit duration values already derived from the sealed attempt report.
 ///
 /// The store does not inspect report timestamps or rebuild durations. A
-/// missing duration remains absent from its histogram rather than becoming a
-/// fabricated zero-duration sample.
+/// missing duration is absent from its histogram, and the store does not record
+/// it as a zero-duration sample.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct BackendAttemptDurations {
     pub(crate) total_ns: Option<u64>,
@@ -180,7 +193,9 @@ impl BackendAttemptDurations {
 /// Closed admission health projected from the owning ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BackendAdmissionHealth {
+    /// The device ledger accepts new admission.
     Open,
+    /// The device ledger rejects new admission after close or a health transition.
     Closed,
 }
 
@@ -188,7 +203,9 @@ pub enum BackendAdmissionHealth {
 /// [`BACKEND_ATTEMPT_DURATION_BUCKETS_NS`] and ends with its `+Inf` bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendHistogramSnapshot {
+    /// Cumulative counts at each finite nanosecond bound and the final `+Inf` bound.
     pub bucket_counts: [u64; BACKEND_ATTEMPT_DURATION_BUCKET_COUNT],
+    /// Total duration samples represented by the final cumulative bucket.
     pub count: u64,
     pub(crate) sum: u64,
 }
@@ -227,14 +244,19 @@ impl BackendAttemptMetricsSnapshot {
 /// Ledger-class backend metrics for one fixed device slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendAdmissionMetricsSnapshot {
+    /// Attempts with an active or cleaning admission grant.
     pub active_attempts: u64,
+    /// Bytes committed to immutable active and cleaning query grants.
     pub live_grant_bytes: u64,
+    /// Bytes retained by resident owners at the ledger transition.
     pub resident_owner_bytes: u64,
+    /// Largest resident-owner charge observed during this backend generation.
     pub max_resident_owner_bytes: u64,
     /// Evictable cache residency from the device ledger's current snapshot.
     pub cache_evictable_resident_bytes: u64,
     /// Pinned cache residency from the device ledger's current snapshot.
     pub cache_pinned_in_use_bytes: u64,
+    /// Ledger admission health at the recorded transition.
     pub health: BackendAdmissionHealth,
 }
 
@@ -254,8 +276,11 @@ impl BackendAdmissionMetricsSnapshot {
 /// value fixed during backend construction, never an attempt or query id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendDeviceMetricsSnapshot {
+    /// Configured CUDA ordinal used as the closed device label.
     pub device_ordinal: usize,
+    /// Authoritative ledger sequence associated with the admission metrics.
     pub ledger_sequence: u64,
+    /// Current and maximum values recorded from device ledger transitions.
     pub admission: BackendAdmissionMetricsSnapshot,
 }
 
@@ -268,10 +293,14 @@ pub struct BackendDeviceMetricsSnapshot {
 /// backend generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BackendMetricsSnapshot {
+    /// Backend resource generation that owns these metrics.
     pub backend_generation: u64,
+    /// Store update sequence advanced after each accepted metric update.
     pub generation: u64,
     #[serde(serialize_with = "serialize_backend_metric_devices")]
+    /// Fixed ordinal-indexed device slots; `None` for an unconfigured ordinal.
     pub devices: [Option<BackendDeviceMetricsSnapshot>; BACKEND_METRIC_DEVICE_CAPACITY],
+    /// Terminal counters and duration histograms accumulated at report readiness.
     pub attempts: BackendAttemptMetricsSnapshot,
 }
 
@@ -409,14 +438,18 @@ impl BackendMetricsSnapshot {
 /// A typed, closed backend-metric attribute value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendMetricAttributeValue {
+    /// Bounded integer identity, such as a configured device ordinal.
     I64(i64),
+    /// Value from a closed stable label domain.
     Str(&'static str),
 }
 
 /// One descriptor-ordered attribute of a projected backend metric sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendMetricAttribute {
+    /// Canonical label name from the descriptor, in descriptor order.
     pub key: &'static str,
+    /// Value in that descriptor label's closed domain.
     pub value: BackendMetricAttributeValue,
 }
 
@@ -425,23 +458,31 @@ pub struct BackendMetricAttribute {
 /// final implicit `+Inf` bucket).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendHistogramProjection {
+    /// Finite increasing bounds in the descriptor's declared unit.
     pub explicit_bounds: Vec<f64>,
+    /// Disjoint counts for each finite interval and the final `+Inf` interval.
     pub bucket_counts: [u64; BACKEND_ATTEMPT_DURATION_BUCKET_COUNT],
+    /// Total samples represented by the disjoint bucket counts.
     pub count: u64,
+    /// Total observed duration in the descriptor's declared unit.
     pub sum: f64,
 }
 
 /// One value produced by a backend descriptor projection.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendMetricSampleValue {
+    /// Unsigned counter, gauge or maximum in the descriptor unit.
     Scalar(u64),
+    /// Duration distribution converted to the descriptor unit.
     Histogram(BackendHistogramProjection),
 }
 
 /// One closed-label sample for a canonical backend descriptor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendMetricSample {
+    /// Closed label attributes ordered by the canonical descriptor.
     pub attributes: Vec<BackendMetricAttribute>,
+    /// Scalar or histogram value in the descriptor's declared unit.
     pub value: BackendMetricSampleValue,
 }
 
@@ -449,11 +490,38 @@ pub struct BackendMetricSample {
 /// descriptor-owned backend metric.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendMetricProjectionError {
-    NonCanonicalDescriptor { metric_name: &'static str },
+    /// The supplied descriptor differs from the registered descriptor for its identity.
+    NonCanonicalDescriptor {
+        /// Name of the rejected descriptor.
+        metric_name: &'static str,
+    },
+    /// A duration cannot be converted to the descriptor's declared unit.
     Duration(BackendDurationProjectionError),
-    CumulativeHistogramDecreases { metric_name: &'static str, bucket_index: usize },
-    CumulativeHistogramCountMismatch { metric_name: &'static str, cumulative_count: u64, count: u64 },
-    DisjointHistogramCountMismatch { metric_name: &'static str, bucket_count_sum: u64, count: u64 },
+    /// Cumulative counts are not monotonically increasing.
+    CumulativeHistogramDecreases {
+        /// Metric with invalid bucket counts.
+        metric_name: &'static str,
+        /// Zero-based index of the first decreasing cumulative bucket.
+        bucket_index: usize,
+    },
+    /// The final cumulative bucket differs from the histogram sample count.
+    CumulativeHistogramCountMismatch {
+        /// Metric with inconsistent counts.
+        metric_name: &'static str,
+        /// Count in the final cumulative `+Inf` bucket.
+        cumulative_count: u64,
+        /// Total histogram sample count.
+        count: u64,
+    },
+    /// Disjoint bucket counts do not add up to the histogram sample count.
+    DisjointHistogramCountMismatch {
+        /// Metric with inconsistent counts.
+        metric_name: &'static str,
+        /// Sum of disjoint bucket counts.
+        bucket_count_sum: u64,
+        /// Total histogram sample count.
+        count: u64,
+    },
 }
 
 impl fmt::Display for BackendMetricProjectionError {

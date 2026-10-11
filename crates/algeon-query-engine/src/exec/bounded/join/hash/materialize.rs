@@ -287,7 +287,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
 /// One attempt at a slice, without retry: slices both gather maps, bounds the output for
 /// `len` rows and gathers the projected columns.
 ///
-/// The output must have exactly `len` rows (checked in debug builds).
+/// The output row count must equal `len` (checked in debug builds).
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"

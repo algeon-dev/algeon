@@ -16,7 +16,8 @@ void set_error(std::string const& msg);
 void set_error(char const* msg);
 
 // Records `status` in the copyable error detail. Nonthrowing producers use it
-// when the returned or recorded status, not the message, classifies a failure.
+// when the returned or recorded status classifies a failure, and the message
+// plays no part in that classification.
 void set_error(cudf_status_t status, char const* msg) noexcept;
 
 cudf_status_t translate_exception();
@@ -43,9 +44,9 @@ cudf_status_t cudf_translate_cleanup_exception_noexcept() noexcept;
 
 // Null-check macro that sets error and returns.
 //
-// Project rule for C-shim output parameters:
-// once an output pointer itself has been validated, initialize it immediately
-// so any later failure leaves caller-visible outputs in a predictable state.
+// Under the project rule for C-shim output parameters, an output pointer is
+// initialized right after it passes validation. Then any later failure leaves
+// caller-visible outputs in a predictable state.
 #define CUDF_RUST_NULL_CHECK(ptr, msg) \
   do {                                 \
     if ((ptr) == nullptr) {            \
@@ -67,7 +68,6 @@ inline cudf_status_t validate_c_string_array(char const* const* values,
   return CUDF_SUCCESS;
 }
 
-// Convert C enum to C++ cudf::type_id.
 inline cudf::type_id to_cudf_type_id(cudf_type_id_t id) { return static_cast<cudf::type_id>(id); }
 
 #endif  // CUDF_RUST_SHIM_COMMON_H

@@ -1,6 +1,3 @@
-//! Tests for the `DataFrame::groupby` high-level API: `GroupBy`, `GroupByAgg`, `AggSpec`,
-//! `GroupByOptions`.
-
 use cudf::{AggSpec, DataFrame, ErrorCode, ErrorKind, Exec, GroupByAgg};
 
 use crate::common::{assert_missing_column_error, column_from_slice, dataframe_from_columns, error_context_value};
@@ -23,10 +20,6 @@ fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, reques
     assert_eq!(error_context_value(err, "request_index").as_deref(), Some(request_index));
     assert_eq!(error_context_value(err, "ddof").as_deref(), Some(expected_ddof.to_string().as_str()));
 }
-
-// ---------------------------------------------------------------------------
-// GroupBy::agg with AggSpec; basic aggregations
-// ---------------------------------------------------------------------------
 
 fn groupby_sum() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
@@ -85,10 +78,6 @@ fn groupby_count() {
     assert_eq!(pairs, vec![(1, 2), (2, 3)]);
 }
 
-// ---------------------------------------------------------------------------
-// Output column naming: alias support
-// ---------------------------------------------------------------------------
-
 fn groupby_alias() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -136,10 +125,6 @@ fn groupby_deterministic_naming_without_alias() {
     assert_eq!(names[5], "price_max");
 }
 
-// ---------------------------------------------------------------------------
-// Multi-column aggregation ordering
-// ---------------------------------------------------------------------------
-
 fn groupby_multi_column_agg_ordering() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let a = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -172,10 +157,6 @@ fn groupby_multi_column_agg_ordering() {
 
     assert_eq!(rows, vec![(1, 30, 3, 10), (2, 70, 7, 30)]);
 }
-
-// ---------------------------------------------------------------------------
-// Error handling
-// ---------------------------------------------------------------------------
 
 fn groupby_missing_value_column() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
@@ -219,10 +200,6 @@ fn groupby_empty_agg_specs() {
         "provide at least one AggSpec or use a shortcut like .sum([...])",
     );
 }
-
-// ---------------------------------------------------------------------------
-// Shortcut methods: sum, mean, count
-// ---------------------------------------------------------------------------
 
 fn groupby_sum_shortcut() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
@@ -308,10 +285,6 @@ fn scoped_groupby_handle_is_reusable() {
     assert_eq!(averaged.column_names(), vec!["key", "value_mean"]);
 }
 
-// ---------------------------------------------------------------------------
-// Shortcut with multiple value columns
-// ---------------------------------------------------------------------------
-
 fn groupby_sum_shortcut_multi_columns() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let a = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -333,10 +306,6 @@ fn groupby_sum_shortcut_multi_columns() {
     assert_eq!(rows, vec![(1, 30, 3), (2, 70, 7)]);
 }
 
-// ---------------------------------------------------------------------------
-// GroupByOptions: include_null_keys
-// ---------------------------------------------------------------------------
-
 fn groupby_with_options_include_null_keys() {
     use cudf::GroupByOptions;
 
@@ -351,14 +320,6 @@ fn groupby_with_options_include_null_keys() {
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.num_rows(), 2);
 }
-
-// ===========================================================================
-// Expanded GroupByAgg enum; Median, NUnique, Std, Variance
-// ===========================================================================
-
-// ---------------------------------------------------------------------------
-// GroupByAgg::Median
-// ---------------------------------------------------------------------------
 
 fn groupby_median() {
     // keys: [1, 1, 1, 2, 2], values: [10.0, 20.0, 30.0, 100.0, 200.0]
@@ -396,10 +357,6 @@ fn groupby_median_shortcut() {
     assert_eq!(pairs, vec![(Some(1), Some(20.0)), (Some(2), Some(150.0))]);
 }
 
-// ---------------------------------------------------------------------------
-// GroupByAgg::NUnique
-// ---------------------------------------------------------------------------
-
 fn groupby_nunique() {
     // keys: [1, 1, 1, 2, 2], values: [10, 10, 20, 30, 30]
     // key=1 nunique=2, key=2 nunique=1
@@ -435,10 +392,6 @@ fn groupby_nunique_shortcut() {
     pairs.sort_by_key(|&(k, _)| k);
     assert_eq!(pairs, vec![(1, 2), (2, 1)]);
 }
-
-// ---------------------------------------------------------------------------
-// GroupByAgg::Std
-// ---------------------------------------------------------------------------
 
 fn groupby_std_ddof1() {
     // keys: [1, 1, 2, 2], values: [10.0, 20.0, 100.0, 200.0]
@@ -520,10 +473,6 @@ fn groupby_rejects_ddof_above_i32_max_with_stable_contract() {
     assert_ddof_range_validation_error(&err, "groupby::GroupBy::agg", "0", u32::MAX);
 }
 
-// ---------------------------------------------------------------------------
-// GroupByAgg::Variance
-// ---------------------------------------------------------------------------
-
 fn groupby_variance_ddof1() {
     // key=1: var(ddof=1) = 50.0
     // key=2: var(ddof=1) = 5000.0
@@ -586,10 +535,6 @@ fn groupby_var_shortcut() {
     assert!((pairs[1].1 - 5000.0).abs() < 1e-6);
 }
 
-// ---------------------------------------------------------------------------
-// Extended naming; all GroupByAgg variants in a single groupby
-// ---------------------------------------------------------------------------
-
 fn groupby_all_agg_variants_naming() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
@@ -627,10 +572,6 @@ fn groupby_all_agg_variants_naming() {
         ]
     );
 }
-
-// ---------------------------------------------------------------------------
-// Alias works with new variants
-// ---------------------------------------------------------------------------
 
 fn groupby_new_agg_alias() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();

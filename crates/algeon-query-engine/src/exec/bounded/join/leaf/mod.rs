@@ -1,7 +1,7 @@
 //! Deferred local-Parquet leaves under compiled join and aggregate tasks.
 //!
-//! A join leaf is a Parquet source whose chunks are read while the join runs,
-//! instead of being materialized before the join task starts. This module owns
+//! A join leaf is a Parquet source whose chunks are read while the join runs.
+//! Its chunks are not materialized before the join task starts. This module owns
 //! the stream description (`BoundedJoinLeafLocalParquetSourceStream`), the
 //! stages that stay after decoding because the reader cannot evaluate them,
 //! the dynamic-filter rewrite that narrows row groups from a completed build
@@ -79,7 +79,7 @@ use stream::*;
 
 /// Names the join source read as the failing boundary so a resource error
 /// from a leaf read is attributed to the leaf, with the chunk and attempt that
-/// failed, rather than to the join operator above it.
+/// failed. The join operator above the leaf is not the attributed boundary.
 fn attach_join_source_read_resource_facts(
     error: QueryError,
     node_id: NodeId,

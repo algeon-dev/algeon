@@ -44,7 +44,7 @@ impl QueryId {
         &self.0
     }
 
-    /// Returns true when this id is a real query id rather than the default sentinel.
+    /// Returns true when this id is not the default sentinel.
     pub fn is_assigned(&self) -> bool {
         self.0 != Self::UNASSIGNED
     }

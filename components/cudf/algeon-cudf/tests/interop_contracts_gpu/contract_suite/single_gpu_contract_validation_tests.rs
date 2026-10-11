@@ -1,14 +1,12 @@
-//! Single-GPU interop validation tests aligned with the current interop
-//! direction.
+//! Single-GPU interop validation tests for graph-construction-shaped consumers.
 //!
-//! These tests keep the validation consumer-neutral while still exercising the
-//! graph-construction-shaped contract the current specs call for:
+//! These tests keep the validation consumer-neutral. They check this contract:
 //!
-//! - prepared export can describe one edge-list input without relying on
+//! - a prepared device export describes one edge-list input without exposing
 //!   private `cudf` ownership details
-//! - deep-copy import remains a validated fallback when the consumer wants its
-//!   own runtime-owned working set
-//! - result handoff remains explicit and goes back through the same shared
+//! - deep-copy import is a validated fallback for a consumer that needs its own
+//!   runtime-owned working set
+//! - result handoff is explicit and goes back through the same shared
 //!   prepared-export boundary
 use std::{collections::HashMap, ffi::c_void};
 

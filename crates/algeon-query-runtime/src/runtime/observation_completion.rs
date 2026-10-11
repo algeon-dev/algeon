@@ -27,12 +27,12 @@ const BUILD_OPERATION: &str = "query_engine.gpu_backend_core.build";
 
 type ObservationCompletionCallback = Box<dyn FnOnce() + Send + 'static>;
 
-/// A completion callback that recovers itself if the worker drops it before
-/// explicitly running it.
+/// A completion callback that `Drop` runs when the worker drops the task
+/// before running it.
 ///
 /// A receiver drops its queued messages when the worker exits unexpectedly.
-/// Permit release and observer sealing are terminal work, so silently dropping
-/// either would strand backend observation quiescence.
+/// Permit release and observer sealing are terminal work, so dropping either
+/// without running it would strand backend observation quiescence.
 struct ObservationCompletionTask {
     callback: Option<ObservationCompletionCallback>,
 }
@@ -271,6 +271,7 @@ impl ObservationCompletionSupervisor {
             }
             let _ = handle.join();
         }
+        // Keep the join lock to the joins; unregistering takes the registration and registry locks.
         drop(join);
         self.unregister_process_exit();
     }
@@ -364,7 +365,7 @@ impl ObservationCompletionDispatcher {
 ///
 /// The executor owns no backend resources. Its dispatcher may be retained by a
 /// query after the resource generation is gone, so an enqueue failure must
-/// execute the payload inline rather than drop its permit. Both receivers drain
+/// execute the payload inline, which releases the permit. Both receivers drain
 /// accepted payloads after the executor owner drops; dispatcher clones retain
 /// senders until every future completion has either been enqueued or
 /// synchronously finalized.

@@ -78,7 +78,6 @@ impl OuterJoinNullRejectionDiagnostics {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -502,7 +501,7 @@ fn trace_right_origins_inner(
         PlanNode::Sort(sort) => {
             trace_right_origins_inner(nodes, sort.input, column_name, path, traces);
         },
-        // Limit is not transparent to this rewrite: null-rejected rows can
+        // Limit is not transparent to this rewrite. Null-rejected rows can
         // consume limit slots before a downstream join removes them.
         PlanNode::Limit(_) => {},
         PlanNode::Join(join) => {

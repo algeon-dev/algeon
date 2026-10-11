@@ -36,13 +36,9 @@ HERE = Path(__file__).resolve().parent
 # XGBoost's default training-history callback evaluates the training metric
 # (e.g. merror for multiclass) after every boosting round, even with no
 # `evals` passed. On this machine that eval path probes for a CUDA driver
-# and raises cudaErrorNoDevice instead of falling back to CPU, so every
+# and raises cudaErrorNoDevice; it does not fall back to CPU, so every
 # xgboost.train() call here disables the default eval metric.
 XGB_BASE_PARAMS = {"device": "cpu", "verbosity": 0, "disable_default_eval_metric": 1}
-
-
-# ---------------------------------------------------------------------------
-# float formatting
 
 
 def fmt_f32(v):
@@ -101,7 +97,6 @@ def record(path):
     results.append((path.name, path.stat().st_size))
 
 
-# ---------------------------------------------------------------------------
 # Fixture 1: xgb_binary_logistic
 
 
@@ -144,7 +139,6 @@ def build_xgb_binary_logistic():
     return name, model_path.name, "xgboost_json", 16, 4, 1, "binary:logistic probability, 1 column"
 
 
-# ---------------------------------------------------------------------------
 # Fixtures 2 & 3: xgb_multiclass_softmax / xgb_multiclass_softprob
 
 
@@ -260,7 +254,6 @@ def build_xgb_multiclass_softprob_ubj(bst, X_in):
     return name, model_path.name, "xgboost_ubjson", 16, 4, 3, notes
 
 
-# ---------------------------------------------------------------------------
 # Fixture 4: lgb_regression_double
 
 
@@ -309,7 +302,6 @@ def build_lgb_regression_double():
     return name, model_path.name, "lightgbm", 16, 4, 1, "regression output, 1 column; model trained on float64 data (double thresholds)"
 
 
-# ---------------------------------------------------------------------------
 # Fixture 5: xgb_multiclass_tie (handcrafted)
 
 
@@ -413,7 +405,6 @@ def build_xgb_multiclass_tie():
     return name, model_path.name, "xgboost_json", 16, 4, 1, notes
 
 
-# ---------------------------------------------------------------------------
 # Fixture 6: lgb_threshold_boundary (handcrafted)
 
 
@@ -492,7 +483,6 @@ def build_lgb_threshold_boundary():
     return name, model_path.name, "lightgbm", 4, 1, 1, notes
 
 
-# ---------------------------------------------------------------------------
 # Fixture 7: xgb_multi_target (rejection fixture, no expected/gtil)
 
 
@@ -523,7 +513,6 @@ def build_xgb_multi_target():
     return name, model_path.name, "xgboost_json", 16, 4, 0, "multi-target model (num_target=2); rejection-path fixture, no expected/gtil files"
 
 
-# ---------------------------------------------------------------------------
 # Fixture 8: corrupt.json (truncated copy of fixture 1)
 
 
@@ -536,9 +525,6 @@ def build_corrupt(binary_logistic_model_path):
     record(model_path)
     print(f"{name}: truncated {len(data)} bytes -> {len(truncated)} bytes")
     return name, model_path.name, "xgboost_json", 0, 0, 0, "first half of xgb_binary_logistic.json bytes, for parse-error tests"
-
-
-# ---------------------------------------------------------------------------
 
 
 def write_versions():
@@ -558,8 +544,8 @@ def write_versions():
 
 
 def write_manifest(rows):
-    # No quoting: notes use semicolons instead of commas so the file stays
-    # splittable by a naive `line.split(',')`, matching the other fixture
+    # No quoting: notes use semicolons, and commas only separate fields, so the file
+    # stays splittable by a naive `line.split(',')`, matching the other fixture
     # text formats (no CSV/JSON library on the Rust side).
     path = HERE / "manifest.csv"
     with open(path, "w") as f:

@@ -10,7 +10,6 @@ impl std::fmt::Debug for DataFrame {
         ds.field("num_columns", &num_cols);
         ds.field("num_rows", &num_rows);
 
-        // Build a columns summary: [(name, type)] without GPU data copy.
         let columns_info: Vec<(&str, String)> = self
             .columns
             .iter()
@@ -34,7 +33,6 @@ impl std::fmt::Display for DataFrame {
     }
 }
 
-/// Cached schema metadata for one display column.
 struct DisplayColumnMetadata {
     type_str: String,
     nullable: Option<bool>,
@@ -63,7 +61,6 @@ impl DisplayColumnMetadata {
     }
 }
 
-/// Build one display column schema summary from a named DataFrame column.
 fn build_display_column_metadata(df: &DataFrame, name: &str) -> DisplayColumnMetadata {
     let col = match df.columns.get(name) {
         Some(col) => col,

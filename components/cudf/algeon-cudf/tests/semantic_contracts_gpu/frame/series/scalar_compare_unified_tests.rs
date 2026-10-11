@@ -1,20 +1,12 @@
-//! Integration tests for the unified `Series::*_scalar` API.
-//!
 //! Verifies that the six generic scalar-compare methods (`eq`, `ne`, `gt`,
 //! `lt`, `ge`, `le`) accept both numeric primitives (via `CudfType`) and
-//! string slices (`&str`) through the `IntoRuntimeScalar` conversion trait,
-//! and that the explicit `Series::*_in(..., Exec)` API stays in
-//! sync with the owned `Series` API.
-//!
-//! All tests require a GPU.
+//! string slices (`&str`) through the `Into<ScalarValue>` conversion,
+//! and that the explicit `.on(Exec)` path stays in sync with the owned
+//! `Series` API.
 
 use cudf::{Exec, TypeId};
 
 use crate::common::series;
-
-// ===========================================================================
-// Primitive path: numeric `CudfType` values still work through the generic API
-// ===========================================================================
 
 fn eq_scalar_accepts_primitive() {
     let s = series::<i32>("z", &[1, 2, 2, 3]).unwrap();
@@ -54,10 +46,6 @@ fn le_scalar_accepts_primitive() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, false, false]);
 }
 
-// ===========================================================================
-// String path: `&str` literals now work through the generic API
-// ===========================================================================
-
 fn eq_scalar_accepts_str_literal() {
     let s = series("status", &["active", "inactive", "active"]).unwrap();
     let mask = s.on(Exec::RETAINED).eq_scalar("active").unwrap();
@@ -96,9 +84,7 @@ fn le_scalar_accepts_str_literal() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
 }
 
-// ===========================================================================
-// Owned `String` and `&String` work too
-// ===========================================================================
+// Owned `String` and `&String` work too.
 
 fn eq_scalar_accepts_owned_string() {
     let s = series("status", &["active", "inactive", "active"]).unwrap();
@@ -106,14 +92,11 @@ fn eq_scalar_accepts_owned_string() {
     let mask = s.on(Exec::RETAINED).eq_scalar(&needle).unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 
-    // Now pass owned String by value.
     let mask2 = s.on(Exec::RETAINED).eq_scalar(needle).unwrap();
     assert_eq!(mask2.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-// ===========================================================================
-// Explicit execution-context path stays in sync with the owned API
-// ===========================================================================
+// The explicit execution-context path stays in sync with the owned API.
 
 fn eq_scalar_in_accepts_str_literal() {
     let s = series("status", &["active", "inactive", "active"]).unwrap();

@@ -1,13 +1,7 @@
-# =============================================================================
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION.
-# SPDX-License-Identifier: Apache-2.0
-# =============================================================================
-
 cmake_minimum_required(VERSION 3.30.4 FATAL_ERROR)
 
-# Fetch rapids-cmake via git instead of the codeload HTTP zip archive. GitHub
-# rate-limits the codeload zip endpoint (429), while git clone stays on a
-# separate, non-rate-limited path.
+# Fetch rapids-cmake with git clone. GitHub rate-limits the codeload zip
+# endpoint (429), and git clone uses a separate path that is not rate-limited.
 set(rapids-cmake-fetch-via-git ON)
 include(../../cudf/cmake/rapids_config.cmake)
 include(rapids-cmake)
@@ -24,16 +18,10 @@ project(
   LANGUAGES C CXX CUDA
 )
 
-# ##################################################################################################
-# * build options ---------------------------------------------------------------------------------
-
 option(CUDF_USE_PER_THREAD_DEFAULT_STREAM "Build with per-thread default stream" OFF)
 option(CUDA_STATIC_RUNTIME "Statically link the CUDA runtime" OFF)
 option(CUDF_RUST_ENABLE_CLANG_TIDY "Run clang-tidy for cudf-sys/native while building" OFF)
 option(CUDF_RUST_ENABLE_TEST_HOOKS "Build the test-only cudf-rust hook ABI" OFF)
-
-# ##################################################################################################
-# * lint configuration ----------------------------------------------------------------------------
 
 if(CUDF_RUST_ENABLE_CLANG_TIDY)
   set(CUDF_RUST_CLANG_TIDY_EXE
@@ -71,9 +59,6 @@ if(CUDF_RUST_ENABLE_CLANG_TIDY)
   endfunction()
 endif()
 
-# ##################################################################################################
-# * compiler options ------------------------------------------------------------------------------
-
 rapids_find_package(CUDAToolkit REQUIRED)
 
 include(CheckCXXSourceCompiles)
@@ -103,9 +88,6 @@ endif()
 
 rapids_cmake_build_type("Release")
 
-# ##################################################################################################
-# * CUDF ------------------------------------------------------------------------------------------
-
 set(CUDF_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../../cudf/cpp")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/cudf-discovery.cmake")
 
@@ -118,7 +100,6 @@ elseif(EXISTS "${CUDF_SOURCE_DIR}/build/CMakeCache.txt")
   set(CUDF_RUST_CUDF_BUILD_DIR_CANDIDATE "${CUDF_SOURCE_DIR}/build")
 endif()
 
-# Search for libcudf in CUDF_INSTALL_DIR if specified, otherwise in CUDF_CPP_BUILD_DIR.
 if(DEFINED ENV{CUDF_INSTALL_DIR})
   set(CUDF_INSTALL_DIR
       "$ENV{CUDF_INSTALL_DIR}"
@@ -222,9 +203,6 @@ if(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS STREQUAL "enabled" AND NOT TARGET k
   )
 endif()
 message(STATUS "libcudf KvikIO remote IO build status: ${CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS}")
-
-# ##################################################################################################
-# * library target --------------------------------------------------------------------------------
 
 add_library(cudf_rust_rmm_interop SHARED src/rmm_interop_bridge.cpp)
 
@@ -373,9 +351,6 @@ if(TARGET kvikio::kvikio)
 endif()
 target_link_libraries(cudf_rust PRIVATE ${CMAKE_DL_LIBS})
 
-# ##################################################################################################
-# * cudart options --------------------------------------------------------------------------------
-
 if(CUDA_STATIC_RUNTIME)
   set(CUDF_RUST_CUDA_RUNTIME_MODE "static")
   target_link_libraries(cudf_rust PRIVATE CUDA::cudart_static)
@@ -385,18 +360,13 @@ else()
 endif()
 target_link_libraries(cudf_rust PRIVATE CUDA::cuda_driver)
 
-# ##################################################################################################
-# * Cargo link manifest ---------------------------------------------------------------------------
-
 set(CUDF_RUST_CARGO_LINK_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/cargo-link.txt")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/cargo-link.txt.in" "${CUDF_RUST_CARGO_LINK_MANIFEST}" @ONLY)
 
-# ##################################################################################################
-# * install ---------------------------------------------------------------------------------------
-
 install(TARGETS cudf_rust cudf_rust_rmm_interop LIBRARY DESTINATION lib)
-# Remove headers installed by the former flat layout. CMake installs update
-# files but do not remove outputs that disappeared from the install manifest.
+# Headers install under include/cudf_rust/. CMake installs update files but
+# does not remove outputs that disappeared from the install manifest, so any
+# top-level include/*.h left in the prefix is removed here.
 install(
   CODE [[
     file(GLOB cudf_rust_legacy_public_headers "${CMAKE_INSTALL_PREFIX}/include/*.h")

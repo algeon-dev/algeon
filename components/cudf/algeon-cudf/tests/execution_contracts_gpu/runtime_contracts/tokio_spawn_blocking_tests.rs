@@ -21,14 +21,13 @@ fn assert_send_sync<T: Send + Sync>() {}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsive() {
-    // Compile-time guarantees for key shared types.
     assert_send_sync::<Column>();
     assert_send_sync::<Table>();
 
     let data: Vec<i32> = (0..4096).collect();
     let shared = Arc::new(column_from_slice(&data).unwrap());
 
-    // Heartbeat counter: if Tokio's async worker gets blocked, tick count will stall.
+    // The tick count stalls if Tokio's async worker gets blocked.
     let ticker = tokio::spawn(async {
         let start = Instant::now();
         let mut ticks = 0usize;
@@ -41,7 +40,6 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
         ticks
     });
 
-    // Stress the API concurrently via spawn_blocking workers.
     let workers = 8;
     let iterations = 32;
     let mut handles = Vec::with_capacity(workers);
@@ -50,12 +48,10 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
         let shared = Arc::clone(&shared);
         handles.push(spawn_blocking(move || -> cudf::Result<()> {
             for _ in 0..iterations {
-                // Shared read access from multiple threads.
                 let view = shared.testing_view()?;
                 assert_eq!(view.len()?, 4096);
                 assert_eq!(view.data_type()?.id(), TypeId::Int32);
 
-                // Per-thread deep copy and host transfer.
                 let copied = shared.deep_copy()?;
                 let host = copied.testing_view()?.to_vec::<i32>()?;
                 assert_eq!(host.first().copied(), Some(0));

@@ -115,10 +115,10 @@ fn test_server_config_with_env(mut env: std::collections::BTreeMap<&'static str,
 }
 
 // These cases inject an already-built backend, so their server configuration
-// must describe the same concrete controller rather than the automatic
-// planning placeholder used by ordinary server construction. Keep this local
-// to injected-backend coverage: production construction continues to size
-// each selected device from its own immutable profile.
+// must describe the same concrete controller. The automatic planning
+// placeholder used by ordinary server construction does not apply here. Keep
+// this local to injected-backend coverage. Production construction continues
+// to size each selected device from its own immutable profile.
 const INJECTED_BACKEND_TEST_DEVICE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 fn build_injected_test_backend(config: &mut ServerConfig) -> AlgeonGpuBackend {

@@ -34,8 +34,8 @@ const BASIC_PREFIX: &str = "Basic ";
 const VERIFICATION_MEMORY_BUDGET_KIB: u32 = 256 * 1024;
 
 /// Number of Argon2 verifications allowed to run concurrently, derived from
-/// [`VERIFICATION_MEMORY_BUDGET_KIB`] and the actual `m_cost` used by
-/// `password.rs` (Argon2's library default) rather than an arbitrary count.
+/// [`VERIFICATION_MEMORY_BUDGET_KIB`] and the `m_cost` that `password.rs` uses,
+/// which is Argon2's library default.
 pub(crate) fn verification_permits() -> usize {
     (VERIFICATION_MEMORY_BUDGET_KIB / Params::DEFAULT_M_COST).max(1) as usize
 }
@@ -62,16 +62,15 @@ type HandshakeResponseStream = BoxStream<'static, Result<HandshakeResponse, Stat
 ///
 /// When [`AuthMode::Disabled`] is configured, the handshake is a no-op
 /// passthrough that emits a single empty response; clients can still
-/// call it (some drivers do unconditionally), and the result is the
-/// same as the pre-auth stub.
+/// call it (some drivers do unconditionally).
 ///
 /// Credential verification runs Argon2 (real or decoy), which is
 /// CPU/memory-heavy and must not run inline on an async worker thread.
 /// It is dispatched to [`tokio::task::spawn_blocking`] gated by
 /// `interceptor`'s verification semaphore; when the semaphore is
-/// saturated the handshake fails fast with `resource_exhausted` rather
-/// than queuing, since an unbounded queue of pending verifications is
-/// the same memory DoS as running them inline.
+/// saturated the handshake fails fast with `resource_exhausted`, without
+/// queuing. An unbounded queue of pending verifications is the same memory
+/// DoS as running them inline.
 pub async fn handle_handshake(
     interceptor: &AuthInterceptor,
     request: Request<Streaming<HandshakeRequest>>,
@@ -109,6 +108,7 @@ async fn authenticate_and_issue_token(
             let username = spawn_blocking(move || authenticate_user(&users, &username, &password).map(|()| username))
                 .await
                 .map_err(|_| Status::internal("password verification task panicked"))??;
+            // Return the verification slot once Argon2 finishes; issuing a token runs no Argon2.
             drop(permit);
 
             let principal = Principal { username };
@@ -137,9 +137,9 @@ fn verify_credential(user: &StaticUserConfig, password: &str) -> Result<(), Stat
         Ok(true) => Ok(()),
         Ok(false) => Err(Status::unauthenticated("invalid username or password")),
         Err(error) => {
-            // Misconfigured hash is a server bug, not a client error;
-            // log it and surface as `internal` so an operator can find
-            // it in the logs without leaking the hash to the client.
+            // A misconfigured hash is a server bug. The error is logged and
+            // surfaced as `internal`, so an operator can find it in the logs
+            // without leaking the hash to the client.
             tracing::error!(username = %user.username, %error, "auth: password hash failed to parse");
             Err(Status::internal("server auth configuration error"))
         },
@@ -265,7 +265,7 @@ mod tests {
     async fn saturated_verification_semaphore_fails_fast_with_resource_exhausted() {
         let interceptor = basic_bearer_interceptor();
         // Hold every permit up front so the handshake below cannot acquire
-        // one; this must reject immediately rather than queue.
+        // one; this must reject immediately, without queuing.
         let semaphore = interceptor.verification_semaphore();
         let permits = semaphore.try_acquire_many(semaphore.available_permits() as u32).expect("acquire all permits");
 

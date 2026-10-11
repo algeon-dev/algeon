@@ -1,18 +1,18 @@
 //! Byte and row caps for bounded source reads and source-adjacent aggregate batches.
 //!
 //! The query domain's allocator is the only enforcer of the attempt's cap (see
-//! `website/docs/design/admission.mdx`, "The allocation path"). The policy here
-//! decides how much encoded input one read or one raw batch requests at a time,
-//! so that the decoded columns, staged copies and partition slices that are live
-//! together usually fit under that cap. A miss surfaces as a typed allocation
-//! failure that the chunk-split retry handles; nothing in this module reserves
-//! memory or vetoes an allocation.
+//! `website/docs/design/admission.mdx#allocation-enforcement`, "The allocation
+//! path"). The policy here decides how much encoded input one read or one raw
+//! batch requests at a time, so that the decoded columns, staged copies and
+//! partition slices that are live together usually fit under that cap. A miss
+//! surfaces as a typed allocation failure that the chunk-split retry handles;
+//! nothing in this module reserves memory or vetoes an allocation.
 
 use query_planning::{chunk::SourceChunkPlanningPolicy, execution_contracts::MemoryControlPolicy};
 
 /// Internal batching caps for bounded local-Parquet source work.
 ///
-/// These values describe runtime batching shapes, not user-facing resource
+/// These values describe runtime batching shapes and are not user-facing resource
 /// controls. Keep the public/admin surface on bounded memory policy and source
 /// planning mode until production evidence shows a stable tuning contract.
 ///
@@ -61,7 +61,7 @@ impl BoundedSourceBatchingPolicy {
     /// once: the stage output, its hash partition, and the partition slices.
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_BATCH_STAGE_COPY_FACTOR: u64 = 3;
     /// A batch whose partial aggregate keeps at most this many output rows per
-    /// million input rows is reduced locally instead of hash-partitioned.
+    /// million input rows is reduced locally and is not hash-partitioned.
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_OUTPUT_ROWS_PPM: u64 = 1_000;
     /// Local reduction stays enabled only while one batch's partial output is
     /// at most the working-set target divided by this value.
@@ -246,7 +246,7 @@ impl BoundedSourceBatchingPolicy {
     }
 
     /// Whether one observed batch reduced strongly enough that the next batch
-    /// can be partially aggregated whole instead of hash-partitioned first.
+    /// can be partially aggregated whole, without hash partitioning first.
     pub(in crate::exec::bounded) fn source_adjacent_local_reduction_effective(
         self,
         input_rows: u64,

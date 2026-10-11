@@ -2,8 +2,8 @@
 
 /// Relation-backed aligned vertex pairs consumed by a similarity algorithm.
 ///
-/// The relation remains a normal native-plan input.  It is neither a catalog
-/// name nor an executor-local lookup, so a graph algorithm records it as an
+/// The relation remains a normal native-plan input. It is not a catalog name or
+/// an executor-local lookup. A graph algorithm therefore records it as an
 /// explicit dependency alongside its edge-list input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphVertexPairInput {
@@ -24,10 +24,10 @@ impl GraphVertexPairInput {
 
 /// Shared parameters for explicit-pair graph similarity algorithms.
 ///
-/// The metric is deliberately represented by [`crate::plan::GraphAlgorithm`], rather than
-/// by four duplicate parameter payloads.  Whether an execution consumes edge
-/// weights is likewise derived from the edge weight binding; a second boolean
-/// here could contradict the graph construction contract.
+/// The metric is carried by [`crate::plan::GraphAlgorithm`], so the four
+/// similarity metrics share this one payload type. Whether an execution consumes
+/// edge weights is likewise derived from the edge weight binding; a second
+/// boolean here could contradict the graph construction contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphSimilarityParams {
     /// Required candidate-pair relation.

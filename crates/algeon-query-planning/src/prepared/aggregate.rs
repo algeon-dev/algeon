@@ -36,8 +36,8 @@ pub fn aggregate_spec_has_filters(spec: &AggregateSpec) -> bool {
 ///
 /// Selection follows DataFusion's accumulator for the input and output Arrow
 /// types, so aggregates evaluated beside STDDEV/VAR keep DataFusion's integer
-/// width, wrapping arithmetic, and NaN ordering instead of passing through
-/// `f64`.
+/// width, wrapping arithmetic, and NaN ordering. Integer sums, minima, and
+/// maxima do not pass values through `f64`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataFusionExactHostAccumulator {
     /// Non-null input count.

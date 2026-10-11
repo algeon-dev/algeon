@@ -63,7 +63,6 @@ impl StreamFanoutReplayDiagnostics {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -80,7 +79,6 @@ pub struct StreamFanoutReplayCandidateDiagnostics {
     pub(crate) fanout_node_id: NodeId,
     /// Number of direct consumers of the shared producer node.
     pub consumer_count: usize,
-    /// Join-probe consumer nodes that share this producer.
     pub(crate) join_probe_consumer_node_ids: Vec<NodeId>,
     /// True when the returned plan duplicates the producer subtree. A
     /// candidate is rejected only when it lies outside the sink-reachable
@@ -257,8 +255,8 @@ fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
 /// Whether the join's probe pulls its input chunk by chunk under every
 /// strategy that can execute it. Joins with a residual stay out of the rule
 /// even when their probe streams: replaying the shared lineitem probe of
-/// TPC-H SF10 Q21's residual semi and anti joins read 4656 row groups instead
-/// of 3189 and took about 450 ms instead of 314 ms.
+/// TPC-H SF10 Q21's residual semi and anti joins read 4656 row groups and took
+/// about 450 ms, compared with 3189 row groups and 314 ms without replay.
 fn join_probe_stream_capable(node_id: NodeId, join: &JoinNode) -> bool {
     join.spec.residual_predicate.is_none()
         && classify_join(node_id, join)

@@ -514,11 +514,12 @@ async fn distributed_aggregate_over_merge_of_sorted_partitions_lowers_to_native_
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// A merge with a fetch drops rows, so the final aggregate would read fewer
+/// A merge with a fetch drops rows; the final aggregate would then read fewer
 /// rows than its partial stage produced. The pair stays rejected and the
 /// blocker names the merge. The plan is already one partition, and the union
-/// below the partial stage keeps its branches as separate partitions, so the
-/// remedy is an engine gap and not planning for one partition.
+/// below the partial stage keeps its branches as separate partitions. The
+/// remedy is therefore the `unsupported_operator_gap` engine gap;
+/// `set_target_partitions_one` does not apply.
 #[tokio::test]
 async fn distributed_aggregate_over_merge_with_fetch_is_rejected() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-sorted-merge-fetch");

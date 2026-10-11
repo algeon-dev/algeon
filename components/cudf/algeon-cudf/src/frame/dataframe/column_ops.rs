@@ -140,18 +140,17 @@ impl DataFrame {
     /// # Duplicate name handling
     ///
     /// If the same output name appears more than once in `pairs`, the **last
-    /// value wins**; earlier entries for that name are silently overwritten.
-    /// This matches the semantics of Python's `DataFrame.assign(**kwargs)` and
-    /// is intentional: `assign` is a batch "set these columns" operation, not a
-    /// schema-definition operation. Methods that define schema shape
+    /// value wins** and earlier entries for that name are overwritten without
+    /// an error. This matches the semantics of Python's `DataFrame.assign(**kwargs)`.
+    /// The behavior is intentional because `assign` is a batch "set these columns"
+    /// operation. Methods that define schema shape
     /// ([`select`](Self::select), [`rename_columns`](Self::rename_columns))
     /// reject duplicates with an error.
     ///
     /// If `self` has zero columns but a non-zero logical row count (for
     /// example after [`without_columns`](Self::without_columns) or [`select`](Self::select) removes
     /// every column), inserted Series must still match that row count. Only a
-    /// truly empty `0 x 0` DataFrame lets the first inserted Series establish
-    /// the row count.
+    /// `0 x 0` DataFrame lets the first inserted Series establish the row count.
     ///
     /// # Errors
     ///

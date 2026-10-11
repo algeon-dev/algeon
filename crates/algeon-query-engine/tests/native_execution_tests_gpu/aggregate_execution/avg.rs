@@ -445,9 +445,9 @@ fn assert_grouped_many_group_decimal_avg(context: &BackendQueryContext) {
 }
 
 /// Stress regression for a high-cardinality grouped AVG: four AVGs over one
-/// BIGINT and three `Decimal128(7, 2)` columns, sorted by group key, with every
-/// row spot-checked. This exercises the per-group partial-state path from the
-/// compiled bounded pipeline.
+/// BIGINT and three `Decimal128(7, 2)` columns, sorted by group key, with each
+/// output row compared against its expected average. This exercises the
+/// per-group partial-state path from the compiled bounded pipeline.
 fn assert_grouped_high_cardinality_mixed_avg(context: &BackendQueryContext, groups: usize) {
     let dir = unique_temp_dir("query-engine-native-grouped-high-cardinality-avg");
     let path = dir.join("input.parquet");

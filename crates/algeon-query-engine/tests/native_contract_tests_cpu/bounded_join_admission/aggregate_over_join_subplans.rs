@@ -66,8 +66,8 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
 
     // A fetch limit after the root turns the tail into sort+fetch over the same
     // keyless conditional and grouped-aggregate fragments. It is executable and
-    // admitted; capacity is the allocator's, enforced as a typed cap failure at
-    // runtime, not an admission gate.
+    // admitted. Capacity is the allocator's and is enforced as a typed cap failure at
+    // runtime; admission does not check it.
     let limit_after_root_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::LimitAfterRoot,
     );

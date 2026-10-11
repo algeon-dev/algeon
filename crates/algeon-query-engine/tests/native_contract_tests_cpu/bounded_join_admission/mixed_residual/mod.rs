@@ -105,7 +105,7 @@ fn bounded_multi_join_admits_full_tail_after_valid_mixed_residual_semi_anti() {
 #[test]
 fn bounded_multi_join_refuses_mixed_residual_semi_anti_projecting_right_columns_as_malformed() {
     // A semi or anti join outputs only left rows, so a right-side output
-    // column has no value: the IR is malformed, not an unsupported shape.
+    // column has no value, and validation rejects the IR as malformed with `InvalidPlan`.
     for (join_type, build_side) in [(JoinType::LeftSemi, JoinSide::Left), (JoinType::LEFT_ANTI, JoinSide::Right)] {
         let plan = mixed_residual_multi_join_plan(
             join_type.clone(),

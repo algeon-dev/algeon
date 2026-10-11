@@ -17,7 +17,9 @@ pub enum RuntimeObservationExportErrorKind {
 /// Retry status derived from the export failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeObservationExportErrorStatus {
+    /// The record cannot be encoded; unchanged data is not suitable for retry.
     Permanent,
+    /// The destination rejected a write; a healthy destination may accept the sealed data.
     Temporary,
 }
 

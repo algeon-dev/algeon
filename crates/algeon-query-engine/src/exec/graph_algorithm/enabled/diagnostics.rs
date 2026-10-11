@@ -289,7 +289,7 @@ pub(super) fn map_cugraph_error(
 /// This is the same attribution table the cuDF boundary uses: only a proven
 /// physical provenance may become `DeviceOutOfMemory`, an owner reservation
 /// limit is the query cap rejecting an allocation, and an unattributed
-/// failure never impersonates either.
+/// failure maps to neither of them.
 #[cfg(feature = "cugraph")]
 fn code_for_cugraph_error(error: &cugraph::Error) -> QueryErrorCode {
     match error.kind() {
@@ -321,8 +321,8 @@ mod tests {
 
         let error = map_cugraph_error("query_engine.graph_algorithm.test", "cuGraph test OOM")(source);
 
-        // An unattributed cuGraph allocation failure never impersonates a
-        // physical device OOM or a query-cap rejection.
+        // An unattributed cuGraph allocation failure maps to neither a physical
+        // device OOM nor a query-cap rejection.
         assert_eq!(error.code(), QueryErrorCode::DeviceAllocationFailed);
         assert_eq!(error.fact_value("cugraph_allocation_failure_source"), Some("unknown"));
         assert_eq!(error.context().allocation_source, Some(QueryAllocationSource::Unknown));

@@ -46,7 +46,8 @@ pub const DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER: u64 =
 pub struct SemijoinReductionOptions {
     /// Whether the pass is allowed to rewrite eligible left-semi joins.
     pub enabled: bool,
-    /// Maximum accepted `semi_side / target_side` cost multiplier.
+    /// Minimum accepted `target_side / semi_side` cost ratio. The pass keeps a
+    /// candidate when `semi_side * cost_threshold_multiplier <= target_side`.
     pub cost_threshold_multiplier: u64,
 }
 
@@ -59,7 +60,7 @@ impl SemijoinReductionOptions {
         Self { enabled: false, cost_threshold_multiplier: Self::DEFAULT_COST_THRESHOLD_MULTIPLIER }
     }
 
-    /// Validates internal consistency for semijoin-reduction cost gates.
+    /// Rejects a zero `cost_threshold_multiplier`; no other field is checked.
     pub fn validate(&self) -> Result<()> {
         if self.cost_threshold_multiplier == 0 {
             return Err(QueryError::new(
@@ -81,14 +82,11 @@ impl Default for SemijoinReductionOptions {
     }
 }
 
-/// Result for one semijoin-reduction optimizer pass invocation.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SemijoinReductionResult {
     /// Plan returned after the pass, rewritten only when the pass was kept.
     pub plan: QueryPlan,
-    /// Whether this pass changed the plan.
     pub change: super::NativeOptimizerChange,
-    /// Candidate diagnostics collected by the pass.
     pub diagnostics: SemijoinReductionDiagnostics,
 }
 
@@ -109,7 +107,6 @@ impl SemijoinReductionDiagnostics {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another semijoin diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -162,7 +159,6 @@ pub struct SemijoinReductionCostGateDiagnostics {
     pub signal: SemijoinReductionCostSignal,
     /// Threshold multiplier configured for this pass.
     pub(crate) threshold_multiplier: u64,
-    /// Whether the cost gate accepted the candidate.
     pub(crate) accepted: bool,
 }
 
@@ -238,7 +234,6 @@ pub enum SemijoinReductionRejectedReason {
     RootOutputProjectionMismatch,
 }
 
-/// Runs the semijoin-reduction pass.
 pub(crate) fn optimize_semijoin_reduction(
     plan: QueryPlan,
     options: &SemijoinReductionOptions,
@@ -809,7 +804,7 @@ fn evaluate_semijoin_cost_gate(
 ) -> SemijoinReductionCostGateDiagnostics {
     let target_subtree = analysis.target_subtree_id;
     // Options are not validated on the optimizer path, so a zero multiplier is
-    // read as one instead of accepting every candidate.
+    // read as one. Without that, a zero multiplier would accept every candidate.
     let threshold_multiplier = threshold_multiplier.max(1);
 
     if let Some(signal) = filtered_source_keyset_cost_signal(plan, semi_right, analysis) {
@@ -1070,8 +1065,8 @@ fn schemas_equal(left: &ArrowSchemaRef, right: &ArrowSchemaRef) -> bool {
 
 /// Final check that the rebuilt plan presents the same result: the sink schema
 /// and the root node schema must both equal the original's. A failure rejects
-/// the whole pass rather than one candidate, since the candidates were applied
-/// into one shared node list.
+/// every applied candidate, since the candidates were applied into one shared
+/// node list.
 fn validate_rewritten_root_semantics(
     original: &QueryPlan,
     rewritten: &QueryPlan,

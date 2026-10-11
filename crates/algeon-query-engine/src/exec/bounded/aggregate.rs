@@ -22,7 +22,7 @@
 //! `CompiledStreamPartials::new` picks the accumulator. When the aggregate capability decision
 //! selects the partitioned merge for the final stage and the aggregate has no grouping sets, the
 //! incremental partitioned merge (`final_merge/incremental.rs`) folds partials into per-partition
-//! states while chunks arrive; retained bytes then follow the merged state rather than the input.
+//! states while chunks arrive; retained bytes then follow the merged state.
 //! Otherwise the partials are retained, or folded in a binary carry, and
 //! `execute_compiled_bounded_final_aggregate_merge` (`final_merge/compiled.rs`) runs at the end. It
 //! partitions by group key when the same capability decision and the partial sizes allow it, and
@@ -30,8 +30,8 @@
 //!
 //! No step here reserves memory. The attempt's device budget is a batching input that sizes
 //! chunks, partitions and fan-in, and the query allocator enforces the grant when a step
-//! allocates. Admission terms (attempt, grant, budget token) are defined in
-//! `website/docs/design/admission.mdx`.
+//! allocates. Admission terms (attempt, grant) are defined in
+//! `website/docs/design/admission.mdx#from-capability-validation-to-admission`.
 
 use std::sync::Arc;
 
@@ -112,9 +112,9 @@ pub(in crate::exec::bounded) fn should_execute_partitioned_source_adjacent_group
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
 ) -> bool {
-    // Admission uses the max live incremental working set, not whole-input retention
-    // or a fixed chunk/row-group count. Source-adjacent group-key partition is the
-    // high-cardinality path for multi-chunk string grouped aggregates.
+    // Admission uses the max live incremental working set; whole-input retention and
+    // fixed chunk or row-group counts are not admission inputs. Source-adjacent group-key
+    // partition is the high-cardinality path for multi-chunk string grouped aggregates.
     bounded.has_source_adjacent_stages()
         && !bounded.aggregate.0.spec.group_exprs.is_empty()
         && !aggregate_spec_has_floating_statistical_aggregate(&bounded.aggregate.0.spec)
@@ -135,7 +135,7 @@ fn source_adjacent_partitioned_live_working_set_fits_budget(
 ) -> bool {
     let MemoryControlPolicy { device_budget_bytes, .. } = context.memory_control_policy();
 
-    // Live set approximation:
+    // The live set is approximated as the sum of these terms:
     //   one source batch + projected/hash-partition peak + one ready partition batch
     //   + retained partition-local partial floors across partitions.
     let mut largest_source_batch_bytes = 0u64;

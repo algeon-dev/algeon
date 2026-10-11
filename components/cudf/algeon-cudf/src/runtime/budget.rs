@@ -51,6 +51,7 @@ pub enum ExecutionBudgetEnforcement {
 }
 
 impl ExecutionBudgetEnforcement {
+    /// Returns the stable diagnostic label for allocator enforcement.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::QueryDomainMember => "query_domain_member",
@@ -123,10 +124,12 @@ impl ExecutionBudgetReport {
         self
     }
 
+    /// Borrows the caller's execution-stage byte request and diagnostic boundary label.
     pub fn request(&self) -> &ExecutionBudgetRequest {
         &self.request
     }
 
+    /// Returns the allocator enforcement contract used by this completed operation.
     pub fn enforcement(&self) -> ExecutionBudgetEnforcement {
         ExecutionBudgetEnforcement::QueryDomainMember
     }
@@ -136,30 +139,50 @@ impl ExecutionBudgetReport {
         self.member_limit_bytes
     }
 
+    /// Returns the reservation's peak requested allocation bytes when its usage snapshot was available.
+    ///
+    /// The member's peak includes retained work from earlier operations.
     pub fn allocator_high_water_bytes(&self) -> Option<usize> {
         self.allocator_high_water_bytes
     }
 
+    /// Returns requested allocation bytes still retained when the operation's reservation was sampled.
+    ///
+    /// Returns `None` without an allocator usage snapshot.
     pub fn allocator_current_bytes(&self) -> Option<usize> {
         self.allocator_current_bytes
     }
 
+    /// Returns the reservation's peak aligned allocation charge in bytes.
+    ///
+    /// Returns `None` without an allocator usage snapshot.
     pub fn allocator_peak_aligned_bytes(&self) -> Option<usize> {
         self.allocator_peak_aligned_bytes
     }
 
+    /// Returns retained device bytes reported by the operation, or `None` when unrecorded.
+    ///
+    /// This can describe output storage or prepared state, such as a sorted row order,
+    /// separately from the materialized output size.
     pub fn retained_bytes(&self) -> Option<usize> {
         self.retained_bytes
     }
 
+    /// Returns reported output device bytes, or `None` when the operation supplied no size.
+    ///
+    /// A preparation operation can report the prospective output size before materialization.
     pub fn output_bytes(&self) -> Option<usize> {
         self.output_bytes
     }
 
+    /// Returns the completed output row count when recorded, or `None` otherwise.
     pub fn output_rows(&self) -> Option<usize> {
         self.output_rows
     }
 
+    /// Borrows operation diagnostic context in sorted key order.
+    ///
+    /// These facts do not change allocator enforcement or the execution-stage request.
     pub fn context_facts(&self) -> &BTreeMap<String, String> {
         &self.context_facts
     }
@@ -174,7 +197,7 @@ pub trait CompleteReport {
 }
 
 /// The output of an operation [`ExecutionBudgetToken::run`] runs: a
-/// `DataFrame`, `Series`, `Column`, or prepared sort. Its device footprint
+/// `DataFrame`, `Series`, `Column`, or prepared sort. Its device byte size
 /// and rows complete the operation's report.
 pub trait BudgetedOutput: CompleteReport {}
 
@@ -245,6 +268,7 @@ impl ExecutionBudgetToken {
         Self { lease, request, _retained_runtime: runtime.clone() }
     }
 
+    /// Borrows the caller's execution-stage byte request and diagnostic boundary label.
     pub fn request(&self) -> &ExecutionBudgetRequest {
         &self.request
     }
@@ -295,7 +319,7 @@ impl ExecutionBudgetToken {
     }
 
     /// Runs `f` on this token's stream and memory resource, then reports the
-    /// member's allocator usage with the output's footprint and rows.
+    /// member's allocator usage with the output's byte size and rows.
     ///
     /// The member lease enforces the allocation limit; the report records
     /// what the operation used. A resource or dependency failure carries this

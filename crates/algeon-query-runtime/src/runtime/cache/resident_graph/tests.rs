@@ -205,9 +205,9 @@ fn graph_scope_charge_survives_source_cache_eviction_between_build_and_commit() 
         .expect("graph insertion precharge fits");
     let parked = build_forward_graph(&transaction);
 
-    // This is the former aggregate-delta hole: source residency disappears
-    // after graph construction but before graph charge reconciliation. The
-    // graph scope is allocator-owned and excludes that source mutation.
+    // Source residency disappears after graph construction but before graph
+    // charge reconciliation. The graph scope is allocator-owned and excludes
+    // that source mutation.
     source_cache.close_and_drain().expect("evict source cache between graph build and commit");
 
     let mut transaction = transaction;
@@ -257,8 +257,8 @@ fn live_scope_candidate_drop_retains_precharge_and_closes_admission() {
     let reserved_bytes = transaction.bytes();
 
     // Keep a scope-routed allocation alive across the transaction drop. The
-    // destructor must see that its candidate teardown is unproven and leave
-    // the prospective ledger charge in place rather than releasing it.
+    // destructor finds candidate teardown unproven and keeps the prospective
+    // ledger charge in place.
     let runtime = transaction.runtime();
     let live_candidate_allocation = runtime.device_buffer(1024).expect("allocate a live candidate object");
     drop(transaction);

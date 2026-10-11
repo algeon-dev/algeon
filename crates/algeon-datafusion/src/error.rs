@@ -83,20 +83,44 @@ pub(crate) const ERROR_FACTS_TRUNCATED_KEY: &str = "error_facts_truncated";
 pub enum ClientDetail {
     /// A column whose Arrow type the configured GPU execution requirement
     /// cannot execute.
-    UnsupportedColumn { name: String, data_type: String, role: &'static str },
+    UnsupportedColumn {
+        /// Caller column identifier rejected by the execution requirement.
+        name: String,
+        /// Display form of the column's Arrow type, including nested field names.
+        data_type: String,
+        /// Semantic input role used in client-visible diagnostic facts.
+        role: &'static str,
+    },
     /// A relation field whose Arrow type a GPU function rejects.
-    RelationField { field: String, data_type: String },
+    RelationField {
+        /// Caller relation-field identifier rejected by a GPU function.
+        field: String,
+        /// Display form of the field's Arrow type.
+        data_type: String,
+    },
     /// A field a rejection names: absent from its relation or named by
     /// native validation.
-    Field { name: String },
+    Field {
+        /// Caller field identifier named by the rejection.
+        name: String,
+    },
     /// A column native validation or execution names.
-    Column { name: String },
+    Column {
+        /// Caller column identifier named by native validation or execution.
+        name: String,
+    },
     /// An input ORDER BY key that is not an output column of its input.
-    OrderingKey { name: String },
+    OrderingKey {
+        /// ORDER BY expression that could not bind to the input's output columns.
+        name: String,
+    },
     /// The plan element that keeps the configured GPU execution requirement
     /// from holding, as one line that can quote the caller's SQL and
     /// identifiers.
-    BlockingSubject { text: String },
+    BlockingSubject {
+        /// Client-visible plan-element description, which may include SQL literals and identifiers.
+        text: String,
+    },
 }
 
 impl ClientDetail {
@@ -262,7 +286,7 @@ pub(crate) fn classify(error: &DataFusionError, statement: FailedStatement) -> E
 /// Fact keys are static strings so they can be treated as a documented contract
 /// by tests, reports, and callers. Values are stringified with [`ToString`].
 /// Iteration is sorted by key because facts are stored in a [`BTreeMap`].
-/// Raw lookup and iteration preserve every value exactly. [`fmt::Debug`]
+/// Raw lookup and iteration preserve every value. [`fmt::Debug`]
 /// exposes only facts explicitly approved through [`Error::with_log_safe_fact`],
 /// using the same sanitized and bounded projection as server observability.
 ///
@@ -309,10 +333,14 @@ impl Facts {
         self.insert_with_log_safety(key, value, false);
     }
 
+    /// Inserts a fact approved by the caller for log disclosure.
+    ///
+    /// Empty or duplicate keys follow [`Facts`] collision rules. The reserved
+    /// truncation marker is retained as raw data and cannot mark itself log-safe.
     pub fn insert_log_safe(&mut self, key: &'static str, value: String) {
-        // The truncation marker is owned by the projection. Preserve a caller's
-        // raw typed value, but never let it opt itself into disclosure or spoof
-        // the synthetic retained marker.
+        // The truncation marker is owned by the projection. A caller value under
+        // this key is stored raw and never marked log-safe. Such a value cannot
+        // spoof the synthetic retained marker.
         self.insert_with_log_safety(key, value, key != ERROR_FACTS_TRUNCATED_KEY);
     }
 
@@ -334,6 +362,9 @@ impl Facts {
         self.values.insert(FACT_COLLISION_KEYS, FactValue { value, log_safe: true });
     }
 
+    /// Returns only disclosure-approved facts after sanitizing and applying count and byte bounds.
+    ///
+    /// The projection records truncation without modifying the stored raw facts.
     pub fn log_safe_projection(&self) -> LogSafeFactProjection {
         let safe_facts = self
             .values
@@ -376,10 +407,10 @@ impl Facts {
     ///
     /// Combines the log-safe operational projection with the error's
     /// [`ClientDetail`]. Detail values are raw caller schema identifiers: they
-    /// are sanitized and bounded exactly like log-safe values, but their
-    /// presence here is a disclosure to the query caller, not a log-safety
-    /// claim. A single `error_facts_truncated` marker covers truncation in
-    /// either projection. Operational logs and [`fmt::Debug`] keep using
+    /// are sanitized and bounded the same way as log-safe values. Their presence
+    /// here discloses them to the query caller and does not claim log safety.
+    /// A single `error_facts_truncated` marker covers truncation in either
+    /// projection. Operational logs and [`fmt::Debug`] keep using
     /// [`Self::log_safe_projection`] without the detail.
     pub fn retained_capture_entries(&self, client_detail: Option<&ClientDetail>) -> Vec<(String, String)> {
         let safe = self.log_safe_projection();
@@ -410,6 +441,8 @@ impl fmt::Debug for Facts {
 }
 
 impl LogSafeFactProjection {
+    /// Copies sanitized entries for retained diagnostics, adding
+    /// `error_facts_truncated=true` when any bound shortened the projection.
     pub fn retained_entries(&self) -> Vec<(String, String)> {
         let mut entries =
             self.entries.iter().map(|(key, value)| ((*key).to_string(), value.clone())).collect::<Vec<_>>();
@@ -420,11 +453,15 @@ impl LogSafeFactProjection {
         entries
     }
 
+    /// Formats the sanitized entries as comma-separated `key=value` pairs.
+    ///
+    /// Returns `None` when no approved entries remain.
     pub fn rendered(&self) -> Option<String> {
         (!self.entries.is_empty())
             .then(|| self.entries.iter().map(|(key, value)| format!("{key}={value}")).collect::<Vec<_>>().join(", "))
     }
 
+    /// Returns whether sanitization bounds omitted or shortened any approved fact.
     pub fn truncated(&self) -> bool {
         self.truncated
     }
@@ -506,12 +543,11 @@ pub struct Error {
 ///
 /// Retained query diagnostics should keep machine-readable fields (`code`,
 /// `kind`, `status`, `operation`, facts) separate from human root-cause text.
-/// This formatter walks `std::error::Error::source()` and renders project
-/// errors by their human message, not by their structured `Display`
-/// representation. Each layer's text is capped at
-/// `MAX_SOURCE_CHAIN_MESSAGE_BYTES` and the joined chain at
-/// `MAX_SOURCE_CHAIN_BYTES`, both with `...` markers; the in-process error is
-/// never rewritten. Server-side logs should use [`ErrorLogDiagnostics`].
+/// This formatter walks `std::error::Error::source()` and renders each project
+/// error by its human message. Structured `Display` output is not used. Each
+/// layer's text is capped at `MAX_SOURCE_CHAIN_MESSAGE_BYTES` and the joined
+/// chain at `MAX_SOURCE_CHAIN_BYTES`, both with `...` markers; the in-process
+/// error is never rewritten. Server-side logs should use [`ErrorLogDiagnostics`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorSourceDiagnostics {
     chain: Option<String>,
@@ -695,7 +731,7 @@ impl Error {
 
     /// Adds a fact that may be projected into logs and retained diagnostics.
     ///
-    /// This is an explicit disclosure contract, not a convenience alias for
+    /// This is an explicit disclosure contract. It is not a convenience alias for
     /// [`Self::with_fact`]. Use it only for bounded operational classification
     /// values that contain no credentials, identifiers, paths, query literals,
     /// backend details, or other sensitive/user-provided data. The projection
@@ -725,6 +761,7 @@ impl Error {
         self
     }
 
+    /// Replaces this error's fact set with an existing set, preserving its disclosure flags and collision evidence.
     pub fn with_preserved_facts(mut self, facts: Facts) -> Self {
         self.facts = facts;
         self
@@ -762,9 +799,9 @@ impl Error {
     /// classification and a URI-redacted message are preserved as `cudf_*`
     /// facts.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
-        // Server I/O lifecycle wraps cuDF errors without a native QueryError, so
-        // the adapter derives the code from the runtime's single cuDF
-        // classification rather than a second table.
+        // Server I/O lifecycle wraps cuDF errors without a native QueryError. The
+        // adapter derives the code from the runtime's single cuDF classification,
+        // so only one mapping table exists.
         let code = code_for_native_error(query_error_code_for_cudf_error(&source));
         let mut error = Self::new(code, operation, message)
             .with_log_safe_fact("cudf_code", source.code())

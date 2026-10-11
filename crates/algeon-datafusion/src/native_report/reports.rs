@@ -17,10 +17,10 @@ use super::{
 /// In-memory fallback-pressure report.
 ///
 /// Rows describe native candidate acceptance or rejection before execution.
-/// This collector runs candidate-only lowering without cost selection, so it
-/// observes the producer subset (`Selected`, `NotSupported`);
-/// the shared [`CandidateOutcomeKind`] projection still covers cost outcomes
-/// without a narrowed enum.
+/// This collector runs candidate-only lowering without cost selection. Its
+/// rows cover only the producer subset (`Selected`, `NotSupported`). The shared
+/// [`CandidateOutcomeKind`] projection still covers cost outcomes without a
+/// narrowed enum.
 /// TSV serialization writes optional workload metadata, then
 /// [`NATIVE_FALLBACK_PRESSURE_TSV_HEADER`].
 /// Optional planning fields serialize as `none`; missing dataset content
@@ -39,7 +39,7 @@ impl NativeFallbackPressureReport {
     ///
     /// This convenience path uses the canonical bounded execution config.
     /// Call [`Self::collect_with_native_execution_config`] with an explicit
-    /// config when its precise planning settings matter to the report.
+    /// config when its planning settings matter to the report.
     pub fn collect(items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>) -> Self {
         let execution_config = AlgeonNativeExecutionConfig::default();
         Self::collect_with_native_execution_config(items, &execution_config)
@@ -66,12 +66,12 @@ impl NativeFallbackPressureReport {
         self
     }
 
-    /// Number of accepted candidate rows, not distinct query ids.
+    /// Number of accepted candidate rows; one query id can appear in several rows.
     pub fn selected_count(&self) -> usize {
         self.rows.iter().filter(|row| matches!(row.outcome, Some(CandidateOutcomeKind::Selected))).count()
     }
 
-    /// Number of rejected candidate rows, not distinct query ids.
+    /// Number of rejected candidate rows; one query id can appear in several rows.
     pub fn not_selected_count(&self) -> usize {
         self.rows
             .iter()
@@ -113,6 +113,9 @@ pub struct NativeDataFusionPlanningReport {
 }
 
 impl NativeDataFusionPlanningReport {
+    /// Projects each planned candidate or planning failure into rows in workload order.
+    ///
+    /// Collection reads retained plans and diagnostics; it does not plan or execute queries.
     pub fn collect(items: impl IntoIterator<Item = NativeDataFusionPlanningWorkloadItem>) -> Self {
         let rows = items.into_iter().flat_map(datafusion_planning_rows_for_item).collect();
         Self { rows, workload_dataset: None }
@@ -171,6 +174,10 @@ pub struct NativeDataFusionExecutionReport {
 }
 
 impl NativeDataFusionExecutionReport {
+    /// Projects supplied plans, runtime outcomes, and failures into rows in workload order.
+    ///
+    /// Collection does not execute queries. Dataset and statistical-mode metadata
+    /// are unset until attached by their builder methods.
     pub fn collect(items: impl IntoIterator<Item = NativeDataFusionExecutionWorkloadItem>) -> Self {
         let rows = items.into_iter().flat_map(datafusion_execution_rows_for_item).collect();
         Self { rows, workload_dataset: None, statistical_aggregate_execution_mode: None }
@@ -243,6 +250,9 @@ impl NativeDataFusionExecutionTsvTemplate {
     const QUERY_ID_FIELD: usize = 0;
     const RUNTIME_FIELD_START: usize = 15;
 
+    /// Consumes a report and retains only the flattened planning fields needed for later TSV rendering.
+    ///
+    /// Dataset and statistical-mode metadata are not retained by this compact template.
     pub fn from_report(report: NativeDataFusionExecutionReport) -> Self {
         let rows = report
             .rows
@@ -268,10 +278,14 @@ impl NativeDataFusionExecutionTsvTemplate {
         Self { rows, retained_capacity_bytes }
     }
 
+    /// Returns logical retained bytes for the flattened strings and their pointer arrays.
+    ///
+    /// This diagnostic count does not measure allocator overhead or process resident memory.
     pub const fn retained_capacity_bytes(&self) -> u64 {
         self.retained_capacity_bytes
     }
 
+    /// Renders the execution TSV header and rows, filling runtime fields from the supplied outcome.
     pub fn to_tsv(&self, runtime: NativeDataFusionRuntime) -> String {
         self.render(NativeDataFusionRuntimeSummary::from_runtime(runtime))
     }

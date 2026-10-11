@@ -1,4 +1,3 @@
-//! Tests for DataFrame ↔ Arrow RecordBatch interop.
 use std::sync::Arc;
 
 use arrow::{
@@ -130,10 +129,6 @@ fn nullable_decimal64_series(values: &[i64], validity: &[bool], scale: i32) -> c
 fn timestamp_series(values: &[i64], duration_type: TypeId, timestamp_type: TypeId) -> cudf::Result<cudf::Series> {
     series("ts", values)?.on(Exec::RETAINED).astype(duration_type)?.on(Exec::RETAINED).astype(timestamp_type)
 }
-
-// ---------------------------------------------------------------------------
-// Round-trip: DataFrame → RecordBatch → DataFrame
-// ---------------------------------------------------------------------------
 
 fn test_arrow_datatype_try_from_type_id_supported_mappings() {
     assert_eq!(ArrowDataType::try_from(TypeId::Int32).unwrap(), ArrowDataType::Int32);
@@ -1486,10 +1481,6 @@ fn test_gpu_record_batch_preserves_date64_and_time_schema_contract() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Nullable columns: verify null mask round-trip
-// ---------------------------------------------------------------------------
-
 fn test_round_trip_nullable_i32() {
     let df = dataframe_from_columns(
         vec!["a".to_string()],
@@ -1505,7 +1496,6 @@ fn test_round_trip_nullable_i32() {
     assert_eq!(arr.value(0), 1);
     assert_eq!(arr.value(2), 3);
 
-    // Round-trip back.
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("a").unwrap();
     let validity = cv.testing_view().unwrap().to_host_validity().unwrap().unwrap();
@@ -1544,10 +1534,6 @@ fn test_round_trip_nullable_f64() {
     assert!((vals[2].unwrap() - 3.3).abs() < 1e-10);
     assert_eq!(vals[3], None);
 }
-
-// ---------------------------------------------------------------------------
-// Bool8 columns
-// ---------------------------------------------------------------------------
 
 fn test_round_trip_bool8() {
     let df = dataframe_from_columns(vec!["flag".to_string()], vec![column_from_slice(&[true, false, true]).unwrap()])
@@ -1604,10 +1590,6 @@ fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
     assert!(!arr.value(2));
 }
 
-// ---------------------------------------------------------------------------
-// Schema (column names) preserved
-// ---------------------------------------------------------------------------
-
 fn test_schema_preserved_multi_column() {
     let df = dataframe_from_columns(
         vec!["id".to_string(), "score".to_string(), "active".to_string()],
@@ -1625,15 +1607,10 @@ fn test_schema_preserved_multi_column() {
     let df2 = import_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["id", "score", "active"]);
 
-    // Verify types survived.
     assert_eq!(df2.series("id").unwrap().dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(df2.series("score").unwrap().dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(df2.series("active").unwrap().dtype().unwrap().id(), TypeId::Bool8);
 }
-
-// ---------------------------------------------------------------------------
-// From RecordBatch (Arrow → DataFrame)
-// ---------------------------------------------------------------------------
 
 fn test_from_record_batch_creates_dataframe() {
     let schema =
@@ -1720,10 +1697,6 @@ fn test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls
     assert_eq!(vals, vec![None, Some(30)]);
 }
 
-// ---------------------------------------------------------------------------
-// String columns: round-trip via Arrow StringArray
-// ---------------------------------------------------------------------------
-
 fn test_round_trip_string_only() {
     let df =
         dataframe_from_columns(vec!["name".to_string()], vec![column_from_strs(&["alice", "bob", "charlie"]).unwrap()])
@@ -1739,7 +1712,6 @@ fn test_round_trip_string_only() {
     assert_eq!(arr.value(1), "bob");
     assert_eq!(arr.value(2), "charlie");
 
-    // Round-trip back to GPU DataFrame.
     let df2 = import_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["name"]);
     assert_eq!(df2.series("name").unwrap().dtype().unwrap().id(), TypeId::String);
@@ -1787,7 +1759,6 @@ fn test_round_trip_nullable_string() {
     assert_eq!(arr.value(0), "hello");
     assert_eq!(arr.value(2), "world");
 
-    // Round-trip back.
     let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("tag").unwrap();
     let validity = cv.testing_view().unwrap().to_host_validity().unwrap().unwrap();
@@ -1959,10 +1930,7 @@ fn test_round_trip_empty_string_schema() {
     assert!(strs.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Batched pinned-staged import: DataFrame::from_record_batches
-// ---------------------------------------------------------------------------
-
+// Batched pinned-staged import through DataFrame::from_record_batches.
 fn batches_from_ranges(ranges: &[std::ops::Range<i64>]) -> Vec<RecordBatch> {
     ranges
         .iter()

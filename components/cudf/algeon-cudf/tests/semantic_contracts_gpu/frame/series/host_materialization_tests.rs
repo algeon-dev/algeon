@@ -1,17 +1,11 @@
-//! Integration tests for `Series` host materialization convenience methods.
-//!
 //! Methods under test: `to_vec_strict<T>`, `to_optional_vec<T>`,
 //! `to_strings_strict`, `to_optional_strings`, `to_strings_lossy`.
-//!
-//! All tests require a GPU.
 
 use cudf::{ErrorCode, ErrorKind, TypeId, testing::prelude::*};
 
 use crate::common::{error_context_value, nullable_series, series};
 
-// ===========================================================================
-// to_vec_strict<T>; numeric host materialization (rejects nullable)
-// ===========================================================================
+// `to_vec_strict<T>` materializes numeric columns and rejects nullable data.
 
 fn test_to_vec_i32() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
@@ -74,9 +68,7 @@ fn test_to_vec_on_string_column_returns_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
-// ===========================================================================
-// to_optional_vec<T>; numeric with null awareness
-// ===========================================================================
+// `to_optional_vec<T>` materializes numeric columns and maps null slots to `None`.
 
 fn test_to_optional_vec_all_valid() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -130,9 +122,7 @@ fn test_to_optional_vec_bool_preserves_false_and_skips_nulls() {
     assert_eq!(vals, vec![Some(false), Some(true), None, Some(true)]);
 }
 
-// ===========================================================================
-// to_strings_strict; rejects nullable string columns
-// ===========================================================================
+// `to_strings_strict` rejects nullable string columns.
 
 fn test_to_strings_basic() {
     let s = series("x", &["hello", "world"]).unwrap();
@@ -172,9 +162,7 @@ fn test_to_strings_on_numeric_returns_error() {
     assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
 }
 
-// ===========================================================================
-// to_optional_strings; null-preserving string materialization
-// ===========================================================================
+// `to_optional_strings` maps null slots to `None`.
 
 fn test_to_optional_strings_with_nulls() {
     let s = nullable_series("x", &["a", "b", "c"], &[true, false, true]).unwrap();
@@ -199,10 +187,6 @@ fn test_to_optional_strings_on_numeric_returns_type_mismatch_error() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("string"));
 }
 
-// ===========================================================================
-// to_strings_lossy; nulls become empty strings
-// ===========================================================================
-
 fn test_to_strings_lossy_maps_null_to_empty() {
     let s = nullable_series("x", &["a", "b", "c"], &[true, false, true]).unwrap();
     let vals = s.to_strings_lossy().unwrap();
@@ -224,17 +208,12 @@ fn test_series_to_strings_lossy_matches_column_view_lossy_materialization() {
     assert_eq!(series_vals, view_vals);
 }
 
-// ===========================================================================
-// materialization methods do not consume the Series
-// ===========================================================================
-
 fn test_materialization_preserves_series() {
     let s = nullable_series::<i32>("x", &[1, 0, 3], &[true, false, true]).unwrap();
 
     // to_vec_strict would reject this nullable Series, so use to_optional_vec.
     let _v1 = s.to_optional_vec::<i32>().unwrap();
 
-    // Series is still usable.
     assert_eq!(s.len(), 3);
     assert_eq!(s.null_count(), 1);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);

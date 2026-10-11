@@ -75,8 +75,8 @@ pub(crate) fn seal_attempt_observation(
         observation.with_attempt_report_provider(Arc::new(move || report.clone())).finish_query(Some(terminal));
     let snapshot = snapshot.expect("attempt observation seals before coordinator handoff");
     // The sealed snapshot owns the immutable report projection accepted by the
-    // coordinator. Return that exact projection rather than a pre-seal test
-    // template, whose completeness footer may have been filled during sealing.
+    // coordinator. Return that exact projection. The pre-seal test template can
+    // differ from it because sealing may fill the template's completeness footer.
     let report = snapshot.attempt_report().expect("sealed snapshot carries its attempt report").clone();
     (report, snapshot)
 }

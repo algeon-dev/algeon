@@ -154,12 +154,10 @@ impl<'a> SeriesPreparedScalarReduction<'a> {
 /// Infer the output `DataType` for a reduction aggregation, matching cuDF
 /// Python behavior.
 ///
-/// Accepts `&DataType` (not bare `TypeId`) so that fixed-point scale is
-/// preserved for pass-through arms (min, max, product, decimal sum).
+/// The `&DataType` input keeps the fixed-point scale of the pass-through arms
+/// (min, max, product, decimal sum).
 pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAgg, operation: &'static str) -> Result<DataType> {
     match agg {
-        // sum: int types → Int64, float → same float, Bool8 → Int64,
-        //       decimal → same decimal (preserves scale), rest → error
         ReduceAgg::Sum => match input.id() {
             TypeId::Int8
             | TypeId::Int16
@@ -177,15 +175,12 @@ pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAgg, operat
                 .with_fact(FACT_TYPE_ID, input.id())),
         },
 
-        // min / max / product: same type as input (preserves decimal scale)
         ReduceAgg::Min | ReduceAgg::Max | ReduceAgg::Product => Ok(*input),
 
-        // mean / median / std / var: always Float64
         ReduceAgg::Mean | ReduceAgg::Median | ReduceAgg::Std { .. } | ReduceAgg::Variance { .. } => {
             Ok(DataType::new(TypeId::Float64))
         },
 
-        // any / all: always Bool8
         ReduceAgg::Any | ReduceAgg::All => Ok(DataType::new(TypeId::Bool8)),
 
         // nunique: libcudf size_type (int32)
@@ -245,12 +240,6 @@ impl Series {
         let scalar = self.reduce_in_context(ReduceAgg::NUnique { null_policy: NullPolicy::Exclude }, ctx, operation)?;
         scalar_to_usize_count(scalar, operation)
     }
-
-    // -- Scalar reductions ---------------------------------------------------
-
-    // -- Scan (cumulative) operations ----------------------------------------
-
-    // -- Unary operations ----------------------------------------------------
 }
 
 fn annotate_scalar_reduction_budget_execution_error(
@@ -267,7 +256,7 @@ fn annotate_scalar_reduction_budget_execution_error(
 impl SeriesOps<'_> {
     /// Reduce the series to a single scalar: sum of all elements.
     ///
-    /// Output type: integer types → `Int64`, float → same float, `Bool8` → `Int64`.
+    /// Integer and `Bool8` inputs produce `Int64`. Float inputs keep their type.
     /// Nulls are excluded from the sum.
     ///
     /// # Cost
@@ -299,7 +288,7 @@ impl SeriesOps<'_> {
 
     /// Reduce the series to a single scalar: minimum element.
     ///
-    /// Output type: same as input. Nulls are excluded.
+    /// The output type matches the input. Nulls are excluded.
     pub fn min(&self) -> Result<Scalar> {
         self.series.reduce_in_context(ReduceAgg::Min, self.ctx, "series::min")
     }
@@ -323,7 +312,7 @@ impl SeriesOps<'_> {
 
     /// Reduce the series to a single scalar: maximum element.
     ///
-    /// Output type: same as input. Nulls are excluded.
+    /// The output type matches the input. Nulls are excluded.
     pub fn max(&self) -> Result<Scalar> {
         self.series.reduce_in_context(ReduceAgg::Max, self.ctx, "series::max")
     }
@@ -433,7 +422,7 @@ impl SeriesOps<'_> {
         Ok(scalar_to_optional_value(self.all()?)?.unwrap_or(true))
     }
 
-    /// Product of all elements. Output type: same as input.
+    /// Product of all elements. The output type matches the input.
     ///
     /// Nulls are excluded.
     pub fn product(&self) -> Result<Scalar> {
@@ -478,7 +467,7 @@ impl SeriesOps<'_> {
     /// Nulls are excluded from the running total (filled with null in output).
     ///
     /// # Cost
-    /// GPU-allocating: produces a new column.
+    /// Allocates a new column.
     pub fn cumsum(&self) -> Result<Series> {
         self.series.scan_with_context(
             ScanAgg::Sum,
@@ -527,7 +516,7 @@ impl SeriesOps<'_> {
     /// Only meaningful for float types; integer types will return all `false`.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new BOOL8 column.
+    /// Allocates a new BOOL8 column on the device.
     pub fn is_nan(&self) -> Result<Series> {
         self.series.is_nan_with_context(self.ctx, "series::is_nan")
     }
@@ -540,7 +529,7 @@ impl SeriesOps<'_> {
     /// Element-wise absolute value.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new column.
+    /// Allocates a new column.
     pub fn abs(&self) -> Result<Series> {
         self.series.unary_with_context(UnaryOperator::Abs, self.ctx, "series::abs")
     }
@@ -548,7 +537,7 @@ impl SeriesOps<'_> {
     /// Element-wise arithmetic negation.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new column.
+    /// Allocates a new column.
     pub fn neg(&self) -> Result<Series> {
         self.series.unary_with_context(UnaryOperator::Negate, self.ctx, "series::neg")
     }
@@ -556,7 +545,7 @@ impl SeriesOps<'_> {
     /// Element-wise logical NOT for `Bool8` columns.
     ///
     /// # Cost
-    /// GPU-allocating: produces a new BOOL8 column.
+    /// Allocates a new BOOL8 column on the device.
     pub fn logical_not(&self) -> Result<Series> {
         self.series.logical_not_with_context(self.ctx, "series::logical_not")
     }

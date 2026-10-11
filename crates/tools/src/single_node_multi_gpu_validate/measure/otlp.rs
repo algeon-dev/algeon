@@ -126,8 +126,8 @@ impl OtlpExportWorker {
 
 /// A requested OTLP cell cannot run unless the explicit optional feature
 /// linked the reference exporter. `run_measured_run` rejects that CLI shape
-/// before reaching this fallback; retaining it here keeps the failure honest
-/// if a future caller bypasses the CLI parser.
+/// before reaching this fallback; retaining it here records the failure in the
+/// artifact if a future caller bypasses the CLI parser.
 #[cfg(not(feature = "single-node-multi-gpu-validate-run-otlp"))]
 pub(super) struct OtlpExportWorker {
     pub(super) evidence: OtlpExportEvidence,

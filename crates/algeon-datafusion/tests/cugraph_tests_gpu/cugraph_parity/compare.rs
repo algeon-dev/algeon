@@ -652,15 +652,15 @@ pub fn compare_repeated_partitions(
     Ok(())
 }
 
-/// ECG uses randomized Louvain internally.  Exact partition equality with a
+/// ECG uses randomized Louvain internally. Exact partition equality with a
 /// Python oracle is therefore not a portable correctness condition: a CUDA or
 /// cuGraph build may choose an equally valid partition despite the same seed.
 ///
 /// The oracle remains useful as a quality baseline. Require the exact vertex
 /// set, permit at most one community either side of its count, and require
 /// modularity on the same Python-compatible undirected normalized edge list to
-/// remain within tolerance below the oracle baseline. A higher modularity is
-/// an improvement, not a parity failure.
+/// remain within tolerance below the oracle baseline. A modularity above the
+/// oracle baseline is an improvement and passes the check.
 fn compare_ecg_partition_quality(
     actual: &Table,
     expected: &Table,
@@ -688,7 +688,7 @@ fn compare_ecg_partition_quality(
 ///
 /// Like ECG, keep the oracle as a modularity baseline. Spectral modularity
 /// maximization targets standard modularity, so the baseline uses resolution
-/// 1.0; the parity spec carries no resolution knob.
+/// 1.0; the parity spec carries no resolution setting.
 fn compare_spectral_partition_quality(
     actual: &Table,
     expected: &Table,
@@ -716,7 +716,7 @@ fn compare_spectral_partition_quality(
 /// in different but equally valid communities. Require the replay to cover
 /// the same vertices, stay within one community of the initial count, and
 /// keep modularity within tolerance below the initial run. A higher
-/// modularity is an improvement, not instability.
+/// modularity is an improvement and passes the check.
 pub fn compare_repeated_partition_quality(
     initial_batches: &[RecordBatch],
     replay_batches: &[RecordBatch],
@@ -1025,9 +1025,9 @@ mod tests {
     #[test]
     fn ecg_quality_comparison_accepts_different_partition_at_the_same_quality() {
         // The two ways to split a four-cycle both have modularity zero. This
-        // proves the ECG comparator deliberately accepts an equally good
-        // partition rather than treating the oracle's labels as a golden
-        // cross-build result.
+        // test checks that the ECG comparator accepts an equally good
+        // partition. The comparator does not treat the oracle's labels as a
+        // golden cross-build result.
         let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "community");
         let actual = partition_table(vec![0, 1, 2, 3], vec![0, 1, 1, 0], "community");
         let edges = [

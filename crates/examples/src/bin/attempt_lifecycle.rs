@@ -79,8 +79,8 @@ async fn run() -> anyhow::Result<()> {
         .collect()
         .await?;
 
-    // CPU-only invocation: the aggregate is outside the native capability
-    // catalogue, so the plan falls back to DataFusion CPU execution.
+    // The aggregate is outside the native capability catalogue, so this
+    // invocation falls back to DataFusion CPU execution.
     run_and_print(
         &backend.begin_attempt(AttemptOptions::default())?,
         &ctx_a,
@@ -90,8 +90,8 @@ async fn run() -> anyhow::Result<()> {
 
     run_same_device_native_attempts(&backend, &ctx_a, &ctx_b).await?;
 
-    // Completion is independent of result consumption: dropping the stream
-    // still produces a bounded terminal report.
+    // Dropping the stream still produces a bounded terminal report, so
+    // completion does not depend on result consumption.
     let dropped = backend.begin_attempt(AttemptOptions::default())?;
     let stream = dropped.sql(&ctx_a, "SELECT * FROM fallback_values").await?;
     drop(stream);

@@ -1,5 +1,3 @@
-//! Tests for Table::into_columns.
-
 use cudf::{ErrorCode, Runtime, TypeId, core::Table, testing::prelude::*};
 use cudf_sys::test_support;
 
@@ -77,7 +75,6 @@ fn test_into_columns_nullable_column() {
 }
 
 fn test_into_columns_roundtrip() {
-    // Create table, decompose into columns, re-create table, verify data.
     let c1 = column_from_slice(&[10i32, 20]).unwrap();
     let c2 = column_from_slice(&[1.5f64, 2.5]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
@@ -85,7 +82,6 @@ fn test_into_columns_roundtrip() {
     let columns = table.into_columns().unwrap();
     assert_eq!(columns.len(), 2);
 
-    // Re-assemble into a new table.
     let table2 = Table::from_columns(columns).unwrap();
     let view = table2.testing_view().unwrap();
     assert_eq!(view.num_columns().unwrap(), 2);
@@ -111,7 +107,6 @@ fn test_into_columns_with_string_column() {
 }
 
 fn test_into_columns_with_empty_rows() {
-    // Table with columns that have zero rows.
     let c1 = empty_column(TypeId::Int32).unwrap();
     let c2 = empty_column(TypeId::Float64).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();

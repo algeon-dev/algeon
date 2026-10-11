@@ -207,7 +207,7 @@ void* query_domain_resource::allocate_for_member(
   // Direct member allocations share the seal linearisation boundary with
   // routed allocations: holding the in-flight guard across the seal-flag
   // check and the reservation below forces a racing freeze to observe this
-  // operation and fail closed instead of sealing underneath it. Routed
+  // operation and return an error without sealing the domain. Routed
   // callers already hold a guard through their route; nesting only deepens
   // the same counter. Deallocation intentionally takes no guard so post-seal
   // resident teardown stays legal.
@@ -284,8 +284,8 @@ void* query_domain_resource::allocate_impl(
   // held by every caller, a racing seal is always observed on one side.
   if (!allocation_open_.load(std::memory_order_seq_cst)) {
     // A frozen domain rejecting new work is a routing/lifetime invariant
-    // violation, not caller input: the attempt was supposed to stop
-    // allocating before its output was published.
+    // violation. The attempt was supposed to stop allocating before its output
+    // was published.
     throw cudf::rust::invariant_error{
       "allocator invariant violation: query memory domain is frozen to new allocations"};
   }

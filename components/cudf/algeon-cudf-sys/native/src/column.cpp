@@ -176,23 +176,20 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    // Compute element size for the given fixed-width type.
     auto elem_size    = cudf::size_of(dtype);
     size_t data_bytes = static_cast<size_t>(size) * elem_size;
 
-    // Copy host data to device.
     std::optional<rmm::device_buffer> dev_data;
     std::optional<rmm::device_buffer> dev_null_mask;
     cudf_host_source_copy_sync_guard host_copy_guard{exec->stream};
     if (data_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
     dev_data.emplace(data, data_bytes, exec->stream, *exec->mr);
 
-    // Copy null mask to device if provided.
     if (null_count > 0) {
       // cudf bitmask is stored as uint32_t words.
       size_t mask_bytes = cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(size));
-      // We receive packed bytes from Rust; copy them to a device buffer
-      // of the right alignment size.
+      // Rust passes packed bits zero-padded to the cudf mask allocation size.
+      // The device buffer takes the full allocation size.
       if (mask_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
       dev_null_mask.emplace(null_mask, mask_bytes, exec->stream, *exec->mr);
     }
@@ -813,7 +810,7 @@ cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
     auto const* src = view->head<uint8_t>() + static_cast<size_t>(view->offset()) * elem_size;
     CUDF_CUDA_TRY(
       cudaMemcpyAsync(host_buf, src, needed, cudaMemcpyDeviceToHost, exec->stream.value()));
-    // This API promises the caller's host buffer is populated on return.
+    // The caller's host buffer is populated on return.
     exec->stream.synchronize();
     cudf_record_synchronized_stream(exec->stream);
     return CUDF_SUCCESS;
@@ -860,7 +857,7 @@ cudf_status_t cudf_column_view_null_mask_to_host_ex(cudf_column_view_handle hand
                                   compact_mask_bytes,
                                   cudaMemcpyDeviceToHost,
                                   exec->stream.value()));
-    // This API promises the caller's host buffer is populated on return.
+    // The caller's host buffer is populated on return.
     exec->stream.synchronize();
     if ((view->size() % 8) != 0) {
       auto const last_byte_mask = static_cast<uint8_t>((1u << (view->size() % 8)) - 1u);
@@ -928,7 +925,6 @@ cudf_status_t cudf_column_create_strings_ex(char const** strings,
       return CUDF_SUCCESS;
     }
 
-    // Compute offsets: offsets[0] = 0, offsets[i+1] = offsets[i] + lengths[i]
     auto const num_strings_size = static_cast<size_t>(num_strings);
     std::vector<int32_t> host_offsets(num_strings_size + 1);
     host_offsets[0] = 0;
@@ -1058,8 +1054,8 @@ cudf_status_t cudf_column_view_strings_to_host_ex(cudf_column_view_handle handle
     }
 
     // String columns: child 0 = offsets, child 1 = chars
-    // For the *sliced* view, we need n+1 offsets (not the unsliced child size,
-    // which may be larger when the view is a slice of a larger column).
+    // For the *sliced* view, n+1 offsets are needed. The offsets child can hold
+    // more entries than n+1 when the view is a slice of a larger column.
     if (view->num_children() < 1) {
       set_error("string column view must expose an offsets child");
       return CUDF_ERROR_INVALID_OPERATION;
@@ -1068,7 +1064,6 @@ cudf_status_t cudf_column_view_strings_to_host_ex(cudf_column_view_handle handle
     auto offsets_count            = n + 1;
     auto const offsets_count_size = static_cast<size_t>(offsets_count);
 
-    // Copy offsets to host
     size_t needed_offsets_bytes = offsets_count_size * sizeof(int32_t);
     CUDF_RUST_NULL_CHECK(offsets_buf, "offsets_buf is null");
     if (offsets_buf_size < needed_offsets_bytes) {
@@ -1105,7 +1100,6 @@ cudf_status_t cudf_column_view_strings_to_host_ex(cudf_column_view_handle handle
       return CUDF_ERROR_TYPE;
     }
 
-    // Compute total chars bytes from offsets
     int64_t char_begin = host_offsets[0];
     int64_t char_end   = host_offsets[offsets_count_size - 1];
     if (char_begin < 0 || char_end < char_begin) {
@@ -1127,23 +1121,21 @@ cudf_status_t cudf_column_view_strings_to_host_ex(cudf_column_view_handle handle
           return CUDF_ERROR_INVALID_OPERATION;
         }
 
-        // In cudf 25.x the chars are embedded in the offsets column's parent
-        // We need to get chars from the strings_column_view.
+        // The chars child of the STRING column is read through strings_column_view.
         cudf::strings_column_view scv(*view);
         char const* chars_ptr = scv.chars_begin(exec->stream);
 
         // chars_begin does NOT account for view offset, but the offsets
-        // already tell us where chars start (host_offsets[0] = char_begin).
+        // already record where chars start (host_offsets[0] = char_begin).
         CUDF_CUDA_TRY(cudaMemcpyAsync(chars_buf,
                                       chars_ptr + char_begin,
                                       total_chars,
                                       cudaMemcpyDeviceToHost,
                                       exec->stream.value()));
-        // This API promises the caller's chars buffer is populated on return.
+        // The caller's chars buffer is populated on return.
         exec->stream.synchronize();
         cudf_record_synchronized_stream(exec->stream);
       }
-      // If chars_buf is null, we just return total_chars_bytes without copying.
     }
 
     // Adjust offsets to be zero-based for the caller

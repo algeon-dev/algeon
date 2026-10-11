@@ -1,7 +1,12 @@
 //! Raw FFI bindings to the cuGraph C API.
 //!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion); workspace code
+//! uses this crate for its component contracts. See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
+//!
 //! This crate provides checked-in bindings generated with `bindgen`. Users should
-//! prefer the safe `cugraph` crate instead of using these bindings directly.
+//! prefer the safe `cugraph` crate and avoid calling these bindings directly.
 
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]

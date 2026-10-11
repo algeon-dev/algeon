@@ -28,8 +28,8 @@ impl Default for CleanupFailureTally {
 
 impl CleanupFailureTally {
     /// Retains only the first cleanup failure while accounting every observed
-    /// one. Overflow is marked incomplete rather than published as a
-    /// saturated exact value.
+    /// one. Overflow marks the tally incomplete, and the count is then not
+    /// reported as exact.
     pub(super) fn record(&mut self, summary: CleanupFailureSummary) {
         if let Some(first) = &mut self.first {
             // The report retains one representative summary. Once another
@@ -100,8 +100,9 @@ pub(super) struct RuntimeObservationRecorderState {
     pub(super) cache_fill_events_overflow: u64,
 }
 
-// Bounded by the number of plan executions in the query, not by data volume;
-// detail rows inside are bounded by the recorder's shared record/byte limits.
+// Bounded by the number of plan executions in the query, and data volume does
+// not change that bound. Detail rows inside are bounded by the recorder's
+// shared record/byte limits.
 #[derive(Debug, Default)]
 pub(super) struct PlanExecutionMetrics {
     pub(super) summary: QueryMetricsSummary,

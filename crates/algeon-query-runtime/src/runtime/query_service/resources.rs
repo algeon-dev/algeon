@@ -19,8 +19,9 @@ use crate::runtime::{
 ///
 /// The factory is deliberately retained beside the concrete cache subdomains:
 /// it owns the one physical cuDF allocation domain for an ordinal.  Keeping it
-/// here means cache allocator lifetime follows the backend resource generation,
-/// not a query controller or an individual execution context.
+/// here means cache allocator lifetime follows the backend resource generation.
+/// Neither a query controller nor an individual execution context owns that
+/// lifetime.
 #[derive(Debug, Clone)]
 pub(super) struct DeviceResidentCaches {
     devices: HashMap<usize, DeviceResidentCache>,
@@ -32,9 +33,9 @@ struct DeviceResidentCache {
     #[cfg(feature = "cugraph")]
     graph: GpuResidentGraphCache,
     // Declare this last: every cache lease and cached allocation must be
-    // destroyed before the domain owner becomes droppable. Keep-alive only:
-    // the factory owns the one physical cuDF allocation domain for the
-    // ordinal, so it is retained but never read directly.
+    // destroyed before the domain owner becomes droppable. The factory is
+    // retained only to keep the one physical cuDF allocation domain for the
+    // ordinal alive, so it is never read directly.
     allocation_factory: DeviceCacheAllocationFactory,
 }
 

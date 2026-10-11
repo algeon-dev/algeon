@@ -78,6 +78,9 @@ impl AlgeonNativeExecutionConfig {
         self.query_admission_ticket.as_ref().map(Arc::clone)
     }
 
+    /// Returns whether this config carries a backend admission source or an attempt-bound ticket.
+    ///
+    /// This presence check does not claim capacity or establish that the backend is open.
     pub fn has_query_admission_authority(&self) -> bool {
         self.query_admission_source.is_some() || self.query_admission_ticket.is_some()
     }

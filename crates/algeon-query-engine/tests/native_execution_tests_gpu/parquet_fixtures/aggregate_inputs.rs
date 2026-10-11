@@ -388,8 +388,9 @@ pub(crate) fn write_grouped_decimal_avg_many_groups_parquet(path: &Path) -> Arc<
 }
 
 /// Fixture for AVG over a `BIGINT` column and three `Decimal128(7, 2)` columns
-/// grouped by a string key. The unique group `G1` exercises both the integer
-/// and decimal AVG output paths in a single aggregate node.
+/// grouped by a string key. The groups `G0`, `G1`, and `G2` hold one, two, and
+/// two rows, and together exercise both the integer and decimal AVG output
+/// paths in a single aggregate node.
 pub(crate) fn write_grouped_mixed_avg_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("group_key", DataType::Utf8, false),

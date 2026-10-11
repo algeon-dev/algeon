@@ -15,7 +15,7 @@
 //! execution started ends the attempt without a CPU replay. A GPU-resident
 //! producer's output belongs to the context of the composed root that runs it
 //! and is released with that root's stream. The lifetime contract is in
-//! `website/docs/design/admission.mdx`.
+//! `website/docs/design/admission.mdx#resident-handoff-and-release`.
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -185,9 +185,9 @@ pub(crate) fn validate_host_wrapped_gpu_execution(
 
 /// Finds the single native execution wrapper closest to an invocation root
 /// and returns its post-seal attempt-metric target. Transparent root wrappers
-/// are skipped, and mixed DataFusion plans elect their first native subtree in
-/// stable child order. The target is deliberately chosen before execution and
-/// receives only the already-sealed report.
+/// are skipped, and mixed DataFusion plans select their first native subtree in
+/// stable child order. The target is chosen before execution and receives only
+/// the already-sealed report.
 pub(crate) fn sealed_attempt_metrics_target(plan: &dyn ExecutionPlan) -> Option<SealedAttemptMetricsTarget> {
     if let Some(exec) = plan.downcast_ref::<AlgeonNativeExec>()
         && exec.materializes_host()
@@ -218,8 +218,8 @@ pub(crate) fn sealed_attempt_metrics_target(plan: &dyn ExecutionPlan) -> Option<
 /// Returns the live metric set of every native execution wrapper in `plan`,
 /// including GPU-resident producers, relation functions, and graph nodes below
 /// a composed root. Execution clones share these sets and wrappers register
-/// their metrics only while executing, so readers take them after execution
-/// rather than an `ExecutionPlan::metrics` snapshot.
+/// their metrics only while executing, so readers take them after execution.
+/// Readers do not use an `ExecutionPlan::metrics` snapshot.
 pub(crate) fn native_execution_metrics(plan: &dyn ExecutionPlan) -> Vec<ExecutionPlanMetricsSet> {
     fn visit(plan: &dyn ExecutionPlan, seen: &mut HashSet<*const ()>, sets: &mut Vec<ExecutionPlanMetricsSet>) {
         // Physical plans can be DAGs; visit each shared node once.

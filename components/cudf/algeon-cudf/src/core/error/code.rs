@@ -1,9 +1,7 @@
 //! Leaf-only `ErrorCode` taxonomy and pure projections to `ErrorKind`
 //! and `ErrorStatus`.
 //!
-//! Per the truthful error contract redesign:
-//!
-//! - `ErrorCode` contains only leaf codes; coarse family variants are removed.
+//! - `ErrorCode` contains only leaf codes; it has no coarse family variants.
 //! - `ErrorKind` is the coarse category, derived from `code`.
 //! - `ErrorStatus` is the retry semantic, derived from `code`.
 //! - Neither `ErrorKind` nor `ErrorStatus` is stored on `Error`.
@@ -12,14 +10,11 @@ use std::fmt;
 
 /// Stable, machine-readable failure identity.
 ///
-/// Every variant is a leaf code. The old coarse-family variants
-/// (`InvalidInput`, `NotFound`, `Unsupported`, `ExecutionContext`,
-/// `ResourceExhausted`, `DependencyFailure`, `MissingResource`) are removed
-/// from this taxonomy. Use [`ErrorKind`] if you need coarse policy.
+/// Every variant is a leaf code. Use [`ErrorKind`] if you need coarse policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
-    // -- Domestic invalid-input leaves ---------------------------------------
+    // Domestic invalid-input leaves.
     /// A DataFrame column name was expected but did not exist.
     MissingColumn,
     /// A DataFrame column name was duplicated in an input list.
@@ -43,20 +38,19 @@ pub enum ErrorCode {
     /// This leaf covers two physically distinct but contract-equivalent
     /// conditions:
     ///
-    /// - **SQL-level null value**: an element whose mask bit is null appeared
-    ///   in an API that does not accept nulls (for example, a reduction or
-    ///   join key column that required non-null values).
-    /// - **Interior null byte in a string**: a `&str` / `String` input
-    ///   contained a `\0` byte somewhere before its end. This typically
-    ///   surfaces when the value must be handed to a C shim as a
-    ///   null-terminated string, where the embedded `\0` would silently
-    ///   truncate the payload.
+    /// - An element whose mask bit is null appeared in an API that does not
+    ///   accept nulls (for example, a reduction or join key column that
+    ///   required non-null values).
+    /// - A `&str` / `String` input contained a `\0` byte somewhere before its
+    ///   end. This typically surfaces when the value must be handed to a C shim
+    ///   as a null-terminated string, where the embedded `\0` would truncate the
+    ///   payload.
     ///
-    /// Although the two sources differ (mask bit versus string byte),
-    /// downstream policy is the same: the input carries a null-ness the
-    /// callee cannot process, and the caller must clean or reject it.
-    /// Keeping both under one leaf avoids forcing downstreams to branch on
-    /// an implementation detail that does not change their response.
+    /// Although the two sources differ (mask bit versus string byte), downstream
+    /// policy is the same. The input carries a null-ness the callee cannot
+    /// process, so the caller must clean or reject it. Keeping both under one
+    /// leaf avoids forcing downstreams to branch on an implementation detail
+    /// that does not change their response.
     NullUnexpected,
     /// A collection-valued input was empty where at least one element was
     /// required.
@@ -64,7 +58,7 @@ pub enum ErrorCode {
     /// A file input path pointed to a directory.
     PathIsDirectory,
 
-    // -- Domestic execution-context leaves -----------------------------------
+    // Domestic execution-context leaves.
     /// An empty-column construction path requires an explicit runtime.
     EmptyConstructionRequiresRuntime,
     /// Inputs reside on different CUDA devices where a single-device
@@ -80,7 +74,7 @@ pub enum ErrorCode {
     /// unavailable.
     ExecutionBindingUnavailable,
 
-    // -- Domestic unsupported leaves -----------------------------------------
+    // Domestic unsupported leaves.
     /// The requested dtype is not supported on this path.
     UnsupportedDtype,
     /// The requested physical layout is not supported on this path.
@@ -88,7 +82,7 @@ pub enum ErrorCode {
     /// The requested operation is not supported on this path.
     UnsupportedOperation,
 
-    // -- Domestic dependency / resource leaves -------------------------------
+    // Domestic dependency and resource leaves.
     /// Device memory (or another bounded resource) was exhausted domestically.
     OutOfMemory,
     /// A byte-size or element-count computation exceeded the representable
@@ -106,11 +100,11 @@ pub enum ErrorCode {
     /// I/O cleanup could not proceed because operations are still active.
     IoBusy,
 
-    // -- Domestic soft-panic leaf --------------------------------------------
-    /// An invariant in our own code was violated (soft-panic replacement).
+    // Domestic soft-panic leaf.
+    /// An invariant in the crate's own code was violated (soft-panic replacement).
     InvariantViolation,
 
-    // -- Foreign boundary leaves ---------------------------------------------
+    // Foreign boundary leaves.
     /// The foreign layer reported caller-supplied invalid input; classification
     /// stopped at the boundary.
     ForeignInvalidArgument,
@@ -210,9 +204,8 @@ impl fmt::Display for ErrorCode {
 
 /// Coarse failure category, derived from [`ErrorCode`] via [`kind_for_code`].
 ///
-/// `ErrorKind` exists for caller policy that only cares about the broad
-/// category. It is never stored on `Error`; it is always a projection of
-/// `code`.
+/// `ErrorKind` exists for caller policy that needs only the broad category.
+/// `Error` does not store it; each call projects it from `code`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorKind {

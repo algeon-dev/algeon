@@ -145,13 +145,12 @@ pub(super) fn native_parquet_file_reader_factory_is_supported(parquet_source: &P
     // rejected because they may change bytes, metadata, caching, credentials,
     // or IO semantics in ways the native source IR cannot represent.
     //
-    // `ParquetFileReaderFactory` in DataFusion 55 has no `Any` supertrait, so
-    // the concrete type is unreachable. The derived `Debug` of the two stock
-    // factories opens with `Name { store: `; requiring the full opening, not
-    // only the type name, rejects wrappers such as
-    // `DefaultParquetFileReaderFactoryProxy` and same-named types with other
-    // fields. A caller type that reproduces both name and first field is
-    // indistinguishable until the trait exposes a type identity.
+    // `ParquetFileReaderFactory` in DataFusion 55 has no `Any` supertrait; the
+    // concrete type is unreachable. The derived `Debug` of the two stock
+    // factories opens with `Name { store: `. Requiring that full opening rejects
+    // wrappers such as `DefaultParquetFileReaderFactoryProxy` and same-named
+    // types with other fields. A caller type that reproduces both name and first
+    // field is indistinguishable until the trait exposes a type identity.
     parquet_source.parquet_file_reader_factory().is_none_or(|factory| {
         let debug = format!("{factory:?}");
         STOCK_PARQUET_FILE_READER_FACTORY_DEBUG_PREFIXES.iter().any(|prefix| debug.starts_with(prefix))
@@ -161,14 +160,15 @@ pub(super) fn native_parquet_file_reader_factory_is_supported(parquet_source: &P
 /// Derives a stable graph-residency descriptor directly from a DataFusion
 /// local-Parquet scan.
 ///
-/// This is intentionally narrower than native execution lowering. Graph cache
-/// identity is a complete edge *rowset* contract, so the scan's parallel file
-/// grouping and declared output order do not affect it. They do matter to a
-/// host-visible native execution plan and therefore remain rejected by
+/// This is narrower than native execution lowering. Graph cache identity is a
+/// complete edge *rowset* contract. The scan's parallel file grouping and declared
+/// output order do not affect it. Both matter to a host-visible native execution
+/// plan, and native execution lowering therefore keeps rejecting such scans in
 /// [`validate_slice1_parquet_scan`].
 ///
 /// Pushed reader predicates and scan limits can change the effective rowset in
-/// ways this direct adapter does not yet model, so they continue to bypass.
+/// ways this direct adapter does not model. A scan with either one yields no
+/// descriptor.
 #[cfg(feature = "cugraph")]
 pub(crate) fn graph_residency_descriptor_for_datafusion_local_parquet_scan(
     source_exec: &DataSourceExec,
@@ -198,10 +198,10 @@ pub(crate) fn graph_local_parquet_source_for_datafusion_local_parquet_scan(
 /// Returns the exact row count for the same narrow local-Parquet rowset that
 /// may form a graph-residency key.
 ///
-/// The conversion deliberately rejects pushed predicates and scan limits, so
-/// the total is footer-proven for the exact rows consumed by a graph build.
-/// This lets graph admission use a real construction model when DataFusion's
-/// generic scan statistics are merely inexact.
+/// The conversion rejects pushed predicates and scan limits. The total is
+/// therefore footer-proven for the exact rows consumed by a graph build. Graph
+/// admission can use it in its construction model when DataFusion's generic scan
+/// statistics are inexact.
 #[cfg(feature = "cugraph")]
 pub(crate) fn exact_row_count_for_datafusion_local_parquet_scan(
     source_exec: &DataSourceExec,
@@ -214,9 +214,9 @@ pub(crate) fn exact_row_count_for_datafusion_local_parquet_scan(
 /// Returns the footer-proven graph vertex upper bound for the same exact
 /// local-Parquet rowset accepted by the graph-residency bridge.
 ///
-/// This deliberately shares the rowset checks with
-/// [`exact_row_count_for_datafusion_local_parquet_scan`]: a detached fixture
-/// manifest or a query/session setting must never price a different scan.
+/// This shares the rowset checks with
+/// [`exact_row_count_for_datafusion_local_parquet_scan`]. A detached fixture
+/// manifest or a query/session setting must not price a different scan.
 #[cfg(feature = "cugraph")]
 pub(crate) fn graph_vertex_upper_bound_for_datafusion_local_parquet_scan(
     source_exec: &DataSourceExec,
@@ -253,8 +253,8 @@ fn graph_residency_local_parquet_scan_source(
 ) -> Result<NativeLocalParquetSource, CapabilityReason> {
     // Cache identity must describe the exact graph rowset. The general native
     // lowerer can model these features for execution, but this source-only
-    // bridge deliberately leaves them unkeyable until it also fingerprints
-    // their complete semantics.
+    // bridge leaves them unkeyable until it also fingerprints their complete
+    // semantics.
     if file_scan.limit.is_some() || parquet_source.filter().is_some() {
         return Err(CapabilityReason::NativeSourcePushedDownParquetPredicate);
     }
@@ -466,8 +466,8 @@ pub(super) fn attach_row_group_byte_metadata(
 }
 
 /// Reads exactly one parseable graph-vertex upper bound from the Parquet
-/// footer.  Duplicate, empty, or malformed metadata is deliberately ignored
-/// rather than selecting an arbitrary producer value.
+/// footer. Duplicate, empty, or malformed metadata yields no bound; the function
+/// never picks between conflicting producer values.
 fn graph_vertex_upper_bound_from_footer(metadata: &ParquetMetaData) -> Option<u64> {
     graph_vertex_upper_bound_from_key_value_metadata(metadata.file_metadata().key_value_metadata()?)
 }
@@ -478,14 +478,13 @@ fn graph_vertex_upper_bound_from_key_value_metadata(metadata: &[KeyValue]) -> Op
     entries.next().is_none().then_some(value)
 }
 
-/// JSON schema carried by the v1 simple-directed topology footer key.
-///
-/// Keep the payload intentionally small and index-based: the native source
-/// contract compares the declared physical column roles to the resolved scan
-/// bindings, so aliases cannot accidentally claim a proof for another column.
 /// Reads exactly one valid simple-directed topology certificate from a Parquet
 /// footer. A malformed, duplicate, or overbroad entry remains unavailable;
 /// callers then retain the normal Python-compatible edge-normalize path.
+///
+/// The payload carries only physical column indices. The native source contract
+/// compares the declared physical column roles to the resolved scan bindings.
+/// An alias therefore cannot claim a proof for another column.
 fn graph_simple_directed_edge_topology_from_footer(
     metadata: &ParquetMetaData,
 ) -> Option<GraphSimpleDirectedEdgeTopology> {

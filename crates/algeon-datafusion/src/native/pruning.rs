@@ -281,8 +281,8 @@ pub(super) fn validate_pruning_only_parquet_predicate(
         return Ok(());
     };
     let Some(filter) = filter else {
-        // Default SQL can leave dynamic pruning predicates on the scan. They are optimizer hints,
-        // not row-level semantics, so native execution can read the source fully.
+        // Default SQL can leave dynamic pruning predicates on the scan. They are optimizer hints
+        // with no row-level semantics; native execution can read the source in full.
         return if scan_predicate_is_dynamic_filter_hint(scan_predicate.as_ref()) {
             Ok(())
         } else {

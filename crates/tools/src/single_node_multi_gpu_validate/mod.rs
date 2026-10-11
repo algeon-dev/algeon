@@ -117,7 +117,7 @@ struct CliOptions {
     /// `deadline_expired` sealed report and a healthy reuse attempt.
     deadline_first_after: Option<std::time::Duration>,
     /// Drive the dedicated ordinary domain-cap exhaustion scenario. It
-    /// reuses public SQL rather than injecting an allocator failure.
+    /// reuses public SQL and injects no allocator failure.
     domain_exhaustion_probe: bool,
     /// Drive the dedicated finite-cohort overload scenario. All outcome
     /// proof comes from sealed reports; it never creates a synthetic queue
@@ -142,7 +142,7 @@ struct CliOptions {
     /// attempt must be accounted for exactly once.
     close_under_load: bool,
     /// Hold one public completion receiver at a time behind this delay.
-    /// This is a dedicated rate-mode probe, never a backend behavior mode.
+    /// This is a dedicated rate-mode probe. The backend has no behavior mode for it.
     slow_report_sink: Option<std::time::Duration>,
 }
 
@@ -521,7 +521,7 @@ fn measured_run_preflight_with_completion_sink(
     }
     if let Some(cycles) = quarantine_cycles {
         // Each cycle needs a distinct target, and the fleet must keep at
-        // least one open ordinal so stabilization between cycles is real.
+        // least one open ordinal so stabilization between cycles can be observed.
         if profile.backend.device_profiles.len() < 2 {
             return Err("--quarantine-cycles requires at least two configured devices".into());
         }
@@ -644,7 +644,7 @@ fn run_measured_run(profile: RunProfile, config_sha256: String, options: &CliOpt
     let provenance = Provenance::collect()?;
     // The tool entrypoint pins a current-thread runtime, which cannot execute
     // concurrent attempts. Own a multi-thread runtime on a dedicated thread so
-    // the measured concurrency is real rather than interleaved.
+    // attempts can run in parallel.
     let artifact = if options.cache_calibration {
         let cache_disabled = profile.cache_disabled_companion()?;
         let disabled_measurement =
@@ -673,8 +673,8 @@ fn run_measured_run(profile: RunProfile, config_sha256: String, options: &CliOpt
 
 #[cfg(not(feature = "single-node-multi-gpu-validate-run"))]
 fn run_measured_run(profile: RunProfile, _config_sha256: String, _options: &CliOptions) -> ToolResult<PathBuf> {
-    // Validate what does not need the GPU, then refuse rather than emit an
-    // artifact that claims a run happened.
+    // Validate what does not need the GPU, then return an error without
+    // writing an artifact that claims a run happened.
     measured_run_preflight(
         &profile,
         _options.quarantine_device,

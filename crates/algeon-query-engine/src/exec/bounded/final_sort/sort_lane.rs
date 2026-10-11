@@ -57,7 +57,7 @@ pub(super) struct SortLaneCandidate {
 /// Whether one top-k may fan its `chunk_count` independent candidates out to
 /// lanes.
 ///
-/// Ready work, not lane capacity, decides first: a single chunk stays serial.
+/// Ready work decides first; lane width is a separate check, and a single chunk stays serial.
 /// A retryable failure retries serially (`attempt > 1`), which strictly
 /// shrinks simultaneous live work while the merge loop keeps reducing its
 /// fan-in. This is the small cost/batch policy for sort width: no learned
@@ -84,7 +84,7 @@ pub(super) fn split_sort_candidate_ranges(input_rows: usize, rows_per_chunk: usi
 
 /// Sorts and truncates one owned candidate to `keep_rows` on this lane.
 ///
-/// Mirrors the serial per-chunk candidate exactly: same memory boundary,
+/// Mirrors the serial per-chunk candidate: same memory boundary,
 /// same budget token boundary, same comparator, same `fetch(keep_rows)`
 /// truncation with the offset left for the final limit. An empty input passes
 /// through untouched, matching the serial stream path.

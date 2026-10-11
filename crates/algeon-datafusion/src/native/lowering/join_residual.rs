@@ -106,9 +106,8 @@ pub(super) fn lower_join_filter(
     canonical: CanonicalJoin,
     bindings: Option<JoinResidualInputBindings<'_>>,
 ) -> Result<LoweredJoinResidual, LoweringFailure> {
-    // Supported residual vocabulary is deliberately small. Expressions the
-    // cuDF join AST cannot represent directly may be materialized on one input
-    // side, but a residual predicate must still reference both sides.
+    // Expressions the cuDF join AST cannot represent directly may be materialized
+    // on one input side. The residual predicate must still reference both sides.
     let filter = contract.filter();
     debug_assert!(Arc::ptr_eq(contract.expression().expr(), filter.expression()));
     let mut left_required = BTreeSet::new();

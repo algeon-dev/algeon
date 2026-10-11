@@ -21,7 +21,7 @@ use crate::error::{Error, ErrorCode, Result};
 /// Crate-internal device-resident producer contract used by composed native execution.
 ///
 /// A producer's output stays on the GPU and is bound into a composed native
-/// consumer's input map instead of streaming Arrow batches. Its capability
+/// consumer's input map. No Arrow batches are streamed. Its capability
 /// evidence and row bound describe that output; they are not memory estimates
 /// and must not become a predicted-usage admission veto, a second reservation,
 /// or a per-operator grant.
@@ -186,9 +186,9 @@ pub(crate) fn rewrite_gpu_resident_producer_for_subsumed_composed_consumer(
 }
 
 /// Returns the admission tickets emitted by a fully prepared producer
-/// subtree.  This is deliberately discovered through the producer SPI rather
-/// than the attempt extension: a composed query may have several producers,
-/// and the extension only retains the most recently bound ticket.
+/// subtree. Tickets are discovered through the producer SPI. A composed query
+/// may have several producers, and the attempt extension only retains the most
+/// recently bound ticket.
 pub(crate) fn prepared_gpu_resident_producer_admission_tickets(
     plan: &dyn ExecutionPlan,
 ) -> Vec<Arc<QueryAdmissionTicket>> {

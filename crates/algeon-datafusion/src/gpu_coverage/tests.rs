@@ -107,7 +107,7 @@ fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
 }
 
 #[cfg(feature = "cugraph")]
-/// A native edge relation in the form planning hands it to a graph: a
+/// A native edge relation in the form that planning produces for a graph input: a
 /// GPU-resident producer the graph reads on the device.
 fn native_edge_producer() -> Arc<dyn ExecutionPlan> {
     let schema = Arc::new(Schema::new(vec![

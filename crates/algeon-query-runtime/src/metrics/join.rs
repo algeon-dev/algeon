@@ -33,9 +33,9 @@ pub struct JoinOperatorMetrics {
     /// Planner orientation used to execute or describe this join.
     ///
     /// For reusable hash joins this is the side that owns the hash table. For
-    /// keyless conditional and cross joins no hash table is built, so this is an
-    /// orientation label for comparable metrics rather than a physical build
-    /// artifact.
+    /// keyless conditional and cross joins no hash table is built. For those
+    /// joins the value is an orientation label for comparable metrics, and no
+    /// physical build artifact backs it.
     pub build_side: String,
     /// The side opposite `build_side` in the planner orientation.
     pub probe_side: String,
@@ -60,7 +60,7 @@ pub struct JoinOperatorMetrics {
     /// Device bytes retained by join gather maps produced for this join.
     ///
     /// This is a direct cudf observation over the returned device index
-    /// columns, not a row-count estimate.
+    /// columns; no row-count estimate is involved.
     pub gather_map_bytes: u64,
     /// Upper bound of the join output's materialized bytes, `None` when the
     /// byte model cannot bound one of its columns.

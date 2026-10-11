@@ -82,8 +82,8 @@ pub(super) async fn terminate_gracefully_with_in_flight(
             }
         });
     }
-    // Only the task clones may keep the channel open. A task that exits early then closes it, and
-    // `recv` reports the failure instead of waiting out the deadline.
+    // Only the task clones may keep the channel open. Once every task has exited, `recv` reports
+    // the closed channel without waiting out the deadline.
     drop(ready_tx);
     start.wait().await;
     let ready_deadline = Instant::now() + params.poll_timeout;

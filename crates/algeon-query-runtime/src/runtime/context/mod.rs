@@ -11,8 +11,10 @@
 //! clones, and stream leases retain that epoch, so the service cannot reach
 //! idle while they live and their work fails once the service or the query
 //! handle closes; the cudf runtime only validates it (see `runtime`).
-//! Standalone contexts skip that layer. The admission, cancellation, and
-//! release contracts are in `website/docs/design/admission.mdx`.
+//! Standalone contexts skip that layer. The admission contract is in
+//! `website/docs/design/admission.mdx#from-capability-validation-to-admission`;
+//! the cancellation and release contracts are in
+//! `website/docs/design/admission.mdx#resident-handoff-and-release`.
 
 use std::sync::Arc;
 
@@ -346,8 +348,8 @@ impl ExecutionContext {
         // Validate the query/service epoch at acquisition time, but do not
         // embed it in GPU allocations. Escaping allocations are owned by a
         // ResidentOwnerLease; unowned residual allocations must reach final
-        // validation so cleanup can fail closed instead of keeping the query
-        // epoch alive forever and preventing B-to-R handoff.
+        // validation so cleanup can fail closed. Embedding the epoch in one
+        // would keep the query epoch alive forever and prevent B-to-R handoff.
         drop(self.acquire_resource_epoch(operation)?);
         Ok(self.stream.runtime().as_ref().clone())
     }
@@ -368,8 +370,8 @@ impl ExecutionContext {
 
     /// Returns a shared handle to the runtime.
     ///
-    /// The caller receives the same runtime object, not a new runtime with
-    /// copied configuration.
+    /// The caller receives the same runtime object. A new runtime with copied
+    /// configuration is not created.
     pub fn shared_runtime(&self) -> Result<Arc<CudfRuntime>> {
         self.runtime().map(Arc::new)
     }
@@ -379,8 +381,8 @@ impl ExecutionContext {
     ///
     /// The lease's query-execution job follows this context's own claim on
     /// the attempt: a root context runs it as root-class work, while an
-    /// auxiliary fragment context -- a second native island of the same
-    /// attempt -- runs it as auxiliary work backed by the attempt auxiliary
+    /// auxiliary fragment context, which is a second native island of the same
+    /// attempt, runs it as auxiliary work backed by the attempt auxiliary
     /// permit that context already holds. Root capacity is one job per
     /// admitted attempt, so a second island charging it would fail where it
     /// has a reserved auxiliary slot of its own.

@@ -6,16 +6,17 @@
 //! runtime-owned: the report records whether the attempt obtained a plan and
 //! how it terminated, and the engine owns every attempt number behind it.
 //! [`AttemptDisposition`] never shares an enum with plan-time coverage because
-//! the runtime must not depend on DataFusion adapter types, and `Unplanned`
-//! describes attempt lifecycle, not physical-plan shape. The adapter maps a
-//! completed [`crate::planner::FinalPlanDisposition`] to
+//! the runtime must not depend on DataFusion adapter types. `Unplanned`
+//! describes the attempt lifecycle and says nothing about physical-plan shape.
+//! The adapter maps a completed [`crate::planner::FinalPlanDisposition`] to
 //! [`AttemptDisposition`] exactly once (`DataFusion` to `CpuFallback`,
-//! `Mixed` to `PartialNative`, `Native` to `Native`); a planning failure
-//! seals as `Unplanned` by leaving the disposition unset, never by mapping
-//! from a plan classification.
+//! `Mixed` to `PartialNative`, `Native` to `Native`). A planning failure
+//! seals as `Unplanned` with the disposition left unset, and no plan
+//! classification sets it.
 //!
 //! The runtime owns the attempt: numbering, admission, the grant, the terminal
-//! state machine and the sealed report (`website/docs/design/admission.mdx`).
+//! state machine and the sealed report
+//! (`website/docs/design/admission.mdx#from-capability-validation-to-admission`).
 //! This module maps DataFusion planning and stream events onto `AttemptOwner`
 //! commits. The owner accepts one terminal commit and refuses every later one,
 //! so the paths below never need to agree on who was first; each commits the
@@ -124,10 +125,16 @@ impl Default for AttemptOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SealedAttemptNativeExecutionSnapshot {
+    /// Identity of the attempt whose terminal report sealed this snapshot.
     pub attempt_id: AttemptId,
+    /// Coverage of the elected root's final physical plan, captured before execution.
     pub coverage: FinalPlanCoverage,
+    /// Number of native wrapper output boundaries requiring host Arrow materialization.
     pub terminal_host_materialization_count: usize,
+    /// Runtime device-to-host materializations beyond the planned wrapper output boundaries.
+    /// The count saturates at zero when the runtime count is smaller than the planned count.
     pub intermediate_device_to_host_materialization_count: usize,
+    /// Native execution observations frozen at the terminal report's seal point.
     pub metrics: NativeDataFusionExecutionMetrics,
 }
 
@@ -253,9 +260,9 @@ impl InvocationAttempt {
     /// Records the native physical plan that first needs admission.
     ///
     /// CTAS may execute that plan from `execute_logical_plan` before the
-    /// adapter receives the outer DataFrame's physical plan.  Establish the
-    /// attempt's final-plan disposition at ticket construction so the later
-    /// query-service grant always has a valid lifecycle predecessor.
+    /// adapter receives the outer DataFrame's physical plan. Establish the
+    /// attempt's final-plan disposition at ticket construction. The later
+    /// query-service grant then always has a valid lifecycle predecessor.
     pub(crate) fn native_admission_planned(&self, plan: &dyn ExecutionPlan) {
         let index = NativePlanIndex::build(plan);
         let _ = self.state.handle.set_disposition(disposition_for(index.disposition()));
@@ -273,7 +280,7 @@ impl InvocationAttempt {
 /// until then the attempt itself commits planning outcomes. A second
 /// [`sql`](Self::sql), [`execute_dataframe`](Self::execute_dataframe), or
 /// [`execute_physical_plan`](Self::execute_physical_plan) call finds no
-/// authority left and fails instead of running again.
+/// authority left and returns an error without executing again.
 pub struct AlgeonAttempt {
     /// `Some` while this object still holds the terminalization authority.
     /// `take_owner` moves it into the one result stream; afterwards every
@@ -308,8 +315,8 @@ impl AlgeonGpuBackend {
     /// Begins an attempt that requests an exact immutable query memory cap.
     ///
     /// The cap is carried through the attempt-bound admission ticket into the
-    /// attempt's one query-service admission. Admission rejects a cap that
-    /// cannot fit instead of resizing it.
+    /// attempt's one query-service admission. When a cap cannot fit, admission
+    /// rejects it and does not resize it.
     pub fn begin_attempt_with_query_cap_bytes(
         &self,
         options: AttemptOptions,
@@ -329,6 +336,7 @@ impl AlgeonGpuBackend {
         self.session_capability().take_abandoned_attempt_reports(max)
     }
 
+    /// Reads backend-wide attempt lifecycle counters without draining retained reports.
     pub fn attempt_counters_snapshot(&self) -> AttemptBackendCountersSnapshot {
         self.session_capability().attempt_counters_snapshot()
     }
@@ -365,7 +373,7 @@ impl AlgeonAttempt {
             sealed_graph_claim_calibration: OnceLock::new(),
             sealed_native_execution: OnceLock::new(),
         });
-        // The attempt object holds the minting factory, not a receiver, so
+        // The attempt object holds the minting factory and no receiver, so
         // only caller-held receivers count toward the abandoned-report
         // decision.
         let completion_factory = begin.completion;
@@ -382,6 +390,7 @@ impl AlgeonAttempt {
         })
     }
 
+    /// Returns this invocation's runtime-assigned identity, stable through terminal publication.
     pub fn attempt_id(&self) -> AttemptId {
         self.state.handle.attempt_id()
     }
@@ -418,6 +427,10 @@ impl AlgeonAttempt {
         self.state.sealed_native_execution_snapshot()
     }
 
+    /// Clones the attempt's cancellation token, including its configured deadline.
+    ///
+    /// Requesting cancellation stops further native submission at execution boundaries;
+    /// it does not interrupt a CUDA operation already submitted.
     pub fn cancellation(&self) -> AttemptCancellation {
         self.state.cancellation.clone()
     }
@@ -430,21 +443,21 @@ impl AlgeonAttempt {
         self.invocation.planning_diagnostics()
     }
 
-    /// Registers a read-only handoff for the immutable report produced at the
+    /// Registers a read-only observer of the immutable report produced at the
     /// attempt's sole observation seal point.
     ///
     /// The observer has no terminalization authority. The attempt owner
-    /// publishes the report before it delivers its sealed observation, so the
-    /// callback can retain the exact completed report together with the
-    /// snapshot that embeds it without a detached completion task.
+    /// publishes the report before it delivers its sealed observation. The
+    /// callback can thus retain the exact completed report together with the
+    /// snapshot that embeds it, without a detached completion task.
     pub fn register_sealed_report_observer<F>(&self, observer: F)
     where F: Fn(Option<Arc<QueryAttemptReport>>, SealedRuntimeObservationSnapshot) + Send + Sync + 'static {
         self.register_sealed_execution_observer(move |report, snapshot, _native_execution| observer(report, snapshot));
     }
 
-    /// Like [`Self::register_sealed_report_observer`], and also hands over the
-    /// native execution snapshot. It is sealed by the report sink, which runs
-    /// before the owner delivers the sealed observation.
+    /// Like [`Self::register_sealed_report_observer`], and also passes the native
+    /// execution snapshot to the observer. It is sealed by the report sink, which
+    /// runs before the owner delivers the sealed observation.
     pub(crate) fn register_sealed_execution_observer<F>(&self, observer: F)
     where F: Fn(
                 Option<Arc<QueryAttemptReport>>,
@@ -459,12 +472,11 @@ impl AlgeonAttempt {
             let report = factory.try_report();
             if report.is_none() {
                 // `AttemptOwner::finish_with_footer` publishes the report
-                // before the owner exposes this sealed snapshot. Keep the
-                // coordinator fail-closed if that engine invariant is ever
-                // violated rather than retaining a fabricated projection.
-                // The invariant is preserved in every build; emit its
-                // operational diagnostic before retaining a fail-closed
-                // projection.
+                // before the owner exposes this sealed snapshot. If that engine
+                // invariant is ever violated, the observer receives `None` for
+                // the report, the coordinator stays fail-closed, and no
+                // fabricated projection is retained. The check runs in every
+                // build and logs an error.
                 tracing::error!("attempt observation sealed before its immutable report was published");
             }
             observer(report, snapshot, state.sealed_native_execution_snapshot());
@@ -493,9 +505,9 @@ impl AlgeonAttempt {
     /// executes exactly one invocation.
     ///
     /// `result_stream_started` is stored after the take and never cleared.
-    /// `start_stream` sets the metrics target after this call, so a planning
-    /// pass that observes the flag unset in between cannot leave its target
-    /// in place.
+    /// `start_stream` sets the metrics target after this call. A planning
+    /// pass that observes the flag unset in between therefore cannot leave
+    /// its target in place.
     fn take_owner(&self) -> DataFusionResult<AttemptOwner> {
         let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().ok_or_else(|| {
             DataFusionError::from(Error::new(
@@ -529,8 +541,8 @@ impl AlgeonAttempt {
     }
 
     /// Rejects planning when the backend started closing after this attempt
-    /// won the begin gate: the attempt terminalizes `unplanned` with bounded
-    /// `backend_closing` evidence instead of producing a plan.
+    /// won the begin gate. The attempt terminalizes `unplanned` with bounded
+    /// `backend_closing` evidence and produces no plan.
     fn fail_if_backend_closing(&self, operation: &'static str) -> DataFusionResult<()> {
         if !self.session.is_closing() {
             return Ok(());
@@ -859,11 +871,12 @@ impl AttemptStream {
     }
 
     /// Commits the outer terminal result before destroying the physical
-    /// stream, so the attempt's outcome is the root stream's result rather
-    /// than a state its inputs' teardown reached first.
+    /// stream. The attempt's outcome is then the root stream's result, and the
+    /// teardown of its inputs does not reach a terminal state first.
     fn finish_terminal(&mut self, outcome: RuntimeTerminalOutcome) {
         self.terminal = true;
         self.commit(outcome);
+        // Free the physical stream at the terminal commit, because this wrapper can outlive it.
         drop(self.inner.take());
     }
 
@@ -911,16 +924,17 @@ impl Stream for AttemptStream {
         if !this.state.handle.is_terminal()
             && this.state.cancellation.check("algeon_datafusion.attempt.result_drain").is_err()
         {
-            // The cancellation error is the stream's final item. The handle
-            // is terminal after `commit`, so it cannot guard a later poll.
+            // The cancellation error is the stream's final item. After `commit`
+            // the handle is terminal and cannot guard a later poll; the
+            // `terminal` flag does.
             this.finish_cancelled();
             return Poll::Ready(Some(Err(this.cancelled_error())));
         }
         if !this.physical_start_recorded {
             this.physical_start_recorded = true;
-            // CPU-only plans begin physical execution at first poll; native
-            // plans record it truthfully at admission instead (a queued or
-            // rejected admission therefore leaves this boundary absent).
+            // CPU-only plans begin physical execution at first poll. Native
+            // plans record this boundary at admission, and a queued or rejected
+            // admission leaves it absent.
             if this.state.handle.disposition() == Some(AttemptDisposition::CpuFallback) {
                 let _ = this.state.handle.record_physical_execution_started();
             }
@@ -957,9 +971,9 @@ impl Drop for AttemptStream {
     fn drop(&mut self) {
         if !self.state.handle.is_terminal() {
             // Flight's unwind guard cancels the shared token while it records
-            // the coordinator-side panic.  Preserve the primary unwind
-            // outcome for the immutable attempt report instead of letting
-            // that cleanup cancellation downgrade it to `Cancelled`.
+            // the coordinator-side panic. The immutable attempt report keeps
+            // the primary unwind outcome, and that cleanup cancellation does
+            // not downgrade it to `Cancelled`.
             if std::thread::panicking() {
                 self.finish_terminal(RuntimeTerminalOutcome::Panicked);
             } else if self.state.cancellation.is_cancelled() || self.state.cancellation.is_expired() {
@@ -972,7 +986,6 @@ impl Drop for AttemptStream {
                 self.finish_terminal(RuntimeTerminalOutcome::Dropped);
             }
         }
-        drop(self.inner.take());
     }
 }
 
@@ -982,7 +995,7 @@ impl std::fmt::Debug for AttemptStream {
     }
 }
 
-/// Server hooks for attempt phases before, or instead of, a result stream.
+/// Server hooks for attempt phases that run before a result stream or without one.
 ///
 /// An attempt commits one terminal outcome. While [`AlgeonAttempt`] still
 /// holds its terminalization authority, the committing hooks below commit

@@ -86,9 +86,9 @@ fn finished_handle_releases_runtime_service_ownership_before_activity_drop() {
 
     drop(attempt);
 
-    // The admitted envelope owns GPU resources, so the release;
-    // including the activity drop; completes on the device executor. Wait
-    // for the probe instead of expecting synchronous completion.
+    // The admitted envelope owns GPU resources, so the release, including the
+    // activity drop, completes on the device executor. Completion is
+    // asynchronous, so the test waits for the probe.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let probe_result = replacement.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
@@ -139,7 +139,7 @@ fn query_service_observes_enqueue_admit_and_release_under_one_admission_id() {
     let handle = waiter.try_admit().expect("admission attempt succeeds").expect("capacity admits query");
     let admission_request_id = handle.admission_request_id();
 
-    // The attempt's end, not the handle's drop, releases the admission.
+    // The attempt's end releases the admission. Dropping the handle does not.
     drop(handle);
     drop(attempt);
     wait_for_sealed_observation(&observation);

@@ -2,14 +2,15 @@
 
 //! Workspace-internal safe libcugraph execution component for Algeon.
 //!
+//! Published as an Algeon implementation dependency. Applications use
+//! [`algeon-datafusion`](https://docs.rs/algeon-datafusion); workspace code
+//! uses this crate for its component contracts. See the
+//! [API documentation boundary](https://algeon.dev/design#api-documentation).
+//!
 //! Algeon integrations enter through a runtime-bound [`ResourceHandle`], use
 //! the prepared transfer contracts in [`cudf_interop`], and retain explicit
 //! producer readiness and consumer completion ordering. Native failures are
 //! preserved as structured [`Error`] values.
-//!
-//! The package name `cugraph` and Rust import name `cugraph` are
-//! workspace contracts. This crate is not published as a general-purpose
-//! cuGraph SDK and does not make an external semantic-versioning promise.
 //!
 //! # Key concepts
 //!

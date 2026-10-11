@@ -50,7 +50,7 @@ pub(super) fn cugraph_execution_config_after_staging(
         edge_execution_config(edge_source, default_execution_config).without_query_admission_ticket();
     // The nested state that lowers a cuGraph edge relation deliberately has
     // no admission authority: the graph root must be the only admission
-    // owner once footer metadata is resolved.  Its lowered child still owns
+    // owner once footer metadata is resolved. Its lowered child still owns
     // execution policy, but restore the outer root's source here so this
     // post-hydration boundary can mint that one ticket.
     let execution_config = if execution_config.has_query_admission_authority() {
@@ -231,7 +231,7 @@ fn collect_native_fragment_capability_evidences(
 
 /// Returns the lowered plan of a native graph input. Keep graph admission's
 /// row, vertex, capability, and native-boundary checks on this one lookup so
-/// a new producer form cannot silently lose pricing evidence while retaining
+/// a new producer form cannot lose pricing evidence while retaining
 /// graph execution authority.
 pub(super) fn lowered_native_edge_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
     native_graph_input_execution_plan(plan)?.downcast_ref::<AlgeonNativeExec>().map(AlgeonNativeExec::native_plan)

@@ -29,8 +29,8 @@ pub struct TriangleCountParams {
 
 /// Compute triangle counts for all vertices or a selected start list.
 ///
-/// Prefer using [`Graph::triangle_count`](crate::graph::Graph::triangle_count)
-/// instead of calling this function directly.
+/// Prefer using [`Graph::triangle_count`](crate::graph::Graph::triangle_count),
+/// which calls this function.
 pub(crate) fn triangle_count<T, V: CugraphElement>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<T>,

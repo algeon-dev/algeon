@@ -7,8 +7,7 @@
 //! - the output dtype comes from the lookup values.
 //!
 //! The current backend uses a distinct-hash build/probe/gather pipeline
-//! internally, but that is an implementation detail rather than the public
-//! contract.
+//! internally. The public contract does not cover that internal structure.
 
 use std::{
     ptr::{self, NonNull},

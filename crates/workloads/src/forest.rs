@@ -150,7 +150,8 @@ pub fn ember2024_table_name(split: &str) -> String {
 /// holding `parquet/` and `models/`).
 ///
 /// At least one split and one LightGBM text model must be present. The
-/// feature count is read from the Parquet schema, not assumed.
+/// feature count is read from the first present split's Parquet schema, and
+/// every later split must match it.
 pub fn describe_ember2024_dataset(root: &Path) -> WorkloadResult<Ember2024DatasetMetadata> {
     let parquet_root = root.join("parquet");
     let models_root = root.join("models");

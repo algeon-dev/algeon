@@ -2,7 +2,7 @@
 //!
 //! [`DeviceId`] is a validated GPU ordinal. Use it with
 //! [`RuntimeBuilder::with_device`](super::RuntimeBuilder::with_device) to pin
-//! a [`Runtime`](super::Runtime); and all resources it creates; to a
+//! a [`Runtime`](super::Runtime), and all resources it creates, to a
 //! specific GPU.
 //!
 //! The device is a first-class part of the execution contract: when a
@@ -84,7 +84,8 @@ impl DeviceId {
         let mut count: i32 = 0;
         error::check_status_in(unsafe { cudf_sys::cudf_cuda_get_device_count(&mut count) }, "DeviceId::count")?;
         let n = count as usize;
-        // If another thread raced us, that's fine; same value.
+        // A concurrent caller may set the cache first. Both read the same device count,
+        // so the rejected `set` is ignored.
         let _ = DEVICE_COUNT_CACHE.set(n);
         Ok(n)
     }

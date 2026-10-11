@@ -100,9 +100,9 @@ pub struct MetricDescriptor {
     pub aggregation: MetricAggregation,
     /// One-line human-readable semantics.
     pub semantics: &'static str,
-    /// Optional direction/health hint.
+    /// Optional direction of healthier values. `None` supplies no directional hint.
     pub direction: Option<MetricDirection>,
-    /// Optional healthy-value hint.
+    /// Optional healthy-value hint. `None` supplies no recommended value or range.
     pub healthy: Option<&'static str>,
 }
 

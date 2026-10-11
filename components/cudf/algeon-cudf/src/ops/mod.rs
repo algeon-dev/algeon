@@ -14,8 +14,8 @@
 //! expression methods.
 //!
 //! The expression DSL is eager when evaluated against a
-//! [`crate::DataFrame`]; it builds a declarative expression tree, but it is not
-//! a lazy query optimizer. See [`expr`] for the row-aligned broadcast-reduction
+//! [`crate::DataFrame`]. It builds a declarative expression tree and performs no
+//! lazy query optimization. See [`expr`] for the row-aligned broadcast-reduction
 //! semantics and naming rules around [`Expr::agg`].
 
 pub mod ast;

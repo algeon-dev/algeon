@@ -36,7 +36,7 @@ pub struct CumlLogicalNode {
     /// empty when the input declares no order.
     input_orderings: Vec<Vec<SortExpr>>,
     options: CumlValidatedOptions,
-    /// Model bound at planning; present exactly for `cuml_forest_predict`.
+    /// Model bound at planning; present only for `cuml_forest_predict`.
     model: Option<Arc<MlForestModelSnapshot>>,
     schema: DFSchemaRef,
 }

@@ -315,7 +315,7 @@ pub(crate) fn labeling_result_to_dataframe(result: &LabelingResult, runtime: &Ru
 ///
 /// cuGraph assigns component labels in hook-race order, so raw labels vary run
 /// to run, and WCC additionally reports labels in the internal renumbered id
-/// space rather than the caller-visible vertex space. Mapping every label to
+/// space, which the caller does not see. Mapping every label to
 /// `MIN(vertex)` over its component fixes both at once: the mapping is a pure
 /// function of the partition (which cuGraph computes correctly), so the output
 /// is run-stable and expressed in vertex ids. Row order is preserved.
@@ -367,7 +367,7 @@ fn canonicalize_component_labels(
         .collect();
     // Canonical values are vertex ids, so they take the vertex column's width.
     // A missing mapping is impossible (the groupby covers every non-null key);
-    // falling back to the raw label keeps the row rather than failing the query.
+    // falling back to the raw label keeps the row and does not fail the query.
     let canonical = match vertex
         .dtype()
         .map_err(|error| {

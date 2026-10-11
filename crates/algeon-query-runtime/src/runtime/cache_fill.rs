@@ -12,7 +12,9 @@ use super::ExecutionCancellation;
 /// Service-wide resources used only by complete-object lakehouse cache fills.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LakehouseCacheFillConfig {
-    /// Max in-flight complete-object bytes. `None` auto-sizes from host RAM.
+    /// Maximum complete-object fill bytes held concurrently.
+    /// `None` uses one quarter of detected host RAM, capped at 16 GiB,
+    /// with a 1 GiB fallback when RAM detection is unavailable.
     pub budget_bytes: Option<u64>,
     /// Timeout for blocking byte-budget and operation-gate acquisition.
     pub acquire_timeout: Duration,
@@ -23,9 +25,13 @@ pub struct LakehouseCacheFillConfig {
 impl LakehouseCacheFillConfig {
     pub(crate) const DEFAULT_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
     pub(crate) const DEFAULT_BUDGET_CAP_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+    /// Default wait bound for cache-fill byte and operation permits, 30 seconds.
     pub const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
     pub(crate) const DEFAULT_MAX_CONCURRENT_OPS: usize = 4;
 
+    /// Validates the service-wide fill policy.
+    /// Returns `InvalidConfiguration` for a zero explicit byte budget, zero
+    /// acquisition timeout or zero concurrent operations.
     pub fn validate(&self) -> Result<()> {
         if let Some(budget_bytes) = self.budget_bytes {
             validate_budget_bytes(budget_bytes)?;

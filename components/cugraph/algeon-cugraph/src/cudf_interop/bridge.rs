@@ -84,7 +84,7 @@ pub fn device_array_view_from_slice<'a, T: CugraphElement>(
             .with_context("requested_dtype", format!("{:?}", expected)));
     }
 
-    // SAFETY: we have verified that the slice's runtime dtype matches T.
+    // SAFETY: The dtype check above confirms that the slice's runtime dtype matches T.
     // DeviceSlice guarantees a valid device pointer for its lifetime.
     let raw = unsafe {
         crate::array::RawDeviceArrayView::try_from_raw(
@@ -123,9 +123,9 @@ impl RawDeviceArrayView<'_> {
         )?;
 
         // SAFETY: `self.device_ptr()` points to valid GPU memory containing
-        // `self.len()` elements of `dtype`, which we have verified maps to
-        // `cudf_type`. The explicit runtime owns the destination allocation
-        // and execution domain for the device-to-device copy.
+        // `self.len()` elements of `dtype`, which the `cugraph_type_to_cudf` lookup
+        // above maps to `cudf_type`. The explicit runtime owns the destination
+        // allocation and execution domain for the device-to-device copy.
         let col = unsafe { runtime.column_from_device_ptr(self.device_ptr() as *const c_void, self.len(), cudf_type) }
             .map_err(|error| {
                 map_cudf_error_with(

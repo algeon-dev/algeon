@@ -1,20 +1,20 @@
 use query_planning::error::QueryErrorCode;
 
 use super::*;
-// Transactional admission: fault-injection rollback and envelope
+// Transactional admission tests cover fault-injection rollback and envelope
 // identity evidence.
 
-/// Wait for the controller's complete cleanup boundary: returning streams are
-/// not sufficient because the release commit still owns the ledger grant and
-/// lane until it publishes the terminal report.
+/// Wait for the controller's complete cleanup boundary. Streams returning to the
+/// pool are not sufficient, because the release commit still owns the ledger
+/// grant and lane until it publishes the terminal report.
 fn wait_for_transaction_cleanup(service: &QueryService, what: &str) {
     service.wait_for_stream_pools_idle(Duration::from_secs(10)).unwrap_or_else(|error| panic!("{what}: {error}"));
 }
 
 /// Every injected transaction failure must restore the admission counters,
-/// ledger state, attempt lanes, and stream permits exactly, leave the ledger
-/// sequence in a valid observable state, and keep the service healthy for a
-/// later admission.
+/// ledger state, attempt lanes, and stream permits to their prior values,
+/// leave the ledger sequence in a valid observable state, and keep the service
+/// healthy for a later admission.
 #[test]
 fn injected_fault_at_every_transaction_step_restores_all_counters_exactly() {
     for step in AdmissionStep::ALL {
@@ -53,7 +53,7 @@ fn injected_fault_at_every_transaction_step_restores_all_counters_exactly() {
             "ledger sequence remains valid (monotonic) at {step:?}"
         );
 
-        // The service stays healthy: a later admission publishes a complete
+        // The service stays healthy. A later admission publishes a complete
         // matching envelope.
         let handle = service.admit_query().expect("admission succeeds after rollback");
         let (domain_id, grant_id, worker_scope) =
@@ -116,10 +116,10 @@ fn rollback_retains_lane_and_grant_until_stream_cleanup_quiesces() {
 }
 
 /// A complete but unpublished envelope transfers its private admission count
-/// to rollback cleanup before the admission mutex is released.  Otherwise the
-/// admission-quiescence phase of close could observe every counter as zero in
-/// the narrow interval before `AdmissionEnvelope::drop` installs deferred
-/// cleanup.
+/// to rollback cleanup before the admission mutex is released. If the transfer
+/// were deferred, the admission-quiescence phase of close could observe every
+/// counter as zero in the narrow interval before `AdmissionEnvelope::drop`
+/// installs deferred cleanup.
 #[test]
 fn rejected_complete_envelope_keeps_close_from_reporting_false_quiescence() {
     let service =
@@ -320,7 +320,7 @@ fn publication_after_admission_poison_rolls_back_the_envelope() {
     }
 }
 
-/// A published admission always carries the complete physical envelope: the
+/// A published admission always carries the complete physical envelope. The
 /// root stream is held from admission time (before any context acquisition),
 /// the domain matches the grant, and the lane/worker identity is consistent.
 #[test]
@@ -341,8 +341,8 @@ fn admitted_attempt_holds_complete_envelope_before_context_acquisition() {
     assert_eq!(worker_scope.device_ordinal(), 0);
     assert_eq!(worker_scope.lane_index(), 0, "first attempt takes lane zero");
 
-    // The context consumes the envelope binding rather than creating a
-    // stream or domain late.
+    // The context consumes the envelope binding and does not create a stream
+    // or domain late.
     let context = handle.acquire_context().expect("context consumes the envelope binding");
     assert_eq!(domain_id, Some(grant_id));
     drop(context);
@@ -359,8 +359,8 @@ fn admitted_attempt_holds_complete_envelope_before_context_acquisition() {
 }
 
 /// An async admission builds its envelope's root stream, allocation domain,
-/// and root member on the placed device's GPU pool, not on the caller's Tokio
-/// worker.
+/// and root member on the placed device's GPU pool. The caller's Tokio worker
+/// does not run that build.
 async fn async_admission_builds_its_envelope_on_the_device_gpu_pool_case() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for envelope placement");
     let probe = Arc::new(AdmissionTransactionProbe::disabled());
@@ -385,7 +385,7 @@ async fn async_admission_builds_its_envelope_on_the_device_gpu_pool() {
 }
 
 /// A blocking admission builds its envelope on the placed device's GPU pool,
-/// as an async admission does, not on the calling thread.
+/// as an async admission does. The calling thread does not run the build.
 fn blocking_admission_builds_its_envelope_on_the_device_gpu_pool() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for envelope placement");
     let probe = Arc::new(AdmissionTransactionProbe::disabled());

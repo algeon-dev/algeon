@@ -8,7 +8,7 @@
 //! The capacity contract splits the frozen managed capacity `M` into a cache
 //! share `K` (`cache_cap_bytes`) and a query share `Q = M - K`. Query
 //! admission and cache eviction each own one share, so no admission order can
-//! promise the same bytes twice. The admission equation is normative:
+//! promise the same bytes twice. The admission equation is:
 //!
 //! ```text
 //! R + Σ Gᵢ <= Q            (frozen residents + live grants fit the query share)
@@ -164,13 +164,20 @@ impl LedgerSnapshot {
 /// Public diagnostic report for one device ledger.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceLedgerReport {
+    /// CUDA device whose admission ledger was sampled.
     pub device_ordinal: usize,
+    /// Observation sequence advanced by each ledger state mutation.
     pub sequence: u64,
+    /// Managed byte capacity shared by query grants, frozen residents and cache.
     pub managed_capacity_bytes: u64,
     pub(crate) default_query_limit_bytes: u64,
+    /// Immutable simultaneous admitted-attempt bound.
     pub max_active_attempts: usize,
+    /// Attempts whose grant remains active or is being cleaned up.
     pub active_attempts: usize,
+    /// Sum of immutable active and cleaning grant capacities in bytes.
     pub live_grants_bytes: u64,
+    /// Query-share bytes retained by frozen resident domains.
     pub frozen_resident_bytes: u64,
     /// Aggregate bytes retained by resident owners at this report's sequence.
     pub resident_owner_bytes: u64,
@@ -193,19 +200,26 @@ pub struct DeviceLedgerReport {
     /// Cache-internal evictable accounting, reported separately from active
     /// grants and pinned cache bytes.
     pub evictable_bytes: u64,
+    /// Resident-cache bytes available for eviction at this ledger sequence.
     pub cache_evictable_resident_bytes: u64,
     /// Resident-cache bytes temporarily pinned by an active cache lease.
     pub cache_pinned_in_use_bytes: u64,
+    /// Admission state label, `open` or `closed`.
     pub health: String,
+    /// Active grant rows from the same ledger sequence.
     pub grants: Vec<DeviceLedgerGrantRow>,
 }
 
 /// One active grant row in [`DeviceLedgerReport`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceLedgerGrantRow {
+    /// Ledger generation minted once for this immutable grant.
     pub grant_id: u64,
+    /// Request identity whose admission committed the grant.
     pub admission_request_id: AdmissionRequestId,
+    /// Immutable query grant capacity in bytes.
     pub grant_bytes: u64,
+    /// Live resident-owner charges associated with this grant, in bytes.
     pub resident_owner_bytes: u64,
     pub(crate) frozen_resident_bytes: Option<u64>,
 }
@@ -562,7 +576,7 @@ impl DeviceLedger {
     /// Registers an in-lock observer for every ledger sequence transition.
     ///
     /// Registration is additive. Each invocation receives a snapshot whose
-    /// sequence is exactly the transition sequence; observer panics are
+    /// sequence equals the transition sequence; observer panics are
     /// isolated from admission and release.
     pub(crate) fn register_transition_observer(&self, observer: LedgerTransitionObserver) -> Result<()> {
         let mut registered = self.inner.transition_observers.lock().map_err(|_error| {
@@ -604,9 +618,9 @@ impl DeviceLedger {
         let profile = &self.inner.profile;
         let active_attempts = state.grants.values().filter(|grant| grant.frozen_resident_bytes.is_none()).count();
         // Admission reserves the complete root plus bounded auxiliary envelope
-        // for every active attempt. Derive availability from that immutable
-        // envelope under the ledger lock instead of reading mutable executor or
-        // stream-pool counters independently.
+        // for every active attempt. Availability is derived from that immutable
+        // envelope under the ledger lock, and mutable executor or stream-pool
+        // counters are not read separately.
         let committed_auxiliary_slots = active_attempts.saturating_mul(profile.source_work_per_attempt);
         LedgerSnapshot {
             device_ordinal: profile.device_ordinal,
@@ -680,7 +694,6 @@ impl DeviceLedger {
         })
     }
 
-    /// Current device admission health.
     pub(crate) fn health(&self) -> Result<DeviceAdmissionHealth> {
         let state = self.lock_state("health")?;
         Ok(state.health.clone())
@@ -745,7 +758,7 @@ impl DeviceLedger {
 
     /// Attempts one immutable grant admission for `waiter_id`.
     ///
-    /// The grant is exactly the explicit cap, or the default cap resolved
+    /// The grant is the explicit cap, or the default cap resolved
     /// against resident ownership in this transaction. It is never clamped to
     /// transient capacity and planner estimates do not participate.
     ///
@@ -937,10 +950,9 @@ impl DeviceLedger {
 
     /// Releases the complete exact charge of a destroyed resident-cache entry.
     ///
-    /// Unlike a permissive aggregate release, this refuses an
-    /// undercharged release. The residency state machine calls it only after
-    /// GPU-safe destruction has completed, so a mismatched byte count must
-    /// fail closed instead of releasing another entry's charge.
+    /// An undercharged release is refused. The residency state machine calls it
+    /// only after GPU-safe destruction has completed, so a mismatched byte count
+    /// fails closed and does not release another entry's charge.
     pub(crate) fn release_cache_residency_charge_after_destroy(&self, bytes: u64) -> Result<()> {
         self.release_exact_evictable_cache_charge(bytes, "release_cache_residency_charge_after_destroy")
     }
@@ -1131,7 +1143,7 @@ impl MemoryGrant {
     }
 
     /// Immutable grant budget in bytes. This value never changes while the
-    /// grant is live; v1 has no live grant growth, shrink, borrowing, or
+    /// grant is live; the grant has no live growth, shrink, borrowing, or
     /// revocation.
     pub fn budget_bytes(&self) -> u64 {
         self.inner.grant_bytes

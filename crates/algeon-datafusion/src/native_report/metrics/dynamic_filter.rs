@@ -11,9 +11,9 @@ const NATIVE_DYNAMIC_FILTER_RUNTIME_ROWS_METRIC_NAME: &str = "native_dynamic_fil
 
 /// Stable query-level classification of measured dynamic-filter reduction.
 ///
-/// The value describes observed runtime reduction, not whether a filter route
-/// was produced or reached a consumer. The string values are public TSV
-/// sentinels and should remain stable.
+/// The value describes observed runtime reduction only. Whether a filter route
+/// was produced or reached a consumer does not change it. The string values are
+/// public TSV sentinels and should remain stable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDynamicFilterMeasuredReductionStatus {
     /// No dynamic-filter runtime evidence was observed.

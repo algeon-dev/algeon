@@ -249,6 +249,7 @@ async fn probe_native_observed(
         },
     };
 
+    // The seal waits for grant release and cleanup, which need the output and context gone.
     drop(result);
     drop(admitted_context);
     let seal_deadline = Instant::now() + Duration::from_secs(10);
@@ -514,9 +515,9 @@ fn write_runtime_observation_jsonl_live(
     snapshot: &LiveRuntimeObservationSnapshot,
     out: &mut dyn Write,
 ) -> io::Result<()> {
-    // Live snapshots share the sealed exporter shape except footer is incomplete.
-    // Serialize manually as JSON lines via the public sealed writer when possible;
-    // fall back to event-only export.
+    // Unlike the sealed export, a live snapshot has no manifest or footer record.
+    // This writer emits a live_marker line, then one JSON line per event, and
+    // does not call the sealed writer.
     writeln!(
         out,
         "{}",
@@ -617,7 +618,8 @@ fn summarize_stages(sealed: Option<&SealedRuntimeObservationSnapshot>, live_dir:
     }
 
     // If Finished is the latest sealed view but some Started stages never
-    // finished, prefer an open stage as the residual long pole.
+    // finished, prefer an open stage as the last active stage, since it has no
+    // Finished event.
     if last_state.as_deref() == Some("finished")
         && let Some(open) = started.difference(&finished).next().cloned()
     {

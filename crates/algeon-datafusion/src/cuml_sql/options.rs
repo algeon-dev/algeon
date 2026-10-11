@@ -21,6 +21,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Validated columns bound to one named relation role in a cuML SQL call.
 pub struct CumlRelationBinding {
     relation_role: MlRelationRole,
     id: String,
@@ -29,15 +30,19 @@ pub struct CumlRelationBinding {
 }
 
 impl CumlRelationBinding {
+    /// Returns the semantic input role associated with this relation.
     pub fn relation_role(&self) -> MlRelationRole {
         self.relation_role
     }
+    /// Returns the bound row-id column used to correlate results with input rows.
     pub fn id(&self) -> &str {
         &self.id
     }
+    /// Returns the validated dense-vector representation and column binding.
     pub fn features(&self) -> &DenseVectorBinding {
         &self.features
     }
+    /// Returns the supervised-learning label column, or `None` for a relation without labels.
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
     }
@@ -65,10 +70,12 @@ pub(crate) enum CumlParams {
 }
 
 impl CumlValidatedOptions {
+    /// Returns normalized option JSON used as this call's identity and serialized representation.
     pub fn canonical_json(&self) -> &str {
         &self.canonical_json
     }
 
+    /// Returns validated relation bindings in the operation descriptor's role order.
     pub fn bindings(&self) -> &[CumlRelationBinding] {
         &self.bindings
     }

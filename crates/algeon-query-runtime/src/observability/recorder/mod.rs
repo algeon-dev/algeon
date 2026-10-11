@@ -46,6 +46,10 @@ pub(crate) use state::{BudgetWindow, CleanupFailureTally};
 use state::{PlanExecutionMetrics, RuntimeObservationRecorderState};
 
 /// Query-local recorder configuration.
+///
+/// [`Default`] disables capture. [`Self::native_execution`] enables the bounded
+/// native profile. Record and byte caps limit retained detail independently of
+/// the terminal outcome and the exact source totals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeObservationConfig {
     enabled: bool,
@@ -64,6 +68,7 @@ impl RuntimeObservationConfig {
     }
 
     /// Enables recording with deterministic record and logical-byte caps.
+    /// Zero caps permit recording attempts but retain no records.
     pub const fn bounded(max_retained_records: u64, max_retained_bytes: u64) -> Self {
         Self { enabled: true, limits: RuntimeObservationLimits { max_retained_records, max_retained_bytes } }
     }
@@ -195,16 +200,17 @@ impl SealedRuntimeObservationSnapshot {
 
     /// The metrics of plan execution `plan`, as frozen when its owner
     /// projected them or, failing that, when this session sealed.
+    /// `None` means that the snapshot has no frozen metrics for that invocation.
     pub fn query_metrics(&self, plan: &PlanExecutionId) -> Option<&QueryMetrics> {
         self.data.plans.get(plan)
     }
 
     /// Returns whether both values are views of the same immutable seal.
     ///
-    /// Query identifiers are intentionally insufficient for this comparison:
-    /// independently-created recorder sessions may share one external query
-    /// identity. Ownership boundaries use this identity check to make repeated
-    /// delivery idempotent without silently accepting another session.
+    /// Query identifiers are intentionally insufficient for this comparison.
+    /// Independently created recorder sessions may share one external query
+    /// identity. The comparison uses the `Arc` allocation behind each snapshot.
+    /// Only test code calls this method.
     #[cfg(test)]
     pub(crate) fn is_same_snapshot(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.data, &other.data)

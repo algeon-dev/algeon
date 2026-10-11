@@ -64,8 +64,8 @@ impl LiveBackendLease {
 impl Drop for LiveBackendLeaseInner {
     fn drop(&mut self) {
         let Ok(mut state) = self.registry.state.lock() else {
-            // A poisoned registry remains fail-closed rather than permitting a
-            // second independent resource ledger.
+            // A poisoned registry stays fail-closed, and no second independent
+            // resource ledger can be claimed.
             return;
         };
         if state.active.as_ref().is_some_and(|owner| owner.generation == self.generation) {

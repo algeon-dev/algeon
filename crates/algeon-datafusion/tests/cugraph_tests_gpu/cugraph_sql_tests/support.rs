@@ -259,8 +259,9 @@ pub(super) fn register_personalization_memtable(ctx: &SessionContext, table_name
 /// Registers the small undirected graph used to prove weighted similarity.
 ///
 /// Its pair `(0, 1)` has weighted neighborhoods `{1: 1, 2: 2}` and
-/// `{0: 1, 2: 3}`.  Its weighted Jaccard numerator is therefore `min(2, 3) =
-/// 2`, while the denominator is `max(1, 0) + max(0, 1) + max(2, 3) = 5`.
+/// `{0: 1, 2: 3}`. Its weighted Jaccard numerator is therefore
+/// `min(2, 3) = 2`, while the denominator is
+/// `max(1, 0) + max(0, 1) + max(2, 3) = 5`.
 pub(super) fn register_weighted_similarity_edges_i64(ctx: &SessionContext, table_name: &str) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),

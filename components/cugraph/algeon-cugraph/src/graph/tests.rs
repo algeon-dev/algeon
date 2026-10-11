@@ -436,7 +436,7 @@ fn fatal_native_graph_destroy_is_contained_and_rejects_later_owner_work() {
     fail_next_fatal_device_resource_destroy(700);
 
     // A native bridge regression that unwound or terminated across the C
-    // boundary would abort this test process instead of returning here.
+    // boundary would abort this test process and never return here.
     drop(graph);
 
     let snapshot = scope.health_snapshot(device);

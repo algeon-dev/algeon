@@ -3,7 +3,6 @@
 # image needs into docker/dist/.
 #
 # WHY THIS SCRIPT EXISTS
-# ----------------------
 # algeon-datafusion links against locally built RAPIDS C++ libraries (cuDF,
 # cuGraph, RMM, cuVS, cuML) for this checkout. The image bundles
 # the exact `.so` files this binary was linked against. This script collects them.
@@ -38,7 +37,7 @@
 #   bash docker/build-image.sh
 #
 # The image is feature-agnostic: it bundles whatever this script staged and
-# harvests only the CUDA libs the binary actually links. A cuDF-only
+# harvests only the CUDA libs the binary links. A cuDF-only
 # build omits the optional SQL families without an extra image-build flag.
 
 set -euo pipefail
@@ -86,7 +85,7 @@ echo "==> ALGEON_NATIVE_DIR    : $ALGEON_NATIVE_DIR"
 
 cd "$REPO_ROOT"
 
-# ── 0. Compile or verify canonical artifact ─────────────────────────────────
+# 0. Compile or verify canonical artifact
 # The helper rejects every ambient codegen/config override, starts Cargo from
 # an isolated cwd/CARGO_HOME, and supplies the policy target + rustflags on the
 # command line.
@@ -112,15 +111,15 @@ fi
 [[ -f "$BINARY" ]] || { echo "ERROR: canonical artifact $BINARY not found." >&2; exit 1; }
 [[ -f "$BUILD_RECORD" ]] || { echo "ERROR: build record $BUILD_RECORD not found." >&2; exit 1; }
 
-# ── 2. Reset staging dir ────────────────────────────────────────────────────
+# 2. Reset staging dir
 echo "==> Resetting $DIST_DIR ..."
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR/bin" "$DIST_DIR/lib"
 
-# ── 3. Stage the binary ─────────────────────────────────────────────────────
+# 3. Stage the binary
 cp "$BINARY" "$DIST_DIR/bin/algeon_server"
 
-# ── 4. Locate + stage cudf-sys runtime shared objects ───────────────────────
+# 4. Locate + stage cudf-sys runtime shared objects
 # They live in the cudf-sys CMake OUT_DIR, referenced by the binary's RUNPATH.
 RUNPATH=$(patchelf --print-rpath "$BINARY" 2>/dev/null \
     || readelf -d "$BINARY" 2>/dev/null \
@@ -150,7 +149,7 @@ cp -L "$CUDF_RUST_SO" "$DIST_DIR/lib/libcudf_rust.so"
 echo "==> libcudf_rust_rmm_interop.so: $CUDF_RUST_RMM_INTEROP_SO"
 cp -L "$CUDF_RUST_RMM_INTEROP_SO" "$DIST_DIR/lib/libcudf_rust_rmm_interop.so"
 
-# ── 5. Stage cuDF / RMM libs ────────────────────────────────────────────────
+# 5. Stage cuDF / RMM libs
 # copy_lib <src-glob...> : copy each matching real file and preserve symlinks.
 copy_lib() {
     local pat found=0 f
@@ -169,13 +168,13 @@ CUDF_LIB="$CUDF_INSTALL_DIR/lib"
 echo "==> Staging forked cuDF libs from $CUDF_LIB"
 copy_lib "$CUDF_LIB/libcudf.so"          || { echo "ERROR: libcudf.so missing" >&2; exit 1; }
 copy_lib "$CUDF_LIB/librmm.so"           || { echo "ERROR: librmm.so missing" >&2; exit 1; }
-# Optional-but-bundled: kvikio (remote/GDS reads) + nvcomp (parquet codecs).
-# These are dlopen'd by libcudf, so they never show up in ldd: bundle eagerly.
+# kvikio (remote/GDS reads) and nvcomp (parquet codecs) are optional but bundled.
+# libcudf dlopen()s them, and ldd does not list dlopen()ed libraries. Bundle them eagerly.
 copy_lib "$CUDF_LIB/libkvikio.so"        || echo "    note: libkvikio.so absent (remote-direct reads unavailable)"
 copy_lib "$CUDF_LIB/libnvcomp.so"*       || echo "    note: libnvcomp.so absent (GPU parquet codecs may be unavailable)"
 copy_lib "$CUDF_LIB/libnvcomp_cpu.so"*   || true
 
-# ── 6. Stage canonical cuVS and optional cuGraph / cuML libraries ───────────
+# 6. Stage canonical cuVS and optional cuGraph / cuML libraries
 CUVS_LIB=""
 if [[ $want_cuvs_runtime -eq 1 ]]; then
     for candidate in "$CUVS_INSTALL_DIR/lib" "$CUVS_INSTALL_DIR/lib64"; do
@@ -279,7 +278,7 @@ else
     echo "    note: rapids_logger has no shared DT_NEEDED edge (static/absorbed); not staging librapids_logger.so"
 fi
 
-# ── 7. Strip + rehome RUNPATHs ──────────────────────────────────────────────
+# 7. Strip + rehome RUNPATHs
 # Strip removes unneeded symbols from release .so/bin artifacts.
 # Rehome every RUNPATH to point only at the runtime lib dir + $ORIGIN, erasing
 # the stale host build paths so the image is hermetic and LD_LIBRARY_PATH-free.
@@ -304,7 +303,7 @@ else
     echo "warning: patchelf absent; relying on ENV LD_LIBRARY_PATH=$RUNTIME_LIB_DIR set by the image"
 fi
 
-# ── 8. Fail-closed native loader closure validation ─────────────────────────
+# 8. Fail-closed native loader closure validation
 validate_loader_closure() {
     command -v readelf >/dev/null 2>&1 || { echo "ERROR: readelf is required for loader validation." >&2; return 1; }
     command -v ldd >/dev/null 2>&1 || { echo "ERROR: ldd is required for loader validation." >&2; return 1; }
@@ -461,7 +460,7 @@ echo "==> Validating staged loader closure with readelf + ldd"
 validate_loader_closure
 echo "OK: staged loader closure passed."
 
-# ── 9. Manifest ─────────────────────────────────────────────────────────────
+# 9. Manifest
 python3 "$POLICY_HELPER" create-manifest \
     --dist-dir "$DIST_DIR" \
     --build-record "$BUILD_RECORD" \

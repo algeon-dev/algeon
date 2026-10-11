@@ -185,8 +185,9 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
 /// sets, and serially otherwise.
 ///
 /// On the serial path a merge failure ends the aggregate, because source work cannot be replayed
-/// after earlier partials were committed. `preserve_output_stream` asks for a lazy frame stream
-/// instead of one concatenated frame when the incremental merge is in use.
+/// after earlier partials were committed. `preserve_output_stream` asks the incremental merge
+/// for a lazy frame stream. Without it, the incremental merge concatenates its
+/// partitions into one frame.
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

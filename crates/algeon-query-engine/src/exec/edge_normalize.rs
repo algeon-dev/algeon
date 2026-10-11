@@ -18,7 +18,7 @@ pub(super) fn execute_edge_normalize(
     let graph_residency = input.graph_residency().cloned();
     // Edge normalization only restructures topology (reverse/dedup); a null
     // weight or edge_id must not drop an edge here. Weight-null conflicts are
-    // resolved by the weight combiner during deduplication, not by dropping.
+    // resolved by the weight combiner during deduplication; the null filter keeps those rows.
     let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope { weight: false, edge_id: false };
     let frame = super::edge_null_filter::filter_null_edge_rows(
         context,

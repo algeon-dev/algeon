@@ -1,8 +1,8 @@
 //! Supervisor thread owning the GPU execution pool Tokio runtime.
 //!
 //! The pool's Tokio runtime is built and dropped on a dedicated OS thread
-//! named `algeon-gpu-{device}-supervisor` rather than on the thread that
-//! constructs the pool. Dropping a multi-thread runtime joins its workers, and
+//! named `algeon-gpu-{device}-supervisor`. The thread that constructs the pool
+//! does not build or drop it. Dropping a multi-thread runtime joins its workers, and
 //! that join is forbidden from inside a runtime worker and from inside another
 //! Tokio runtime. Pool owners (backend close, process exit, the last `Arc`
 //! drop) may be on either kind of thread, so they only request an exit and
@@ -108,13 +108,13 @@ struct RuntimeSupervisorState {
 enum RuntimeSupervisorExit {
     Clean,
     /// Dropping the runtime unwound. The runtime is gone either way, but the
-    /// panic is reported to the cleanup coordinator rather than swallowed.
+    /// panic is reported to the cleanup coordinator and is not swallowed.
     Panicked {
         panic_message: String,
     },
     /// `Builder::build` failed before any handle was published. Retained so a
     /// later `wait_for_exit_until` on a half-constructed pool reports the
-    /// cause instead of a timeout.
+    /// cause and does not wait for the deadline.
     BuildFailed {
         message: String,
     },
@@ -189,10 +189,9 @@ impl RuntimeSupervisor {
                         },
                     };
                     // A closed startup channel means `start` already returned
-                    // an error; no owner exists to request exit, so drop the
-                    // runtime here before it can accept work.
+                    // an error; no owner exists to request exit, so return and
+                    // drop the runtime before it can accept work.
                     if startup_sender.send(RuntimeSupervisorStartup::Ready(runtime.handle().clone())).is_err() {
-                        drop(runtime);
                         return;
                     }
 
@@ -201,7 +200,7 @@ impl RuntimeSupervisor {
                     // returns. A job body is synchronous GPU work, so a running
                     // job finishes before its task is cancelled. The pool closes
                     // submissions before requesting exit, which is why the drop
-                    // waits for that request rather than for the handle count.
+                    // waits for that request and does not wait on the handle count.
                     let teardown = panic::catch_unwind(AssertUnwindSafe(|| {
                         thread_control.wait_for_exit_request();
                         #[cfg(test)]
@@ -369,10 +368,10 @@ impl RuntimeSupervisor {
 
     /// Joins the supervisor thread after it has published exit.
     ///
-    /// Joining before exit is published is rejected rather than attempted:
-    /// without a deadline that join could block a cleanup coordinator for as
-    /// long as the runtime takes to drain, and the coordinator owns the
-    /// deadline, so it must call [`Self::wait_for_exit_until`] first.
+    /// Joining before exit is published is rejected without attempting the join.
+    /// A join without a deadline could block a cleanup coordinator for as long
+    /// as the runtime takes to drain. The coordinator owns the deadline, so it
+    /// must call [`Self::wait_for_exit_until`] first.
     /// A thread cannot join itself, so a call from the supervisor thread
     /// (possible when the final pool reference is dropped by a pool job)
     /// leaves the handle in place and reports a self-join error.
@@ -460,9 +459,8 @@ impl RuntimeSupervisor {
         let joined = handle.join();
         self.join_disposition
             .store(if joined.is_ok() { SUPERVISOR_JOINED } else { SUPERVISOR_JOIN_FAILED }, Ordering::Release);
-        // The registry lock inside `unregister_process_exit` is taken while
-        // the exit hook iterates registrations; do not hold the join lock
-        // across it.
+        // Keep the join lock to the join itself; unregistering takes the
+        // registration and registry locks.
         drop(join);
         self.unregister_process_exit();
     }

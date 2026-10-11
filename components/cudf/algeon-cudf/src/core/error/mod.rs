@@ -93,14 +93,12 @@ impl BudgetExhaustionDetail {
 }
 
 impl Error {
-    // -- Construction (crate-internal) --------------------------------------
-
     /// Create a new error with the full contract: a leaf `code`, a cudf
     /// boundary `operation`, and a primary `message`.
     ///
     /// `operation` must be a non-empty `&'static str`. `message` must be
-    /// non-empty. These are programmer errors inside cudf, so they panic
-    /// rather than return `Result`.
+    /// non-empty. These are programmer errors inside cudf. Violations panic;
+    /// the constructor does not return `Result`.
     pub(crate) fn new_with(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
         let message = message.into();
         assert!(!operation.is_empty(), "cudf internal error: operation label must not be empty");
@@ -120,7 +118,7 @@ impl Error {
         }
     }
 
-    /// Internal: insert a typed fact; a duplicate key keeps the leaf error's value.
+    /// Inserts a typed fact. A duplicate key keeps the leaf error's value.
     #[must_use]
     pub(crate) fn with_fact<T>(mut self, key: FactKey<T>, value: T) -> Self
     where T: IntoFactValue {
@@ -128,13 +126,13 @@ impl Error {
         self
     }
 
-    /// Internal: append the canonical column-name fact.
+    /// Appends the canonical column-name fact.
     #[must_use]
     pub(crate) fn with_column(self, name: impl Into<Cow<'static, str>>) -> Self {
         self.with_fact(FACT_COLUMN_NAME, name.into())
     }
 
-    /// Internal: append a diagnostic detail. Repeated keys are allowed.
+    /// Appends a diagnostic detail. Repeated keys are allowed.
     ///
     /// Debug-asserts if `key` is a canonical fact snake_case name; such keys
     /// must be written via [`with_fact`](Self::with_fact), never through the
@@ -146,21 +144,21 @@ impl Error {
         self
     }
 
-    /// Internal: append a typed fact only when that canonical fact is absent.
+    /// Appends a typed fact only when that canonical fact is absent.
     #[must_use]
     pub(crate) fn with_fact_if_absent<T>(self, key: FactKey<T>, value: T) -> Self
     where T: IntoFactValue {
         if self.fact_value(key.name()).is_some() { self } else { self.with_fact(key, value) }
     }
 
-    /// Internal: append a diagnostic detail only when that detail key is
+    /// Appends a diagnostic detail only when that detail key is
     /// absent.
     #[must_use]
     pub(crate) fn with_detail_if_absent(self, key: &'static str, value: impl Into<String>) -> Self {
         if self.detail_value(key).is_some() { self } else { self.with_detail(key, value) }
     }
 
-    /// Internal: append several diagnostic details.
+    /// Appends several diagnostic details.
     ///
     /// Debug-asserts if any `key` is a canonical fact snake_case name. See
     /// [`with_detail`](Self::with_detail).
@@ -176,7 +174,7 @@ impl Error {
         self
     }
 
-    /// Internal: attach typed budget-exhaustion counters if absent.
+    /// Attaches typed budget-exhaustion counters if absent.
     #[must_use]
     pub(crate) fn with_budget_exhaustion_if_absent(mut self, detail: BudgetExhaustionDetail) -> Self {
         if self.inner.budget_exhaustion.is_none() {
@@ -185,21 +183,21 @@ impl Error {
         self
     }
 
-    /// Internal: attach the copied native shim payload.
+    /// Attaches the copied native shim payload.
     #[must_use]
     pub(crate) fn with_ffi_detail(mut self, detail: CudfErrorDetail) -> Self {
         self.inner.ffi_detail = Some(detail);
         self
     }
 
-    /// Internal: attach a source error.
+    /// Attaches a source error.
     #[must_use]
     pub(crate) fn with_source(mut self, src: impl Into<BoxedSourceError>) -> Self {
         self.inner.source = Some(src.into());
         self
     }
 
-    /// Internal: re-anchor this error at a new boundary.
+    /// Re-anchors this error at a new boundary.
     ///
     /// The previous primary operation is appended to `call_chain` as-is with
     /// no deduplication. All other fields are preserved.
@@ -211,14 +209,12 @@ impl Error {
         self
     }
 
-    /// Internal: re-anchor this error only when the requested operation
+    /// Re-anchors this error only when the requested operation
     /// differs from the current anchor.
     #[must_use]
     pub(crate) fn reanchor_if_needed(self, operation: &'static str) -> Self {
         if self.operation() == operation { self } else { self.reanchor(operation) }
     }
-
-    // -- Public read accessors ----------------------------------------------
 
     /// The stable machine-readable failure identity.
     pub fn code(&self) -> ErrorCode {
@@ -371,29 +367,29 @@ impl Error {
         out
     }
 
-    // -- Status/identity helpers (exact aliases only) -----------------------
+    // Status and identity helpers are exact aliases only.
 
-    /// Exact alias: `status() == Temporary`.
+    /// Equivalent to `status() == Temporary`.
     pub fn is_retryable(&self) -> bool {
         self.status() == ErrorStatus::Temporary
     }
 
-    /// Exact alias: `status() == Temporary`.
+    /// Equivalent to `status() == Temporary`.
     pub fn is_temporary(&self) -> bool {
         self.status() == ErrorStatus::Temporary
     }
 
-    /// Exact alias: `status() == Permanent`.
+    /// Equivalent to `status() == Permanent`.
     pub fn is_permanent(&self) -> bool {
         self.status() == ErrorStatus::Permanent
     }
 
-    /// Exact alias: `status() == Persistent`.
+    /// Equivalent to `status() == Persistent`.
     pub fn is_persistent(&self) -> bool {
         self.status() == ErrorStatus::Persistent
     }
 
-    /// Exact alias: `code() == ErrorCode::OutOfMemory`.
+    /// Equivalent to `code() == ErrorCode::OutOfMemory`.
     ///
     /// This is the single domestic OOM leaf. Foreign resource exhaustion is a
     /// different leaf and does not alias here.
@@ -404,7 +400,8 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Format: "{kind} ({status}) at {operation}: {message}[; k: v; ...][; source: {src}]"
+        // Output is "{kind} ({status}) at {operation}: {message}", then "; k: v" for each
+        // detail, then "; source: {src}" when a source is present.
         write!(f, "{} ({}) at {}: {}", self.kind(), self.status(), self.inner.operation, self.inner.message)?;
         for (k, v) in &self.inner.details {
             write!(f, "; {}: {}", k, v)?;
@@ -468,7 +465,6 @@ fn diagnostic_quote(input: &str) -> String {
     out
 }
 
-/// Build an `InvariantViolation` error.
 pub(crate) fn invariant_violation(operation: &'static str, message: impl Into<String>) -> Error {
     Error::new_with(ErrorCode::InvariantViolation, operation, message)
 }
@@ -679,7 +675,7 @@ fn error_for_ffi_status_with_detail(
 fn read_ffi_last_error_message() -> String {
     // SAFETY: cudf_last_error_message returns either null or a pointer to a
     // thread-local static C string that remains valid until the next FFI
-    // call on this thread. We immediately copy it into an owned String below.
+    // call on this thread. The pointee is copied into an owned String below.
     unsafe {
         let ptr = cudf_sys::cudf_last_error_message();
         if ptr.is_null() {
@@ -731,8 +727,8 @@ pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'stat
 /// thread-local entry stack.
 ///
 /// Device-aware runtime boundaries use this after reporting through their
-/// explicit owner-device path so one native failure produces one health
-/// record rather than a second generic TLS-derived record.
+/// explicit owner-device path, so one native failure produces one health
+/// record and no second generic TLS-derived record.
 pub(crate) fn check_status_in_without_device_report(
     status: cudf_sys::cudf_status_t,
     operation: &'static str,
@@ -901,8 +897,8 @@ fn foreign_context_detail_key(key: &'static str) -> Option<&'static str> {
         "validation_device" => "foreign_validation_device",
         "validation_stream" => "foreign_validation_stream",
         "control_plane_scalar_bytes" => "foreign_control_plane_scalar_bytes",
-        // Unreachable unless a new canonical key is added. Use a safe
-        // fallback rather than panicking inside a translator.
+        // Unreachable unless a new canonical key is added. The fallback avoids
+        // a panic inside the translator.
         _ => "foreign_canonical_context",
     })
 }

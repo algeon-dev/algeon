@@ -20,7 +20,7 @@ const DEFAULT_IGNORE_DIRS = new Set([
 ]);
 const DEFAULT_EXTS = new Set(['md', 'mdx', 'markdown', 'txt']);
 
-// ---------- text preparation ----------
+// Text preparation
 
 // Blank out a region but keep every index (and newline) in place so
 // line numbers survive.
@@ -60,7 +60,7 @@ function sentences(text) {
     .filter((s) => words(s).length > 0);
 }
 
-// ---------- statistics ----------
+// Statistics
 
 function computeStats(text) {
   const sents = sentences(text);
@@ -95,7 +95,6 @@ function computeStats(text) {
 
 function uniformityScore(stats) {
   // Each component contributes when the text looks mechanically uniform.
-  // Short texts get a confidence haircut instead of a confident score.
   let score = 0;
   if (stats.burstiness < 0.45) score += 40 * ((0.45 - stats.burstiness) / 0.45);
   if (stats.typeTokenRatio > 0 && stats.typeTokenRatio < 0.45) {
@@ -108,7 +107,7 @@ function uniformityScore(stats) {
   return Math.min(100, score);
 }
 
-// ---------- detection ----------
+// Detection
 
 function loadRules(rulesPath) {
   const file = rulesPath || DEFAULT_RULES;
@@ -195,7 +194,7 @@ function detect(prepared, rules) {
   return findings;
 }
 
-// ---------- scoring ----------
+// Scoring
 
 function patternScore(findings, wordCount) {
   if (!wordCount) return 0;
@@ -233,7 +232,7 @@ function badge(score) {
   return 'heavy AI    (rewrite it)';
 }
 
-// ---------- fixing ----------
+// Fixing
 
 function applyFixes(raw, rules) {
   let text = raw;
@@ -266,7 +265,7 @@ function applyFixes(raw, rules) {
   return { text, applied };
 }
 
-// ---------- scan ----------
+// Scan
 
 function walk(dir, opts, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -300,7 +299,7 @@ function scan(dir, rules, opts) {
   return results;
 }
 
-// ---------- CLI ----------
+// CLI
 
 function parseArgs(argv) {
   const opts = {

@@ -217,10 +217,10 @@ fn native_lag_window_shifts_within_partition_and_restores_input_order() {
         int64_array(batch, 2).iter().collect::<Vec<_>>(),
         vec![Some(10), Some(20), Some(100), Some(30), Some(200), Some(300)]
     );
-    // Within each partition rows are reasoned about in `ord` order:
+    // Within each partition, rows are ordered by `ord`:
     //   grp=1: ord=1 (value=20) -> ord=2 (value=10) -> ord=3 (value=30)
     //   grp=2: ord=1 (value=200) -> ord=2 (value=100) -> ord=3 (value=300)
-    // So LAG(value, 1) in input row order is:
+    // LAG(value, 1) in input row order is:
     //   row 0 (grp=1, ord=2): 20
     //   row 1 (grp=1, ord=1): NULL (first in partition)
     //   row 2 (grp=2, ord=2): 200
@@ -285,7 +285,7 @@ fn native_lag_window_groups_null_partition_keys_together() {
 
     // Output keeps input row count.
     assert_eq!(batch.num_rows(), 5);
-    // Within-partition logical order:
+    // Within each partition, rows are ordered by `ord`:
     //   grp=Some(1) sorted by ord: ord=1 (value=10) -> ord=2 (value=20) -> ord=3 (value=30)
     //   grp=None  sorted by ord: ord=1 (value=100) -> ord=2 (value=200)
     // LAG(value, 1) in input row order:
@@ -430,7 +430,7 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
 
 fn native_lead_window_attaches_output_to_filtered_parquet_source_frame() {
     // A Parquet chunk is decoded under a stage budget token, so its frame
-    // carries the token's stream and memory resource instead of the
+    // carries the token's stream and memory resource, which differ from the
     // runtime's. The LEAD output column is built on the runtime's resources,
     // and the window must still attach it to that frame.
     let dir = unique_temp_dir("query-engine-lead-parquet-source");

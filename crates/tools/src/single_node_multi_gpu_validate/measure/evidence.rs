@@ -126,8 +126,8 @@ pub(super) fn project_composed_schedule_projection(
 }
 
 /// Projects the DataFusion adapter's immutable typed snapshot into the stress
-/// artifact. This intentionally reads engine fields directly rather
-/// than reconstructing graph rows from DataFusion metric labels or error text.
+/// artifact. This intentionally reads engine fields directly. Graph rows are
+/// not reconstructed from DataFusion metric labels or error text.
 pub(super) fn project_graph_claim_calibration_snapshot(
     snapshot: SealedAttemptGraphClaimCalibrationSnapshot,
 ) -> GraphClaimCalibrationSnapshot {
@@ -189,8 +189,8 @@ pub(super) fn json_value<T: serde::Serialize>(value: T) -> Value {
 }
 
 /// Closes the public backend once and retains an auditable bounded projection
-/// of either outcome. Do not convert an error to a `null` artifact field: a
-/// failed close is a real result that must remain visible.
+/// of either outcome. Do not convert an error to a `null` artifact field. A
+/// failed close is a result that must remain visible.
 pub(super) fn close_backend(backend: &AlgeonGpuBackend) -> BackendCloseEvidence {
     let before = project_close_snapshot(backend.close_snapshot());
     let outcome = match backend.close_and_wait(CLOSE_TIMEOUT) {
@@ -243,7 +243,7 @@ pub(super) fn device_configurations(backend: &AlgeonGpuBackend) -> Vec<DeviceCon
             lane_count: record.lane_count,
             ownership: format!("{:?}", record.memory_ownership),
             device_health_generation: record.device_health_generation,
-            // A device that enumerated a startup record is admissible at t0;
+            // A device that enumerated a startup record is admissible at t0.
             // The quarantine scenario owns making one become ineligible mid-run.
             starting_health_open: true,
         })

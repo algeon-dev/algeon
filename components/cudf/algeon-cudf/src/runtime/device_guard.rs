@@ -199,8 +199,8 @@ impl DeviceEntryGuard {
     ///
     /// Dropping the returned guard restores the suspended entries; the
     /// teardown's entry guard must unwind first so its ambient restore and pop
-    /// happen before the resume. The CUDA current device is untouched: entries
-    /// are suspended, not exited.
+    /// happen before the resume. The CUDA current device is untouched because
+    /// suspension only moves the entry records into the returned guard.
     fn suspend_active_device() -> Option<SuspendedDeviceEntry> {
         THREAD_AUTHORITY.with(|authority| {
             let mut authority = authority.borrow_mut();
@@ -346,8 +346,8 @@ mod tests {
     }
 
     /// Teardown of another device's resource inside a nested entry suspends
-    /// the active entries instead of failing with a nested cross-device
-    /// error, and resumes them after the teardown entry unwinds.
+    /// the active entries and does not fail with a nested cross-device error.
+    /// The suspended entries resume after the teardown entry unwinds.
     #[test]
     fn teardown_entry_suspends_nested_entries_on_another_device_and_resumes_them() {
         let scope = DeviceSafetyTestScope::install([

@@ -24,7 +24,7 @@ pub(crate) use query_runtime::native_error::{
 use query_runtime::runtime::ExecutionContext;
 
 /// Memory-scope label of an allocation failure sampled at the attempt's
-/// allocation domain instead of an operation's budget scope.
+/// allocation domain. It does not name an operation's budget scope.
 const ATTEMPT_DOMAIN_BOUNDARY: &str = "attempt_allocation_domain";
 
 /// Records the attempt allocation domain's counters on an allocation failure
@@ -99,8 +99,8 @@ pub(crate) fn cuvs_query_error(operation: &'static str, message: impl Into<Strin
 ///
 /// The engine validates vector schemas and selects every requested column
 /// before preparing this producer-rooted export. A preparation failure at this
-/// point is therefore an execution-binding invariant, not a second user-input
-/// validation surface.
+/// point is therefore an execution-binding invariant violation, and input
+/// validation has already run.
 #[cfg(feature = "cuvs")]
 pub(crate) fn cudf_interop_query_error<E>(
     operation: &'static str,

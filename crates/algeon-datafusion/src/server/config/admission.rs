@@ -44,9 +44,9 @@ pub(super) fn server_queue_policy(
 
 /// Resolve the server's complete ordinal-keyed device envelope set.
 ///
-/// `ALGEON_SERVER_GPU_DEVICES` remains a deployment selector, but it no
-/// longer broadcasts one scalar resource policy. Every selected device,
-/// including a single selected device, must name one TOML profile.
+/// `ALGEON_SERVER_GPU_DEVICES` is a deployment selector only. It does not
+/// apply a shared resource policy to the selected devices. Every selected
+/// device, including a single selected device, must name one TOML profile.
 pub(super) fn server_device_profiles(
     file: &ServerAdmissionFileConfig,
     device_ordinals: &[usize],
@@ -119,7 +119,7 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
             return Err(ServerError::invalid_config(field, "must be greater than zero"));
         }
     }
-    // Automatic capacity bakes in driver headroom; an explicit limit does not,
+    // Automatic capacity includes the driver reserve; an explicit limit does not,
     // so an explicit limit must declare its reserve (0 is a deliberate choice).
     if raw.memory_limit_bytes.is_some() && raw.backend_reserve_bytes.is_none() {
         return Err(ServerError::invalid_config(

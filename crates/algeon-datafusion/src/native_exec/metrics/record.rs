@@ -184,7 +184,9 @@ pub struct SealedAttemptGraphClaimCalibrationSnapshot {
 /// graph executor started; peak qualification remains fail-closed downstream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphClaimCalibrationExecution {
+    /// The graph algorithm executed locally and can supply physical allocation-peak evidence.
     Physical,
+    /// The logical request completed without a local graph traversal, for the attached reason.
     NonPhysical(GraphClaimCalibrationNonPhysicalReason),
 }
 
@@ -195,7 +197,10 @@ pub enum GraphClaimCalibrationNonPhysicalReason {
     /// This exact BFS request reused a completed leader result. The leader's
     /// engine-minted attempt id is retained when the request was attempt-bound
     /// so qualification can require that leader's physical peak evidence.
-    BfsSingleflightFollower { leader_attempt_id: Option<AttemptId> },
+    BfsSingleflightFollower {
+        /// Leader attempt whose traversal supplied this result, or `None` without an attempt binding.
+        leader_attempt_id: Option<AttemptId>,
+    },
 }
 
 impl SealedAttemptGraphClaimCalibrationSnapshot {
@@ -215,8 +220,8 @@ impl SealedAttemptGraphClaimCalibrationSnapshot {
                 execution_complete &= captured.execution_complete;
                 match execution.as_ref() {
                     // The sealed target may receive the same capture through a
-                    // composed root and its graph producer. Classification is
-                    // state, not an event, so identical observations coalesce.
+                    // composed root and its graph producer. Classification is a state.
+                    // Identical observations coalesce.
                     Some(existing) if existing == &captured_execution => {},
                     Some(_) => {
                         execution = Some(captured_execution);
@@ -288,8 +293,8 @@ struct CapturedGraphMeasuredPeakRows {
 
 impl GraphClaimCalibrationCapture {
     /// Records a completed exact-request BFS follower. The follower did not
-    /// execute a graph algorithm; it must point at its physical leader rather
-    /// than borrow or synthesize that leader's peak.
+    /// execute a graph algorithm; it must point at its physical leader and
+    /// must not borrow or synthesize that leader's peak.
     #[cfg(feature = "cugraph")]
     pub(crate) fn record_bfs_singleflight_follower(&self, leader_attempt_id: Option<AttemptId>) {
         self.record_execution(GraphClaimCalibrationExecution::NonPhysical(
@@ -339,8 +344,8 @@ impl GraphClaimCalibrationCapture {
         state.sealed = true;
         let (row_execution, row_execution_complete) = graph_claim_execution_from_rows(&state.rows);
         let (execution, execution_complete) = match state.execution.clone() {
-            // BFS followers have an engine-minted request identity rather than
-            // a local graph row. Keep that explicit route distinct from the
+            // BFS followers have an engine-minted request identity and no local
+            // graph row. Keep that explicit route distinct from the
             // row-derived graph-executor lifecycle.
             Some(execution) => (Some(execution), state.execution_complete),
             None => (row_execution, row_execution_complete),
@@ -568,8 +573,8 @@ impl AlgeonNativeMetrics {
 
     /// Finalizes a native outcome whose logical host sink the adapter's
     /// bounded GPU-to-host cursor runs later. A failed plan records its
-    /// metrics now; a successful one hands them, with `context_lease`, to the
-    /// cursor. Either way the metrics freeze before the lease is released.
+    /// metrics now; a successful one returns them, with `context_lease`, for the
+    /// cursor to hold. Either way the metrics freeze before the lease is released.
     pub(crate) fn finalize_query_outcome_for_deferred_host(
         &self,
         outcome: QueryExecutionOutcome,

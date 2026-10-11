@@ -97,7 +97,6 @@ impl QueryServiceEpoch {
         }
         let user = self.retain_existing_user();
         if !self.inner.open.load(Ordering::Acquire) {
-            drop(user);
             return Err(query_service_epoch_closed(operation));
         }
         Ok(user)
@@ -297,10 +296,7 @@ impl QueryResourceEpoch {
         self.check_open(operation)?;
         self.inner.active_users.fetch_add(1, Ordering::AcqRel);
         let anchor = Arc::new(QueryResourceAnchor { epoch: self.clone(), _owner: owner });
-        if let Err(error) = self.check_open(operation) {
-            drop(anchor);
-            return Err(error);
-        }
+        self.check_open(operation)?;
         Ok(anchor)
     }
 
@@ -346,8 +342,8 @@ impl QueryResourceEpoch {
 
 /// One counted outward ownership root for an admitted query.
 ///
-/// Clones of the surrounding context/resource share this anchor. The owner is
-/// deliberately held by the anchor rather than by [`QueryResourceEpoch`].
+/// Clones of the surrounding context/resource share this anchor. The anchor
+/// holds the owner, and [`QueryResourceEpoch`] holds none.
 pub(crate) struct QueryResourceAnchor {
     epoch: QueryResourceEpoch,
     _owner: Arc<dyn Send + Sync>,
@@ -411,7 +407,6 @@ impl QueryServiceResourceEpoch {
         if let Some(anchor) = &query_anchor
             && let Err(error) = anchor.check_open(operation)
         {
-            drop(user);
             return Err(error);
         }
         Ok(Arc::new(Self { epoch: epoch.clone(), _user: user, query_anchor }))
@@ -441,7 +436,7 @@ impl QueryServiceResourceEpoch {
         self.epoch.check_open(operation)?;
         let user = self.epoch.retain_existing_user();
         // Re-check after retaining: a close that began between the two checks
-        // must not hand back a lease that would keep the generation alive
+        // must not return a lease that would keep the generation alive
         // past its own teardown. Failing here drops `user` and releases it.
         self.epoch.check_open(operation)?;
         Ok(Arc::new(Self { epoch: self.epoch.clone(), _user: user, query_anchor: None }))

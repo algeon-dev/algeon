@@ -47,9 +47,8 @@ pub const TPCDS_TABLES: &[&str] = &[
 pub const ALGEON_TPCDS_SCALE_FACTOR_ENV: &str = "ALGEON_TPCDS_SCALE_FACTOR";
 /// Free-form provenance command recorded in dataset metadata.
 pub const ALGEON_TPCDS_GENERATION_COMMAND_ENV: &str = "ALGEON_TPCDS_GENERATION_COMMAND";
-/// Optional caller-supplied content fingerprint. When unset, only the cheaper
-/// metadata fingerprint is recorded unless the caller explicitly requests a
-/// content-fingerprint pass.
+/// Truthy flag requesting a content-fingerprint pass. Without it, only the cheaper
+/// metadata fingerprint is recorded.
 pub const ALGEON_TPCDS_CONTENT_FINGERPRINT_ENV: &str = "ALGEON_TPCDS_CONTENT_FINGERPRINT";
 
 /// In-repo default Parquet root for the TPC-DS SF1 fixture.
@@ -259,8 +258,7 @@ pub fn describe_tpcds_dataset(
 /// Describes a complete TPC-DS fixture and optionally hashes file contents.
 ///
 /// Metadata fingerprints are cheap and derived from Parquet metadata. Content
-/// fingerprints scan table bytes and use a stable `tpcds-content-fnv1a64-v1`
-/// report vocabulary.
+/// fingerprints scan table bytes and emit `content-fnv1a64:*` values.
 pub fn describe_tpcds_dataset_with_content_fingerprint(
     root: &Path,
     scale_factor: impl Into<String>,

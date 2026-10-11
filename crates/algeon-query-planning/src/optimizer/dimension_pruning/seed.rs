@@ -259,8 +259,8 @@ fn remap_join_output_predicate(predicate: &Expr, join: &JoinNode) -> Option<(Joi
     side.map(|side| (side, remapped))
 }
 
-// Deliberately narrower than the similarly named helper in
-// `join_filter_reassociation`: dimension pruning must reject expression
+// This helper is deliberately narrower than the similarly named helper in
+// `join_filter_reassociation`. Dimension pruning must reject expression
 // families it cannot prove safe to push into source pruning.
 pub(super) fn remap_unqualified_columns(
     expr: &Expr,

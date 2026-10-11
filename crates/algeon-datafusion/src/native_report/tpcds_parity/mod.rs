@@ -6,7 +6,7 @@
 //! and status enums serialize through their `as_str` methods.
 //!
 //! Output fingerprints use a stable FNV-1a hash over schema metadata and
-//! canonicalized row values. They are diagnostic identifiers, not
+//! canonicalized row values. They are diagnostic identifiers. They are not
 //! cryptographic hashes. Unordered comparisons sort canonical rows before
 //! comparing values; ordered comparisons preserve batch row order.
 
@@ -36,8 +36,8 @@ mod compare;
 mod fingerprint;
 mod report;
 
-// Private sibling-visibility imports. Submodules pick up these names via
-// `use super::*;` because child modules can see their parent's private uses.
+// Private `use` items are visible to this module and its descendants. The
+// submodules import these names with `use super::*;`.
 use canonical::{CanonicalField, collect_canonical_rows, compare_canonical_rows};
 use compare::{ParityCompareOptions, compare_record_batches_with_options};
 pub use compare::{

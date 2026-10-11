@@ -79,51 +79,34 @@ before changing behavior; drafts, blog posts and examples are not normative.
 
 ## Imports
 
-- Import production dependencies in the file's top `use` block. Imports used
-  only by test modules belong inside each consuming test module, including
-  when multiple test modules need the same item. Let the module's `cfg(test)`
-  gate those imports; preserve other feature, platform and attribute conditions.
-  Standalone test sources and shared test-support modules own their imports.
-  Keep imports needed by parent-module `cfg(test)` helpers or `test-hooks`
-  interfaces with those consumers, preserving their visibility and feature
-  conditions. Follow [Test layout](scripts/test-harness.md#test-layout) for
-  source ownership. Reach variants and associated functions through the
-  imported type.
+- Place each import with the code that consumes it and gate it with that
+  code's `cfg`. Production imports go in the file's top `use` block. Imports
+  read only by tests go inside each consuming test module, even when several
+  test modules repeat them; a `#[cfg(test)]` seam in the parent module keeps
+  its gated import in the top block.
+- Reach variants and associated functions through the imported type.
 - Use `super::` only for the direct parent; use `crate::` above it.
-- On name collisions, the local item keeps the bare name and foreign items use
-  an origin prefix, such as `CudfDataType`, `ArrowDataType`, or
-  `DataFusionResult`. Prefix both sides when both are foreign. Keep the local
-  `Result` bare; use `std::result::Result` inline only when its arity differs.
+- On name collisions, the local item keeps the bare name and foreign items
+  take an origin prefix, such as `CudfDataType`, `ArrowDataType` or
+  `DataFusionResult`. Prefix both sides when both are foreign. The local
+  `Result` stays bare; write `std::result::Result` inline only when its arity
+  differs.
 - Inline paths are otherwise limited to visibility qualifiers, attributes,
-  doc links, calls through imported modules, sibling private modules, and enum
-  translation matches. Gate imports with the same `cfg` as their uses.
+  doc links, calls through imported modules, sibling private modules and enum
+  translation matches.
 
-## Agent skills
+## Validation
 
 Repository skills live under `.agents/skills/`. Use
-[algeon-validation](.agents/skills/algeon-validation/SKILL.md) when selecting
-checks or diagnosing validation failures. Read harness internals only when
-the task needs them.
-
-## Validation policy
-
-Select commands from the [test guide](website/docs/build/tests.md) for the
-contracts affected. Broaden focused checks only when failures or scope warrant
-it. Ordinary implementation work finishes after the relevant focused lint and
-behavior tests pass, with no task-related failures. Read-only reviews and
-prose-only edits need no Cargo or GPU checks unless requested.
-
-Run the full gate only for pre-merge validation or an explicit request; follow
-the guide's launch and monitoring instructions. Report focused, `--fast` and
-failure-only reruns as partial validation. For native work, report commands,
-selected native prefixes, loader paths and GPU environment.
-
-Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build
-artifacts; cleanup is never implicit.
+[algeon-validation](.agents/skills/algeon-validation/SKILL.md) to select
+checks, diagnose failures and report results. Ordinary implementation work
+finishes once the focused lint and behavior tests for the affected contracts
+pass. Run the full gate only for pre-merge validation or an explicit request.
+Read-only reviews and prose-only edits need no Cargo or GPU checks unless
+requested. `bash scripts/dev/clean_target_artifacts.sh` only reports
+removable build artifacts; cleanup is never implicit.
 
 ## Writing tests
-
-Follow the [test layout contract](scripts/test-harness.md#test-layout).
 
 - Prefer extending existing coverage at the behavior boundary before creating
   new tests.

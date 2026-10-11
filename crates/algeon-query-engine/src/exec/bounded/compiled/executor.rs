@@ -259,8 +259,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 // sink through sibling tasks sharing the same run (join probe
                 // chunks, aggregate source chunks), and tracking every producer
                 // is more coupling than one output-sized copy. A lane-less run
-                // executes everything on the root context, so it returns the
-                // frame as produced instead of doubling device usage at the sink.
+                // executes everything on the root context. It returns the frame as produced,
+                // and the adoption copy that would double device usage at the sink is skipped.
                 let root_runtime = self.execution.context().runtime()?;
                 let adopted = frame.frame().copy_into_runtime(&root_runtime).map_err(|error| {
                     cudf_query_error(

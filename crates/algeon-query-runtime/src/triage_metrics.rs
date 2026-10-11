@@ -3,7 +3,6 @@ use query_planning::triage::{TriageCode, TriageSeverity, TriageSignal, TriageSum
 use crate::metrics::QueryMetrics;
 
 impl QueryMetrics {
-    /// Builds a compact triage summary from runtime metrics.
     pub(crate) fn triage_summary(&self) -> TriageSummary {
         let mut signals = Vec::new();
         if self.retry_resource_exhausted_count > 0 {

@@ -124,7 +124,7 @@ struct RuntimeResourceHandleOwner {
 unsafe impl Send for RuntimeResourceHandleOwner {}
 // SAFETY: see the `Send` impl above. Shared access cannot bypass the stable
 // gate, and Drop consumes the pointer exactly once. If device entry cannot be
-// proven, Drop quarantines the native pointer instead of invoking FFI.
+// proven, Drop quarantines the native pointer and does not invoke FFI.
 unsafe impl Sync for RuntimeResourceHandleOwner {}
 
 impl RuntimeResourceHandleOwner {
@@ -141,8 +141,8 @@ impl RuntimeResourceHandleOwner {
             .route_current_resource(runtime.stream(), runtime.memory_resource())
             .map_err(|error| map_current_resource_route_error(error, operation))?;
         // SAFETY: `binding` is borrowed from a live explicit cudf runtime. The
-        // shim borrows the stream and memory-resource handles for exactly the
-        // lifetime guarded by the binding-extension lease's retained domain.
+        // shim borrows the stream and memory-resource handles for the lifetime
+        // guarded by the binding-extension lease's retained domain.
         let shim = unsafe {
             cugraph_rs_runtime_resource_handle_create(
                 binding.cuda_stream().as_raw(),
@@ -385,7 +385,7 @@ impl ResourceHandle {
 
     /// Create a new resource handle with default single-GPU cuGraph resources.
     ///
-    /// Internal helper for source-local tests and implementation plumbing.
+    /// Internal helper for source-local tests. Delegates to `for_current_device`.
     #[cfg(test)]
     pub(crate) fn new() -> Result<Self> {
         Self::for_current_device()
@@ -600,7 +600,7 @@ impl ResourceHandle {
     /// Enter the owner device on the current thread and create an execution
     /// session for GPU-capable work. Runtime-bound handles serialize entry for
     /// the shared native owner; nested same-owner entry on one thread is
-    /// rejected instead of deadlocking.
+    /// rejected without waiting, so it cannot deadlock.
     pub fn enter(&self, operation: &'static str) -> Result<EnteredContext<'_>> {
         let runtime_extension = match &self.state {
             ResourceHandleState::RuntimeBound { lease } => Some(lease.enter(operation)?),

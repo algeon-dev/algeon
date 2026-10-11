@@ -92,12 +92,10 @@ pub struct JoinFilterReassociationDiagnostics {
 }
 
 impl JoinFilterReassociationDiagnostics {
-    /// Returns true when the pass produced no candidate evidence.
     pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
-    /// Merges another diagnostics value into this one.
     pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -1052,9 +1050,9 @@ fn remap_single_side_join_output_predicate(predicate: &Expr, join: &JoinNode) ->
     side.map(|side| (side, remapped))
 }
 
-// Deliberately broader than the similarly named helper in `dimension_pruning`:
-// reassociation rebuilds supported expression trees, while pruning keeps a
-// tighter proof boundary for source-pushdown safety.
+// This helper is deliberately broader than the similarly named helper in
+// `dimension_pruning`. Reassociation rebuilds supported expression trees, while
+// pruning keeps a tighter proof boundary for source-pushdown safety.
 fn remap_unqualified_columns(expr: &Expr, map_column: &mut impl FnMut(&ColumnRef) -> Option<Expr>) -> Option<Expr> {
     match expr {
         Expr::Column(column) if column.qualifier().is_none() => map_column(column),

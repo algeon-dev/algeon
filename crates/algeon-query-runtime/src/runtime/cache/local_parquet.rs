@@ -3,7 +3,7 @@
 //! A promotion always copies the attempt-owned frame into the one shared
 //! device cache allocation domain. The cache pre-reserves its ledger charge
 //! before that copy, so an allocation failure or cancellation cannot leave a
-//! copied allocation uncharged. The source handle is borrowed throughout: the
+//! copied allocation uncharged. The source handle is borrowed throughout. The
 //! attempt remains its sole owner when retention is skipped or fails.
 
 use std::{
@@ -34,9 +34,9 @@ const MAX_SOURCE_EVENT_SNAPSHOTS: usize = 256;
 
 /// Result of attempting to promote an attempt-owned decoded source frame.
 ///
-/// Allocation failure is deliberately distinct from [`Self::CapacitySkipped`]:
-/// the former means capacity was reserved before the copy but the cache-domain
-/// allocator could not complete it; the latter performs no device copy.
+/// Allocation failure is deliberately distinct from [`Self::CapacitySkipped`].
+/// The former means capacity was reserved before the copy but the cache-domain
+/// allocator could not complete it. The latter performs no device copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GpuLocalParquetSourceCachePromotion {
     /// A new cache-owned copy was retained.
@@ -60,8 +60,8 @@ pub struct GpuLocalParquetSourceCachePromotionResult {
     pub(crate) outcome: GpuLocalParquetSourceCachePromotion,
     pub(crate) retained_device_bytes: u64,
     pub(crate) evicted_device_bytes: u64,
-    /// The allocation error code, when a copy allocation failed rather than
-    /// outgrew its pre-reservation.
+    /// The allocation error code when a copy allocation failed. `None` when the
+    /// copy outgrew its pre-reservation.
     pub(crate) allocation_failure_code: Option<QueryErrorCode>,
 }
 
@@ -113,7 +113,7 @@ struct GpuLocalParquetSourceCacheEntry {
 struct GpuLocalParquetSourceCacheState {
     entries: HashMap<GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCacheEntry>,
     /// Source reads currently building a candidate value.  This is separate
-    /// from `promotions`: it covers the decode itself so waiters do not each
+    /// from `promotions`.  It covers the decode itself, so waiters do not each
     /// perform the same cache-cold Parquet read before discovering a shared
     /// entry at promotion time.
     loads: HashMap<GpuLocalParquetSourceCacheKey, u64>,
@@ -232,8 +232,8 @@ pub enum GpuLocalParquetSourceCacheLoad {
 /// Pin held by every cache checkout and every transitive derived frame.
 ///
 /// The shared residency pin is deliberately non-cloneable. This wrapper makes
-/// a cloned result retain the same one lease; the state machine sees one final
-/// release only after the final result clone is gone.
+/// a cloned result retain the same one lease. The lease is released once,
+/// after the final result clone is gone.
 #[derive(Clone)]
 pub(crate) struct GpuLocalParquetSourceCachePin {
     _inner: Arc<CacheResidencyPin>,
@@ -369,10 +369,11 @@ impl GpuLocalParquetSourceCache {
     /// Atomically checks out a cached source frame or claims the one cold
     /// read permitted for `key` in this ordinal-local cache domain.
     ///
-    /// This is intentionally above `promote`: coalescing only completed
+    /// This is intentionally above `promote`.  Coalescing only completed
     /// promotions prevents duplicate cache charges, but it still lets every
     /// concurrent caller decode the same Parquet bytes.  A load claim closes
-    /// that gap and gives the source path real build-wait behavior.
+    /// that gap, so concurrent callers wait for the elected leader to decode
+    /// the source.
     #[doc(hidden)]
     pub fn checkout_or_claim(
         &self,
@@ -491,9 +492,9 @@ impl GpuLocalParquetSourceCache {
     }
 
     /// Promotes a successfully decoded leader frame, then wakes every
-    /// same-key follower.  The wake happens on all promotion outcomes: a
-    /// skipped/failed promotion elects at most one next leader rather than
-    /// leaving waiters blocked or charging duplicates.
+    /// same-key follower.  The wake happens on all promotion outcomes.  A
+    /// skipped or failed promotion elects at most one next leader, so waiters
+    /// are not left blocked and no duplicate is charged.
     #[doc(hidden)]
     pub fn promote_load(
         &self,
@@ -810,6 +811,7 @@ impl GpuLocalParquetSourceCache {
             },
         };
         if state.closed {
+            // Release the state lock: clear_promotion re-locks it after the device sync.
             drop(state);
             self.destroy_committed_value(value, residency)?;
             self.clear_promotion(&key)?;
@@ -817,6 +819,7 @@ impl GpuLocalParquetSourceCache {
         }
         let pending = state.promotions.remove(&key);
         if !pending || state.entries.contains_key(&key) {
+            // Release the state lock: destroy_committed_value synchronizes the device.
             drop(state);
             self.destroy_committed_value(value, residency)?;
             return Err(QueryError::new(
@@ -836,8 +839,9 @@ impl GpuLocalParquetSourceCache {
 
     /// Drains all cache entries after ensuring no checkout remains pinned.
     ///
-    /// Refuses to close a pinned source cache rather than dropping its map
-    /// ownership and relying on a later pin release to discover teardown.
+    /// Refuses to close a source cache while any entry is pinned. The map keeps
+    /// ownership of every entry on refusal, so teardown does not depend on a
+    /// later pin release.
     pub(crate) fn close_and_drain(&self) -> Result<()> {
         let entries = {
             let mut state = self.lock("close_and_drain")?;
@@ -924,6 +928,7 @@ impl GpuLocalParquetSourceCache {
         transaction: CacheResidencyChargeTransaction,
     ) -> Result<()> {
         let destroy = value.synchronize_for_destruction();
+        // Drop the uncommitted value before the charge transaction is rolled back or sealed.
         drop(value);
         match destroy {
             Ok(()) => transaction.rollback(),
@@ -937,6 +942,7 @@ impl GpuLocalParquetSourceCache {
         destruction: CacheResidencyDestruction,
     ) -> Result<()> {
         let destroy = value.synchronize_for_destruction();
+        // Drop the cached value before the destruction token releases or retains its charge.
         drop(value);
         match destroy {
             Ok(()) => destruction.commit_after_destroy(),

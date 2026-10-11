@@ -145,7 +145,7 @@ pub(crate) fn installed_prefix_for_libcudf(library_path: &Path) -> Option<&Path>
 /// Wipe the CMake build directory when cached configure-time inputs no longer
 /// match the current Cargo build. CMake otherwise keeps stale cache entries
 /// across auto-reconfigures, including the libcudf discovery prefix, and may
-/// silently ignore updated environment variables.
+/// ignore updated environment variables without a diagnostic.
 pub(crate) fn discard_stale_cmake_build_dir(c_compiler: &Path, cxx_compiler: &Path, test_hooks: &str) {
     let Ok(out_dir) = env::var("OUT_DIR") else { return };
     discard_stale_cmake_build_dir_at(Path::new(&out_dir), c_compiler, cxx_compiler, test_hooks);
@@ -423,7 +423,7 @@ pub(crate) fn check_libcudf_staleness(manifest_dir: &Path) -> Option<StalenessRe
     let Ok(libcudf_meta) = fs::metadata(&libcudf_so) else { return None };
     let Ok(libcudf_mtime) = libcudf_meta.modified() else { return None };
 
-    // cudf-sys lives at <repo>/cudf-sys, libcudf submodule at <repo>/cudf.
+    // The libcudf submodule is this crate's sibling at `components/cudf/cudf`.
     let cudf_cpp = manifest_dir.join("../cudf/cpp");
     let scan_dirs = [cudf_cpp.join("src"), cudf_cpp.join("include")];
 

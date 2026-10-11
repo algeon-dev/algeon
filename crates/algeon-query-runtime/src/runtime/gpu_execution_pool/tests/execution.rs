@@ -501,7 +501,7 @@ fn blocking_submit_saturates_fast_with_typed_error_on_min_pool() {
 /// A resolved join implies the worker's class slot is already reusable: the
 /// worker releases its class permit and job counters before it delivers the
 /// completion, so a caller that joins and immediately resubmits is admitted
-/// rather than failing on a slot the finished worker still holds.
+/// and does not fail on a slot the finished worker still holds.
 #[test]
 fn blocking_join_resolves_only_after_the_class_slot_is_released() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
@@ -589,11 +589,11 @@ fn blocking_completion_notifies_in_finish_order_after_releasing_capacity() {
 }
 
 /// `submit_blocking` must hold the pool's resource epoch clone inside the
-/// worker closure, not only across submission: the closure runs on a
+/// worker closure as well as across submission. The closure runs on a
 /// `spawn_blocking` thread outside the async paths that already move their
 /// epoch clone into the task. If the epoch clone were dropped at submission
-/// time instead of inside the worker, the epoch would go idle (and a
-/// concurrent close could complete) while the worker is still parked.
+/// time, the epoch would go idle and a concurrent close could complete while
+/// the worker is still parked.
 #[test]
 fn blocking_worker_holds_the_resource_epoch_until_the_job_finishes() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
@@ -622,10 +622,9 @@ fn blocking_worker_holds_the_resource_epoch_until_the_job_finishes() {
     // the service epoch, while the worker is still parked on the gate. The
     // task's own epoch clone must be the only thing keeping the epoch's user
     // count above zero. `wait_for_idle_until` always reports the live user
-    // count on a non-completing wait, so checking that fact (rather than
-    // whether the call itself errors on an immediate deadline, which can
-    // trivially expire either way) deterministically distinguishes a held
-    // epoch from an idle one.
+    // count on a non-completing wait, so checking that fact deterministically
+    // distinguishes a held epoch from an idle one. An immediate deadline can
+    // expire either way, so the error alone does not distinguish the two cases.
     drop(pool);
     drop(anchor);
     service_epoch.invalidate();

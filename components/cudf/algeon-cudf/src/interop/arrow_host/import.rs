@@ -97,7 +97,6 @@ pub fn all_null_list_series(runtime: &Runtime, data_type: &ArrowDataType, rows: 
     Series::from_column(column).map_err(|error| error.reanchor(operation))
 }
 
-/// Convert a single Arrow array to an owned cudf `Column`.
 pub(super) fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -> Result<Column> {
     let dt = arr.data_type();
     match dt {
@@ -761,7 +760,6 @@ fn unexpected_arrow_array_layout_error(
     .with_detail("actual_arrow_type", format!("{actual_arrow_type:?}"))
 }
 
-/// Convert a primitive Arrow array to a cudf Column.
 fn primitive_to_column<T>(runtime: &Runtime, arr: &dyn Array) -> Result<Column>
 where T: ArrowPrimitiveMapping {
     let prim = arr.as_primitive::<T::ArrowPrimitive>();

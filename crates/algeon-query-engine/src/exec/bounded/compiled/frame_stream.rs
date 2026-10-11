@@ -73,7 +73,7 @@ pub(in crate::exec::bounded) trait ResidentFrameStreamSource: Send {
     fn release(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) {}
 
     /// Creates an independent cursor sharing retained input storage. Output
-    /// transformations may be replayed instead of retaining finalized frames.
+    /// transformations may be replayed; finalized frames need not be retained.
     fn alias(&self) -> Option<Box<dyn ResidentFrameStreamSource>> {
         None
     }
@@ -194,7 +194,7 @@ impl ResidentFrameStreamPayload {
         Some(Self::new(frames))
     }
 
-    /// Whether frames are still produced on demand rather than all resident.
+    /// Whether frames are produced on demand; a lazy payload need not hold them all resident.
     pub(in crate::exec::bounded) fn is_lazy(&self) -> bool {
         self.producer.is_some()
     }

@@ -93,7 +93,7 @@ cudf_status_t cudf_table_payload_size_ex(cudf_table_handle handle,
                                          cudf_exec_options_t const* options,
                                          size_t* out);
 
-/// Return the total device allocation footprint of this owning table.
+/// Return the total device allocation size of this owning table.
 ///
 /// This forwards to libcudf `table::alloc_size()` and includes padding.
 cudf_status_t cudf_table_device_allocated_size(cudf_table_handle handle, size_t* out);

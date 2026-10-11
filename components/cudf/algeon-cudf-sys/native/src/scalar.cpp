@@ -23,8 +23,6 @@
 #include <utility>
 
 namespace {
-// Helper: construct a numeric scalar of the given type from a host value
-// pointer.
 template <typename T>
 std::unique_ptr<cudf::scalar> make_numeric_scalar(void const* value,
                                                   bool is_valid,
@@ -346,7 +344,6 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
 
     {
       switch (s.type().id()) {
-        // Numeric types
 #define CUDF_COPY_NUMERIC(ENUM, TYPE)                                              \
   case cudf::type_id::ENUM:                                                        \
     copy = std::make_unique<cudf::numeric_scalar<TYPE>>(                           \
@@ -365,7 +362,6 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
         CUDF_COPY_NUMERIC(BOOL8, bool)
 #undef CUDF_COPY_NUMERIC
 
-        // Timestamp types
 #define CUDF_COPY_TIMESTAMP(ENUM, TYPE)                                              \
   case cudf::type_id::ENUM:                                                          \
     copy = std::make_unique<cudf::timestamp_scalar<TYPE>>(                           \
@@ -378,7 +374,6 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
         CUDF_COPY_TIMESTAMP(TIMESTAMP_NANOSECONDS, cudf::timestamp_ns)
 #undef CUDF_COPY_TIMESTAMP
 
-        // Duration types
 #define CUDF_COPY_DURATION(ENUM, TYPE)                                              \
   case cudf::type_id::ENUM:                                                         \
     copy = std::make_unique<cudf::duration_scalar<TYPE>>(                           \
@@ -391,13 +386,11 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
         CUDF_COPY_DURATION(DURATION_NANOSECONDS, cudf::duration_ns)
 #undef CUDF_COPY_DURATION
 
-        // String
         case cudf::type_id::STRING:
           copy = std::make_unique<cudf::string_scalar>(
             static_cast<cudf::string_scalar const&>(s), exec->stream, *exec->mr);
           break;
 
-          // Fixed-point decimal
         case cudf::type_id::DECIMAL32:
           copy = std::make_unique<cudf::fixed_point_scalar<numeric::decimal32>>(
             static_cast<cudf::fixed_point_scalar<numeric::decimal32> const&>(s),
@@ -417,13 +410,11 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
             *exec->mr);
           break;
 
-          // List
         case cudf::type_id::LIST:
           copy = std::make_unique<cudf::list_scalar>(
             static_cast<cudf::list_scalar const&>(s), exec->stream, *exec->mr);
           break;
 
-          // Struct
         case cudf::type_id::STRUCT:
           copy = std::make_unique<cudf::struct_scalar>(
             static_cast<cudf::struct_scalar const&>(s), exec->stream, *exec->mr);
@@ -521,7 +512,6 @@ cudf_status_t cudf_scalar_value_ex(cudf_scalar_handle handle,
     auto& s  = cudf_scalar_from_handle(handle);
     auto tid = s.type().id();
 
-    // Dispatch to the correct numeric_scalar<T>::value().
     switch (tid) {
 #define CUDF_SCALAR_CASE(ENUM, TYPE)                                            \
   case cudf::type_id::ENUM: {                                                   \

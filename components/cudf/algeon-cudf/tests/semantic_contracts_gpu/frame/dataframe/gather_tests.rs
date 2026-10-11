@@ -1,5 +1,3 @@
-//! Tests for DataFrame::gather().
-
 use std::sync::Arc;
 
 use arrow::{

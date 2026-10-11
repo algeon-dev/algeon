@@ -292,7 +292,7 @@ impl<T> Graph<T> {
     /// Prepared-input completion witnesses are synchronized before parking so
     /// cached graphs do not retain their input column owners indefinitely.
     /// The ordering proof relies on runtime-bound cuGraph handles using the
-    /// cudf runtime stream directly rather than a RAFT stream pool.
+    /// cudf runtime stream directly, without a RAFT stream pool.
     ///
     /// If this method returns an error, the consumed graph is dropped.
     pub fn park(mut self, handle: &EnteredContext<'_>) -> Result<ParkedGraph<T>>
@@ -410,7 +410,7 @@ impl<T> Graph<T> {
         }
         // Matching the storage leases is not enough once a graph can execute
         // under a borrowed binding: the park event has to be recorded on the
-        // stream every tracked use actually ran on.
+        // stream every tracked use ran on.
         let entering = handle_lease.runtime().binding_id();
         if self.ordered_binding.get().is_some_and(|ordered| ordered != entering) {
             return Err(Error::new(ErrorKind::InvalidState, operation)
@@ -484,8 +484,7 @@ impl<T> Graph<T> {
     /// Return the number of edges currently stored in this graph.
     ///
     /// This materializes a transient edgelist view via the cuGraph C API, so
-    /// it should be treated as a structural query rather than a constant-time
-    /// metadata lookup.
+    /// it should be treated as a structural query whose cost is not constant-time.
     ///
     /// The returned count follows the graph's declared
     /// [`GraphProperties`]:

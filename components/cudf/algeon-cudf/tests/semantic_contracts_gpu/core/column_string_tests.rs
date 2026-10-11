@@ -1,5 +1,3 @@
-//! Tests for string column creation and reading.
-
 use cudf::{
     ErrorCode, ErrorKind, Result, Runtime, TypeId,
     testing::{ColumnView, column::adopt_owned_column_view_for_test, prelude::*},

@@ -139,9 +139,9 @@ pub(in crate::native) enum ScalarFunctionKind {
 }
 
 impl ScalarFunctionKind {
-    /// Identifies a scalar function by its implementation type, not its name:
-    /// a user UDF registered under a builtin name must not inherit the
-    /// builtin's validation and lowering.
+    /// Identifies a scalar function by its implementation type. A user UDF
+    /// registered under a builtin name must not inherit the builtin's
+    /// validation and lowering.
     pub(in crate::native) fn from_scalar_function(function: &ScalarFunctionExpr) -> Result<Self, ExpressionRejection> {
         let implementation = function.fun().inner().as_ref() as &dyn Any;
         if implementation.is::<SubstrFunc>() {

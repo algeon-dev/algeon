@@ -932,7 +932,7 @@ fn partitioned_probe_one_chunk(
         BoundedCompiledJoinProbeState::PartitionedLazyStream(inner) => inner,
         other => {
             // Split-build single-chunk probes always return lazy; any other
-            // variant would mean the strategy changed under us.
+            // variant would mean the strategy changed while the lane runs.
             release_bounded_compiled_join_probe_state(lane_execution, other);
             return Err(bounded_invariant_violation(
                 "partitioned parallel probe expected a lazy stream for its chunk",

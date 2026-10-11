@@ -6,7 +6,7 @@ use cugraph::{
 
 use crate::test_handle;
 
-/// Helper: create a star graph where vertices 1,2,3 all point to vertex 0.
+/// Creates a star graph where vertices 1,2,3 all point to vertex 0.
 /// With store_transposed=true and renumber=true (needed for degree computation).
 fn make_star_graph(handle: &EnteredContext<'_>) -> Graph<Transposed> {
     // Directed star: 1->0, 2->0, 3->0
@@ -22,7 +22,7 @@ fn make_star_graph(handle: &EnteredContext<'_>) -> Graph<Transposed> {
     GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(handle).expect("star graph")
 }
 
-/// Helper: build a vertex -> (in_degree, out_degree) map from a DegreesResult
+/// Builds a vertex -> (in_degree, out_degree) map from a DegreesResult
 /// using the DegreeValues API.
 fn degree_map(handle: &EnteredContext<'_>, result: &DegreesResult) -> std::collections::HashMap<i32, (i64, i64)> {
     let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vert copy");
@@ -142,8 +142,7 @@ fn test_degrees_isolated_vertex() {
     let handle = test_handle();
     let entered = handle.enter("test_degrees_isolated_vertex").expect("entered");
 
-    // Graph: 0->1, 3->4; vertices 0,1,3,4 appear, and we check
-    // that all degrees are correct.
+    // Graph: 0->1, 3->4; vertices 0,1,3,4 appear, and every degree is checked.
     let src_data: Vec<i32> = vec![0, 3];
     let dst_data: Vec<i32> = vec![1, 4];
 

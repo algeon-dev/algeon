@@ -134,7 +134,7 @@ impl ExecutionContext {
             return Ok(None);
         };
         // An activated deferred-resident phase for this exact plan scope
-        // replaces the submitted evidence with the scope actually proven at
+        // replaces the submitted evidence with the scope proven at
         // activation (`with_admitted_gpu_inputs`); every other plan validates
         // against the evidence submitted at admission.
         let evidence = match &self.plan.activated_deferred_resident_phase {
@@ -181,9 +181,9 @@ impl ExecutionContext {
             return Ok(self.clone());
         }
         // A phase activated for this same scope under a different grant is a
-        // real admission violation. Otherwise the phase is re-derived from the
-        // frames actually presented: one execution context legitimately runs a
-        // plan more than once, and a later round may carry a different frame.
+        // admission violation. Otherwise the phase is re-derived from the
+        // frames presented: one execution context can run a plan more than
+        // once, and a later round may carry a different frame.
         if let Some(activated) = &self.plan.activated_deferred_resident_phase
             && activated.consumer_execution_scope_fingerprint == plan.execution_fingerprint()
             && activated.grant_identity != immutable_grant.identity()

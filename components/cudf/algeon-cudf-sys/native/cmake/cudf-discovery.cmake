@@ -1,8 +1,3 @@
-# =============================================================================
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION.
-# SPDX-License-Identifier: Apache-2.0
-# =============================================================================
-
 function(cudf_rust_cache_value cache_path cache_key output_var)
   file(STRINGS "${cache_path}" cache_line REGEX "^${cache_key}:[^=]*=")
   if(cache_line)

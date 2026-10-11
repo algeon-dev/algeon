@@ -6,8 +6,11 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum CudfErrorFailureSource {
+    /// The upstream physical allocator could not satisfy an allocation.
     Physical,
+    /// An enforced reservation or query-domain allocation limit rejected the allocation.
     ReservationLimit,
+    /// The shim did not establish a known allocation-failure source.
     Unknown,
 }
 
@@ -34,15 +37,23 @@ impl fmt::Display for CudfErrorFailureSource {
 /// The self-contained native payload copied before another shim call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CudfErrorDetail {
+    /// Authoritative status returned by the failed shim call.
     pub status: u32,
+    /// Typed allocation-failure provenance copied at the shim boundary.
     pub failure_source: CudfErrorFailureSource,
+    /// Allocation-domain identity, or zero when the throwing owner supplied no identity.
     pub domain_id: u64,
+    /// Stream-member identity, or zero when unavailable at the boundary.
     pub member_id: u64,
+    /// Native domain generation used to distinguish reused caller ids; zero when unavailable.
     pub generation: u64,
+    /// Failed allocation request in bytes, or zero when no request size was supplied.
     pub requested_bytes: u64,
+    /// Requested allocation alignment in bytes, or zero when unavailable.
     pub alignment: u64,
     /// CUDA runtime error code, or `-1` when unavailable at the boundary.
     pub cuda_error: i32,
+    /// Owned native diagnostic message copied before another shim call can replace it.
     pub message: String,
 }
 

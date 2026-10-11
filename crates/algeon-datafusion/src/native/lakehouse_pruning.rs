@@ -53,7 +53,7 @@ use crate::{
 /// Resolves footer-backed pruning for one already-lowered native plan.
 ///
 /// The physical optimizer marks native wrappers for this async execution-time
-/// continuation. Keeping the resolver on `QueryPlan` lets every native wrapper
+/// continuation. Passing the resolver with the plan lets every native wrapper
 /// use the same product path without DataFusion plan downcasts or a benchmark
 /// side channel.
 pub(crate) async fn prune_native_query_plan(

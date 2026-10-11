@@ -53,14 +53,14 @@ impl QueryAdmission {
     }
 
     /// Whether this facade owns a real backend and therefore must route Flight
-    /// execution through `AlgeonAttempt` rather than the CPU-only test seam.
+    /// execution through `AlgeonAttempt`. The CPU-only test seam never does.
     pub(crate) fn has_attempt_backend(&self) -> bool {
         matches!(self.backend, QueryAdmissionBackend::QueryService { .. })
     }
 
-    /// Close the admission gate. After close, any pending or future
-    /// [`Self::acquire`] call returns a session error so graceful shutdown can
-    /// drain in-flight work without admitting more.
+    /// Close the admission gate. After close, the backend rejects attempts that
+    /// have not been admitted yet, so graceful shutdown can drain admitted work
+    /// without admitting more.
     pub fn close(&self) {
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {

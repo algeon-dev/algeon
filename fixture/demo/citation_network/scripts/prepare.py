@@ -66,10 +66,7 @@ _GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY_BYTES = GRAPH_SIMPLE_DIRECTED_
 MULTI_GRAPH_SLICE_PARTITION = "source_hash_splitmix64"
 _U64_MASK = (1 << 64) - 1
 
-# ---------------------------------------------------------------------------
 # Schemas
-# ---------------------------------------------------------------------------
-
 EDGE_SCHEMA = pa.schema(
     [
         pa.field("edge_id", pa.int64(), nullable=False),
@@ -121,9 +118,9 @@ FOS_SCHEMA = pa.schema(
 
 # Bloom filters help point/equality lookups on HIGH-cardinality columns the cuGraph
 # subgraph-filter and enrichment-JOIN story touches. They are per-column *per row group*,
-# so NDV is sized to the row-group row count (see bloom_options), not the dataset. Very
-# low-cardinality columns (e.g. doc_type) are deliberately excluded: dictionary encoding
-# already prunes them and a Bloom filter there is pure overhead.
+# so NDV is sized to the row-group row count (see bloom_options). Low-cardinality columns
+# (e.g. doc_type) are deliberately excluded because dictionary encoding already prunes them
+# and a Bloom filter there is pure overhead.
 EDGE_BLOOM_COLUMNS = ("src", "dst")
 PROFILE_BLOOM_COLUMNS = ("paper_id", "venue", "primary_fos")
 AUTHOR_BLOOM_COLUMNS = ("paper_id", "author_id")
@@ -149,11 +146,7 @@ class DatasetSpec:
     )
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert DBLP/AMiner V12 citation JSON into Algeon pruning-friendly Parquet.",
@@ -253,11 +246,7 @@ def require_positive(name: str, value: int) -> None:
         raise SystemExit(f"{name} must be >= 1")
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
-
-
 class ProgressLogger:
     """Rate-limited stderr progress for long local fixture generation."""
 
@@ -415,11 +404,6 @@ def iter_papers(source_json: Path, max_papers: int) -> Iterator[dict[str, Any]]:
                 return
 
 
-# ---------------------------------------------------------------------------
-# External merge sort for the edge tables (edges do not fit in RAM at full scale).
-# ---------------------------------------------------------------------------
-
-
 def _read_edge_run(path: Path) -> Iterator[tuple[int, int, int]]:
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -427,6 +411,7 @@ def _read_edge_run(path: Path) -> Iterator[tuple[int, int, int]]:
             yield (int(src_s), int(dst_s), int(edge_s))
 
 
+# External merge sort for the edge tables (edges do not fit in RAM at full scale).
 class EdgeSorter:
     """Buffer (src, dst, edge_id) rows, spill sorted runs, then cascade-merge them.
 
@@ -792,11 +777,7 @@ class RowSorter:
         self._run_paths.clear()
 
 
-# ---------------------------------------------------------------------------
 # Parquet writers
-# ---------------------------------------------------------------------------
-
-
 def bloom_options(columns: tuple[str, ...], row_group_size: int, dataset_ndv: int) -> dict[str, Any]:
     """Size Bloom filters to per-row-group cardinality.
 
@@ -880,11 +861,7 @@ def edge_batch(src: list[int], dst: list[int], edge_id: list[int], bucket_width:
     )
 
 
-# ---------------------------------------------------------------------------
 # Conversion
-# ---------------------------------------------------------------------------
-
-
 def parquet_metadata(path: Path) -> dict[str, Any]:
     parquet_file = pq.ParquetFile(path)
     meta = parquet_file.metadata
@@ -1032,8 +1009,8 @@ def _record_slice_rows(
         srcs = rows.column("src").to_pylist()
         dsts = rows.column("dst").to_pylist()
         for edge_id, src, dst in zip(edge_ids, srcs, dsts, strict=True):
-            # The digest is over the logical, source-sorted edge rowset rather
-            # than Parquet bytes, so it stays stable across writer versions.
+            # The digest covers the logical, source-sorted edge rowset and does not hash
+            # Parquet bytes. It therefore stays stable across writer versions.
             rowset_hashers[slice_index].update(struct.pack(">qqq", int(edge_id), int(src), int(dst)))
         return
     if table == "edges_by_dst":
@@ -1273,12 +1250,13 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
 
     # Bloom NDV targets the number of *distinct values* in the filtered column. For src/dst that is
     # the distinct-vertex count (~ paper count, since papers both cite and are cited); for the node
-    # tables the key is paper_id, whose distinct count is exactly the paper count.
+    # tables the key is paper_id, whose distinct count equals the paper count.
     ndv_papers = args.max_papers if args.max_papers > 0 else spec.expected_papers
     ndv_edges = ndv_papers
 
-    # Node tables are sorted by paper_id before writing so the declared sorting_columns are honest
-    # (the AMiner JSON is not ordered by id). Edges use their own dedicated integer sorter.
+    # Node tables are sorted by paper_id before writing so the declared sorting_columns match
+    # the file contents (the AMiner JSON is not ordered by id). Edges use their own dedicated
+    # integer sorter.
     fan_in = args.merge_fan_in
     profile_sorter = RowSorter(
         work_dir,
@@ -1350,7 +1328,7 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
             if isinstance(references, list):
                 for reference in references:
                     if not isinstance(reference, int):
-                        continue  # skip malformed reference ids rather than crash mid-stream
+                        continue  # skip malformed reference ids; the scan does not abort mid-stream
                     edge_src_sorter.add(paper_id, reference, edge_id)
                     edge_dst_sorter.add(paper_id, reference, edge_id)
                     edge_id += 1
@@ -1442,7 +1420,7 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
                     ),
                 )
             # Drain accumulated column batches into the per-table sorters in chunks (the sorters
-            # own the spill-to-disk buffering); the caller just avoids per-row Python-call overhead.
+            # own the spill-to-disk buffering); the caller avoids per-row Python-call overhead.
             if len(profile_columns["paper_id"]) >= 65_536:
                 profile_sorter.add_columns(profile_columns)
                 _reset_columns(profile_columns)
@@ -1453,7 +1431,6 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
                 fos_sorter.add_columns(fos_columns)
                 _reset_columns(fos_columns)
 
-        # Drain the tail of each column buffer into its sorter.
         logger.log(
             f"scan source JSON: complete papers={counters['papers']:,} edges={counters['edges']:,} "
             f"authors={counters['author_rows']:,} fos={counters['fos_rows']:,}"
@@ -1676,9 +1653,6 @@ def _write_sorted_edges(
     if sorter.logger is not None:
         sorter.logger.log(f"edges_by_{order}: write complete rows={written:,}")
     return parquet_metadata(path)
-
-
-# ---- column buffers ----
 
 
 def _empty_profile_columns() -> dict[str, list[Any]]:

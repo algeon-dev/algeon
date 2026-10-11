@@ -105,7 +105,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn group_lineage_column(
 ) -> Result<LineageColumn, AggregateJoinPushdownRejectedReason> {
     // Group keys must surface as plain column references at the aggregate
     // boundary. The aggregate's view-name comes from the original group expr;
-    // the inlined column resolves which join output column it actually reads.
+    // the inlined column resolves which join output column it reads.
     let aggregate_view_column =
         simple_projection_column(expr).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
     let aggregate_output_name = aggregate_view_column.name().to_string();

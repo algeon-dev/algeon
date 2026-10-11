@@ -151,8 +151,8 @@ const SCALAR_EXPRESSION_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
     // TRY_CAST to a non-integer target (Float64) remains unsupported until
-    // libcudf grows a string→float null-on-failure primitive; the structured
-    // reject category still pins the unsupported type pair.
+    // libcudf provides a string→float null-on-failure primitive; the structured
+    // reject category pins the unsupported type pair.
     GpuGapCase {
         id: "try_cast_string_to_float",
 
@@ -164,7 +164,7 @@ const SCALAR_EXPRESSION_CASES: &[GpuGapCase] = &[
         },
     },
     // TRY_CAST whose source is not a string column (here a numeric column)
-    // also stays unsupported in v1; the lower-level primitive is
+    // also stays unsupported; the lower-level primitive accepts
     // string→integer only.
     GpuGapCase {
         id: "try_cast_int_to_int",

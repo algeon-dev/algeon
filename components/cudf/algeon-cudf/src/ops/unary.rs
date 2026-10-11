@@ -178,7 +178,6 @@ pub(crate) fn is_valid_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-/// Cast a column to the specified data type.
 pub(crate) fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
     let ctx = Exec::RETAINED;
     let execution = ResolvedExecution::unary(input.execution_domain(), ctx, "unary::cast")?;
@@ -362,7 +361,7 @@ fn integral_range(id: TypeId) -> Option<(i128, i128)> {
 }
 
 /// Rejects input values that a DataFusion `CAST` (non-safe mode) to an integer
-/// type would reject, before libcudf wraps or saturates them silently.
+/// type would reject, before libcudf wraps or saturates them without an error.
 ///
 /// A cast whose source range fits the target needs no check. Every other
 /// integer, floating-point, and fixed-point source takes one min/max reduction
@@ -453,7 +452,7 @@ fn integral_scalar_range(id: TypeId, scale: i32, min: &Scalar, max: &Scalar) -> 
 }
 
 /// The min and max scalars of an integer or fixed-point column as stored: a
-/// fixed-point value is its raw integer, not scaled.
+/// fixed-point value is its raw integer, and the scale is not applied.
 fn scalar_raw_range(id: TypeId, min: &Scalar, max: &Scalar) -> Result<(i128, i128)> {
     macro_rules! widen {
         ($ty:ty) => {

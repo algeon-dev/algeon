@@ -37,8 +37,8 @@ async fn flight_sql_get_db_schemas_lists_default_schemas() {
 
     server.abort();
 
-    // `information_schema` is exposed by `SessionState`, not by the catalog
-    // provider, so it does not surface here. The default `public` schema does.
+    // `information_schema` is exposed by `SessionState` and is absent from the
+    // catalog provider, so it does not surface here. The default `public` schema does.
     let schemas = collect_string_column(&batches, "db_schema_name");
     assert!(schemas.contains(&"public".to_string()), "missing public: {schemas:?}");
     let catalogs = collect_string_column(&batches, "catalog_name");
@@ -55,8 +55,8 @@ async fn flight_sql_get_tables_distinguishes_views_from_base_tables() {
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
-    // Seed both a real base table and a view so we can assert that the
-    // metadata layer reports each with the correct Flight SQL table_type.
+    // Seed both a real base table and a view. The assertions below check that
+    // the metadata layer reports each with the correct Flight SQL table_type.
     let dir = tempfile::Builder::new().prefix("algeon-datafusion-flight-sql-metadata-").tempdir().unwrap();
     let parquet_path = dir.path().join("metadata_probe.parquet");
     write_update_edges_parquet(&parquet_path);

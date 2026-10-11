@@ -37,7 +37,7 @@ fn source_read_bytes_for_batch_chunks(chunks: &[SourceChunk]) -> Option<u64> {
 ///
 /// Incompatible chunks remain singleton batches. `max_batch_source_read_bytes`
 /// is a planning target; chunks without source-read byte estimates are kept as
-/// singleton batches so batching cannot silently defeat bounded memory policy.
+/// singleton batches so batching cannot defeat the bounded memory policy.
 pub fn plan_source_chunk_batches(
     chunks: &[SourceChunk],
     max_batch_source_read_bytes: Option<u64>,
