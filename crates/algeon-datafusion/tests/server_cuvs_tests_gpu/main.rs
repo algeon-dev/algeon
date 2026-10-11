@@ -32,8 +32,7 @@ fn test_server_config() -> ServerConfig {
     let path = dir.path().join("server.toml");
     std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
     let path = path.to_string_lossy().into_owned();
-    ServerConfig::from_env_get(|name| (name == ALGEON_SERVER_CONFIG_FILE_ENV).then(|| path.clone()))
-        .expect("explicit test device profile")
+    ServerConfig::from_vars([(ALGEON_SERVER_CONFIG_FILE_ENV, path)]).expect("explicit test device profile")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

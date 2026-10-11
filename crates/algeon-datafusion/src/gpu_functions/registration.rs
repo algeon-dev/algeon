@@ -2,9 +2,11 @@
 
 use std::sync::Arc;
 
-use datafusion::execution::SessionStateBuilder;
+use datafusion::{execution::SessionStateBuilder, logical_expr::planner::RelationPlanner};
 
-use super::{GpuFunctionCatalog, GpuFunctionFamily, gpu_metadata_table_functions};
+use super::{
+    GpuFunctionCatalog, GpuFunctionFamily, gpu_metadata_table_functions, unknown_function::UnknownGpuFunctionPlanner,
+};
 use crate::error::{Error, ErrorCode, Result};
 
 /// Install one family into the builder's immutable GPU UDTF catalog.
@@ -12,8 +14,10 @@ use crate::error::{Error, ErrorCode, Result};
 /// Reinstalling the same family identity is idempotent only when it has the
 /// same descriptor projection; changing a family's session configuration after
 /// it has been installed is a local setup error. Every successful installation
-/// replaces the catalog extension and rebinds the three shared UDTFs to the new
-/// immutable snapshot.
+/// replaces the catalog extension and rebinds the three shared UDTFs and the
+/// unknown-function relation planner to the new immutable snapshot. That
+/// planner stays last in the builder's relation planners, after every family
+/// planner, which DataFusion tries first because installation prepends them.
 pub(crate) fn install_gpu_function_family(
     builder: &mut SessionStateBuilder,
     family: Arc<dyn GpuFunctionFamily>,
@@ -34,10 +38,19 @@ pub(crate) fn install_gpu_function_family(
     families.push(family);
     let catalog = Arc::new(GpuFunctionCatalog::try_new(families)?);
     config.set_extension(Arc::clone(&catalog));
+    let prior_planner = config.get_extension::<UnknownGpuFunctionPlanner>();
+    let unknown_function_planner = Arc::new(UnknownGpuFunctionPlanner::new(Arc::clone(&catalog)));
+    config.set_extension(Arc::clone(&unknown_function_planner));
     let table_functions = builder.table_functions().get_or_insert_with(Default::default);
     for function in gpu_metadata_table_functions(catalog) {
         table_functions.insert(function.name().to_string(), function);
     }
+    let relation_planners = builder.relation_planners().get_or_insert_with(Vec::new);
+    if let Some(prior_planner) = prior_planner {
+        let prior_planner: Arc<dyn RelationPlanner> = prior_planner;
+        relation_planners.retain(|planner| !Arc::ptr_eq(planner, &prior_planner));
+    }
+    relation_planners.push(unknown_function_planner);
     Ok(())
 }
 

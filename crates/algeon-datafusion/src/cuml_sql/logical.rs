@@ -10,7 +10,7 @@ use datafusion::{
 #[cfg(feature = "server")]
 use query_planning::plan::MlForestModelDigest;
 use query_planning::plan::{
-    MlAlgorithmParams, MlForestModelSnapshot, RelationIdType, ml_classification_output_schema,
+    MlAlgorithmParams, MlForestModelSnapshot, RelationIdType, VectorElementType, ml_classification_output_schema,
     ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema,
     vector_pca_output_schema,
 };
@@ -29,6 +29,9 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+/// DataFusion logical extension for a statically validated cuML relation call.
+///
+/// Input schemas and options determine its output schema before GPU execution.
 pub struct CumlLogicalNode {
     operation: CumlOperation,
     inputs: Vec<LogicalPlan>,
@@ -139,7 +142,7 @@ impl CumlLogicalNode {
                 DenseVectorBinding::Columns(columns) => {
                     for column in columns {
                         let field = resolve_feature(operation, input, role, column)?;
-                        require_float32(operation, role, column, field)?;
+                        require_feature_element(operation, role, column, field)?;
                     }
                     Some(columns.len())
                 },
@@ -147,11 +150,11 @@ impl CumlLogicalNode {
                     let field = resolve_feature(operation, input, role, column)?;
                     match field.data_type() {
                         DataType::FixedSizeList(element, dimension) if *dimension > 0 => {
-                            require_float32(operation, role, column, element)?;
+                            require_feature_element(operation, role, column, element)?;
                             Some(*dimension as usize)
                         },
                         DataType::List(element) | DataType::LargeList(element) => {
-                            require_float32(operation, role, column, element)?;
+                            require_feature_element(operation, role, column, element)?;
                             None
                         },
                         actual => {
@@ -160,7 +163,10 @@ impl CumlLogicalNode {
                                 role,
                                 column,
                                 actual,
-                                "FixedSizeList, List, or LargeList with Float32 elements",
+                                format!(
+                                    "FixedSizeList, List, or LargeList with {} elements",
+                                    supported_elements(operation)
+                                ),
                             ));
                         },
                     }
@@ -294,15 +300,21 @@ impl CumlLogicalNode {
         &self.input_orderings
     }
 
+    /// Returns the registered operation represented by this logical node.
     pub fn operation(&self) -> CumlOperation {
         self.operation
     }
+    /// Borrows options parsed and validated during node construction.
     pub fn validated_options(&self) -> &CumlValidatedOptions {
         &self.options
     }
+    /// Borrows the immutable planning-bound forest model.
+    ///
+    /// Returns `None` for operations other than model-backed forest prediction.
     pub fn model(&self) -> Option<&Arc<MlForestModelSnapshot>> {
         self.model.as_ref()
     }
+    /// Returns the Arrow result schema established by call validation.
     pub fn output_schema(&self) -> SchemaRef {
         Arc::clone(self.schema.inner())
     }
@@ -336,11 +348,19 @@ fn resolve_feature<'a>(
     input.schema().field_with_unqualified_name(name).map_err(|_| field_not_found(operation, role, name))
 }
 
-fn require_float32(operation: CumlOperation, role: &'static str, name: &str, field: &FieldRef) -> Result<()> {
-    if field.data_type() != &DataType::Float32 {
-        return Err(unsupported_type(operation, role, name, field.data_type(), "Float32"));
+/// Accepts a wide feature column, or a list column's element field, of an
+/// element type the operation declares. Execution narrows Float64 features to
+/// Float32, the only element type cuML trains and predicts on.
+fn require_feature_element(operation: CumlOperation, role: &'static str, name: &str, field: &FieldRef) -> Result<()> {
+    let supported = operation.descriptor().vector_element_support;
+    if VectorElementType::from_data_type(field.data_type()).is_none_or(|element| !supported.contains(&element)) {
+        return Err(unsupported_type(operation, role, name, field.data_type(), supported_elements(operation)));
     }
     Ok(())
+}
+
+fn supported_elements(operation: CumlOperation) -> String {
+    operation.descriptor().vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>().join(", ")
 }
 
 impl PartialEq for CumlLogicalNode {

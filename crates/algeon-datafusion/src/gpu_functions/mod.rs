@@ -15,6 +15,7 @@ mod named_args;
 mod registration;
 pub(crate) mod scalar_arguments;
 mod table_functions;
+mod unknown_function;
 mod validation;
 
 pub(crate) use catalog::GpuFunctionCatalog;
@@ -29,4 +30,4 @@ pub(crate) use table_functions::gpu_metadata_table_functions;
 #[cfg(feature = "server")]
 pub(crate) use table_functions::is_builtin_gpu_metadata_table_source;
 pub use table_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION};
-pub(crate) use validation::{GpuCallRequest, GpuCallValidation};
+pub(crate) use validation::{GpuCallProblem, GpuCallProblems, GpuCallRequest, GpuCallValidation, argument_of};

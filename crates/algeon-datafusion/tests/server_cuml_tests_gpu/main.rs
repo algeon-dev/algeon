@@ -39,8 +39,7 @@ async fn flight_sql_lists_and_executes_all_cuml_functions() {
     let path = dir.path().join("server.toml");
     std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").unwrap();
     let path = path.to_string_lossy().into_owned();
-    let mut config =
-        ServerConfig::from_env_get(|name| (name == ALGEON_SERVER_CONFIG_FILE_ENV).then(|| path.clone())).unwrap();
+    let mut config = ServerConfig::from_vars([(ALGEON_SERVER_CONFIG_FILE_ENV, path.clone())]).unwrap();
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.bind_addr = addr;
     let server = ScopedServer { handle: tokio::spawn(async move { serve_with_listener(config, listener).await }) };
@@ -201,8 +200,7 @@ async fn flight_sql_forest_predict_rejects_model_bytes_that_change_after_plannin
     )
     .unwrap();
     let path = path.to_string_lossy().into_owned();
-    let mut config =
-        ServerConfig::from_env_get(|name| (name == ALGEON_SERVER_CONFIG_FILE_ENV).then(|| path.clone())).unwrap();
+    let mut config = ServerConfig::from_vars([(ALGEON_SERVER_CONFIG_FILE_ENV, path.clone())]).unwrap();
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.bind_addr = addr;
     let server = ScopedServer { handle: tokio::spawn(async move { serve_with_listener(config, listener).await }) };

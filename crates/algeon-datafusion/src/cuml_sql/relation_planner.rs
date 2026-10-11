@@ -11,12 +11,15 @@ use datafusion::{
 
 use super::{
     CumlLogicalNode, CumlOperation,
-    model_store::{CumlModelStore, bind_operation_model},
+    model_store::{CumlModelStore, bind_operation_model, require_model_store},
     options::{dense_relation_function, validate_options},
 };
 use crate::gpu_functions::dense_relation::table_function_name;
 
 #[derive(Debug, Default)]
+/// DataFusion SQL relation planner that binds named cuML function arguments.
+///
+/// Unrecognized relations retain their original DataFusion planning path.
 pub struct CumlRelationPlanner {
     model_store: Option<Arc<CumlModelStore>>,
 }
@@ -42,6 +45,7 @@ impl RelationPlanner for CumlRelationPlanner {
         else {
             return Ok(RelationPlanning::Original(Box::new(relation)));
         };
+        require_model_store(operation, self.model_store.as_deref())?;
         let call = dense_relation_function(operation).plan_call(relation, context)?;
         let model = bind_operation_model(
             operation,

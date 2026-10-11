@@ -23,7 +23,7 @@ use query_runtime::observability::{
 use tokio::{task::yield_now, time::timeout};
 
 use super::{
-    super::observability::{CapturedError, QUERY_STATS_HEADER_LINE, QueryStatsPayload},
+    super::observability::{CapturedError, QUERY_STATS_HEADER_LINE, QueryStatsPayload, QueryStatsView},
     artifacts::{
         ArtifactEgressLimiter, FinalizationTestGate, LiveStatsCache, LiveStatsRead, LiveStatsWaitResult,
         LiveStatsWaiter, RUNTIME_ARTIFACT_CONTROL_SCHEMA, compose_terminal_artifact, incomplete_runtime_control,
@@ -714,7 +714,7 @@ fn undersized_terminal_cap_installs_stats_free_tombstone_without_leaking_egress(
         Some(CoordinatorArtifact::Unavailable(RetainedUnavailableReason::TooLarge))
     ));
     assert!(coordinator.query_stats(query_id).is_none());
-    assert!(coordinator.lease_query_stats(query_id).unwrap().is_none());
+    assert!(coordinator.lease_query_stats(query_id, QueryStatsView::Full).unwrap().is_none());
     assert_eq!(coordinator.artifact_egress_usage(), (0, 0));
     let state = coordinator.lock_state();
     let key = state.current.get(query_id).unwrap();
@@ -1910,7 +1910,7 @@ fn live_stats_egress_reserves_bound_before_render_and_reconciles_to_actual_bytes
                 request_release.wait();
             }
         });
-        request_coordinator.lease_query_stats("live-egress-preflight").unwrap().unwrap()
+        request_coordinator.lease_query_stats("live-egress-preflight", QueryStatsView::Full).unwrap().unwrap()
     });
     entered.wait();
     {
@@ -1948,7 +1948,7 @@ fn live_stats_render_panic_releases_provisional_egress_and_publishes_shared_erro
                     panic!("injected stats renderer panic");
                 }
             });
-            request_coordinator.lease_query_stats("live-render-panic")
+            request_coordinator.lease_query_stats("live-render-panic", QueryStatsView::Full)
         }))
     })
     .join()
@@ -1958,7 +1958,7 @@ fn live_stats_render_panic_releases_provisional_egress_and_publishes_shared_erro
         let state = coordinator.artifact_egress.state.lock().unwrap();
         assert_eq!((state.streams, state.bytes), (0, 0));
     }
-    let error = coordinator.lease_query_stats("live-render-panic").unwrap_err();
+    let error = coordinator.lease_query_stats("live-render-panic", QueryStatsView::Full).unwrap_err();
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::ArtifactRenderFailed);
     let state = coordinator.artifact_egress.state.lock().unwrap();
     assert_eq!((state.streams, state.bytes), (0, 0));

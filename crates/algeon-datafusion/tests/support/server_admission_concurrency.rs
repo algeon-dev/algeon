@@ -50,8 +50,8 @@ fn server_config_for_concurrency(managed_capacity_bytes: u64, query_cap_bytes: u
     let path = dir.path().join("server.toml");
     std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
     let path = path.to_string_lossy().into_owned();
-    let mut config = ServerConfig::from_env_get(|name| (name == ALGEON_SERVER_CONFIG_FILE_ENV).then(|| path.clone()))
-        .expect("explicit test device profile");
+    let mut config =
+        ServerConfig::from_vars([(ALGEON_SERVER_CONFIG_FILE_ENV, path)]).expect("explicit test device profile");
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.gpu_device_profiles[0] = config.gpu_device_profiles[0]
         .clone()

@@ -1,5 +1,6 @@
 use std::{
-    sync::Arc,
+    io::Write,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -7,6 +8,8 @@ use cudf::testing;
 use datafusion::{execution::SessionStateBuilder, prelude::SessionConfig};
 use query_runtime::observability::RuntimeObservationConfig;
 use tokio::{runtime::Builder as TestRuntimeBuilder, time::timeout};
+use tracing::{Level, subscriber};
+use tracing_subscriber::fmt::{MakeWriter, Subscriber as FmtSubscriber};
 
 use super::*;
 use crate::{
@@ -47,16 +50,16 @@ fn base_config() -> ServerConfig {
         bind_addr: "127.0.0.1:0".parse().expect("test bind address"),
         queue_policy: AlgeonGpuQueuePolicy::default(),
         gpu_device_profiles: vec![AlgeonGpuDeviceProfile::new(0)],
-        gpu_devices: vec![0],
         gpu_memory_ownership: vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)],
         statement_ticket_ttl: Duration::from_secs(60),
         http2_keepalive: Http2Keepalive::default(),
         observability: ServerObservabilityConfig::default(),
         native_optimizer_config: AlgeonNativeOptimizerConfig::default(),
         auth: AuthConfig::default(),
-        workspace: None,
         cugraph: None,
         models: None,
+        tls: None,
+        init_sql: None,
     }
 }
 
@@ -295,7 +298,7 @@ async fn builder_rejects_admission_bounds_the_coordinator_cannot_register() {
     queued.queue_policy = queued.queue_policy.clone().with_max_queued_attempts(1023);
     let error = builder_error(FlightSqlServer::builder().config(queued)).await;
     assert_eq!(error.fact_value("reason"), Some("admission_exceeds_live_query_capacity"));
-    assert_eq!(error.fact_value("config_field"), Some(ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV));
+    assert_eq!(error.fact_value("config_field"), Some("admission.max_queued_attempts"));
 
     let active = bounded_config(1024);
     let error = builder_error(FlightSqlServer::builder().config(active)).await;
@@ -407,7 +410,6 @@ fn builder_rejects_injected_backend_wait_timeout_conflict() {
 fn builder_rejects_injected_backend_gpu_device_conflict() {
     let backend = runtime_backend(1);
     let mut config = bounded_config(1);
-    config.gpu_devices = vec![1];
     config.gpu_device_profiles = vec![
         AlgeonGpuDeviceProfile::new(1)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES }),
@@ -545,4 +547,115 @@ fn startup_rejection_of_a_configuration_prints_the_setting_value_and_accepted_ra
 
     let other = backend_build_error(adapter_error::Error::new(ErrorCode::Internal, "algeon_datafusion.test", "boom"));
     assert_eq!(other.message(), "failed to initialize query service admission");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_occupied_port_fails_serving_with_the_address_and_no_readiness_line() {
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupy a loopback port");
+    let addr = occupied.local_addr().expect("occupied address");
+    let mut config = bounded_config(1);
+    config.bind_addr = addr;
+    let backend = runtime_backend(1);
+    let logs = CapturedLogs::default();
+    let _subscriber = subscriber::set_default(
+        FmtSubscriber::builder().with_writer(logs.clone()).with_ansi(false).with_max_level(Level::INFO).finish(),
+    );
+
+    let server = FlightSqlServer::builder()
+        .config(config)
+        .backend(backend.clone())
+        .shutdown(ServerShutdown::Token(CancellationToken::new()))
+        .build()
+        .await
+        .expect("the server builds before it binds");
+    let error = server.serve().await.expect_err("an occupied port fails serving");
+
+    assert_eq!(error.code(), ErrorCode::ServerTransportFailure, "{error}");
+    assert_eq!(error.message(), format!("failed to bind Flight SQL listener at {addr}"));
+    assert_eq!(error.fact_value("bind_addr"), Some(addr.to_string().as_str()));
+    let logs = logs.text();
+    assert!(logs.contains("server config snapshot"), "{logs}");
+    assert!(!logs.contains("starting Algeon Flight SQL server"), "{logs}");
+}
+
+#[tokio::test]
+async fn init_sql_runs_ddl_and_names_the_first_statement_that_is_not_ddl() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("init.sql");
+    std::fs::write(&path, "CREATE VIEW seeded AS VALUES (1), (2);\nCREATE VIEW seeded_view AS SELECT * FROM seeded;\nSELECT * FROM seeded;\n")
+        .expect("write init_sql");
+    let ctx = SessionContext::new();
+
+    let error = session::run_init_sql(&ctx, &path).await.expect_err("a query is not DDL");
+
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration, "{error}");
+    assert_eq!(error.fact_value("config_field"), Some("init_sql"));
+    assert_eq!(error.fact_value("statement_index"), Some("3"));
+    assert_eq!(error.fact_value("reason"), Some("init_sql_statement_not_ddl"));
+    assert!(error.message().contains("SELECT * FROM seeded"), "{}", error.message());
+    assert!(ctx.table_exist("seeded_view").expect("catalog lookup"), "earlier DDL statements ran");
+}
+
+#[tokio::test]
+async fn init_sql_applies_the_flight_ddl_policy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("init.sql");
+    std::fs::write(&path, "CREATE TABLE seeded AS VALUES (1), (2);\n").expect("write init_sql");
+    let ctx = SessionContext::new();
+
+    let error = session::run_init_sql(&ctx, &path).await.expect_err("CTAS is refused like a Flight update");
+
+    assert_eq!(error.fact_value("reason"), Some("init_sql_statement_rejected"), "{error}");
+    assert_eq!(error.fact_value("statement_index"), Some("1"));
+    assert!(error.message().contains("CREATE TABLE AS SELECT"), "{}", error.message());
+    assert!(!ctx.table_exist("seeded").expect("catalog lookup"));
+}
+
+#[tokio::test]
+async fn init_sql_errors_mask_statement_option_values() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("init.sql");
+    // Short enough that the OPTIONS clause lies inside the 120-character excerpt.
+    std::fs::write(
+        &path,
+        "CREATE EXTERNAL TABLE r STORED AS PARQUET LOCATION 's3://b/r.parquet' OPTIONS ('aws.secret_access_key' 'sekrit');\n",
+    )
+    .expect("write init_sql");
+    let ctx = SessionContext::new();
+
+    let error = session::run_init_sql(&ctx, &path).await.expect_err("no object store serves s3://");
+
+    // Two layers keep the value out of the startup log: DataFusion's statement
+    // rendering omits the OPTIONS clause, and the excerpt passes through
+    // `RedactedSql` so a rendering that includes it would still be masked.
+    assert!(!error.message().contains("sekrit"), "{}", error.message());
+    assert!(error.message().contains("CREATE EXTERNAL TABLE r"), "{}", error.message());
+}
+
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().expect("log buffer")).into_owned()
+    }
+}
+
+impl Write for CapturedLogs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log buffer").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for CapturedLogs {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
 }

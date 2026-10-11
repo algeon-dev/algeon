@@ -518,7 +518,6 @@ flock /tmp/cudf-gpu.lock target/release/algeon_tools single-node-multi-gpu-valid
 cargo build --release -p algeon-server --all-features --bin algeon_server
 cargo build --release -p tools --all-features
 
-ALGEON_SERVER_GPU_DEVICES=0,1,2,3 \
 ALGEON_SERVER_CONFIG_FILE=fixture/stress/server-s8-s2-scan-sf1.toml \
 ALGEON_SERVER_BIND=127.0.0.1:50051 \
 flock /tmp/cudf-gpu.lock target/release/algeon_server

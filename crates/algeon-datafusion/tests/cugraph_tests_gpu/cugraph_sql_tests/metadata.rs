@@ -180,7 +180,12 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
     );
 
     let error = ctx.sql("SELECT * FROM gpu_describe_function('bfs')").await.unwrap_err().to_string();
-    assert!(error.contains("unknown GPU function 'bfs'"));
+    assert!(
+        error.contains(
+            "unknown GPU function bfs; closest registered name: cugraph_bfs; gpu_list_functions() lists every installed function"
+        ),
+        "{error}"
+    );
 }
 
 #[tokio::test]

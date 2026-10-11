@@ -45,14 +45,9 @@ impl ServerChild {
         let stderr = File::create(&config.stderr_path)?;
         let mut command = Command::new(&config.server_binary);
         command.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).kill_on_drop(true);
-        // The server rejects settings of the removed Iceberg integration, and any inherited
-        // ALGEON_SERVER_* value would change the topology under test.
+        // Any inherited ALGEON_SERVER_* value would change the topology under test.
         for (name, _) in std::env::vars() {
-            if name.starts_with("ALGEON_SERVER_")
-                || name.starts_with("ALGEON_ICEBERG_")
-                || name.starts_with("ALGEON_LAKEHOUSE_")
-                || name == "TOKIO_WORKER_THREADS"
-            {
+            if name.starts_with("ALGEON_SERVER_") || name == "TOKIO_WORKER_THREADS" {
                 command.env_remove(name);
             }
         }

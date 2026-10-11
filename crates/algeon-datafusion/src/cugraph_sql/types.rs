@@ -41,7 +41,9 @@ pub struct GpuIslandHostBoundaryConfig {
 }
 
 impl GpuIslandHostBoundaryConfig {
+    /// Default cumulative input Arrow staging limit in bytes (1 GiB).
     pub const DEFAULT_MAX_INPUT_STAGING_BYTES: usize = 1024 * 1024 * 1024;
+    /// Default cumulative output Arrow staging limit in bytes (1 GiB).
     pub const DEFAULT_MAX_OUTPUT_STAGING_BYTES: usize = 1024 * 1024 * 1024;
 
     /// Creates finite non-zero cumulative input and output staging limits.
@@ -53,10 +55,12 @@ impl GpuIslandHostBoundaryConfig {
         Ok(Self { max_input_staging_bytes, max_output_staging_bytes })
     }
 
+    /// Returns the shared input staging ceiling in bytes for one graph call.
     pub fn max_input_staging_bytes(self) -> usize {
         self.max_input_staging_bytes.get()
     }
 
+    /// Returns the cumulative materialized output ceiling in bytes for one graph call.
     pub fn max_output_staging_bytes(self) -> usize {
         self.max_output_staging_bytes.get()
     }
@@ -74,6 +78,7 @@ impl Default for GpuIslandHostBoundaryConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+/// Graph-construction defaults and host staging limits installed for cuGraph SQL calls.
 pub struct CugraphSqlConfig {
     /// Graph construction defaults applied before named value arguments.
     pub default_graph_options: CugraphGraphOptions,
@@ -82,12 +87,22 @@ pub struct CugraphSqlConfig {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Validated SQL call contract used to construct and execute one graph algorithm.
+///
+/// The parameter variant, input-column flags, and output schema must agree with
+/// `algorithm`; SQL binding validates this combination before execution.
 pub struct CugraphAlgorithmSpec {
+    /// Algorithm whose input and output contracts this specification applies.
     pub algorithm: CugraphAlgorithm,
+    /// Whether the edge child supplies the canonical `weight` column.
     pub has_weight: bool,
+    /// Whether the edge child supplies the canonical `edge_id` column.
     pub has_edge_id: bool,
+    /// Construction semantics applied to the input edge list.
     pub graph_options: CugraphGraphOptions,
+    /// Parameters whose variant must match `algorithm`.
     pub params: CugraphAlgorithmParams,
+    /// Arrow schema derived from validated inputs and result-shape options.
     pub output_schema: SchemaRef,
 }
 
@@ -225,9 +240,13 @@ impl PredicateSourceColumnRole {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Edge-list construction options applied before algorithm execution.
 pub struct CugraphGraphOptions {
+    /// Whether input edges describe a directed graph; defaults to `true`.
     pub directed: bool,
+    /// Whether graph construction renumbers input vertex ids; defaults to `true`.
     pub renumber: bool,
+    /// Duplicate and reverse-edge normalization policy; defaults to Python cuGraph semantics.
     pub construction_policy: CugraphGraphConstructionPolicy,
 }
 
@@ -267,11 +286,14 @@ impl CugraphGraphOptions {
 ///   has no null-edge semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CugraphGraphConstructionPolicy {
+    /// Normalize duplicate and reverse edges using Python cuGraph construction semantics.
     PythonCugraph,
+    /// Pass normalized edges to libcugraph directly, after filtering null edge rows.
     RawLibcugraph,
 }
 
 impl CugraphGraphConstructionPolicy {
+    /// Returns the stable SQL option value for this selector.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PythonCugraph => "python_cugraph",
@@ -295,30 +317,55 @@ impl CugraphGraphConstructionPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Algorithm-specific SQL parameters paired with [`CugraphAlgorithmSpec::algorithm`].
 pub enum CugraphAlgorithmParams {
+    /// Rank vertices by damped incoming-link influence.
     PageRank(CugraphPageRankParams),
+    /// Rank vertices using a caller-supplied personalization relation.
     PersonalizedPageRank(CugraphPersonalizedPageRankParams),
+    /// Traverse unweighted paths from one or more sources.
     Bfs(Box<CugraphBfsParams>),
+    /// Detect communities by hierarchical modularity optimization.
     Louvain(CugraphLouvainParams),
+    /// Compute vertex influence from neighboring centrality scores.
     EigenvectorCentrality(CugraphEigenvectorCentralityParams),
+    /// Compute attenuated neighbor influence with a constant bias.
     KatzCentrality(CugraphKatzCentralityParams),
+    /// Compute hub and authority scores.
     Hits(CugraphHitsParams),
+    /// Score vertices by their contribution to shortest paths.
     BetweennessCentrality(CugraphBetweennessCentralityParams),
+    /// Score edges by their contribution to shortest paths.
     EdgeBetweennessCentrality(CugraphEdgeBetweennessCentralityParams),
+    /// Compute weighted shortest distances from one source.
     Sssp(CugraphSsspParams),
+    /// Return incoming and outgoing vertex degrees.
     DegreesAll(CugraphDegreesAllParams),
+    /// Return incoming vertex degrees.
     InDegreesAll(CugraphInDegreesAllParams),
+    /// Return outgoing vertex degrees.
     OutDegreesAll(CugraphOutDegreesAllParams),
+    /// Label components using connectivity without edge direction.
     WeaklyConnectedComponents(CugraphWccParams),
+    /// Label components whose vertices are mutually reachable by directed paths.
     StronglyConnectedComponents(CugraphSccParams),
+    /// Count triangles involving each vertex.
     TriangleCountAll(CugraphTriangleCountAllParams),
+    /// Return each vertex's largest containing k-core.
     CoreNumber(CugraphCoreNumberParams),
+    /// Extract the subgraph meeting the requested core-number bound.
     KCore(CugraphKCoreParams),
+    /// Return minimum-weight spanning edges.
     MinimumSpanningTree(CugraphMstParams),
+    /// Detect communities with modularity refinement.
     Leiden(CugraphLeidenParams),
+    /// Detect communities using an ensemble of Louvain partitions.
     Ecg(CugraphEcgParams),
+    /// Cluster vertices from a modularity spectral embedding.
     SpectralModularityMaximization(CugraphSpectralClusteringParams),
+    /// Compute two-dimensional vertex layout coordinates.
     ForceAtlas2(CugraphForceAtlas2Params),
+    /// Compute the selected coefficient for explicit vertex pairs.
     Similarity(CugraphSimilarityParams),
 }
 
@@ -467,6 +514,9 @@ impl CugraphAlgorithmParams {
 pub struct CugraphVertexPairTable;
 
 impl CugraphVertexPairTable {
+    /// Constructs the relation-presence marker.
+    ///
+    /// The associated child plan supplies and validates the relation's data and schema.
     pub const fn new() -> Self {
         Self
     }
@@ -478,13 +528,18 @@ impl CugraphVertexPairTable {
 /// same relation binding and cannot drift into copied SQL parameter types.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CugraphSimilarityParams {
+    /// Presence of the relation supplying aligned `first` and `second` vertex pairs.
     pub vertex_pairs: CugraphVertexPairTable,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Damping and convergence settings for PageRank.
 pub struct CugraphPageRankParams {
+    /// Damping factor in `[0, 1]`; defaults to `0.85`.
     pub alpha: f64,
+    /// Positive convergence tolerance; defaults to `1e-5`.
     pub epsilon: f64,
+    /// Positive iteration limit; defaults to `100`.
     pub max_iterations: u32,
 }
 
@@ -495,21 +550,29 @@ impl Default for CugraphPageRankParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+/// PageRank settings and the presence of a personalization relation.
 pub struct CugraphPersonalizedPageRankParams {
+    /// Damping and convergence settings shared with ordinary PageRank.
     pub pagerank: CugraphPageRankParams,
+    /// Presence of the child relation supplying personalization weights.
     pub personalization: CugraphPageRankPersonalizationTable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Marks a planned personalization relation with canonical `vertex` and `value` columns.
 pub struct CugraphPageRankPersonalizationTable;
 
 impl CugraphPageRankPersonalizationTable {
+    /// Constructs the relation-presence marker.
+    ///
+    /// The associated child plan supplies and validates the relation's data and schema.
     pub const fn new() -> Self {
         Self
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Source, traversal predicates, and result-shape settings for breadth-first search.
 pub struct CugraphBfsParams {
     /// Source vertex selector for the SQL BFS traversal.
     pub source: CugraphBfsSource,
@@ -542,14 +605,20 @@ impl Default for CugraphBfsSource {
 }
 
 impl CugraphBfsSource {
+    /// Selects one numeric source vertex without a relation-backed source input.
     pub fn scalar_i64(value: i64) -> Self {
         Self::Scalar(CugraphBfsSourceVertex::Int64(value))
     }
 
+    /// Selects one logical string source vertex for mapping through the call's vertex codebook.
     pub fn scalar_utf8(value: impl Into<String>) -> Self {
         Self::Scalar(CugraphBfsSourceVertex::Utf8(value.into()))
     }
 
+    /// Reports a string scalar or a literal list whose first value is a string.
+    ///
+    /// Relation-backed sources and empty lists return `false`; this does not validate
+    /// a list's element types.
     pub fn is_utf8(&self) -> bool {
         match self {
             Self::Scalar(CugraphBfsSourceVertex::Utf8(_)) => true,
@@ -558,6 +627,9 @@ impl CugraphBfsSource {
         }
     }
 
+    /// Reports a numeric scalar or a literal list whose first value is numeric.
+    ///
+    /// Relation-backed sources and empty lists return `false`.
     pub fn is_literal_numeric_domain(&self) -> bool {
         match self {
             Self::Scalar(CugraphBfsSourceVertex::Int64(_)) => true,
@@ -566,6 +638,7 @@ impl CugraphBfsSource {
         }
     }
 
+    /// Returns the numeric scalar value, or `None` for a string, list, or relation selector.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Scalar(source) => source.as_i64(),
@@ -573,10 +646,15 @@ impl CugraphBfsSource {
         }
     }
 
+    /// Whether execution needs a source-vertices table; only a numeric scalar avoids that input.
     pub fn requires_source_vertices_input(&self) -> bool {
         !matches!(self, Self::Scalar(CugraphBfsSourceVertex::Int64(_)))
     }
 
+    /// Returns whether logical planning already supplies a source-vertices child.
+    ///
+    /// Relations and numeric literal lists supply a child; string literals are
+    /// materialized after logical-id mapping during execution.
     pub fn planned_source_vertices_input(&self) -> bool {
         match self {
             Self::Relation(_) => true,
@@ -585,6 +663,8 @@ impl CugraphBfsSource {
         }
     }
 
+    /// Returns `vertex` for a relation selector and the generated
+    /// `__source_vertex` column name for a literal selector.
     pub fn source_vertices_column(&self) -> &str {
         match self {
             Self::Relation(_) => CUGRAPH_VERTEX_COLUMN,
@@ -592,6 +672,7 @@ impl CugraphBfsSource {
         }
     }
 
+    /// Borrows the relation marker for a relation selector, or returns `None` for literals.
     pub fn relation(&self) -> Option<&CugraphGraphPredicateTable> {
         match self {
             Self::Relation(input) => Some(input),
@@ -599,6 +680,9 @@ impl CugraphBfsSource {
         }
     }
 
+    /// Borrows one scalar as a one-element slice or the literal list.
+    ///
+    /// Returns `None` for a relation-backed selector.
     pub fn literal_values(&self) -> Option<&[CugraphBfsSourceVertex]> {
         match self {
             Self::Scalar(value) => Some(std::slice::from_ref(value)),
@@ -607,6 +691,7 @@ impl CugraphBfsSource {
         }
     }
 
+    /// Returns the scalar/list source count, or `None` when a relation supplies the sources.
     pub fn literal_count(&self) -> Option<usize> {
         self.literal_values().map(<[_]>::len)
     }
@@ -633,10 +718,12 @@ pub enum CugraphVertexSelector {
 }
 
 impl CugraphVertexSelector {
+    /// Returns whether this literal names a logical string vertex.
     pub const fn is_utf8(&self) -> bool {
         matches!(self, Self::Utf8(_))
     }
 
+    /// Returns the numeric vertex value, or `None` for a logical string vertex.
     pub const fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Int64(value) => Some(*value),
@@ -661,10 +748,12 @@ impl Default for CugraphBfsSourceVertex {
 }
 
 impl CugraphBfsSourceVertex {
+    /// Returns whether this literal names a logical string vertex.
     pub const fn is_utf8(&self) -> bool {
         matches!(self, Self::Utf8(_))
     }
 
+    /// Returns the numeric vertex value, or `None` for a logical string vertex.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Int64(value) => Some(*value),
@@ -780,14 +869,16 @@ pub(crate) fn vertex_id_domain_for_call(
 
     if !is_numeric_vertex_dtype(src_type) {
         return Err(unsupported_vertex_dtype_error(format!(
-            "cuGraph {} source column has unsupported dtype {src_type:?}",
-            algorithm.function_name()
+            "cuGraph {} source column has unsupported dtype {src_type:?}; supported vertex types: {}",
+            algorithm.function_name(),
+            supported_vertex_types().join(", ")
         )));
     }
     if !is_numeric_vertex_dtype(dst_type) {
         return Err(unsupported_vertex_dtype_error(format!(
-            "cuGraph {} destination column has unsupported dtype {dst_type:?}",
-            algorithm.function_name()
+            "cuGraph {} destination column has unsupported dtype {dst_type:?}; supported vertex types: {}",
+            algorithm.function_name(),
+            supported_vertex_types().join(", ")
         )));
     }
     if src_type != dst_type {
@@ -802,8 +893,21 @@ pub(crate) fn vertex_id_domain_for_call(
     }
 }
 
+/// Arrow dtypes of vertex columns that cuGraph indexes as integer vertex IDs.
+pub(crate) const NUMERIC_VERTEX_DTYPES: [DataType; 2] = [DataType::Int32, DataType::Int64];
+
+/// Arrow dtypes of vertex columns that a per-call codebook maps to native
+/// vertex IDs.
+pub(crate) const STRING_VERTEX_DTYPES: [DataType; 3] = [DataType::Utf8, DataType::LargeUtf8, DataType::Utf8View];
+
 pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {
-    matches!(data_type, DataType::Int32 | DataType::Int64)
+    NUMERIC_VERTEX_DTYPES.contains(data_type)
+}
+
+/// Every vertex dtype a cuGraph call accepts, numeric first, as Arrow type
+/// names.
+pub(crate) fn supported_vertex_types() -> Vec<String> {
+    NUMERIC_VERTEX_DTYPES.iter().chain(&STRING_VERTEX_DTYPES).map(|data_type| format!("{data_type:?}")).collect()
 }
 
 /// Validates the static schema contract for an explicit-pair similarity
@@ -860,7 +964,7 @@ fn vertex_dtype_mismatch_error(message: impl Into<String>) -> Error {
 }
 
 pub(crate) fn is_string_vertex_dtype(data_type: &DataType) -> bool {
-    matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
+    STRING_VERTEX_DTYPES.contains(data_type)
 }
 
 /// SQL-visible BFS output options.
@@ -905,15 +1009,24 @@ impl CugraphBfsOutputMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Optional relation inputs restricting BFS traversal or selecting target vertices.
+///
+/// `None` leaves the corresponding predicate unspecified.
 pub struct CugraphBfsPredicateInputs {
+    /// Optional allowed-vertex relation; absence imposes no allowed-vertex predicate.
     pub include_vertices: Option<CugraphGraphPredicateTable>,
+    /// Optional excluded-vertex relation; absence excludes no vertices by this predicate.
     pub exclude_vertices: Option<CugraphGraphPredicateTable>,
+    /// Optional target-vertex relation used for target metadata or path output.
     pub target_vertices: Option<CugraphGraphPredicateTable>,
+    /// Optional allowed edge-id relation, requiring an edge-id input contract.
     pub include_edge_ids: Option<CugraphGraphPredicateTable>,
+    /// Optional allowed edge relation identified by endpoints and, when declared, edge ids.
     pub include_edges: Option<CugraphGraphEdgePredicateTable>,
 }
 
 impl CugraphBfsPredicateInputs {
+    /// Returns whether any optional traversal predicate relation is present.
     pub fn has_inputs(&self) -> bool {
         self.include_vertices.is_some()
             || self.exclude_vertices.is_some()
@@ -924,26 +1037,34 @@ impl CugraphBfsPredicateInputs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Marks a planned one-column vertex or edge-id predicate relation.
 pub struct CugraphGraphPredicateTable;
 
 impl CugraphGraphPredicateTable {
+    /// Constructs the relation-presence marker.
+    ///
+    /// The associated child plan supplies and validates the relation's data and schema.
     pub const fn new() -> Self {
         Self
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Declares the canonical edge-predicate relation and whether it also supplies edge ids.
 pub struct CugraphGraphEdgePredicateTable {
+    /// Whether the predicate relation supplies `edge_id` in addition to `src` and `dst`.
     pub has_edge_id: bool,
 }
 
 impl CugraphGraphEdgePredicateTable {
+    /// Declares whether the edge-predicate child has a canonical `edge_id` column.
     pub const fn new(has_edge_id: bool) -> Self {
         Self { has_edge_id }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Hierarchy depth and modularity settings for Louvain community detection.
 pub struct CugraphLouvainParams {
     /// Maximum hierarchy depth / iteration count. Must be >= 1.
     pub max_level: u32,
@@ -960,8 +1081,11 @@ impl Default for CugraphLouvainParams {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Convergence settings for eigenvector centrality.
 pub struct CugraphEigenvectorCentralityParams {
+    /// Positive convergence tolerance; defaults to `1e-6`.
     pub epsilon: f64,
+    /// Positive iteration limit; defaults to `200`.
     pub max_iterations: u32,
 }
 
@@ -973,10 +1097,15 @@ impl Default for CugraphEigenvectorCentralityParams {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Attenuation, bias, and convergence settings for Katz centrality.
 pub struct CugraphKatzCentralityParams {
+    /// Neighbor-score attenuation in `(0, 1]`; defaults to `0.01`.
     pub alpha: f64,
+    /// Positive bias added to each vertex score; defaults to `1.0`.
     pub beta: f64,
+    /// Positive convergence tolerance; defaults to `1e-6`.
     pub epsilon: f64,
+    /// Positive iteration limit; defaults to `1000`.
     pub max_iterations: u32,
 }
 
@@ -988,9 +1117,13 @@ impl Default for CugraphKatzCentralityParams {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Convergence and output normalization for hub and authority scores.
 pub struct CugraphHitsParams {
+    /// Positive convergence tolerance; defaults to `1e-5`.
     pub epsilon: f64,
+    /// Positive iteration limit; defaults to `100`.
     pub max_iterations: u32,
+    /// Whether hub and authority scores are normalized; defaults to `false`.
     pub normalize: bool,
 }
 
@@ -1002,7 +1135,9 @@ impl Default for CugraphHitsParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Explicit logical vertex selectors used as betweenness traversal sources.
 pub struct CugraphBetweennessSeeds {
+    /// Traversal-source vertex ids, interpreted in the input graph's logical vertex domain.
     pub vertices: Vec<CugraphVertexSelector>,
 }
 
@@ -1018,21 +1153,30 @@ impl CugraphBetweennessSeeds {
         }
     }
 
+    /// Returns the number of explicit traversal-source vertices.
     pub fn len(&self) -> usize {
         self.vertices.len()
     }
 
+    /// Returns whether no explicit traversal-source vertices are listed.
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Source selection and score normalization for vertex betweenness centrality.
 pub struct CugraphBetweennessCentralityParams {
+    /// Explicit traversal sources, or `None` for automatic source selection.
     pub seeds: Option<CugraphBetweennessSeeds>,
+    /// Optional deterministic source count; execution selects the first `k` distinct
+    /// graph vertices in stable order. Mutually exclusive with explicit `seeds`.
     pub k: Option<u64>,
+    /// Whether returned betweenness scores use the algorithm's normalized scale.
     pub normalized: bool,
+    /// Whether path endpoints contribute to vertex betweenness scores.
     pub include_endpoints: bool,
+    /// Largest graph vertex count eligible for automatic exact traversal when neither `seeds` nor `k` is set.
     pub exact_vertex_threshold: u64,
 }
 
@@ -1049,10 +1193,16 @@ impl Default for CugraphBetweennessCentralityParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Source selection and score normalization for edge betweenness centrality.
 pub struct CugraphEdgeBetweennessCentralityParams {
+    /// Explicit traversal sources, or `None` for automatic source selection.
     pub seeds: Option<CugraphBetweennessSeeds>,
+    /// Optional deterministic source count; execution selects the first `k` distinct
+    /// graph vertices in stable order. Mutually exclusive with explicit `seeds`.
     pub k: Option<u64>,
+    /// Whether returned betweenness scores use the algorithm's normalized scale.
     pub normalized: bool,
+    /// Largest graph vertex count eligible for automatic exact traversal when neither `seeds` nor `k` is set.
     pub exact_vertex_threshold: u64,
 }
 
@@ -1068,28 +1218,36 @@ impl Default for CugraphEdgeBetweennessCentralityParams {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Source vertex and optional weighted-distance cutoff for shortest paths.
 pub struct CugraphSsspParams {
+    /// One logical source vertex from which weighted shortest distances are computed.
     pub source_vertex: CugraphVertexSelector,
     /// Maximum edge-weight sum to consider. `None` means no cutoff; must be >= 0 when set.
     pub cutoff: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Parameter marker for returning both incoming and outgoing degree counts.
 pub struct CugraphDegreesAllParams;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Parameter marker for returning incoming degree counts.
 pub struct CugraphInDegreesAllParams;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Parameter marker for returning outgoing degree counts.
 pub struct CugraphOutDegreesAllParams;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Parameter marker for weakly connected component labels.
 pub struct CugraphWccParams;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Parameter marker for strongly connected component labels.
 pub struct CugraphSccParams;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Parameter marker for triangle counts for each graph vertex.
 pub struct CugraphTriangleCountAllParams;
 
 /// Degree direction for core-number and k-core SQL parameters.
@@ -1097,13 +1255,17 @@ pub struct CugraphTriangleCountAllParams;
 /// Mirrors `query_planning::plan::GraphKCoreDegreeType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CugraphKCoreDegreeType {
+    /// Use incoming degree.
     In,
+    /// Use outgoing degree.
     Out,
     #[default]
+    /// Use combined incoming and outgoing degree; the default.
     InOut,
 }
 
 impl CugraphKCoreDegreeType {
+    /// Returns the stable SQL option value for this degree direction.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::In => "in",
@@ -1122,7 +1284,9 @@ impl CugraphKCoreDegreeType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Degree direction used to compute vertex core numbers.
 pub struct CugraphCoreNumberParams {
+    /// Degree direction defining the core-number calculation.
     pub degree_type: CugraphKCoreDegreeType,
 }
 
@@ -1133,8 +1297,11 @@ impl Default for CugraphCoreNumberParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Minimum core number and degree direction for extracting a k-core.
 pub struct CugraphKCoreParams {
+    /// Minimum core number retained in the extracted subgraph; defaults to `2`.
     pub k: u32,
+    /// Degree direction defining core membership.
     pub degree_type: CugraphKCoreDegreeType,
 }
 
@@ -1146,6 +1313,7 @@ impl Default for CugraphKCoreParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Parameter marker for the minimum spanning tree operation.
 pub struct CugraphMstParams;
 
 /// Parameters for Leiden community detection.
@@ -1267,19 +1435,25 @@ pub struct CugraphForceAtlas2Params {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Declares optional columns in the planned vertex-attributes relation.
 pub struct CugraphForceAtlas2VertexAttributesTable {
+    /// Whether a `radius` column is present.
     pub has_radius: bool,
+    /// Whether a `mobility` column is present.
     pub has_mobility: bool,
+    /// Whether a `mass` column is present.
     pub has_mass: bool,
 }
 
 impl CugraphForceAtlas2VertexAttributesTable {
+    /// Declares which optional attribute columns are present in the relation child.
     pub const fn new(has_radius: bool, has_mobility: bool, has_mass: bool) -> Self {
         Self { has_radius, has_mobility, has_mass }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Marks a planned relation supplying canonical `vertex`, `x`, and `y` starting positions.
 pub struct CugraphForceAtlas2InitialPositionsTable;
 
 impl Default for CugraphForceAtlas2InitialPositionsTable {
@@ -1289,6 +1463,9 @@ impl Default for CugraphForceAtlas2InitialPositionsTable {
 }
 
 impl CugraphForceAtlas2InitialPositionsTable {
+    /// Constructs the relation-presence marker.
+    ///
+    /// The associated child plan supplies and validates the relation's data and schema.
     pub const fn new() -> Self {
         Self
     }
@@ -1318,6 +1495,9 @@ impl Default for CugraphForceAtlas2Params {
     }
 }
 
+/// Returns the algorithm registry's base result schema.
+///
+/// Use [`result_schema_for_params`] for BFS options that change the result shape.
 pub fn stable_result_schema(algorithm: CugraphAlgorithm) -> SchemaRef {
     algorithm.native_algorithm().definition().base_result_schema()
 }

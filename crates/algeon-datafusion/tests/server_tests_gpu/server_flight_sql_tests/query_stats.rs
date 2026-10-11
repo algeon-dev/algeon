@@ -70,7 +70,8 @@ async fn get_query_stats_returns_structured_error_after_planning_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_stats() {
     let (listener, addr) = free_local_addr();
-    let env = std::collections::BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "native_required".to_string())]);
+    let env =
+        std::collections::BTreeMap::from([("ALGEON_SERVER_NATIVE_EXECUTION_MODE", "native_required".to_string())]);
     let mut config = test_server_config_with_env(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
@@ -93,7 +94,7 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
     assert_eq!(status.code(), Code::InvalidArgument);
     assert_eq!(
         status.message(),
-        "GPU execution does not support projected column `unsupported_values` with Arrow type `List(Decimal128(10, 2))`"
+        "native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support projected column `unsupported_values` with Arrow type `List(Decimal128(10, 2))`"
     );
     assert_eq!(
         status.metadata().get(UNSUPPORTED_COLUMN_METADATA_KEY).and_then(|value| value.to_str().ok()),
@@ -127,7 +128,8 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn strict_flight_names_the_blocking_aggregate_function_in_status_metadata_and_stats() {
     let (listener, addr) = free_local_addr();
-    let env = std::collections::BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "native_required".to_string())]);
+    let env =
+        std::collections::BTreeMap::from([("ALGEON_SERVER_NATIVE_EXECUTION_MODE", "native_required".to_string())]);
     let mut config = test_server_config_with_env(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
@@ -145,7 +147,7 @@ async fn strict_flight_names_the_blocking_aggregate_function_in_status_metadata_
     assert_eq!(status.code(), Code::InvalidArgument);
     assert_eq!(
         status.message(),
-        "GPU execution does not support aggregate function approx_percentile_cont; EXPLAIN GPU lists every blocking candidate"
+        "native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support aggregate function approx_percentile_cont; EXPLAIN GPU lists every blocking candidate"
     );
     let metadata = |key| status.metadata().get(key).and_then(|value| value.to_str().ok());
     assert_eq!(metadata(BLOCKING_KIND_METADATA_KEY), Some("aggregate_function"));
@@ -170,7 +172,10 @@ async fn strict_flight_names_the_blocking_aggregate_function_in_status_metadata_
     );
     let summary_detail: serde_json::Value =
         serde_json::from_str(coverage_string(explain, &explain_schema, "detail_json", 0)).unwrap();
-    assert_eq!(summary_detail["detail"], "GPU execution does not support aggregate function approx_percentile_cont");
+    assert_eq!(
+        summary_detail["detail"],
+        "native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support aggregate function approx_percentile_cont"
+    );
     let blocked = coverage_candidate_row(explain, &explain_schema, "not_supported");
     assert_eq!(
         coverage_string(explain, &explain_schema, "blocking", blocked),
@@ -189,7 +194,8 @@ async fn strict_flight_names_the_blocking_aggregate_function_in_status_metadata_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn strict_flight_executes_basic_list_limit_natively() {
     let (listener, addr) = free_local_addr();
-    let env = std::collections::BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "native_required".to_string())]);
+    let env =
+        std::collections::BTreeMap::from([("ALGEON_SERVER_NATIVE_EXECUTION_MODE", "native_required".to_string())]);
     let mut config = test_server_config_with_env(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
@@ -348,7 +354,7 @@ async fn get_query_stats_unknown_query_returns_not_found() {
     server.abort();
 
     assert_eq!(status.code(), Code::NotFound);
-    assert!(status.message().contains("unknown or expired query_id"), "{status:?}");
+    assert!(status.message().contains("no retained query has query_id or correlation_id"), "{status:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

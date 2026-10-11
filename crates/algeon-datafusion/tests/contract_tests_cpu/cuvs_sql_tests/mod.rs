@@ -12,6 +12,7 @@ use algeon_datafusion::cugraph_sql::CugraphAlgoExec;
 #[cfg(feature = "cugraph")]
 use algeon_datafusion::native_exec::AlgeonNativeExec;
 use algeon_datafusion::{
+    cugraph_sql::CugraphSqlConfig,
     cuvs_sql::{
         CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
         CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION,
@@ -1670,4 +1671,89 @@ fn assert_schema(schema: &DFSchema, names: &[&str]) {
 
 fn sql_literal(json: &str) -> String {
     json.replace('\'', "''")
+}
+
+/// A misspelled or unknown name with a GPU prefix fails as an unknown
+/// function, whichever family planners are installed, instead of reaching
+/// DataFusion's parser of unnamed table-function arguments.
+#[tokio::test]
+async fn unknown_gpu_function_names_report_the_closest_registered_name() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL contracts")
+        .try_with_cuvs_sql()
+        .expect("install cuVS SQL contracts")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_table(
+        &ctx,
+        "edges",
+        Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ])),
+    );
+    register_table(
+        &ctx,
+        "vectors",
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("d0", DataType::Float32, false),
+            Field::new("d1", DataType::Float32, false),
+        ])),
+    );
+    for (sql, closest) in [
+        ("SELECT * FROM cugraph_page_rank(edges => (SELECT src, dst FROM edges))", Some("cugraph_pagerank")),
+        ("SELECT * FROM cuvs_k_means(input => (SELECT id, d0, d1 FROM vectors), n_clusters => 1)", Some("cuvs_kmeans")),
+        ("SELECT * FROM gpu_frobnicate(level => 1)", None),
+    ] {
+        let error = ctx.state().create_logical_plan(sql).await.expect_err(sql);
+        let typed = error.find_algeon_error().unwrap_or_else(|| panic!("untyped rejection for {sql}: {error}"));
+        assert_eq!(typed.code(), ErrorCode::ObjectNotFound, "{sql}");
+        let message = typed.message();
+        assert!(message.ends_with("; gpu_list_functions() lists every installed function"), "{message}");
+        match closest {
+            Some(name) => assert!(message.contains(&format!("; closest registered name: {name};")), "{message}"),
+            None => assert!(!message.contains("closest registered name"), "{message}"),
+        }
+    }
+    // The metadata functions share the reserved prefix and still plan.
+    ctx.state().create_logical_plan("SELECT * FROM gpu_list_functions()").await.expect("metadata function plans");
+}
+
+/// The list shape is the type of the only feature field, not its name.
+#[tokio::test]
+async fn list_vector_fields_bind_by_type_under_any_name() {
+    let ctx = cuvs_context();
+    let item = Arc::new(Field::new("item", DataType::Float64, false));
+    register_table(
+        &ctx,
+        "embeddings",
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("embedding", DataType::List(item), false),
+            Field::new("weight", DataType::Float64, false),
+        ])),
+    );
+    let call = |input: &str| format!("SELECT * FROM {CUVS_KMEANS_FUNCTION}(input => ({input}), n_clusters => 1)");
+    ctx.state()
+        .create_logical_plan(&call("SELECT id, embedding FROM embeddings"))
+        .await
+        .expect("a single List<Float64> feature field is the vector");
+
+    let error =
+        ctx.state().create_logical_plan(&call("SELECT id, embedding, weight FROM embeddings")).await.unwrap_err();
+    let typed = error.find_algeon_error().expect("typed list-shape rejection");
+    assert_eq!(typed.fact_value("reason"), Some("list_vector_with_additional_features"));
+    assert_eq!(
+        typed.message(),
+        "cuVS input relation has a list field beside other feature fields; project either the list field alone or only scalar feature fields"
+    );
+    assert_eq!(typed.client_detail().and_then(|detail| detail.value("field")), Some("embedding"));
+}
+
+fn register_table(ctx: &SessionContext, name: &str, schema: Arc<Schema>) {
+    let batch = RecordBatch::new_empty(Arc::clone(&schema));
+    ctx.register_table(name, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).expect("fixture MemTable")))
+        .expect("register fixture table");
 }

@@ -21,12 +21,8 @@ use algeon_datafusion::{
     planner::AlgeonNativeOptimizerConfig,
     session::AlgeonSessionStateBuilderExt,
 };
-#[cfg(feature = "cuml")]
-use arrow::array::{BooleanArray, StringArray};
-#[cfg(not(feature = "cuml"))]
-use arrow::array::{BooleanArray, StringArray};
 use arrow::{
-    array::Array,
+    array::{Array, BooleanArray, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -83,9 +79,11 @@ fn native_context() -> SessionContext {
 }
 
 fn register_fixtures(ctx: SessionContext) -> SessionContext {
-    for (name, id, feature) in
-        [("vectors", DataType::Int64, DataType::Float32), ("double_vectors", DataType::Int64, DataType::Float64)]
-    {
+    for (name, id, feature) in [
+        ("vectors", DataType::Int64, DataType::Float32),
+        ("double_vectors", DataType::Int64, DataType::Float64),
+        ("integer_vectors", DataType::Int64, DataType::Int16),
+    ] {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", id, false),
             Field::new("d0", feature.clone(), false),
@@ -464,7 +462,14 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         for element in descriptor.vector_element_support {
             assert!(page.contains(&format!("| `{}` |", element.as_str())), "{}", page_path.display());
         }
-        assert_eq!(descriptor.vector_element_support, &[VectorElementType::Float32]);
+        // Float64 features are narrowed to Float32; a forest model keeps
+        // Float32 input, because its own precision decides the device width.
+        let elements: &[VectorElementType] = if descriptor.operation == CumlOperation::ForestPredict {
+            &[VectorElementType::Float32]
+        } else {
+            &[VectorElementType::Float32, VectorElementType::Float64]
+        };
+        assert_eq!(descriptor.vector_element_support, elements, "{}", descriptor.sql_function_name);
         for option in descriptor.options.iter().filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
         {
             let row = page
@@ -846,14 +851,67 @@ async fn nullable_typed_relations_plan_with_the_canonical_non_null_output_schema
 }
 
 #[tokio::test]
-async fn schema_rejections_preserve_structured_reasons_and_float32_support() {
+async fn schema_rejections_preserve_structured_reasons_and_narrowed_float64_support() {
     let ctx = context();
-    let error = ctx.state().create_logical_plan(&sql(CUML_TSVD_FUNCTION, "double_vectors", 1)).await.unwrap_err();
+    let item = Arc::new(Field::new("item", DataType::Float64, false));
+    for (name, vector) in [
+        ("double_list_vectors", DataType::List(Arc::clone(&item))),
+        ("double_fixed_vectors", DataType::FixedSizeList(item, 2)),
+    ] {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("embedding", vector, false),
+        ]));
+        ctx.register_table(
+            name,
+            Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![RecordBatch::new_empty(schema)]]).unwrap()),
+        )
+        .unwrap();
+    }
+    // Float64 wide columns and list elements pass planning and native
+    // preflight; execution narrows them to Float32.
+    let list = |table: &str| {
+        format!("SELECT * FROM {CUML_TSVD_FUNCTION}(input => (SELECT id, embedding FROM {table}), n_components => 1)")
+    };
+    for statement in
+        [sql(CUML_TSVD_FUNCTION, "double_vectors", 1), list("double_list_vectors"), list("double_fixed_vectors")]
+    {
+        let logical = ctx.state().create_logical_plan(&statement).await.unwrap();
+        assert_eq!(logical.schema().field_with_unqualified_name("pc_0").unwrap().data_type(), &DataType::Float32);
+        let physical = ctx.state().create_physical_plan(&logical).await.unwrap();
+        assert!(find_exec(physical.as_ref()).is_some(), "{statement}");
+    }
+    let error = ctx.state().create_logical_plan(&sql(CUML_TSVD_FUNCTION, "integer_vectors", 1)).await.unwrap_err();
     let typed = error.find_algeon_error().unwrap();
     assert_eq!(typed.code(), ErrorCode::UnsupportedType);
-    assert_eq!(typed.fact_value("expected_type"), Some("Float32"));
+    assert_eq!(typed.fact_value("expected_type"), Some("Float32, Float64"));
     let error = ctx.state().create_logical_plan(&sql(CUML_TSVD_FUNCTION, "vectors", 3)).await.unwrap_err();
     assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some("component_count_exceeds_dimension"));
+    // The list-shape rule names the same element types as the wide shape.
+    for descriptor in CUML_OPERATION_REGISTRY {
+        let name = descriptor.sql_function_name;
+        let described = ctx
+            .sql(&format!("SELECT relation_roles_json FROM gpu_describe_function('{name}')"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let roles: serde_json::Value =
+            serde_json::from_str(described[0].column(0).as_any().downcast_ref::<StringArray>().unwrap().value(0))
+                .unwrap();
+        let features = &roles[0]["fields"]["features"];
+        let list_rule = features["one_of"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|shape| shape["shape"] == "list")
+            .and_then(|shape| shape["rule"].as_str())
+            .unwrap();
+        let elements = descriptor.vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>();
+        assert_eq!(features["element_types"], serde_json::json!(elements), "{name}");
+        assert!(list_rule.contains(&format!("of {} elements", elements.join(" or "))), "{name}: {list_rule}");
+    }
 }
 
 #[cfg(feature = "cuml")]
@@ -876,7 +934,7 @@ async fn catalog_reports_validation_paths_for_option_and_relation_fields() {
     );
     for (relation, components, code, path) in [
         ("vectors", 0, "missing_or_invalid_option", "options.n_components"),
-        ("double_vectors", 1, "unsupported_type", "relations.input.fields.d0"),
+        ("integer_vectors", 1, "unsupported_type", "relations.input.fields.d0"),
     ] {
         let call =
             serde_json::json!({"relations": {"input": {"table": relation}}, "options": {"n_components": components}})
@@ -1288,4 +1346,19 @@ async fn forest_predict_rejects_a_disabled_cuml_feature_before_reading_the_model
         forest_rejection(&models.context(), &forest_sql("missing.json", "xgboost_json", "")).await.0.as_deref(),
         Some("required_feature_disabled")
     );
+}
+
+/// A function the session cannot run reports why before its arguments are
+/// bound, so the missing `model` and `model_format` are not the first error.
+#[tokio::test]
+async fn forest_predict_reports_its_availability_before_binding_arguments() {
+    let error = context()
+        .state()
+        .create_logical_plan(&format!(
+            "SELECT * FROM {CUML_FOREST_PREDICT_FUNCTION}(input => (SELECT id, d0, d1, d2, d3 FROM forest_vectors))"
+        ))
+        .await
+        .unwrap_err();
+    let reason = if cfg!(feature = "cuml") { "model_root_unconfigured" } else { "required_feature_disabled" };
+    assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some(reason));
 }

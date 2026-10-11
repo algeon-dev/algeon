@@ -96,6 +96,22 @@ impl AlgeonGpuExecutionMode {
     pub const fn rejects_datafusion_cpu(self) -> bool {
         matches!(self, Self::NativeRequired)
     }
+
+    /// The configuration spelling: the value `native.execution_mode` accepts
+    /// and `algeon_version()` reports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FunctionsOnly => "functions_only",
+            Self::NativePreferred => "native_preferred",
+            Self::NativeRequired => "native_required",
+        }
+    }
+}
+
+impl std::fmt::Display for AlgeonGpuExecutionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Classify the exact completed physical plan without invoking planning.

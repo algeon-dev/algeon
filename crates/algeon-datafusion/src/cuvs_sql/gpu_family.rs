@@ -4,19 +4,19 @@
 //! Named validation relations become schema-only `TableScan` logical inputs, so
 //! no relation scan, GPU allocation, or cuVS operation is performed here.
 
-use datafusion::catalog::Session;
+use datafusion::{catalog::Session, common::DataFusionError};
 use serde_json::{Map, Value, json};
 
 use super::{
     CUVS_OPERATION_REGISTRY, CuvsLogicalNode, CuvsOperation, CuvsOutputContract, CuvsRelationRole, GpuOptionKind,
-    error::ERRORS, options::dense_relation_function,
+    error::ERRORS,
+    options::{dense_relation_function, validate_options},
 };
 use crate::gpu_functions::{
-    GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
-    REQUIRED_FEATURE_DISABLED,
+    GpuCallProblem, GpuCallProblems, GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor,
+    GpuFunctionFamily, REQUIRED_FEATURE_DISABLED,
     dense_relation::{
-        NULL_VALUES_CONTRACT, adapter_validation_error, resolve_schema_only_input, schema_json, validation_error,
-        validation_request_schema,
+        NULL_VALUES_CONTRACT, resolve_schema_only_input, schema_json, validation_problem, validation_request_schema,
     },
 };
 
@@ -67,6 +67,8 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
             return unavailable_validation(operation, request, &self.availability);
         }
 
+        let function = dense_relation_function(operation);
+        let mut problems = GpuCallProblems::default();
         let mut inputs = Vec::with_capacity(operation.descriptor().relation_roles.len());
         let mut relation_details = Map::new();
         for role in operation.descriptor().relation_roles {
@@ -86,78 +88,75 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
                 },
                 Err(message) => {
                     relation_details.insert(role_name.to_string(), json!({"table": relation.table, "resolved": false}));
-                    let mut details = base_details(operation, relation_details);
+                    let mut details = base_details(operation, relation_details.clone());
                     details["path"] = Value::String(format!("relations.{role_name}"));
                     details["relation_role"] = Value::String(role_name.to_string());
-                    return GpuCallValidation {
-                        valid: false,
-                        error_code: Some("table_not_found".to_string()),
-                        message,
-                        function_name: operation.descriptor().sql_function_name.to_string(),
-                        relations_resolved: false,
-                        normalized_call: request.normalized_json(),
-                        output_schema: json!({}),
-                        would_execute_gpu: false,
-                        details,
-                    };
+                    problems.push(GpuCallProblem { code: "table_not_found".to_string(), message, details });
                 },
             }
         }
-
-        let option_values = request.options.as_object().cloned().unwrap_or_default();
-        let options_json = match dense_relation_function(operation).options_json(&inputs, option_values) {
-            Ok(options_json) => options_json,
-            Err(error) => {
-                let mut details = base_details(operation, relation_details);
-                let (error_code, message) = adapter_validation_error(&error, &mut details, "cuvs_validation_failed");
-                return GpuCallValidation {
-                    valid: false,
-                    error_code: Some(error_code),
-                    message,
-                    function_name: operation.descriptor().sql_function_name.to_string(),
-                    relations_resolved: true,
-                    normalized_call: request.normalized_json(),
-                    output_schema: json!({}),
-                    would_execute_gpu: false,
-                    details,
-                };
+        let relations_resolved = problems.is_empty();
+        let base = base_details(operation, relation_details);
+        let bindings = if relations_resolved {
+            function.relation_bindings(&inputs).map_err(|errors| {
+                for error in errors {
+                    problems.push(validation_problem(&error.into(), &base, "cuvs_validation_failed"));
+                }
+            })
+        } else {
+            Err(())
+        };
+        let mut values = request.options.as_object().cloned().unwrap_or_default();
+        let failing_option =
+            |error: &DataFusionError, values: &Map<String, Value>| function.failing_option(error, values);
+        let project = |error: &DataFusionError| validation_problem(error, &base, "cuvs_validation_failed");
+        let node = match &bindings {
+            Ok(bindings) => problems.check_options(
+                &mut values,
+                |values| {
+                    let options_json = function.options_json_with_bindings(bindings, values.clone())?;
+                    CuvsLogicalNode::try_new(operation, inputs.clone(), &options_json)
+                },
+                failing_option,
+                project,
+            ),
+            // Without every relation's binding, the value options are still
+            // checked, against bindings of the declared shape.
+            Err(()) => {
+                let bindings = function.stand_in_bindings();
+                problems.check_options(
+                    &mut values,
+                    |values| {
+                        let options_json = function.options_json_with_bindings(&bindings, values.clone())?;
+                        Ok(validate_options(operation, &options_json)?)
+                    },
+                    failing_option,
+                    project,
+                );
+                None
             },
         };
-        match CuvsLogicalNode::try_new(operation, inputs, &options_json) {
-            Ok(node) => {
-                let mut normalized = request.clone();
-                normalized.options = Value::Object(node.validated_options().value_options().clone());
-                let mut details = base_details(operation, relation_details);
-                details["output_contract"] =
-                    Value::String(output_contract_name(operation.descriptor().output_contract).to_string());
-                details["validated_options"] = normalized.options.clone();
-                GpuCallValidation {
-                    valid: true,
-                    error_code: None,
-                    message: "valid".to_string(),
-                    function_name: operation.descriptor().sql_function_name.to_string(),
-                    relations_resolved: true,
-                    normalized_call: normalized.normalized_json(),
-                    output_schema: schema_json(&node.output_schema()),
-                    would_execute_gpu: true,
-                    details,
-                }
-            },
-            Err(error) => {
-                let mut details = base_details(operation, relation_details);
-                let (error_code, message) = validation_error(&error, &mut details, "cuvs_validation_failed");
-                GpuCallValidation {
-                    valid: false,
-                    error_code: Some(error_code),
-                    message,
-                    function_name: operation.descriptor().sql_function_name.to_string(),
-                    relations_resolved: true,
-                    normalized_call: request.normalized_json(),
-                    output_schema: json!({}),
-                    would_execute_gpu: false,
-                    details,
-                }
-            },
+        let function_name = operation.descriptor().sql_function_name;
+        if let Some(invalid) = problems.into_invalid(function_name, relations_resolved, request.normalized_json()) {
+            return invalid;
+        }
+        let node = node.expect("a call without problems has a validated node");
+        let mut normalized = request.clone();
+        normalized.options = Value::Object(node.validated_options().value_options().clone());
+        let mut details = base;
+        details["output_contract"] =
+            Value::String(output_contract_name(operation.descriptor().output_contract).to_string());
+        details["validated_options"] = normalized.options.clone();
+        GpuCallValidation {
+            valid: true,
+            error_code: None,
+            message: "valid".to_string(),
+            function_name: function_name.to_string(),
+            relations_resolved: true,
+            normalized_call: normalized.normalized_json(),
+            output_schema: schema_json(&node.output_schema()),
+            would_execute_gpu: true,
+            details,
         }
     }
 }
@@ -191,8 +190,7 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
                             },
                             {
                                 "shape": "list",
-                                "field": "vector",
-                                "rule": "The vector field is FixedSizeList, List, or LargeList of a supported element type, with no other non-id fields. Nullable field and element types are accepted and a null row or element fails the query."
+                                "rule": "The only non-id field is a FixedSizeList, List, or LargeList of a supported element type, under any name. Nullable field and element types are accepted and a null row or element fails the query."
                             }
                         ]
                     }

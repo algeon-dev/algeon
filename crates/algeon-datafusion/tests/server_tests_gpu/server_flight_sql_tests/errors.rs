@@ -155,7 +155,7 @@ async fn unknown_table_errors_remain_generic_planning_without_message_parsing() 
 async fn feature_off_cugraph_ticket_returns_structured_capability_error() {
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config_with_env(std::collections::BTreeMap::from([(
-        algeon_datafusion::server::ALGEON_SERVER_CUGRAPH_ENABLED_ENV,
+        "ALGEON_SERVER_CUGRAPH_ENABLED",
         "true".to_string(),
     )]));
     declare_test_gpu_ownership(&mut config);

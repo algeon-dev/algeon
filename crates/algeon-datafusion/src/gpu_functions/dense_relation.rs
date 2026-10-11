@@ -1,6 +1,6 @@
 //! DataFusion contracts shared by dense-relation SQL families.
 
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::{
     catalog::Session,
     common::{DFSchema, DataFusionError, Result as DataFusionResult, TableReference},
@@ -13,12 +13,12 @@ use query_planning::plan::{DenseVectorBinding, GpuOptionDefinition, GpuOptionKin
 use serde_json::{Map, Value, json};
 
 use super::{
-    NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments,
+    GpuCallProblem, NamedArgumentDefinition, NamedArgumentKind, argument_of, bind_named_arguments,
     dense_relation_errors::DenseRelationErrorContext,
     resolve_input_ordering,
     scalar_arguments::{scalar_json, scalar_literal},
 };
-use crate::error::{DataFusionErrorExt, Error, ErrorCode, Result};
+use crate::error::{ClientDetail, DataFusionErrorExt, Error, ErrorCode, Result, datafusion_error_human_message};
 
 /// Descriptor value for relation fields whose Arrow nullability is not checked
 /// and whose values must be null-free: execution fails the query on a null.
@@ -274,14 +274,61 @@ impl DenseRelationFunction {
     /// The options JSON of a call with `inputs` and the value options
     /// `values`: the values plus each relation's binding, inferred from its
     /// schema.
-    pub(crate) fn options_json(&self, inputs: &[LogicalPlan], mut values: Map<String, Value>) -> Result<String> {
+    pub(crate) fn options_json(&self, inputs: &[LogicalPlan], values: Map<String, Value>) -> Result<String> {
+        let bindings = self.relation_bindings(inputs).map_err(|mut errors| errors.swap_remove(0))?;
+        self.options_json_with_bindings(&bindings, values)
+    }
+
+    /// The binding of each relation in `inputs`, inferred from its schema, or
+    /// every relation's binding error.
+    pub(crate) fn relation_bindings(
+        &self,
+        inputs: &[LogicalPlan],
+    ) -> std::result::Result<Map<String, Value>, Vec<Error>> {
         if inputs.len() != self.relations.len() {
-            return Err(self.invalid_call(
+            return Err(vec![self.invalid_call(
                 "invalid_relation_count",
                 format!("{} requires {} relation argument(s)", self.sql_function_name, self.relations.len()),
-            ));
+            )]);
         }
+        let mut bindings = Map::new();
+        let mut errors = Vec::new();
         for (relation, input) in self.relations.iter().zip(inputs) {
+            match self.relation_binding(input, *relation) {
+                Ok(binding) => {
+                    bindings.insert(relation.role.to_string(), binding);
+                },
+                Err(error) => errors.push(error),
+            }
+        }
+        if errors.is_empty() { Ok(bindings) } else { Err(errors) }
+    }
+
+    /// Bindings of the declared shape for every relation, naming columns no
+    /// schema has to contain. They let validation check value options when a
+    /// relation is unresolved or has no valid binding; canonicalization
+    /// checks a binding's shape, never its columns.
+    pub(crate) fn stand_in_bindings(&self) -> Map<String, Value> {
+        self.relations
+            .iter()
+            .map(|relation| {
+                let binding = if relation.label == LabelColumn::Required {
+                    json!({"id": "id", "vector": {"columns": ["feature"]}, "label": "label"})
+                } else {
+                    json!({"id": "id", "vector": {"columns": ["feature"]}})
+                };
+                (relation.role.to_string(), binding)
+            })
+            .collect()
+    }
+
+    /// Relation roles are supplied through bindings and cannot also appear in value options.
+    pub(crate) fn options_json_with_bindings(
+        &self,
+        bindings: &Map<String, Value>,
+        mut values: Map<String, Value>,
+    ) -> Result<String> {
+        for relation in &self.relations {
             if values.contains_key(relation.role) {
                 return Err(self.invalid_call(
                     "unknown_argument",
@@ -291,9 +338,22 @@ impl DenseRelationFunction {
                     ),
                 ));
             }
-            values.insert(relation.role.to_string(), self.relation_binding(input, *relation)?);
         }
+        values.extend(bindings.iter().map(|(role, binding)| (role.clone(), binding.clone())));
         Ok(Value::Object(values).to_string())
+    }
+
+    /// The value option a validation error is about: its `argument` fact, or
+    /// for an unknown option the first key of `values` this function does not
+    /// declare, which is the key canonicalization rejects.
+    pub(crate) fn failing_option(&self, error: &DataFusionError, values: &Map<String, Value>) -> Option<String> {
+        argument_of(error).or_else(|| {
+            let reason = error.find_algeon_error().and_then(|error| error.fact_value("reason"));
+            (reason == Some("unknown_option"))
+                .then(|| values.keys().find(|key| !self.options.iter().any(|option| option.name == key.as_str())))
+                .flatten()
+                .cloned()
+        })
     }
 
     /// The binding of `input`: its `id`, its feature fields, and its `label`
@@ -320,28 +380,39 @@ impl DenseRelationFunction {
             },
             LabelColumn::Required | LabelColumn::Forbidden | LabelColumn::Feature => {},
         }
-        let feature_names = schema
+        let features = schema
             .fields()
             .iter()
-            .map(|field| field.name().as_str())
-            .filter(|name| *name != "id" && (relation.label == LabelColumn::Feature || *name != "label"))
+            .filter(|field| {
+                let name = field.name().as_str();
+                name != "id" && (relation.label == LabelColumn::Feature || name != "label")
+            })
             .collect::<Vec<_>>();
-        if feature_names.is_empty() {
+        if features.is_empty() {
             return Err(self.invalid_call(
                 "missing_vector_features",
                 format!("{family} {role} relation requires at least one feature field after 'id'"),
             ));
         }
-        let vector = if feature_names.contains(&"vector") {
-            if feature_names.len() != 1 {
-                return Err(self.invalid_call(
-                    "vector_field_with_additional_features",
-                    format!("{family} {role} relation cannot combine 'vector' with other feature fields"),
-                ));
-            }
-            json!({"column": "vector"})
-        } else {
-            json!({"columns": feature_names})
+        let is_list = |data_type: &DataType| {
+            matches!(data_type, DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(..))
+        };
+        let vector = match features.as_slice() {
+            [field] if is_list(field.data_type()) => json!({"column": field.name()}),
+            _ => {
+                if let Some(list) = features.iter().find(|field| is_list(field.data_type())) {
+                    return Err(self
+                        .invalid_call(
+                            "list_vector_with_additional_features",
+                            format!(
+                                "{family} {role} relation has a list field beside other feature fields; project either the list field alone or only scalar feature fields"
+                            ),
+                        )
+                        .with_log_safe_fact("relation_role", role)
+                        .with_client_detail(ClientDetail::Field { name: list.name().clone() }));
+                }
+                json!({"columns": features.iter().map(|field| field.name()).collect::<Vec<_>>()})
+            },
         };
         Ok(if relation.label == LabelColumn::Required {
             json!({"id": "id", "vector": vector, "label": "label"})
@@ -480,9 +551,15 @@ pub(crate) fn validation_error(
 ) -> (String, String) {
     let Some(adapter) = error.find_algeon_error() else {
         details["path"] = Value::String("options".to_string());
-        return (fallback_code.to_string(), error.to_string());
+        return (fallback_code.to_string(), datafusion_error_human_message(error));
     };
     adapter_validation_error(adapter, details, fallback_code)
+}
+
+pub(crate) fn validation_problem(error: &DataFusionError, base: &Value, fallback_code: &'static str) -> GpuCallProblem {
+    let mut details = base.clone();
+    let (code, message) = validation_error(error, &mut details, fallback_code);
+    GpuCallProblem { code, message, details }
 }
 
 /// Projects the typed rejection and its argument or relation locator into validation details.

@@ -5,6 +5,9 @@
 //! API; configuration, session construction, Flight SQL behavior, and error
 //! projection are owned here.
 //!
+//! The listener serves plaintext unless [`ServerConfig::tls`] is set, for an
+//! address-bound and a prebound listener alike.
+//!
 //! Accepted HTTP/2 connections use [`ServerConfig::http2_keepalive`], defaulting
 //! to a ping after 30 seconds without inbound traffic and a 10-second acknowledgement timeout.
 //! Connection loss drops the Flight result stream, cancelling its attempt and
@@ -29,16 +32,20 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};
 
-use crate::server::{
-    backend::{
-        AlgeonGpuBackend, AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy,
-        GpuMemoryOwnership,
-    },
-    cugraph_sql::CUGRAPH_OPERATION_REGISTRY,
-};
 pub(crate) use crate::{
     attempt, backend, capability, cugraph_sql, cuml_sql, error as adapter_error, gpu_coverage, native_exec,
     native_report, planner, report, session as adapter_session,
+};
+use crate::{
+    build_info::build_info,
+    server::{
+        backend::{
+            AlgeonGpuBackend, AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy,
+            GpuMemoryOwnership,
+        },
+        config::{ConfigSources, non_default_settings},
+        cugraph_sql::CUGRAPH_OPERATION_REGISTRY,
+    },
 };
 
 mod admission;
@@ -52,28 +59,11 @@ mod flight;
 mod io_lifecycle;
 mod observability;
 mod session;
-mod workspace;
 
 pub use auth::{AuthConfig, AuthMode, PasswordHashError, StaticUserConfig, hash_password, verify_password};
 pub use config::{
-    ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
-    ALGEON_SERVER_BIND_ENV, ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-    ALGEON_SERVER_CUGRAPH_ENABLED_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_GPU_DEVICES_ENV,
-    ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV, ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV,
-    ALGEON_SERVER_LOG_ENV, ALGEON_SERVER_NATIVE_CONFIG_OPTIONS, ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV,
-    ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
-    ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
-    ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
-    ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
-    ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
-    ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
-    ALGEON_SERVER_S3_ENDPOINT_ENV, ALGEON_SERVER_S3_PATH_STYLE_ENV, ALGEON_SERVER_S3_REGION_ENV,
-    ALGEON_SERVER_S3_UNSIGNED_ENV, ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
-    ALGEON_SERVER_WORKSPACE_BACKING_ALIASES_ENV, ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
-    ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, ALGEON_SERVER_WORKSPACE_CATALOG_ENV,
-    ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, AlgeonServerNativeConfigOption, CugraphServerConfig, Http2Keepalive,
-    ServerConfig, ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
+    ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_LOG_ENV, ConfigValueSource, CugraphServerConfig, Http2Keepalive,
+    LoadedServerConfig, ServerConfig, ServerObservabilityConfig,
 };
 pub use error::{
     BLOCKING_KIND_METADATA_KEY, BLOCKING_SUBJECT_METADATA_KEY, ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY,
@@ -118,6 +108,7 @@ pub enum ServerShutdown {
 #[derive(Default)]
 pub struct FlightSqlServerBuilder {
     config: Option<ServerConfig>,
+    sources: Option<ConfigSources>,
     backend: Option<AlgeonGpuBackend>,
     session_context: Option<Arc<SessionContext>>,
     listener: Option<std::net::TcpListener>,
@@ -126,7 +117,8 @@ pub struct FlightSqlServerBuilder {
 
 /// Embeddable Flight SQL server assembled from a [`ServerConfig`].
 pub struct FlightSqlServer {
-    http2_keepalive: Http2Keepalive,
+    transport: Server,
+    tls_enabled: bool,
     service: flight::DatafusionAlgeonFlightSqlService,
     listen: Listen,
     shutdown: ServerShutdown,
@@ -136,6 +128,7 @@ pub struct FlightSqlServer {
 }
 
 impl FlightSqlServer {
+    /// Starts an embeddable server builder. Supply [`FlightSqlServerBuilder::config`] before building.
     pub fn builder() -> FlightSqlServerBuilder {
         FlightSqlServerBuilder::default()
     }
@@ -155,37 +148,74 @@ impl FlightSqlServer {
         self.local_addr
     }
 
+    /// Serves Flight SQL until the configured shutdown source fires.
+    ///
+    /// Consumes the built server, drains RPCs and native attempts during shutdown,
+    /// and returns transport or shutdown failures as [`ServerError`].
     pub async fn serve(self) -> Result<()> {
         serve_built_server(self).await
     }
 }
 
 impl FlightSqlServerBuilder {
+    /// Supplies the required server configuration used for startup validation and service installation.
     pub fn config(mut self, config: ServerConfig) -> Self {
         self.config = Some(config);
+        self.sources = None;
         self
     }
 
+    /// Supplies a loaded configuration. Besides [`Self::config`], the
+    /// startup log then names the config file, each setting that differs
+    /// from its default with its source, and whether the device profiles
+    /// were defaulted.
+    pub fn loaded_config(mut self, loaded: LoadedServerConfig) -> Self {
+        let (config, sources) = loaded.into_parts();
+        self.config = Some(config);
+        self.sources = Some(sources);
+        self
+    }
+
+    /// Uses the supplied shared backend when constructing the server.
+    ///
+    /// [`Self::build`] rejects device, queue, or execution settings that conflict
+    /// with the supplied server configuration.
     pub fn backend(mut self, backend: AlgeonGpuBackend) -> Self {
         self.backend = Some(backend);
         self
     }
 
+    /// Injects the shared base DataFusion session.
+    ///
+    /// An injected backend is required. [`Self::build`] validates that the session
+    /// is bound to that backend and satisfies the configured SQL-family and catalog contracts.
     pub fn session_context(mut self, ctx: Arc<SessionContext>) -> Self {
         self.session_context = Some(ctx);
         self
     }
 
+    /// Adopts an already-bound TCP listener, taking ownership of its socket.
+    ///
+    /// Its address replaces `ServerConfig::bind_addr`; the configured TLS policy
+    /// applies to this listener as well.
     pub fn listener(mut self, listener: std::net::TcpListener) -> Self {
         self.listener = Some(listener);
         self
     }
 
+    /// Selects the shutdown signal source; the default uses SIGINT and SIGTERM.
     pub fn shutdown(mut self, shutdown: ServerShutdown) -> Self {
         self.shutdown = shutdown;
         self
     }
 
+    /// Validates startup configuration and assembles transport, backend, and the shared session.
+    ///
+    /// Does not bind or serve. It constructs a backend and session when they
+    /// were not injected, and rejects incompatible injections. Invalid TLS material
+    /// is rejected before a new backend initializes GPU resources. The
+    /// [`ServerConfig::init_sql`] statements run on the shared session last;
+    /// a failing statement fails the build with `invalid_configuration`.
     pub async fn build(self) -> Result<FlightSqlServer> {
         let config = self.config.ok_or_else(|| {
             ServerError::builder_validation(
@@ -198,6 +228,9 @@ impl FlightSqlServerBuilder {
         config.auth.mode.validate()?;
         config.validate_admission_within_live_query_capacity()?;
         let active_logical_capture_budget_bytes = config.active_logical_capture_budget_bytes()?;
+        // Unusable TLS material must fail startup before the backend below
+        // initializes CUDA, so the transport is built from the config first.
+        let transport = transport_server(&config)?;
         ensure_single_librmm_runtime_mapping()?;
         let listen = match self.listener {
             Some(listener) => Listen::Prebound(listener),
@@ -220,7 +253,8 @@ impl FlightSqlServerBuilder {
         };
         let mut effective_config = config.clone();
         effective_config.native_optimizer_config = backend.optimizer_config().clone();
-        log_server_config_snapshot(&effective_config, active_logical_capture_budget_bytes);
+        log_server_config_snapshot(&effective_config, self.sources.as_ref(), active_logical_capture_budget_bytes);
+        log_device_startup_records(&backend, self.sources.as_ref());
         warn_if_cugraph_built_but_disabled(&effective_config);
 
         let admission_init_start = Instant::now();
@@ -240,6 +274,9 @@ impl FlightSqlServerBuilder {
             },
             None => Arc::new(session::build_session_context_with_backend(&effective_config, &backend).await?),
         };
+        if let Some(path) = &effective_config.init_sql {
+            session::run_init_sql(&ctx, path).await?;
+        }
 
         let auth_interceptor = auth::AuthInterceptor::new(effective_config.auth.mode.clone(), auth::TokenStore::new());
         log_auth_mode_snapshot(&effective_config.auth.mode);
@@ -253,7 +290,8 @@ impl FlightSqlServerBuilder {
         .with_server_config_diagnostics(&effective_config, active_logical_capture_budget_bytes);
         let local_addr = matches!(&listen, Listen::Prebound(_)).then_some(addr);
         Ok(FlightSqlServer {
-            http2_keepalive: effective_config.http2_keepalive,
+            transport,
+            tls_enabled: effective_config.tls.is_some(),
             service,
             listen,
             shutdown: self.shutdown,
@@ -296,18 +334,21 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
 /// Serve on an already-bound listener.
 ///
 /// This lets a caller reserve the port up front and pass the live socket to the
-/// server, eliminating the bind/serve gap. Unlike [`serve`], the TCP socket accepts
-/// connections before CUDA/session/admission startup finishes, so an early client
-/// succeeds at the TCP layer and its first RPC blocks until gRPC is ready. Such a
-/// client is not refused. `config.bind_addr` is ignored in favour of the listener's address.
+/// server. Unlike [`serve`], which binds `config.bind_addr` only after CUDA,
+/// session and admission startup finish, this TCP socket accepts connections
+/// during startup: an early client connects at the TCP layer and its first RPC
+/// waits until gRPC serves. `config.bind_addr` is ignored in favour of the
+/// listener's address.
 pub async fn serve_with_listener(config: ServerConfig, listener: std::net::TcpListener) -> Result<()> {
     FlightSqlServer::builder().config(config).listener(listener).build().await?.serve().await
 }
 
 /// How [`FlightSqlServer`] obtains its TCP socket.
 enum Listen {
-    /// Binds `addr` only after full initialization, so the socket never exists
-    /// half-ready.
+    /// Binds `addr` when serving starts, after backend and session
+    /// initialization, so an open port means the server is ready. The
+    /// readiness log line follows a successful bind; a failed bind names the
+    /// address and never logs it.
     Addr(std::net::SocketAddr),
     /// Adopt a listener the caller already bound.
     Prebound(std::net::TcpListener),
@@ -322,11 +363,74 @@ impl Listen {
                 .map_err(|error| ServerError::session("failed to read Flight SQL listener address", error)),
         }
     }
+
+    async fn incoming(self) -> Result<(SocketAddr, TcpIncoming)> {
+        let listener = match self {
+            Listen::Addr(addr) => TcpListener::bind(addr).await.map_err(|error| bind_error(addr, error))?,
+            Listen::Prebound(listener) => {
+                listener
+                    .set_nonblocking(true)
+                    .map_err(|error| ServerError::session("failed to set Flight SQL listener non-blocking", error))?;
+                TcpListener::from_std(listener)
+                    .map_err(|error| ServerError::session("failed to adopt Flight SQL listener", error))?
+            },
+        };
+        let addr = listener
+            .local_addr()
+            .map_err(|error| ServerError::session("failed to read Flight SQL listener address", error))?;
+        // `TcpIncoming::from` leaves TCP_NODELAY unset, while tonic's own
+        // address-bound path enables it; keep gRPC latency the same.
+        Ok((addr, TcpIncoming::from(listener).with_nodelay(Some(true))))
+    }
+}
+
+/// `server_transport_failure` naming the address, with the OS error as cause.
+fn bind_error(addr: SocketAddr, error: std::io::Error) -> ServerError {
+    let message = format!("failed to bind Flight SQL listener at {addr}");
+    // `ServerError::session` keeps an adapter error's code, operation and facts.
+    ServerError::session(
+        message.clone(),
+        adapter_error::Error::new(
+            adapter_error::ErrorCode::ServerTransportFailure,
+            "algeon_datafusion.server.transport",
+            message,
+        )
+        .with_fact("bind_addr", addr)
+        .with_source(error),
+    )
+}
+
+impl ServerConfig {
+    /// Parses the configured TLS material the way serving does, without a
+    /// GPU: a certificate chain that does not parse or a key that does not
+    /// match it fails here with `invalid_configuration`, as it would at
+    /// startup. A plaintext configuration passes.
+    pub fn check_tls_material(&self) -> Result<()> {
+        transport_server(self).map(|_| ())
+    }
+}
+
+/// The tonic server with keepalive and TLS applied. tonic parses the PEM and
+/// matches the private key to the certificate here, so the value serving
+/// connections is the value that was validated.
+fn transport_server(config: &ServerConfig) -> Result<Server> {
+    let server = Server::builder()
+        .http2_keepalive_interval(Some(config.http2_keepalive.interval))
+        .http2_keepalive_timeout(Some(config.http2_keepalive.timeout));
+    let Some(tls) = &config.tls else {
+        return Ok(server);
+    };
+    server.tls_config(tls.clone()).map_err(|error| {
+        ServerError::invalid_config_with_source(
+            "tls",
+            "must hold a PEM certificate chain, its matching private key, and any client CA as PEM",
+            error,
+        )
+    })
 }
 
 async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
-    let FlightSqlServer { service, listen, shutdown, http2_keepalive, .. } = server;
-    let addr = listen.addr()?;
+    let FlightSqlServer { service, listen, shutdown, mut transport, tls_enabled, .. } = server;
     let admission = Arc::clone(service.admission());
     let io_lifecycle = Arc::clone(service.io_lifecycle());
     let cancellations = Arc::clone(service.cancellations());
@@ -340,30 +444,24 @@ async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
         Arc::clone(&coordinator),
         maintenance,
     );
-    tracing::info!(bind_addr = %addr, "starting Algeon Flight SQL server");
+    let (addr, incoming) = match listen.incoming().await {
+        Ok(bound) => bound,
+        Err(error) => {
+            // Nothing was served, but the backend still drains through the
+            // same supervised shutdown as a stopped server.
+            if let Err(shutdown_error) = shutdown_supervisor.finish().await {
+                tracing::warn!(error = %shutdown_error, "server shutdown after a failed bind did not complete cleanly");
+            }
+            return Err(error);
+        },
+    };
+    tracing::info!(bind_addr = %addr, tls_enabled, "starting Algeon Flight SQL server");
 
     let (shutdown, watchdog_rx) =
         shutdown_future(shutdown, shutdown_supervisor.trigger(), cancellations, shutdown_token);
 
-    let builder = Server::builder()
-        .http2_keepalive_interval(Some(http2_keepalive.interval))
-        .http2_keepalive_timeout(Some(http2_keepalive.timeout))
-        .add_service(FlightServiceServer::new(service));
-    let server_result = match listen {
-        Listen::Addr(addr) => builder.serve_with_shutdown(addr, shutdown).await,
-        Listen::Prebound(listener) => {
-            listener
-                .set_nonblocking(true)
-                .map_err(|error| ServerError::session("failed to set Flight SQL listener non-blocking", error))?;
-            let tokio_listener = TcpListener::from_std(listener)
-                .map_err(|error| ServerError::session("failed to adopt Flight SQL listener", error))?;
-            // `TcpIncoming::from` leaves TCP_NODELAY unset; tonic's own
-            // address-bound path defaults it to enabled, so restore it to keep
-            // gRPC latency behaviour identical across the two entry points.
-            let incoming = TcpIncoming::from(tokio_listener).with_nodelay(Some(true));
-            builder.serve_with_incoming_shutdown(incoming, shutdown).await
-        },
-    };
+    let server_result =
+        transport.add_service(FlightServiceServer::new(service)).serve_with_incoming_shutdown(incoming, shutdown).await;
 
     // Abort the watchdog if it was armed. If the serve future returned before
     // the shutdown future ran (e.g. a bind/listen error), the oneshot sender
@@ -638,7 +736,7 @@ fn validate_injected_startup_profiles(records: &[GpuBackendDeviceStartupRecord],
             return Err(ServerError::builder_conflict(
                 "server_backend_admission_conflict",
                 "admission.device_profiles",
-                format_usize_list(&config.gpu_devices),
+                format_usize_list(&config.gpu_devices()),
                 ordinal,
             ));
         };
@@ -719,7 +817,6 @@ fn validate_injected_startup_profiles(records: &[GpuBackendDeviceStartupRecord],
 }
 
 fn configured_profile_map(config: &ServerConfig) -> Result<std::collections::BTreeMap<usize, &AlgeonGpuDeviceProfile>> {
-    let selected = config.gpu_devices.iter().copied().collect::<std::collections::BTreeSet<_>>();
     let mut profiles = std::collections::BTreeMap::new();
     for profile in &config.gpu_device_profiles {
         let ordinal = profile.device_ordinal();
@@ -730,15 +827,6 @@ fn configured_profile_map(config: &ServerConfig) -> Result<std::collections::BTr
             )
             .with_fact("device_ordinal", ordinal));
         }
-    }
-    let configured = profiles.keys().copied().collect::<std::collections::BTreeSet<_>>();
-    if configured != selected {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "admission.device_profiles",
-            format_usize_list(&config.gpu_devices),
-            format_usize_list(&profiles.keys().copied().collect::<Vec<_>>()),
-        ));
     }
     Ok(profiles)
 }
@@ -754,13 +842,13 @@ fn configured_ownership_map(config: &ServerConfig) -> Result<std::collections::B
             .with_fact("device_ordinal", ordinal));
         }
     }
-    let selected = config.gpu_devices.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let selected = config.gpu_devices().into_iter().collect::<std::collections::BTreeSet<_>>();
     let declared = ownership.keys().copied().collect::<std::collections::BTreeSet<_>>();
     if declared != selected {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "gpu_memory_ownership",
-            format_usize_list(&config.gpu_devices),
+            format_usize_list(&config.gpu_devices()),
             format_usize_list(&ownership.keys().copied().collect::<Vec<_>>()),
         ));
     }
@@ -829,13 +917,38 @@ fn format_usize_list(values: &[usize]) -> String {
     values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
-fn log_server_config_snapshot(config: &ServerConfig, active_logical_capture_budget_bytes: u64) {
+fn log_server_config_snapshot(
+    config: &ServerConfig,
+    sources: Option<&ConfigSources>,
+    active_logical_capture_budget_bytes: u64,
+) {
+    let build = build_info();
     let native_execution = config.native_optimizer_config.native_execution_config();
     let source_chunking = native_execution.source_chunking();
     let source_scheduler = native_execution.source_scheduler_policy();
+    let max_source_chunk_bytes =
+        source_chunking.explicit_max_source_chunk_bytes().map_or_else(|| "auto".to_string(), |bytes| bytes.to_string());
+    let auth_mode = match &config.auth.mode {
+        AuthMode::Disabled => "disabled",
+        AuthMode::BasicBearer { .. } => "basic_bearer",
+    };
     tracing::info!(
+        version = build.version,
+        git_commit = build.git_commit.unwrap_or("unknown"),
+        features = %build.features.join(","),
+        datafusion_version = build.datafusion_version,
+        config_file = %sources
+            .and_then(ConfigSources::config_file)
+            .map_or_else(|| "none".to_string(), |path| path.display().to_string()),
         bind_addr = %config.bind_addr,
+        tls_enabled = config.tls.is_some(),
+        auth_mode,
+        execution_mode = config.native_optimizer_config.execution_mode().as_str(),
         statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
+        http2_keepalive_interval_secs = config.http2_keepalive.interval.as_secs(),
+        http2_keepalive_timeout_secs = config.http2_keepalive.timeout.as_secs(),
+        admission_max_queued_attempts = config.queue_policy.max_queued_attempts(),
+        admission_max_queue_wait_ms = u64::try_from(config.queue_policy.max_queue_wait().as_millis()).unwrap_or(u64::MAX),
         observability_per_query_max_records = config.observability.per_query_max_records,
         observability_per_query_max_bytes = config.observability.per_query_max_bytes,
         observability_active_logical_capture_max_bytes = active_logical_capture_budget_bytes,
@@ -844,7 +957,7 @@ fn log_server_config_snapshot(config: &ServerConfig, active_logical_capture_budg
         observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
         observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
         observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
-        native_max_source_chunk_bytes = source_chunking.max_source_chunk_bytes.get(),
+        native_max_source_chunk_bytes = %max_source_chunk_bytes,
         native_max_row_groups_per_chunk = source_chunking.max_row_groups_per_chunk.get(),
         native_max_retry_attempts = source_chunking.max_retry_attempts.get(),
         native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
@@ -854,30 +967,51 @@ fn log_server_config_snapshot(config: &ServerConfig, active_logical_capture_budg
         cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(config),
         "server config snapshot"
     );
+    // A config assembled in Rust has no file or environment provenance.
+    let Some(sources) = sources else {
+        return;
+    };
+    for (path, value, source) in non_default_settings(config, sources) {
+        tracing::info!(setting = path, value = %value, source = %source, "server setting differs from its default");
+    }
+}
+
+fn log_device_startup_records(backend: &AlgeonGpuBackend, sources: Option<&ConfigSources>) {
+    const GIB: f64 = (1u64 << 30) as f64;
+    for record in backend.device_startup_records() {
+        tracing::info!(
+            device_ordinal = record.device_ordinal,
+            device_name = record.model_name.as_deref().unwrap_or("unknown"),
+            managed_capacity_bytes = record.capacity_bytes,
+            managed_capacity_gib = format_args!("{:.2}", record.capacity_bytes as f64 / GIB),
+            default_query_limit_bytes = record.resource_profile.default_query_limit_bytes,
+            max_active_attempts = record.max_active_attempts,
+            worker_count = record.worker_count,
+            profile_defaulted = sources.is_some_and(ConfigSources::device_profiles_defaulted),
+            "GPU device ready for admission"
+        );
+    }
 }
 
 fn cugraph_enabled(config: &ServerConfig) -> bool {
     config.cugraph.is_some()
 }
 
-/// Emit a one-shot startup WARN when this binary was built with the `cugraph`
-/// feature but cuGraph UDTFs were disabled at runtime
-/// (`ALGEON_SERVER_CUGRAPH_ENABLED=false`). Without it the
-/// `cugraph_*` relation planner is not installed and queries fail with a
-/// not-found error, which is easy to misread as a build problem when the
-/// feature is compiled in. The cfg-gated definitions keep this a
-/// no-op on feature-off builds, where enabling the runtime setting instead
-/// registers the public frontend and returns its capability error at execution.
+/// One startup line when this binary was built with the `cugraph` feature
+/// but `cugraph.enabled = false` left the `cugraph_*` functions unregistered,
+/// so a call to one fails with `object_not_found` rather than a build
+/// problem. The cfg-gated definitions keep this a no-op on feature-off
+/// builds, where enabling the setting registers the frontend and execution
+/// returns its capability error instead.
 #[cfg(feature = "cugraph")]
 fn warn_if_cugraph_built_but_disabled(config: &ServerConfig) {
     if config.cugraph.is_some() {
         return;
     }
-    tracing::warn!(
+    tracing::info!(
         cugraph_enabled = false,
-        "Algeon Flight SQL server was built with the `cugraph` feature \
-         but cuGraph UDTFs are disabled at runtime. Set \
-         ALGEON_SERVER_CUGRAPH_ENABLED=true to enable the cugraph_* SQL planner."
+        "cugraph.enabled = false: the cugraph_* functions are not registered, and a call to one fails with \
+         object_not_found (ALGEON_SERVER_CUGRAPH_ENABLED=true registers them)"
     );
 }
 

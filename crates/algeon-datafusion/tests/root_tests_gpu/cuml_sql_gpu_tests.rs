@@ -146,6 +146,13 @@ fn cuml_sql_gpu_tests_cases_1() {
                 .expect("case runtime")
                 .block_on(nullable_typed_null_free_relations_match_the_non_null_results())
         }),
+        ("tsvd_float64_wide_and_list_features_match_the_float32_oracle", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(tsvd_float64_wide_and_list_features_match_the_float32_oracle())
+        }),
         ("null_ids_features_list_values_and_labels_fail_naming_the_function_role_and_column", || {
             TestRuntimeBuilder::new_current_thread()
                 .enable_all()
@@ -233,6 +240,21 @@ async fn nullable_typed_null_free_relations_match_the_non_null_results() {
     let nullable = logistic("CASE WHEN id < 0 THEN NULL ELSE CAST(id >= 4 AS INT) END");
     let actual = collect(plan(&ctx, &nullable).await, ctx.task_ctx()).await.unwrap();
     assert_eq!(format!("{actual:?}"), format!("{oracle:?}"));
+    close(backend, ctx);
+}
+
+/// Float64 wide columns and a List<Float64> built in SQL are narrowed to
+/// Float32 on the device and reproduce the Float32 oracle; the fixture values
+/// are exact in both widths.
+async fn tsvd_float64_wide_and_list_features_match_the_float32_oracle() {
+    let (backend, ctx) = context();
+    for input in [
+        "SELECT id, CAST(d0 AS DOUBLE) AS d0, CAST(d1 AS DOUBLE) AS d1, CAST(d2 AS DOUBLE) AS d2 FROM t",
+        "SELECT id, make_array(CAST(d0 AS DOUBLE), CAST(d1 AS DOUBLE), CAST(d2 AS DOUBLE)) AS embedding FROM t",
+    ] {
+        let sql = format!("SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => ({input}), n_components => 2)");
+        check_oracle(&collect(plan(&ctx, &sql).await, ctx.task_ctx()).await.unwrap_or_else(|error| panic!("{error}")));
+    }
     close(backend, ctx);
 }
 

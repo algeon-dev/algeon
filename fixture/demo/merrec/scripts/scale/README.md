@@ -28,7 +28,6 @@ Build a release server for performance measurements:
 cargo build --workspace --all-features --release --bin algeon_server
 
 ALGEON_SERVER_CONFIG_FILE="$PWD/fixture/demo/merrec/scripts/scale/server.toml" \
-ALGEON_SERVER_EXECUTION_MODE=native_required \
 ALGEON_SERVER_BIND=127.0.0.1:50064 \
 flock -x /tmp/cudf-gpu.lock target/release/algeon_server
 ```
@@ -50,7 +49,7 @@ python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 --register \
 ```
 
 For the CPU SQL baseline, stop that server and restart it with
-`ALGEON_SERVER_EXECUTION_MODE=functions_only`. Run the identical SQL and input
+`ALGEON_SERVER_NATIVE_EXECUTION_MODE=functions_only`. Run the identical SQL and input
 files with separate `full/cpu` report and result directories. This mode keeps
 ordinary relational SQL in DataFusion. Explicit cuGraph and cuVS functions
 remain GPU functions, and are excluded from this CPU SQL comparison.

@@ -264,3 +264,24 @@ async fn attempt_cancellation_stops_host_staging_while_an_input_waits() {
     let error = item.expect_err("a cancelled attempt yields no batch");
     assert_eq!(error.find_algeon_error().expect("typed cancellation").code(), ErrorCode::Cancelled);
 }
+
+/// A list feature field binds by its type, so an `embedding` column of
+/// `List<Float64>` runs without an alias.
+#[cfg(feature = "cuvs")]
+#[tokio::test]
+async fn kmeans_runs_over_a_float64_list_field_under_any_name() {
+    let backend = InstalledTestGpuBackend::new();
+    let state = backend
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .expect("install backend")
+        .try_with_cuvs_sql()
+        .expect("install cuVS SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    let sql = "SELECT * FROM cuvs_kmeans(input => (\
+                   SELECT column1 AS id, make_array(column2, column3) AS embedding \
+                   FROM (VALUES (1, 0.0, 0.0), (2, 0.1, 0.0), (3, 5.0, 5.0), (4, 5.1, 5.0))), \
+               n_clusters => 2)";
+    let batches = ctx.sql(sql).await.unwrap().collect().await.expect("cuVS k-means over List<Float64>");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+}

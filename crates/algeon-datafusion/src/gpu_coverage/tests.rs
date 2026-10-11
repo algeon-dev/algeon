@@ -404,7 +404,14 @@ async fn validate_query_preserves_the_installed_final_plan_policy() {
         .expect("the first not-supported candidate names its blocking subject");
     // The execution message ends with a pointer to this report, so the report
     // omits it.
-    assert_eq!(rejection.detail, format!("GPU execution does not support {}", blocked.text()), "coverage={coverage:?}");
+    assert_eq!(
+        rejection.detail,
+        format!(
+            "native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support {}",
+            blocked.text()
+        ),
+        "coverage={coverage:?}"
+    );
     assert_eq!(coverage.validated_under.final_plan_requirements, ["no_datafusion_cpu"]);
 }
 

@@ -181,7 +181,7 @@ cargo run -p examples --all-features --bin functions_only_modes
 ```
 
 Server deployments use `native.execution_mode` in TOML or
-`ALGEON_SERVER_EXECUTION_MODE`. GPU inputs and outputs use bounded Arrow staging
+`ALGEON_SERVER_NATIVE_EXECUTION_MODE`. GPU inputs and outputs use bounded Arrow staging
 with DataFusion memory accounting; staging does not spill. Unsupported
 capability, OOM, cancellation, and runtime failures remain structured errors,
 and a GPU UDTF is not replayed as a CPU algorithm after GPU execution
@@ -196,11 +196,8 @@ shared query-service ledger.
 
 ```bash
 EXAMPLE_REST_BIND=127.0.0.1:8080 \
-ALGEON_SERVER_BIND=127.0.0.1:50051 \
-ALGEON_SERVER_CUGRAPH_ENABLED=true \
 DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
 DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \
-flock /tmp/cudf-gpu.lock \
 cargo run -p examples --all-features --bin embedded_backend
 ```
 

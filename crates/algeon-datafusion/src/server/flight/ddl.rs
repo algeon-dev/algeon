@@ -1,7 +1,10 @@
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
 use super::*;
-use crate::{attempt::AttemptOptions, server::adapter_error::Result as AdapterResult};
+use crate::{
+    attempt::AttemptOptions,
+    server::{adapter_error::Result as AdapterResult, observability::RedactedSql},
+};
 
 impl DatafusionAlgeonFlightSqlService {
     pub(super) async fn execute_update_sql(
@@ -67,7 +70,7 @@ impl DatafusionAlgeonFlightSqlService {
         tracing::info!(
             query_id,
             correlation_id = tracing_correlation_id(correlation_id.as_deref()),
-            sql = sql.as_ref(),
+            sql = %RedactedSql(&sql),
             statement_kind = ?statement_kind,
             "executing Flight SQL update statement"
         );
@@ -100,12 +103,11 @@ impl DatafusionAlgeonFlightSqlService {
                         attempt.planning_failed(&error);
                     }
                     let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation(), FailedStatement::Other);
-                    let status = status_with_query_id(
+                    let status = status_with_query_id_and_correlation_id(
                         datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), FailedStatement::Other),
                         &query_id,
+                        correlation_id.as_deref(),
                     );
-                    let status =
-                        status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("planning", &status, captured);
                     coordinator_terminal.wait_finished().await;
                     return Err(status);
@@ -132,11 +134,11 @@ impl DatafusionAlgeonFlightSqlService {
             }
             let captured =
                 datafusion_error_to_captured_error(&error, statement_kind.sql_operation(), FailedStatement::Other);
-            let status = status_with_query_id(
+            let status = status_with_query_id_and_correlation_id(
                 datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), FailedStatement::Other),
                 &query_id,
+                correlation_id.as_deref(),
             );
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             coordinator_terminal.finish_captured("planning", &status, captured);
             coordinator_terminal.wait_finished().await;
             return Err(status);
@@ -196,12 +198,8 @@ impl DatafusionAlgeonFlightSqlService {
                         attempt.planning_failed(&error);
                     }
                     let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation(), failed_statement);
-                    let status = status_with_query_id(
-                        datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), failed_statement),
-                        &query_id,
-                    );
                     let status = status_with_query_id_and_correlation_id(
-                        status,
+                        datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), failed_statement),
                         &query_id,
                         correlation_id.as_deref(),
                     );
@@ -317,7 +315,7 @@ pub(super) fn collect_referenced_table_names(plan: &LogicalPlan, tables: &mut BT
     }
 }
 
-pub(super) async fn reject_drop_object_type_mismatch(
+pub(in crate::server) async fn reject_drop_object_type_mismatch(
     ctx: &SessionContext,
     plan: &LogicalPlan,
     operation: &'static str,

@@ -87,6 +87,7 @@ mod correlation_tests {
         RuntimeReservationDisposition, RuntimeReservationId, RuntimeReservationObservation,
     };
     use tokio::{spawn, task::yield_now, time::timeout};
+    use tonic::metadata::MetadataMap;
 
     use super::*;
     use crate::server::{
@@ -200,15 +201,11 @@ mod correlation_tests {
             .to_string();
         assert!(!query_stats(&service, &query_id).contains("# correlation_id="));
 
-        let response = service
+        service
             .execute_ticket(query_id.clone(), Some("do-get-corr-7".to_string()))
             .await
             .expect("statement do_get should succeed");
 
-        assert_eq!(
-            response.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
-            Some("do-get-corr-7")
-        );
         let payload = query_stats(&service, &query_id);
         assert!(payload.contains("# correlation_id=do-get-corr-7\n"), "{payload}");
     }
@@ -240,14 +237,7 @@ mod correlation_tests {
             .execute_ticket(query_id.clone(), None)
             .await
             .expect("DoGet constructs a lazy response before encoding the oversized row");
-        assert_eq!(
-            response.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
-            Some(query_id.as_str())
-        );
-        assert_eq!(
-            response.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
-            Some(correlation_id)
-        );
+        let headers = response.metadata().clone();
 
         let mut stream = response.into_inner();
         let schema = stream.next().await.expect("schema frame").expect("schema frame is valid");
@@ -259,14 +249,19 @@ mod correlation_tests {
             .expect_err("one oversized scalar cannot be emitted as FlightData");
 
         assert_eq!(status.code(), Code::ResourceExhausted);
-        assert_eq!(
-            status.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
-            Some(query_id.as_str())
-        );
-        assert_eq!(
-            status.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
-            Some(correlation_id)
-        );
+        // Clients such as the ADBC driver report DoGet response headers and
+        // the trailing status together, so each id must appear once across
+        // both.
+        for (key, value) in [(QUERY_ID_METADATA_KEY, query_id.as_str()), (CORRELATION_ID_METADATA_KEY, correlation_id)]
+        {
+            let values = headers
+                .get_all(key)
+                .iter()
+                .chain(status.metadata().get_all(key).iter())
+                .map(|value| value.to_str().unwrap().to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(values, [value], "{key}");
+        }
         assert_eq!(
             status.metadata().get(ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("host_materialization_limit_exceeded")
@@ -431,6 +426,7 @@ mod correlation_tests {
         let _flight_error = datafusion_error_to_flight_error(
             DataFusionError::Execution("runtime batch failed".to_string()),
             query_id,
+            None,
             &terminal,
             "algeon_datafusion.server.flight.test_stream",
         );
@@ -707,6 +703,107 @@ mod correlation_tests {
         witness.await.expect("the witness must run while the handler waits");
         renderer.join().expect("held render must complete");
         execution.succeed();
+    }
+
+    async fn run_correlated_statement(
+        service: &DatafusionAlgeonFlightSqlService,
+        sql: &str,
+        correlation_id: &str,
+    ) -> String {
+        let mut request = Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new()));
+        request.metadata_mut().insert(CORRELATION_ID_METADATA_KEY, MetadataValue::try_from(correlation_id).unwrap());
+        let response = service
+            .get_flight_info_statement(CommandStatementQuery { query: sql.to_string(), transaction_id: None }, request)
+            .await
+            .expect("statement flight info should succeed");
+        let query_id =
+            response.metadata().get(QUERY_ID_METADATA_KEY).unwrap().to_str().expect("ASCII query id").to_string();
+        service
+            .execute_ticket(query_id.clone(), None)
+            .await
+            .expect("DoGet should start")
+            .into_inner()
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("DoGet should finish");
+        sealed_query_stats(service, &query_id).await;
+        query_id
+    }
+
+    async fn stats_action(
+        service: &DatafusionAlgeonFlightSqlService,
+        action: &str,
+        body: &str,
+    ) -> Result<(MetadataMap, String), Status> {
+        let response = service
+            .do_action_fallback(Request::new(arrow_flight::Action {
+                r#type: action.to_string(),
+                body: body.as_bytes().to_vec().into(),
+            }))
+            .await?;
+        let metadata = response.metadata().clone();
+        let results = response.into_inner().try_collect::<Vec<_>>().await?;
+        let payload = results.iter().map(|result| std::str::from_utf8(&result.body).unwrap()).collect::<String>();
+        Ok((metadata, payload))
+    }
+
+    /// A client that sets its own correlation id never needs to read a
+    /// response header to find its stats. The lookup only considers the
+    /// caller's own queries, since correlation ids are client-chosen.
+    #[tokio::test]
+    async fn get_query_stats_resolves_a_correlation_id_to_the_callers_latest_query() {
+        let service = DatafusionAlgeonFlightSqlService::new(
+            Arc::new(SessionContext::new()),
+            Arc::new(QueryAdmission::new_for_tests()),
+            Duration::from_secs(30),
+        );
+        let first = run_correlated_statement(&service, "SELECT 1 AS one", "agent-run-1").await;
+        let second = run_correlated_statement(&service, "SELECT 2 AS two", "agent-run-1").await;
+        let header =
+            |metadata: &MetadataMap, key: &str| metadata.get(key).map(|value| value.to_str().unwrap().to_string());
+
+        let (metadata, payload) = stats_action(&service, GET_QUERY_STATS_ACTION, "agent-run-1").await.unwrap();
+        assert_eq!(header(&metadata, QUERY_ID_METADATA_KEY).as_deref(), Some(second.as_str()));
+        assert_eq!(header(&metadata, CORRELATION_ID_METADATA_KEY).as_deref(), Some("agent-run-1"));
+        assert!(payload.contains(&format!("# query_id={second}\n")), "{payload}");
+
+        service.ownership.insert(second.clone(), Owner::User(Arc::from("another-principal")));
+        let (metadata, _) = stats_action(&service, GET_QUERY_STATS_ACTION, "agent-run-1").await.unwrap();
+        assert_eq!(header(&metadata, QUERY_ID_METADATA_KEY).as_deref(), Some(first.as_str()));
+
+        let (metadata, _) = stats_action(&service, GET_QUERY_STATS_ACTION, &first).await.unwrap();
+        assert_eq!(header(&metadata, QUERY_ID_METADATA_KEY).as_deref(), Some(first.as_str()));
+        let status = stats_action(&service, GET_QUERY_STATS_ACTION, &second).await.unwrap_err();
+        assert_eq!(status.code(), Code::PermissionDenied, "query-id ownership stays as strict: {status:?}");
+
+        let status = stats_action(&service, GET_QUERY_STATS_ACTION, "agent-run-unknown").await.unwrap_err();
+        assert_eq!(status.code(), Code::NotFound);
+        assert!(status.message().contains("query_id or correlation_id"), "{status:?}");
+    }
+
+    #[tokio::test]
+    async fn query_stats_summary_keeps_only_header_and_trailer_lines() {
+        let service = DatafusionAlgeonFlightSqlService::new(
+            Arc::new(SessionContext::new()),
+            Arc::new(QueryAdmission::new_for_tests()),
+            Duration::from_secs(30),
+        );
+        let query_id = run_correlated_statement(&service, "SELECT 1 AS one", "summary-run").await;
+
+        let (_, full) = stats_action(&service, GET_QUERY_STATS_ACTION, &query_id).await.unwrap();
+        let (metadata, summary) = stats_action(&service, GET_QUERY_STATS_SUMMARY_ACTION, "summary-run").await.unwrap();
+
+        assert_eq!(metadata.get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()), Some(query_id.as_str()));
+        assert!(full.contains("\n[physical_plan]\n"), "the full payload carries record sections: {full}");
+        let full_header_lines = full.lines().filter(|line| line.starts_with('#')).collect::<Vec<_>>();
+        let summary_lines = summary.lines().collect::<Vec<_>>();
+        assert!(summary_lines.iter().all(|line| full_header_lines.contains(line)), "{summary}");
+        assert!(summary_lines.len() < full.lines().count(), "{summary}");
+        for line in ["# algeon_datafusion_query_stats", "# sealed=true", "# outcome=succeeded"] {
+            assert!(summary_lines.contains(&line), "{line}: {summary}");
+        }
+        assert!(summary_lines.iter().any(|line| line.starts_with("# incomplete=")), "{summary}");
+        assert!(summary_lines.iter().any(|line| line.starts_with("# capture_max_bytes=")), "{summary}");
     }
 
     #[tokio::test]

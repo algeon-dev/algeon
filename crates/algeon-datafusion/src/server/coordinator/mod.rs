@@ -32,7 +32,10 @@ pub(crate) use self::artifacts::install_coordinator_render_probe;
 use self::artifacts::{FinalizationTestGate, run_coordinator_render_probe};
 #[cfg(test)]
 pub(crate) use self::types::{CoordinatorArtifact, QueryTerminalOutcome, RetainedUnavailableReason};
-use self::{artifacts::ArtifactEgressLimiter, registry::QueryRegistryState};
+use self::{
+    artifacts::ArtifactEgressLimiter,
+    registry::{QueryRegistryState, normalized_correlation_id},
+};
 pub(crate) use self::{
     maintenance::{QueryCoordinatorMaintenance, QueryCoordinatorShutdownPlan},
     ticket::{QueryExecutionLease, QueryPlanningLease, QueryPlanningReportDeliveryTerminal},
@@ -87,6 +90,9 @@ impl QueryCoordinator {
         let mut state = self.lock_state();
         let Some(key) = state.current.get(query_id).cloned() else { return };
         let Some(record) = state.records.get_mut(&key) else { return };
+        if record.correlation_id.is_none() {
+            record.correlation_id = normalized_correlation_id(correlation_id);
+        }
         if let Some(captured) = &mut record.captured {
             captured.record_correlation_id(correlation_id);
             Self::bump_capture_version(record);

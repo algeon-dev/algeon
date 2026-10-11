@@ -1,111 +1,48 @@
 use super::{
-    env::EnvValues,
-    file::ServerAdmissionFileConfig,
-    native::{duration_millis_from_value, optional_duration_millis_value, optional_native_usize},
+    file::{ServerAdmissionDeviceProfileFileConfig, ServerAdmissionFileConfig},
     *,
 };
-use crate::server::backend::{
-    AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
-};
+use crate::server::backend::{AlgeonGpuDeviceInstallationBounds, GpuDeviceMemoryLimit};
 
-pub const ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV: &str = "ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS";
-pub const ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV: &str = "ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS";
-pub const ALGEON_SERVER_GPU_DEVICES_ENV: &str = "ALGEON_SERVER_GPU_DEVICES";
 pub(super) fn server_queue_policy(
-    values: &mut EnvValues<'_>,
     file: &ServerAdmissionFileConfig,
+    sources: &ConfigSources,
 ) -> Result<AlgeonGpuQueuePolicy> {
-    let queued = optional_native_usize(
-        values,
-        ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
-        "admission.max_queued_attempts",
-        file.max_queued_attempts,
-    )?;
-    let wait = optional_duration_millis_value(
-        values,
-        ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV,
-        "admission.max_queue_wait_ms",
-        file.max_queue_wait_ms,
-    )?;
-    for value in [queued.as_ref().map(|v| (v.value, v.field))].into_iter().flatten() {
-        if value.0 == 0 {
-            return Err(ServerError::invalid_config(value.1, "must be greater than zero"));
-        }
-    }
     let mut policy = AlgeonGpuQueuePolicy::default();
-    if let Some(value) = queued {
-        policy = policy.with_max_queued_attempts(value.value);
+    if let Some(queued) = file.max_queued_attempts {
+        if queued == 0 {
+            return Err(sources.invalid("admission.max_queued_attempts", "must be greater than zero"));
+        }
+        policy = policy.with_max_queued_attempts(queued);
     }
-    if let Some(value) = wait {
-        policy = policy.with_max_queue_wait(duration_millis_from_value(value)?);
+    if let Some(wait_ms) = file.max_queue_wait_ms {
+        if wait_ms == 0 {
+            return Err(sources.invalid("admission.max_queue_wait_ms", "must be greater than zero"));
+        }
+        policy = policy.with_max_queue_wait(Duration::from_millis(wait_ms));
     }
     Ok(policy)
 }
 
-/// Resolve the server's complete ordinal-keyed device envelope set.
-///
-/// `ALGEON_SERVER_GPU_DEVICES` is a deployment selector only. It does not
-/// apply a shared resource policy to the selected devices. Every selected
-/// device, including a single selected device, must name one TOML profile.
-pub(super) fn server_device_profiles(
-    file: &ServerAdmissionFileConfig,
-    device_ordinals: &[usize],
-) -> Result<Vec<AlgeonGpuDeviceProfile>> {
+/// One profile per `[[admission.device_profiles]]` entry, in file order. The
+/// profile ordinals are the selected GPUs. Without any entry the server
+/// selects GPU 0 with an all-default profile and reports `true`; a default
+/// profile carries no scalar setting, so no value is applied to several GPUs.
+pub(super) fn server_device_profiles(file: &ServerAdmissionFileConfig) -> Result<(Vec<AlgeonGpuDeviceProfile>, bool)> {
     if file.device_profiles.is_empty() {
-        return Err(ServerError::invalid_config(
-            "admission.device_profiles",
-            "one explicit ordinal-keyed profile is required for every configured GPU device",
-        )
-        .with_fact("reason", "missing_device_profiles")
-        .with_fact("device_ordinals", format_device_ordinals(device_ordinals)));
+        return Ok((vec![AlgeonGpuDeviceProfile::new(0)], true));
     }
-
-    let selected = device_ordinals.iter().copied().collect::<std::collections::BTreeSet<_>>();
-    let mut profiles = std::collections::BTreeMap::new();
-    for raw in &file.device_profiles {
-        let profile = profile_from_file(raw)?;
-        let ordinal = profile.device_ordinal();
-        if profiles.insert(ordinal, profile).is_some() {
-            return Err(ServerError::invalid_config(
-                "admission.device_profiles",
-                format!("contains duplicate profile for device ordinal {ordinal}"),
-            )
-            .with_fact("reason", "duplicate_device")
-            .with_fact("device_ordinal", ordinal));
-        }
-    }
-    let configured = profiles.keys().copied().collect::<std::collections::BTreeSet<_>>();
-    let missing = selected.difference(&configured).copied().collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(ServerError::invalid_config(
-            "admission.device_profiles",
-            "must configure every device selected by ALGEON_SERVER_GPU_DEVICES",
-        )
-        .with_fact("reason", "missing_devices")
-        .with_fact("device_ordinals", format_device_ordinals(&missing)));
-    }
-    let unconfigured = configured.difference(&selected).copied().collect::<Vec<_>>();
-    if !unconfigured.is_empty() {
-        return Err(ServerError::invalid_config(
-            "admission.device_profiles",
-            "must not configure a device outside ALGEON_SERVER_GPU_DEVICES",
-        )
-        .with_fact("reason", "unconfigured_devices")
-        .with_fact("device_ordinals", format_device_ordinals(&unconfigured)));
-    }
-    Ok(device_ordinals
-        .iter()
-        .map(|ordinal| profiles.remove(ordinal).expect("validated selected profile exists"))
-        .collect())
+    let profiles = file.device_profiles.iter().map(profile_from_file).collect::<Result<Vec<_>>>()?;
+    Ok((profiles, false))
 }
 
-fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) -> Result<AlgeonGpuDeviceProfile> {
+fn profile_from_file(raw: &ServerAdmissionDeviceProfileFileConfig) -> Result<AlgeonGpuDeviceProfile> {
     for (field, value) in [
         ("admission.device_profiles.memory_limit_bytes", raw.memory_limit_bytes),
         ("admission.device_profiles.default_query_limit_bytes", raw.default_query_limit_bytes),
     ] {
         if value == Some(0) {
-            return Err(ServerError::invalid_config(field, "must be greater than zero"));
+            return Err(profile_error(raw, field, "must be greater than zero"));
         }
     }
     for (field, value) in [
@@ -116,21 +53,21 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
         ("admission.device_profiles.lane_count", raw.lane_count),
     ] {
         if value == Some(0) {
-            return Err(ServerError::invalid_config(field, "must be greater than zero"));
+            return Err(profile_error(raw, field, "must be greater than zero"));
         }
     }
     // Automatic capacity includes the driver reserve; an explicit limit does not,
     // so an explicit limit must declare its reserve (0 is a deliberate choice).
     if raw.memory_limit_bytes.is_some() && raw.backend_reserve_bytes.is_none() {
-        return Err(ServerError::invalid_config(
+        return Err(profile_error(
+            raw,
             "admission.device_profiles.backend_reserve_bytes",
             "is required when memory_limit_bytes is explicit; declare 0 to run with no backend headroom",
         ));
     }
-    // Start from the root projection of engine defaults and apply only values
-    // explicitly selected by the server file. This must not restate device
-    // controller defaults such as the automatic query limit, two active attempts, or
-    // one source-work slot.
+    // Start from the engine defaults and apply only the values the file sets,
+    // so the automatic query limit, active attempts and source-work slots keep
+    // one definition in the engine.
     let mut profile = AlgeonGpuDeviceProfile::new(raw.device_ordinal);
     if let Some(limit_bytes) = raw.memory_limit_bytes {
         profile = profile.with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes });
@@ -163,35 +100,17 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
             ));
         },
         _ => {
-            return Err(ServerError::invalid_config(
+            return Err(profile_error(
+                raw,
                 "admission.device_profiles",
-                "stream_pool_size, worker_count, and lane_count must be configured together",
+                "sets only some of stream_pool_size, worker_count and lane_count; set all three or none",
             ));
         },
     }
     Ok(profile)
 }
 
-fn format_device_ordinals(device_ordinals: &[usize]) -> String {
-    device_ordinals.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
-}
-
-pub(super) fn server_gpu_devices(values: &mut EnvValues<'_>) -> Result<Vec<usize>> {
-    let Some(raw) = values.string(ALGEON_SERVER_GPU_DEVICES_ENV) else {
-        return Ok(vec![0]);
-    };
-    let mut devices = Vec::new();
-    for part in raw.split(',') {
-        let ordinal = part.trim().parse::<usize>().map_err(|error| {
-            ServerError::invalid_config(
-                ALGEON_SERVER_GPU_DEVICES_ENV,
-                format!("must contain integer ordinals: {error}"),
-            )
-        })?;
-        if devices.contains(&ordinal) {
-            return Err(ServerError::invalid_config(ALGEON_SERVER_GPU_DEVICES_ENV, "must not contain duplicates"));
-        }
-        devices.push(ordinal);
-    }
-    Ok(devices)
+fn profile_error(raw: &ServerAdmissionDeviceProfileFileConfig, field: &'static str, reason: &str) -> ServerError {
+    ServerError::invalid_config(field, format!("{reason} (entry for GPU {})", raw.device_ordinal))
+        .with_fact("device_ordinal", raw.device_ordinal)
 }

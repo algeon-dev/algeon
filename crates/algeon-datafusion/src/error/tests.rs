@@ -971,3 +971,34 @@ fn native_cancelled_error_preserves_adapter_classification_and_facts() {
     assert_eq!(adapter_error.fact_value("native_code"), Some("cancelled"));
     assert_eq!(adapter_error.fact_value("cancellation_requested"), Some("true"));
 }
+
+#[test]
+fn native_required_rejections_name_the_mode_in_every_client_text() {
+    let plain = Error::new(
+        ErrorCode::FinalPlanRequirementUnsatisfied,
+        "algeon_datafusion.planner.final_plan_requirement",
+        "exact final physical plan does not satisfy the configured GPU execution requirement",
+    );
+    let column = Error::new(
+        ErrorCode::FinalPlanRequirementUnsatisfied,
+        "algeon_datafusion.planner.final_plan_requirement",
+        "GPU execution does not support a projected column with an unsupported Arrow type",
+    )
+    .with_client_detail(ClientDetail::UnsupportedColumn {
+        name: "countDetail".to_string(),
+        data_type: "List(Decimal128(10, 2))".to_string(),
+        role: "projected",
+    });
+    for error in [plain, column] {
+        let text = client::client_message(&error).text;
+        assert!(text.starts_with("native_required mode rejected a plan that needs DataFusion CPU: "), "{text}");
+        assert!(!text.contains("NoDataFusionCpu") && !text.contains("final plan requirement"), "{text}");
+    }
+}
+
+#[test]
+fn query_memory_cap_message_names_the_setting_that_raises_it() {
+    let error = Error::new(ErrorCode::QueryMemoryLimitExceeded, "query_engine.exec.sort", "allocation failed");
+    let text = client::client_message(&error).text;
+    assert!(text.contains("raise `admission.device_profiles.default_query_limit_bytes` for the device"), "{text}");
+}

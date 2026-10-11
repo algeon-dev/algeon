@@ -1,8 +1,15 @@
-use std::time::Instant;
+use std::{ops::ControlFlow, time::Instant};
 
 use arrow::error::ArrowError;
 use arrow_flight::error::FlightError;
-use datafusion::{common::Result as DataFusionResult, execution::SessionState};
+use datafusion::{
+    common::Result as DataFusionResult,
+    execution::SessionState,
+    sql::{
+        parser::Statement as DataFusionSqlStatement,
+        sqlparser::ast::{Expr as SqlExpr, Value as SqlValue, visit_expressions},
+    },
+};
 use prost::bytes::Bytes;
 
 use super::*;
@@ -17,11 +24,12 @@ use crate::{
 pub(super) fn datafusion_error_to_flight_error(
     error: DataFusionError,
     query_id: &str,
+    correlation_id: Option<&str>,
     terminal: &CoordinatorExecutionTerminal,
     operation: &'static str,
 ) -> FlightError {
     let (status, captured) = datafusion_error_to_status_and_capture(error, operation, FailedStatement::Other);
-    let status = status_with_query_id(status, query_id);
+    let status = status_with_query_id_and_correlation_id(status, query_id, correlation_id);
     terminal.finish_captured("stream", &status, captured);
     FlightError::from(status)
 }
@@ -86,9 +94,7 @@ pub(super) fn verify_flight_info_plan(plan: &LogicalPlan, ticket_kind: Statement
 /// analyzed plan; the encoder casts batches to whatever schema it receives.
 pub(super) fn flight_result_schema(state: &SessionState, plan: &LogicalPlan) -> DataFusionResult<Schema> {
     match plan {
-        LogicalPlan::Ddl(_) | LogicalPlan::Statement(Statement::SetVariable(_) | Statement::ResetVariable(_)) => {
-            Ok(Schema::empty())
-        },
+        LogicalPlan::Ddl(_) => Ok(Schema::empty()),
         _ => {
             let analyzed = state.analyzer().execute_and_check(plan.clone(), state.config_options(), |_, _| {})?;
             Ok(analyzed.schema().as_arrow().clone())
@@ -106,7 +112,6 @@ pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> Result<()> {
         LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
             statement,
             "algeon_datafusion.server.flight.get_flight_info_statement.verify_plan",
-            "Flight SQL statement query does not support SQL session statements; use the update endpoint for session updates",
         ),
         _ => Ok(()),
     }
@@ -135,7 +140,6 @@ pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> Result<()> {
         LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
             statement,
             "algeon_datafusion.server.flight.get_flight_info_prepared_statement.verify_plan",
-            "Flight SQL prepared session-update statements must be executed with execute_update",
         ),
         _ => Ok(()),
     }
@@ -149,35 +153,20 @@ pub(super) fn verify_update_plan(plan: &LogicalPlan) -> Result<()> {
             "algeon_datafusion.server.flight.do_put_update.verify_plan",
             "Flight SQL update DoPut does not yet support DML or COPY statements",
         )),
-        LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
-            statement,
-            "algeon_datafusion.server.flight.do_put_update.verify_plan",
-            "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL update DoPut",
-        ),
+        LogicalPlan::Statement(statement) => {
+            verify_sql_statement_namespace(statement, "algeon_datafusion.server.flight.do_put_update.verify_plan")
+        },
         _ => Err(Error::new(
             ErrorCode::InvalidRequest,
             "algeon_datafusion.server.flight.do_put_update.verify_plan",
-            "Flight SQL update DoPut only supports DDL and session-update statements; use the statement query endpoint for SELECT",
+            "Flight SQL update DoPut only supports DDL statements; use the statement query endpoint for SELECT",
         )),
     }
 }
 
-pub(super) fn verify_sql_statement_namespace(
-    statement: &Statement,
-    operation: &'static str,
-    session_update_message: &'static str,
-) -> Result<()> {
+pub(super) fn verify_sql_statement_namespace(statement: &Statement, operation: &'static str) -> Result<()> {
     match statement {
-        Statement::SetVariable(set) if operation == "algeon_datafusion.server.flight.do_put_update.verify_plan" => {
-            reject_flight_algeon_datafusion_session_key(&set.variable, operation)
-        },
-        Statement::SetVariable(_) | Statement::ResetVariable(_) => {
-            if operation == "algeon_datafusion.server.flight.do_put_update.verify_plan" {
-                Ok(())
-            } else {
-                Err(Error::new(ErrorCode::InvalidRequest, operation, session_update_message))
-            }
-        },
+        Statement::SetVariable(_) | Statement::ResetVariable(_) => Err(session_statement_unsupported_error(operation)),
         Statement::TransactionStart(_) | Statement::TransactionEnd(_) => {
             Err(Error::new(ErrorCode::UnsupportedOperator, operation, "Flight SQL transactions are not supported"))
         },
@@ -189,27 +178,23 @@ pub(super) fn verify_sql_statement_namespace(
     }
 }
 
-fn reject_flight_algeon_datafusion_session_key(variable: &str, operation: &'static str) -> Result<()> {
-    let normalized = variable.trim().to_ascii_lowercase();
-    if normalized != "algeon_datafusion" && !normalized.starts_with("algeon_datafusion.") {
-        return Ok(());
-    }
-    Err(Error::new(
-        ErrorCode::InvalidRequest,
+/// Every Flight query plans in a copy of the shared server session, so a
+/// session statement could only change a discarded copy. Rejecting it on
+/// every endpoint keeps the client from seeing a success that has no effect.
+pub(super) fn session_statement_unsupported_error(operation: &'static str) -> Error {
+    Error::new(
+        ErrorCode::UnsupportedOperator,
         operation,
-        "Flight SQL does not support session-scoped algeon-datafusion keys; configure algeon-datafusion request policy through server configuration or admission defaults",
+        "SET and RESET are not supported over Flight SQL; configure DataFusion session options with DATAFUSION_* environment variables before starting the server",
     )
-    .with_log_safe_fact("reason", "flight_session_scoped_algeon_datafusion_keys_unsupported")
-    .with_fact("config_key", variable)
-    .with_log_safe_fact("configuration_scope", "server_or_admission_defaults"))
 }
 
-pub(super) fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> Result<()> {
+pub(in crate::server) fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> Result<()> {
     match ddl {
         DdlStatement::CreateMemoryTable(_) | DdlStatement::CreateIndex(_) => Err(Error::new(
             ErrorCode::UnsupportedOperator,
             operation,
-            "Flight SQL update DoPut does not yet support query-producing DDL such as CREATE TABLE AS SELECT",
+            "query-producing DDL such as CREATE TABLE AS SELECT is not supported; register data with CREATE EXTERNAL TABLE or CREATE VIEW",
         )),
         _ => Ok(()),
     }
@@ -223,12 +208,32 @@ pub(super) fn reject_parameterized_plan(
     if parameter_names.is_empty() {
         return Ok(());
     }
-    Err(Error::new(
+    Err(parameter_binding_unsupported_error(operation).into())
+}
+
+/// Placeholder check for a statement that prepares without a logical plan.
+/// A prepared `EXPLAIN GPU` plans its query only at execution, so its
+/// placeholders are found in the parsed query instead.
+pub(super) fn reject_parameterized_statement(
+    statement: &DataFusionSqlStatement,
+    operation: &'static str,
+) -> Result<()> {
+    let DataFusionSqlStatement::Statement(statement) = statement else {
+        return Ok(());
+    };
+    let placeholder = visit_expressions(statement.as_ref(), |expression| match expression {
+        SqlExpr::Value(value) if matches!(value.value, SqlValue::Placeholder(_)) => ControlFlow::Break(()),
+        _ => ControlFlow::Continue(()),
+    });
+    if placeholder.is_break() { Err(parameter_binding_unsupported_error(operation)) } else { Ok(()) }
+}
+
+fn parameter_binding_unsupported_error(operation: &'static str) -> Error {
+    Error::new(
         ErrorCode::InvalidRequest,
         operation,
         "Flight SQL parameter binding is not supported; prepare statements without placeholders",
     )
-    .into())
 }
 
 pub(super) fn arrow_error_to_status_for_operation(
@@ -292,13 +297,12 @@ pub(super) fn cancellation_error(shutdown_token: &CancellationToken) -> Error {
     }
 }
 
-pub(super) fn status_with_query_id(mut status: Status, query_id: &str) -> Status {
-    if let Ok(value) = MetadataValue::try_from(query_id) {
-        status.metadata_mut().insert(QUERY_ID_METADATA_KEY, value);
-    }
-    status
+pub(super) fn status_with_query_id(status: Status, query_id: &str) -> Status {
+    status_with_query_id_and_correlation_id(status, query_id, None)
 }
 
+/// `insert` replaces any earlier value, so a status that passes through this
+/// on several error paths still carries one value per key.
 pub(super) fn status_with_query_id_and_correlation_id(
     mut status: Status,
     query_id: &str,

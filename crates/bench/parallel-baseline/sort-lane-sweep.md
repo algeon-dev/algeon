@@ -37,6 +37,11 @@ comparison on the sort phase. Every cell asserts `Native` disposition and an
 order-sensitive output fingerprint; any drift fails the run. Query cap 2 GB,
 device capacity 8 GB, reps 10 after 1 warmup.
 
+The recorded fingerprints below used the `ordered-v1` hash domain and hashed
+each batch column by column. Current sweeps use `ordered-v2` and hash each row
+in column order, preserving the fingerprint across batch splits. Historical
+hashes remain measurement records and cannot be compared with current hashes.
+
 ## Single-query results
 
 Rows per branch 2M (66 MB total), wall ms:

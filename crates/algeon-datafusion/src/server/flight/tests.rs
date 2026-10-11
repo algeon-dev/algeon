@@ -658,68 +658,124 @@ async fn update_ddl_read_only_schema_failure_does_not_classify_upstream_error_pr
     .unwrap();
     assert!(payload.contains("operation=algeon_datafusion.server.flight.do_put_statement_update.sql"), "{payload}");
     assert!(payload.contains("fact.datafusion_error=execution"), "{payload}");
-    for raw_fact in [
-        "fact.target_catalog=",
-        "fact.target_schema=",
-        "fact.target_table=",
-        "fact.workspace_catalog=",
-        "fact.workspace_schema=",
-        "fact.statement_kind=",
-    ] {
+    for raw_fact in ["fact.target_catalog=", "fact.target_schema=", "fact.target_table=", "fact.statement_kind="] {
         assert!(!payload.contains(raw_fact), "raw identifier fact must not be retained: {payload}");
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn update_set_algeon_datafusion_key_is_rejected_loudly() {
-    let ctx = Arc::new(SessionContext::new());
-    let service =
-        DatafusionAlgeonFlightSqlService::new(ctx, Arc::new(QueryAdmission::new_for_tests()), Duration::from_secs(30));
-    let query_id = "reject-algeon-set".to_string();
-    let sql = "SET algeon_datafusion.request.requested_grant_bytes = '1048576'".to_string();
-    let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
+/// Each Flight query plans in a copy of the shared session, so a `SET` could
+/// only change a discarded copy. Every endpoint rejects it with one message,
+/// and the server's settings stay as they were.
+#[tokio::test]
+async fn set_and_reset_are_rejected_on_every_endpoint() {
+    const MESSAGE: &str = "SET and RESET are not supported over Flight SQL; configure DataFusion session options with DATAFUSION_* environment variables before starting the server";
+    let ctx = SessionContext::new_with_config(SessionConfig::new().with_information_schema(true));
+    let service = DatafusionAlgeonFlightSqlService::new(
+        Arc::new(ctx),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+    );
+    let time_zone_setting = || async {
+        let response = service
+            .get_flight_info_statement(
+                CommandStatementQuery {
+                    query:
+                        "SELECT value FROM information_schema.df_settings WHERE name = 'datafusion.execution.time_zone'"
+                            .to_string(),
+                    transaction_id: None,
+                },
+                Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+            )
+            .await
+            .expect("df_settings is readable over the statement endpoint");
+        let batches = execute_ticket_batches(&service, query_id_from_flight_info(&response)).await;
+        let values = batches[0].column(0).as_any().downcast_ref::<StringArray>().expect("df_settings value is Utf8");
+        values.is_valid(0).then(|| values.value(0).to_string())
+    };
+    let before = time_zone_setting().await;
 
-    let status = service
-        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement, None)
-        .await
-        .expect_err("Flight update SET for algeon-datafusion keys should be rejected");
+    for sql in ["SET datafusion.execution.time_zone = 'UTC'", "RESET datafusion.execution.time_zone"] {
+        let statement = service
+            .get_flight_info_statement(
+                CommandStatementQuery { query: sql.to_string(), transaction_id: None },
+                Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+            )
+            .await
+            .expect_err("the statement endpoint rejects session statements");
+        let prepared = service
+            .do_action_create_prepared_statement(
+                ActionCreatePreparedStatementRequest { query: sql.to_string(), transaction_id: None },
+                Request::new(arrow_flight::Action { r#type: String::new(), body: Default::default() }),
+            )
+            .await
+            .expect_err("the prepared endpoint rejects session statements");
+        let query_id = format!("update-{sql}");
+        let planning_lease = service.register_query(query_id, sql.to_string(), None).unwrap();
+        let update = service
+            .execute_update_sql(planning_lease, sql.to_string(), None, UpdateStatementKind::Statement, None)
+            .await
+            .expect_err("the update endpoint rejects session statements");
+        for status in [statement, prepared, update] {
+            assert_eq!(status.code(), Code::Unimplemented, "{sql}: {status:?}");
+            assert_eq!(status.message(), MESSAGE, "{sql}");
+            assert_status_metadata(&status, "unsupported_operator", "unsupported", "permanent");
+        }
+    }
 
-    assert_eq!(status.code(), Code::InvalidArgument);
-    assert_status_metadata(&status, "invalid_request", "invalid_input", "permanent");
-    assert!(status.message().contains("server configuration or admission defaults"), "status={status:?}");
-    let payload = String::from_utf8(
-        service.coordinator.query_stats(&query_id).expect("failed SET update should retain query stats").to_vec(),
-    )
-    .unwrap();
-    assert!(payload.contains("fact.reason=flight_session_scoped_algeon_datafusion_keys_unsupported"), "{payload}");
-    assert!(payload.contains("fact.configuration_scope=server_or_admission_defaults"), "{payload}");
-    assert!(!payload.contains("fact.config_key="), "raw config key must not be retained: {payload}");
+    assert_eq!(time_zone_setting().await, before);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn update_set_plain_datafusion_key_still_succeeds() {
-    let service = super::service::bounded_test_service(Duration::from_secs(30));
-    let query_id = "plain-datafusion-set".to_string();
-    let sql = "SET datafusion.execution.batch_size = '1024'".to_string();
-    let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
+/// SQL from the update and prepared paths reaches INFO logs only after
+/// `OPTIONS` values are masked, since those values carry storage credentials.
+#[tokio::test]
+async fn statement_logs_mask_options_values_on_the_update_and_prepared_paths() {
+    const SECRET: &str = "super-secret-value";
+    let buffer = SharedLogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let _logs = set_default(subscriber);
+    let service = DatafusionAlgeonFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+    );
+    let sql = |table: &str| {
+        format!(
+            "CREATE EXTERNAL TABLE {table} STORED AS PARQUET LOCATION '/nonexistent/algeon/{table}/' OPTIONS ('aws.secret_access_key' '{SECRET}')"
+        )
+    };
 
-    let count = service
-        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement, None)
+    let update_sql = sql("update_secret_rows");
+    let planning_lease = service.register_query("update-secret".to_string(), update_sql.clone(), None).unwrap();
+    // The location does not exist, so the update fails after its statement log.
+    let _ = service.execute_update_sql(planning_lease, update_sql, None, UpdateStatementKind::Statement, None).await;
+
+    let prepared = service
+        .do_action_create_prepared_statement(
+            ActionCreatePreparedStatementRequest { query: sql("prepared_secret_rows"), transaction_id: None },
+            Request::new(arrow_flight::Action { r#type: String::new(), body: Default::default() }),
+        )
         .await
-        .expect("plain DataFusion SET should keep existing update-lane behavior");
+        .expect("CREATE EXTERNAL TABLE prepares without reading its location");
+    service
+        .get_flight_info_prepared_statement(
+            CommandPreparedStatementQuery { prepared_statement_handle: prepared.prepared_statement_handle },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect("prepared DDL plans without executing");
 
-    assert_eq!(count, NO_UPDATED_RECORDS_COUNT);
-    let payload = String::from_utf8(
-        service
-            .coordinator
-            .query_stats(&query_id)
-            .expect("bounded DoPut update should retain the attempt-owned query report")
-            .to_vec(),
-    )
-    .unwrap();
-    assert!(payload.contains("# attempt_id=attempt-"), "{payload}");
-    assert_eq!(payload.matches("# attempt_outcome=").count(), 1, "{payload}");
-    assert!(payload.contains("# sealed=true"), "{payload}");
+    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+    for message in ["executing Flight SQL update statement", "planning Flight SQL prepared statement"] {
+        let line = output.lines().find(|line| line.contains(message)).unwrap_or_else(|| panic!("{message}: {output}"));
+        assert!(line.contains("'aws.secret_access_key' '***'"), "{line}");
+    }
+    assert!(!output.contains(SECRET), "{output}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

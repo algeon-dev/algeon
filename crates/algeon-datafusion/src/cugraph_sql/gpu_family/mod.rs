@@ -30,10 +30,10 @@ use super::{
     relation_planner::relation_role,
 };
 use crate::{
-    error::{DataFusionErrorExt, Error},
+    error::{DataFusionErrorExt, Error, datafusion_error_human_message},
     gpu_functions::{
-        GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
-        REQUIRED_FEATURE_DISABLED,
+        GpuCallProblem, GpuCallProblems, GpuCallRequest, GpuCallValidation, GpuFunctionAvailability,
+        GpuFunctionDescriptor, GpuFunctionFamily, REQUIRED_FEATURE_DISABLED, argument_of,
     },
 };
 
@@ -94,6 +94,7 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
             );
         }
 
+        let mut problems = GpuCallProblems::default();
         let mut inputs = Vec::new();
         let mut roles = Vec::new();
         let mut relation_details = serde_json::Map::new();
@@ -103,17 +104,14 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
             };
             let Some(reference) = request.relations.get(argument.name) else {
                 if argument.required {
-                    let mut invalid = GpuCallValidation::invalid(
-                        "missing_relation",
-                        format!("missing required relation role '{}'", argument.name),
-                        function_name,
-                        request.normalized_json(),
-                    );
-                    invalid.details = json!({
-                        "path": format!("relations.{}", argument.name),
-                        "relation_role": argument.name,
+                    problems.push(GpuCallProblem {
+                        code: "missing_relation".to_string(),
+                        message: format!("missing required relation role '{}'", argument.name),
+                        details: json!({
+                            "path": format!("relations.{}", argument.name),
+                            "relation_role": argument.name,
+                        }),
                     });
-                    return invalid;
                 }
                 continue;
             };
@@ -137,71 +135,96 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
                         }
                     }
                     relation_details.insert(argument.name.to_string(), detail);
-                    roles.push(if argument.name == "edges" {
-                        CugraphRelationRole::Edges
+                    let role = if argument.name == "edges" {
+                        Ok(CugraphRelationRole::Edges)
                     } else {
-                        match relation_role(argument.name) {
-                            Ok(role) => role,
-                            Err(error) => {
-                                return invalid_graph_call(
-                                    algorithm,
-                                    request,
-                                    DataFusionError::from(error).to_string(),
-                                    relation_details,
-                                );
-                            },
-                        }
-                    });
-                    inputs.push(input);
+                        relation_role(argument.name)
+                    };
+                    match role {
+                        Ok(role) => {
+                            roles.push(role);
+                            inputs.push(input);
+                        },
+                        Err(error) => problems.push(graph_problem(&error.into(), &relation_details)),
+                    }
                 },
                 Err(message) => {
                     relation_details
                         .insert(argument.name.to_string(), json!({"table": reference.table, "resolved": false}));
-                    relation_details.insert("path".to_string(), Value::String(format!("relations.{}", argument.name)));
-                    relation_details.insert("relation_role".to_string(), Value::String(argument.name.to_string()));
-                    return GpuCallValidation {
-                        valid: false,
-                        error_code: Some("table_not_found".to_string()),
+                    let mut details = relation_details.clone();
+                    details.insert("path".to_string(), Value::String(format!("relations.{}", argument.name)));
+                    details.insert("relation_role".to_string(), Value::String(argument.name.to_string()));
+                    problems.push(GpuCallProblem {
+                        code: "table_not_found".to_string(),
                         message,
-                        function_name: function_name.to_string(),
-                        relations_resolved: false,
-                        normalized_call: request.normalized_json(),
-                        output_schema: json!({}),
-                        would_execute_gpu: false,
-                        details: Value::Object(relation_details),
-                    };
+                        details: Value::Object(details),
+                    });
                 },
             }
         }
+        let relations_resolved = problems.is_empty();
         let mut values = request.options.as_object().cloned().unwrap_or_default();
-        let source = match options::require_declared_options(algorithm, &values)
-            .and_then(|()| take_source(algorithm, &mut values))
-        {
-            Ok(source) => source,
-            Err(error) => {
-                return invalid_graph_error(algorithm, request, &DataFusionError::from(error), relation_details);
-            },
+        let failing_option = |error: &DataFusionError, _: &serde_json::Map<String, Value>| argument_of(error);
+        let project = |error: &DataFusionError| graph_problem(error, &relation_details);
+        let node = if relations_resolved {
+            problems.check_options(
+                &mut values,
+                |values| {
+                    let mut values = values.clone();
+                    options::require_declared_options(algorithm, &values)?;
+                    let source = take_source(algorithm, &mut values)?;
+                    CugraphLogicalNode::try_new(algorithm, inputs.clone(), roles.clone(), values, source, &self.config)
+                },
+                failing_option,
+                project,
+            )
+        } else {
+            // Without every relation, the value options are still checked on
+            // their own.
+            problems.check_options(
+                &mut values,
+                |values| Ok(check_value_options(algorithm, &self.config, values)?),
+                failing_option,
+                project,
+            );
+            None
         };
-        match CugraphLogicalNode::try_new(algorithm, inputs, roles, values, source, &self.config) {
-            Ok(node) => {
-                let mut normalized = request.normalized_json();
-                normalized["options"] =
-                    normalized_value_options(algorithm, request.options.as_object().unwrap(), &self.config);
-                GpuCallValidation {
-                    valid: true,
-                    error_code: None,
-                    message: "valid".to_string(),
-                    function_name: function_name.to_string(),
-                    relations_resolved: true,
-                    normalized_call: normalized,
-                    output_schema: schema_json(node.output_schema().as_ref()),
-                    would_execute_gpu: true,
-                    details: Value::Object(relation_details),
-                }
-            },
-            Err(error) => invalid_graph_error(algorithm, request, &error, relation_details),
+        if let Some(invalid) = problems.into_invalid(function_name, relations_resolved, request.normalized_json()) {
+            return invalid;
+        }
+        let node = node.expect("a call without problems has a validated node");
+        let mut normalized = request.normalized_json();
+        normalized["options"] = normalized_value_options(
+            algorithm,
+            request.options.as_object().expect("the common envelope requires an options object"),
+            &self.config,
+        );
+        GpuCallValidation {
+            valid: true,
+            error_code: None,
+            message: "valid".to_string(),
+            function_name: function_name.to_string(),
+            relations_resolved: true,
+            normalized_call: normalized,
+            output_schema: schema_json(node.output_schema().as_ref()),
+            would_execute_gpu: true,
+            details: Value::Object(relation_details),
         }
     }
+}
+
+/// Checks the value options of a call without its relations: declared names,
+/// the source selector, and each value against the algorithm's defaults.
+fn check_value_options(
+    algorithm: CugraphAlgorithm,
+    config: &CugraphSqlConfig,
+    values: &serde_json::Map<String, Value>,
+) -> Result<(), Error> {
+    let mut values = values.clone();
+    options::require_declared_options(algorithm, &values)?;
+    let source = take_source(algorithm, &mut values)?;
+    let (mut graph_options, mut params) = options::default_options(algorithm, config, source)?;
+    options::apply_options(algorithm, &values, &mut graph_options, &mut params)
 }
 
 fn descriptor(
@@ -372,34 +395,10 @@ fn normalized_value_options(
     )
 }
 
-fn invalid_graph_call(
-    algorithm: CugraphAlgorithm,
-    request: &GpuCallRequest,
-    message: String,
-    mut details: serde_json::Map<String, Value>,
-) -> GpuCallValidation {
-    details.entry("path".to_string()).or_insert_with(|| Value::String("options".to_string()));
-    GpuCallValidation {
-        valid: false,
-        error_code: Some("invalid_argument".to_string()),
-        message,
-        function_name: algorithm.function_name().to_string(),
-        relations_resolved: true,
-        normalized_call: request.normalized_json(),
-        output_schema: json!({}),
-        would_execute_gpu: false,
-        details: Value::Object(details),
-    }
-}
-
-fn invalid_graph_error(
-    algorithm: CugraphAlgorithm,
-    request: &GpuCallRequest,
-    error: &DataFusionError,
-    mut details: serde_json::Map<String, Value>,
-) -> GpuCallValidation {
+fn graph_problem(error: &DataFusionError, relations: &serde_json::Map<String, Value>) -> GpuCallProblem {
+    let mut details = relations.clone();
     let typed = error.find_algeon_error();
-    let error_code = typed.and_then(|error| error.fact_value("reason")).unwrap_or("invalid_argument").to_string();
+    let code = typed.and_then(|error| error.fact_value("reason")).unwrap_or("invalid_argument").to_string();
     if let Some(argument) = typed.and_then(|error| error.fact_value("argument")) {
         details.insert("path".to_string(), Value::String(format!("options.{argument}")));
         details.insert("argument".to_string(), Value::String(argument.to_string()));
@@ -407,19 +406,10 @@ fn invalid_graph_error(
         details.insert("path".to_string(), Value::String(format!("relations.{role}")));
         details.insert("relation_role".to_string(), Value::String(role.to_string()));
     } else {
-        details.entry("path".to_string()).or_insert_with(|| Value::String("options".to_string()));
+        details.insert("path".to_string(), Value::String("options".to_string()));
     }
-    GpuCallValidation {
-        valid: false,
-        error_code: Some(error_code),
-        message: error.to_string(),
-        function_name: algorithm.function_name().to_string(),
-        relations_resolved: true,
-        normalized_call: request.normalized_json(),
-        output_schema: json!({}),
-        would_execute_gpu: false,
-        details: Value::Object(details),
-    }
+    let message = typed.map_or_else(|| datafusion_error_human_message(error), |error| error.message().to_string());
+    GpuCallProblem { code, message, details: Value::Object(details) }
 }
 
 fn schema_json(schema: &Schema) -> Value {

@@ -16,6 +16,7 @@ use datafusion::{
 
 use super::*;
 use crate::{
+    build_info::{ALGEON_VERSION_FUNCTION, is_algeon_version_table_source},
     error::Result as AdapterResult,
     gpu_functions::{
         GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION,
@@ -80,7 +81,8 @@ impl DatafusionAlgeonFlightSqlService {
             match node {
                 LogicalPlan::TableScan(scan)
                     if table_reference_is_information_schema(&scan.table_name)
-                        || is_builtin_gpu_metadata_table_source(&scan.source) =>
+                        || is_builtin_gpu_metadata_table_source(&scan.source)
+                        || is_algeon_version_table_source(&scan.source) =>
                 {
                     saw_metadata_scan = true;
                 },
@@ -563,7 +565,7 @@ impl Visitor for MetadataSourceCandidateProof {
         let source_is_metadata = match factor {
             TableFactor::Table { name, args: None, .. } => object_name_is_information_schema(name),
             TableFactor::Table { name, args: Some(_), .. } | TableFactor::Function { name, .. } => {
-                object_name_is_builtin_gpu_metadata_function(name)
+                object_name_is_builtin_metadata_function(name)
             },
             TableFactor::Derived { .. }
             | TableFactor::NestedJoin { .. }
@@ -590,11 +592,16 @@ fn object_name_is_information_schema(name: &ObjectName) -> bool {
         .is_some_and(|ident| ident.value.eq_ignore_ascii_case("information_schema"))
 }
 
-fn object_name_is_builtin_gpu_metadata_function(name: &ObjectName) -> bool {
+fn object_name_is_builtin_metadata_function(name: &ObjectName) -> bool {
     name.0.last().and_then(ObjectNamePart::as_ident).is_some_and(|ident| {
-        [GPU_LIST_FUNCTIONS_FUNCTION, GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_VALIDATE_CALL_FUNCTION]
-            .iter()
-            .any(|function| ident.value.eq_ignore_ascii_case(function))
+        [
+            GPU_LIST_FUNCTIONS_FUNCTION,
+            GPU_DESCRIBE_FUNCTION_FUNCTION,
+            GPU_VALIDATE_CALL_FUNCTION,
+            ALGEON_VERSION_FUNCTION,
+        ]
+        .iter()
+        .any(|function| ident.value.eq_ignore_ascii_case(function))
     })
 }
 
