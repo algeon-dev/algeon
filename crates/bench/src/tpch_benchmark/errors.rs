@@ -1,4 +1,4 @@
-use super::*;
+use super::{DataFusionError, WorkloadError};
 
 pub(super) fn plan_error(message: impl Into<String>) -> DataFusionError {
     DataFusionError::Plan(message.into())

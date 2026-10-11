@@ -30,13 +30,9 @@ use std::{
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use tokio::sync::watch;
 
-use super::{
-    super::{
-        super::context::{AdmittedPlanIdentities, AttemptAuxiliarySlots, QueryResourceAnchor, QueryResourceEpoch},
-        *,
-    },
-    release::{QueryHandleRelease, QueryHandleReleaseGuard},
-};
+use super::release::{QueryHandleRelease, QueryHandleReleaseGuard};
+#[cfg(test)]
+use crate::runtime::MemoryGrant;
 #[cfg(test)]
 use crate::runtime::attempt_domain::AttemptAllocationDomain;
 #[cfg(test)]
@@ -45,8 +41,15 @@ use crate::{
     attempt::{AdmittedGrantRelease, AttemptHandle},
     observability::AttemptId,
     runtime::{
-        AttemptStreamProviderRoute, allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
-        deadline::block_until, query_service::service::transaction::AdmissionEnvelope,
+        AttemptStreamProviderRoute,
+        allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
+        context::{AdmittedPlanIdentities, AttemptAuxiliarySlots, QueryResourceAnchor, QueryResourceEpoch},
+        deadline::block_until,
+        query_service::{
+            AdmissionRequestId, AttemptCapabilityEvidence, ExecutionCancellation, ExecutionContext, Mutex,
+            QueryCompletion, QueryServiceEpochUser, QueryServiceInner, RuntimeObservationHandle,
+            RuntimeTerminalOutcome, service::transaction::AdmissionEnvelope,
+        },
     },
 };
 

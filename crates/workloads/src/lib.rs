@@ -17,6 +17,7 @@ pub mod error;
 pub mod forest;
 pub mod graph;
 pub mod metadata;
+mod parquet_metadata;
 pub mod tpcds;
 pub mod tpch;
 

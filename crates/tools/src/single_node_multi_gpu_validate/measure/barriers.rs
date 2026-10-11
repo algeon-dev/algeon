@@ -6,7 +6,7 @@ use std::{
 
 use tokio::task::JoinHandle;
 
-use super::*;
+use super::{ArrivalPlan, PhysicalPressureLeaseFacts};
 
 /// Runner-local facts captured at the close boundary. The evidence
 /// reducer combines these with sealed attempt outcomes; nothing here infers

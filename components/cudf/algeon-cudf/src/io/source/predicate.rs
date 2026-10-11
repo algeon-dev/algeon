@@ -4,7 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::*;
+use super::{
+    AstExpression, AstOperator, ColumnDescriptor, ConvertedType, DataType, Error, ErrorCode, FACT_COLUMN_INDEX,
+    FACT_TYPE_ID, FileReader, LocalParquetSource, LogicalType, OP_SOURCE_READER_PREDICATE, ParquetPhysicalType,
+    ParquetSourceLocation, Result, Runtime, SerializedFileReader, SourceChunk, SourceColumnRef, TimestampResolution,
+    TypeId, checked_name, schema_missing_error,
+};
 use crate::core::{Scalar, scalar::ScalarValue};
 
 /// A source-schema column referenced by a local Parquet reader predicate.

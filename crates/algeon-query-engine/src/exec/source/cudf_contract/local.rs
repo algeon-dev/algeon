@@ -36,8 +36,10 @@ use crate::{
         object_store_decimal_reader_predicate_requires_footer_contract, source_file_for_chunk,
     },
     exec::source::{
+        ExecutionContext, LocalParquetFile, LocalParquetSource, QueryError, QueryErrorCode, Result, SourceChunk,
+        attach_row_group_facts, format_row_groups, parquet_chunk_path_fact, parquet_file_path_fact,
+        parquet_file_stable_id_fact,
         predicate::{lower_source_reader_batch_predicate, lower_source_reader_predicate},
-        *,
     },
     source_chunk::SourceMetadataCache,
 };

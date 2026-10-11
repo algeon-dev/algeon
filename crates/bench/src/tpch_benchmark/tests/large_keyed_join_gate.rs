@@ -1,6 +1,7 @@
 use query_planning::execution_contracts::SourceChunkPlanningMode;
 
 use super::*;
+use crate::tpch_benchmark::config::{DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS};
 
 #[test]
 fn large_keyed_join_strategy_gate_accepts_skip_cpu_sf100_matrix_report() {

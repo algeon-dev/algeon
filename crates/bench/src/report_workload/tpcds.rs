@@ -27,6 +27,7 @@ use workloads::tpcds::{
     registration::tpcds_table_schema,
 };
 
+use super::{datafusion_planning_workload_item, fallback_pressure_workload_item};
 use crate::gpu_backend::{DEFAULT_NATIVE_DEVICE_BUDGET_BYTES, build_report_gpu_backend, close_report_gpu_backend};
 
 mod parity;
@@ -528,24 +529,7 @@ pub async fn tpcds_fallback_pressure_workload_items(
 
     let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
     for query in TPCDS_QUERIES {
-        let item = match ctx.sql(query.sql).await {
-            Ok(df) => match df.create_physical_plan().await {
-                Ok(plan) => NativeFallbackPressureWorkloadItem::new(query.id, plan),
-                Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
-                    query.id,
-                    "physical_planning",
-                    "physical_planning_failed",
-                    error.to_string(),
-                ),
-            },
-            Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
-                query.id,
-                "sql_to_logical_plan",
-                "sql_planning_failed",
-                error.to_string(),
-            ),
-        };
-        items.push(item);
+        items.push(fallback_pressure_workload_item(&ctx, query.id, query.sql).await);
     }
     Ok(items)
 }
@@ -581,27 +565,7 @@ pub async fn tpcds_datafusion_planning_workload_items_with_optimizer_config(
 
     let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
     for query in TPCDS_QUERIES {
-        let item = match ctx.sql(query.sql).await {
-            Ok(df) => {
-                let (state, logical) = df.into_parts();
-                match plan_with_native_diagnostics(&state, &logical).await {
-                    Ok((plan, diagnostics)) => NativeDataFusionPlanningWorkloadItem::new(query.id, plan, diagnostics),
-                    Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
-                        query.id,
-                        "physical_planning",
-                        "physical_planning_failed",
-                        error.to_string(),
-                    ),
-                }
-            },
-            Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
-                query.id,
-                "sql_to_logical_plan",
-                "sql_planning_failed",
-                error.to_string(),
-            ),
-        };
-        items.push(item);
+        items.push(datafusion_planning_workload_item(&ctx, query.id, query.sql).await);
     }
     Ok(items)
 }

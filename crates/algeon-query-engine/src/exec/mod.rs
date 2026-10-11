@@ -88,7 +88,11 @@ use query_planning::{
         validate_local_parquet_source,
     },
     validate_query_plan,
-    validation::*,
+    validation::{
+        global_count_star_expr, global_valid_count_state_alias, plan_node_kind, projection_schema_mismatch_error,
+        topk_candidate_rows, validate_aggregate_output_names, validate_avg_output_fields,
+        validate_global_aggregate_capability,
+    },
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use query_runtime::metrics::QueryMetrics;
@@ -114,16 +118,49 @@ use source::{read_gpu_resident_source, read_literal_batch_source};
 pub use vector_algorithm::{set_vector_after_index_build_hook_for_tests, set_vector_pool_coverage_hook_for_tests};
 
 #[cfg(feature = "cugraph")]
-use self::graph_algorithm::*;
+use self::graph_algorithm::execute_graph_algorithm_sanitized;
+#[cfg(any(feature = "cuvs", feature = "cuml"))]
+use self::util::invalid_node_reference;
+#[cfg(not(feature = "cuvs"))]
+use self::vector_algorithm::vector_algorithm_execution_unavailable;
+#[cfg(feature = "cuvs")]
+use self::vector_algorithm::{execute_vector_algorithm, validate_vector_algorithm_execution};
 use self::{
-    bounded::*,
-    join::*,
-    materialize::*,
-    operators::*,
-    order::*,
+    bounded::{BoundedExecutionAttempt, RuntimeResourceFacts, execute_bounded_query_plan},
+    join::{
+        NullAwareAntiProbe, dataframe_cross_join_options, dataframe_mixed_join_options,
+        dataframe_predicate_join_options, join_index_error, lower_join_residual_predicate, lower_null_equality,
+        materialize_join_output_projection, materialize_left_only_join_output_projection,
+        materialize_mark_join_output_projection, null_aware_anti_probe, null_aware_anti_probe_input, probe_side,
+        projected_input_columns, projected_output_columns, reorder_projected_cross_join_output, residual_input_columns,
+        select_join_input, side_metric, validate_executable_join_subset,
+    },
+    materialize::materialize_bounded_frame_to_host,
+    operators::{
+        PartialAggregateInputEvidence, attach_budget_token_failure_facts, budgeted_value,
+        cast_count_output_columns_with_budget, execute_aggregate_with_budget, execute_aggregate_with_budget_for_node,
+        execute_datafusion_exact_host_aggregate_batch, execute_filter_with_budget,
+        execute_global_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
+        execute_partial_aggregate_with_budget, execute_projection_with_budget,
+        execute_projection_with_budget_and_prepared, execution_budget_token_for_boundary,
+        final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget, limit_keeps_all_rows,
+        materialize_datafusion_exact_host_aggregate_input, partial_aggregate_source_chunk_fingerprint,
+        partial_global_aggregate_output_schema, prepare_aggregate_input_frame,
+        prepare_datafusion_exact_host_aggregate_input_frame, projection_regexp_replace_prepare,
+        record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
+        should_execute_datafusion_exact_floating_statistical_aggregate, upload_datafusion_exact_host_aggregate_output,
+    },
+    order::{
+        append_datafusion_join_order_columns, append_source_order_columns, datafusion_order_columns,
+        join_input_columns_with_order, join_side_projection_with_order,
+        plan_requires_datafusion_exact_statistical_order, schema_with_datafusion_order_columns,
+        sort_by_datafusion_order_if_present,
+    },
     output::{PlanMetrics, QueryExecutionOutcome, QueryOutput as Output},
-    util::*,
-    vector_algorithm::*,
+    util::{
+        bounded_invariant_violation, comma_separated_usize, limit_slice, observe_device_memory_bytes,
+        record_batch_memory_size, record_device_memory_observation,
+    },
 };
 #[cfg(feature = "cuvs")]
 use crate::native_error::{cudf_interop_query_error, cuvs_query_error};
@@ -137,7 +174,14 @@ use crate::{
     native_error::{
         cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure, with_attempt_domain_memory,
     },
-    prepared::*,
+    prepared::{
+        AvgStateAliases, LoweredAggregate, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,
+        aggregate_spec_has_distinct, aggregate_spec_has_filters, aggregate_spec_has_floating_statistical_aggregate,
+        aggregate_spec_has_median, aggregate_spec_requires_whole_input, lower_aggregate_function,
+        lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_filter_predicate_expr,
+        lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec,
+        lower_projection_output_expr, lower_single_stage_grouped_aggregate_spec, lower_sort_spec,
+    },
     rapids_backend::rapids_analysis_context,
 };
 

@@ -1,4 +1,4 @@
-use super::*;
+use super::{InteropError, InteropErrorKind};
 
 pub(super) fn invalid_view_contract_error(
     operation: &'static str,

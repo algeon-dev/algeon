@@ -9,7 +9,7 @@ use {
     opentelemetry_proto::tonic::resource::v1::Resource, tokio::runtime::Builder,
 };
 
-use super::*;
+use super::{AlgeonGpuBackend, OtlpExportEvidence, ToolResult, unix_epoch_ns};
 
 /// Runtime-only OTLP exporter input. Its full endpoint is deliberately never
 /// copied into an artifact; only `endpoint_host_port` is retained.

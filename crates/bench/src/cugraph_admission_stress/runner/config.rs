@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::*;
+use super::HarnessConfig;
 
 const ENV_EDGES: &str = "ALGEON_CUGRAPH_ADMISSION_EDGES_PARQUET";
 pub(super) const ENV_PAPERS: &str = "ALGEON_CUGRAPH_ADMISSION_PAPERS_PARQUET";

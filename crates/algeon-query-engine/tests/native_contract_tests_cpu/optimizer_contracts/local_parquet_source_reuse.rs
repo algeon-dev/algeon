@@ -147,6 +147,60 @@ fn native_optimizer_keeps_local_parquet_source_reuse_contract_isolated() {
 }
 
 #[test]
+fn native_optimizer_keeps_optional_source_identity_presence_distinct() {
+    let domain_missing = ResolvedParquetSource::remote_kvikio(
+        "s3://warehouse/customer_address-domain.parquet",
+        CredentialMode::SharedProcessEnv,
+    )
+    .with_content_identity("snapshot=42,file=customer_address,etag=abc");
+    let domain_present = ResolvedParquetSource::remote_kvikio(
+        "s3://warehouse/customer_address-domain.parquet",
+        CredentialMode::SharedProcessEnv,
+    )
+    .with_storage_domain("none")
+    .with_content_identity("snapshot=42,file=customer_address,etag=abc");
+    let content_missing = ResolvedParquetSource::remote_kvikio(
+        "s3://warehouse/customer_address-content.parquet",
+        CredentialMode::SharedProcessEnv,
+    )
+    .with_storage_domain("warehouse@s3");
+    let content_present = ResolvedParquetSource::remote_kvikio(
+        "s3://warehouse/customer_address-content.parquet",
+        CredentialMode::SharedProcessEnv,
+    )
+    .with_storage_domain("warehouse@s3")
+    .with_content_identity("none");
+
+    let mut builder = QueryPlanBuilder::new();
+    let sources = [domain_missing, domain_present, content_missing, content_present].map(|contract| {
+        builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(contract)))
+    });
+    let union = builder.add_union(sources.to_vec(), schema(&["id"])).unwrap();
+    let plan = builder.finish_gpu_resident(union).unwrap();
+    let options = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(
+        result.diagnostics.local_parquet_source_reuse.considered_count, 0,
+        "None and Some(\"none\") source identities must remain separate"
+    );
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 0);
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "customer_address"), 4);
+}
+
+#[test]
 fn native_optimizer_local_parquet_source_reuse_diagnostics_redact_stable_file_ids() {
     let plan = compatible_sensitive_stable_id_local_parquet_source_variants_plan();
     let options = NativeOptimizerOptions {

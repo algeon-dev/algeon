@@ -2,7 +2,13 @@
 
 use std::sync::Arc;
 
-use arrow::{array::*, datatypes::DataType as ArrowDataType, record_batch::RecordBatch};
+use arrow::{
+    array::{
+        Array, ArrayRef, FixedSizeListArray, LargeListArray, LargeStringArray, ListArray, StringArray, StringViewArray,
+    },
+    datatypes::DataType as ArrowDataType,
+    record_batch::RecordBatch,
+};
 
 use super::schema::{
     ArrowHostSchema, cudf_dtype_from_arrow_type_in, list_child_is_supported, list_fixed_width_interop_dtype,

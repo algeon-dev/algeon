@@ -2,7 +2,11 @@
 
 use std::{marker::PhantomData, ptr, ptr::NonNull, sync::Arc};
 
-use cudf_sys::*;
+use cudf_sys::{
+    CUDF_AGG_MAX, CUDF_AGG_MEAN, CUDF_AGG_MEDIAN, CUDF_AGG_MIN, CUDF_AGG_NUNIQUE, CUDF_AGG_SUM,
+    CUDF_NULL_POLICY_EXCLUDE, CUDF_NULL_POLICY_INCLUDE, CUDF_REDUCE_AGG_MAX, CUDF_REDUCE_AGG_MIN,
+    CUDF_REDUCE_AGG_PRODUCT, CUDF_REDUCE_AGG_SUM,
+};
 use smallvec::SmallVec;
 
 pub use crate::core::types::NullPolicy;
@@ -219,6 +223,39 @@ impl Drop for PreparedGroupBy<'_> {
     }
 }
 
+/// Adopt grouped result columns in request order. Free the pointer array on success.
+///
+/// # Safety
+/// `out_values` must be the array returned by a successful groupby aggregate
+/// or scan call, with `total` entries or null when `total` is zero.
+/// `agg_counts` must contain non-negative values whose sum does not exceed
+/// `total`, and the first `sum(agg_counts)` entries must be valid column
+/// handles compatible with `output_domain`.
+unsafe fn adopt_groupby_result_columns(
+    out_values: *mut cudf_sys::cudf_column_handle,
+    total: usize,
+    agg_counts: &[i32],
+    output_domain: &Arc<ExecutionDomain>,
+) -> Result<Vec<Vec<Column>>> {
+    let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
+
+    let mut results: Vec<Vec<Column>> = Vec::with_capacity(agg_counts.len());
+    let mut offset = 0;
+    for count in agg_counts {
+        let n = *count as usize;
+        let mut cols = Vec::with_capacity(n);
+        for i in 0..n {
+            cols.push(unsafe { Column::from_raw_with_domain(col_array[offset + i], Arc::clone(output_domain)) }?);
+        }
+        offset += n;
+        results.push(cols);
+    }
+
+    unsafe { cudf_sys::cudf_free_column_array(out_values) };
+
+    Ok(results)
+}
+
 pub(crate) fn groupby_aggregate_impl(
     keys: &TableView<'_>,
     requests: &[AggregationRequest<'_>],
@@ -323,21 +360,7 @@ pub(crate) fn groupby_aggregate_impl(
         )
         .with_detail("reported_table_column_count", out_total_columns.to_string())
     })?;
-    let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
-
-    let mut results: Vec<Vec<Column>> = Vec::with_capacity(requests.len());
-    let mut offset = 0;
-    for count in &agg_counts {
-        let n = *count as usize;
-        let mut cols = Vec::with_capacity(n);
-        for i in 0..n {
-            cols.push(unsafe { Column::from_raw_with_domain(col_array[offset + i], Arc::clone(output_domain)) }?);
-        }
-        offset += n;
-        results.push(cols);
-    }
-
-    unsafe { cudf_sys::cudf_free_column_array(out_values) };
+    let results = unsafe { adopt_groupby_result_columns(out_values, total, &agg_counts, output_domain) }?;
 
     Ok(GroupByAggregationOutput { keys: keys_table, results })
 }
@@ -443,21 +466,7 @@ pub(crate) fn groupby_aggregate_impl_with_prepared(
         )
         .with_detail("reported_table_column_count", out_total_columns.to_string())
     })?;
-    let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
-
-    let mut results: Vec<Vec<Column>> = Vec::with_capacity(requests.len());
-    let mut offset = 0;
-    for count in &agg_counts {
-        let n = *count as usize;
-        let mut cols = Vec::with_capacity(n);
-        for i in 0..n {
-            cols.push(unsafe { Column::from_raw_with_domain(col_array[offset + i], Arc::clone(output_domain)) }?);
-        }
-        offset += n;
-        results.push(cols);
-    }
-
-    unsafe { cudf_sys::cudf_free_column_array(out_values) };
+    let results = unsafe { adopt_groupby_result_columns(out_values, total, &agg_counts, output_domain) }?;
 
     Ok(GroupByAggregationOutput { keys: keys_table, results })
 }
@@ -562,21 +571,7 @@ pub(crate) fn groupby_scan_impl(
         )
         .with_detail("reported_table_column_count", out_total_columns.to_string())
     })?;
-    let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
-
-    let mut results: Vec<Vec<Column>> = Vec::with_capacity(requests.len());
-    let mut offset = 0;
-    for count in &agg_counts {
-        let n = *count as usize;
-        let mut cols = Vec::with_capacity(n);
-        for i in 0..n {
-            cols.push(unsafe { Column::from_raw_with_domain(col_array[offset + i], Arc::clone(output_domain)) }?);
-        }
-        offset += n;
-        results.push(cols);
-    }
-
-    unsafe { cudf_sys::cudf_free_column_array(out_values) };
+    let results = unsafe { adopt_groupby_result_columns(out_values, total, &agg_counts, output_domain) }?;
 
     Ok(GroupByScanOutput { results })
 }

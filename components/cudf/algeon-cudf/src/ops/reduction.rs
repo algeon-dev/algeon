@@ -17,7 +17,10 @@
 
 use std::{ptr, sync::Arc};
 
-use cudf_sys::*;
+use cudf_sys::{
+    CUDF_REDUCE_AGG_ALL, CUDF_REDUCE_AGG_ANY, CUDF_REDUCE_AGG_MAX, CUDF_REDUCE_AGG_MEAN, CUDF_REDUCE_AGG_MEDIAN,
+    CUDF_REDUCE_AGG_MIN, CUDF_REDUCE_AGG_PRODUCT, CUDF_REDUCE_AGG_SUM,
+};
 
 pub use crate::core::types::NullPolicy;
 use crate::{

@@ -163,6 +163,25 @@ impl std::error::Error for InteropError {
     }
 }
 
+fn validate_cuda_handle(
+    raw: *mut c_void,
+    device: i32,
+    handle_name: &'static str,
+    device_field: &'static str,
+    handle_field: &'static str,
+) -> Result<NonNull<c_void>> {
+    if device < 0 {
+        return Err(InteropError::new(InteropErrorKind::InvalidView, format!("{handle_name} device must be >= 0"))
+            .with_context("field", device_field)
+            .with_context("device", device.to_string()));
+    }
+
+    NonNull::new(raw).ok_or_else(|| {
+        InteropError::new(InteropErrorKind::InvalidView, format!("{handle_name} handle must be non-null"))
+            .with_context("field", handle_field)
+    })
+}
+
 /// Borrowed opaque handle to a CUDA stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CudaStreamHandle<'a> {
@@ -175,19 +194,7 @@ impl CudaStreamHandle<'_> {
     /// Construct a borrowed stream handle from a raw non-null pointer plus its
     /// CUDA device identity.
     pub fn from_raw_on_device(raw: *mut c_void, device: i32) -> Result<Self> {
-        if device < 0 {
-            return Err(InteropError::new(InteropErrorKind::InvalidView, "CUDA stream device must be >= 0")
-                .with_context("field", "cuda_stream.device")
-                .with_context("device", device.to_string()));
-        }
-        Self::try_new(raw, device)
-    }
-
-    fn try_new(raw: *mut c_void, device: i32) -> Result<Self> {
-        let raw = NonNull::new(raw).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "CUDA stream handle must be non-null")
-                .with_context("field", "cuda_stream")
-        })?;
+        let raw = validate_cuda_handle(raw, device, "CUDA stream", "cuda_stream.device", "cuda_stream")?;
         Ok(Self { raw, device, _lifetime: PhantomData })
     }
 
@@ -221,19 +228,7 @@ impl CudaEventHandle<'_> {
     /// Construct a borrowed event handle from a raw non-null pointer plus its
     /// CUDA device identity.
     pub fn from_raw_on_device(raw: *mut c_void, device: i32) -> Result<Self> {
-        if device < 0 {
-            return Err(InteropError::new(InteropErrorKind::InvalidView, "CUDA event device must be >= 0")
-                .with_context("field", "cuda_event.device")
-                .with_context("device", device.to_string()));
-        }
-        Self::try_new(raw, device)
-    }
-
-    fn try_new(raw: *mut c_void, device: i32) -> Result<Self> {
-        let raw = NonNull::new(raw).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "CUDA event handle must be non-null")
-                .with_context("field", "cuda_event")
-        })?;
+        let raw = validate_cuda_handle(raw, device, "CUDA event", "cuda_event.device", "cuda_event")?;
         Ok(Self { raw, device, _lifetime: PhantomData })
     }
 

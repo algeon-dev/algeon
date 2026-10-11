@@ -279,8 +279,8 @@ impl KCoreResult {
             operation,
             pointer_name,
         )?;
-        // SAFETY: `view_ptr` is a borrowed child view tied to the live result.
-        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), operation, pointer_name) }
+        // SAFETY: cuGraph allocates this view metadata; this wrapper frees it, and `self.raw` retains the backing arrays.
+        unsafe { RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), operation, pointer_name) }
     }
 
     fn optional_raw_view(

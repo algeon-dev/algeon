@@ -26,14 +26,21 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use query_planning::naming::unique_alias_with_suffix;
 
 use super::{
-    cudf_query_error,
+    AggregateExecutionStage, AggregateExpr, AggregateFunction, AggregateSpec, AggregateStrategyCapabilityDecision,
+    ArrowDataType, AvgStateAliases, CudfAggSpec, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
+    Expr, Field, GpuDataFrame, LoweredAggregate, NodeId, PartialAggregateInputEvidence, QueryError, QueryErrorCode,
+    Result, STRING_OFFSET_BYTES_CONSERVATIVE, Schema, aggregate_strategy_capability_decision,
+    attach_budget_token_failure_facts, budgeted_value, cast_count_output_columns_with_budget,
+    cast_reduction_output_columns_with_budget, cudf_query_error, execute_groupby_aggregate_with_budget,
+    execute_groupby_aggregate_with_budget_observed,
     filter_inputs::{grouped_aggregate_input_type, materialized_aggregate_argument},
     filtered_common::{
         add_segmented_budgeted_execution_stats, estimate_column_bytes, filtered_fixed_width_dtype_size,
         filtered_inputs_per_segment_for_budget, null_mask_bytes, unsupported_stateful_filtered_merge,
     },
     filtered_segment_policy::{FilteredAggregateScope, FilteredAggregateSegmentationPolicy},
-    *,
+    finalize_avg_output_columns_with_budget, lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr,
+    lower_expr, lower_final_aggregate_spec, record_grouped_aggregate_strategy_decision,
 };
 use crate::prepared::lower_avg_state_aggregations;
 

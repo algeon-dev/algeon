@@ -11,6 +11,10 @@ use crate::{
     types::DataType,
 };
 
+pub(super) fn widen_values<T: Into<U>, U>(values: Vec<T>) -> Vec<U> {
+    values.into_iter().map(Into::into).collect()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // VertexIds; typed enum for runtime-width vertex id arrays
 // ═══════════════════════════════════════════════════════════════════════════
@@ -76,10 +80,7 @@ impl<'a> IntegerValues<'a> {
     /// Copy to host as `Vec<i64>`, widening `i32` values if needed.
     pub fn to_vec_i64(&self, handle: &EnteredContext<'_>) -> Result<Vec<i64>> {
         match self {
-            Self::I32(v) => {
-                let vals = v.to_vec(handle)?;
-                Ok(vals.into_iter().map(|x| x as i64).collect())
-            },
+            Self::I32(v) => v.to_vec(handle).map(widen_values),
             Self::I64(v) => v.to_vec(handle),
         }
     }
@@ -142,10 +143,7 @@ impl<'a> VertexIds<'a> {
     /// Copy to host as `Vec<i64>`, widening `i32` values if needed.
     pub fn to_vec_i64(&self, handle: &EnteredContext<'_>) -> Result<Vec<i64>> {
         match self {
-            Self::I32(v) => {
-                let vals = v.to_vec(handle)?;
-                Ok(vals.into_iter().map(|x| x as i64).collect())
-            },
+            Self::I32(v) => v.to_vec(handle).map(widen_values),
             Self::I64(v) => v.to_vec(handle),
         }
     }
@@ -269,10 +267,7 @@ impl<'a> ScoreValues<'a> {
     /// Copy to host as `Vec<f64>`, widening `f32` values if needed.
     pub fn to_vec_f64(&self, handle: &EnteredContext<'_>) -> Result<Vec<f64>> {
         match self {
-            Self::F32(v) => {
-                let vals = v.to_vec(handle)?;
-                Ok(vals.into_iter().map(|x| x as f64).collect())
-            },
+            Self::F32(v) => v.to_vec(handle).map(widen_values),
             Self::F64(v) => v.to_vec(handle),
         }
     }
@@ -367,10 +362,7 @@ impl<'a> Distances<'a> {
     /// instead.
     pub fn to_vec_i64(&self, handle: &EnteredContext<'_>) -> Result<Vec<i64>> {
         match self {
-            Self::I32(v) => {
-                let vals = v.to_vec(handle)?;
-                Ok(vals.into_iter().map(|x| x as i64).collect())
-            },
+            Self::I32(v) => v.to_vec(handle).map(widen_values),
             Self::I64(v) => v.to_vec(handle),
             Self::F32(_) | Self::F64(_) => Err(Error::new(ErrorKind::InvalidState, "Distances::to_vec_i64")
                 .with_message("distances are floating-point; use to_vec_f64()")),
@@ -397,18 +389,12 @@ impl<'a> Distances<'a> {
     /// possible precision loss for very large i64 values.
     pub fn to_vec_f64(&self, handle: &EnteredContext<'_>) -> Result<Vec<f64>> {
         match self {
-            Self::I32(v) => {
-                let vals = v.to_vec(handle)?;
-                Ok(vals.into_iter().map(|x| x as f64).collect())
-            },
+            Self::I32(v) => v.to_vec(handle).map(widen_values),
             Self::I64(v) => {
                 let vals = v.to_vec(handle)?;
                 Ok(vals.into_iter().map(|x| x as f64).collect())
             },
-            Self::F32(v) => {
-                let vals = v.to_vec(handle)?;
-                Ok(vals.into_iter().map(|x| x as f64).collect())
-            },
+            Self::F32(v) => v.to_vec(handle).map(widen_values),
             Self::F64(v) => v.to_vec(handle),
         }
     }

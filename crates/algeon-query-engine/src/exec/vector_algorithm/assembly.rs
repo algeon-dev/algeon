@@ -6,11 +6,11 @@ use query_planning::plan::{
 };
 
 use crate::exec::{
+    CudfSortOptions, Exec, ExecutionContext, GpuDataFrame, QueryError, QueryErrorCode, Result, cudf_query_error,
     dense_relation::{
         VECTOR_OPERATIONS, relation_id_series_for, relation_row_ordinals_for, require_libcudf_row_count,
         require_series_contract_for,
     },
-    *,
 };
 
 const ASSEMBLY_OPERATION: &str = "query_engine.vector_algorithm.assemble";

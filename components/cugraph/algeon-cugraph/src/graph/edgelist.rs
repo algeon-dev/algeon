@@ -48,9 +48,8 @@ impl DecompressedEdgelist {
             pointer_name,
         )?;
 
-        // SAFETY: `view_ptr` belongs to the live edgelist object and was
-        // checked for null above.
-        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), operation, pointer_name) }
+        // SAFETY: cuGraph allocates the view metadata; this wrapper frees it while the edgelist retains the backing arrays.
+        unsafe { RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), operation, pointer_name) }
     }
 
     pub(super) fn edge_count(

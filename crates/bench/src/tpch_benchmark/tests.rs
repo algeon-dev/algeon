@@ -4,6 +4,10 @@ use algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics;
 use workloads::tpch::TpchTableMetadata;
 
 use super::*;
+use crate::tpch_benchmark::{
+    config::{NativeTpchProfileSettings, native_tpch_profile_settings_with_env},
+    reports::{NATIVE_TPCH_BENCHMARK_TSV_COLUMNS, NATIVE_TPCH_BENCHMARK_TSV_HEADER},
+};
 
 mod config_dataset;
 mod large_keyed_join_gate;

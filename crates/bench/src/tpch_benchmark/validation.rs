@@ -1,7 +1,7 @@
 use arrow::datatypes::SchemaRef;
 use query_planning::util::StableFnv1a64;
 
-use super::*;
+use super::{DataFusionError, DataFusionResult, RecordBatch, array_value_to_string, execution};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ParityStatus {

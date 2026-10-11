@@ -31,13 +31,14 @@ use super::assembly::{
     assemble_pca_output, assemble_top_k_output,
 };
 use crate::exec::{
-    GpuDataFrame,
+    ExecutionContext, GpuDataFrame, NodeId, QueryError, QueryErrorCode, Result, cudf_interop_query_error,
+    cudf_query_error, cuvs_query_error,
     dense_relation::{
         DenseRelationInputs, RelationColumns, VECTOR_OPERATIONS, checked_output_rows, list_export_error,
         matrix_bytes_for, pack_dense_relation_for, relation_dimension, relation_element_type_for, relation_input_for,
         require_null_free_relation, size_overflow_for,
     },
-    *,
+    invalid_node_reference,
 };
 
 const EXECUTE_OPERATION: &str = "query_engine.vector_algorithm.execute";

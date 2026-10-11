@@ -10,7 +10,14 @@ use arrow::{
 use arrow_flight::{FlightData, sql::metadata::SqlInfoData};
 use futures::stream::once;
 
-use super::*;
+use super::{
+    Array, BoxStream, CommandGetTables, FlightDescriptor, FlightEndpoint, FlightInfo, Int32Array, Message,
+    ProstMessageExt, SQL_ANSI92_ENTRY_SQL_BIT_INDEX, Schema, SqlInfo, SqlInfoDataBuilder, SqlNullOrdering,
+    SqlOuterJoinsSupportLevel, SqlSupportedCaseSensitivity, SqlSupportedGroupBy, SqlSupportedResultSetConcurrency,
+    SqlSupportedResultSetType, SqlSupportedTransaction, SqlSupportedUnions, SqlTransactionIsolationLevel, Status,
+    StringArray, SupportedSqlGrammar, TableType, Ticket, TryStreamExt, UInt8Array, arrow_error_to_status_for_operation,
+    arrow_flight_error_to_status_for_operation, encode_flight_data_stream,
+};
 
 const FLIGHT_SQL_TABLE_TYPE_TABLE: &str = "TABLE";
 /// Flight SQL standard `table_type` string for a view.
@@ -333,6 +340,7 @@ mod get_tables_prefilter_tests {
     };
 
     use super::*;
+    use crate::server::flight::{DatafusionAlgeonFlightSqlService, QueryAdmission, SessionContext};
 
     #[derive(Debug)]
     struct CountingCatalog {

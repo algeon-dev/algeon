@@ -4,6 +4,7 @@ use query_planning::{
 };
 
 use super::*;
+use crate::tpch_benchmark::{config::ALGEON_TPCH_BENCH_NATIVE_PROFILE_ENV, reports::NATIVE_TPCH_BENCHMARK_TSV_HEADER};
 
 #[test]
 fn benchmark_report_header_and_not_selected_rows_are_stable() {

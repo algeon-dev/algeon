@@ -1,4 +1,4 @@
-use super::*;
+use super::{DataType, OP_PARTITION_NEW, Result, TimestampResolution, TypeId, checked_name};
 
 fn decimal128_dtype(scale: i32) -> DataType {
     match DataType::fixed_point(TypeId::Decimal128, scale) {

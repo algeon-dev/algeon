@@ -29,16 +29,17 @@ use std::{
 
 #[cfg(test)]
 use super::lifetime::{EnvelopeReleaseGate, ReleaseCommitGate};
-use super::{
-    super::*,
-    report_commit::{QueryHandleReportCommit, project_pool_usage},
-};
+use super::report_commit::{QueryHandleReportCommit, project_pool_usage};
 use crate::{
     observability::AttemptTimedDomainUsage,
     runtime::{
         AttemptStreamProviderRoute,
         allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
-        query_service::service::{disposition::CleanupEvidence, transaction::AdmissionEnvelope},
+        query_service::{
+            AdmissionRequestId, AttemptCapabilityEvidence, ExecutionContext, Mutex, QueryCompletion,
+            QueryServiceEpochUser, QueryServiceInner, RuntimeObservationHandle, RuntimeTerminalOutcome,
+            service::{disposition::CleanupEvidence, transaction::AdmissionEnvelope},
+        },
         service_stream::StreamCleanupOutcome,
     },
 };

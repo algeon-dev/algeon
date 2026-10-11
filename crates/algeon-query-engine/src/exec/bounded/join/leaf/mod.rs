@@ -63,19 +63,36 @@ mod scheduler;
 mod stages;
 mod stream;
 
-use batching::*;
-use concat::*;
-use dynamic_filter::*;
+use batching::{
+    annotate_join_leaf_source_chunk_batching_reasons, join_leaf_source_chunk_batches_for_execution,
+    materialized_source_chunk_batches_for_execution, source_chunk_batch_target_bytes, source_chunk_batches,
+    stream_has_multi_source_batches,
+};
+use concat::concatenate_join_source_chunks;
+use dynamic_filter::{
+    deferred_large_small_in_list_reader_predicate_routes, merged_reader_predicate_route_ids,
+    record_dynamic_filter_reader_predicate_batch_rows, record_dynamic_filter_reader_predicate_rows,
+    source_post_decode_dynamic_filter_stages, source_reader_predicate_dynamic_filter_stages,
+};
 pub(in crate::exec::bounded) use planning::{
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_shared_join_aggregate_local_parquet_source_stream,
     plan_bounded_unary_chain_local_parquet_source_stream,
 };
-use read_serial::*;
-use scheduler::*;
-use stages::*;
+use read_serial::{
+    read_join_leaf_source_batch_attempt, read_join_leaf_source_batches_serial, read_join_leaf_source_chunk_attempt,
+    read_join_leaf_source_chunks_serial,
+};
+use scheduler::{
+    abandon_join_leaf_reads, fill_optional_join_leaf_reads, read_join_leaf_source_chunks_with_scheduler,
+    start_join_leaf_scheduled_source_read, start_next_required_join_leaf_read,
+};
+use stages::apply_join_leaf_source_stream_stages;
 pub(in crate::exec::bounded) use stream::bounded_join_leaf_local_parquet_source_frame_stream;
-use stream::*;
+use stream::{
+    execute_uncommitted_source_chunk, stream_join_leaf_source_chunk_with_consumer_retry,
+    stream_join_leaf_source_chunks_serial, stream_join_leaf_source_chunks_with_scheduler,
+};
 
 /// Names the join source read as the failing boundary so a resource error
 /// from a leaf read is attributed to the leaf, with the chunk and attempt that

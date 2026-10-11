@@ -16,7 +16,6 @@
 use std::{
     error::Error,
     fs,
-    io::Write as _,
     path::PathBuf,
     sync::{
         Arc, Mutex,

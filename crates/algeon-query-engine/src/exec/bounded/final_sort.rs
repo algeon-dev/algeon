@@ -21,7 +21,12 @@ use std::time::Instant;
 use cudf::{ExecutionBudgetReport, ExecutionBudgetRequest};
 use query_planning::chunk::SourceChunkPlanningPolicy;
 
-use super::{compiled::ResidentFrameStreamPayload, *};
+use super::{
+    BoundedExecutionAttempt, CommittedPartial, CudfSortOptions, DataFrame, ExecutionBudgetToken, ExecutionMetrics,
+    GpuDataFrame, LimitNode, LimitSpec, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result, RetryFacts,
+    RuntimeResourceFacts, SortNode, compiled::ResidentFrameStreamPayload, cudf_query_error, limit_keeps_all_rows,
+    limit_slice, lower_sort_spec, observe_device_memory_bytes, reduce_merge_fan_in, topk_candidate_rows,
+};
 
 mod full_sort;
 mod hierarchical_topk;
@@ -32,15 +37,23 @@ mod sort_lane;
 mod topk_candidate;
 mod topk_level;
 
-use limit::*;
+use limit::{
+    concat_committed_frames_with_token, execute_limit_on_frame_with_token, execute_limit_spec_with_token,
+    execute_limit_with_token,
+};
 use query_runtime::observability::{
     RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
 };
-use retry::*;
+use retry::{
+    final_sort_retry_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error, record_final_sort_retry_error,
+};
 use sizing::{estimate_rows_bytes, estimated_bytes_per_row, final_sort_retained_bytes, final_sort_rows_per_chunk};
-use sort_lane::*;
-use topk_candidate::*;
-use topk_level::*;
+use sort_lane::{
+    SortLaneCandidate, execute_sort_lane_candidate, sort_lane_fan_out, sort_lane_params, split_sort_candidate_ranges,
+    stream_candidate_chunk_hint,
+};
+use topk_candidate::sort_topk_candidate_with_budget;
+use topk_level::{TopKLevelItem, commit_topk_merge_level};
 
 use super::compiled::lanes::AggregateLaneDispatch;
 use crate::exec::retry::{ResourceFailureRecovery, RetryLimits, backoff_before_retry, resource_failure_recovery};

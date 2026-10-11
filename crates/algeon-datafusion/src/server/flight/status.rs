@@ -12,7 +12,12 @@ use datafusion::{
 };
 use prost::bytes::Bytes;
 
-use super::*;
+use super::{
+    CORRELATION_ID_METADATA_KEY, CancellationToken, CapturedError, Code, CoordinatorExecutionTerminal, DataFusionError,
+    DdlStatement, Error, ErrorCode, FailedStatement, IpcMessage, IpcWriteOptions, LogicalPlan, MetadataValue,
+    QUERY_ID_METADATA_KEY, Schema, SchemaAsIpc, Statement, StatementTicketKind, Status, adapter_error_to_status,
+    datafusion_error_to_captured_error, datafusion_error_to_status_for_operation,
+};
 use crate::{
     error::Result,
     server::{

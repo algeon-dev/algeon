@@ -530,7 +530,7 @@ fn resolved_source_contract_key(resolved_source: &ResolvedParquetSource) -> Stri
     push_contract_value(&mut key, "reader_location", resolved_source.reader_location());
     push_optional_contract_value(&mut key, "storage_domain", resolved_source.storage_domain.as_deref());
     push_optional_contract_value(&mut key, "content_identity", resolved_source.content_identity.as_deref());
-    push_contract_value(&mut key, "storage_profile_id", resolved_source.storage_profile_id().unwrap_or("none"));
+    push_optional_contract_value(&mut key, "storage_profile_id", resolved_source.storage_profile_id());
     push_contract_value(&mut key, "read_strategy", resolved_source.read_strategy().as_str());
     push_contract_value(&mut key, "credential_mode", resolved_source.credential_mode().as_str());
     push_contract_value(&mut key, "lakehouse_cache_status", resolved_source.cache_status.as_str());
@@ -573,7 +573,10 @@ fn reader_decimal_contract_key(reader_decimal_types: &[ParquetReaderDecimalType]
 }
 
 fn push_optional_contract_value(output: &mut String, key: &str, value: Option<&str>) {
-    push_contract_value(output, key, value.unwrap_or("none"));
+    match value {
+        Some(value) => push_contract_value(output, key, format!("some:{value}").as_str()),
+        None => push_contract_value(output, key, "none"),
+    }
 }
 
 fn push_contract_value(output: &mut String, key: &str, value: &str) {

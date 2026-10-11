@@ -6,7 +6,11 @@ use algeon_datafusion::native_report::{
     format_native_task_operator_metric_rows, format_native_task_runtime_metric_rows,
 };
 
-use super::*;
+use super::{
+    CapabilityDecisionRow, MetricsSet, NativeAggregateStrategyMetricRow, NativeCapabilityCompiledGraphDiagnostics,
+    NativeDynamicFilterRuntimeMetricRow, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
+    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, NativeTpchMemoryPolicy, TpchDatasetMetadata,
+};
 use crate::report_workload::RelationalExecutionSelection;
 
 pub(super) fn write_native_execution_policy_metadata(

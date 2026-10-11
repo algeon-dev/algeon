@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use super::*;
+use super::{HarnessConfig, QuerySpec, Request};
 
 pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
     let spec = |label: &str, sql: String, needs_papers: bool, needs_fos: bool| QuerySpec {

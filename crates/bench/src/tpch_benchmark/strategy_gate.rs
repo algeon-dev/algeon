@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::*;
+use super::{DataFusionError, DataFusionResult, plan_error};
 
 const LARGE_KEYED_JOIN_GATE_ENV: &str = "ALGEON_TPCH_BENCH_LARGE_KEYED_JOIN_GATE";
 const LARGE_KEYED_JOIN_GATE_QUERY_IDS_ENV: &str = "ALGEON_TPCH_BENCH_LARGE_KEYED_JOIN_GATE_QUERY_IDS";

@@ -5,16 +5,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use arrow::datatypes::Schema;
-use parquet::{
-    arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    file::reader::{FileReader, SerializedFileReader},
-};
-
 use super::{WorkloadError, WorkloadResult};
 use crate::{
     ALGEON_PARQUET_DIR_ENV,
     metadata::{DatasetFingerprint, WorkloadDatasetMetadata},
+    parquet_metadata,
 };
 
 /// The single logical table exposed by the ClickBench fixture. Upstream uses
@@ -405,43 +400,16 @@ struct ClickbenchFileMetadata {
 }
 
 fn read_parquet_file_metadata(root: &Path, path: &Path) -> WorkloadResult<ClickbenchFileMetadata> {
-    let metadata = fs::metadata(path)?;
-    if !metadata.is_file() {
-        return Err(WorkloadError::InvalidDataset(format!("expected {} to be a Parquet file", path.display())));
-    }
-
-    let byte_size = metadata.len();
-    let reader_builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
-    let schema = canonical_schema(reader_builder.schema().as_ref());
-    let file = File::open(path)?;
-    let reader = SerializedFileReader::new(file)?;
-    let parquet_metadata = reader.metadata();
-    let row_group_count = parquet_metadata.num_row_groups();
-    let mut row_group_rows = Vec::with_capacity(row_group_count);
-    let mut row_group_bytes = Vec::with_capacity(row_group_count);
-    for row_group in parquet_metadata.row_groups() {
-        let rows = u64::try_from(row_group.num_rows()).map_err(|_| {
-            WorkloadError::InvalidDataset(format!("negative row count in Parquet metadata for {}", path.display()))
-        })?;
-        let bytes = u64::try_from(row_group.compressed_size()).map_err(|_| {
-            WorkloadError::InvalidDataset(format!(
-                "negative compressed byte size in Parquet metadata for {}",
-                path.display()
-            ))
-        })?;
-        row_group_rows.push(rows);
-        row_group_bytes.push(bytes);
-    }
-    let row_count = row_group_rows.iter().sum();
+    let metadata = parquet_metadata::read_file_metadata(root, path)?;
     Ok(ClickbenchFileMetadata {
-        path: path.to_path_buf(),
-        relative_path: relative_dataset_path(root, path),
-        schema,
-        byte_size,
-        row_count,
-        row_group_count,
-        row_group_rows,
-        row_group_bytes,
+        path: metadata.path,
+        relative_path: metadata.relative_path,
+        schema: metadata.schema,
+        byte_size: metadata.byte_size,
+        row_count: metadata.row_count,
+        row_group_count: metadata.row_group_count,
+        row_group_rows: metadata.row_group_rows,
+        row_group_bytes: metadata.row_group_bytes,
     })
 }
 
@@ -456,7 +424,7 @@ fn clickbench_dataset_metadata_fingerprint(
     let mut hasher = DatasetFingerprint::new();
     hasher.update_field("algeon-datafusion-clickbench-dataset-metadata-v1");
     hasher.update_field(layout.label());
-    hasher.update_field(&relative_dataset_path(root, layout.register_path()));
+    hasher.update_field(&parquet_metadata::relative_dataset_path(root, layout.register_path()));
     hasher.update_field(provenance);
     hasher.update_field(generation_command);
     hasher.update_field(schema);
@@ -494,28 +462,6 @@ fn clickbench_dataset_content_fingerprint(files: &[ClickbenchFileMetadata]) -> W
         hasher.update_bytes(&[0]);
     }
     Ok(format!("content-fnv1a64:{:016x}", hasher.finish()))
-}
-
-fn canonical_schema(schema: &Schema) -> String {
-    schema
-        .fields()
-        .iter()
-        .map(|field| {
-            format!(
-                "{}:{:?}:nullable={}:metadata={:?}",
-                field.name(),
-                field.data_type(),
-                field.is_nullable(),
-                field.metadata()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-fn relative_dataset_path(root: &Path, path: &Path) -> String {
-    let relative = path.strip_prefix(root).expect("discovered dataset path must be under root");
-    relative.iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
 fn env_truthy(value: &str) -> bool {

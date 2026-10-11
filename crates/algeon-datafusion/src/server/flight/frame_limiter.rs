@@ -20,7 +20,7 @@ use cudf::frame::dataframe::HostBatchCursorConfig;
 use futures::{Stream, stream::iter, task::noop_waker_ref};
 use prost::Message;
 
-use super::*;
+use super::{Array, BoxStream, Error, ErrorCode, adapter_error_status};
 
 /// Tonic's default encoded-message limit. Every DoGet path stays below this
 /// bound. The transport limit is not raised to fit larger frames.

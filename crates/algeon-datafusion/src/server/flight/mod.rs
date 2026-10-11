@@ -82,14 +82,29 @@ pub(super) use correlation::{attach_query_response_metadata, request_correlation
 use ddl::referenced_table_names;
 pub(in crate::server) use ddl::reject_drop_object_type_mismatch;
 use frame_limiter::encode_flight_data_stream;
-use metadata::*;
+use metadata::{
+    GetTablesPrefilters, build_table_types_batch, empty_foreign_keys_batch, empty_primary_keys_batch,
+    flight_sql_foreign_keys_schema, flight_sql_primary_keys_schema, flight_sql_table_types_schema,
+    metadata_flight_info, metadata_record_batch_stream, sql_info_data, table_type_to_flight_sql,
+};
 use ownership::{Owner, QueryOwnership};
 use prepared::{PreparedStatementEntry, PreparedStatementStore};
 pub use service::DatafusionAlgeonFlightSqlService;
 use statement::verify_forest_model_identity;
 pub(in crate::server) use status::verify_update_ddl;
-use status::*;
-use tickets::*;
+use status::{
+    adapter_error_status, adapter_error_to_status_and_capture, arrow_error_to_status_and_capture,
+    arrow_error_to_status_for_operation, arrow_flight_error_to_status_and_capture,
+    arrow_flight_error_to_status_for_operation, cancellation_error, datafusion_error_to_flight_error,
+    datafusion_error_to_status_and_capture, flight_result_schema, flight_sql_transactions_unsupported_error,
+    log_statement_status, reject_parameterized_plan, reject_parameterized_statement, schema_to_ipc_bytes,
+    server_shutdown_error, status_with_query_id, status_with_query_id_and_correlation_id, verify_flight_info_plan,
+    verify_sql_statement_namespace, verify_update_plan,
+};
+use tickets::{
+    CoordinatorExecutionTerminal, CoordinatorReportHandoffTerminal, QueryExecutionGuard, StatementTicketKind,
+    UpdateStatementKind,
+};
 
 const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;

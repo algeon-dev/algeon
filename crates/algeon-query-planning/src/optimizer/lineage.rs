@@ -47,6 +47,12 @@ pub(super) enum AggregateGroupKeyLineage {
     Reject,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalParquetSortLineage {
+    Stop,
+    Cross,
+}
+
 /// The one lineage of `column_name` at `node_id`, or `None` when the column has
 /// no traceable origin or more than one, as below a union of two sources.
 pub(super) fn unique_lineage(
@@ -221,9 +227,13 @@ fn aggregate_group_key_lineages(
                     })
                     .collect::<Vec<_>>()
             },
-            AggregateGroupKeyLineage::Consumer => {
-                consumer_pre_aggregate_expr_lineages(plan, parent_counts, aggregate.input, expr)
-            },
+            AggregateGroupKeyLineage::Consumer => local_parquet_lineages_for_expr(
+                plan,
+                parent_counts,
+                aggregate.input,
+                expr,
+                LocalParquetSortLineage::Stop,
+            ),
             AggregateGroupKeyLineage::Reject => Vec::new(),
         })
         .map(|mut lineage| {
@@ -317,24 +327,28 @@ fn projection_expr_lineages(
     }
 }
 
-fn consumer_pre_aggregate_expr_lineages(
+fn local_parquet_lineages_for_expr(
     plan: &QueryPlan,
     parent_counts: &[usize],
     input: NodeId,
     expr: &Expr,
+    sort_lineage: LocalParquetSortLineage,
 ) -> Vec<SourceColumnLineage> {
     match expr {
-        Expr::Column(column) => consumer_pre_aggregate_lineages_for_column(plan, parent_counts, input, column.name()),
-        Expr::Alias { expr, .. } => consumer_pre_aggregate_expr_lineages(plan, parent_counts, input, expr),
+        Expr::Column(column) => {
+            local_parquet_lineages_for_column(plan, parent_counts, input, column.name(), sort_lineage)
+        },
+        Expr::Alias { expr, .. } => local_parquet_lineages_for_expr(plan, parent_counts, input, expr, sort_lineage),
         _ => Vec::new(),
     }
 }
 
-fn consumer_pre_aggregate_lineages_for_column(
+fn local_parquet_lineages_for_column(
     plan: &QueryPlan,
     parent_counts: &[usize],
     node_id: NodeId,
     column_name: &str,
+    sort_lineage: LocalParquetSortLineage,
 ) -> Vec<SourceColumnLineage> {
     let Some(node) = plan.node(node_id) else {
         return Vec::new();
@@ -357,7 +371,7 @@ fn consumer_pre_aggregate_lineages_for_column(
             _ => Vec::new(),
         },
         PlanNode::Filter(filter) => {
-            consumer_pre_aggregate_lineages_for_column(plan, parent_counts, filter.input, column_name)
+            local_parquet_lineages_for_column(plan, parent_counts, filter.input, column_name, sort_lineage)
                 .into_iter()
                 .map(mark_shared)
                 .collect()
@@ -367,10 +381,19 @@ fn consumer_pre_aggregate_lineages_for_column(
             .iter()
             .filter(|output| output.field.name() == column_name)
             .flat_map(|output| {
-                consumer_pre_aggregate_expr_lineages(plan, parent_counts, projection.input, &output.expr)
+                local_parquet_lineages_for_expr(plan, parent_counts, projection.input, &output.expr, sort_lineage)
             })
             .map(mark_shared)
             .collect(),
+        PlanNode::Sort(sort) => match sort_lineage {
+            LocalParquetSortLineage::Stop => Vec::new(),
+            LocalParquetSortLineage::Cross => {
+                local_parquet_lineages_for_column(plan, parent_counts, sort.input, column_name, sort_lineage)
+                    .into_iter()
+                    .map(mark_shared)
+                    .collect()
+            },
+        },
         PlanNode::Join(join) => join
             .spec
             .output_projection
@@ -381,18 +404,17 @@ fn consumer_pre_aggregate_lineages_for_column(
                     JoinSide::Left => join.inputs[0],
                     JoinSide::Right => join.inputs[1],
                 };
-                consumer_pre_aggregate_lineages_for_column(plan, parent_counts, input, output.column.name())
+                local_parquet_lineages_for_column(plan, parent_counts, input, output.column.name(), sort_lineage)
             })
             .map(mark_shared)
             .collect(),
         PlanNode::Union(union) => union
             .inputs
             .iter()
-            .flat_map(|input| consumer_pre_aggregate_lineages_for_column(plan, parent_counts, *input, column_name))
+            .flat_map(|input| local_parquet_lineages_for_column(plan, parent_counts, *input, column_name, sort_lineage))
             .map(mark_shared)
             .collect(),
         PlanNode::Aggregate(_)
-        | PlanNode::Sort(_)
         | PlanNode::Limit(_)
         | PlanNode::Window(_)
         | PlanNode::EdgeNormalize(_)
@@ -418,82 +440,7 @@ pub(super) fn simple_lineages_for_column(
     node_id: NodeId,
     column_name: &str,
 ) -> Vec<SourceColumnLineage> {
-    let Some(node) = plan.node(node_id) else {
-        return Vec::new();
-    };
-    let has_shared_path = parent_counts[node_id.index()] > 1;
-    let mark_shared = |mut lineage: SourceColumnLineage| {
-        lineage.has_shared_path |= has_shared_path;
-        lineage
-    };
-    match &node.kind {
-        PlanNode::Source(source) => match source.as_ref() {
-            SourceNode::LocalParquet(source) if source.source_column_ref(column_name).is_some() => {
-                vec![SourceColumnLineage {
-                    source_node_id: node_id,
-                    source_column: column_name.to_string(),
-                    aggregate_group_key_node_id: None,
-                    has_shared_path,
-                }]
-            },
-            _ => Vec::new(),
-        },
-        PlanNode::Filter(filter) => simple_lineages_for_column(plan, parent_counts, filter.input, column_name)
-            .into_iter()
-            .map(mark_shared)
-            .collect(),
-        PlanNode::Projection(projection) => projection
-            .outputs
-            .iter()
-            .filter(|output| output.field.name() == column_name)
-            .flat_map(|output| simple_projection_expr_lineages(plan, parent_counts, projection.input, &output.expr))
-            .map(mark_shared)
-            .collect(),
-        PlanNode::Sort(sort) => simple_lineages_for_column(plan, parent_counts, sort.input, column_name)
-            .into_iter()
-            .map(mark_shared)
-            .collect(),
-        PlanNode::Limit(_) => Vec::new(),
-        PlanNode::Join(join) => join
-            .spec
-            .output_projection
-            .iter()
-            .filter(|output| output.output_name == column_name)
-            .flat_map(|output| {
-                let input = match output.side {
-                    JoinSide::Left => join.inputs[0],
-                    JoinSide::Right => join.inputs[1],
-                };
-                simple_lineages_for_column(plan, parent_counts, input, output.column.name())
-            })
-            .map(mark_shared)
-            .collect(),
-        PlanNode::Union(union) => union
-            .inputs
-            .iter()
-            .flat_map(|input| simple_lineages_for_column(plan, parent_counts, *input, column_name))
-            .map(mark_shared)
-            .collect(),
-        PlanNode::Aggregate(_)
-        | PlanNode::Window(_)
-        | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_)
-        | PlanNode::MlAlgorithm(_) => Vec::new(),
-    }
-}
-
-fn simple_projection_expr_lineages(
-    plan: &QueryPlan,
-    parent_counts: &[usize],
-    input: NodeId,
-    expr: &Expr,
-) -> Vec<SourceColumnLineage> {
-    match expr {
-        Expr::Column(column) => simple_lineages_for_column(plan, parent_counts, input, column.name()),
-        Expr::Alias { expr, .. } => simple_projection_expr_lineages(plan, parent_counts, input, expr),
-        _ => Vec::new(),
-    }
+    local_parquet_lineages_for_column(plan, parent_counts, node_id, column_name, LocalParquetSortLineage::Cross)
 }
 
 #[cfg(test)]

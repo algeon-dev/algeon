@@ -45,11 +45,10 @@ use query_runtime::{
 };
 
 use super::{
-    cudf_query_error,
+    DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, SourceChunk, cudf_query_error,
     maintenance::start_cache_maintenance_fetch,
     policy::LakehouseCachePolicy,
     s3::{cache_maintenance_location, object_store_key_fact},
-    *,
 };
 use crate::{
     chunk::SourceChunkBatch,
@@ -481,11 +480,7 @@ fn optimized_batch_resolved_source_contract_signature(resolved_source: &Resolved
     push_optimized_batch_contract_hash(&mut output, "reader_location", Some(resolved_source.reader_location()));
     push_optimized_batch_contract_hash(&mut output, "storage_domain", resolved_source.storage_domain.as_deref());
     push_optimized_batch_contract_hash(&mut output, "content_identity", resolved_source.content_identity.as_deref());
-    push_optimized_batch_contract_value(
-        &mut output,
-        "storage_profile_id",
-        resolved_source.storage_profile_id().unwrap_or("none"),
-    );
+    push_optimized_batch_contract_hash(&mut output, "storage_profile_id", resolved_source.storage_profile_id());
     push_optimized_batch_contract_value(&mut output, "read_strategy", resolved_source.read_strategy().as_str());
     push_optimized_batch_contract_value(&mut output, "credential_mode", resolved_source.credential_mode().as_str());
     push_optimized_batch_contract_value(&mut output, "cache_status", resolved_source.cache_status.as_str());

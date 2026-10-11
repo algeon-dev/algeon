@@ -24,7 +24,7 @@ mod list_validation;
 mod schema_contract;
 
 pub use host_batch_cursor::{HostBatchCursor, HostBatchCursorConfig, PreparedHostBatch};
-use list_export::{FixedSizeListStructuralProof, UniformListProof};
+use list_export::{FixedSizeListStructuralProof, ListExportContract, ListExportParts, UniformListProof};
 pub use list_export::{ValidatedFixedSizeListExport, ValidatedUniformListExport};
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use list_validation::{
@@ -56,6 +56,25 @@ fn validate_list_child_finite(
         .with_detail("supported_elements", "Float32, Float64, Int8, UInt8")),
     }
     .map_err(|error| error.reanchor(operation))
+}
+
+fn prepare_list_export<'a>(
+    producer: &'a Arc<Column>,
+    contract: ListExportContract,
+    operation: &'static str,
+) -> Result<(ListExportParts<'a>, Option<validation::FiniteValidationProof>)> {
+    let export = producer
+        .try_prepare_device_column_export()
+        .map_err(|error| error::from_interop_in(error, operation))?
+        .with_retained_owner(Arc::<Column>::clone(producer));
+    let parts = validate_list_export(export, contract, operation)?;
+    let child = producer
+        .view()
+        .map_err(|error| error.reanchor(operation))?
+        .list_sliced_child()
+        .map_err(|error| error.reanchor(operation))?;
+    let finite_proof = validate_list_child_finite(&child, contract.element, operation)?;
+    Ok((parts, finite_proof))
 }
 
 pub(super) struct RetainedProducerDomain(pub(super) Arc<ExecutionDomain>);
@@ -208,17 +227,7 @@ impl GpuRecordBatch {
             .with_detail("reason", "fixed_size_list_proof_identity_mismatch"));
         }
 
-        let export = producer
-            .try_prepare_device_column_export()
-            .map_err(|error| error::from_interop_in(error, OPERATION))?
-            .with_retained_owner(Arc::<Column>::clone(producer));
-        let parts = validate_list_export(export, proof.into(), OPERATION)?;
-        let child = producer
-            .view()
-            .map_err(|error| error.reanchor(OPERATION))?
-            .list_sliced_child()
-            .map_err(|error| error.reanchor(OPERATION))?;
-        let finite_proof = validate_list_child_finite(&child, proof.element, OPERATION)?;
+        let (parts, finite_proof) = prepare_list_export(producer, proof.into(), OPERATION)?;
         if finite_proof.is_some_and(|finite_proof| {
             finite_proof.validated_values() != proof.child_len
                 || finite_proof.binding_id() != proof.binding_id
@@ -323,17 +332,7 @@ impl GpuRecordBatch {
             .with_detail("reason", "uniform_list_proof_identity_mismatch"));
         }
 
-        let export = producer
-            .try_prepare_device_column_export()
-            .map_err(|error| error::from_interop_in(error, OPERATION))?
-            .with_retained_owner(Arc::<Column>::clone(producer));
-        let parts = validate_list_export(export, proof.into(), OPERATION)?;
-        let child = producer
-            .view()
-            .map_err(|error| error.reanchor(OPERATION))?
-            .list_sliced_child()
-            .map_err(|error| error.reanchor(OPERATION))?;
-        let finite_proof = validate_list_child_finite(&child, proof.element, OPERATION)?;
+        let (parts, finite_proof) = prepare_list_export(producer, proof.into(), OPERATION)?;
         if finite_proof.is_some_and(|finite_proof| {
             finite_proof.validated_values() != proof.child_len
                 || finite_proof.binding_id() != proof.binding_id

@@ -205,10 +205,9 @@ impl LayoutResult {
             "LayoutResult::vertex_ids",
             "vertices",
         )?;
-        // SAFETY: `view_ptr` belongs to the live layout result and was
-        // validated to be non-null above.
+        // SAFETY: cuGraph allocates view metadata; this wrapper frees it while the result retains the backing arrays.
         let raw = unsafe {
-            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::vertex_ids", "vertices")
+            RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), "LayoutResult::vertex_ids", "vertices")
         }?;
         VertexIds::from_raw(raw)
     }
@@ -223,10 +222,9 @@ impl LayoutResult {
         // the duration of the call.
         let view_ptr =
             require_non_null(unsafe { cugraph_layout_result_get_x_axis(self.raw) }, "LayoutResult::x", "x_axis")?;
-        // SAFETY: `view_ptr` belongs to the live layout result and was
-        // validated to be non-null above.
+        // SAFETY: cuGraph allocates view metadata; this wrapper frees it while the result retains the backing arrays.
         let raw =
-            unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::x", "x_axis") }?;
+            unsafe { RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), "LayoutResult::x", "x_axis") }?;
         ScoreValues::from_raw(raw)
     }
 
@@ -240,10 +238,9 @@ impl LayoutResult {
         // the duration of the call.
         let view_ptr =
             require_non_null(unsafe { cugraph_layout_result_get_y_axis(self.raw) }, "LayoutResult::y", "y_axis")?;
-        // SAFETY: `view_ptr` belongs to the live layout result and was
-        // validated to be non-null above.
+        // SAFETY: cuGraph allocates view metadata; this wrapper frees it while the result retains the backing arrays.
         let raw =
-            unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::y", "y_axis") }?;
+            unsafe { RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), "LayoutResult::y", "y_axis") }?;
         ScoreValues::from_raw(raw)
     }
 
