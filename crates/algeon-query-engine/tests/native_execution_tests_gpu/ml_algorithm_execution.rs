@@ -10,7 +10,7 @@ mod enabled {
         datatypes::{DataType, Field, Schema, SchemaRef},
         record_batch::RecordBatch,
     };
-    use cudf::{DataFrame, DenseMatrixLayout};
+    use cudf::{DataFrame, DenseMatrixLayout, testing::run_named_cases};
     use cuml::{
         CumlResources, DeviceMatrix, ForestModelFormat, ForestOutput, ForestOutputKind, ForestPrecision,
         LogisticRegressionModel, LogisticRegressionParams, MatrixLayout, OwnedFloat32Matrix, forest_inference_version,
@@ -367,7 +367,6 @@ mod enabled {
         assert_eq!(error.fact_value("reason"), Some("unsupported_label_type"));
     }
 
-    #[test]
     fn supervised_prediction_uses_predict_ids_and_records_fit_and_predict_stages() {
         for classes in [2, 3] {
             let (result, observation) = execute_supervised(MlAlgorithm::LogisticRegression, classes, None, classes);
@@ -422,7 +421,6 @@ mod enabled {
         }
     }
 
-    #[test]
     fn random_forest_classifier_and_regressor_score_independent_rows() {
         for algorithm in [MlAlgorithm::RandomForestClassifier, MlAlgorithm::RandomForestRegressor] {
             let (result, observation) = execute_supervised(algorithm, 2, None, 12);
@@ -495,6 +493,35 @@ mod enabled {
     }
 
     #[test]
+    fn ml_algorithm_execution_cases_1() {
+        run_named_cases(&[
+            (
+                "ml_algorithm_execution::enabled::random_forest_classifier_and_regressor_score_independent_rows",
+                random_forest_classifier_and_regressor_score_independent_rows,
+            ),
+            (
+                "ml_algorithm_execution::enabled::supervised_prediction_uses_predict_ids_and_records_fit_and_predict_stages",
+                supervised_prediction_uses_predict_ids_and_records_fit_and_predict_stages,
+            ),
+            (
+                "ml_algorithm_execution::enabled::hdbscan_finds_three_blobs_and_a_noise_row",
+                hdbscan_finds_three_blobs_and_a_noise_row,
+            ),
+            (
+                "ml_algorithm_execution::enabled::umap_embedding_is_finite_and_observation_is_row_major",
+                umap_embedding_is_finite_and_observation_is_row_major,
+            ),
+            (
+                "ml_algorithm_execution::enabled::double_forest_widens_features_and_matches_the_reference",
+                double_forest_widens_features_and_matches_the_reference,
+            ),
+            (
+                "ml_algorithm_execution::enabled::forest_predict_scores_fixture_models_after_one_import_stage",
+                forest_predict_scores_fixture_models_after_one_import_stage,
+            ),
+        ]);
+    }
+
     fn supervised_label_errors_and_empty_predict_are_structured() {
         for (labels, reason) in [
             (vec![0; 12], "single_class"),
@@ -516,7 +543,6 @@ mod enabled {
         );
     }
 
-    #[test]
     fn tsvd_matches_rank_one_host_oracle_and_preserves_row_identity() {
         let algorithm = MlAlgorithm::Tsvd;
         for shape in [Shape::Wide, Shape::Fixed] {
@@ -588,6 +614,39 @@ mod enabled {
     }
 
     #[test]
+    fn ml_algorithm_execution_cases_2() {
+        run_named_cases(&[
+            (
+                "ml_algorithm_execution::enabled::tsvd_matches_rank_one_host_oracle_and_preserves_row_identity",
+                tsvd_matches_rank_one_host_oracle_and_preserves_row_identity,
+            ),
+            (
+                "ml_algorithm_execution::enabled::supervised_label_errors_and_empty_predict_are_structured",
+                supervised_label_errors_and_empty_predict_are_structured,
+            ),
+            (
+                "ml_algorithm_execution::enabled::runtime_row_count_and_uniform_list_dimension_errors_are_structured",
+                runtime_row_count_and_uniform_list_dimension_errors_are_structured,
+            ),
+            (
+                "ml_algorithm_execution::enabled::row_dependent_hdbscan_and_umap_rejections_are_structured",
+                row_dependent_hdbscan_and_umap_rejections_are_structured,
+            ),
+            (
+                "ml_algorithm_execution::enabled::empty_ml_input_returns_exact_schema_without_native_stage",
+                empty_ml_input_returns_exact_schema_without_native_stage,
+            ),
+            (
+                "ml_algorithm_execution::enabled::two_components_split_into_distinct_device_columns",
+                two_components_split_into_distinct_device_columns,
+            ),
+            (
+                "ml_algorithm_execution::enabled::imported_forest_facts_that_differ_from_the_snapshot_are_an_invariant_violation",
+                imported_forest_facts_that_differ_from_the_snapshot_are_an_invariant_violation,
+            ),
+        ]);
+    }
+
     fn two_components_split_into_distinct_device_columns() {
         let algorithm = MlAlgorithm::Tsvd;
         let (result, _, _) = execute(algorithm, Shape::Wide, 8, 2);
@@ -600,7 +659,6 @@ mod enabled {
         assert!(second.values().iter().all(|value| value.abs() < 1e-2), "{algorithm:?}: {second:?}");
     }
 
-    #[test]
     fn runtime_row_count_and_uniform_list_dimension_errors_are_structured() {
         let (result, _, _) = execute(MlAlgorithm::Tsvd, Shape::Wide, 1, 1);
         assert_eq!(result.err().expect("single row").fact_value("reason"), Some("insufficient_input_rows"));
@@ -611,7 +669,6 @@ mod enabled {
         );
     }
 
-    #[test]
     fn empty_ml_input_returns_exact_schema_without_native_stage() {
         for algorithm in [MlAlgorithm::Tsvd, MlAlgorithm::Hdbscan, MlAlgorithm::Umap] {
             let expected = match algorithm {
@@ -638,7 +695,6 @@ mod enabled {
         }
     }
 
-    #[test]
     fn row_dependent_hdbscan_and_umap_rejections_are_structured() {
         for (algorithm, rows, reason) in [
             (MlAlgorithm::Hdbscan, 2, "min_samples_exceeds_input_rows"),
@@ -649,7 +705,6 @@ mod enabled {
         }
     }
 
-    #[test]
     fn hdbscan_finds_three_blobs_and_a_noise_row() {
         let mut a = Vec::new();
         let mut b = Vec::new();
@@ -713,7 +768,6 @@ mod enabled {
         );
     }
 
-    #[test]
     fn umap_embedding_is_finite_and_observation_is_row_major() {
         let (result, _, observation) = execute(MlAlgorithm::Umap, Shape::Fixed, 12, 2);
         let QueryOutput::HostArrow(output) = result.expect("UMAP embedding") else { panic!("host output") };
@@ -1034,7 +1088,6 @@ mod enabled {
         }
     }
 
-    #[test]
     fn forest_predict_scores_fixture_models_after_one_import_stage() {
         let snapshot =
             forest_snapshot("xgb_binary_logistic.json", MlForestModelFormat::XgboostJson, ForestOutput::Scores);
@@ -1108,7 +1161,6 @@ mod enabled {
         }
     }
 
-    #[test]
     fn double_forest_widens_features_and_matches_the_reference() {
         let snapshot =
             forest_snapshot("lgb_regression_double.txt", MlForestModelFormat::LightGbm, ForestOutput::Scores);
@@ -1187,7 +1239,6 @@ mod enabled {
             RuntimeObservationPayload::OperatorStage(stage) if stage.stage_kind == RuntimeOperatorStageKind::MlPack)));
     }
 
-    #[test]
     fn imported_forest_facts_that_differ_from_the_snapshot_are_an_invariant_violation() {
         let planned =
             forest_snapshot("xgb_binary_logistic.json", MlForestModelFormat::XgboostJson, ForestOutput::Scores);

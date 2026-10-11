@@ -5,7 +5,7 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema},
     record_batch::RecordBatch,
 };
-use cudf::DataFrame as CudfDataFrame;
+use cudf::{DataFrame as CudfDataFrame, testing::run_named_cases};
 use query_planning::{
     admission,
     expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
@@ -214,7 +214,6 @@ fn resident_handle_with_rows(
     runtime::resident::GpuResultHandle::new(context, frame, Arc::clone(schema)).expect("resident handle")
 }
 
-#[test]
 fn leased_context_preserves_activated_deferred_resident_phase() {
     let (consumer, producer_a, producer_b, schema) = same_schema_provenance_fixture();
     let evidence = composed_provenance_evidence(&consumer, &[("left", &producer_a), ("right", &producer_b)]);
@@ -249,7 +248,6 @@ fn leased_context_preserves_activated_deferred_resident_phase() {
     attempt.end_test_attempt();
 }
 
-#[test]
 fn deferred_resident_activation_rejects_same_schema_producer_substitution() {
     let (consumer, producer_a, producer_b, schema) = same_schema_provenance_fixture();
     let evidence = composed_provenance_evidence(&consumer, &[("left", &producer_a), ("right", &producer_b)]);
@@ -273,7 +271,6 @@ fn deferred_resident_activation_rejects_same_schema_producer_substitution() {
     attempt.end_test_attempt();
 }
 
-#[test]
 fn deferred_resident_activation_rejects_a_missing_occurrence() {
     let (consumer, producer_a, producer_b, schema) = same_schema_provenance_fixture();
     let evidence = composed_provenance_evidence(&consumer, &[("left", &producer_a), ("right", &producer_b)]);
@@ -296,7 +293,6 @@ fn deferred_resident_activation_rejects_a_missing_occurrence() {
     attempt.end_test_attempt();
 }
 
-#[test]
 fn unscoped_upload_does_not_skip_scoped_resident_validation() {
     let (consumer, producer_a, producer_b, schema) = same_schema_provenance_fixture();
     let evidence = composed_provenance_evidence(&consumer, &[("right", &producer_b)]);
@@ -320,7 +316,6 @@ fn unscoped_upload_does_not_skip_scoped_resident_validation() {
     attempt.end_test_attempt();
 }
 
-#[test]
 fn deferred_resident_activation_accepts_repeated_execution_with_fresh_frames() {
     let (consumer, producer_a, producer_b, schema) = same_schema_provenance_fixture();
     let evidence = composed_provenance_evidence(&consumer, &[("left", &producer_a), ("right", &producer_b)]);
@@ -347,7 +342,6 @@ fn deferred_resident_activation_accepts_repeated_execution_with_fresh_frames() {
     attempt.end_test_attempt();
 }
 
-#[test]
 fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
     let (consumer_plan, similarity_plan, roles_plan, evidence, similarity_schema, roles_schema) =
         shared_two_join_fixture();
@@ -422,4 +416,34 @@ fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
         .expect("two LEFT JOIN consumer executes after exact resident refinement");
     let batch = result.output().as_host_arrow().expect("consumer host output");
     assert_eq!(batch.num_rows(), 12, "duplicate first-role matches must multiply six input pairs");
+}
+
+#[test]
+fn deferred_resident_cases() {
+    run_named_cases(&[
+        (
+            "deferred_resident::shared_resident_two_left_joins_preserve_duplicate_multiplicity",
+            shared_resident_two_left_joins_preserve_duplicate_multiplicity,
+        ),
+        (
+            "deferred_resident::deferred_resident_activation_rejects_a_missing_occurrence",
+            deferred_resident_activation_rejects_a_missing_occurrence,
+        ),
+        (
+            "deferred_resident::deferred_resident_activation_accepts_repeated_execution_with_fresh_frames",
+            deferred_resident_activation_accepts_repeated_execution_with_fresh_frames,
+        ),
+        (
+            "deferred_resident::unscoped_upload_does_not_skip_scoped_resident_validation",
+            unscoped_upload_does_not_skip_scoped_resident_validation,
+        ),
+        (
+            "deferred_resident::leased_context_preserves_activated_deferred_resident_phase",
+            leased_context_preserves_activated_deferred_resident_phase,
+        ),
+        (
+            "deferred_resident::deferred_resident_activation_rejects_same_schema_producer_substitution",
+            deferred_resident_activation_rejects_same_schema_producer_substitution,
+        ),
+    ]);
 }

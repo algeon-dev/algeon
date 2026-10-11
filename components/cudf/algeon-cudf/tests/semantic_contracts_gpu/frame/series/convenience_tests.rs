@@ -6,17 +6,16 @@
 //!
 //! All tests require a GPU.
 use cudf::{
-    DataType, ErrorCode, ErrorKind, Exec, Series, SortOptions, TypeId,
+    DataType, ErrorCode, ErrorKind, Exec, SortOptions, TypeId,
     core::error::{FactKeyName, FactValue},
     frame::factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder},
     testing::{prelude::*, series::trigger_nunique_negative_distinct_count_for_test},
 };
 
 use crate::common::{
-    column_from_slice, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, lock_event_observation, nullable_series,
-    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
-    series,
+    dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, lock_event_observation, nullable_series, reset_dependency_observation,
+    reset_exec_observation, reset_sync_observation, sample_runtime, series,
 };
 
 // ===========================================================================
@@ -86,38 +85,6 @@ fn test_astype_i32_to_f64() {
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(casted.len(), 3);
     assert_eq!(casted.to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, 3.0]);
-}
-
-fn test_astype_f64_to_i32_truncates() {
-    let s = series::<f64>("x", &[1.9, 2.1, 3.7]).unwrap();
-    let casted = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
-
-    assert_eq!(casted.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(casted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
-}
-
-fn test_astype_preserves_length() {
-    let s = series::<i32>("x", &[10, 20, 30, 40, 50]).unwrap();
-    let casted = s.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
-
-    assert_eq!(casted.len(), 5);
-    assert_eq!(casted.dtype().unwrap().id(), TypeId::Int64);
-}
-
-fn test_astype_preserves_nulls() {
-    let s = nullable_series::<i32>("x", &[1, 0, 3], &[true, false, true]).unwrap();
-    let casted = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
-
-    assert_eq!(casted.null_count(), 1);
-    assert_eq!(casted.dtype().unwrap().id(), TypeId::Float64);
-}
-
-fn test_astype_same_type_is_no_op_copy() {
-    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-    let casted = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
-
-    assert_eq!(casted.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(casted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 fn test_log_f64() {
@@ -405,27 +372,6 @@ fn test_factorize_strings() {
     assert_eq!(uniq_vals, vec!["a", "b", "c"]);
 }
 
-fn test_factorize_unnamed_input_keeps_outputs_unnamed() {
-    let column = column_from_slice(&[10i32, 20, 10, 30]).unwrap();
-    let s = Series::from_column(column).unwrap();
-    let factorized = s.on(Exec::RETAINED).factorize().unwrap();
-    let codes = factorized.row_codes();
-    let keys = factorized.codebook().keys();
-    let codes_output = format!("{}", codes.as_series());
-    let keys_output = format!("{:?}", keys);
-
-    assert!(
-        !codes_output.contains("name="),
-        "factorized row codes should remain unnamed in display output: {}",
-        codes_output
-    );
-    assert!(
-        !keys_output.contains("name"),
-        "factorization codebook keys should remain unnamed in debug output: {}",
-        keys_output
-    );
-}
-
 fn test_codebook_can_encode_and_decode_new_queries() {
     let s = series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.on(Exec::RETAINED).codebook().unwrap();
@@ -525,16 +471,6 @@ fn test_codebook_encode_and_decode_in_use_borrowed_context_domain() {
 }
 
 fn test_codebook_can_decode_plain_series_from_external_code_columns() {
-    let s = series("x", &["b", "a", "c", "a"]).unwrap();
-    let codebook = s.on(Exec::RETAINED).codebook().unwrap();
-    let encoded = codebook.encode(&series("vertex", &["a", "c"]).unwrap(), Exec::RETAINED).unwrap();
-    let external_codes = encoded.into_series();
-
-    let decoded = codebook.decode_series(&external_codes, Exec::RETAINED).unwrap();
-    assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "c"]);
-}
-
-fn test_codebook_decode_series_works_from_plain_series() {
     let s = series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.on(Exec::RETAINED).codebook().unwrap();
     let encoded = codebook.encode(&series("vertex", &["a", "c"]).unwrap(), Exec::RETAINED).unwrap();
@@ -775,115 +711,118 @@ fn test_convenience_ops_preserve_input() {
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
 }
 
-#[test]
-fn convenience_tests_cases() {
-    run_named_cases(&[
-        ("test_is_null_all_valid", test_is_null_all_valid),
-        ("test_is_null_with_nulls", test_is_null_with_nulls),
-        ("test_is_null_empty", test_is_null_empty),
-        ("test_is_not_null_all_valid", test_is_not_null_all_valid),
-        ("test_is_not_null_with_nulls", test_is_not_null_with_nulls),
-        ("test_is_null_and_is_not_null_are_complementary", test_is_null_and_is_not_null_are_complementary),
-        ("test_astype_i32_to_f64", test_astype_i32_to_f64),
-        ("test_astype_f64_to_i32_truncates", test_astype_f64_to_i32_truncates),
-        ("test_astype_preserves_length", test_astype_preserves_length),
-        ("test_astype_preserves_nulls", test_astype_preserves_nulls),
-        ("test_astype_same_type_is_no_op_copy", test_astype_same_type_is_no_op_copy),
-        ("test_log_f64", test_log_f64),
-        ("test_fillna_replaces_nulls_with_scalar", test_fillna_replaces_nulls_with_scalar),
-        ("test_fillna_no_nulls_returns_same_values", test_fillna_no_nulls_returns_same_values),
-        ("test_fillna_all_nulls", test_fillna_all_nulls),
-        ("test_fillna_f64", test_fillna_f64),
-        ("test_fillna_with_series_replaces_nulls", test_fillna_with_series_replaces_nulls),
-        ("test_fillna_with_series_no_nulls", test_fillna_with_series_no_nulls),
-        ("test_isin_basic", test_isin_basic),
-        ("test_isin_no_matches", test_isin_no_matches),
-        ("test_isin_all_match", test_isin_all_match),
-        ("test_isin_strings", test_isin_strings),
-        (
-            "test_isin_type_mismatch_uses_canonical_error_contract",
-            test_isin_type_mismatch_uses_canonical_error_contract,
-        ),
-        (
-            "test_isin_succeeds_with_mixed_domains_and_uses_source_provenance",
-            test_isin_succeeds_with_mixed_domains_and_uses_source_provenance,
-        ),
-        ("test_unique_removes_duplicates", test_unique_removes_duplicates),
-        ("test_unique_already_unique", test_unique_already_unique),
-        ("test_unique_empty", test_unique_empty),
-        ("test_unique_strings", test_unique_strings),
-        ("test_nunique_basic", test_nunique_basic),
-        ("test_nunique_all_same", test_nunique_all_same),
-        ("test_nunique_empty", test_nunique_empty),
-        ("test_nunique_all_unique", test_nunique_all_unique),
-        (
-            "test_nunique_negative_distinct_count_uses_stable_foreign_contract",
-            test_nunique_negative_distinct_count_uses_stable_foreign_contract,
-        ),
-        ("test_nunique_counts_nan_as_distinct_non_null_value", test_nunique_counts_nan_as_distinct_non_null_value),
-        (
-            "test_nunique_excludes_null_but_keeps_nan_distinctness",
-            test_nunique_excludes_null_but_keeps_nan_distinctness,
-        ),
-        ("test_factorize_basic", test_factorize_basic),
-        ("test_factorize_strings", test_factorize_strings),
-        ("test_factorize_unnamed_input_keeps_outputs_unnamed", test_factorize_unnamed_input_keeps_outputs_unnamed),
-        ("test_codebook_can_encode_and_decode_new_queries", test_codebook_can_encode_and_decode_new_queries),
-        (
-            "test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation",
-            test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation,
-        ),
-        ("test_codebook_encode_returns_codes", test_codebook_encode_returns_codes),
-        ("test_codebook_decode_returns_decoded_values", test_codebook_decode_returns_decoded_values),
-        (
-            "test_codebook_decode_preserves_null_codes_as_null_values",
-            test_codebook_decode_preserves_null_codes_as_null_values,
-        ),
-        (
-            "test_codebook_encode_and_decode_in_use_borrowed_context_domain",
-            test_codebook_encode_and_decode_in_use_borrowed_context_domain,
-        ),
-        (
-            "test_codebook_can_decode_plain_series_from_external_code_columns",
-            test_codebook_can_decode_plain_series_from_external_code_columns,
-        ),
-        ("test_codebook_decode_series_works_from_plain_series", test_codebook_decode_series_works_from_plain_series),
-        ("test_codebook_first_seen_ordering", test_codebook_first_seen_ordering),
-        (
-            "test_zero_argument_codebook_preserves_sorted_default_ordering",
-            test_zero_argument_codebook_preserves_sorted_default_ordering,
-        ),
-        ("test_empty_decimal_codebook_preserves_scale", test_empty_decimal_codebook_preserves_scale),
-        ("test_factorize_with_first_seen_ordering", test_factorize_with_first_seen_ordering),
-        (
-            "test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null_from_codebook",
-            test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null_from_codebook,
-        ),
-        ("test_codebook_from_keys_rejects_duplicate_keys", test_codebook_from_keys_rejects_duplicate_keys),
-        (
-            "test_factorize_with_first_seen_ordering_avoids_temp_name_collisions",
-            test_factorize_with_first_seen_ordering_avoids_temp_name_collisions,
-        ),
-        (
-            "test_factorize_with_in_first_seen_ordering_uses_the_same_contract",
-            test_factorize_with_in_first_seen_ordering_uses_the_same_contract,
-        ),
-        (
-            "test_zero_argument_factorize_preserves_sorted_default_ordering",
-            test_zero_argument_factorize_preserves_sorted_default_ordering,
-        ),
-        (
-            "test_empty_decimal_factorize_preserves_codebook_scale",
-            test_empty_decimal_factorize_preserves_codebook_scale,
-        ),
-        ("test_sort_values_ascending", test_sort_values_ascending),
-        ("test_sort_values_descending", test_sort_values_descending),
-        ("test_sort_values_stable", test_sort_values_stable),
-        ("test_sort_values_f64", test_sort_values_f64),
-        ("test_sort_values_empty", test_sort_values_empty),
-        ("test_sort_values_with_nulls", test_sort_values_with_nulls),
-        ("test_sort_values_nulls_first", test_sort_values_nulls_first),
-        ("test_sort_values_rejects_wrong_descending_len", test_sort_values_rejects_wrong_descending_len),
-        ("test_convenience_ops_preserve_input", test_convenience_ops_preserve_input),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("convenience_tests::test_is_null_all_valid", test_is_null_all_valid),
+    ("convenience_tests::test_is_null_with_nulls", test_is_null_with_nulls),
+    ("convenience_tests::test_is_null_empty", test_is_null_empty),
+    ("convenience_tests::test_is_not_null_all_valid", test_is_not_null_all_valid),
+    ("convenience_tests::test_is_not_null_with_nulls", test_is_not_null_with_nulls),
+    (
+        "convenience_tests::test_is_null_and_is_not_null_are_complementary",
+        test_is_null_and_is_not_null_are_complementary,
+    ),
+    ("convenience_tests::test_astype_i32_to_f64", test_astype_i32_to_f64),
+    ("convenience_tests::test_log_f64", test_log_f64),
+    ("convenience_tests::test_fillna_replaces_nulls_with_scalar", test_fillna_replaces_nulls_with_scalar),
+    ("convenience_tests::test_fillna_no_nulls_returns_same_values", test_fillna_no_nulls_returns_same_values),
+    ("convenience_tests::test_fillna_all_nulls", test_fillna_all_nulls),
+    ("convenience_tests::test_fillna_f64", test_fillna_f64),
+    ("convenience_tests::test_fillna_with_series_replaces_nulls", test_fillna_with_series_replaces_nulls),
+    ("convenience_tests::test_fillna_with_series_no_nulls", test_fillna_with_series_no_nulls),
+    ("convenience_tests::test_isin_basic", test_isin_basic),
+    ("convenience_tests::test_isin_no_matches", test_isin_no_matches),
+    ("convenience_tests::test_isin_all_match", test_isin_all_match),
+    ("convenience_tests::test_isin_strings", test_isin_strings),
+    (
+        "convenience_tests::test_isin_type_mismatch_uses_canonical_error_contract",
+        test_isin_type_mismatch_uses_canonical_error_contract,
+    ),
+    (
+        "convenience_tests::test_isin_succeeds_with_mixed_domains_and_uses_source_provenance",
+        test_isin_succeeds_with_mixed_domains_and_uses_source_provenance,
+    ),
+    ("convenience_tests::test_unique_removes_duplicates", test_unique_removes_duplicates),
+    ("convenience_tests::test_unique_already_unique", test_unique_already_unique),
+    ("convenience_tests::test_unique_empty", test_unique_empty),
+    ("convenience_tests::test_unique_strings", test_unique_strings),
+    ("convenience_tests::test_nunique_basic", test_nunique_basic),
+    ("convenience_tests::test_nunique_all_same", test_nunique_all_same),
+    ("convenience_tests::test_nunique_empty", test_nunique_empty),
+    ("convenience_tests::test_nunique_all_unique", test_nunique_all_unique),
+    (
+        "convenience_tests::test_nunique_negative_distinct_count_uses_stable_foreign_contract",
+        test_nunique_negative_distinct_count_uses_stable_foreign_contract,
+    ),
+    (
+        "convenience_tests::test_nunique_counts_nan_as_distinct_non_null_value",
+        test_nunique_counts_nan_as_distinct_non_null_value,
+    ),
+    (
+        "convenience_tests::test_nunique_excludes_null_but_keeps_nan_distinctness",
+        test_nunique_excludes_null_but_keeps_nan_distinctness,
+    ),
+    ("convenience_tests::test_factorize_basic", test_factorize_basic),
+    ("convenience_tests::test_factorize_strings", test_factorize_strings),
+    (
+        "convenience_tests::test_codebook_can_encode_and_decode_new_queries",
+        test_codebook_can_encode_and_decode_new_queries,
+    ),
+    (
+        "convenience_tests::test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation",
+        test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation,
+    ),
+    ("convenience_tests::test_codebook_encode_returns_codes", test_codebook_encode_returns_codes),
+    ("convenience_tests::test_codebook_decode_returns_decoded_values", test_codebook_decode_returns_decoded_values),
+    (
+        "convenience_tests::test_codebook_decode_preserves_null_codes_as_null_values",
+        test_codebook_decode_preserves_null_codes_as_null_values,
+    ),
+    (
+        "convenience_tests::test_codebook_encode_and_decode_in_use_borrowed_context_domain",
+        test_codebook_encode_and_decode_in_use_borrowed_context_domain,
+    ),
+    (
+        "convenience_tests::test_codebook_can_decode_plain_series_from_external_code_columns",
+        test_codebook_can_decode_plain_series_from_external_code_columns,
+    ),
+    ("convenience_tests::test_codebook_first_seen_ordering", test_codebook_first_seen_ordering),
+    (
+        "convenience_tests::test_zero_argument_codebook_preserves_sorted_default_ordering",
+        test_zero_argument_codebook_preserves_sorted_default_ordering,
+    ),
+    ("convenience_tests::test_empty_decimal_codebook_preserves_scale", test_empty_decimal_codebook_preserves_scale),
+    ("convenience_tests::test_factorize_with_first_seen_ordering", test_factorize_with_first_seen_ordering),
+    (
+        "convenience_tests::test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null_from_codebook",
+        test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null_from_codebook,
+    ),
+    (
+        "convenience_tests::test_codebook_from_keys_rejects_duplicate_keys",
+        test_codebook_from_keys_rejects_duplicate_keys,
+    ),
+    (
+        "convenience_tests::test_factorize_with_first_seen_ordering_avoids_temp_name_collisions",
+        test_factorize_with_first_seen_ordering_avoids_temp_name_collisions,
+    ),
+    (
+        "convenience_tests::test_factorize_with_in_first_seen_ordering_uses_the_same_contract",
+        test_factorize_with_in_first_seen_ordering_uses_the_same_contract,
+    ),
+    (
+        "convenience_tests::test_zero_argument_factorize_preserves_sorted_default_ordering",
+        test_zero_argument_factorize_preserves_sorted_default_ordering,
+    ),
+    (
+        "convenience_tests::test_empty_decimal_factorize_preserves_codebook_scale",
+        test_empty_decimal_factorize_preserves_codebook_scale,
+    ),
+    ("convenience_tests::test_sort_values_ascending", test_sort_values_ascending),
+    ("convenience_tests::test_sort_values_descending", test_sort_values_descending),
+    ("convenience_tests::test_sort_values_stable", test_sort_values_stable),
+    ("convenience_tests::test_sort_values_f64", test_sort_values_f64),
+    ("convenience_tests::test_sort_values_empty", test_sort_values_empty),
+    ("convenience_tests::test_sort_values_with_nulls", test_sort_values_with_nulls),
+    ("convenience_tests::test_sort_values_nulls_first", test_sort_values_nulls_first),
+    ("convenience_tests::test_sort_values_rejects_wrong_descending_len", test_sort_values_rejects_wrong_descending_len),
+    ("convenience_tests::test_convenience_ops_preserve_input", test_convenience_ops_preserve_input),
+];

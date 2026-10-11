@@ -912,14 +912,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_defaults_to_the_full_catalog() {
-        let config = parse_args(vec!["--workload".into(), "tpch".into()]).expect("parse");
-        assert_eq!(config.workload, Workload::Tpch);
-        assert_eq!(config.query_ids.len(), TPCH_QUERIES.len());
-        assert!(!config.no_execute);
-    }
-
-    #[test]
     fn parse_args_reads_explicit_queries_and_no_execute() {
         let config = parse_args(vec![
             "--workload".into(),

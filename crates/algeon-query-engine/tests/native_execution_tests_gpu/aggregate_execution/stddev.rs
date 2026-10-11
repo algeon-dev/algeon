@@ -7,7 +7,6 @@ use query_planning::{
 
 use super::*;
 
-#[test]
 fn grouped_stddev_samp_matches_datafusion_welford_contract() {
     let dir = unique_temp_dir("query-engine-stddev-samp");
     let path = dir.join("input.parquet");
@@ -98,6 +97,43 @@ fn grouped_stddev_samp_matches_datafusion_welford_contract() {
 }
 
 #[test]
+fn stddev_cases_policy_1() {
+    run_named_cases(&[
+        (
+            "aggregate_execution::stddev::grouped_stddev_samp_matches_datafusion_welford_contract",
+            grouped_stddev_samp_matches_datafusion_welford_contract,
+        ),
+        (
+            "aggregate_execution::stddev::grouped_stddev_samp_handles_repeated_string_multi_key_groups",
+            grouped_stddev_samp_handles_repeated_string_multi_key_groups,
+        ),
+        (
+            "aggregate_execution::stddev::global_stddev_samp_preserves_multifile_input_order_bits",
+            global_stddev_samp_preserves_multifile_input_order_bits,
+        ),
+        (
+            "aggregate_execution::stddev::global_stddev_samp_preserves_row_group_filter_projection_order_bits",
+            global_stddev_samp_preserves_row_group_filter_projection_order_bits,
+        ),
+        (
+            "aggregate_execution::stddev::join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits",
+            join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits,
+        ),
+        (
+            "aggregate_execution::stddev::join_grouped_stddev_samp_can_preserve_left_probe_order_bits",
+            join_grouped_stddev_samp_can_preserve_left_probe_order_bits,
+        ),
+        (
+            "aggregate_execution::stddev::bounded_residual_join_grouped_stddev_samp_keeps_order_bits_after_filter",
+            bounded_residual_join_grouped_stddev_samp_keeps_order_bits_after_filter,
+        ),
+        (
+            "aggregate_execution::stddev::bounded_grouped_stddev_samp_over_empty_join_stream_returns_empty_batch",
+            bounded_grouped_stddev_samp_over_empty_join_stream_returns_empty_batch,
+        ),
+    ]);
+}
+
 fn grouped_stddev_samp_handles_repeated_string_multi_key_groups() {
     let dir = unique_temp_dir("query-engine-string-multi-key-stddev-samp");
     let path = dir.join("input.parquet");
@@ -228,7 +264,6 @@ fn assert_global_stddev_samp_count_zero_and_one_return_null(mode: StatisticalAgg
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn global_stddev_samp_preserves_multifile_input_order_bits() {
     let dir = unique_temp_dir("query-engine-ordered-stddev-samp");
     let first_path = dir.join("first.parquet");
@@ -272,7 +307,6 @@ fn global_stddev_samp_preserves_multifile_input_order_bits() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn global_stddev_samp_preserves_row_group_filter_projection_order_bits() {
     let context =
         backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
@@ -335,7 +369,6 @@ fn global_stddev_samp_preserves_row_group_filter_projection_order_bits() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
     let dir = unique_temp_dir("query-engine-join-ordered-stddev-samp");
     let left_paths = [dir.join("left-0.parquet"), dir.join("left-1.parquet"), dir.join("left-2.parquet")];
@@ -651,7 +684,6 @@ fn bounded_join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn join_grouped_stddev_samp_can_preserve_left_probe_order_bits() {
     let dir = unique_temp_dir("query-engine-left-probe-ordered-stddev-samp");
     let fact_path = dir.join("fact.parquet");
@@ -777,7 +809,6 @@ fn join_grouped_stddev_samp_can_preserve_left_probe_order_bits() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_residual_join_grouped_stddev_samp_keeps_order_bits_after_filter() {
     let dir = unique_temp_dir("query-engine-bounded-residual-join-ordered-stddev-samp");
     let fact_path = dir.join("fact.parquet");
@@ -925,7 +956,6 @@ fn bounded_residual_join_grouped_stddev_samp_keeps_order_bits_after_filter() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_grouped_stddev_samp_over_empty_join_stream_returns_empty_batch() {
     let context =
         backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);

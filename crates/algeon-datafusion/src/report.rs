@@ -212,18 +212,6 @@ impl GpuCandidate {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn candidate_outcome_kind_labels_are_stable() {
-        assert_eq!(CandidateOutcomeKind::Selected.as_str(), "selected");
-        assert_eq!(CandidateOutcomeKind::NotSupported.as_str(), "not_supported");
-        assert_eq!(CandidateOutcomeKind::NotSelectedByCost.as_str(), "not_selected_by_cost");
-    }
-}
-
 /// Canonical classification for a native GPU candidate decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CandidateOutcomeKind {

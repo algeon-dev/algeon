@@ -11,7 +11,7 @@ use cudf::{
 use crate::common::{
     assert_missing_column_error, column_from_slice, column_from_slice_nullable, dataframe_from_columns,
     error_context_value, execution_budget_token, last_exec_mr_value, observed_exec_mr_values, reset_exec_observation,
-    run_named_cases, sample_df, series, series_opt, with_test_runtime,
+    sample_df, series, series_opt, with_test_runtime,
 };
 
 fn assert_sort_options_validation_error(
@@ -69,25 +69,9 @@ fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, lower_b
 // SortOptions defaults
 // ---------------------------------------------------------------------------
 
-fn test_sort_options_defaults() {
-    let opts = SortOptions::new();
-    assert!(opts.descending.is_empty(), "default descending should be empty (= all ascending)");
-    assert!(opts.nulls_first.is_empty(), "default nulls_first should be empty (= all nulls last)");
-    assert!(!opts.stable, "default should be unstable sort");
-}
-
 // ---------------------------------------------------------------------------
 // SortOptions builder
 // ---------------------------------------------------------------------------
-
-fn test_sort_options_builder() {
-    let opts =
-        SortOptions::new().with_descending(vec![true, false]).with_nulls_first(vec![false, true]).with_stable(true);
-
-    assert_eq!(opts.descending, vec![true, false]);
-    assert_eq!(opts.nulls_first, vec![false, true]);
-    assert!(opts.stable);
-}
 
 // ---------------------------------------------------------------------------
 // sort_values; single column ascending (default)
@@ -746,83 +730,93 @@ fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
     );
 }
 
-#[test]
-fn dataframe_sort_values_tests_cases() {
-    run_named_cases(&[
-        ("test_sort_options_defaults", test_sort_options_defaults),
-        ("test_sort_options_builder", test_sort_options_builder),
-        ("test_sort_values_single_column_ascending", test_sort_values_single_column_ascending),
-        ("test_sort_values_single_column_descending", test_sort_values_single_column_descending),
-        ("test_sort_values_multi_column", test_sort_values_multi_column),
-        ("test_sort_values_multi_column_with_owned_string_keys", test_sort_values_multi_column_with_owned_string_keys),
-        ("test_sort_values_stable_preserves_order", test_sort_values_stable_preserves_order),
-        (
-            "test_sort_values_rejects_mismatched_descending_length",
-            test_sort_values_rejects_mismatched_descending_length,
-        ),
-        (
-            "test_sort_values_rejects_mismatched_nulls_first_length",
-            test_sort_values_rejects_mismatched_nulls_first_length,
-        ),
-        ("test_sort_values_preserves_schema", test_sort_values_preserves_schema),
-        ("test_sort_values_nonexistent_column", test_sort_values_nonexistent_column),
-        ("test_sort_values_empty_options_means_defaults", test_sort_values_empty_options_means_defaults),
-        ("test_sort_values_nulls_first", test_sort_values_nulls_first),
-        ("test_sort_values_descending_null_placement", test_sort_values_descending_null_placement),
-        ("test_sort_values_default_places_nulls_last", test_sort_values_default_places_nulls_last),
-        ("test_sort_values_unstable_by_default", test_sort_values_unstable_by_default),
-        ("test_sort_values_explicit_ascending", test_sort_values_explicit_ascending),
-        (
-            "test_prepare_sort_values_single_key_matches_sort_values",
-            test_prepare_sort_values_single_key_matches_sort_values,
-        ),
-        (
-            "test_prepare_sort_values_multi_key_descending_matches_sort_values",
-            test_prepare_sort_values_multi_key_descending_matches_sort_values,
-        ),
-        (
-            "test_prepare_sort_values_descending_null_placement_matches_sort_values",
-            test_prepare_sort_values_descending_null_placement_matches_sort_values,
-        ),
-        (
-            "test_prepare_sort_values_stable_matches_sort_values_for_ties",
-            test_prepare_sort_values_stable_matches_sort_values_for_ties,
-        ),
-        (
-            "test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties",
-            test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties,
-        ),
-        (
-            "test_prepared_sort_unique_gathers_only_retained_payload_under_cap",
-            test_prepared_sort_unique_gathers_only_retained_payload_under_cap,
-        ),
-        (
-            "test_sorted_order_reservation_matches_retained_prepared_sort_allocation",
-            test_sorted_order_reservation_matches_retained_prepared_sort_allocation,
-        ),
-        (
-            "test_sorted_order_reservation_rejects_rows_above_cudf_size_type",
-            test_sorted_order_reservation_rejects_rows_above_cudf_size_type,
-        ),
-        (
-            "test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output",
-            test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output,
-        ),
-        (
-            "test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order",
-            test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order,
-        ),
-        (
-            "test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties",
-            test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties,
-        ),
-        (
-            "test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator",
-            test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator,
-        ),
-        (
-            "test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly",
-            test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("dataframe_sort_values_tests::test_sort_values_single_column_ascending", test_sort_values_single_column_ascending),
+    (
+        "dataframe_sort_values_tests::test_sort_values_single_column_descending",
+        test_sort_values_single_column_descending,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_multi_column", test_sort_values_multi_column),
+    (
+        "dataframe_sort_values_tests::test_sort_values_multi_column_with_owned_string_keys",
+        test_sort_values_multi_column_with_owned_string_keys,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_stable_preserves_order", test_sort_values_stable_preserves_order),
+    (
+        "dataframe_sort_values_tests::test_sort_values_rejects_mismatched_descending_length",
+        test_sort_values_rejects_mismatched_descending_length,
+    ),
+    (
+        "dataframe_sort_values_tests::test_sort_values_rejects_mismatched_nulls_first_length",
+        test_sort_values_rejects_mismatched_nulls_first_length,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_preserves_schema", test_sort_values_preserves_schema),
+    ("dataframe_sort_values_tests::test_sort_values_nonexistent_column", test_sort_values_nonexistent_column),
+    (
+        "dataframe_sort_values_tests::test_sort_values_empty_options_means_defaults",
+        test_sort_values_empty_options_means_defaults,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_nulls_first", test_sort_values_nulls_first),
+    (
+        "dataframe_sort_values_tests::test_sort_values_descending_null_placement",
+        test_sort_values_descending_null_placement,
+    ),
+    (
+        "dataframe_sort_values_tests::test_sort_values_default_places_nulls_last",
+        test_sort_values_default_places_nulls_last,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_unstable_by_default", test_sort_values_unstable_by_default),
+    ("dataframe_sort_values_tests::test_sort_values_explicit_ascending", test_sort_values_explicit_ascending),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_single_key_matches_sort_values",
+        test_prepare_sort_values_single_key_matches_sort_values,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_multi_key_descending_matches_sort_values",
+        test_prepare_sort_values_multi_key_descending_matches_sort_values,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_descending_null_placement_matches_sort_values",
+        test_prepare_sort_values_descending_null_placement_matches_sort_values,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_stable_matches_sort_values_for_ties",
+        test_prepare_sort_values_stable_matches_sort_values_for_ties,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties",
+        test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_unique_gathers_only_retained_payload_under_cap",
+        test_prepared_sort_unique_gathers_only_retained_payload_under_cap,
+    ),
+    (
+        "dataframe_sort_values_tests::test_sorted_order_reservation_matches_retained_prepared_sort_allocation",
+        test_sorted_order_reservation_matches_retained_prepared_sort_allocation,
+    ),
+    (
+        "dataframe_sort_values_tests::test_sorted_order_reservation_rejects_rows_above_cudf_size_type",
+        test_sorted_order_reservation_rejects_rows_above_cudf_size_type,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output",
+        test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order",
+        test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties",
+        test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator",
+        test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly",
+        test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly,
+    ),
+];

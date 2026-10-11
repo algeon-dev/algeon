@@ -41,8 +41,8 @@ pub use cugraph::{
     ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, ALGEON_SERVER_CUGRAPH_ENABLED_ENV, CugraphServerConfig,
 };
 pub use env::{
-    ALGEON_SERVER_BIND_ENV, ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_LOG_ENV,
-    ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
+    ALGEON_SERVER_BIND_ENV, ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV,
+    ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV, ALGEON_SERVER_LOG_ENV, ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
 };
 use env::{DEFAULT_BIND_ADDR, DEFAULT_STATEMENT_TICKET_TTL_SECS, EnvValues};
 use file::{ServerCugraphFileConfig, ServerFileOverlay, load_overlay};
@@ -135,6 +135,21 @@ const REMOVED_ICEBERG_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
     "ALGEON_LAKEHOUSE_CACHE_MAX_BYTES",
 ];
 
+/// HTTP/2 transport loss detection. Acknowledging clients may retain unread results.
+#[derive(Debug, Clone, Copy)]
+pub struct Http2Keepalive {
+    /// Time without inbound traffic before a ping is sent.
+    pub interval: Duration,
+    /// Time to acknowledge a ping before the connection closes.
+    pub timeout: Duration,
+}
+
+impl Default for Http2Keepalive {
+    fn default() -> Self {
+        Self { interval: Duration::from_secs(30), timeout: Duration::from_secs(10) }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind_addr: SocketAddr,
@@ -154,6 +169,8 @@ pub struct ServerConfig {
     /// `DoGet`. Expired tickets are dropped; GPU admission is acquired later
     /// by native plan execution.
     pub statement_ticket_ttl: Duration,
+    /// Keepalive intervals for accepted HTTP/2 connections.
+    pub http2_keepalive: Http2Keepalive,
     /// Bounded native runtime-artifact capture and sealed retention policy.
     pub observability: ServerObservabilityConfig,
     pub native_optimizer_config: AlgeonNativeOptimizerConfig,
@@ -203,6 +220,23 @@ impl ServerConfig {
             ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
             values.positive_u64(ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
         )?;
+        let keepalive_defaults = Http2Keepalive::default();
+        let http2_keepalive = Http2Keepalive {
+            interval: checked_config_duration(
+                ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV,
+                values.positive_u64(
+                    ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV,
+                    keepalive_defaults.interval.as_secs(),
+                )?,
+            )?,
+            timeout: checked_config_duration(
+                ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV,
+                values.positive_u64(
+                    ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV,
+                    keepalive_defaults.timeout.as_secs(),
+                )?,
+            )?,
+        };
         let observability = server_observability_config(&mut values, &overlay.observability)?;
         reject_removed_server_environment(
             &mut values,
@@ -238,6 +272,7 @@ impl ServerConfig {
             gpu_devices,
             gpu_memory_ownership: Vec::new(),
             statement_ticket_ttl,
+            http2_keepalive,
             observability,
             native_optimizer_config,
             auth: overlay.auth,

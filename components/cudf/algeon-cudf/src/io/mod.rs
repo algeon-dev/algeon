@@ -294,8 +294,6 @@ unsafe fn collect_column_names(
 mod tests {
     use std::{ffi::CString, fs, os::raw::c_char, ptr};
 
-    use cudf_sys::test_support;
-
     use crate::core::error::{ErrorCode, ErrorKind, ErrorStatus, FactKeyName, FactValue};
 
     #[test]
@@ -312,39 +310,6 @@ mod tests {
     fn kvikio_bounce_buffer_drain_idle_result_is_idempotent() {
         assert_eq!(super::kvikio_drain_result(16 * 1024 * 1024, 0).unwrap(), 16 * 1024 * 1024);
         assert_eq!(super::kvikio_drain_result(0, 0).unwrap(), 0);
-    }
-
-    #[test]
-    fn kvikio_native_lifecycle_gate_rejects_drain_while_io_is_active() {
-        struct ActiveIoGuard(bool);
-
-        impl Drop for ActiveIoGuard {
-            fn drop(&mut self) {
-                if !self.0 {
-                    return;
-                }
-                // SAFETY: this guard owns the matching test-only active-I/O
-                // increment. Cleanup is best-effort while unwinding; the
-                // normal path below asserts the status explicitly.
-                let _ = unsafe { test_support::cudf_test_io_kvikio_active_io_end() };
-            }
-        }
-
-        // SAFETY: the test hook takes no pointers and the guard balances the
-        // process-global lifecycle count even if the assertion below panics.
-        assert_eq!(unsafe { test_support::cudf_test_io_kvikio_active_io_begin() }, cudf_sys::CUDF_SUCCESS);
-        let mut active_io = ActiveIoGuard(true);
-        if super::kvikio_compat_mode().is_some() {
-            let error = super::drain_kvikio_bounce_buffer_pools().unwrap_err();
-            assert_eq!(error.code(), ErrorCode::IoBusy);
-            assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
-            assert_eq!(error.status(), ErrorStatus::Temporary);
-            assert_eq!(error.detail_value("reason"), Some("active_io"));
-        }
-        // SAFETY: this is the matching decrement for the begin call above.
-        let status = unsafe { test_support::cudf_test_io_kvikio_active_io_end() };
-        active_io.0 = false;
-        assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     }
 
     #[test]

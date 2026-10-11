@@ -18,7 +18,7 @@ use cudf::{
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, dataframe_from_columns,
-    error_context_value, run_named_cases, series,
+    error_context_value, series,
 };
 
 // ---------------------------------------------------------------------------
@@ -158,19 +158,19 @@ fn dataframe_new_rejects_duplicate_names() {
     assert_duplicate_name_error(&err, "dup");
 }
 
-#[test]
-fn internal_tests_cases() {
-    run_named_cases(&[
-        ("filter_preserves_row_and_column_counts", filter_preserves_row_and_column_counts),
-        ("sort_preserves_schema_names_and_lengths", sort_preserves_schema_names_and_lengths),
-        ("reassembly_after_drop_duplicates_preserves_schema", reassembly_after_drop_duplicates_preserves_schema),
-        ("sort_with_missing_column_returns_error", sort_with_missing_column_returns_error),
-        ("join_reassembly_preserves_schema_names", join_reassembly_preserves_schema_names),
-        (
-            "reassembly_name_count_mismatch_uses_canonical_count_contract",
-            reassembly_name_count_mismatch_uses_canonical_count_contract,
-        ),
-        ("from_series_rejects_duplicate_names", from_series_rejects_duplicate_names),
-        ("dataframe_new_rejects_duplicate_names", dataframe_new_rejects_duplicate_names),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("internal_tests::filter_preserves_row_and_column_counts", filter_preserves_row_and_column_counts),
+    ("internal_tests::sort_preserves_schema_names_and_lengths", sort_preserves_schema_names_and_lengths),
+    (
+        "internal_tests::reassembly_after_drop_duplicates_preserves_schema",
+        reassembly_after_drop_duplicates_preserves_schema,
+    ),
+    ("internal_tests::sort_with_missing_column_returns_error", sort_with_missing_column_returns_error),
+    ("internal_tests::join_reassembly_preserves_schema_names", join_reassembly_preserves_schema_names),
+    (
+        "internal_tests::reassembly_name_count_mismatch_uses_canonical_count_contract",
+        reassembly_name_count_mismatch_uses_canonical_count_contract,
+    ),
+    ("internal_tests::from_series_rejects_duplicate_names", from_series_rejects_duplicate_names),
+    ("internal_tests::dataframe_new_rejects_duplicate_names", dataframe_new_rejects_duplicate_names),
+];

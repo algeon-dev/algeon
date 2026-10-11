@@ -9,8 +9,8 @@ use cudf::{
 };
 
 use crate::common::{
-    error_context_value, execution_budget_token, last_exec_mr_value, nullable_series, reset_exec_observation,
-    run_named_cases, series, with_test_runtime,
+    error_context_value, execution_budget_token, last_exec_mr_value, nullable_series, reset_exec_observation, series,
+    with_test_runtime,
 };
 
 fn assert_no_budget_error_details(err: &cudf::Error) {
@@ -498,85 +498,82 @@ fn test_logical_not_bool() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
-fn series_reduction_tests_cases() {
-    run_named_cases(&[
-        ("test_sum_i32", test_sum_i32),
-        ("test_sum_f64", test_sum_f64),
-        ("test_sum_bool8", test_sum_bool8),
-        ("test_sum_with_nulls", test_sum_with_nulls),
-        (
-            "test_sum_string_reports_series_operation_on_type_error",
-            test_sum_string_reports_series_operation_on_type_error,
-        ),
-        ("test_min_i32", test_min_i32),
-        ("test_max_i32", test_max_i32),
-        ("test_min_f64", test_min_f64),
-        ("test_max_f64", test_max_f64),
-        (
-            "test_prepared_scalar_max_reports_shape_and_returns_scalar",
-            test_prepared_scalar_max_reports_shape_and_returns_scalar,
-        ),
-        (
-            "test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar",
-            test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar,
-        ),
-        (
-            "test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allocator",
-            test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allocator,
-        ),
-        (
-            "test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagnostics",
-            test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagnostics,
-        ),
-        (
-            "test_prepared_scalar_max_one_byte_budget_preserves_budget_details",
-            test_prepared_scalar_max_one_byte_budget_preserves_budget_details,
-        ),
-        (
-            "test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar",
-            test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar,
-        ),
-        (
-            "test_prepared_scalar_reduction_unsupported_dtype_has_no_budget_details",
-            test_prepared_scalar_reduction_unsupported_dtype_has_no_budget_details,
-        ),
-        (
-            "test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details",
-            test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details,
-        ),
-        ("test_mean_i32", test_mean_i32),
-        ("test_mean_f64", test_mean_f64),
-        ("test_median_i32", test_median_i32),
-        ("test_std_f64", test_std_f64),
-        ("test_var_f64", test_var_f64),
-        (
-            "test_std_ddof_above_i32_max_uses_series_operation_contract",
-            test_std_ddof_above_i32_max_uses_series_operation_contract,
-        ),
-        (
-            "test_var_ddof_above_i32_max_uses_series_operation_contract",
-            test_var_ddof_above_i32_max_uses_series_operation_contract,
-        ),
-        ("test_any_true", test_any_true),
-        ("test_any_false", test_any_false),
-        ("test_all_true", test_all_true),
-        ("test_all_false", test_all_false),
-        ("test_product_i32", test_product_i32),
-        ("test_product_f64", test_product_f64),
-        ("test_minmax_i32", test_minmax_i32),
-        ("test_minmax_f64", test_minmax_f64),
-        ("test_cumsum_i32", test_cumsum_i32),
-        ("test_cumsum_f64", test_cumsum_f64),
-        ("test_cummin_i32", test_cummin_i32),
-        ("test_cummax_i32", test_cummax_i32),
-        ("test_cumprod_i32", test_cumprod_i32),
-        ("test_is_nan_f64", test_is_nan_f64),
-        ("test_is_not_nan_f64", test_is_not_nan_f64),
-        ("test_abs_i32", test_abs_i32),
-        ("test_abs_f64", test_abs_f64),
-        ("test_neg_i32", test_neg_i32),
-        ("test_neg_f64", test_neg_f64),
-        ("test_logical_not_bool", test_logical_not_bool),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("series_reduction_tests::test_sum_i32", test_sum_i32),
+    ("series_reduction_tests::test_sum_f64", test_sum_f64),
+    ("series_reduction_tests::test_sum_bool8", test_sum_bool8),
+    ("series_reduction_tests::test_sum_with_nulls", test_sum_with_nulls),
+    (
+        "series_reduction_tests::test_sum_string_reports_series_operation_on_type_error",
+        test_sum_string_reports_series_operation_on_type_error,
+    ),
+    ("series_reduction_tests::test_min_i32", test_min_i32),
+    ("series_reduction_tests::test_max_i32", test_max_i32),
+    ("series_reduction_tests::test_min_f64", test_min_f64),
+    ("series_reduction_tests::test_max_f64", test_max_f64),
+    (
+        "series_reduction_tests::test_prepared_scalar_max_reports_shape_and_returns_scalar",
+        test_prepared_scalar_max_reports_shape_and_returns_scalar,
+    ),
+    (
+        "series_reduction_tests::test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar",
+        test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar,
+    ),
+    (
+        "series_reduction_tests::test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allocator",
+        test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allocator,
+    ),
+    (
+        "series_reduction_tests::test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagnostics",
+        test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagnostics,
+    ),
+    (
+        "series_reduction_tests::test_prepared_scalar_max_one_byte_budget_preserves_budget_details",
+        test_prepared_scalar_max_one_byte_budget_preserves_budget_details,
+    ),
+    (
+        "series_reduction_tests::test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar",
+        test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar,
+    ),
+    (
+        "series_reduction_tests::test_prepared_scalar_reduction_unsupported_dtype_has_no_budget_details",
+        test_prepared_scalar_reduction_unsupported_dtype_has_no_budget_details,
+    ),
+    (
+        "series_reduction_tests::test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details",
+        test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details,
+    ),
+    ("series_reduction_tests::test_mean_i32", test_mean_i32),
+    ("series_reduction_tests::test_mean_f64", test_mean_f64),
+    ("series_reduction_tests::test_median_i32", test_median_i32),
+    ("series_reduction_tests::test_std_f64", test_std_f64),
+    ("series_reduction_tests::test_var_f64", test_var_f64),
+    (
+        "series_reduction_tests::test_std_ddof_above_i32_max_uses_series_operation_contract",
+        test_std_ddof_above_i32_max_uses_series_operation_contract,
+    ),
+    (
+        "series_reduction_tests::test_var_ddof_above_i32_max_uses_series_operation_contract",
+        test_var_ddof_above_i32_max_uses_series_operation_contract,
+    ),
+    ("series_reduction_tests::test_any_true", test_any_true),
+    ("series_reduction_tests::test_any_false", test_any_false),
+    ("series_reduction_tests::test_all_true", test_all_true),
+    ("series_reduction_tests::test_all_false", test_all_false),
+    ("series_reduction_tests::test_product_i32", test_product_i32),
+    ("series_reduction_tests::test_product_f64", test_product_f64),
+    ("series_reduction_tests::test_minmax_i32", test_minmax_i32),
+    ("series_reduction_tests::test_minmax_f64", test_minmax_f64),
+    ("series_reduction_tests::test_cumsum_i32", test_cumsum_i32),
+    ("series_reduction_tests::test_cumsum_f64", test_cumsum_f64),
+    ("series_reduction_tests::test_cummin_i32", test_cummin_i32),
+    ("series_reduction_tests::test_cummax_i32", test_cummax_i32),
+    ("series_reduction_tests::test_cumprod_i32", test_cumprod_i32),
+    ("series_reduction_tests::test_is_nan_f64", test_is_nan_f64),
+    ("series_reduction_tests::test_is_not_nan_f64", test_is_not_nan_f64),
+    ("series_reduction_tests::test_abs_i32", test_abs_i32),
+    ("series_reduction_tests::test_abs_f64", test_abs_f64),
+    ("series_reduction_tests::test_neg_i32", test_neg_i32),
+    ("series_reduction_tests::test_neg_f64", test_neg_f64),
+    ("series_reduction_tests::test_logical_not_bool", test_logical_not_bool),
+];

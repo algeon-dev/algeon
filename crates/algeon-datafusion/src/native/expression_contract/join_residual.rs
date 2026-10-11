@@ -55,6 +55,14 @@ impl<'a> ValidatedJoinResidual<'a> {
         &self.right_schema
     }
 
+    pub(in crate::native) fn contains_decimal_division(&self) -> bool {
+        fn contains(expr: &Arc<dyn PhysicalExpr>, schema: &SchemaRef) -> bool {
+            expr.downcast_ref::<BinaryExpr>().is_some_and(|binary| is_decimal_division(binary, schema))
+                || expr.children().into_iter().any(|child| contains(child, schema))
+        }
+        contains(self.filter.expression(), self.filter.schema())
+    }
+
     pub(in crate::native) fn single_side(&self, expr: &Arc<dyn PhysicalExpr>) -> Result<JoinSide, ExpressionRejection> {
         join_filter_expr_single_side(expr, self.filter)
     }
@@ -157,18 +165,13 @@ fn validate_join_residual_shape(expr: &Arc<dyn PhysicalExpr>, filter: &JoinFilte
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         // The cudf AST has no zero-divisor or overflow checks and no verified
         // floating-point remainder, and it wraps timestamp arithmetic that
-        // Arrow checks. A residual is also lowered without restricting a CASE
-        // branch to the rows DataFusion evaluates, so a division that native
-        // evaluation checks would fail on a guarded row. Only floating-point
-        // division is admitted.
+        // Arrow checks. Decimal division uses the checked GPU post-join
+        // evaluator, including CASE branch activation.
         let ast_arithmetic_is_unchecked = match binary.op() {
             Operator::Modulo => true,
             Operator::Plus | Operator::Minus => is_checked_temporal_arithmetic(binary, filter.schema()),
-            Operator::Divide => {
-                is_decimal_division(binary, filter.schema())
-                    || physical_expr_data_type(binary.left(), filter.schema())
-                        .map_or(true, |data_type| is_integral_type(&data_type))
-            },
+            Operator::Divide => physical_expr_data_type(binary.left(), filter.schema())
+                .map_or(true, |data_type| is_integral_type(&data_type)),
             _ => false,
         };
         if ast_arithmetic_is_unchecked {

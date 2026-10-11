@@ -3,13 +3,11 @@ pub(super) use join_limit_projection::shared_filtered_dimension_fan_out_plan;
 pub(super) use join_roots::{
     aggregate_join_build_input_data_plan, keyless_root_join_data_plan, residual_one_shot_frame_stream_multi_join_plan,
     residual_one_shot_leaf_stream_join_plan, residual_one_shot_leaf_stream_left_build_join_plan, root_join_data_plan,
-    root_join_gpu_sink_data_plan, root_join_sort_limit_data_plan, root_join_sort_limit_filter_data_plan,
-    root_join_sort_limit_offset_data_plan, root_join_with_unary_inputs_data_plan,
-    shared_source_join_build_and_aggregate_data_plan, shared_source_self_join_data_plan, simple_multi_join_plan,
-    single_join_post_root_aggregate_data_plan, single_join_post_root_aggregate_sort_limit_data_plan,
-    string_group_join_post_root_aggregate_data_plan,
+    root_join_gpu_sink_data_plan, root_join_sort_limit_filter_data_plan, root_join_sort_limit_offset_data_plan,
+    root_join_with_unary_inputs_data_plan, shared_source_join_build_and_aggregate_data_plan,
+    shared_source_self_join_data_plan, simple_multi_join_plan, single_join_post_root_aggregate_data_plan,
+    single_join_post_root_aggregate_sort_limit_data_plan, string_group_join_post_root_aggregate_data_plan,
 };
-use query_planning::capability::{Reason, RejectionOwner};
 pub(super) use root_topk::aggregate_sort_limit_data_plan;
 
 use super::{projection_outputs, *};

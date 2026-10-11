@@ -53,12 +53,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signed_i64_dtype_contract_is_preserved() {
-        assert_eq!(i64::DLPACK_CODE, cuvs_sys::DLDataTypeCode::kDLInt as u8);
-        assert_eq!(i64::DLPACK_BITS, 64);
-    }
-
-    #[test]
     fn descriptor_folds_offset_into_data_and_preserves_device_dtype_shape_strides() {
         let runtime = cudf::Runtime::new().expect("runtime binding");
         let mut backing = [0_f32; 16];

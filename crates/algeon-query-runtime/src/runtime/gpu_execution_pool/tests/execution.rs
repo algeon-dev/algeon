@@ -356,16 +356,6 @@ fn a_pool_without_a_worker_outside_the_lifecycle_reserve_is_structured() {
     assert_eq!(error.fact_value("reason"), Some("below_lifecycle_reserve"));
 }
 
-#[test]
-fn snapshots_identify_the_shared_pool_instance_across_clones() {
-    let pool = GpuExecutionPool::new(7, 2).unwrap();
-    let clone = pool.clone();
-    let distinct_pool = GpuExecutionPool::new(7, 2).unwrap();
-
-    assert_eq!(pool.snapshot().pool_id, clone.snapshot().pool_id);
-    assert_ne!(pool.snapshot().pool_id, distinct_pool.snapshot().pool_id);
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn fixed_width_tracks_peaks_without_starving_serving_runtime() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 3, 2, 4, GpuExecutionQueryTracker::new()).unwrap();

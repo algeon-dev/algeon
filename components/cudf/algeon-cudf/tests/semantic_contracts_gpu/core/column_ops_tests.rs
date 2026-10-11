@@ -8,7 +8,7 @@ use cudf::{
     },
 };
 
-use crate::common::{run_named_cases, series};
+use crate::common::series;
 
 fn test_series_div_i32() {
     let a = series::<i32>("a", &[10, 21, 35]).unwrap();
@@ -81,18 +81,15 @@ fn test_series_scalar_ops_support_narrow_signed_integer_types() {
     assert_eq!(div.to_vec_strict::<i16>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
-fn column_ops_tests_cases() {
-    run_named_cases(&[
-        ("test_series_div_i32", test_series_div_i32),
-        ("test_expr_true_div_i32_produces_float64", test_expr_true_div_i32_produces_float64),
-        ("test_expr_binary_op_with_type", test_expr_binary_op_with_type),
-        ("test_expr_floor_div_f64", test_expr_floor_div_f64),
-        ("test_series_mul_scalar_mixed_types", test_series_mul_scalar_mixed_types),
-        ("test_expr_add_null_literal_produces_all_null", test_expr_add_null_literal_produces_all_null),
-        (
-            "test_series_scalar_ops_support_narrow_signed_integer_types",
-            test_series_scalar_ops_support_narrow_signed_integer_types,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("column_ops_tests::test_series_div_i32", test_series_div_i32),
+    ("column_ops_tests::test_expr_true_div_i32_produces_float64", test_expr_true_div_i32_produces_float64),
+    ("column_ops_tests::test_expr_binary_op_with_type", test_expr_binary_op_with_type),
+    ("column_ops_tests::test_expr_floor_div_f64", test_expr_floor_div_f64),
+    ("column_ops_tests::test_series_mul_scalar_mixed_types", test_series_mul_scalar_mixed_types),
+    ("column_ops_tests::test_expr_add_null_literal_produces_all_null", test_expr_add_null_literal_produces_all_null),
+    (
+        "column_ops_tests::test_series_scalar_ops_support_narrow_signed_integer_types",
+        test_series_scalar_ops_support_narrow_signed_integer_types,
+    ),
+];

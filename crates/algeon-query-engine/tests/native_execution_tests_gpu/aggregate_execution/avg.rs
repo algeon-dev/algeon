@@ -173,7 +173,6 @@ fn native_query_executes_grouped_avg_with_float32_output_schema() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_nullable_avg_with_null_all_group() {
     let dir = unique_temp_dir("query-engine-bounded-native-nullable-avg");
     let path = dir.join("input.parquet");
@@ -218,48 +217,35 @@ fn bounded_native_query_executes_nullable_avg_with_null_all_group() {
 }
 
 #[test]
-fn bounded_native_query_rejects_avg_with_unsupported_output_schema() {
-    let dir = unique_temp_dir("query-engine-bounded-native-avg-output-type");
-    let path = dir.join("input.parquet");
-    let context = backend_context();
-    let input_schema = write_uneven_avg_input_parquet(&path);
-
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("avg_m00", DataType::Int64, true),
-    ]));
-
-    let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
-        Arc::clone(&input_schema),
-        vec!["key".to_string(), "m00".to_string()],
-    );
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("key")],
-        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "avg_m00")],
-    );
-    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
-    let sort = builder.add_sort(aggregate, sort).unwrap();
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
-    let plan = builder.finish_with_host_sink(limit).unwrap();
-
-    match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("avg with unsupported output schema should be rejected"),
-        Err(error) => {
-            assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
-            assert_eq!(error.operation(), "query_engine.aggregate.validate_avg");
-            assert_eq!(error.fact_value("alias"), Some("avg_m00"));
-        },
-    }
-
-    fs::remove_dir_all(dir).unwrap();
+fn avg_cases_policy_3() {
+    run_named_cases(&[
+        (
+            "aggregate_execution::avg::bounded_native_query_executes_nullable_avg_with_null_all_group",
+            bounded_native_query_executes_nullable_avg_with_null_all_group,
+        ),
+        (
+            "aggregate_execution::avg::native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source_read",
+            native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source_read,
+        ),
+        (
+            "aggregate_execution::avg::native_query_rejects_global_avg_reserved_state_alias_collision_before_source_read",
+            native_query_rejects_global_avg_reserved_state_alias_collision_before_source_read,
+        ),
+        (
+            "aggregate_execution::avg::bounded_native_query_executes_grouped_high_cardinality_mixed_avg",
+            bounded_native_query_executes_grouped_high_cardinality_mixed_avg,
+        ),
+        (
+            "aggregate_execution::avg::bounded_native_query_executes_grouped_many_group_decimal_avg",
+            bounded_native_query_executes_grouped_many_group_decimal_avg,
+        ),
+        (
+            "aggregate_execution::avg::bounded_native_query_executes_grouped_mixed_integer_and_decimal_avg",
+            bounded_native_query_executes_grouped_mixed_integer_and_decimal_avg,
+        ),
+    ]);
 }
 
-#[test]
 fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source_read() {
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
@@ -297,7 +283,6 @@ fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source
     }
 }
 
-#[test]
 fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_read() {
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![Field::new("m00", DataType::Int64, false)]));
@@ -326,69 +311,6 @@ fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_
             );
         },
     }
-}
-
-/// Grouped `AVG(Decimal128(7, 2))` with the output schema declared at
-/// `Decimal128(11, 6)` must preserve scale-6 precision rather than truncating
-/// at the input scale. Group `G1` has `SUM = 34.65` and `COUNT = 2`, so the
-/// exact average is `17.325`; an AVG that truncates at scale 2 would emit
-/// `17.320000` and miss `0.005000`.
-///
-/// Asserted across the unbounded executor path (single-stage groupby) and
-/// the bounded executor path (partial -> final -> finalize). The unbounded
-/// path exercises libcudf groupby `MEAN` replacement for fixed-point columns.
-fn assert_grouped_decimal_avg_keeps_output_scale(context: &BackendQueryContext) {
-    let dir = unique_temp_dir("query-engine-native-grouped-decimal-avg-pattern");
-    let path = dir.join("input.parquet");
-    let input_schema = write_grouped_fractional_decimal_avg_parquet(&path);
-
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("group_key", DataType::Utf8, false),
-        Field::new("avg_amount", DataType::Decimal128(11, 6), true),
-    ]));
-    let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
-        Arc::clone(&input_schema),
-        vec!["group_key".to_string(), "amount".to_string()],
-    );
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("group_key")],
-        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("amount"), "avg_amount")],
-    );
-    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("group_key"), false, false)]);
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
-    let sort = builder.add_sort(aggregate, sort).unwrap();
-    let plan = builder.finish_with_host_sink(sort).unwrap();
-
-    let result = execute_query_plan(context, &plan).unwrap();
-
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    assert_eq!(batch.schema(), aggregated_schema);
-    assert_eq!(batch.num_rows(), 3);
-    assert_eq!(string_array(batch, 0).iter().map(|value| value.unwrap()).collect::<Vec<_>>(), vec!["G0", "G1", "G2"]);
-    let avg_amount = decimal128_array(batch, 1);
-    assert_eq!(avg_amount.precision(), 11);
-    assert_eq!(avg_amount.scale(), 6);
-    assert_eq!(avg_amount.value(0), 75_030_000, "G0 has one row amount=75.03 -> AVG=75.030000 at scale 6");
-    assert_eq!(
-        avg_amount.value(1),
-        17_325_000,
-        "G1 (sum=34.65, count=2) must keep scale-6 precision (17.325000), not truncate to 17.320000"
-    );
-    assert_eq!(avg_amount.value(2), 69_300_000, "G2 has two rows of 69.30 -> AVG=69.300000 at scale 6");
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn bounded_native_query_executes_grouped_decimal_avg_at_output_scale() {
-    let context = backend_context();
-    assert_grouped_decimal_avg_keeps_output_scale(&context);
 }
 
 /// A single aggregate node with one AVG over `BIGINT` and three AVGs over
@@ -623,46 +545,19 @@ fn assert_grouped_high_cardinality_mixed_avg(context: &BackendQueryContext, grou
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_grouped_high_cardinality_mixed_avg() {
     let context = backend_context();
     assert_grouped_high_cardinality_mixed_avg(&context, 1500);
 }
 
-#[test]
 fn bounded_native_query_executes_grouped_many_group_decimal_avg() {
     let context = backend_context();
     assert_grouped_many_group_decimal_avg(&context);
 }
 
-#[test]
 fn bounded_native_query_executes_grouped_mixed_integer_and_decimal_avg() {
     let context = backend_context();
     assert_grouped_mixed_integer_and_decimal_avg(&context);
-}
-
-#[test]
-fn unbounded_native_query_executes_grouped_decimal_avg_at_output_scale() {
-    let context = backend_context();
-    assert_grouped_decimal_avg_keeps_output_scale(&context);
-}
-
-#[test]
-fn unbounded_native_query_executes_grouped_mixed_integer_and_decimal_avg() {
-    let context = backend_context();
-    assert_grouped_mixed_integer_and_decimal_avg(&context);
-}
-
-#[test]
-fn unbounded_native_query_executes_grouped_high_cardinality_mixed_avg() {
-    let context = backend_context();
-    assert_grouped_high_cardinality_mixed_avg(&context, 1500);
-}
-
-#[test]
-fn unbounded_native_query_executes_grouped_many_group_decimal_avg() {
-    let context = backend_context();
-    assert_grouped_many_group_decimal_avg(&context);
 }
 
 /// DataFusion casts an integer AVG argument to Float64 before it sums, so group
@@ -706,13 +601,6 @@ fn assert_grouped_integer_avg_sums_as_float64(context: &BackendQueryContext, fil
     assert_eq!(float64_array(batch, 1).values().as_ref(), &[(1u64 << 52) as f64, 3.0]);
 
     fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn native_grouped_integer_avg_sums_in_float64_single_stage() {
-    let context = backend_context();
-    assert_grouped_integer_avg_sums_as_float64(&context, false);
-    assert_grouped_integer_avg_sums_as_float64(&context, true);
 }
 
 #[test]

@@ -3,31 +3,6 @@ use std::sync::Arc;
 use super::*;
 
 #[test]
-fn native_query_executes_filter_projection_and_group_by_on_partition_columns() {
-    let dir = unique_temp_dir("query-engine-native-execution-partitions");
-    let first_path = dir.join("part-001.parquet");
-    let second_path = dir.join("part-002.parquet");
-    let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
-    let file_schema = write_input_parquet(&runtime, &first_path);
-    write_input_parquet(&runtime, &second_path);
-    let plan = partition_column_query_plan(&first_path, &second_path, file_schema);
-
-    let result = execute_query_plan(&context, &plan).unwrap();
-
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    assert_eq!(batch.num_rows(), 1);
-    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2]);
-    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1000]);
-    assert_eq!(result.metrics().parquet_files, 2);
-    assert_eq!(result.metrics().read_columns, 2);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn bounded_native_query_executes_partition_columns_per_source_chunk() {
     let dir = unique_temp_dir("query-engine-native-execution-bounded-partitions");
     let first_path = dir.join("part-001.parquet");

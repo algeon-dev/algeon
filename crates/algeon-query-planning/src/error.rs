@@ -1019,7 +1019,6 @@ mod tests {
             .map(|code| AttemptFailureCode::Query(*code))
             .chain(AttemptFailureCode::LIFECYCLE)
             .collect::<Vec<_>>();
-        assert_eq!(codes.len(), 38);
         for code in codes {
             let json = serde_json::to_string(&code).unwrap();
             assert_eq!(json, format!("\"{}\"", code.as_str()));

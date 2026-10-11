@@ -11,7 +11,7 @@ use cudf::{
 use crate::common::{
     assert_missing_column_error, column_from_slice, column_from_slice_nullable, column_from_strs,
     dataframe_from_columns, error_context_value, execution_budget_token, lock_event_observation,
-    observed_exec_mr_values, reset_exec_observation, run_named_cases, scalar, series, with_test_runtime,
+    observed_exec_mr_values, reset_exec_observation, scalar, series, with_test_runtime,
 };
 
 fn decimal128_scale_zero_frame() -> DataFrame {
@@ -499,59 +499,68 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_report
     );
 }
 
-#[test]
-fn column_ops_tests_cases() {
-    run_named_cases(&[
-        ("test_with_column_adds_new_column", test_with_column_adds_new_column),
-        ("test_with_column_replaces_existing_column", test_with_column_replaces_existing_column),
-        ("test_with_column_preserves_schema_order_on_replace", test_with_column_preserves_schema_order_on_replace),
-        ("test_with_column_mismatched_row_count_returns_error", test_with_column_mismatched_row_count_returns_error),
-        ("test_fillna_with_scalar_fills_values", test_fillna_with_scalar_fills_values),
-        (
-            "test_fillna_with_scalar_nonexistent_column_returns_error",
-            test_fillna_with_scalar_nonexistent_column_returns_error,
-        ),
-        ("test_fillna_with_scalar_preserves_other_columns", test_fillna_with_scalar_preserves_other_columns),
-        ("test_cast_column_changes_type", test_cast_column_changes_type),
-        ("test_cast_column_nonexistent_returns_error", test_cast_column_nonexistent_returns_error),
-        ("test_cast_column_preserves_schema_order", test_cast_column_preserves_schema_order),
-        (
-            "test_with_column_add_preserves_existing_string_column",
-            test_with_column_add_preserves_existing_string_column,
-        ),
-        ("test_fillna_with_scalar_with_string_sibling_column", test_fillna_with_scalar_with_string_sibling_column),
-        ("test_cast_column_with_string_sibling_column", test_cast_column_with_string_sibling_column),
-        (
-            "test_with_columns_with_budget_reports_output_and_routes_allocator",
-            test_with_columns_with_budget_reports_output_and_routes_allocator,
-        ),
-        (
-            "test_with_columns_with_budget_case_report_records_output",
-            test_with_columns_with_budget_case_report_records_output,
-        ),
-        (
-            "test_cast_column_with_budget_reports_output_and_routes_allocator",
-            test_cast_column_with_budget_reports_output_and_routes_allocator,
-        ),
-        (
-            "test_cast_column_decimal128_scale_to_scale_preserves_requested_scale",
-            test_cast_column_decimal128_scale_to_scale_preserves_requested_scale,
-        ),
-        (
-            "test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_routes_allocator",
-            test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_routes_allocator,
-        ),
-        (
-            "test_with_columns_with_budget_reports_exceeded_budget_details",
-            test_with_columns_with_budget_reports_exceeded_budget_details,
-        ),
-        (
-            "test_cast_column_with_budget_reports_exceeded_budget_details",
-            test_cast_column_with_budget_reports_exceeded_budget_details,
-        ),
-        (
-            "test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts",
-            test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("column_ops_tests::test_with_column_adds_new_column", test_with_column_adds_new_column),
+    ("column_ops_tests::test_with_column_replaces_existing_column", test_with_column_replaces_existing_column),
+    (
+        "column_ops_tests::test_with_column_preserves_schema_order_on_replace",
+        test_with_column_preserves_schema_order_on_replace,
+    ),
+    (
+        "column_ops_tests::test_with_column_mismatched_row_count_returns_error",
+        test_with_column_mismatched_row_count_returns_error,
+    ),
+    ("column_ops_tests::test_fillna_with_scalar_fills_values", test_fillna_with_scalar_fills_values),
+    (
+        "column_ops_tests::test_fillna_with_scalar_nonexistent_column_returns_error",
+        test_fillna_with_scalar_nonexistent_column_returns_error,
+    ),
+    (
+        "column_ops_tests::test_fillna_with_scalar_preserves_other_columns",
+        test_fillna_with_scalar_preserves_other_columns,
+    ),
+    ("column_ops_tests::test_cast_column_changes_type", test_cast_column_changes_type),
+    ("column_ops_tests::test_cast_column_nonexistent_returns_error", test_cast_column_nonexistent_returns_error),
+    ("column_ops_tests::test_cast_column_preserves_schema_order", test_cast_column_preserves_schema_order),
+    (
+        "column_ops_tests::test_with_column_add_preserves_existing_string_column",
+        test_with_column_add_preserves_existing_string_column,
+    ),
+    (
+        "column_ops_tests::test_fillna_with_scalar_with_string_sibling_column",
+        test_fillna_with_scalar_with_string_sibling_column,
+    ),
+    ("column_ops_tests::test_cast_column_with_string_sibling_column", test_cast_column_with_string_sibling_column),
+    (
+        "column_ops_tests::test_with_columns_with_budget_reports_output_and_routes_allocator",
+        test_with_columns_with_budget_reports_output_and_routes_allocator,
+    ),
+    (
+        "column_ops_tests::test_with_columns_with_budget_case_report_records_output",
+        test_with_columns_with_budget_case_report_records_output,
+    ),
+    (
+        "column_ops_tests::test_cast_column_with_budget_reports_output_and_routes_allocator",
+        test_cast_column_with_budget_reports_output_and_routes_allocator,
+    ),
+    (
+        "column_ops_tests::test_cast_column_decimal128_scale_to_scale_preserves_requested_scale",
+        test_cast_column_decimal128_scale_to_scale_preserves_requested_scale,
+    ),
+    (
+        "column_ops_tests::test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_routes_allocator",
+        test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_routes_allocator,
+    ),
+    (
+        "column_ops_tests::test_with_columns_with_budget_reports_exceeded_budget_details",
+        test_with_columns_with_budget_reports_exceeded_budget_details,
+    ),
+    (
+        "column_ops_tests::test_cast_column_with_budget_reports_exceeded_budget_details",
+        test_cast_column_with_budget_reports_exceeded_budget_details,
+    ),
+    (
+        "column_ops_tests::test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts",
+        test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts,
+    ),
+];

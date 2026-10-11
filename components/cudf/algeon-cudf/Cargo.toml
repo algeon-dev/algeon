@@ -94,5 +94,9 @@ name = "query_memory_manager_failure_callback_contracts_gpu"
 required-features = ["test-hooks"]
 
 [[test]]
+name = "semantic_contracts_cpu"
+required-features = ["test-hooks"]
+
+[[test]]
 name = "semantic_contracts_gpu"
 required-features = ["test-hooks"]

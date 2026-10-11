@@ -1,191 +1,246 @@
-//! Integration tests for top-level algorithm parameter structs.
-//!
-//! Primitive wrapper invariants live in source-local unit tests. Keep this file
-//! focused on cross-module defaults and a minimal "ergonomic to construct"
-//! smoke for public params types.
+//! Public parameter validation at the CPU boundary.
 
+use cudf::testing::run_named_cases;
 use cugraph::{
-    centrality::{
-        EdgeBetweennessCentralityParams, EigenvectorCentralityParams, HitsParams, KatzCentralityParams, PageRankParams,
-        PersonalizedPageRankParams,
+    error::ErrorKind,
+    params::{
+        BfsDepthLimit, ClosedUnitF64, ClusterCount, FractionF64, HalfOpenUnitF64, IterationCount, NonNegativeF64,
+        PositiveF64, UnitF64,
     },
-    community::{EcgParams, LeidenParams, LouvainParams, SpectralClusteringParams},
-    layout::ForceAtlas2Params,
-    params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
-    sampling::{
-        NeighborSamplingParams, Node2VecRandomWalkParams, PriorSourcesBehavior, RandomWalkParams, SamplingCompression,
-        SamplingOptions, TemporalSamplingComparison,
-    },
-    similarity::{AllPairsSimilarityParams, SimilarityParams},
 };
 
 #[test]
-fn pagerank_params_default_has_expected_values() {
-    let params = PageRankParams::default();
-    assert_eq!(params.alpha.get(), 0.85);
-    assert_eq!(params.epsilon.get(), 1e-5);
-    assert_eq!(params.max_iterations.get(), 100);
+fn parameter_validation_cases_1() {
+    run_named_cases(&[
+        ("params::tests::half_open_unit_f64_accepts_zero_but_not_one", half_open_unit_f64_accepts_zero_but_not_one),
+        ("params::tests::iteration_count_try_into_i32_rejects_overflow", iteration_count_try_into_i32_rejects_overflow),
+        ("params::tests::non_negative_f64_accepts_zero", non_negative_f64_accepts_zero),
+        ("params::tests::closed_unit_f64_accepts_boundaries", closed_unit_f64_accepts_boundaries),
+        ("params::tests::iteration_count_try_from_usize", iteration_count_try_from_usize),
+        (
+            "params::tests::bfs_depth_limit_try_from_i32_rejects_negative_values",
+            bfs_depth_limit_try_from_i32_rejects_negative_values,
+        ),
+        ("params::tests::positive_f64_accepts_positive_finite_values", positive_f64_accepts_positive_finite_values),
+        ("params::tests::cluster_count_requires_at_least_two_clusters", cluster_count_requires_at_least_two_clusters),
+        (
+            "fraction_f64_rejects_out_of_range_and_non_finite_values",
+            fraction_f64_rejects_out_of_range_and_non_finite_values,
+        ),
+        ("params::tests::iteration_count_accepts_positive_values", iteration_count_accepts_positive_values),
+        ("params::tests::unit_f64_accepts_values_in_open_interval", unit_f64_accepts_values_in_open_interval),
+        ("params::tests::unit_f64_rejects_negative", unit_f64_rejects_negative),
+        ("params::tests::closed_unit_f64_rejects_nan_and_infinity", closed_unit_f64_rejects_nan_and_infinity),
+        ("params::tests::closed_unit_f64_rejects_out_of_range", closed_unit_f64_rejects_out_of_range),
+        (
+            "half_open_unit_f64_rejects_out_of_range_and_non_finite_values",
+            half_open_unit_f64_rejects_out_of_range_and_non_finite_values,
+        ),
+        ("params::tests::iteration_count_rejects_zero", iteration_count_rejects_zero),
+        ("params::tests::non_negative_f64_accepts_positive", non_negative_f64_accepts_positive),
+        ("params::tests::positive_f64_rejects_infinity", positive_f64_rejects_infinity),
+        ("params::tests::unit_f64_rejects_greater_than_one", unit_f64_rejects_greater_than_one),
+        ("params::tests::unit_f64_rejects_one", unit_f64_rejects_one),
+        ("params::tests::unit_f64_rejects_zero", unit_f64_rejects_zero),
+        ("params::tests::iteration_count_try_from_i32", iteration_count_try_from_i32),
+        ("params::tests::non_negative_f64_rejects_negative", non_negative_f64_rejects_negative),
+        ("params::tests::positive_f64_rejects_nan", positive_f64_rejects_nan),
+        ("params::tests::positive_f64_rejects_negative", positive_f64_rejects_negative),
+        ("params::tests::non_negative_f64_rejects_nan_and_infinity", non_negative_f64_rejects_nan_and_infinity),
+        (
+            "bfs_depth_limit_accepts_zero_as_the_sources_only_limit",
+            bfs_depth_limit_accepts_zero_as_the_sources_only_limit,
+        ),
+        (
+            "params::tests::fraction_f64_accepts_the_upper_bound_but_not_zero",
+            fraction_f64_accepts_the_upper_bound_but_not_zero,
+        ),
+        ("params::tests::positive_f64_rejects_zero", positive_f64_rejects_zero),
+        ("params::tests::unit_f64_rejects_nan_and_infinity", unit_f64_rejects_nan_and_infinity),
+    ]);
 }
 
-#[test]
-fn centrality_expansion_params_default_has_expected_values() {
-    let ppr = PersonalizedPageRankParams::default();
-    assert_eq!(ppr.alpha.get(), 0.85);
-    assert_eq!(ppr.epsilon.get(), 1e-5);
-    assert_eq!(ppr.max_iterations.get(), 100);
-    assert!(!ppr.do_expensive_check);
-
-    let eigenvector = EigenvectorCentralityParams::default();
-    assert_eq!(eigenvector.epsilon.get(), 1e-6);
-    assert_eq!(eigenvector.max_iterations.get(), 200);
-    assert!(!eigenvector.do_expensive_check);
-
-    let katz = KatzCentralityParams::default();
-    assert_eq!(katz.alpha.get(), 0.01);
-    assert_eq!(katz.beta.get(), 1.0);
-    assert_eq!(katz.epsilon.get(), 1e-6);
-    assert_eq!(katz.max_iterations.get(), 1000);
-    assert!(!katz.do_expensive_check);
-
-    let hits = HitsParams::default();
-    assert_eq!(hits.epsilon.get(), 1e-5);
-    assert_eq!(hits.max_iterations.get(), 100);
-    assert!(!hits.normalize);
-    assert!(!hits.do_expensive_check);
-
-    let edge = EdgeBetweennessCentralityParams::default();
-    assert!(edge.normalized);
-    assert!(!edge.do_expensive_check);
+fn half_open_unit_f64_accepts_zero_but_not_one() {
+    assert_eq!(HalfOpenUnitF64::new(0.0).unwrap().get(), 0.0);
+    assert_eq!(HalfOpenUnitF64::new(0.999).unwrap().get(), 0.999);
+    assert!(HalfOpenUnitF64::new(1.0).is_err());
 }
 
-#[test]
-fn force_atlas2_params_default_has_expected_values() {
-    let params = ForceAtlas2Params::default();
-    assert_eq!(params.max_iter.get(), 500);
-    assert!(!params.outbound_attraction_distribution);
-    assert!(!params.lin_log_mode);
-    assert!(!params.prevent_overlapping);
-    assert_eq!(params.overlap_scaling_ratio.get(), 2.0);
-    assert_eq!(params.edge_weight_influence.get(), 1.0);
-    assert_eq!(params.jitter_tolerance.get(), 1.0);
-    assert!(!params.barnes_hut_optimize);
-    assert_eq!(params.barnes_hut_theta.get(), 0.5);
-    assert_eq!(params.scaling_ratio.get(), 2.0);
-    assert!(!params.strong_gravity_mode);
-    assert_eq!(params.gravity.get(), 1.0);
-    assert!(!params.verbose);
+fn iteration_count_try_into_i32_rejects_overflow() {
+    let count = IterationCount::new(u32::MAX).unwrap();
+    let err = i32::try_from(count).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
-fn louvain_params_default_has_expected_values() {
-    let params = LouvainParams::default();
-    assert_eq!(params.max_level.get(), 100);
-    assert_eq!(params.threshold.get(), 1e-7);
-    assert_eq!(params.resolution.get(), 1.0);
-    assert!(!params.do_expensive_check);
+fn non_negative_f64_accepts_zero() {
+    assert_eq!(NonNegativeF64::new(0.0).unwrap().get(), 0.0);
 }
 
-#[test]
-fn leiden_params_default_has_expected_values() {
-    let params = LeidenParams::default();
-    assert_eq!(params.max_level.get(), 100);
-    assert_eq!(params.resolution.get(), 1.0);
-    assert!(!params.do_expensive_check);
+fn closed_unit_f64_accepts_boundaries() {
+    assert_eq!(ClosedUnitF64::new(0.0).unwrap().get(), 0.0);
+    assert_eq!(ClosedUnitF64::new(1.0).unwrap().get(), 1.0);
+    assert_eq!(ClosedUnitF64::new(0.5).unwrap().get(), 0.5);
 }
 
-#[test]
-fn ecg_params_default_has_expected_values() {
-    let params = EcgParams::default();
-    assert_eq!(params.min_weight.get(), 0.001);
-    assert_eq!(params.ensemble_size.get(), 10);
-    assert_eq!(params.max_level.get(), 100);
-    assert_eq!(params.threshold.get(), 1e-7);
-    assert_eq!(params.resolution.get(), 1.0);
-    assert!(!params.do_expensive_check);
+fn iteration_count_try_from_usize() {
+    let count: IterationCount = 1000usize.try_into().unwrap();
+    assert_eq!(count.get(), 1000);
+
+    assert!(IterationCount::try_from(0usize).is_err());
+
+    // Value exceeding u32::MAX
+    let huge = u32::MAX as usize + 1;
+    let err = IterationCount::try_from(huge).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.message().contains("u32::MAX"));
 }
 
-#[test]
-fn spectral_clustering_params_default_has_expected_values() {
-    let params = SpectralClusteringParams::default();
-    assert_eq!(params.n_clusters.get(), 2);
-    assert_eq!(params.n_eigenvectors.get(), 2);
-    assert_eq!(params.evs_tolerance.get(), 0.01);
-    assert!(!params.do_expensive_check);
+fn bfs_depth_limit_try_from_i32_rejects_negative_values() {
+    let limit: BfsDepthLimit = 7i32.try_into().unwrap();
+    assert_eq!(limit.get(), 7);
+    assert_eq!(BfsDepthLimit::try_from(0i32).unwrap().get(), 0);
+
+    let err = BfsDepthLimit::try_from(-1i32).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
-fn random_walk_params_default_has_expected_values() {
-    let params = RandomWalkParams::default();
-    assert_eq!(params.max_length.get(), 1);
-
-    let node2vec = Node2VecRandomWalkParams::default();
-    assert_eq!(node2vec.max_length.get(), 1);
-    assert_eq!(node2vec.p.get(), 1.0);
-    assert_eq!(node2vec.q.get(), 1.0);
+fn positive_f64_accepts_positive_finite_values() {
+    assert_eq!(PositiveF64::new(0.001).unwrap().get(), 0.001);
+    assert_eq!(PositiveF64::new(1.0).unwrap().get(), 1.0);
+    assert_eq!(PositiveF64::new(1e10).unwrap().get(), 1e10);
+    assert_eq!(PositiveF64::new(f64::MIN_POSITIVE).unwrap().get(), f64::MIN_POSITIVE);
 }
 
-#[test]
-fn neighbor_sampling_params_default_has_expected_values() {
-    let params = NeighborSamplingParams::default();
-    assert_eq!(params.fan_out, vec![1]);
-    assert_eq!(params.options, SamplingOptions::default());
-    assert!(!params.do_expensive_check);
-
-    let options = SamplingOptions::default();
-    assert!(!options.retain_seeds);
-    assert!(!options.renumber_results);
-    assert!(!options.compress_per_hop);
-    assert!(!options.with_replacement);
-    assert!(!options.return_hops);
-    assert_eq!(options.compression, SamplingCompression::Coo);
-    assert_eq!(options.prior_sources_behavior, PriorSourcesBehavior::Default);
-    assert!(!options.dedupe_sources);
-    assert_eq!(options.temporal_sampling_comparison, TemporalSamplingComparison::StrictlyIncreasing);
-    assert!(!options.disjoint_sampling);
+fn cluster_count_requires_at_least_two_clusters() {
+    assert_eq!(ClusterCount::new(2).unwrap().get(), 2);
+    assert!(ClusterCount::new(1).is_err());
+    assert_eq!(ClusterCount::new(0).unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
-fn similarity_params_default_has_expected_values() {
-    let params = SimilarityParams::default();
-    assert!(!params.use_weight);
-    assert!(!params.do_expensive_check);
-
-    let all_pairs = AllPairsSimilarityParams::default();
-    assert!(!all_pairs.use_weight);
-    assert_eq!(all_pairs.topk, None);
-    assert!(!all_pairs.do_expensive_check);
+fn fraction_f64_rejects_out_of_range_and_non_finite_values() {
+    assert!(FractionF64::new(-0.1).is_err());
+    assert!(FractionF64::new(1.0 + f64::EPSILON).is_err());
+    assert!(FractionF64::new(f64::NAN).is_err());
+    assert!(FractionF64::new(f64::INFINITY).is_err());
+    assert_eq!(FractionF64::new(2.0).unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
-fn top_level_algorithm_params_are_ergonomic_to_construct() {
-    let pagerank = PageRankParams {
-        alpha: ClosedUnitF64::new(0.9).unwrap(),
-        epsilon: NonNegativeF64::new(1e-6).unwrap(),
-        max_iterations: IterationCount::new(200).unwrap(),
-        do_expensive_check: false,
-    };
-    let force_atlas2 = ForceAtlas2Params {
-        max_iter: IterationCount::new(100).unwrap(),
-        prevent_overlapping: true,
-        overlap_scaling_ratio: PositiveF64::new(3.0).unwrap(),
-        barnes_hut_optimize: true,
-        barnes_hut_theta: ClosedUnitF64::new(0.8).unwrap(),
-        gravity: NonNegativeF64::new(5.0).unwrap(),
-        edge_weight_influence: NonNegativeF64::new(0.0).unwrap(),
-        ..Default::default()
-    };
-    let louvain = LouvainParams {
-        max_level: IterationCount::new(75).unwrap(),
-        threshold: NonNegativeF64::new(1e-6).unwrap(),
-        resolution: PositiveF64::new(1.25).unwrap(),
-        do_expensive_check: true,
-    };
+fn iteration_count_accepts_positive_values() {
+    assert_eq!(IterationCount::new(1).unwrap().get(), 1);
+    assert_eq!(IterationCount::new(100).unwrap().get(), 100);
+    assert_eq!(IterationCount::new(u32::MAX).unwrap().get(), u32::MAX);
+}
 
-    assert_eq!(pagerank.alpha.get(), 0.9);
-    assert_eq!(pagerank.max_iterations.get(), 200);
-    assert_eq!(force_atlas2.max_iter.get(), 100);
-    assert!(force_atlas2.prevent_overlapping);
-    assert!(force_atlas2.barnes_hut_optimize);
-    assert_eq!(louvain.max_level.get(), 75);
-    assert!(louvain.do_expensive_check);
+fn unit_f64_accepts_values_in_open_interval() {
+    assert_eq!(UnitF64::new(0.5).unwrap().get(), 0.5);
+    assert_eq!(UnitF64::new(0.001).unwrap().get(), 0.001);
+    assert_eq!(UnitF64::new(0.999).unwrap().get(), 0.999);
+    assert_eq!(UnitF64::new(0.85).unwrap().get(), 0.85);
+}
+
+fn unit_f64_rejects_negative() {
+    assert!(UnitF64::new(-0.1).is_err());
+}
+
+fn closed_unit_f64_rejects_nan_and_infinity() {
+    assert!(ClosedUnitF64::new(f64::NAN).is_err());
+    assert!(ClosedUnitF64::new(f64::INFINITY).is_err());
+}
+
+fn closed_unit_f64_rejects_out_of_range() {
+    assert!(ClosedUnitF64::new(-0.001).is_err());
+    assert!(ClosedUnitF64::new(1.001).is_err());
+}
+
+fn half_open_unit_f64_rejects_out_of_range_and_non_finite_values() {
+    assert!(HalfOpenUnitF64::new(-f64::MIN_POSITIVE).is_err());
+    assert!(HalfOpenUnitF64::new(f64::NAN).is_err());
+    assert!(HalfOpenUnitF64::new(f64::INFINITY).is_err());
+    assert_eq!(HalfOpenUnitF64::new(2.0).unwrap_err().kind(), ErrorKind::InvalidInput);
+}
+
+fn iteration_count_rejects_zero() {
+    let err = IterationCount::new(0).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.message().contains("greater than zero"));
+}
+
+fn non_negative_f64_accepts_positive() {
+    assert_eq!(NonNegativeF64::new(1.5).unwrap().get(), 1.5);
+    assert_eq!(NonNegativeF64::new(100.0).unwrap().get(), 100.0);
+}
+
+fn positive_f64_rejects_infinity() {
+    assert!(PositiveF64::new(f64::INFINITY).is_err());
+    assert!(PositiveF64::new(f64::NEG_INFINITY).is_err());
+}
+
+fn unit_f64_rejects_greater_than_one() {
+    assert!(UnitF64::new(1.01).is_err());
+}
+
+fn unit_f64_rejects_one() {
+    let err = UnitF64::new(1.0).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+}
+
+fn unit_f64_rejects_zero() {
+    let err = UnitF64::new(0.0).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.message().contains("(0.0, 1.0)"));
+}
+
+fn iteration_count_try_from_i32() {
+    let count: IterationCount = 500i32.try_into().unwrap();
+    assert_eq!(count.get(), 500);
+
+    let err = IterationCount::try_from(0i32).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+
+    let err = IterationCount::try_from(-1i32).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+}
+
+fn non_negative_f64_rejects_negative() {
+    let err = NonNegativeF64::new(-0.001).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.message().contains("non-negative"));
+}
+
+fn positive_f64_rejects_nan() {
+    assert!(PositiveF64::new(f64::NAN).is_err());
+}
+
+fn positive_f64_rejects_negative() {
+    let err = PositiveF64::new(-1.0).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+}
+
+fn non_negative_f64_rejects_nan_and_infinity() {
+    assert!(NonNegativeF64::new(f64::NAN).is_err());
+    assert!(NonNegativeF64::new(f64::INFINITY).is_err());
+    assert!(NonNegativeF64::new(f64::NEG_INFINITY).is_err());
+}
+
+fn bfs_depth_limit_accepts_zero_as_the_sources_only_limit() {
+    assert_eq!(BfsDepthLimit::new(0).get(), 0);
+    assert_eq!(BfsDepthLimit::new(100).get(), 100);
+}
+
+fn fraction_f64_accepts_the_upper_bound_but_not_zero() {
+    assert_eq!(FractionF64::new(1.0).unwrap().get(), 1.0);
+    assert_eq!(FractionF64::new(f64::MIN_POSITIVE).unwrap().get(), f64::MIN_POSITIVE);
+    assert!(FractionF64::new(0.0).is_err());
+}
+
+fn positive_f64_rejects_zero() {
+    let err = PositiveF64::new(0.0).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.message().contains("greater than zero"));
+}
+
+fn unit_f64_rejects_nan_and_infinity() {
+    assert!(UnitF64::new(f64::NAN).is_err());
+    assert!(UnitF64::new(f64::INFINITY).is_err());
+    assert!(UnitF64::new(f64::NEG_INFINITY).is_err());
 }

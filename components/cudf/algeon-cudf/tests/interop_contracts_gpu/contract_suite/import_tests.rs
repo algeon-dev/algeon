@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use cudf::{
     DataFrame, Runtime, Series, TypeId,
     core::{Column, Table},
-    testing::{dictionary, interop::column_export_with_lease_backend_for_test, prelude::*},
+    testing::{dictionary, interop::column_export_with_lease_backend_for_test, prelude::*, run_named_cases},
 };
 use rapids_interop::{
     BufferBinding, ColumnLayout, InteropError, InteropErrorKind, PhysicalValidity, PreparedAccess,
     PreparedColumnExport, PreparedExportProfile, SemanticColumn,
 };
 
-use crate::common::{self, run_named_cases};
+use crate::common::{self};
 
 fn binding_bytes(binding: &BufferBinding<'_>) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr() as *const u8, binding.bytes().byte_len()) }.to_vec()
@@ -664,7 +664,7 @@ mod dataframe_import_contracts {
     }
 }
 
-mod error_mapping_contracts {
+pub(crate) mod error_mapping_contracts {
     use super::*;
 
     fn prepared_host_column_export_constructor_rejects_device_bindings() {
@@ -750,17 +750,14 @@ mod error_mapping_contracts {
         assert_eq!(interop_error_context_value(&err, "phase"), Some("synchronize"));
     }
 
-    #[test]
-    fn import_tests_cases_error_mapping_contracts() {
-        run_named_cases(&[
-            (
-                "prepared_host_column_export_constructor_rejects_device_bindings",
-                prepared_host_column_export_constructor_rejects_device_bindings,
-            ),
-            (
-                "prepared_device_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable",
-                prepared_device_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable,
-            ),
-        ]);
-    }
+    pub(crate) const CASES: &[(&str, fn())] = &[
+        (
+            "import_tests::error_mapping_contracts::prepared_host_column_export_constructor_rejects_device_bindings",
+            prepared_host_column_export_constructor_rejects_device_bindings,
+        ),
+        (
+            "import_tests::error_mapping_contracts::prepared_device_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable",
+            prepared_device_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable,
+        ),
+    ];
 }

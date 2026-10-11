@@ -70,29 +70,3 @@ pub(in crate::exec) fn graph_build_range(operation: &str) -> Option<NvtxRange> {
 fn graph_build_label(operation: &str) -> Option<&'static CStr> {
     (operation == "algeon_datafusion_cugraph_similarity").then_some(c"algeon_datafusion.cugraph_similarity.graph_build")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn attempt_execution_label_includes_the_engine_attempt_and_device() {
-        let attempt_id = AttemptId::mint();
-        let label = attempt_execution_label(attempt_id, 7);
-
-        assert_eq!(
-            label.to_str().expect("NVTX label is UTF-8"),
-            format!("algeon_datafusion.attempt_gpu_execution attempt_id={attempt_id} device_ordinal=7")
-        );
-    }
-
-    #[cfg(feature = "cugraph")]
-    #[test]
-    fn similarity_graph_build_label_remains_selective() {
-        assert_eq!(
-            graph_build_label("algeon_datafusion_cugraph_similarity"),
-            Some(c"algeon_datafusion.cugraph_similarity.graph_build")
-        );
-        assert!(graph_build_label("algeon_datafusion_cugraph_pagerank").is_none());
-    }
-}

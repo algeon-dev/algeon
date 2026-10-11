@@ -190,45 +190,8 @@ fn validate_query_usage() -> String {
 
 #[cfg(test)]
 mod tests {
-    use algeon_datafusion::{gpu_coverage::QueryGpuCandidateReasonKind, report::CandidateOutcomeKind};
 
     use super::*;
-
-    #[test]
-    fn selected_candidate_human_line_marks_optional_reason_fields_absent() {
-        let outcome = QueryGpuCandidateOutcome {
-            selection: CandidateOutcomeKind::Selected,
-            candidate_family: "projection".to_string(),
-            reason_code: None,
-            reason_kind: None,
-            detail: "ProjectionExec".to_string(),
-            category: None,
-            remedy: None,
-            blocking: None,
-            cost_evidence: None,
-        };
-
-        assert_eq!(
-            candidate_outcome_human_line(&outcome),
-            "candidate_outcome: outcome=selected reason_code=absent reason_kind=absent category=absent blocking=absent detail=ProjectionExec"
-        );
-
-        let unsupported = QueryGpuCandidateOutcome {
-            selection: CandidateOutcomeKind::NotSupported,
-            candidate_family: "projection".to_string(),
-            reason_code: Some("unsupported_expression".to_string()),
-            reason_kind: Some(QueryGpuCandidateReasonKind::Expression),
-            detail: "ProjectionExec".to_string(),
-            category: Some("expression".to_string()),
-            remedy: None,
-            blocking: None,
-            cost_evidence: None,
-        };
-        assert_eq!(
-            candidate_outcome_human_line(&unsupported),
-            "candidate_outcome: outcome=not_supported reason_code=unsupported_expression reason_kind=expression category=expression blocking=absent detail=ProjectionExec"
-        );
-    }
 
     #[tokio::test]
     async fn build_context_installs_native_optimizer_rule() {

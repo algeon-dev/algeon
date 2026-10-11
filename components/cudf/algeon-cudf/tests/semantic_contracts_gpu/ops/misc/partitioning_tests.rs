@@ -1,6 +1,6 @@
 use cudf::{DataFrame, ErrorCode, Exec};
 
-use crate::common::{run_named_cases, series};
+use crate::common::series;
 
 fn sample_frame() -> DataFrame {
     let ids = series("id", &[1i32, 2, 3, 4, 5, 6]).unwrap();
@@ -52,10 +52,10 @@ fn hash_partition_by_rejects_empty_key_list() {
     assert_eq!(err.detail_value("reason"), Some("empty_partition_keys"));
 }
 
-#[test]
-fn partitioning_tests_cases() {
-    run_named_cases(&[
-        ("hash_partition_by_preserves_rows_and_reports_offsets", hash_partition_by_preserves_rows_and_reports_offsets),
-        ("hash_partition_by_rejects_empty_key_list", hash_partition_by_rejects_empty_key_list),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "partitioning_tests::hash_partition_by_preserves_rows_and_reports_offsets",
+        hash_partition_by_preserves_rows_and_reports_offsets,
+    ),
+    ("partitioning_tests::hash_partition_by_rejects_empty_key_list", hash_partition_by_rejects_empty_key_list),
+];

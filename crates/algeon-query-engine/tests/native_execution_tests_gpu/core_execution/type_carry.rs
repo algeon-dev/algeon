@@ -211,7 +211,6 @@ fn narrow_decimal_record_batch() -> RecordBatch {
     .unwrap()
 }
 
-#[test]
 fn native_literal_batch_carries_decimal32_and_decimal64_with_exact_schemas() {
     let context = backend_context();
     let batch = narrow_decimal_record_batch();
@@ -228,7 +227,6 @@ fn native_literal_batch_carries_decimal32_and_decimal64_with_exact_schemas() {
     assert_record_batch_columns_equal(actual, &batch);
 }
 
-#[test]
 fn native_local_parquet_filters_projects_and_limits_decimal32_and_decimal64_payloads() {
     let dir = unique_temp_dir("query-engine-native-narrow-decimal");
     let path = dir.join("input.parquet");
@@ -278,7 +276,6 @@ fn native_local_parquet_filters_projects_and_limits_decimal32_and_decimal64_payl
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_parquet_narrow_decimal_storage_preserves_declared_narrow_or_decimal128_logical_width() {
     let cases = [
         (
@@ -344,7 +341,6 @@ fn native_parquet_narrow_decimal_storage_preserves_declared_narrow_or_decimal128
     }
 }
 
-#[test]
 fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     let dir = unique_temp_dir("query-engine-native-timestamp-tz");
     let path = dir.join("input.parquet");
@@ -394,7 +390,6 @@ fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_literal_batch_carries_exact_basic_list_matrix() {
     let context = backend_context();
     let batch = basic_list_record_batch();
@@ -411,7 +406,6 @@ fn native_literal_batch_carries_exact_basic_list_matrix() {
     assert_record_batch_columns_equal(actual, &batch);
 }
 
-#[test]
 fn native_local_parquet_carries_exact_basic_list_matrix() {
     let dir = unique_temp_dir("query-engine-native-basic-list-matrix");
     let path = dir.join("input.parquet");
@@ -442,7 +436,6 @@ fn native_local_parquet_carries_exact_basic_list_matrix() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_literal_batch_carries_sliced_float64_fixed_size_list_with_empty_input_batch() {
     let context = backend_context();
     let child = Arc::new(Field::new("element", DataType::Float64, false));
@@ -499,7 +492,6 @@ fn native_literal_batch_carries_sliced_float64_fixed_size_list_with_empty_input_
     assert_record_batch_columns_equal(actual, &expected);
 }
 
-#[test]
 fn native_local_parquet_filters_projects_and_limits_nullable_int32_fixed_size_list() {
     let dir = unique_temp_dir("query-engine-native-fixed-size-list");
     let path = dir.join("input.parquet");
@@ -565,6 +557,35 @@ fn native_local_parquet_filters_projects_and_limits_nullable_int32_fixed_size_li
 }
 
 #[test]
+fn type_carry_cases_2() {
+    run_named_cases(&[
+        (
+            "core_execution::type_carry::native_local_parquet_filters_projects_and_limits_nullable_int32_fixed_size_list",
+            native_local_parquet_filters_projects_and_limits_nullable_int32_fixed_size_list,
+        ),
+        (
+            "core_execution::type_carry::native_local_parquet_source_carries_large_list_large_utf8_to_host_output",
+            native_local_parquet_source_carries_large_list_large_utf8_to_host_output,
+        ),
+        (
+            "core_execution::type_carry::native_scalar_filter_projection_alias_sort_and_topk_carry_basic_list_payloads",
+            native_scalar_filter_projection_alias_sort_and_topk_carry_basic_list_payloads,
+        ),
+        (
+            "core_execution::type_carry::native_literal_batch_carries_sliced_float64_fixed_size_list_with_empty_input_batch",
+            native_literal_batch_carries_sliced_float64_fixed_size_list_with_empty_input_batch,
+        ),
+        (
+            "core_execution::type_carry::native_literal_batch_carries_exact_basic_list_matrix",
+            native_literal_batch_carries_exact_basic_list_matrix,
+        ),
+        (
+            "core_execution::type_carry::native_literal_batch_carries_decimal32_and_decimal64_with_exact_schemas",
+            native_literal_batch_carries_decimal32_and_decimal64_with_exact_schemas,
+        ),
+    ]);
+}
+
 fn native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_output() {
     let dir = unique_temp_dir("query-engine-native-list-utf8");
     let path = dir.join("input.parquet");
@@ -627,6 +648,35 @@ fn native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_o
 }
 
 #[test]
+fn type_carry_cases_1() {
+    run_named_cases(&[
+        (
+            "core_execution::type_carry::native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_output",
+            native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_output,
+        ),
+        (
+            "core_execution::type_carry::native_parquet_narrow_decimal_storage_preserves_declared_narrow_or_decimal128_logical_width",
+            native_parquet_narrow_decimal_storage_preserves_declared_narrow_or_decimal128_logical_width,
+        ),
+        (
+            "core_execution::type_carry::native_local_parquet_source_carries_timestamp_timezone_to_host_output",
+            native_local_parquet_source_carries_timestamp_timezone_to_host_output,
+        ),
+        (
+            "core_execution::type_carry::native_local_parquet_filters_projects_and_limits_decimal32_and_decimal64_payloads",
+            native_local_parquet_filters_projects_and_limits_decimal32_and_decimal64_payloads,
+        ),
+        (
+            "core_execution::type_carry::native_local_parquet_carries_exact_basic_list_matrix",
+            native_local_parquet_carries_exact_basic_list_matrix,
+        ),
+        (
+            "core_execution::type_carry::native_local_parquet_limit_materializes_basic_list_shape",
+            native_local_parquet_limit_materializes_basic_list_shape,
+        ),
+    ]);
+}
+
 fn native_scalar_filter_projection_alias_sort_and_topk_carry_basic_list_payloads() {
     let context = backend_context();
     let input = basic_list_payload_batch(&[3, 1, 4, 2]);
@@ -686,7 +736,6 @@ fn native_scalar_filter_projection_alias_sort_and_topk_carry_basic_list_payloads
     assert_basic_list_payload_rows(&topk, 0, 1, &[2, 3]);
 }
 
-#[test]
 fn native_local_parquet_limit_materializes_basic_list_shape() {
     let dir = unique_temp_dir("query-engine-native-list-utf8-null-limit");
     let path = dir.join("input.parquet");
@@ -755,7 +804,6 @@ fn native_local_parquet_limit_materializes_basic_list_shape() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_local_parquet_source_carries_large_list_large_utf8_to_host_output() {
     let dir = unique_temp_dir("query-engine-native-large-list-utf8");
     let path = dir.join("input.parquet");

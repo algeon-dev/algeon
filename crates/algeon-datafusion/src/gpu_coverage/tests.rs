@@ -259,6 +259,8 @@ async fn validate_query_reports_capability_misses_without_terminal_rejection() {
 
     let cpu = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
     assert_eq!(cpu.gpu_path(), "cpu");
+    assert!(cpu.validated_under.native_optimizer_rule_installed);
+    assert_eq!(cpu.validated_under.optimizer_config_source, "installed_session_rule");
     let cpu_cov = cpu.final_plan_coverage().expect("cpu final plan coverage");
     assert_eq!(cpu_cov.disposition(), FinalPlanDisposition::DataFusion);
     assert_eq!(cpu_cov.native_fragment_count(), 0);
@@ -278,25 +280,6 @@ async fn validate_query_reports_capability_misses_without_terminal_rejection() {
         && outcome.reason_code.as_deref() == Some(CapabilityReason::UnsupportedType.code())
         && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::ArrowType)
         && outcome.remedy.as_ref().is_some_and(|remedy| remedy.code == "cast_or_exclude_type")));
-}
-
-#[test]
-fn candidate_outcomes_retain_selected_candidates_without_selection_reasons() {
-    let report = PlanningReport::from_outcomes([CandidateOutcome::Selected {
-        candidate: GpuCandidate::new("ProjectionExec", 1),
-    }]);
-
-    let outcomes = candidate_outcomes_from_report(&report);
-
-    assert_eq!(outcomes.len(), 1);
-    assert_eq!(outcomes[0].selection, CandidateOutcomeKind::Selected);
-    assert_eq!(outcomes[0].detail, "ProjectionExec");
-    assert_eq!(outcomes[0].candidate_family, "other_other_input");
-    assert_eq!(outcomes[0].reason_code, None);
-    assert_eq!(outcomes[0].reason_kind, None);
-    assert_eq!(outcomes[0].category, None);
-    assert_eq!(outcomes[0].remedy, None);
-    assert_eq!(outcomes[0].cost_evidence, None);
 }
 
 #[test]
@@ -434,18 +417,6 @@ async fn validate_query_without_a_native_rule_fails_closed_with_structured_error
     assert_eq!(error.code(), ErrorCode::InvalidRequest);
     assert_eq!(error.operation(), "algeon_datafusion.gpu_coverage.validation_config");
     assert_eq!(error.fact_value("reason"), Some("native_optimizer_rule_not_installed"));
-}
-
-#[tokio::test]
-async fn validate_query_with_installed_rule_and_unsupported_candidate_produces_cpu_only() {
-    let ctx = validation_context(bounded_optimizer_config());
-
-    let coverage = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
-
-    assert_eq!(coverage.gpu_path(), "cpu");
-    assert!(coverage.validated_under.native_optimizer_rule_installed);
-    assert_eq!(coverage.validated_under.optimizer_config_source, "installed_session_rule");
-    assert_eq!(coverage.final_plan_coverage().unwrap().disposition(), FinalPlanDisposition::DataFusion);
 }
 
 #[tokio::test]

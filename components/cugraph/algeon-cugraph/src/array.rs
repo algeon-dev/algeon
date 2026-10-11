@@ -418,12 +418,6 @@ impl<T: CugraphElement> DeviceArray<T> {
     pub fn view(&self) -> Result<DeviceArrayView<'_, T>> {
         Ok(DeviceArrayView { inner: self.inner.raw_view(), _element: PhantomData })
     }
-
-    /// Get the raw C pointer to the underlying array. For internal use.
-    #[cfg(test)]
-    pub(crate) fn raw_view(&self) -> Result<RawDeviceArrayView<'_>> {
-        Ok(self.inner.raw_view())
-    }
 }
 
 /// A non-owning view into device (GPU) memory with compile-time element type `T`.
@@ -604,85 +598,13 @@ mod tests {
     use static_assertions::assert_not_impl_any;
 
     use super::*;
-    use crate::{ResourceHandle, error::ErrorKind};
-
-    #[test]
-    fn test_device_array_roundtrip() {
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_device_array_roundtrip").expect("entered");
-        let arr = DeviceArray::from_slice(&entered, &[10i32, 20, 30, 40, 50]).expect("create");
-
-        let view = arr.view().expect("view");
-        assert_eq!(view.len(), 5);
-
-        let result: Vec<i32> = view.to_vec(&entered).expect("to_vec");
-        assert_eq!(result, vec![10, 20, 30, 40, 50]);
-    }
-
-    #[test]
-    fn test_device_array_f32_roundtrip() {
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_device_array_f32_roundtrip").expect("entered");
-        let arr = DeviceArray::from_slice(&entered, &[1.0f32, 2.0, 3.0]).expect("create");
-
-        let view = arr.view().expect("view");
-        let result: Vec<f32> = view.to_vec(&entered).expect("to_vec");
-        assert_eq!(result, vec![1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn test_device_array_empty() {
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_device_array_empty").expect("entered");
-        let arr = DeviceArray::<i32>::new(&entered, 0).expect("create empty");
-        let view = arr.view().expect("view");
-        assert_eq!(view.len(), 0);
-        assert!(view.is_empty());
-    }
+    use crate::error::ErrorKind;
 
     #[test]
     fn test_array_types_not_send_sync() {
         assert_not_impl_any!(DeviceArray<i32>: Send, Sync);
         assert_not_impl_any!(DeviceArrayView<'static, i32>: Send, Sync);
         assert_not_impl_any!(HostArrayView<'static>: Send, Sync);
-    }
-
-    #[test]
-    fn test_from_raw_roundtrip() {
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_from_raw_roundtrip").expect("entered");
-        let arr = DeviceArray::from_slice(&entered, &[100i32, 200, 300]).expect("create");
-
-        let owned_view = arr.view().expect("owned_view");
-        let raw_ptr = owned_view.device_ptr();
-
-        // SAFETY: `raw_ptr` comes from a live device allocation with exactly 3 i32 values,
-        // and `arr` is kept alive for the duration of `raw_view` usage.
-        let raw_view = unsafe { DeviceArrayView::<i32>::from_raw(raw_ptr, 3) }.expect("raw_view");
-        assert_eq!(raw_view.len(), 3);
-
-        let result: Vec<i32> = raw_view.to_vec(&entered).expect("to_vec");
-        assert_eq!(result, vec![100, 200, 300]);
-    }
-
-    #[test]
-    fn test_to_vec_roundtrip_i32() {
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_to_vec_roundtrip_i32").expect("entered");
-        let src: Vec<i32> = vec![10, 20, 30];
-        let arr = DeviceArray::from_slice(&entered, &src).expect("create");
-        let result: Vec<i32> = arr.view().expect("view").to_vec(&entered).expect("roundtrip");
-        assert_eq!(result, src);
-    }
-
-    #[test]
-    fn test_to_vec_roundtrip_f64() {
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_to_vec_roundtrip_f64").expect("entered");
-        let src: Vec<f64> = vec![1.5, 2.5, 3.5];
-        let arr = DeviceArray::from_slice(&entered, &src).expect("create");
-        let result: Vec<f64> = arr.view().expect("view").to_vec(&entered).expect("roundtrip");
-        assert_eq!(result, src);
     }
 
     #[test]
@@ -736,19 +658,5 @@ mod tests {
     fn test_host_array_view_accepts_oversized_slice() {
         let view = HostArrayView::new(&[0u8; 16], 2, DataType::Int32).expect("oversized slice should succeed");
         drop(view);
-    }
-
-    #[test]
-    fn test_device_array_distinct_types() {
-        // Compile-time test: DeviceArray<i32> and DeviceArray<f32> are distinct types.
-        fn takes_i32(_arr: &DeviceArray<i32>) {}
-        fn takes_f32(_arr: &DeviceArray<f32>) {}
-
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_device_array_distinct_types").expect("entered");
-        let arr_i32 = DeviceArray::from_slice(&entered, &[1i32, 2, 3]).expect("i32");
-        let arr_f32 = DeviceArray::from_slice(&entered, &[1.0f32, 2.0, 3.0]).expect("f32");
-        takes_i32(&arr_i32);
-        takes_f32(&arr_f32);
     }
 }

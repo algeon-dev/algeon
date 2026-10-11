@@ -637,9 +637,8 @@ mod tests {
         sync::atomic::{AtomicBool, Ordering},
     };
 
-    use cudf::{DeviceMemoryResource, QueryMemoryDomainOptions};
+    use cudf::{DeviceMemoryResource, QueryMemoryDomainOptions, testing::run_named_cases};
     use cugraph_sys::cugraph_create_resource_handle;
-    use static_assertions::assert_not_impl_any;
 
     use super::*;
     use crate::{
@@ -696,38 +695,65 @@ mod tests {
     }
 
     #[test]
-    fn test_resource_handle_creation() {
-        let handle = ResourceHandle::new().expect("Failed to create resource handle");
-        // Handle should be non-null and droppable
-        assert!(!handle.as_ptr().is_null());
-        match &handle.state {
-            ResourceHandleState::LocalOwned { raw, device } => {
-                assert_eq!(*raw, handle.as_ptr(), "local owned state must carry the created raw handle");
-                assert_eq!(*device, handle.device(), "local owned state must carry the handle device");
-            },
-            state => panic!("expected local owned state variant, got {}", state_variant_name(state)),
-        }
+    fn native_owner_cases_1() {
+        run_named_cases(&[
+            ("handle::tests::test_for_runtime_retains_execution_owner", test_for_runtime_retains_execution_owner),
+            (
+                "handle::tests::runtime_bound_handles_reuse_one_native_owner_for_exact_binding_hot_hits",
+                runtime_bound_handles_reuse_one_native_owner_for_exact_binding_hot_hits,
+            ),
+            (
+                "handle::tests::runtime_bound_handles_do_not_share_native_owner_across_bindings",
+                runtime_bound_handles_do_not_share_native_owner_across_bindings,
+            ),
+            (
+                "handle::tests::runtime_binding_store_and_native_owner_do_not_form_a_cycle",
+                runtime_binding_store_and_native_owner_do_not_form_a_cycle,
+            ),
+            (
+                "handle::tests::test_for_runtime_uses_runtime_shim_instead_of_direct_cugraph_ownership",
+                test_for_runtime_uses_runtime_shim_instead_of_direct_cugraph_ownership,
+            ),
+            (
+                "handle::tests::test_from_raw_resource_handle_uses_current_device",
+                test_from_raw_resource_handle_uses_current_device,
+            ),
+            (
+                "handle::tests::test_adopt_raw_resource_handle_uses_current_device",
+                test_adopt_raw_resource_handle_uses_current_device,
+            ),
+            (
+                "handle::tests::test_from_raw_resource_handle_does_not_free_on_drop",
+                test_from_raw_resource_handle_does_not_free_on_drop,
+            ),
+            ("handle::tests::test_adopt_raw_resource_handle_marks_owned", test_adopt_raw_resource_handle_marks_owned),
+            (
+                "handle::tests::test_entered_context_exposes_runtime_provenance",
+                test_entered_context_exposes_runtime_provenance,
+            ),
+            (
+                "handle::tests::runtime_handle_effective_memory_tracks_aligned_domain_charge",
+                runtime_handle_effective_memory_tracks_aligned_domain_charge,
+            ),
+            (
+                "handle::tests::runtime_handles_keep_distinct_effective_memory_providers",
+                runtime_handles_keep_distinct_effective_memory_providers,
+            ),
+            (
+                "handle::tests::nested_entry_for_same_native_owner_is_rejected_without_deadlock",
+                nested_entry_for_same_native_owner_is_rejected_without_deadlock,
+            ),
+            (
+                "handle::tests::test_into_raw_resource_handle_releases_rust_ownership",
+                test_into_raw_resource_handle_releases_rust_ownership,
+            ),
+            (
+                "handle::tests::test_runtime_bound_into_raw_resource_handle_is_rejected",
+                test_runtime_bound_into_raw_resource_handle_is_rejected,
+            ),
+        ]);
     }
 
-    #[test]
-    fn test_resource_handle_not_send_sync() {
-        assert_not_impl_any!(ResourceHandle: Send, Sync);
-    }
-
-    #[test]
-    fn test_entered_context_not_send_sync() {
-        assert_not_impl_any!(EnteredContext<'static>: Send, Sync);
-    }
-
-    #[test]
-    fn test_for_runtime_matches_runtime_device() {
-        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
-        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("resource handle");
-
-        assert_eq!(handle.device(), runtime.device().ordinal() as i32);
-    }
-
-    #[test]
     fn test_for_runtime_retains_execution_owner() {
         let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
         assert_eq!(Arc::strong_count(&runtime), 1, "test setup should hold one runtime owner");
@@ -740,7 +766,6 @@ mod tests {
         assert_eq!(Arc::strong_count(&runtime), 1, "dropping the handle should release the retained runtime owner");
     }
 
-    #[test]
     fn runtime_bound_handles_reuse_one_native_owner_for_exact_binding_hot_hits() {
         let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
         let derived = Arc::new(runtime.with_retained_lifetime(Arc::new(())).expect("derived runtime"));
@@ -761,7 +786,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn runtime_bound_handles_do_not_share_native_owner_across_bindings() {
         let first_runtime = Arc::new(cudf::Runtime::builder().build().expect("first runtime"));
         let second_runtime = Arc::new(cudf::Runtime::builder().build().expect("independent runtime"));
@@ -779,7 +803,6 @@ mod tests {
         assert_ne!(first_raw, second_raw);
     }
 
-    #[test]
     fn runtime_binding_store_and_native_owner_do_not_form_a_cycle() {
         let (runtime, released) = probed_runtime();
         let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("resource handle");
@@ -814,7 +837,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn test_for_runtime_uses_runtime_shim_instead_of_direct_cugraph_ownership() {
         let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
 
@@ -838,7 +860,6 @@ mod tests {
         assert_eq!(err.operation(), "ResourceHandle::from_raw_resource_handle");
     }
 
-    #[test]
     fn test_from_raw_resource_handle_uses_current_device() {
         let owned = ResourceHandle::new().expect("owned handle");
         let raw = owned.as_ptr();
@@ -866,7 +887,6 @@ mod tests {
         assert_eq!(err.operation(), "ResourceHandle::adopt_raw_resource_handle");
     }
 
-    #[test]
     fn test_adopt_raw_resource_handle_uses_current_device() {
         // SAFETY: cuGraph returns a newly allocated raw handle or null.
         let raw = unsafe { cugraph_create_resource_handle(ptr::null_mut()) };
@@ -878,7 +898,6 @@ mod tests {
         assert_eq!(adopted.device(), current.ordinal() as i32);
     }
 
-    #[test]
     fn test_from_raw_resource_handle_does_not_free_on_drop() {
         // Create an owned handle, take its raw pointer, wrap it in a
         // non-owning handle, and drop the non-owning one first. The owned
@@ -897,7 +916,6 @@ mod tests {
         assert!(!owned.as_ptr().is_null());
     }
 
-    #[test]
     fn test_adopt_raw_resource_handle_marks_owned() {
         // SAFETY: cuGraph returns a newly allocated raw handle or null.
         let raw = unsafe { cugraph_create_resource_handle(ptr::null_mut()) };
@@ -964,7 +982,6 @@ mod tests {
         assert!(err.is_persistent());
     }
 
-    #[test]
     fn test_entered_context_exposes_runtime_provenance() {
         let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
         let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("resource handle");
@@ -974,7 +991,6 @@ mod tests {
         assert_eq!(session_runtime.device().ordinal(), runtime.device().ordinal());
     }
 
-    #[test]
     fn runtime_handle_effective_memory_tracks_aligned_domain_charge() {
         const CAPACITY_BYTES: usize = 1 << 20;
         let (runtime, budget) = budgeted_runtime(CAPACITY_BYTES);
@@ -1032,7 +1048,6 @@ mod tests {
         assert_eq!(effective_device_memory(&entered), CAPACITY_BYTES);
     }
 
-    #[test]
     fn runtime_handles_keep_distinct_effective_memory_providers() {
         const SMALL_CAPACITY_BYTES: usize = 1 << 20;
         const LARGE_CAPACITY_BYTES: usize = 2 << 20;
@@ -1048,7 +1063,6 @@ mod tests {
         assert_eq!(effective_device_memory(&large_entered), LARGE_CAPACITY_BYTES);
     }
 
-    #[test]
     fn nested_entry_for_same_native_owner_is_rejected_without_deadlock() {
         let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
         let first = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("first resource handle");
@@ -1095,7 +1109,6 @@ mod tests {
         worker.join().expect("concurrent entry worker");
     }
 
-    #[test]
     fn test_into_raw_resource_handle_releases_rust_ownership() {
         let handle = ResourceHandle::new().expect("resource handle");
         let device = handle.device();
@@ -1110,7 +1123,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn test_runtime_bound_into_raw_resource_handle_is_rejected() {
         let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
         let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
@@ -1118,12 +1130,5 @@ mod tests {
         let err = handle.into_raw_resource_handle().expect_err("runtime-bound handle should reject raw extraction");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(err.operation(), "ResourceHandle::into_raw_resource_handle");
-    }
-
-    #[test]
-    fn test_rank_and_comm_size_on_single_gpu_handle() {
-        let handle = ResourceHandle::new().expect("resource handle");
-        assert_eq!(handle.rank(), 0);
-        assert_eq!(handle.comm_size(), 1);
     }
 }

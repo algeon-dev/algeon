@@ -8,7 +8,7 @@ use cudf::{
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, dataframe_from_columns,
-    error_context_value, run_named_cases, series,
+    error_context_value, series,
 };
 
 // ---------------------------------------------------------------------------
@@ -260,32 +260,32 @@ fn test_dataframe_macro_uses_pair_names_not_series_names() {
     assert_eq!(df.column_names(), &["renamed"]);
 }
 
-#[test]
-fn basics_tests_cases() {
-    run_named_cases(&[
-        ("test_new_from_named_columns", test_new_from_named_columns),
-        ("test_column_by_name", test_column_by_name),
-        ("test_reject_duplicate_column_names", test_reject_duplicate_column_names),
-        ("test_reject_mismatched_names_columns_count", test_reject_mismatched_names_columns_count),
-        ("test_column_nonexistent_name_returns_error", test_column_nonexistent_name_returns_error),
-        ("test_column_names_preserves_insertion_order", test_column_names_preserves_insertion_order),
-        ("test_column_index", test_column_index),
-        ("test_column_names_and_index_give_equivalent_info", test_column_names_and_index_give_equivalent_info),
-        ("test_column_accessor_validates_data", test_column_accessor_validates_data),
-        ("test_from_table_round_trip", test_from_table_round_trip),
-        ("test_from_table_mismatched_names_count", test_from_table_mismatched_names_count),
-        ("test_into_table", test_into_table),
-        (
-            "test_zero_column_dataframe_table_round_trip_preserves_row_count",
-            test_zero_column_dataframe_table_round_trip_preserves_row_count,
-        ),
-        ("test_empty_dataframe", test_empty_dataframe),
-        ("test_dataframe_macro_basic", test_dataframe_macro_basic),
-        ("test_dataframe_macro_single_column", test_dataframe_macro_single_column),
-        ("test_dataframe_macro_trailing_comma", test_dataframe_macro_trailing_comma),
-        (
-            "test_dataframe_macro_uses_pair_names_not_series_names",
-            test_dataframe_macro_uses_pair_names_not_series_names,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("basics_tests::test_new_from_named_columns", test_new_from_named_columns),
+    ("basics_tests::test_column_by_name", test_column_by_name),
+    ("basics_tests::test_reject_duplicate_column_names", test_reject_duplicate_column_names),
+    ("basics_tests::test_reject_mismatched_names_columns_count", test_reject_mismatched_names_columns_count),
+    ("basics_tests::test_column_nonexistent_name_returns_error", test_column_nonexistent_name_returns_error),
+    ("basics_tests::test_column_names_preserves_insertion_order", test_column_names_preserves_insertion_order),
+    ("basics_tests::test_column_index", test_column_index),
+    (
+        "basics_tests::test_column_names_and_index_give_equivalent_info",
+        test_column_names_and_index_give_equivalent_info,
+    ),
+    ("basics_tests::test_column_accessor_validates_data", test_column_accessor_validates_data),
+    ("basics_tests::test_from_table_round_trip", test_from_table_round_trip),
+    ("basics_tests::test_from_table_mismatched_names_count", test_from_table_mismatched_names_count),
+    ("basics_tests::test_into_table", test_into_table),
+    (
+        "basics_tests::test_zero_column_dataframe_table_round_trip_preserves_row_count",
+        test_zero_column_dataframe_table_round_trip_preserves_row_count,
+    ),
+    ("basics_tests::test_empty_dataframe", test_empty_dataframe),
+    ("basics_tests::test_dataframe_macro_basic", test_dataframe_macro_basic),
+    ("basics_tests::test_dataframe_macro_single_column", test_dataframe_macro_single_column),
+    ("basics_tests::test_dataframe_macro_trailing_comma", test_dataframe_macro_trailing_comma),
+    (
+        "basics_tests::test_dataframe_macro_uses_pair_names_not_series_names",
+        test_dataframe_macro_uses_pair_names_not_series_names,
+    ),
+];

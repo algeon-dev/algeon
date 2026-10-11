@@ -595,23 +595,6 @@ impl ServiceStreamPool {
         )
     }
 
-    /// Acquire a CUDA stream/runtime lease while observing cooperative cancellation.
-    #[cfg(test)]
-    pub(crate) fn acquire_with_cancellation(
-        &self,
-        cancellation: &ExecutionCancellation,
-        operation: &'static str,
-    ) -> Result<StreamLease> {
-        self.acquire_inner(
-            Some(cancellation),
-            None,
-            operation,
-            RuntimeObservationHandle::disabled(),
-            RuntimeStreamLeaseScope::default(),
-            StreamPermitClass::Auxiliary,
-        )
-    }
-
     /// Acquire a CUDA stream/runtime lease while observing cancellation and an
     /// absolute wait deadline.
     #[cfg(test)]
@@ -1648,47 +1631,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cleanup_supervisor_panic_recovers_inflight_completion_payload() {
-        let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
-        let cleanup_thread = stream_cleanup_thread_id_for_test(&pool);
-        let lease = pool.acquire().unwrap();
-        let (before_sender, before_receiver) = mpsc::channel();
-        let (after_sender, after_receiver) = mpsc::channel();
-        assert!(lease.install_cleanup_completion(
-            move |_| {
-                before_sender.send(thread::current().id()).unwrap();
-                panic!("injected in-flight cleanup completion panic");
-            },
-            move || after_sender.send(thread::current().id()).unwrap(),
-        ));
-        drop(lease);
-
-        let error = pool
-            .close_and_wait_until(
-                Instant::now() + Duration::from_secs(5),
-                "query_engine.service_stream_pool.test_inflight_payload",
-            )
-            .unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::Internal);
-        assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_panicked"));
-        assert_eq!(error.fact_value("supervisor_stage"), Some("cleanup_executor"));
-        assert_eq!(
-            before_receiver.recv_timeout(Duration::from_secs(5)).expect("in-flight before callback"),
-            cleanup_thread
-        );
-        assert_eq!(
-            after_receiver.recv_timeout(Duration::from_secs(5)).expect("in-flight after callback"),
-            cleanup_thread
-        );
-        let state = pool.inner.state.lock().unwrap();
-        assert_eq!(state.pending_cleanups, 0);
-        assert_eq!(state.active_cleanups, 0);
-        assert_eq!(state.created, 0);
-    }
-
-    #[test]
-    fn wait_until_idle_commits_an_already_finished_cleanup_panic() {
+    fn wait_until_idle_commits_an_already_finished_cleanup_panic_case() {
         let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
         let pause = pause_cleanup_supervisor_before_worker_return_for_test(&pool);
         let lease = pool.acquire().unwrap();
@@ -1711,6 +1654,11 @@ mod tests {
     }
 
     #[test]
+    fn wait_until_idle_commits_an_already_finished_cleanup_panic() {
+        wait_until_idle_commits_an_already_finished_cleanup_panic_case();
+        wait_until_quiescent_commits_an_already_finished_cleanup_panic();
+    }
+
     fn wait_until_quiescent_commits_an_already_finished_cleanup_panic() {
         let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
         let pause = pause_cleanup_supervisor_before_worker_return_for_test(&pool);
@@ -2060,6 +2008,7 @@ mod tests {
         let error = waiter.join().unwrap().unwrap_err();
         drop(held);
         assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(error.operation(), "query_engine.service_stream_pool.test_observed_cancel");
         let snapshot = owner.live_snapshot().unwrap();
         let event = snapshot
             .events()
@@ -2080,37 +2029,6 @@ mod tests {
                 StreamLeaseLifecycleState::Cancelled,
             ]
         );
-    }
-
-    #[test]
-    fn stream_acquire_observes_cancellation_while_pool_is_saturated() {
-        let device = cudf::DeviceId::DEFAULT;
-        let pool = ServiceStreamPool::new(device, 1).unwrap();
-        let held = pool.acquire().unwrap();
-        let cancellation = ExecutionCancellation::new();
-        let waiter_cancellation = cancellation.clone();
-        let waiter_pool = pool;
-        let (started_sender, started_receiver) = mpsc::channel();
-        let (result_sender, result_receiver) = mpsc::channel();
-
-        let waiter = thread::spawn(move || {
-            started_sender.send(()).unwrap();
-            let result = waiter_pool.acquire_with_cancellation(
-                &waiter_cancellation,
-                "query_engine.service_stream_pool.test_cancelled_acquire",
-            );
-            result_sender.send(result.map(|_lease| ())).unwrap();
-        });
-        started_receiver.recv().unwrap();
-        thread::sleep(Duration::from_millis(25));
-        cancellation.cancel();
-        let result = result_receiver.recv_timeout(Duration::from_secs(1));
-        drop(held);
-        waiter.join().unwrap();
-        let error = result.expect("cancelled stream acquisition should finish").unwrap_err();
-
-        assert_eq!(error.code(), QueryErrorCode::Cancelled);
-        assert_eq!(error.operation(), "query_engine.service_stream_pool.test_cancelled_acquire");
     }
 
     #[test]
@@ -2141,8 +2059,7 @@ mod tests {
 mod permit_class_tests {
     use super::*;
 
-    #[test]
-    fn root_class_waits_while_auxiliary_slots_are_free() {
+    fn root_class_waits_while_auxiliary_slots_are_free_case() {
         let pool = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 3, 1, 2).unwrap();
         let root = pool.acquire_with_class(StreamPermitClass::Root).unwrap();
         let aux_one = pool.acquire_with_class(StreamPermitClass::Auxiliary).unwrap();
@@ -2180,6 +2097,11 @@ mod permit_class_tests {
     }
 
     #[test]
+    fn root_class_waits_while_auxiliary_slots_are_free() {
+        root_class_waits_while_auxiliary_slots_are_free_case();
+        auxiliary_class_waits_while_root_slots_are_free();
+    }
+
     fn auxiliary_class_waits_while_root_slots_are_free() {
         let pool = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 3, 1, 1).unwrap();
         let _root = pool.acquire_with_class(StreamPermitClass::Root).unwrap();

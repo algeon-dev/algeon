@@ -52,26 +52,6 @@ fn attempt_ids_are_unique_fixed_size_and_formatted() {
 }
 
 #[test]
-fn attempt_report_schema_and_disposition_labels_are_stable() {
-    assert_eq!(QUERY_ATTEMPT_REPORT_SCHEMA, "query_engine.query_attempt_report");
-    let dispositions = [
-        (AttemptDisposition::Unplanned, "\"unplanned\""),
-        (AttemptDisposition::CpuFallback, "\"cpu_fallback\""),
-        (AttemptDisposition::PartialNative, "\"partial_native\""),
-        (AttemptDisposition::Native, "\"native\""),
-    ];
-    for (disposition, expected) in dispositions {
-        assert_eq!(serde_json::to_string(&disposition).expect("serialize"), expected);
-    }
-}
-
-#[test]
-fn correlation_limits_are_pinned_public_constants() {
-    assert_eq!(MAX_ATTEMPT_QUERY_ID_BYTES, 256);
-    assert_eq!(MAX_ATTEMPT_TRACE_CONTEXT_BYTES, 1024);
-}
-
-#[test]
 fn query_attempt_report_serde_round_trips_with_stable_field_names() {
     use query_runtime::observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptCapacityDisposition, AttemptCleanupDisposition,

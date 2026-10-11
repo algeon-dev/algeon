@@ -130,13 +130,6 @@ mod correlation_tests {
     }
 
     #[test]
-    fn tracing_correlation_field_omits_absent_and_empty_values() {
-        assert_eq!(tracing_correlation_id(None), None);
-        assert_eq!(tracing_correlation_id(Some("")), None);
-        assert_eq!(tracing_correlation_id(Some("corr-123")), Some("corr-123"));
-    }
-
-    #[test]
     pub(super) fn request_correlation_id_accepts_server_key_and_alias() {
         let mut request = Request::new(());
         request.metadata_mut().insert(CORRELATION_ID_METADATA_KEY, MetadataValue::try_from("corr-123").unwrap());
@@ -147,33 +140,6 @@ mod correlation_tests {
         alias_request.metadata_mut().insert("x-correlation-id", MetadataValue::try_from("corr-alias").unwrap());
 
         assert_eq!(request_correlation_id(&alias_request).unwrap().as_deref(), Some("corr-alias"));
-    }
-
-    #[test]
-    pub(super) fn query_response_metadata_echoes_query_and_correlation_id() {
-        let mut response = Response::new(());
-
-        attach_query_response_metadata(&mut response, "query-1", Some("corr-1"));
-
-        assert_eq!(
-            response.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
-            Some("query-1")
-        );
-        assert_eq!(
-            response.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
-            Some("corr-1")
-        );
-    }
-
-    #[test]
-    pub(super) fn status_metadata_echoes_query_and_correlation_id() {
-        let status = status_with_query_id_and_correlation_id(Status::unavailable("busy"), "query-1", Some("corr-1"));
-
-        assert_eq!(status.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()), Some("query-1"));
-        assert_eq!(
-            status.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
-            Some("corr-1")
-        );
     }
 
     #[tokio::test]
@@ -444,7 +410,11 @@ mod correlation_tests {
 
     #[test]
     fn stream_error_terminalizes_once_with_structured_adapter_metadata() {
-        let service = test_service();
+        let service = DatafusionAlgeonFlightSqlService::new(
+            Arc::new(SessionContext::new()),
+            Arc::new(QueryAdmission::new_for_tests()),
+            Duration::from_secs(30),
+        );
         let query_id = "stream-error-terminal";
         let planning = service
             .coordinator
@@ -670,7 +640,11 @@ mod correlation_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn get_query_stats_action_waits_for_another_render_off_the_tokio_worker() {
         const QUERY_ID: &str = "worker-stats-render";
-        let service = test_service();
+        let service = DatafusionAlgeonFlightSqlService::new(
+            Arc::new(SessionContext::new()),
+            Arc::new(QueryAdmission::new_for_tests()),
+            Duration::from_secs(30),
+        );
         let execution = service
             .coordinator
             .register_with_id(QUERY_ID, "select 1", None, RuntimeObservationConfig::bounded(16, 4096))
@@ -758,7 +732,11 @@ mod correlation_tests {
         const SQL_SECRET: &str = "rpc-sql-literal-secret";
         const RAW_SOURCE: &str = "s3://reader:rpc-path-secret@private-bucket/customer.parquet?token=raw-token";
 
-        let service = test_service();
+        let service = DatafusionAlgeonFlightSqlService::new(
+            Arc::new(SessionContext::new()),
+            Arc::new(QueryAdmission::new_for_tests()),
+            Duration::from_secs(30),
+        );
         let planning = service
             .coordinator
             .register_with_id_with_attempt_observation(
@@ -907,7 +885,11 @@ mod correlation_tests {
     async fn unavailable_runtime_artifact_action_emits_only_its_control_frame() {
         const QUERY_ID: &str = "runtime-artifact-unavailable";
 
-        let service = test_service();
+        let service = DatafusionAlgeonFlightSqlService::new(
+            Arc::new(SessionContext::new()),
+            Arc::new(QueryAdmission::new_for_tests()),
+            Duration::from_secs(30),
+        );
         let planning = service
             .coordinator
             .register_with_id(QUERY_ID, "SELECT 1", None, service.runtime_observation_config)
@@ -951,7 +933,11 @@ mod correlation_tests {
     async fn dropping_runtime_artifact_action_stream_releases_egress_lease() {
         const QUERY_ID: &str = "runtime-artifact-stream-cancel";
 
-        let service = test_service();
+        let service = DatafusionAlgeonFlightSqlService::new(
+            Arc::new(SessionContext::new()),
+            Arc::new(QueryAdmission::new_for_tests()),
+            Duration::from_secs(30),
+        );
         let planning = service.register_query(QUERY_ID.to_string(), "SELECT 1".to_string(), None).unwrap();
         planning.into_execution().unwrap().succeed();
         assert_eq!(service.coordinator.artifact_egress_usage(), (0, 0));

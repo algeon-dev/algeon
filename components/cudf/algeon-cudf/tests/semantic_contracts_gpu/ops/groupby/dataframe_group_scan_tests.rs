@@ -2,7 +2,7 @@
 
 use cudf::{DataFrame, Exec, SortOptions, ops::reduction::ScanAgg};
 
-use crate::common::{run_named_cases, sample_runtime};
+use crate::common::sample_runtime;
 
 fn group_scan_sorted_returns_row_aligned_cumulative_sum_per_group() {
     let runtime = sample_runtime();
@@ -38,13 +38,13 @@ fn row_positions_are_aligned_to_current_frame_order() {
     assert_eq!(positions.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2]);
 }
 
-#[test]
-fn dataframe_group_scan_tests_cases() {
-    run_named_cases(&[
-        (
-            "group_scan_sorted_returns_row_aligned_cumulative_sum_per_group",
-            group_scan_sorted_returns_row_aligned_cumulative_sum_per_group,
-        ),
-        ("row_positions_are_aligned_to_current_frame_order", row_positions_are_aligned_to_current_frame_order),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "dataframe_group_scan_tests::group_scan_sorted_returns_row_aligned_cumulative_sum_per_group",
+        group_scan_sorted_returns_row_aligned_cumulative_sum_per_group,
+    ),
+    (
+        "dataframe_group_scan_tests::row_positions_are_aligned_to_current_frame_order",
+        row_positions_are_aligned_to_current_frame_order,
+    ),
+];

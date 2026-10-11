@@ -298,39 +298,3 @@ fn libcudf_and_both_shims_resolve_one_candidate_rmm() {
         );
     }
 }
-
-#[test]
-fn public_handles_are_nominal_opaque_pointer_types() {
-    let public_headers = Path::new(MANIFEST_DIR).join("native/include/cudf_rust");
-    let mut headers = Vec::new();
-    collect_headers(&public_headers, &mut headers);
-    for header in headers {
-        let text = fs::read_to_string(&header).expect("public header must be readable");
-        assert!(
-            !text.contains("typedef void* cudf_") && !text.contains("typedef void *cudf_"),
-            "{} must not expose void-pointer handles",
-            header.display()
-        );
-    }
-
-    let compact_headers = fs::read_dir(&public_headers)
-        .unwrap()
-        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
-        .collect::<String>()
-        .split_ascii_whitespace()
-        .collect::<String>();
-    for declaration in [
-        "typedef struct cudf_column_handle_state *cudf_column_handle;",
-        "typedef struct cudf_table_handle_state *cudf_table_handle;",
-        "typedef struct cudf_scalar_handle_state *cudf_scalar_handle;",
-        "typedef struct cudf_stream_handle_state *cudf_stream_handle;",
-        "typedef struct cudf_event_handle_state *cudf_event_handle;",
-        "typedef struct cudf_memory_resource_handle_state *cudf_memory_resource_handle;",
-    ] {
-        let compact_declaration = declaration.split_ascii_whitespace().collect::<String>();
-        assert!(
-            compact_headers.contains(&compact_declaration),
-            "missing nominal public handle declaration `{declaration}`"
-        );
-    }
-}

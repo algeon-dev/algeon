@@ -846,6 +846,7 @@ pub(crate) fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static 
 mod tests {
     use algeon_datafusion::{
         native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport},
+        planner::AlgeonGpuExecutionMode,
         source_cardinality::SOURCE_UNIQUE_KEYS_METADATA_KEY,
     };
     use workloads::tpcds::write_tiny_tpcds_parquet_dataset;
@@ -893,6 +894,28 @@ mod tests {
         // where a join would drop one keyed source's entry for another's.
         assert_eq!(schema.metadata().get(SOURCE_UNIQUE_KEYS_METADATA_KEY), None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn tpcds_decimal_join_predicate_queries_require_no_datafusion_cpu() {
+        let root = std::env::temp_dir().join(format!("algeon-tpcds-decimal-join-test-{}", std::process::id()));
+        write_tiny_tpcds_parquet_dataset(&root).unwrap();
+        let config = tpcds_native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
+        let state = SessionStateBuilder::new_with_default_features()
+            .with_config(native_tpcds_session_config(tpcds_report_session_config()))
+            .with_algeon_native(config)
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        register_tpcds_tables_with_native_metadata(&ctx, &root).await.unwrap();
+        for query in TPCDS_QUERIES.iter().filter(|query| matches!(query.id, "q04" | "q74" | "q75")) {
+            let (state, logical) = ctx.sql(query.sql).await.unwrap().into_parts();
+            let (_, diagnostics) = plan_with_native_diagnostics(&state, &logical)
+                .await
+                .unwrap_or_else(|error| panic!("{} must require native execution: {error}", query.id));
+            assert_eq!(diagnostics.report.selected_count(), 1, "{}: {:?}", query.id, diagnostics.report.outcomes());
+            assert_eq!(diagnostics.report.not_selected_count(), 0, "{}: {:?}", query.id, diagnostics.report.outcomes());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// q36, q70, and q86 rank rows within each rollup level. Their window

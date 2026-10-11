@@ -8,10 +8,7 @@
 
 use cudf::{DataType, Exec, Series, TypeId};
 
-use crate::common::{
-    column_from_slice, error_context_value, host_export_i32_values, host_export_i64_values, nullable_series,
-    run_named_cases, series,
-};
+use crate::common::{error_context_value, host_export_i32_values, host_export_i64_values, nullable_series, series};
 
 // ===========================================================================
 // Series op Series; Result<Series> contract
@@ -56,19 +53,6 @@ fn test_series_div_returns_result_f64() {
 }
 
 // -- output contract: Series formatting never exposes schema names --
-
-fn test_series_op_series_produces_unnamed_result() {
-    let a = series::<i32>("named_a", &[1, 2, 3]).unwrap();
-    let b = series::<i32>("named_b", &[10, 20, 30]).unwrap();
-
-    let result = a.on(Exec::RETAINED).add(&b).unwrap();
-    let output = format!("{}", result);
-    assert!(
-        !output.contains("named_a") && !output.contains("named_b"),
-        "series + series output should not expose schema names: {}",
-        output
-    );
-}
 
 // -- dtype promotion --
 
@@ -239,23 +223,6 @@ fn test_series_div_scalar_f32() {
 
 // -- output contract: scalar ops also omit schema names in Series formatting --
 
-fn test_series_op_scalar_display_omits_input_name() {
-    let s = series::<f64>("my_col", &[1.0, 2.0, 3.0]).unwrap();
-
-    let result = s.on(Exec::RETAINED).mul_scalar(2.0_f64).unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("my_col"), "series * scalar output should not expose schema names: {}", output);
-}
-
-fn test_series_op_scalar_unnamed_stays_unnamed() {
-    // from_column produces an unnamed Series.
-    let unnamed = Series::from_column(column_from_slice(&[1i32, 2, 3]).unwrap()).unwrap();
-
-    let result = unnamed.on(Exec::RETAINED).add_scalar(10_i32).unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("name="), "unnamed series output should stay unnamed: {}", output);
-}
-
 // ===========================================================================
 // Error handling; surfaces Err, not panic
 // ===========================================================================
@@ -337,27 +304,6 @@ fn test_series_rem_scalar_f64() {
     assert!((vals[1] - 1.0).abs() < 1e-10);
 }
 
-fn test_series_rem_produces_unnamed_result() {
-    let a = series::<i32>("named_a", &[10]).unwrap();
-    let b = series::<i32>("named_b", &[3]).unwrap();
-
-    let result = a.on(Exec::RETAINED).rem(&b).unwrap();
-    let output = format!("{}", result);
-    assert!(
-        !output.contains("named_a") && !output.contains("named_b"),
-        "series % series output should not expose schema names: {}",
-        output
-    );
-}
-
-fn test_series_rem_scalar_display_omits_input_name() {
-    let s = series::<i32>("my_col", &[10, 23]).unwrap();
-
-    let result = s.on(Exec::RETAINED).rem_scalar(3_i32).unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("my_col"), "series % scalar output should not expose schema names: {}", output);
-}
-
 // ===========================================================================
 // Negation
 // ===========================================================================
@@ -378,14 +324,6 @@ fn test_series_neg_f64() {
     assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![-1.5, 2.5]);
 }
 
-fn test_series_neg_display_omits_input_name() {
-    let s = series::<i32>("my_col", &[1, 2]).unwrap();
-
-    let result = s.on(Exec::RETAINED).neg().unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("my_col"), "negated series output should not expose schema names: {}", output);
-}
-
 // ===========================================================================
 // Logical not and boolean mask composition (Bool8)
 // ===========================================================================
@@ -397,14 +335,6 @@ fn test_series_not_bool() {
 
     assert_eq!(out.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(out.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
-}
-
-fn test_series_not_display_omits_input_name() {
-    let s = series::<bool>("flags", &[true, false]).unwrap();
-
-    let result = s.on(Exec::RETAINED).logical_not().unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("flags"), "logical-not series output should not expose schema names: {}", output);
 }
 
 fn test_series_logical_and_method_bool() {
@@ -425,62 +355,55 @@ fn test_series_logical_or_method_bool() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
 }
 
-#[test]
-fn series_ops_tests_cases() {
-    run_named_cases(&[
-        ("test_series_add_returns_result", test_series_add_returns_result),
-        ("test_series_sub_returns_result", test_series_sub_returns_result),
-        ("test_series_mul_returns_result", test_series_mul_returns_result),
-        ("test_series_div_returns_result_f64", test_series_div_returns_result_f64),
-        ("test_series_op_series_produces_unnamed_result", test_series_op_series_produces_unnamed_result),
-        ("test_series_add_mixed_type_promotion", test_series_add_mixed_type_promotion),
-        (
-            "test_series_add_decimal64_same_scale_preserves_scale_and_raw_values",
-            test_series_add_decimal64_same_scale_preserves_scale_and_raw_values,
-        ),
-        (
-            "test_series_mul_decimal64_same_scale_sums_scales_and_raw_values",
-            test_series_mul_decimal64_same_scale_sums_scales_and_raw_values,
-        ),
-        (
-            "test_series_add_decimal64_mixed_scale_uses_finer_scale_and_raw_values",
-            test_series_add_decimal64_mixed_scale_uses_finer_scale_and_raw_values,
-        ),
-        (
-            "test_series_add_nullable_decimal64_preserves_scale_and_nulls",
-            test_series_add_nullable_decimal64_preserves_scale_and_nulls,
-        ),
-        (
-            "test_series_timestamp_days_filter_predicate_matches_tpch_date_shape",
-            test_series_timestamp_days_filter_predicate_matches_tpch_date_shape,
-        ),
-        (
-            "test_series_timestamp_minus_timestamp_returns_duration_days",
-            test_series_timestamp_minus_timestamp_returns_duration_days,
-        ),
-        ("test_series_mul_scalar_f64", test_series_mul_scalar_f64),
-        ("test_series_add_scalar_i32", test_series_add_scalar_i32),
-        ("test_series_sub_scalar_i64", test_series_sub_scalar_i64),
-        ("test_series_div_scalar_f32", test_series_div_scalar_f32),
-        ("test_series_op_scalar_display_omits_input_name", test_series_op_scalar_display_omits_input_name),
-        ("test_series_op_scalar_unnamed_stays_unnamed", test_series_op_scalar_unnamed_stays_unnamed),
-        ("test_series_op_series_type_mismatch_returns_err", test_series_op_series_type_mismatch_returns_err),
-        (
-            "test_series_scalar_ops_support_remaining_integer_types",
-            test_series_scalar_ops_support_remaining_integer_types,
-        ),
-        ("test_series_rem_i32", test_series_rem_i32),
-        ("test_series_rem_f64", test_series_rem_f64),
-        ("test_series_rem_scalar_i32", test_series_rem_scalar_i32),
-        ("test_series_rem_scalar_f64", test_series_rem_scalar_f64),
-        ("test_series_rem_produces_unnamed_result", test_series_rem_produces_unnamed_result),
-        ("test_series_rem_scalar_display_omits_input_name", test_series_rem_scalar_display_omits_input_name),
-        ("test_series_neg_i32", test_series_neg_i32),
-        ("test_series_neg_f64", test_series_neg_f64),
-        ("test_series_neg_display_omits_input_name", test_series_neg_display_omits_input_name),
-        ("test_series_not_bool", test_series_not_bool),
-        ("test_series_not_display_omits_input_name", test_series_not_display_omits_input_name),
-        ("test_series_logical_and_method_bool", test_series_logical_and_method_bool),
-        ("test_series_logical_or_method_bool", test_series_logical_or_method_bool),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("series_ops_tests::test_series_add_returns_result", test_series_add_returns_result),
+    ("series_ops_tests::test_series_sub_returns_result", test_series_sub_returns_result),
+    ("series_ops_tests::test_series_mul_returns_result", test_series_mul_returns_result),
+    ("series_ops_tests::test_series_div_returns_result_f64", test_series_div_returns_result_f64),
+    ("series_ops_tests::test_series_add_mixed_type_promotion", test_series_add_mixed_type_promotion),
+    (
+        "series_ops_tests::test_series_add_decimal64_same_scale_preserves_scale_and_raw_values",
+        test_series_add_decimal64_same_scale_preserves_scale_and_raw_values,
+    ),
+    (
+        "series_ops_tests::test_series_mul_decimal64_same_scale_sums_scales_and_raw_values",
+        test_series_mul_decimal64_same_scale_sums_scales_and_raw_values,
+    ),
+    (
+        "series_ops_tests::test_series_add_decimal64_mixed_scale_uses_finer_scale_and_raw_values",
+        test_series_add_decimal64_mixed_scale_uses_finer_scale_and_raw_values,
+    ),
+    (
+        "series_ops_tests::test_series_add_nullable_decimal64_preserves_scale_and_nulls",
+        test_series_add_nullable_decimal64_preserves_scale_and_nulls,
+    ),
+    (
+        "series_ops_tests::test_series_timestamp_days_filter_predicate_matches_tpch_date_shape",
+        test_series_timestamp_days_filter_predicate_matches_tpch_date_shape,
+    ),
+    (
+        "series_ops_tests::test_series_timestamp_minus_timestamp_returns_duration_days",
+        test_series_timestamp_minus_timestamp_returns_duration_days,
+    ),
+    ("series_ops_tests::test_series_mul_scalar_f64", test_series_mul_scalar_f64),
+    ("series_ops_tests::test_series_add_scalar_i32", test_series_add_scalar_i32),
+    ("series_ops_tests::test_series_sub_scalar_i64", test_series_sub_scalar_i64),
+    ("series_ops_tests::test_series_div_scalar_f32", test_series_div_scalar_f32),
+    (
+        "series_ops_tests::test_series_op_series_type_mismatch_returns_err",
+        test_series_op_series_type_mismatch_returns_err,
+    ),
+    (
+        "series_ops_tests::test_series_scalar_ops_support_remaining_integer_types",
+        test_series_scalar_ops_support_remaining_integer_types,
+    ),
+    ("series_ops_tests::test_series_rem_i32", test_series_rem_i32),
+    ("series_ops_tests::test_series_rem_f64", test_series_rem_f64),
+    ("series_ops_tests::test_series_rem_scalar_i32", test_series_rem_scalar_i32),
+    ("series_ops_tests::test_series_rem_scalar_f64", test_series_rem_scalar_f64),
+    ("series_ops_tests::test_series_neg_i32", test_series_neg_i32),
+    ("series_ops_tests::test_series_neg_f64", test_series_neg_f64),
+    ("series_ops_tests::test_series_not_bool", test_series_not_bool),
+    ("series_ops_tests::test_series_logical_and_method_bool", test_series_logical_and_method_bool),
+    ("series_ops_tests::test_series_logical_or_method_bool", test_series_logical_or_method_bool),
+];

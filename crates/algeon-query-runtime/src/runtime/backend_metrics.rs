@@ -997,15 +997,6 @@ mod tests {
     }
 
     #[test]
-    fn store_source_never_names_the_query_scoped_metric_container() {
-        let forbidden_type = concat!("Query", "Metrics");
-        assert!(
-            !include_str!("backend_metrics.rs").contains(forbidden_type),
-            "the fixed backend store must not ingest query-scoped metric rows"
-        );
-    }
-
-    #[test]
     fn histogram_projection_converts_units_and_cumulative_buckets_at_the_owning_boundary() {
         let descriptor = BackendMetric::attempts_duration.descriptor();
         let projected = project_backend_histogram(

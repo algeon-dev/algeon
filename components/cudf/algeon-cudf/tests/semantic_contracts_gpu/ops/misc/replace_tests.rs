@@ -2,7 +2,7 @@
 
 use cudf::Exec;
 
-use crate::common::{nullable_series, run_named_cases, series};
+use crate::common::{nullable_series, series};
 
 // -- Forward fill (ffill) tests -----------------------------------------------
 
@@ -73,20 +73,20 @@ fn test_replace_nulls_policy_float64() {
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![1.0, 1.0, 3.0]);
 }
 
-#[test]
-fn replace_tests_cases() {
-    run_named_cases(&[
-        ("test_replace_nulls_policy_ffill_basic", test_replace_nulls_policy_ffill_basic),
-        ("test_replace_nulls_policy_ffill_leading_nulls_remain", test_replace_nulls_policy_ffill_leading_nulls_remain),
-        ("test_replace_nulls_policy_ffill_no_nulls", test_replace_nulls_policy_ffill_no_nulls),
-        ("test_replace_nulls_policy_ffill_all_null", test_replace_nulls_policy_ffill_all_null),
-        ("test_replace_nulls_policy_ffill_empty", test_replace_nulls_policy_ffill_empty),
-        ("test_replace_nulls_policy_bfill_basic", test_replace_nulls_policy_bfill_basic),
-        (
-            "test_replace_nulls_policy_bfill_trailing_nulls_remain",
-            test_replace_nulls_policy_bfill_trailing_nulls_remain,
-        ),
-        ("test_replace_nulls_policy_bfill_all_null", test_replace_nulls_policy_bfill_all_null),
-        ("test_replace_nulls_policy_float64", test_replace_nulls_policy_float64),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("replace_tests::test_replace_nulls_policy_ffill_basic", test_replace_nulls_policy_ffill_basic),
+    (
+        "replace_tests::test_replace_nulls_policy_ffill_leading_nulls_remain",
+        test_replace_nulls_policy_ffill_leading_nulls_remain,
+    ),
+    ("replace_tests::test_replace_nulls_policy_ffill_no_nulls", test_replace_nulls_policy_ffill_no_nulls),
+    ("replace_tests::test_replace_nulls_policy_ffill_all_null", test_replace_nulls_policy_ffill_all_null),
+    ("replace_tests::test_replace_nulls_policy_ffill_empty", test_replace_nulls_policy_ffill_empty),
+    ("replace_tests::test_replace_nulls_policy_bfill_basic", test_replace_nulls_policy_bfill_basic),
+    (
+        "replace_tests::test_replace_nulls_policy_bfill_trailing_nulls_remain",
+        test_replace_nulls_policy_bfill_trailing_nulls_remain,
+    ),
+    ("replace_tests::test_replace_nulls_policy_bfill_all_null", test_replace_nulls_policy_bfill_all_null),
+    ("replace_tests::test_replace_nulls_policy_float64", test_replace_nulls_policy_float64),
+];

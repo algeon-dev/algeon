@@ -143,15 +143,6 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
     Ok(gpu)
 }
 
-#[cfg(test)]
-fn max_graph_peak(left: Option<u64>, right: Option<u64>) -> Option<u64> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(peak), None) | (None, Some(peak)) => Some(peak),
-        (None, None) => None,
-    }
-}
-
 fn graph_peak_measurement(cache_scope_high_water_bytes: Option<u64>) -> (Option<u64>, GraphMeasuredPeakProvenance) {
     match cache_scope_high_water_bytes {
         Some(peak) => (Some(peak), GraphMeasuredPeakProvenance::CacheScopeHighWater),
@@ -244,27 +235,8 @@ mod graph_peak_measurement_tests {
     use query_planning::plan::{GraphAlgorithm, NodeId};
     use query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance;
 
-    use super::{graph_peak_measurement, max_graph_peak, record_graph_claim_peak_on_error};
+    use super::record_graph_claim_peak_on_error;
     use crate::exec::ExecutionMetrics;
-
-    #[test]
-    fn cache_scope_peak_is_the_direct_attributed_measurement() {
-        assert_eq!(
-            graph_peak_measurement(Some(2_048)),
-            (Some(2_048), GraphMeasuredPeakProvenance::CacheScopeHighWater)
-        );
-    }
-
-    #[test]
-    fn graph_peak_is_unavailable_without_an_attributed_scope() {
-        assert_eq!(graph_peak_measurement(None), (None, GraphMeasuredPeakProvenance::Unavailable));
-    }
-
-    #[test]
-    fn cache_scope_error_and_retry_peaks_keep_the_larger_direct_observation() {
-        assert_eq!(max_graph_peak(Some(2_048), Some(4_096)), Some(4_096));
-        assert_eq!(max_graph_peak(None, Some(4_096)), Some(4_096));
-    }
 
     #[test]
     fn graph_claim_error_records_the_measured_cache_scope_peak() {

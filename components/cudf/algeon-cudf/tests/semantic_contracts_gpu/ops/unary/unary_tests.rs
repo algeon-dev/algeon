@@ -2,7 +2,7 @@
 
 use cudf::{DataType, Exec, TypeId, ops::unary};
 
-use crate::common::{error_context_value, run_named_cases, series};
+use crate::common::{error_context_value, series};
 
 fn test_is_supported_cast() {
     let from = DataType::new(TypeId::Int32);
@@ -31,11 +31,8 @@ fn test_logical_not_empty() {
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
 }
 
-#[test]
-fn unary_tests_cases() {
-    run_named_cases(&[
-        ("test_is_supported_cast", test_is_supported_cast),
-        ("test_cast_error_contains_operation_context", test_cast_error_contains_operation_context),
-        ("test_logical_not_empty", test_logical_not_empty),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("unary_tests::test_is_supported_cast", test_is_supported_cast),
+    ("unary_tests::test_cast_error_contains_operation_context", test_cast_error_contains_operation_context),
+    ("unary_tests::test_logical_not_empty", test_logical_not_empty),
+];

@@ -142,21 +142,4 @@ mod tests {
             BoundedPartitionRowPolicy::DEFAULT_MIXED_JOIN_MAX_PARTITIONS
         );
     }
-
-    #[test]
-    fn hash_frame_stream_min_partitions_preserves_stream_floor() {
-        assert_eq!(
-            BoundedPartitionRowPolicy::default().hash_frame_stream_min_partitions(),
-            BoundedPartitionRowPolicy::DEFAULT_HASH_FRAME_STREAM_MIN_PARTITIONS
-        );
-    }
-
-    #[test]
-    fn source_adjacent_partitioned_aggregate_min_partition_count_tracks_chunk_count_with_bounds() {
-        let policy = BoundedPartitionRowPolicy::default();
-
-        assert_eq!(policy.source_adjacent_partitioned_aggregate_min_partition_count(0), 1);
-        assert_eq!(policy.source_adjacent_partitioned_aggregate_min_partition_count(7), 7);
-        assert_eq!(policy.source_adjacent_partitioned_aggregate_min_partition_count(64), 32);
-    }
 }

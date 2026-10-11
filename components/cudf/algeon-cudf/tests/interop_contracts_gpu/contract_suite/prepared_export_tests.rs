@@ -31,6 +31,7 @@ use cudf::{
             trigger_interop_projection_struct_missing_child_for_test,
         },
         prelude::*,
+        run_named_cases,
     },
 };
 use cudf_sys::{
@@ -48,28 +49,12 @@ use rapids_interop::{
 };
 
 use crate::common::{
-    self, column_from_slice, dataframe_from_columns, interop_error_context_value, lock_event_observation,
-    run_named_cases, series, with_test_runtime,
+    self, column_from_slice, dataframe_from_columns, interop_error_context_value, lock_event_observation, series,
+    with_test_runtime,
 };
 
-const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
-
-fn should_run_multi_gpu_test() -> bool {
-    if std::env::var(SKIP_MULTI_GPU_ENV).unwrap_or_default() == "1" {
-        eprintln!("skipping multi-GPU test because {SKIP_MULTI_GPU_ENV}=1");
-        return false;
-    }
-
-    let count = DeviceId::count().expect("failed to query visible CUDA devices");
-    if count < 2 {
-        eprintln!("skipping multi-GPU test because only {count} CUDA device is visible");
-        return false;
-    }
-
-    true
-}
-
 fn first_two_test_devices() -> (DeviceId, DeviceId) {
+    assert!(DeviceId::count().unwrap() >= 2, "requires at least 2 GPUs");
     let first = DeviceId::new(0).unwrap();
     let second = DeviceId::new(1).unwrap();
     (first, second)
@@ -217,7 +202,7 @@ fn recursive_supported_frame() -> DataFrame {
     DataFrame::from_series([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap()
 }
 
-mod lease_contracts {
+pub(crate) mod lease_contracts {
     use super::*;
 
     fn shared_synchronous_completion_falls_back_by_return() {
@@ -413,7 +398,6 @@ mod lease_contracts {
         assert!(consumer_done.is_ready().unwrap());
     }
 
-    #[test]
     fn device_event_readiness_must_match_the_producer_device() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
@@ -429,10 +413,12 @@ mod lease_contracts {
             },
             access => panic!("expected device-event readiness, got {access:?}"),
         }
+    }
 
-        if !should_run_multi_gpu_test() {
-            return;
-        }
+    #[test]
+    #[ignore = "requires at least 2 GPUs"]
+    fn device_event_export_rejects_readiness_from_another_device() {
+        let _observation_lock = lock_event_observation();
         let _device_guard = common::DeviceRestoreGuard::new();
         let (device0, device1) = first_two_test_devices();
         common::set_current_device(device0);
@@ -573,38 +559,48 @@ mod lease_contracts {
         completion.synchronize().unwrap();
     }
 
-    #[test]
-    fn prepared_export_tests_cases_lease_contracts() {
-        run_named_cases(&[
-            ("shared_synchronous_completion_falls_back_by_return", shared_synchronous_completion_falls_back_by_return),
-            (
-                "shared_stream_lease_orders_consumer_stream_and_returns_witness",
-                shared_stream_lease_orders_consumer_stream_and_returns_witness,
-            ),
-            (
-                "shared_event_ready_stream_lease_waits_producer_event_before_consumer_stream",
-                shared_event_ready_stream_lease_waits_producer_event_before_consumer_stream,
-            ),
-            (
-                "into_prepared_column_export_with_event_retains_the_readiness_event",
-                into_prepared_column_export_with_event_retains_the_readiness_event,
-            ),
-            (
-                "into_prepared_table_export_with_event_retains_the_readiness_event",
-                into_prepared_table_export_with_event_retains_the_readiness_event,
-            ),
-            ("shared_lease_drop_synchronizes_consumer_stream", shared_lease_drop_synchronizes_consumer_stream),
-            (
-                "runtime_stream_lease_records_one_completion_event_and_returns_witness",
-                runtime_stream_lease_records_one_completion_event_and_returns_witness,
-            ),
-            ("runtime_custom_backend_complete_path_is_used", runtime_custom_backend_complete_path_is_used),
-            (
-                "shared_leases_can_overlap_and_reacquire_one_export_root",
-                shared_leases_can_overlap_and_reacquire_one_export_root,
-            ),
-        ]);
-    }
+    pub(crate) const CASES: &[(&str, fn())] = &[
+        (
+            "prepared_export_tests::lease_contracts::shared_synchronous_completion_falls_back_by_return",
+            shared_synchronous_completion_falls_back_by_return,
+        ),
+        (
+            "prepared_export_tests::lease_contracts::shared_stream_lease_orders_consumer_stream_and_returns_witness",
+            shared_stream_lease_orders_consumer_stream_and_returns_witness,
+        ),
+        (
+            "prepared_export_tests::lease_contracts::shared_event_ready_stream_lease_waits_producer_event_before_consumer_stream",
+            shared_event_ready_stream_lease_waits_producer_event_before_consumer_stream,
+        ),
+        (
+            "prepared_export_tests::lease_contracts::into_prepared_column_export_with_event_retains_the_readiness_event",
+            into_prepared_column_export_with_event_retains_the_readiness_event,
+        ),
+        (
+            "prepared_export_tests::lease_contracts::into_prepared_table_export_with_event_retains_the_readiness_event",
+            into_prepared_table_export_with_event_retains_the_readiness_event,
+        ),
+        (
+            "prepared_export_tests::lease_contracts::shared_lease_drop_synchronizes_consumer_stream",
+            shared_lease_drop_synchronizes_consumer_stream,
+        ),
+        (
+            "prepared_export_tests::lease_contracts::runtime_stream_lease_records_one_completion_event_and_returns_witness",
+            runtime_stream_lease_records_one_completion_event_and_returns_witness,
+        ),
+        (
+            "prepared_export_tests::lease_contracts::runtime_custom_backend_complete_path_is_used",
+            runtime_custom_backend_complete_path_is_used,
+        ),
+        (
+            "prepared_export_tests::lease_contracts::shared_leases_can_overlap_and_reacquire_one_export_root",
+            shared_leases_can_overlap_and_reacquire_one_export_root,
+        ),
+        (
+            "prepared_export_tests::lease_contracts::device_event_readiness_must_match_the_producer_device",
+            device_event_readiness_must_match_the_producer_device,
+        ),
+    ];
 }
 
 mod device_export_contracts {
@@ -751,7 +747,7 @@ mod device_export_contracts {
     }
 
     #[test]
-    fn helper_built_exports_use_explicit_runtime_binding_and_cross_device_inputs_are_rejected() {
+    fn helper_built_exports_use_explicit_runtime_binding() {
         with_test_runtime(|runtime| {
             let column = column_from_slice(&[1i32, 2, 3]).unwrap();
             let view = column.testing_view().unwrap();
@@ -775,11 +771,11 @@ mod device_export_contracts {
                 runtime.device(),
             );
         });
+    }
 
-        if !should_run_multi_gpu_test() {
-            return;
-        }
-
+    #[test]
+    #[ignore = "requires at least 2 GPUs"]
+    fn helper_built_exports_reject_cross_device_inputs() {
         let (device0, device1) = first_two_test_devices();
         let rt0 = Runtime::builder().with_device(device0).build().unwrap();
         let rt1 = Runtime::builder().with_device(device1).build().unwrap();

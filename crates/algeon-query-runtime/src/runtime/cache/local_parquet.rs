@@ -1258,12 +1258,11 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires at least 2 GPUs"]
     fn source_copy_rejects_a_cache_domain_on_another_device() {
-        let (context, source, _schema, _key, bytes) = source_fixture();
         let device_count = cudf::DeviceId::count().expect("CUDA device count");
-        if device_count < 2 {
-            return;
-        }
+        assert!(device_count >= 2, "requires at least 2 GPUs, found {device_count}");
+        let (context, source, _schema, _key, bytes) = source_fixture();
         let source_device = source.runtime().device();
         let other_device =
             cudf::DeviceId::new(if source_device.ordinal() == 0 { 1 } else { 0 }).expect("another visible CUDA device");

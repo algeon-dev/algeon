@@ -1,6 +1,7 @@
 use std::{os::raw::c_void, ptr};
 
 use super::*;
+use crate::support::run_named_cases;
 
 fn make_bool8_column(data: &[u8]) -> cudf_sys::cudf_column_handle {
     let (_stream, _mr, exec) = strict_exec_owners();
@@ -21,9 +22,7 @@ fn make_bool8_column(data: &[u8]) -> cudf_sys::cudf_column_handle {
     out
 }
 
-#[test]
 fn test_concatenate_columns_null_element_returns_null_error() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(col);
 
@@ -40,9 +39,8 @@ fn test_concatenate_columns_null_element_returns_null_error() {
         cudf_sys::cudf_column_destroy(col);
     }
 }
-#[test]
+
 fn test_concatenate_tables_null_element_returns_null_error() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -61,9 +59,7 @@ fn test_concatenate_tables_null_element_returns_null_error() {
     }
 }
 
-#[test]
 fn test_sort_negative_num_keys_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[3, 2, 1]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -81,9 +77,7 @@ fn test_sort_negative_num_keys_rejected() {
     }
 }
 
-#[test]
 fn test_sort_invalid_order_enum_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[3, 2, 1]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -104,9 +98,7 @@ fn test_sort_invalid_order_enum_rejected() {
     }
 }
 
-#[test]
 fn test_sort_invalid_null_order_enum_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[3, 2, 1]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -126,9 +118,7 @@ fn test_sort_invalid_null_order_enum_rejected() {
     }
 }
 
-#[test]
 fn test_drop_nulls_negative_keep_threshold_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -146,9 +136,7 @@ fn test_drop_nulls_negative_keep_threshold_rejected() {
     }
 }
 
-#[test]
 fn test_drop_nulls_negative_num_keys_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -167,9 +155,7 @@ fn test_drop_nulls_negative_num_keys_rejected() {
     }
 }
 
-#[test]
 fn test_distinct_negative_num_keys_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -189,9 +175,7 @@ fn test_distinct_negative_num_keys_rejected() {
     }
 }
 
-#[test]
 fn test_gather_invalid_bounds_policy_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[10, 20, 30]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -214,9 +198,7 @@ fn test_gather_invalid_bounds_policy_rejected() {
     }
 }
 
-#[test]
 fn test_distinct_invalid_policy_values_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -246,9 +228,7 @@ fn test_distinct_invalid_policy_values_rejected() {
     }
 }
 
-#[test]
 fn test_drop_nulls_zero_num_keys_allows_null_keys_pointer() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -272,9 +252,7 @@ fn test_drop_nulls_zero_num_keys_allows_null_keys_pointer() {
     }
 }
 
-#[test]
 fn test_distinct_zero_num_keys_allows_null_keys_pointer() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -309,9 +287,7 @@ fn test_distinct_zero_num_keys_allows_null_keys_pointer() {
     }
 }
 
-#[test]
 fn test_gather_ex_uses_explicit_memory_resource() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let input_col = make_i32_column(&[10, 20, 30, 40]);
@@ -354,9 +330,7 @@ fn test_gather_ex_uses_explicit_memory_resource() {
     }
 }
 
-#[test]
 fn test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 3, 4]));
@@ -390,9 +364,7 @@ fn test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenan
     }
 }
 
-#[test]
 fn test_scatter_null_scatter_map_returns_libcudf_error() {
-    let _shim_state = lock_shim_state();
     let stream = OwnedStream::new();
     let mr = OwnedMemoryResource::new_cuda();
     let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
@@ -419,9 +391,7 @@ fn test_scatter_null_scatter_map_returns_libcudf_error() {
     }
 }
 
-#[test]
 fn test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let source_tbl = make_table_from_one_column(make_i32_column(&[10, 20, 30]));
@@ -459,9 +429,7 @@ fn test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance(
     }
 }
 
-#[test]
 fn test_apply_boolean_mask_ex_uses_explicit_memory_resource() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let input_col = make_i32_column(&[10, 20, 30, 40]);
@@ -496,9 +464,7 @@ fn test_apply_boolean_mask_ex_uses_explicit_memory_resource() {
     }
 }
 
-#[test]
 fn test_replace_nulls_policy_ex_uses_explicit_memory_resource() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let input = make_i32_column_nullable(&[10, 20, 30, 40], &[true, false, true, false]);
@@ -528,9 +494,7 @@ fn test_replace_nulls_policy_ex_uses_explicit_memory_resource() {
     }
 }
 
-#[test]
 fn test_distinct_ex_uses_explicit_memory_resource() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let input_col = make_i32_column(&[1, 2, 1, 3, 2, 4, 4, 5]);
@@ -571,4 +535,50 @@ fn test_distinct_ex_uses_explicit_memory_resource() {
         cudf_sys::cudf_table_view_destroy(input_view);
         cudf_sys::cudf_table_destroy(input_tbl);
     }
+}
+
+#[test]
+fn copying_cases() {
+    run_named_cases(&[
+        ("test_distinct_invalid_policy_values_rejected", test_distinct_invalid_policy_values_rejected),
+        (
+            "test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance",
+            test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance,
+        ),
+        (
+            "test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenance",
+            test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenance,
+        ),
+        ("test_distinct_negative_num_keys_rejected", test_distinct_negative_num_keys_rejected),
+        ("test_sort_negative_num_keys_rejected", test_sort_negative_num_keys_rejected),
+        (
+            "test_replace_nulls_policy_ex_uses_explicit_memory_resource",
+            test_replace_nulls_policy_ex_uses_explicit_memory_resource,
+        ),
+        ("test_scatter_null_scatter_map_returns_libcudf_error", test_scatter_null_scatter_map_returns_libcudf_error),
+        ("test_distinct_ex_uses_explicit_memory_resource", test_distinct_ex_uses_explicit_memory_resource),
+        (
+            "test_concatenate_columns_null_element_returns_null_error",
+            test_concatenate_columns_null_element_returns_null_error,
+        ),
+        (
+            "test_apply_boolean_mask_ex_uses_explicit_memory_resource",
+            test_apply_boolean_mask_ex_uses_explicit_memory_resource,
+        ),
+        ("test_drop_nulls_negative_keep_threshold_rejected", test_drop_nulls_negative_keep_threshold_rejected),
+        ("test_sort_invalid_null_order_enum_rejected", test_sort_invalid_null_order_enum_rejected),
+        ("test_gather_invalid_bounds_policy_rejected", test_gather_invalid_bounds_policy_rejected),
+        (
+            "test_concatenate_tables_null_element_returns_null_error",
+            test_concatenate_tables_null_element_returns_null_error,
+        ),
+        ("test_gather_ex_uses_explicit_memory_resource", test_gather_ex_uses_explicit_memory_resource),
+        ("test_drop_nulls_negative_num_keys_rejected", test_drop_nulls_negative_num_keys_rejected),
+        ("test_sort_invalid_order_enum_rejected", test_sort_invalid_order_enum_rejected),
+        ("test_distinct_zero_num_keys_allows_null_keys_pointer", test_distinct_zero_num_keys_allows_null_keys_pointer),
+        (
+            "test_drop_nulls_zero_num_keys_allows_null_keys_pointer",
+            test_drop_nulls_zero_num_keys_allows_null_keys_pointer,
+        ),
+    ]);
 }

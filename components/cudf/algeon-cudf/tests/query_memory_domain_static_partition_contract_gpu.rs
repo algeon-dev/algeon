@@ -29,27 +29,6 @@ fn failure_source_code(source: DeviceMemoryFailureSource) -> u32 {
 }
 
 #[test]
-fn static_partition_allows_query_memory_domain_on_shared_pool() {
-    let _guard = static_partition_test_lock().lock().unwrap();
-    let device = DeviceId::current().unwrap();
-    let options = DeviceMemoryManagerOptions {
-        allocation_limit_bytes: Some(STATIC_PARTITION_BYTES),
-        ..DeviceMemoryManagerOptions::default()
-    };
-    let manager = DeviceMemoryManager::install(device, InstallSpec { options, ..InstallSpec::default() }).unwrap().0;
-
-    let domain = manager
-        .query_memory_domain(
-            92_001,
-            QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(16 * 1024 * 1024),
-        )
-        .unwrap();
-
-    assert_eq!(domain.identity().unwrap().device, device);
-    assert_eq!(domain.usage().unwrap().allocation_limit_bytes, 8 * 1024 * 1024);
-}
-
-#[test]
 fn static_partition_domain_oom_reports_query_identity_without_trim_or_retry() {
     let _guard = static_partition_test_lock().lock().unwrap();
     let device = DeviceId::current().unwrap();

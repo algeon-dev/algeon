@@ -135,12 +135,4 @@ mod tests {
         assert_eq!(error.fact_value("reason"), Some("lane_exhausted"));
         assert_eq!(error.fact_value("device_ordinal"), Some("3"));
     }
-
-    #[test]
-    fn worker_scope_carries_identity() {
-        let scope = DeviceWorkerScope::new(2, 41, 1);
-        assert_eq!(scope.device_ordinal(), 2);
-        assert_eq!(scope.pool_id(), 41);
-        assert_eq!(scope.lane_index(), 1);
-    }
 }

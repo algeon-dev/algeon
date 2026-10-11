@@ -14,9 +14,7 @@ use cudf::{
     frame::dataframe::GpuRecordBatch,
 };
 
-use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, run_named_cases,
-};
+use crate::common::{last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation};
 
 fn row_major_pack_interleaves_columns_on_target_runtime() {
     let input_runtime = Runtime::new().unwrap();
@@ -355,43 +353,55 @@ fn widen_packed_matrix_to_float64_is_exact_on_target_runtime() {
     assert_eq!(error.code(), ErrorCode::TypeMismatch);
 }
 
-#[test]
-fn matrix_tests_cases() {
-    run_named_cases(&[
-        ("row_major_pack_interleaves_columns_on_target_runtime", row_major_pack_interleaves_columns_on_target_runtime),
-        ("column_major_pack_concatenates_columns", column_major_pack_concatenates_columns),
-        (
-            "widen_packed_matrix_to_float64_is_exact_on_target_runtime",
-            widen_packed_matrix_to_float64_is_exact_on_target_runtime,
-        ),
-        ("unpack_dense_matrix_recovers_columns_on_device", unpack_dense_matrix_recovers_columns_on_device),
-        ("numeric_pack_supports_all_element_widths_and_layouts", numeric_pack_supports_all_element_widths_and_layouts),
-        (
-            "pack_rejects_mixed_supported_elements_and_unsupported_first_element",
-            pack_rejects_mixed_supported_elements_and_unsupported_first_element,
-        ),
-        ("float64_finite_validation_rejects_nan_and_infinity", float64_finite_validation_rejects_nan_and_infinity),
-        (
-            "list_exports_keep_element_binding_and_finite_evidence",
-            list_exports_keep_element_binding_and_finite_evidence,
-        ),
-        ("pack_rejects_empty_input", pack_rejects_empty_input),
-        ("pack_rejects_non_float32_column_with_index_and_types", pack_rejects_non_float32_column_with_index_and_types),
-        ("pack_rejects_row_count_mismatch", pack_rejects_row_count_mismatch),
-        ("pack_rejects_null_feature_values", pack_rejects_null_feature_values),
-        (
-            "pack_preserves_non_null_nan_and_infinity_for_separate_value_validation",
-            pack_preserves_non_null_nan_and_infinity_for_separate_value_validation,
-        ),
-        ("finite_validation_rejects_nan_and_both_infinities", finite_validation_rejects_nan_and_both_infinities),
-        (
-            "finite_validation_covers_multi_column_gpu_packed_output",
-            finite_validation_covers_multi_column_gpu_packed_output,
-        ),
-        (
-            "finite_validation_accepts_empty_matrix_with_bounded_scalar_proof",
-            finite_validation_accepts_empty_matrix_with_bounded_scalar_proof,
-        ),
-        ("finite_validation_uses_exact_binding", finite_validation_uses_exact_binding),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "matrix_tests::row_major_pack_interleaves_columns_on_target_runtime",
+        row_major_pack_interleaves_columns_on_target_runtime,
+    ),
+    ("matrix_tests::column_major_pack_concatenates_columns", column_major_pack_concatenates_columns),
+    (
+        "matrix_tests::widen_packed_matrix_to_float64_is_exact_on_target_runtime",
+        widen_packed_matrix_to_float64_is_exact_on_target_runtime,
+    ),
+    ("matrix_tests::unpack_dense_matrix_recovers_columns_on_device", unpack_dense_matrix_recovers_columns_on_device),
+    (
+        "matrix_tests::numeric_pack_supports_all_element_widths_and_layouts",
+        numeric_pack_supports_all_element_widths_and_layouts,
+    ),
+    (
+        "matrix_tests::pack_rejects_mixed_supported_elements_and_unsupported_first_element",
+        pack_rejects_mixed_supported_elements_and_unsupported_first_element,
+    ),
+    (
+        "matrix_tests::float64_finite_validation_rejects_nan_and_infinity",
+        float64_finite_validation_rejects_nan_and_infinity,
+    ),
+    (
+        "matrix_tests::list_exports_keep_element_binding_and_finite_evidence",
+        list_exports_keep_element_binding_and_finite_evidence,
+    ),
+    ("matrix_tests::pack_rejects_empty_input", pack_rejects_empty_input),
+    (
+        "matrix_tests::pack_rejects_non_float32_column_with_index_and_types",
+        pack_rejects_non_float32_column_with_index_and_types,
+    ),
+    ("matrix_tests::pack_rejects_row_count_mismatch", pack_rejects_row_count_mismatch),
+    ("matrix_tests::pack_rejects_null_feature_values", pack_rejects_null_feature_values),
+    (
+        "matrix_tests::pack_preserves_non_null_nan_and_infinity_for_separate_value_validation",
+        pack_preserves_non_null_nan_and_infinity_for_separate_value_validation,
+    ),
+    (
+        "matrix_tests::finite_validation_rejects_nan_and_both_infinities",
+        finite_validation_rejects_nan_and_both_infinities,
+    ),
+    (
+        "matrix_tests::finite_validation_covers_multi_column_gpu_packed_output",
+        finite_validation_covers_multi_column_gpu_packed_output,
+    ),
+    (
+        "matrix_tests::finite_validation_accepts_empty_matrix_with_bounded_scalar_proof",
+        finite_validation_accepts_empty_matrix_with_bounded_scalar_proof,
+    ),
+    ("matrix_tests::finite_validation_uses_exact_binding", finite_validation_uses_exact_binding),
+];

@@ -12,7 +12,7 @@ use cudf::{
         error::{FactKeyName, FactValue},
         memory::DeviceMemoryResource,
     },
-    testing::prelude::*,
+    testing::{prelude::*, run_named_cases},
 };
 use tempfile::TempDir;
 
@@ -21,8 +21,7 @@ use crate::common::{
     dependency_wait_call_count_for_stream, explicit_bool_series, explicit_i32_column, explicit_i32_series,
     last_destroyed_memory_resource_value, last_exec_mr_value, last_exec_stream_value,
     last_memory_resource_destroy_sequence, last_sync_sequence, last_sync_stream_value, lock_event_observation,
-    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
-    scalar, series,
+    reset_dependency_observation, reset_exec_observation, reset_sync_observation, sample_runtime, scalar, series,
 };
 
 fn explicit_nullable_i32_series(_name: &str, data: &[i32], validity: &[bool], identity: u64) -> Series {

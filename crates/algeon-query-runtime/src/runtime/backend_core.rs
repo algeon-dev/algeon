@@ -2275,12 +2275,16 @@ mod tests {
         assert!(close.observation_quiescent);
     }
 
-    #[test]
-    fn query_activity_returns_only_after_service_resources_and_backend_gpu_permit_release() {
+    fn query_activity_returns_only_after_service_resources_and_backend_gpu_permit_release_case() {
         assert_query_activity_allows_close_and_replacement_after_release(false);
     }
 
     #[test]
+    fn query_activity_returns_only_after_service_resources_and_backend_gpu_permit_release() {
+        query_activity_returns_only_after_service_resources_and_backend_gpu_permit_release_case();
+        context_cleanup_completes_before_query_activity_can_close_and_replace_backend();
+    }
+
     fn context_cleanup_completes_before_query_activity_can_close_and_replace_backend() {
         assert_query_activity_allows_close_and_replacement_after_release(true);
     }
@@ -2563,8 +2567,7 @@ mod tests {
 
     #[test]
     fn begin_attempt_after_close_is_rejected_without_creating_an_attempt() {
-        let _owner_test = live_backend_test_lock();
-        let backend = GpuBackendCore::new(one_device_backend_config(0)).unwrap();
+        let backend = inert_backend_for_observation_delivery_test();
         let session = backend.session_capability();
         assert!(backend.close());
         let before = session.attempt_counters_snapshot();
@@ -2578,8 +2581,7 @@ mod tests {
 
     #[test]
     fn begin_attempt_winning_the_close_gate_is_counted_until_report_ready() {
-        let _owner_test = live_backend_test_lock();
-        let backend = GpuBackendCore::new(one_device_backend_config(0)).unwrap();
+        let backend = inert_backend_for_observation_delivery_test();
         let session = backend.session_capability();
         let begin = session.begin_attempt(BeginAttemptRequest::default()).unwrap();
         assert_eq!(session.attempt_counters_snapshot().attempts_begun, 1);

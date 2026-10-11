@@ -176,49 +176,23 @@ mod tests {
     }
 
     #[test]
-    fn source_unique_key_metadata_preserves_semicolon_column_name() {
-        let schema = Schema::new(vec![
-            Field::new("a;b", DataType::Int32, false),
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Int32, false),
-        ]);
-        let schema = schema_with_source_unique_keys(&schema, &[&["a;b"]]);
-        let unrelated = Expr::binary(Expr::column("a"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
-        let exact = Expr::binary(Expr::column("a;b"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
-
-        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &unrelated));
-        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &exact));
-    }
-
-    #[test]
-    fn source_unique_key_metadata_preserves_comma_column_name() {
-        let schema = Schema::new(vec![
-            Field::new("a,b", DataType::Int32, false),
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Int32, false),
-        ]);
-        let schema = schema_with_source_unique_keys(&schema, &[&["a,b"]]);
-        let split_columns = Expr::binary(
-            Expr::binary(Expr::column("a"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7))),
-            BinaryOp::And,
-            Expr::binary(Expr::column("b"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(9))),
-        );
-        let exact = Expr::binary(Expr::column("a,b"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
-
-        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &split_columns));
-        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &exact));
-    }
-
-    #[test]
-    fn source_unique_key_metadata_preserves_whitespace_column_name() {
-        let schema =
-            Schema::new(vec![Field::new(" id ", DataType::Int32, false), Field::new("id", DataType::Int32, false)]);
-        let schema = schema_with_source_unique_keys(&schema, &[&[" id "]]);
-        let normalized = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
-        let exact = Expr::binary(Expr::column(" id "), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
-
-        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &normalized));
-        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &exact));
+    fn source_unique_key_metadata_preserves_delimiters_and_whitespace_in_column_names() {
+        for (name, other) in [("a;b", "a"), ("a,b", "a"), (" id ", "id")] {
+            let schema = Schema::new(vec![
+                Field::new(name, DataType::Int32, false),
+                Field::new(other, DataType::Int32, false),
+                Field::new("b", DataType::Int32, false),
+            ]);
+            let schema = schema_with_source_unique_keys(&schema, &[&[name]]);
+            let unrelated = Expr::binary(
+                Expr::binary(Expr::column(other), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7))),
+                BinaryOp::And,
+                Expr::binary(Expr::column("b"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(9))),
+            );
+            let exact = Expr::binary(Expr::column(name), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
+            assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &unrelated), "{name}");
+            assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &exact), "{name}");
+        }
     }
 
     #[test]

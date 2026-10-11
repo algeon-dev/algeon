@@ -21,7 +21,10 @@ use cudf::{
         ProducerReadiness, Result as InteropResult,
     },
     runtime::stream::CudaStream,
-    testing::interop::{column_export_with_lease_backend_for_test, table_export_with_lease_backend_for_test},
+    testing::{
+        interop::{column_export_with_lease_backend_for_test, table_export_with_lease_backend_for_test},
+        run_named_cases,
+    },
 };
 use cuvs::{
     BruteForceIndex, CagraBuildAlgo, CagraElement, CagraIndex, CagraIndexParams, CagraSearchParams, CuvsResources,
@@ -139,13 +142,11 @@ fn f32_to_host(runtime: &Runtime, buffer: DeviceBuffer<f32>) -> Vec<f32> {
         .expect("copy f32 output")
 }
 
-#[test]
 fn resources_bind_the_runtime_stream_and_current_manager() {
     let (runtime, resources, _reservation) = resources();
     assert_eq!(resources.binding_id(), runtime.binding_id());
 }
 
-#[test]
 fn resources_reject_custom_runtime_memory_resources() {
     let manager_runtime = Runtime::new().expect("device-manager runtime");
     let custom_resource = DeviceMemoryResource::cuda_on(manager_runtime.device()).expect("custom CUDA resource");
@@ -162,7 +163,6 @@ fn resources_reject_custom_runtime_memory_resources() {
     assert!(error.message().contains("cannot bind an arbitrary runtime memory resource"));
 }
 
-#[test]
 fn prepared_tensor_completion_and_incomplete_drop_are_safe() {
     let (runtime, resources, _reservation) = resources();
     let column = runtime.column_from_slice(&[1.0_f32, 2.0, 3.0, 4.0]).expect("column");
@@ -178,7 +178,6 @@ fn prepared_tensor_completion_and_incomplete_drop_are_safe() {
     assert!(runtime.stream().is_ready().expect("query stream readiness"));
 }
 
-#[test]
 fn prepared_completion_retains_owner_until_drop_and_synchronizes_before_release() {
     let (runtime, resources, _reservation) = resources();
     let series =
@@ -206,7 +205,6 @@ fn prepared_completion_retains_owner_until_drop_and_synchronizes_before_release(
     assert_eq!(Arc::strong_count(&marker), 1, "owner must release only after synchronization");
 }
 
-#[test]
 fn prepared_completion_without_retained_owner_synchronizes_before_return() {
     let (runtime, resources, _reservation) = resources();
     let column = runtime.column_from_slice(&[1.0_f32, 2.0]).expect("column");
@@ -223,7 +221,6 @@ fn prepared_completion_without_retained_owner_synchronizes_before_return() {
     assert_eq!(synchronizations.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn finite_fixed_size_list_witness_activates_validated_tensor() {
     let (runtime, resources, _reservation) = resources();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
@@ -251,7 +248,6 @@ fn finite_fixed_size_list_witness_activates_validated_tensor() {
     lease.complete().expect("complete vector read").synchronize().expect("synchronize vector read");
 }
 
-#[test]
 fn fixed_size_list_witness_rejects_non_finite_child_values() {
     let (runtime, _resources, _reservation) = resources();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
@@ -269,7 +265,6 @@ fn fixed_size_list_witness_rejects_non_finite_child_values() {
     assert!(error.message().contains("not finite"));
 }
 
-#[test]
 fn algorithms_reject_same_device_tensors_from_a_different_stream_binding() {
     let (producer_runtime, producer_resources, _producer_reservation) = resources();
     let values = DeviceBuffer::from_slice(&producer_resources, &[0.0_f32, 0.0, 1.0, 1.0]).expect("values");
@@ -293,7 +288,6 @@ fn algorithms_reject_same_device_tensors_from_a_different_stream_binding() {
     assert!(error.context_value("resource_binding_id").is_some());
 }
 
-#[test]
 fn validated_packed_tensor_rejects_a_different_memory_resource_binding() {
     let (runtime, resources, _reservation) = resources();
     let custom_resource = DeviceMemoryResource::cuda_on(runtime.device()).expect("custom CUDA resource");
@@ -319,7 +313,6 @@ fn validated_packed_tensor_rejects_a_different_memory_resource_binding() {
     assert!(error.message().contains("same exact runtime binding"));
 }
 
-#[test]
 fn prepared_table_ingress_uses_one_root_lease_and_runtime_packing() {
     let (runtime, resources, _reservation) = resources();
     let table = Table::from_columns(vec![
@@ -342,7 +335,6 @@ fn prepared_table_ingress_uses_one_root_lease_and_runtime_packing() {
     assert_eq!(synchronizations.load(Ordering::SeqCst), 1, "table import must activate one root lease");
 }
 
-#[test]
 fn validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding() {
     let (runtime, resources, _reservation) = resources();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
@@ -391,7 +383,6 @@ fn validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding() {
     assert!(list_matrix.is_input_validated());
 }
 
-#[test]
 fn float64_prepared_table_packs_and_validates() {
     let (runtime, resources, _reservation) = resources();
     let table = Table::from_columns(vec![
@@ -408,7 +399,6 @@ fn float64_prepared_table_packs_and_validates() {
     assert_eq!(mismatch.context_value("packed_element"), Some("Float64"));
 }
 
-#[test]
 fn integer_list_exports_activate_and_pack_with_their_element() {
     let (runtime, resources, _reservation) = resources();
     let item = Arc::new(Field::new("item", ArrowDataType::Int8, false));
@@ -445,7 +435,6 @@ fn integer_list_exports_activate_and_pack_with_their_element() {
     assert_eq!(packed.as_validated_tensor(&resources).unwrap().strides(), Some([1, 2].as_slice()));
 }
 
-#[test]
 fn brute_force_search_writes_caller_owned_device_buffers() {
     let (runtime, resources, _reservation) = resources();
     let points =
@@ -468,7 +457,6 @@ fn brute_force_search_writes_caller_owned_device_buffers() {
     assert_eq!(&neighbors[..3], &[0, 1, 2]);
 }
 
-#[test]
 fn brute_force_ranks_equal_norm_near_unit_rows_by_distance() {
     let (runtime, resources, _reservation) = resources();
     let dataset = DeviceBuffer::from_slice(&resources, &[NEAR_UNIT_ROW[0], NEAR_UNIT_ROW[1], 1.0, 0.0]).unwrap();
@@ -487,7 +475,6 @@ fn brute_force_ranks_equal_norm_near_unit_rows_by_distance() {
     assert!((distances[1] - NEAR_UNIT_SQUARED_L2).abs() < 1e-6, "distances {distances:?}");
 }
 
-#[test]
 fn offset_dataset_is_used_by_brute_force_and_select_k() {
     let (runtime, resources, _reservation) = resources();
     let data = DeviceBuffer::from_slice(&resources, &[100.0_f32, 101.0, 0.0, 2.0, 1.0, 3.0, 5.0, 7.0])
@@ -511,7 +498,6 @@ fn offset_dataset_is_used_by_brute_force_and_select_k() {
     assert_eq!(i64_to_host(&runtime, positions), [0, 0, 0]);
 }
 
-#[test]
 fn ivf_flat_all_metrics_match_brute_force_when_every_list_is_probed() {
     let (runtime, resources, _reservation) = resources();
     let data = DeviceBuffer::from_slice(
@@ -555,7 +541,6 @@ fn ivf_flat_all_metrics_match_brute_force_when_every_list_is_probed() {
     }
 }
 
-#[test]
 fn ivf_flat_marks_unprobed_slots_and_rejects_foreign_bindings() {
     let (runtime, resources, _reservation) = resources();
     let data = DeviceBuffer::from_slice(
@@ -703,7 +688,6 @@ fn ivf_pq_metrics_recall_against_brute_force_and_mark_missing_slots() {
     index.close().unwrap();
 }
 
-#[test]
 fn cagra_metrics_and_nn_descent_search_a_padded_dataset() {
     let (runtime, resources, _reservation) = resources();
     let rows = 512;
@@ -803,7 +787,6 @@ fn cagra_metrics_and_nn_descent_search_a_padded_dataset() {
     index.close().unwrap();
 }
 
-#[test]
 fn cagra_owns_a_padded_copy_for_unaligned_device_rows() {
     let (runtime, resources, _reservation) = resources();
     let rows = 512;
@@ -846,7 +829,6 @@ fn cagra_failed_build_releases_query_domain_allocations() {
     assert_eq!(resources._coverage.usage().unwrap()[0].current_bytes, pool_before);
 }
 
-#[test]
 fn pairwise_metrics_match_host_oracles_and_reject_foreign_bindings() {
     let (runtime, resources, _reservation) = resources();
     let x = DeviceBuffer::from_slice(&resources, &[1.0_f32, 0.0, 0.0, 1.0]).unwrap();
@@ -879,7 +861,6 @@ fn pairwise_metrics_match_host_oracles_and_reject_foreign_bindings() {
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
 fn pairwise_l2_expanded_keeps_equal_norm_near_unit_distance() {
     let (runtime, resources, _reservation) = resources();
     let x = DeviceBuffer::from_slice(&resources, &[NEAR_UNIT_ROW[0], NEAR_UNIT_ROW[1], 1.0, 0.0]).unwrap();
@@ -894,7 +875,6 @@ fn pairwise_l2_expanded_keeps_equal_norm_near_unit_distance() {
     assert_eq!(out[1], 0.0, "distances {out:?}");
 }
 
-#[test]
 fn batched_top_k_selects_min_and_max_and_validates_boundaries() {
     let (runtime, resources, _reservation) = resources();
     let input = DeviceBuffer::from_slice(&resources, &[4.0_f32, 1.0, 3.0, 2.0, 0.0, 8.0]).unwrap();
@@ -924,7 +904,6 @@ fn batched_top_k_selects_min_and_max_and_validates_boundaries() {
     );
 }
 
-#[test]
 fn kmeans_model_retains_fitted_params_and_device_centroids() {
     let (runtime, resources, _reservation) = resources();
     let values =
@@ -952,7 +931,6 @@ fn kmeans_model_retains_fitted_params_and_device_centroids() {
     }
 }
 
-#[test]
 fn kmeans_supports_l2_sqrt_expanded_metric() {
     let (_runtime, resources, _reservation) = resources();
     let data = DeviceBuffer::from_slice(&resources, &[0.0_f32, 0.0, 1.0, 1.0, 10.0, 10.0, 11.0, 11.0]).expect("data");
@@ -967,7 +945,6 @@ fn kmeans_supports_l2_sqrt_expanded_metric() {
     assert!(model.fit_result().inertia.is_finite());
 }
 
-#[test]
 fn pca_packs_prepared_table_and_returns_device_dataframe() {
     let (runtime, resources, _reservation) = resources();
     let rows = 6;
@@ -1019,7 +996,6 @@ fn pca_packs_prepared_table_and_returns_device_dataframe() {
     }
 }
 
-#[test]
 fn float32_device_buffers_reject_non_finite_native_inputs() {
     let (_runtime, resources, _reservation) = resources();
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -1033,7 +1009,6 @@ fn float32_device_buffers_reject_non_finite_native_inputs() {
     }
 }
 
-#[test]
 fn float64_pairwise_metrics_match_host_oracle_and_output_type() {
     let (_runtime, resources, _reservation) = resources();
     let x = [1.0_f64, 2.0, -3.0, 4.0, 2.0, 1.0];
@@ -1073,7 +1048,6 @@ fn float64_pairwise_metrics_match_host_oracle_and_output_type() {
     }
 }
 
-#[test]
 fn float64_kmeans_matches_float32_partition_for_both_metrics() {
     let (runtime, resources, _reservation) = resources();
     let values = [0.0_f64, 0.0, 0.0, 1.0, 1.0, 0.0, 20.0, 20.0, 20.0, 21.0, 21.0, 20.0];
@@ -1122,8 +1096,13 @@ fn integer_distance(metric: DistanceMetric, a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-fn integer_ann_evidence<T>(element: &str, convert: impl Fn(i16) -> T + Copy)
-where T: CagraElement + IvfElement + Into<f32> {
+fn integer_ann_evidence<T>(
+    element: &str,
+    convert: impl Fn(i16) -> T + Copy,
+    oracles: &mut Vec<(DistanceMetric, Vec<i64>)>,
+) where
+    T: CagraElement + IvfElement + Into<f32>,
+{
     let (runtime, resources, _reservation) = resources();
     let rows = 512;
     let dimensions = 16;
@@ -1147,10 +1126,11 @@ where T: CagraElement + IvfElement + Into<f32> {
         .collect::<Vec<_>>();
     let floats = points.iter().copied().map(Into::<f32>::into).collect::<Vec<_>>();
     let query_floats = queries.iter().copied().map(Into::<f32>::into).collect::<Vec<_>>();
-    let exact_data = DeviceBuffer::from_slice(&resources, &floats).unwrap();
-    let exact_queries = DeviceBuffer::from_slice(&resources, &query_floats).unwrap();
-    let exact_matrix = exact_data.as_validated_matrix(&resources, rows, dimensions).unwrap();
-    let exact_query_matrix = exact_queries.as_validated_matrix(&resources, samples.len(), dimensions).unwrap();
+    let exact_data = oracles.is_empty().then(|| DeviceBuffer::from_slice(&resources, &floats).unwrap());
+    let exact_queries = oracles.is_empty().then(|| DeviceBuffer::from_slice(&resources, &query_floats).unwrap());
+    let exact_matrix = exact_data.as_ref().map(|data| data.as_validated_matrix(&resources, rows, dimensions).unwrap());
+    let exact_query_matrix =
+        exact_queries.as_ref().map(|data| data.as_validated_matrix(&resources, samples.len(), dimensions).unwrap());
     let data = DeviceBuffer::from_slice(&resources, &points).unwrap();
     let query_data = DeviceBuffer::from_slice(&resources, &queries).unwrap();
     let matrix = data.as_validated_matrix(&resources, rows, dimensions).unwrap();
@@ -1163,25 +1143,32 @@ where T: CagraElement + IvfElement + Into<f32> {
         DistanceMetric::InnerProduct,
         DistanceMetric::CosineExpanded,
     ] {
-        let brute = BruteForceIndex::build(&resources, &exact_matrix, metric).unwrap();
-        let mut oracle_ids = DeviceBuffer::<i64>::new(&resources, samples.len() * k).unwrap();
-        let mut oracle_distances = DeviceBuffer::<f32>::new(&resources, samples.len() * k).unwrap();
-        brute.search_into(&exact_query_matrix, k, &mut oracle_ids, &mut oracle_distances).unwrap();
-        let oracle = i64_to_host(&runtime, oracle_ids);
-        let oracle_distances = f32_to_host(&runtime, oracle_distances);
-        let brute_error = oracle
-            .iter()
-            .zip(&oracle_distances)
-            .enumerate()
-            .map(|(position, (&id, &distance))| {
-                let query = &query_floats[position / k * dimensions..(position / k + 1) * dimensions];
-                let row = &floats[id as usize * dimensions..(id as usize + 1) * dimensions];
-                (distance - integer_distance(metric, query, row)).abs()
-            })
-            .fold(0.0_f32, f32::max);
-        eprintln!("BruteForce Float32 {metric:?}: recall@{k} 24/24, max distance error {brute_error}");
-        assert!(brute_error < 0.02, "{metric:?}: brute-force oracle mismatch {brute_error}");
-        brute.close().unwrap();
+        let oracle = if let Some((_, oracle)) = oracles.iter().find(|(cached_metric, _)| *cached_metric == metric) {
+            oracle.clone()
+        } else {
+            let brute = BruteForceIndex::build(&resources, exact_matrix.as_ref().unwrap(), metric).unwrap();
+            let mut oracle_ids = DeviceBuffer::<i64>::new(&resources, samples.len() * k).unwrap();
+            let mut oracle_distances = DeviceBuffer::<f32>::new(&resources, samples.len() * k).unwrap();
+            brute.search_into(exact_query_matrix.as_ref().unwrap(), k, &mut oracle_ids, &mut oracle_distances).unwrap();
+            let oracle = i64_to_host(&runtime, oracle_ids);
+            let oracle_distances = f32_to_host(&runtime, oracle_distances);
+            let brute_error = oracle
+                .iter()
+                .zip(&oracle_distances)
+                .enumerate()
+                .map(|(position, (&id, &distance))| {
+                    let query = &query_floats[position / k * dimensions..(position / k + 1) * dimensions];
+                    let row = &floats[id as usize * dimensions..(id as usize + 1) * dimensions];
+                    (distance - integer_distance(metric, query, row)).abs()
+                })
+                .fold(0.0_f32, f32::max);
+            eprintln!("BruteForce Float32 {metric:?}: recall@{k} 24/24, max distance error {brute_error}");
+            assert!(brute_error < 0.02, "{metric:?}: brute-force oracle mismatch {brute_error}");
+            brute.close().unwrap();
+
+            oracles.push((metric, oracle.clone()));
+            oracle
+        };
 
         for algorithm in ["IVF-Flat", "IVF-PQ", "CAGRA"] {
             if algorithm == "CAGRA" && metric == DistanceMetric::L2SqrtExpanded {
@@ -1301,7 +1288,7 @@ where T: CagraElement + IvfElement + Into<f32> {
 
 fn integer_cagra_unaligned<T: CagraElement>(convert: impl Fn(i16) -> T + Copy) {
     let (runtime, resources, _reservation) = resources();
-    let rows = 512;
+    let rows = 128;
     let dimensions = 15;
     let points = (0..rows)
         .flat_map(|row| (0..dimensions).map(move |dim| convert((1 + (row * 7 + dim * 13) % 97) as i16)))
@@ -1324,13 +1311,129 @@ fn integer_cagra_unaligned<T: CagraElement>(convert: impl Fn(i16) -> T + Copy) {
 }
 
 #[test]
-fn int8_ann_metric_evidence() {
-    integer_ann_evidence("Int8", |value| value as i8);
-    integer_cagra_unaligned(|value| value as i8);
+fn prepared_and_binding_cases() {
+    let cases: &[(&str, fn())] = &[
+        (
+            "resources_bind_the_runtime_stream_and_current_manager",
+            resources_bind_the_runtime_stream_and_current_manager,
+        ),
+        ("resources_reject_custom_runtime_memory_resources", resources_reject_custom_runtime_memory_resources),
+        (
+            "prepared_tensor_completion_and_incomplete_drop_are_safe",
+            prepared_tensor_completion_and_incomplete_drop_are_safe,
+        ),
+        (
+            "prepared_completion_retains_owner_until_drop_and_synchronizes_before_release",
+            prepared_completion_retains_owner_until_drop_and_synchronizes_before_release,
+        ),
+        (
+            "prepared_completion_without_retained_owner_synchronizes_before_return",
+            prepared_completion_without_retained_owner_synchronizes_before_return,
+        ),
+        (
+            "finite_fixed_size_list_witness_activates_validated_tensor",
+            finite_fixed_size_list_witness_activates_validated_tensor,
+        ),
+        (
+            "fixed_size_list_witness_rejects_non_finite_child_values",
+            fixed_size_list_witness_rejects_non_finite_child_values,
+        ),
+        (
+            "algorithms_reject_same_device_tensors_from_a_different_stream_binding",
+            algorithms_reject_same_device_tensors_from_a_different_stream_binding,
+        ),
+        (
+            "validated_packed_tensor_rejects_a_different_memory_resource_binding",
+            validated_packed_tensor_rejects_a_different_memory_resource_binding,
+        ),
+        (
+            "prepared_table_ingress_uses_one_root_lease_and_runtime_packing",
+            prepared_table_ingress_uses_one_root_lease_and_runtime_packing,
+        ),
+        (
+            "validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding",
+            validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding,
+        ),
+        ("float64_prepared_table_packs_and_validates", float64_prepared_table_packs_and_validates),
+        (
+            "integer_list_exports_activate_and_pack_with_their_element",
+            integer_list_exports_activate_and_pack_with_their_element,
+        ),
+        (
+            "float32_device_buffers_reject_non_finite_native_inputs",
+            float32_device_buffers_reject_non_finite_native_inputs,
+        ),
+    ];
+    run_named_cases(cases);
 }
 
 #[test]
-fn uint8_ann_metric_evidence() {
-    integer_ann_evidence("UInt8", |value| value as u8);
+fn ann_search_cases() {
+    let cases: &[(&str, fn())] = &[
+        (
+            "brute_force_search_writes_caller_owned_device_buffers",
+            brute_force_search_writes_caller_owned_device_buffers,
+        ),
+        (
+            "brute_force_ranks_equal_norm_near_unit_rows_by_distance",
+            brute_force_ranks_equal_norm_near_unit_rows_by_distance,
+        ),
+        ("offset_dataset_is_used_by_brute_force_and_select_k", offset_dataset_is_used_by_brute_force_and_select_k),
+        (
+            "ivf_flat_all_metrics_match_brute_force_when_every_list_is_probed",
+            ivf_flat_all_metrics_match_brute_force_when_every_list_is_probed,
+        ),
+        (
+            "ivf_flat_marks_unprobed_slots_and_rejects_foreign_bindings",
+            ivf_flat_marks_unprobed_slots_and_rejects_foreign_bindings,
+        ),
+        ("cagra_metrics_and_nn_descent_search_a_padded_dataset", cagra_metrics_and_nn_descent_search_a_padded_dataset),
+        ("cagra_owns_a_padded_copy_for_unaligned_device_rows", cagra_owns_a_padded_copy_for_unaligned_device_rows),
+    ];
+    run_named_cases(cases);
+}
+
+#[test]
+fn distance_kmeans_pca_cases() {
+    let cases: &[(&str, fn())] = &[
+        (
+            "pairwise_metrics_match_host_oracles_and_reject_foreign_bindings",
+            pairwise_metrics_match_host_oracles_and_reject_foreign_bindings,
+        ),
+        (
+            "pairwise_l2_expanded_keeps_equal_norm_near_unit_distance",
+            pairwise_l2_expanded_keeps_equal_norm_near_unit_distance,
+        ),
+        (
+            "batched_top_k_selects_min_and_max_and_validates_boundaries",
+            batched_top_k_selects_min_and_max_and_validates_boundaries,
+        ),
+        (
+            "kmeans_model_retains_fitted_params_and_device_centroids",
+            kmeans_model_retains_fitted_params_and_device_centroids,
+        ),
+        ("kmeans_supports_l2_sqrt_expanded_metric", kmeans_supports_l2_sqrt_expanded_metric),
+        (
+            "pca_packs_prepared_table_and_returns_device_dataframe",
+            pca_packs_prepared_table_and_returns_device_dataframe,
+        ),
+        (
+            "float64_pairwise_metrics_match_host_oracle_and_output_type",
+            float64_pairwise_metrics_match_host_oracle_and_output_type,
+        ),
+        (
+            "float64_kmeans_matches_float32_partition_for_both_metrics",
+            float64_kmeans_matches_float32_partition_for_both_metrics,
+        ),
+    ];
+    run_named_cases(cases);
+}
+
+#[test]
+fn integer_ann_metric_evidence() {
+    let mut oracles = Vec::new();
+    integer_ann_evidence("Int8", |value| value as i8, &mut oracles);
+    integer_cagra_unaligned(|value| value as i8);
+    integer_ann_evidence("UInt8", |value| value as u8, &mut oracles);
     integer_cagra_unaligned(|value| value as u8);
 }

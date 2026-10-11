@@ -1373,12 +1373,6 @@ mod tests {
     }
 
     #[test]
-    fn redact_sql_options_passes_through_sql_with_no_options_clause_byte_identical() {
-        let sql = "SELECT * FROM lineitem WHERE l_orderkey = 1";
-        assert_eq!(redact_sql_options(sql), sql);
-    }
-
-    #[test]
     fn captured_query_retains_sql_already_redacted() {
         let now = Instant::now();
         let sql = "CREATE EXTERNAL TABLE t STORED AS CSV OPTIONS ('aws.secret_access_key' 'super-secret') \

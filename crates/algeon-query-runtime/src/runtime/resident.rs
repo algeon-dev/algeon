@@ -1069,7 +1069,7 @@ mod tests {
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
-    use cudf::{DataFrame, Exec, ops::expr::col};
+    use cudf::{DataFrame, Exec, ops::expr::col, testing::run_named_cases};
     use query_planning::error::{QueryErrorCode, QueryErrorKind, QueryErrorStatus};
 
     use super::*;
@@ -1099,7 +1099,6 @@ mod tests {
         (GpuDataFrame::new_with_resident_owner(frame, resident_owner), observed_bytes)
     }
 
-    #[test]
     fn gpu_frame_counts_resident_bytes_only_for_the_owning_grant() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = DeviceLedger::for_test(runtime.device().ordinal(), 2048, 4);
@@ -1119,13 +1118,71 @@ mod tests {
     }
 
     #[test]
+    fn resident_cases() {
+        run_named_cases(&[
+            (
+                "runtime::resident::tests::gpu_frame_counts_resident_bytes_only_for_the_owning_grant",
+                gpu_frame_counts_resident_bytes_only_for_the_owning_grant,
+            ),
+            (
+                "runtime::resident::tests::gpu_result_handle_retained_bytes_require_the_current_grant",
+                gpu_result_handle_retained_bytes_require_the_current_grant,
+            ),
+            (
+                "runtime::resident::tests::host_batch_cursor_observes_cancellation_before_starting_the_next_device_to_host_copy",
+                host_batch_cursor_observes_cancellation_before_starting_the_next_device_to_host_copy,
+            ),
+            (
+                "runtime::resident::tests::host_output_schema_binding_preserves_duplicate_names_metadata_and_values",
+                host_output_schema_binding_preserves_duplicate_names_metadata_and_values,
+            ),
+            (
+                "runtime::resident::tests::host_batch_cursor_preserves_structured_hard_limit_facts",
+                host_batch_cursor_preserves_structured_hard_limit_facts,
+            ),
+            (
+                "runtime::resident::tests::host_batch_cursor_reports_clean_eof_when_cancelled_after_final_chunk",
+                host_batch_cursor_reports_clean_eof_when_cancelled_after_final_chunk,
+            ),
+            (
+                "runtime::resident::tests::host_batch_cursor_prepares_each_chunk_without_early_success",
+                host_batch_cursor_prepares_each_chunk_without_early_success,
+            ),
+            (
+                "runtime::resident::tests::host_batch_cursor_prepare_reports_cancellation_before_any_copy",
+                host_batch_cursor_prepare_reports_cancellation_before_any_copy,
+            ),
+            (
+                "runtime::resident::tests::source_residency_clones_owner_for_pure_alias_output",
+                source_residency_clones_owner_for_pure_alias_output,
+            ),
+            (
+                "runtime::resident::tests::source_residency_records_derived_owner_for_fresh_output",
+                source_residency_records_derived_owner_for_fresh_output,
+            ),
+            (
+                "runtime::resident::tests::source_residency_retains_full_output_for_mixed_alias_output",
+                source_residency_retains_full_output_for_mixed_alias_output,
+            ),
+            (
+                "runtime::resident::tests::source_residency_preserves_transitive_frozen_owner_across_alias_chain",
+                source_residency_preserves_transitive_frozen_owner_across_alias_chain,
+            ),
+            (
+                "runtime::resident::tests::source_residency_releases_transitive_owner_when_only_fresh_columns_survive",
+                source_residency_releases_transitive_owner_when_only_fresh_columns_survive,
+            ),
+        ]);
+    }
+
     fn retained_guard_keeps_gpu_result_handle_send_safe() {
         fn assert_send_sync<T: Send + Sync>() {}
 
         assert_send_sync::<GpuResultHandle>();
     }
 
-    #[test]
+    const _: fn() = retained_guard_keeps_gpu_result_handle_send_safe;
+
     fn gpu_result_handle_retained_bytes_require_the_current_grant() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = DeviceLedger::for_test(runtime.device().ordinal(), 2048, 4);
@@ -1159,7 +1216,6 @@ mod tests {
         assert_eq!(owner.resident_owner_bytes(), 0);
     }
 
-    #[test]
     fn host_batch_cursor_observes_cancellation_before_starting_the_next_device_to_host_copy() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
@@ -1186,7 +1242,6 @@ mod tests {
         assert_eq!(cursor.remaining_rows(), 2);
     }
 
-    #[test]
     fn host_output_schema_binding_preserves_duplicate_names_metadata_and_values() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let context = ExecutionContext::standalone(StandaloneConfig {
@@ -1262,7 +1317,6 @@ mod tests {
         assert_eq!(type_error.fact_value("external_arrow_type"), Some("UInt64"));
     }
 
-    #[test]
     fn host_batch_cursor_preserves_structured_hard_limit_facts() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
@@ -1298,7 +1352,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn host_batch_cursor_reports_clean_eof_when_cancelled_after_final_chunk() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
@@ -1328,7 +1381,6 @@ mod tests {
     /// contract without declaring success early. Every prepared chunk materializes exactly
     /// once, the cursor reports more work until the final chunk drains, and dropping the
     /// cursor after a partial drain releases its retained owners instead of leaking a grant.
-    #[test]
     fn host_batch_cursor_prepares_each_chunk_without_early_success() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
@@ -1363,7 +1415,6 @@ mod tests {
         assert_eq!(rows, vec![1, 2, 3], "every chunk materializes exactly once");
     }
 
-    #[test]
     fn host_batch_cursor_prepare_reports_cancellation_before_any_copy() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
@@ -1387,7 +1438,6 @@ mod tests {
         assert_eq!(error.code(), QueryErrorCode::Cancelled);
     }
 
-    #[test]
     fn source_residency_clones_owner_for_pure_alias_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);
@@ -1413,7 +1463,6 @@ mod tests {
         assert_eq!(grant.resident_owner_bytes(), 0);
     }
 
-    #[test]
     fn source_residency_records_derived_owner_for_fresh_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);
@@ -1439,7 +1488,6 @@ mod tests {
         assert_eq!(grant.resident_owner_bytes(), 0);
     }
 
-    #[test]
     fn source_residency_retains_full_output_for_mixed_alias_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);
@@ -1471,7 +1519,6 @@ mod tests {
         assert_eq!(grant.resident_owner_bytes(), 0);
     }
 
-    #[test]
     fn source_residency_preserves_transitive_frozen_owner_across_alias_chain() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);
@@ -1500,7 +1547,6 @@ mod tests {
         assert_eq!(grant.resident_owner_bytes(), 0);
     }
 
-    #[test]
     fn source_residency_releases_transitive_owner_when_only_fresh_columns_survive() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);

@@ -8,7 +8,7 @@
 
 use cudf::{DataFrame, FrameMemoryEffect};
 
-use crate::common::{column_from_slice, dataframe_device_ptr, dataframe_from_columns, run_named_cases};
+use crate::common::{column_from_slice, dataframe_device_ptr, dataframe_from_columns};
 
 /// Helper: build a 3-row, 3-column DataFrame with distinct column types.
 fn sample_df() -> DataFrame {
@@ -322,39 +322,51 @@ fn test_select_subset_then_with_column_shares_retained() {
     assert_eq!(dataframe_device_ptr(&df, "score"), dataframe_device_ptr(&result, "score"));
 }
 
-#[test]
-fn arc_sharing_tests_cases() {
-    run_named_cases(&[
-        ("test_clone_shares_all_columns", test_clone_shares_all_columns),
-        ("test_clone_both_dfs_independently_readable", test_clone_both_dfs_independently_readable),
-        ("test_clone_preserves_schema", test_clone_preserves_schema),
-        ("test_select_shares_selected_columns", test_select_shares_selected_columns),
-        ("test_select_original_still_usable", test_select_original_still_usable),
-        ("test_select_reorder_shares_columns", test_select_reorder_shares_columns),
-        (
-            "test_select_memory_effect_reports_retained_owner_aliases",
-            test_select_memory_effect_reports_retained_owner_aliases,
-        ),
-        (
-            "test_empty_select_memory_effect_reports_zero_column_alias",
-            test_empty_select_memory_effect_reports_zero_column_alias,
-        ),
-        (
-            "test_select_as_allows_multiple_output_aliases_for_one_owner",
-            test_select_as_allows_multiple_output_aliases_for_one_owner,
-        ),
-        ("test_select_as_rejects_duplicate_output_names", test_select_as_rejects_duplicate_output_names),
-        ("test_rename_shares_all_column_data", test_rename_shares_all_column_data),
-        ("test_rename_original_unchanged", test_rename_original_unchanged),
-        ("test_with_column_unchanged_columns_shared", test_with_column_unchanged_columns_shared),
-        ("test_with_column_replaced_column_has_new_allocation", test_with_column_replaced_column_has_new_allocation),
-        ("test_with_column_replaced_column_has_correct_data", test_with_column_replaced_column_has_correct_data),
-        ("test_many_clones_are_zero_cost", test_many_clones_are_zero_cost),
-        ("test_many_clones_readable_after_original_dropped", test_many_clones_readable_after_original_dropped),
-        ("test_clone_then_select_shares_columns", test_clone_then_select_shares_columns),
-        ("test_rename_then_select_shares_columns", test_rename_then_select_shares_columns),
-        ("test_with_column_then_clone_shares_new_and_old", test_with_column_then_clone_shares_new_and_old),
-        ("test_chained_renames_share_all_data", test_chained_renames_share_all_data),
-        ("test_select_subset_then_with_column_shares_retained", test_select_subset_then_with_column_shares_retained),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("arc_sharing_tests::test_clone_shares_all_columns", test_clone_shares_all_columns),
+    ("arc_sharing_tests::test_clone_both_dfs_independently_readable", test_clone_both_dfs_independently_readable),
+    ("arc_sharing_tests::test_clone_preserves_schema", test_clone_preserves_schema),
+    ("arc_sharing_tests::test_select_shares_selected_columns", test_select_shares_selected_columns),
+    ("arc_sharing_tests::test_select_original_still_usable", test_select_original_still_usable),
+    ("arc_sharing_tests::test_select_reorder_shares_columns", test_select_reorder_shares_columns),
+    (
+        "arc_sharing_tests::test_select_memory_effect_reports_retained_owner_aliases",
+        test_select_memory_effect_reports_retained_owner_aliases,
+    ),
+    (
+        "arc_sharing_tests::test_empty_select_memory_effect_reports_zero_column_alias",
+        test_empty_select_memory_effect_reports_zero_column_alias,
+    ),
+    (
+        "arc_sharing_tests::test_select_as_allows_multiple_output_aliases_for_one_owner",
+        test_select_as_allows_multiple_output_aliases_for_one_owner,
+    ),
+    ("arc_sharing_tests::test_select_as_rejects_duplicate_output_names", test_select_as_rejects_duplicate_output_names),
+    ("arc_sharing_tests::test_rename_shares_all_column_data", test_rename_shares_all_column_data),
+    ("arc_sharing_tests::test_rename_original_unchanged", test_rename_original_unchanged),
+    ("arc_sharing_tests::test_with_column_unchanged_columns_shared", test_with_column_unchanged_columns_shared),
+    (
+        "arc_sharing_tests::test_with_column_replaced_column_has_new_allocation",
+        test_with_column_replaced_column_has_new_allocation,
+    ),
+    (
+        "arc_sharing_tests::test_with_column_replaced_column_has_correct_data",
+        test_with_column_replaced_column_has_correct_data,
+    ),
+    ("arc_sharing_tests::test_many_clones_are_zero_cost", test_many_clones_are_zero_cost),
+    (
+        "arc_sharing_tests::test_many_clones_readable_after_original_dropped",
+        test_many_clones_readable_after_original_dropped,
+    ),
+    ("arc_sharing_tests::test_clone_then_select_shares_columns", test_clone_then_select_shares_columns),
+    ("arc_sharing_tests::test_rename_then_select_shares_columns", test_rename_then_select_shares_columns),
+    (
+        "arc_sharing_tests::test_with_column_then_clone_shares_new_and_old",
+        test_with_column_then_clone_shares_new_and_old,
+    ),
+    ("arc_sharing_tests::test_chained_renames_share_all_data", test_chained_renames_share_all_data),
+    (
+        "arc_sharing_tests::test_select_subset_then_with_column_shares_retained",
+        test_select_subset_then_with_column_shares_retained,
+    ),
+];

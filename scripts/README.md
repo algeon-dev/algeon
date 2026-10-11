@@ -42,6 +42,13 @@ script, update this map and all callers in the same change.
 
 `check_all.sh` takes no arguments for the full pre-merge gate, or `--fast` for
 a partial edit loop (policy checks, rustfmt, and CPU tests).
+`ci/cargo_toolchain_environment.py` prints the effective Cargo toolchain
+environment at gate startup. `ci/tests/check_check_all_tests.py` exercises
+gate ordering, loader propagation and failure continuation with mocked Cargo.
+`ci/tests/check_single_brand_tests.py` checks indexed blobs, dirty contents,
+symlink targets and pending deletions against `ci/check_single_brand.sh`.
+Pending deletions have no working-tree content; their indexed paths and blobs
+remain subject to the branding check.
 
 Native build helpers also run from this root and default to the repo-local
 prefixes `target/native/cudf-install`, `target/native/cuvs-install`, and

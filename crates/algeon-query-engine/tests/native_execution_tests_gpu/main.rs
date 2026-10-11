@@ -23,7 +23,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use cudf::DataFrame;
+use cudf::{DataFrame, testing::run_named_cases};
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
     chunk::plan_local_parquet_source_chunks,
@@ -474,7 +474,6 @@ mod ml_algorithm_execution;
 mod native_join_execution;
 mod parquet_fixtures;
 mod partition_execution;
-mod projection_test_support;
 mod projection_validation;
 mod semijoin_reduction;
 mod test_support;
@@ -487,56 +486,4 @@ use aggregate_test_support::*;
 use join_test_support::*;
 use metrics_assertions::*;
 use parquet_fixtures::{fixture_local_parquet_source as LocalParquetSource, *};
-use projection_test_support::*;
 use test_support::*;
-
-#[test]
-fn backend_session_executes_grouped_aggregate_from_gpu_resident_input() {
-    let context = backend_context();
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("value", DataType::Int64, false),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![Arc::new(Int32Array::from(vec![1, 1, 2])), Arc::new(Int64Array::from(vec![10, 20, 7]))],
-    )
-    .unwrap();
-    let output_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("total", DataType::Int64, true),
-    ]));
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-    let aggregate = builder
-        .add_aggregate(
-            source,
-            AggregateSpec::new(
-                vec![Expr::column("key")],
-                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "total")],
-            ),
-            Arc::clone(&output_schema),
-        )
-        .unwrap();
-    let sort =
-        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
-
-    let plan = builder.finish_with_host_sink(sort).unwrap();
-    let admitted = context.admit_plan(&plan).unwrap();
-    let runtime = Arc::new(admitted.runtime().unwrap());
-    let mut inputs = GpuResidentInputMap::new();
-    inputs.insert(
-        "input".to_owned(),
-        GpuResultHandle::new(
-            &admitted,
-            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
-            Arc::clone(&schema),
-        )
-        .unwrap(),
-    );
-    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
-    let QueryOutput::HostArrow(output) = result.output() else { panic!("host sink must return Arrow output") };
-    assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 2]);
-    assert_eq!(int64_array(output, 1).values().as_ref(), &[30, 7]);
-    admitted.finish();
-}

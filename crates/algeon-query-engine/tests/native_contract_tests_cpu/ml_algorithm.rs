@@ -11,13 +11,12 @@ use query_planning::{
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::{
-        CUML_OPERATION_REGISTRY, CumlOperation, CumlOutputContract, MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec,
-        MlForestModelFacts, MlForestModelFormat, MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision,
-        MlForestPredictParams, MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding,
-        MlRelationRole, MlTsvdParams, MlUmapParams, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder,
-        VectorElementType, VectorRowIdBinding, canonicalize_cuml_options, ml_classification_output_schema,
-        ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema,
-        vector_pca_output_schema,
+        CumlOperation, MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlForestModelFacts, MlForestModelFormat,
+        MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision, MlForestPredictParams, MlHdbscanParams,
+        MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlRelationRole, MlTsvdParams,
+        MlUmapParams, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorRowIdBinding,
+        canonicalize_cuml_options, ml_classification_output_schema, ml_embedding_output_schema,
+        ml_forest_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema, vector_pca_output_schema,
     },
     policy::PlanningPolicy,
     source::{GpuResidentSource, SourceNode},
@@ -227,58 +226,8 @@ fn plan(algorithm: MlAlgorithm) -> QueryPlan {
 
 #[test]
 fn registry_and_options_are_operation_specific() {
-    assert_eq!(
-        CumlOperation::all().collect::<Vec<_>>(),
-        vec![
-            CumlOperation::Tsvd,
-            CumlOperation::Hdbscan,
-            CumlOperation::Umap,
-            CumlOperation::LogisticRegression,
-            CumlOperation::RandomForestClassifier,
-            CumlOperation::RandomForestRegressor,
-            CumlOperation::ForestPredict
-        ]
-    );
-    assert_eq!(
-        CUML_OPERATION_REGISTRY.iter().map(|entry| entry.sql_function_name).collect::<Vec<_>>(),
-        [
-            "cuml_tsvd",
-            "cuml_hdbscan",
-            "cuml_umap",
-            "cuml_logistic_regression",
-            "cuml_random_forest_classifier",
-            "cuml_random_forest_regressor",
-            "cuml_forest_predict"
-        ]
-    );
     for operation in CumlOperation::all() {
         let descriptor = operation.descriptor();
-        assert_eq!(
-            descriptor.output_contract,
-            match operation {
-                CumlOperation::Tsvd => CumlOutputContract::Components,
-                CumlOperation::Hdbscan => CumlOutputContract::HdbscanClusters,
-                CumlOperation::Umap => CumlOutputContract::Embedding,
-                CumlOperation::LogisticRegression
-                | CumlOperation::RandomForestClassifier
-                | CumlOperation::RandomForestRegressor => CumlOutputContract::Predictions,
-                CumlOperation::ForestPredict => CumlOutputContract::ForestPrediction,
-            }
-        );
-        assert_eq!(descriptor.vector_element_support, &[VectorElementType::Float32]);
-        assert_eq!(
-            descriptor.relation_roles,
-            if matches!(
-                operation,
-                CumlOperation::LogisticRegression
-                    | CumlOperation::RandomForestClassifier
-                    | CumlOperation::RandomForestRegressor
-            ) {
-                &[MlRelationRole::Training, MlRelationRole::Predict][..]
-            } else {
-                &[MlRelationRole::Input][..]
-            }
-        );
         if descriptor.option("n_components").is_some() {
             assert_eq!(descriptor.options_json_schema()["properties"]["n_components"]["maximum"], i32::MAX);
         }

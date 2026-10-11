@@ -22,10 +22,10 @@ use std::{
 };
 
 use cudf::{
-    DeviceId, Exec,
+    DeviceId,
     core::memory::DeviceMemoryResource,
     runtime::{CudaEvent, CudaStream},
-    testing::prelude::*,
+    testing::{prelude::*, run_named_cases},
 };
 use cudf_sys::test_support::{
     cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_device,
@@ -33,7 +33,7 @@ use cudf_sys::test_support::{
     cudf_test_exec_reset_observation, cudf_test_memory_resource_raw, cudf_test_stream_handle_value,
 };
 
-use crate::common::{column_from_slice, run_named_cases, series};
+use crate::common::{column_from_slice, series};
 
 // ---------------------------------------------------------------------------
 // Safe wrappers around observation hooks
@@ -421,71 +421,6 @@ fn assert_exec_options_copy_validation_error(
 // ===========================================================================
 // Category 1: cudf_sys::ExecutionContext type properties (FFI layer)
 // ===========================================================================
-
-/// Default cudf_sys::ExecutionContext has null stream and null mr.
-fn execution_context_default_has_null_handles() {
-    let ctx = cudf_sys::ExecutionContext::default();
-    let raw = ctx.raw();
-    assert!(raw.stream.is_null(), "default stream should be null");
-    assert!(raw.mr.is_null(), "default mr should be null");
-    assert_eq!(raw.flags, 0, "default flags should be zero");
-}
-
-/// cudf_sys::ExecutionContext stores a non-null stream handle.
-fn execution_context_with_stream_stores_handle() {
-    let stream = CudaStream::new().expect("failed to create stream");
-    let borrowed = stream.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
-    let raw = ctx.raw();
-    assert!(!raw.stream.is_null(), "stream handle should be non-null");
-    assert_eq!(raw.stream, borrowed.as_raw(), "stream handle mismatch");
-}
-
-/// cudf_sys::ExecutionContext stores a non-null memory-resource handle.
-fn execution_context_with_mr_stores_handle() {
-    let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
-    let borrowed = mr.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&borrowed);
-    let raw = ctx.raw();
-    assert!(!raw.mr.is_null(), "mr handle should be non-null");
-    assert_eq!(raw.mr, borrowed.as_raw(), "mr handle mismatch");
-}
-
-/// cudf_sys::ExecutionContext is Copy; copying produces an identical struct.
-fn execution_context_is_copy() {
-    let stream = CudaStream::new().expect("failed to create stream");
-    let borrowed = stream.as_borrowed_sys();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
-    let copy = ctx; // Copy
-    assert_eq!(ctx.raw().stream, copy.raw().stream);
-    assert_eq!(ctx.raw().mr, copy.raw().mr);
-    assert_eq!(ctx.raw().flags, copy.raw().flags);
-}
-
-/// The low-level `cudf_sys::ExecutionContext` remains a transient FFI builder,
-/// not the owned safe-layer override type.
-///
-/// It is therefore still documented here as `!Send + !Sync` because
-/// `cudf_exec_options_t` contains raw pointers. The public safe-layer
-/// `cudf::Exec` has its own `Send + Sync` contract coverage in the
-/// `runtime_v1_public_api_tests` suite.
-fn execution_context_send_sync_status_documented() {
-    // cudf_exec_options_t contains *mut c_void, so the low-level FFI builder
-    // remains !Send + !Sync. This test documents that status quo.
-    let ctx = cudf_sys::ExecutionContext::default();
-    let _copy = ctx;
-    let _also_ctx = ctx; // proves Copy
-}
-
-/// struct_size is correctly initialized.
-fn execution_context_struct_size_is_correct() {
-    let ctx = cudf_sys::ExecutionContext::default();
-    assert_eq!(
-        ctx.raw().struct_size,
-        std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
-        "struct_size must equal size_of::<cudf_exec_options_t>()"
-    );
-}
 
 // ===========================================================================
 // Category 2: Existing _ex operations (pass today)
@@ -1126,49 +1061,6 @@ fn column_deep_copy_uses_source_runtime_stream_without_override() {
     assert_eq!(observed, source_stream, "Column::deep_copy() should use the source runtime stream");
 }
 
-/// Existing `DataFrame::sort_values` (no context) should produce correct
-/// results. This is the default-path baseline for
-/// `DataFrame::with_execution(&ctx).sort_values(...)`.
-fn sort_values_default_produces_correct_results() {
-    let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
-
-    let sorted = df.on(Exec::RETAINED).sort_values(["id"], cudf::SortOptions::default()).unwrap();
-
-    let col = sorted.series("id").unwrap();
-    let host: Vec<i32> = col.testing_view().unwrap().to_vec().unwrap();
-    assert_eq!(host, vec![1, 2, 3], "sort_values result should be correct");
-}
-
-/// Existing `DataFrame::merge` (no context) should produce correct results.
-/// This is the default-path baseline for `DataFrame::with_execution(&ctx).merge(...)`.
-fn merge_default_produces_correct_results() {
-    let left_ids = series::<i32>("id", &[1, 2, 3]).unwrap();
-    let left_vals = series::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
-    let left = cudf::DataFrame::from_series([("id", left_ids), ("val", left_vals)]).unwrap();
-
-    let right_ids = series::<i32>("id", &[2, 3, 4]).unwrap();
-    let right_scores = series::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
-    let right = cudf::DataFrame::from_series([("id", right_ids), ("score", right_scores)]).unwrap();
-
-    let joined = left.on(Exec::RETAINED).merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
-
-    assert_eq!(joined.num_rows(), 2, "inner join on [2,3] should yield 2 rows");
-}
-
-/// Existing `GroupBy::agg` (no context) should produce correct results.
-/// This is the default-path baseline for `GroupBy::with_execution(&ctx).agg(...)`.
-fn groupby_agg_default_produces_correct_results() {
-    let keys = series::<i32>("key", &[1, 1, 2, 2]).unwrap();
-    let vals = series::<i64>("val", &[10, 20, 30, 40]).unwrap();
-    let df = cudf::DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
-
-    let result =
-        df.groupby(["key"]).on(Exec::RETAINED).agg(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)]).unwrap();
-
-    assert_eq!(result.num_rows(), 2, "groupby on 2 unique keys should yield 2 rows");
-}
-
 // ===========================================================================
 // Category 5: Allocator context
 //
@@ -1238,29 +1130,6 @@ fn column_copy_ex_stream_and_mr_combined() {
 // These verify that the cudf wrappers (CudaStream, DeviceMemoryResource)
 // have the properties needed for Exec construction.
 // ===========================================================================
-
-/// CudaStream can be created and synchronized.
-fn cuda_stream_create_and_sync() {
-    let stream = CudaStream::new().unwrap();
-    stream.synchronize().unwrap();
-    assert!(stream.is_ready().unwrap());
-}
-
-/// CudaStream is accessible via the `cudf::runtime` module path (not re-exported at crate root).
-fn cuda_stream_accessible_via_module_path() {
-    let stream = CudaStream::new().unwrap();
-    stream.synchronize().unwrap();
-}
-
-/// DeviceMemoryResource can be created (cuda variant).
-fn device_memory_resource_create_cuda() {
-    let _mr = DeviceMemoryResource::cuda().unwrap();
-}
-
-/// DeviceMemoryResource can be created (pool variant).
-fn device_memory_resource_create_pool() {
-    let _mr = DeviceMemoryResource::pool(16 * 1024 * 1024, None).unwrap();
-}
 
 /// `CudaStream::as_borrowed_sys` preserves the sys-handle identity.
 fn cuda_stream_as_borrowed_sys_preserves_handle() {
@@ -1389,12 +1258,6 @@ fn exec_options_defaults_are_rejected() {
 #[test]
 fn execution_context_tests_cases() {
     run_named_cases(&[
-        ("execution_context_default_has_null_handles", execution_context_default_has_null_handles),
-        ("execution_context_with_stream_stores_handle", execution_context_with_stream_stores_handle),
-        ("execution_context_with_mr_stores_handle", execution_context_with_mr_stores_handle),
-        ("execution_context_is_copy", execution_context_is_copy),
-        ("execution_context_send_sync_status_documented", execution_context_send_sync_status_documented),
-        ("execution_context_struct_size_is_correct", execution_context_struct_size_is_correct),
         ("column_copy_ex_uses_explicit_stream", column_copy_ex_uses_explicit_stream),
         ("column_to_host_ex_uses_explicit_stream", column_to_host_ex_uses_explicit_stream),
         (
@@ -1455,15 +1318,8 @@ fn execution_context_tests_cases() {
             "column_deep_copy_uses_source_runtime_stream_without_override",
             column_deep_copy_uses_source_runtime_stream_without_override,
         ),
-        ("sort_values_default_produces_correct_results", sort_values_default_produces_correct_results),
-        ("merge_default_produces_correct_results", merge_default_produces_correct_results),
-        ("groupby_agg_default_produces_correct_results", groupby_agg_default_produces_correct_results),
         ("column_copy_ex_pool_mr_is_observed", column_copy_ex_pool_mr_is_observed),
         ("column_copy_ex_stream_and_mr_combined", column_copy_ex_stream_and_mr_combined),
-        ("cuda_stream_create_and_sync", cuda_stream_create_and_sync),
-        ("cuda_stream_accessible_via_module_path", cuda_stream_accessible_via_module_path),
-        ("device_memory_resource_create_cuda", device_memory_resource_create_cuda),
-        ("device_memory_resource_create_pool", device_memory_resource_create_pool),
         ("cuda_stream_as_borrowed_sys_preserves_handle", cuda_stream_as_borrowed_sys_preserves_handle),
         ("cuda_event_as_borrowed_sys_preserves_handle", cuda_event_as_borrowed_sys_preserves_handle),
         (

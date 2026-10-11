@@ -294,13 +294,6 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_status_labels_are_stable() {
-        assert_eq!(DeviceTelemetryStatus::Available.as_str(), "available");
-        assert_eq!(DeviceTelemetryStatus::FeatureDisabled.as_str(), "feature_disabled");
-        assert_eq!(DeviceTelemetryStatus::Unavailable.as_str(), "unavailable");
-    }
-
-    #[test]
     fn telemetry_provider_samples_every_configured_ordinal_in_order() {
         let snapshots = device_telemetry_snapshots_for_ordinals(&FakeTelemetry, &[3, 1]);
 

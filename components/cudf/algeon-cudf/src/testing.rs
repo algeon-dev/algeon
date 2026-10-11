@@ -15,7 +15,10 @@ pub mod device_safety;
 pub mod dictionary;
 pub mod error;
 pub mod interop;
+mod named_cases;
 pub mod series;
+
+pub use named_cases::run_named_cases;
 
 use crate::{
     AggSpec, MergeOptions, SortOptions,

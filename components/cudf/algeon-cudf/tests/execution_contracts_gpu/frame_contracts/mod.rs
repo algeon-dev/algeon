@@ -1,1 +1,1 @@
-mod same_provenance_tests;
+pub(crate) mod same_provenance_tests;

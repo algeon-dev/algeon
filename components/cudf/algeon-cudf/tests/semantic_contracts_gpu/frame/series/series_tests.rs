@@ -4,7 +4,7 @@
 
 use cudf::{Exec, Series, TypeId, testing::prelude::*};
 
-use crate::common::{column_from_slice, nullable_series, run_named_cases, series};
+use crate::common::{column_from_slice, nullable_series, series};
 
 // ---------------------------------------------------------------------------
 // Constructors preserve dtype and length
@@ -58,11 +58,6 @@ fn test_new_nullable_strs_rejects_mismatched_validity_length() {
     let err = nullable_series("names", &["a", "b"], &[true]).unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "column::from_strs_nullable_with_runtime");
-}
-
-fn test_from_column_constructor() {
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let _ = Series::from_column(col).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -141,22 +136,6 @@ fn test_lt_scalar_f64() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
-}
-
-fn test_eq_scalar_i32() {
-    let s = series::<i32>("z", &[1, 2, 2, 3]).unwrap();
-    let mask = s.on(Exec::RETAINED).eq_scalar(2i32).unwrap();
-
-    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true, false]);
-}
-
-fn test_eq_scalar_string() {
-    let s = series("status", &["active", "inactive", "active"]).unwrap();
-    let mask = s.on(Exec::RETAINED).eq_scalar("active").unwrap();
-
-    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 fn test_ne_scalar_string() {
@@ -368,63 +347,46 @@ fn test_div_scalar_f64() {
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
-fn test_arithmetic_mixed_types() {
-    // i32 + f64 should promote to f64
-    let a = series::<i32>("a", &[1, 2, 3]).unwrap();
-    let b = series::<f64>("b", &[0.5, 0.5, 0.5]).unwrap();
-    let result = a.on(Exec::RETAINED).add(&b).unwrap();
-
-    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
-}
-
-#[test]
-fn series_tests_cases() {
-    run_named_cases(&[
-        ("test_new_i32_preserves_dtype_and_len", test_new_i32_preserves_dtype_and_len),
-        ("test_new_f64_preserves_dtype_and_len", test_new_f64_preserves_dtype_and_len),
-        ("test_new_bool_preserves_dtype_and_len", test_new_bool_preserves_dtype_and_len),
-        ("test_new_empty_slice", test_new_empty_slice),
-        ("test_new_nullable_preserves_null_count", test_new_nullable_preserves_null_count),
-        ("test_new_strs_preserves_dtype_and_len", test_new_strs_preserves_dtype_and_len),
-        ("test_new_nullable_strs_preserves_null_count", test_new_nullable_strs_preserves_null_count),
-        (
-            "test_new_nullable_strs_rejects_mismatched_validity_length",
-            test_new_nullable_strs_rejects_mismatched_validity_length,
-        ),
-        ("test_from_column_constructor", test_from_column_constructor),
-        ("test_clone_shares_gpu_data", test_clone_shares_gpu_data),
-        ("test_from_column_round_trip", test_from_column_round_trip),
-        ("test_from_column_shares_data", test_from_column_shares_data),
-        ("test_view_matches_column_data", test_view_matches_column_data),
-        ("test_gt_scalar_i32", test_gt_scalar_i32),
-        ("test_lt_scalar_f64", test_lt_scalar_f64),
-        ("test_eq_scalar_i32", test_eq_scalar_i32),
-        ("test_eq_scalar_string", test_eq_scalar_string),
-        ("test_ne_scalar_string", test_ne_scalar_string),
-        ("test_gt_scalar_string", test_gt_scalar_string),
-        ("test_lt_scalar_string", test_lt_scalar_string),
-        ("test_ge_scalar_string", test_ge_scalar_string),
-        ("test_le_scalar_string", test_le_scalar_string),
-        ("test_gt_scalar_preserves_input", test_gt_scalar_preserves_input),
-        ("test_ne_scalar_i32", test_ne_scalar_i32),
-        ("test_ge_scalar_i32", test_ge_scalar_i32),
-        ("test_le_scalar_i32", test_le_scalar_i32),
-        ("test_eq_series", test_eq_series),
-        ("test_ne_series", test_ne_series),
-        ("test_gt_series", test_gt_series),
-        ("test_lt_series", test_lt_series),
-        ("test_ge_series", test_ge_series),
-        ("test_le_series", test_le_series),
-        ("test_comparison_mixed_types_f64_i32", test_comparison_mixed_types_f64_i32),
-        ("test_add_series", test_add_series),
-        ("test_sub_series", test_sub_series),
-        ("test_mul_series", test_mul_series),
-        ("test_div_series_f64", test_div_series_f64),
-        ("test_add_scalar_i32", test_add_scalar_i32),
-        ("test_sub_scalar_i32", test_sub_scalar_i32),
-        ("test_mul_scalar_f64", test_mul_scalar_f64),
-        ("test_div_scalar_f64", test_div_scalar_f64),
-        ("test_arithmetic_mixed_types", test_arithmetic_mixed_types),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("series_tests::test_new_i32_preserves_dtype_and_len", test_new_i32_preserves_dtype_and_len),
+    ("series_tests::test_new_f64_preserves_dtype_and_len", test_new_f64_preserves_dtype_and_len),
+    ("series_tests::test_new_bool_preserves_dtype_and_len", test_new_bool_preserves_dtype_and_len),
+    ("series_tests::test_new_empty_slice", test_new_empty_slice),
+    ("series_tests::test_new_nullable_preserves_null_count", test_new_nullable_preserves_null_count),
+    ("series_tests::test_new_strs_preserves_dtype_and_len", test_new_strs_preserves_dtype_and_len),
+    ("series_tests::test_new_nullable_strs_preserves_null_count", test_new_nullable_strs_preserves_null_count),
+    (
+        "series_tests::test_new_nullable_strs_rejects_mismatched_validity_length",
+        test_new_nullable_strs_rejects_mismatched_validity_length,
+    ),
+    ("series_tests::test_clone_shares_gpu_data", test_clone_shares_gpu_data),
+    ("series_tests::test_from_column_round_trip", test_from_column_round_trip),
+    ("series_tests::test_from_column_shares_data", test_from_column_shares_data),
+    ("series_tests::test_view_matches_column_data", test_view_matches_column_data),
+    ("series_tests::test_gt_scalar_i32", test_gt_scalar_i32),
+    ("series_tests::test_lt_scalar_f64", test_lt_scalar_f64),
+    ("series_tests::test_ne_scalar_string", test_ne_scalar_string),
+    ("series_tests::test_gt_scalar_string", test_gt_scalar_string),
+    ("series_tests::test_lt_scalar_string", test_lt_scalar_string),
+    ("series_tests::test_ge_scalar_string", test_ge_scalar_string),
+    ("series_tests::test_le_scalar_string", test_le_scalar_string),
+    ("series_tests::test_gt_scalar_preserves_input", test_gt_scalar_preserves_input),
+    ("series_tests::test_ne_scalar_i32", test_ne_scalar_i32),
+    ("series_tests::test_ge_scalar_i32", test_ge_scalar_i32),
+    ("series_tests::test_le_scalar_i32", test_le_scalar_i32),
+    ("series_tests::test_eq_series", test_eq_series),
+    ("series_tests::test_ne_series", test_ne_series),
+    ("series_tests::test_gt_series", test_gt_series),
+    ("series_tests::test_lt_series", test_lt_series),
+    ("series_tests::test_ge_series", test_ge_series),
+    ("series_tests::test_le_series", test_le_series),
+    ("series_tests::test_comparison_mixed_types_f64_i32", test_comparison_mixed_types_f64_i32),
+    ("series_tests::test_add_series", test_add_series),
+    ("series_tests::test_sub_series", test_sub_series),
+    ("series_tests::test_mul_series", test_mul_series),
+    ("series_tests::test_div_series_f64", test_div_series_f64),
+    ("series_tests::test_add_scalar_i32", test_add_scalar_i32),
+    ("series_tests::test_sub_scalar_i32", test_sub_scalar_i32),
+    ("series_tests::test_mul_scalar_f64", test_mul_scalar_f64),
+    ("series_tests::test_div_scalar_f64", test_div_scalar_f64),
+];

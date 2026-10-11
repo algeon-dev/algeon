@@ -1,10 +1,9 @@
 use std::{
-    sync::{Mutex, MutexGuard, OnceLock, mpsc},
+    sync::{Mutex, MutexGuard, OnceLock},
     time::Duration,
 };
 
-use query_planning::error::QueryErrorCode;
-
+use super::support::{AdmissionTestController, test_ledger_with_explicit_profile};
 use crate::runtime::{
     GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
     GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryService, QueueBounds,
@@ -18,25 +17,10 @@ fn service_claim_test_guard() -> MutexGuard<'static, ()> {
     LOCK.get_or_init(|| Mutex::new(())).lock().expect("multi-device registry test lock poisoned")
 }
 
-/// Tests that construct real CUDA backends are unsupported on hosts without
-/// the required inventory. Rust's test harness has no runtime `skip` result,
-/// so make that outcome explicit rather than silently returning.
 #[track_caller]
-fn has_required_device_inventory(required: usize) -> bool {
-    let location = std::panic::Location::caller();
-    match cudf::DeviceId::count() {
-        Ok(available) if available >= required => true,
-        Ok(available) => {
-            eprintln!(
-                "SKIP unsupported_gpu_inventory at {location}: requires {required} GPU device(s), found {available}"
-            );
-            false
-        },
-        Err(error) => {
-            eprintln!("SKIP unsupported_gpu_inventory at {location}: could not enumerate GPUs: {error}");
-            false
-        },
-    }
+fn require_device_inventory(required: usize) {
+    let available = cudf::DeviceId::count().expect("CUDA device enumeration");
+    assert!(available >= required, "requires {required} GPU devices, found {available}");
 }
 
 fn test_device_profiles(
@@ -76,10 +60,9 @@ fn runtime_test_service(
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_available() {
-    if !has_required_device_inventory(2) {
-        return;
-    }
+    require_device_inventory(2);
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
@@ -108,10 +91,9 @@ fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_avai
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse() {
-    if !has_required_device_inventory(2) {
-        return;
-    }
+    require_device_inventory(2);
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
@@ -155,15 +137,19 @@ fn alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse() {
 
 #[test]
 fn per_device_active_limit_forces_spread_and_then_blocks() {
-    if !has_required_device_inventory(2) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
+    let service = AdmissionTestController::new_with_ledgers(
         QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
-        test_device_profiles(&[0, 1], 1, 9, TEST_DEVICE_CAPACITY_BYTES),
-    );
+        [0, 1].map(|ordinal| {
+            test_ledger_with_explicit_profile(
+                ordinal,
+                TEST_DEVICE_CAPACITY_BYTES,
+                TEST_DEVICE_CAPACITY_BYTES,
+                1,
+                Default::default(),
+            )
+        }),
+    )
+    .expect("explicit multi-device admission profiles");
 
     let first = service.try_admit_query().unwrap().expect("first query should admit");
     let second = service.try_admit_query().unwrap().expect("second query should admit");
@@ -175,15 +161,19 @@ fn per_device_active_limit_forces_spread_and_then_blocks() {
 
 #[test]
 fn least_loaded_placement_spreads_across_identical_devices() {
-    if !has_required_device_inventory(2) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
+    let service = AdmissionTestController::new_with_ledgers(
         QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
-        test_device_profiles(&[0, 1], 2, 6, TEST_DEVICE_CAPACITY_BYTES / 2),
-    );
+        [0, 1].map(|ordinal| {
+            test_ledger_with_explicit_profile(
+                ordinal,
+                TEST_DEVICE_CAPACITY_BYTES,
+                TEST_DEVICE_CAPACITY_BYTES / 2,
+                2,
+                Default::default(),
+            )
+        }),
+    )
+    .expect("explicit multi-device admission profiles");
 
     let first = service.try_admit_query().unwrap().expect("first query should admit");
     let second = service.try_admit_query().unwrap().expect("second query should admit");
@@ -195,9 +185,7 @@ fn least_loaded_placement_spreads_across_identical_devices() {
 
 #[test]
 fn query_service_memory_failure_callback_ignores_budget_failures() {
-    if !has_required_device_inventory(1) {
-        return;
-    }
+    require_device_inventory(1);
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
@@ -206,10 +194,7 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
     );
 
     let initial_report = service.device_memory_failure_reports().into_iter().next().unwrap();
-    if initial_report.callback_install_unavailable {
-        eprintln!("SKIP unsupported_memory_failure_callback: CUDA allocation failure callback is unavailable");
-        return;
-    }
+    assert!(!initial_report.callback_install_unavailable, "CUDA allocation failure callback is required");
     assert!(initial_report.callback_installed);
 
     const GRANT_BYTES: u64 = 64 * 1024;
@@ -293,9 +278,7 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
 
 #[test]
 fn direct_test_services_do_not_retain_backend_ownership() {
-    if !has_required_device_inventory(1) {
-        return;
-    }
+    require_device_inventory(1);
     let _guard = service_claim_test_guard();
     let config = QueryExecutionConfig::default();
     let queue_bounds = QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500) };
@@ -309,91 +292,9 @@ fn direct_test_services_do_not_retain_backend_ownership() {
 }
 
 #[test]
-fn per_device_active_limit_is_enforced_within_one_backend() {
-    if !has_required_device_inventory(1) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500) },
-        test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES),
-    );
-
-    let first = service.try_admit_query().unwrap().expect("first query should admit");
-
-    assert!(service.try_admit_query().unwrap().is_none());
-
-    drop(first);
-    let _second = service.admit_query().expect("ordered cleanup should wake per-device admission");
-}
-
-#[test]
-fn per_device_active_limit_release_wakes_waiter_in_same_backend() {
-    if !has_required_device_inventory(1) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(2) },
-        test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES),
-    );
-
-    let first = service.try_admit_query().unwrap().expect("first query should admit");
-    let waiting_service = service.clone();
-    let (sender, receiver) = mpsc::channel();
-    let waiter = std::thread::spawn(move || {
-        let result =
-            waiting_service.admit_query().map(|handle| handle.device_ordinal()).map_err(|error| error.to_string());
-        sender.send(result).expect("main thread should receive waiter result");
-    });
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
-    while service.admission_snapshot().unwrap().queued_queries == 0 {
-        assert!(std::time::Instant::now() < deadline, "second query did not queue before release");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    drop(first);
-
-    let admitted_device = receiver.recv_timeout(Duration::from_secs(3)).expect("waiter should wake before timeout");
-    waiter.join().expect("waiter thread should finish");
-    assert_eq!(admitted_device.unwrap(), 0);
-}
-
-#[test]
-fn per_device_active_limit_waits_for_escaped_context_after_handle_finish() {
-    if !has_required_device_inventory(1) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500) },
-        test_device_profiles(&[0], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
-    );
-
-    let first = service.try_admit_query().unwrap().expect("first query should admit");
-    let admitted_context = first.acquire_context().unwrap();
-    let retained_context = admitted_context.context().clone();
-    drop(admitted_context);
-    first.end_test_attempt();
-
-    assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
-    assert!(
-        service.try_admit_query().unwrap().is_none(),
-        "the escaped context must retain the first query's device slot and grant"
-    );
-    drop(retained_context);
-    let second = service.admit_query().expect("the final context anchor should wake admission");
-    assert_eq!(second.device_ordinal(), 0);
-}
-
-#[test]
+#[ignore = "requires at least 2 GPUs"]
 fn escaped_query_anchor_blocks_only_its_selected_device() {
-    if !has_required_device_inventory(2) {
-        return;
-    }
+    require_device_inventory(2);
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
@@ -419,18 +320,22 @@ fn escaped_query_anchor_blocks_only_its_selected_device() {
 
 #[test]
 fn multi_device_admissions_preserve_each_profiles_fixed_default_query_limit() {
-    if !has_required_device_inventory(2) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
     let want_budget = TEST_DEVICE_CAPACITY_BYTES;
     let min_budget = want_budget / 2;
     assert!(min_budget > 0);
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
+    let service = AdmissionTestController::new_with_ledgers(
         QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
-        test_device_profiles(&[0, 1], 2, 6, TEST_DEVICE_CAPACITY_BYTES / 2),
-    );
+        [0, 1].map(|ordinal| {
+            test_ledger_with_explicit_profile(
+                ordinal,
+                TEST_DEVICE_CAPACITY_BYTES,
+                TEST_DEVICE_CAPACITY_BYTES / 2,
+                2,
+                Default::default(),
+            )
+        }),
+    )
+    .expect("explicit multi-device admission profiles");
 
     let first = service.try_admit_query().unwrap().expect("first query should admit");
     let second = service.try_admit_query().unwrap().expect("second query should admit");
@@ -443,18 +348,22 @@ fn multi_device_admissions_preserve_each_profiles_fixed_default_query_limit() {
 
 #[test]
 fn multi_device_admissions_do_not_resize_the_fixed_default_query_limit_for_open_slots() {
-    if !has_required_device_inventory(2) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
     let want_budget = TEST_DEVICE_CAPACITY_BYTES;
     let min_budget = want_budget / 2;
     assert!(min_budget > 0);
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
+    let service = AdmissionTestController::new_with_ledgers(
         QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
-        test_device_profiles(&[0, 1], 2, 9, TEST_DEVICE_CAPACITY_BYTES / 2),
-    );
+        [0, 1].map(|ordinal| {
+            test_ledger_with_explicit_profile(
+                ordinal,
+                TEST_DEVICE_CAPACITY_BYTES,
+                TEST_DEVICE_CAPACITY_BYTES / 2,
+                2,
+                Default::default(),
+            )
+        }),
+    )
+    .expect("explicit multi-device admission profiles");
 
     let first = service.try_admit_query().unwrap().expect("first query should admit");
     let second = service.try_admit_query().unwrap().expect("second query should admit");
@@ -463,59 +372,4 @@ fn multi_device_admissions_do_not_resize_the_fixed_default_query_limit_for_open_
     assert_eq!(first.device_budget_bytes(), min_budget);
     assert_eq!(second.device_budget_bytes(), min_budget);
     assert_eq!(third.device_budget_bytes(), min_budget);
-}
-
-#[test]
-fn query_service_treats_transient_device_capacity_exhaustion_as_busy_not_rejected() {
-    if !has_required_device_inventory(1) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
-        test_device_profiles(&[0], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
-    );
-
-    let first = service.try_admit_query().unwrap().expect("first query should admit");
-
-    assert!(service.try_admit_query().unwrap().is_none());
-    drop(first);
-    let _second = service.admit_query().expect("ordered cleanup should wake capacity admission");
-}
-
-#[test]
-fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
-    if !has_required_device_inventory(1) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    // The queue bound also bounds the setup admission's resource-envelope
-    // acquisition, so keep it far from the wall clock and expire the waiter
-    // explicitly instead of racing a sleep against real device work.
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
-        test_device_profiles(&[0], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
-    );
-    let _active = service.try_admit_query().unwrap().expect("first query should admit");
-    let mut waiter = service.enqueue_admission().unwrap();
-
-    let expired = std::time::Instant::now();
-    waiter.waiter.deadline = Some(expired);
-    service
-        .inner
-        .admission
-        .state
-        .lock()
-        .expect("admission state")
-        .queued
-        .iter_mut()
-        .find(|request| request.admission_request_id == waiter.waiter.admission_request_id)
-        .expect("queued request")
-        .deadline = Some(expired);
-    let error = waiter.try_admit().unwrap_err();
-
-    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
 }

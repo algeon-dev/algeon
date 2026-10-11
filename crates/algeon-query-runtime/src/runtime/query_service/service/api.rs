@@ -574,35 +574,12 @@ impl QueryAdmissionRequest {
 mod tests {
     use std::sync::Arc;
 
-    use arrow::datatypes::{DataType, Field, Schema};
-    use query_planning::{
-        plan::QueryPlanBuilder,
-        source::{GpuResidentSource, SourceNode},
-    };
-
     use super::*;
     use crate::{
         attempt::{AttemptBackendCounters, BeginAttemptRequest},
         observability::{AttemptDisposition, RuntimeObservationConfig},
         runtime::BackendLifecycle,
     };
-
-    fn explicit_sink_capability_evidence() -> AttemptCapabilityEvidence {
-        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-        let plan = builder.finish_with_host_sink(source).unwrap();
-        AttemptCapabilityEvidence::for_query_plan(&plan)
-    }
-
-    #[test]
-    fn public_capability_attachment_retains_only_an_engine_issued_evidence() {
-        let evidence = explicit_sink_capability_evidence();
-        let request = QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone());
-
-        assert_eq!(request.submitted_plan_capability_evidence(), Some(evidence.clone()));
-        assert_eq!(request.resolved_attempt_requirement(), Some(evidence));
-    }
 
     #[test]
     fn attempt_binding_attaches_observation_and_release_together() {

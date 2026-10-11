@@ -1,3 +1,5 @@
+use cudf::testing;
+
 use super::*;
 use crate::native::ParquetReadStrategyConfig;
 
@@ -198,7 +200,6 @@ fn timestamp_timezone_residual_join_filter(
     )
 }
 
-#[test]
 fn hash_join_filter_rejects_timestamp_timezone_residual_comparison() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-hash-join-filter-timestamp-tz");
     let left_path = dir.join("left.parquet");
@@ -213,7 +214,6 @@ fn hash_join_filter_rejects_timestamp_timezone_residual_comparison() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn hash_join_filter_rejects_timestamp_timezone_residual_in_list() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-hash-join-filter-timestamp-tz-in-list");
     let left_path = dir.join("left.parquet");
@@ -229,6 +229,28 @@ fn hash_join_filter_rejects_timestamp_timezone_residual_in_list() {
 }
 
 #[test]
+fn residual_variants_tc_resrej_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "hash_join_filter_rejects_list_null_predicate_residual",
+            hash_join_filter_rejects_list_null_predicate_residual,
+        ),
+        (
+            "hash_join_filter_rejects_timestamp_timezone_residual_comparison",
+            hash_join_filter_rejects_timestamp_timezone_residual_comparison,
+        ),
+        (
+            "hash_join_filter_rejects_timestamp_timezone_residual_in_list",
+            hash_join_filter_rejects_timestamp_timezone_residual_in_list,
+        ),
+        (
+            "nested_loop_join_filter_rejects_timestamp_timezone_residual_comparison",
+            nested_loop_join_filter_rejects_timestamp_timezone_residual_comparison,
+        ),
+        ("hash_join_filter_rejects_integer_divide_residual", hash_join_filter_rejects_integer_divide_residual),
+    ]);
+}
+
 fn hash_join_filter_rejects_list_null_predicate_residual() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-hash-join-filter-list-null");
     let left_path = dir.join("left.parquet");
@@ -243,7 +265,6 @@ fn hash_join_filter_rejects_list_null_predicate_residual() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn hash_join_filter_rejects_integer_divide_residual() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-hash-join-filter-integer-divide");
     let left_path = dir.join("left.parquet");
@@ -258,7 +279,6 @@ fn hash_join_filter_rejects_integer_divide_residual() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn nested_loop_join_filter_rejects_timestamp_timezone_residual_comparison() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-nested-loop-filter-timestamp-tz");
     let left_path = dir.join("left.parquet");
@@ -436,9 +456,7 @@ fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate()
 }
 
 #[test]
-fn hash_join_filter_rejects_a_case_guarded_decimal_divide_residual() {
-    // Native decimal division fails on a zero divisor, and a residual is lowered without restricting a CASE
-    // branch to the rows DataFusion evaluates, so the guarded zero rows would fail the query.
+fn hash_join_filter_lowers_a_case_guarded_decimal_divide_residual() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-hash-join-filter-case-decimal-divide");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -451,7 +469,10 @@ fn hash_join_filter_rejects_a_case_guarded_decimal_divide_residual() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert_native_rejection(&result, CapabilityReason::UnsupportedExpression);
+    let join = rewritten_native_join(&result);
+    let predicate = join.spec.residual_predicate.as_ref().expect("decimal residual must remain on the GPU");
+    assert!(predicate.any(|expr| matches!(expr, Expr::Binary { op: BinaryOp::Divide, right, .. }
+        if matches!(right.as_ref(), Expr::Case { .. }))));
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -599,7 +620,6 @@ fn right_hash_join_filter_decimal_cast_materialization_uses_swapped_native_input
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn right_hash_join_lowers_to_swapped_native_left_join_spec() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-right-hash-join");
     let left_path = dir.join("left.parquet");
@@ -629,7 +649,6 @@ fn right_hash_join_lowers_to_swapped_native_left_join_spec() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn right_semi_hash_join_lowers_to_swapped_native_left_semi_join_spec() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-right-semi-hash-join");
     let left_path = dir.join("left.parquet");
@@ -655,7 +674,6 @@ fn right_semi_hash_join_lowers_to_swapped_native_left_semi_join_spec() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn right_anti_hash_join_lowers_to_swapped_native_left_anti_join_spec() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-right-anti-hash-join");
     let left_path = dir.join("left.parquet");
@@ -681,12 +699,36 @@ fn right_anti_hash_join_lowers_to_swapped_native_left_anti_join_spec() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn right_semi_count_star_uses_native_preserved_side_for_hidden_row_presence() {
     assert_right_semi_anti_count_star_hidden_row_presence(JoinType::RightSemi, NativeJoinType::LeftSemi);
 }
 
 #[test]
+fn residual_variants_tc_swap_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "right_anti_count_star_uses_native_preserved_side_for_hidden_row_presence",
+            right_anti_count_star_uses_native_preserved_side_for_hidden_row_presence,
+        ),
+        (
+            "right_hash_join_lowers_to_swapped_native_left_join_spec",
+            right_hash_join_lowers_to_swapped_native_left_join_spec,
+        ),
+        (
+            "right_semi_count_star_uses_native_preserved_side_for_hidden_row_presence",
+            right_semi_count_star_uses_native_preserved_side_for_hidden_row_presence,
+        ),
+        (
+            "right_anti_hash_join_lowers_to_swapped_native_left_anti_join_spec",
+            right_anti_hash_join_lowers_to_swapped_native_left_anti_join_spec,
+        ),
+        (
+            "right_semi_hash_join_lowers_to_swapped_native_left_semi_join_spec",
+            right_semi_hash_join_lowers_to_swapped_native_left_semi_join_spec,
+        ),
+    ]);
+}
+
 fn right_anti_count_star_uses_native_preserved_side_for_hidden_row_presence() {
     assert_right_semi_anti_count_star_hidden_row_presence(JoinType::RightAnti, NativeJoinType::LEFT_ANTI);
 }

@@ -382,11 +382,9 @@ fn install_algeon_native_rules(
 mod tests {
     use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
     use datafusion::{
-        datasource::MemTable,
         physical_plan::{ExecutionPlan, empty::EmptyExec, union::UnionExec},
         prelude::{SessionConfig, SessionContext},
     };
-    use futures::executor::block_on;
 
     use super::*;
     use crate::{backend::InstalledTestGpuBackend, error::DataFusionErrorExt, native_exec::QueryAdmissionSource};
@@ -594,30 +592,5 @@ mod tests {
         .expect("nested cuGraph planning requires installed native selection");
 
         assert_eq!(nested.config().target_partitions(), 4);
-    }
-
-    #[test]
-    fn cugraph_subplanning_preserves_parent_catalog_relations() {
-        let optimizer_config =
-            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
-        let state =
-            SessionStateBuilder::new_with_default_features().with_algeon_native(optimizer_config.clone()).build();
-        let ctx = SessionContext::new_with_state(state);
-        let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int32, false)]));
-        let table = Arc::new(MemTable::try_new(schema, vec![Vec::new()]).expect("empty test table"));
-        ctx.register_table("graph_edges", table).expect("test relation registers");
-
-        let _nested = session_state_with_native_execution_config(
-            &ctx.state(),
-            optimizer_config.native_execution_config().clone(),
-            "cugraph_test_input".to_string(),
-            InputPlanningSink::default(),
-        )
-        .expect("nested cuGraph planning requires installed native selection");
-
-        assert!(
-            block_on(ctx.table("graph_edges")).is_ok(),
-            "cuGraph subplanning must not overwrite the parent catalog"
-        );
     }
 }

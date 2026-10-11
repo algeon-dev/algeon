@@ -20,7 +20,7 @@ use cudf::{
         cuda_stream_handle,
     },
     runtime::{DeviceEntryGuard, DeviceFaultNativeStatus, DeviceHealthStatus},
-    testing::interop::column_export_with_lease_backend_for_test,
+    testing::{interop::column_export_with_lease_backend_for_test, run_named_cases},
 };
 use cugraph_sys::{
     cugraph_edgelist_get_destinations, cugraph_edgelist_get_edge_weights, cugraph_edgelist_get_sources,
@@ -140,20 +140,56 @@ fn dummy_runtime_bound_graph(
 }
 
 #[test]
-fn test_graph_creation_triangle() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_graph_creation_triangle").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-
-    let graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered);
-    assert!(graph.is_ok(), "graph creation failed: {:?}", graph.err());
+fn native_owner_cases_1() {
+    run_named_cases(&[
+        (
+            "graph::tests::test_graph_synchronize_input_reads_releases_owner_before_graph_destruction",
+            test_graph_synchronize_input_reads_releases_owner_before_graph_destruction,
+        ),
+        (
+            "graph::tests::test_graph_synchronize_input_reads_failure_retains_unfinished_owner",
+            test_graph_synchronize_input_reads_failure_retains_unfinished_owner,
+        ),
+        ("graph::tests::test_graph_park_releases_pending_input_owner", test_graph_park_releases_pending_input_owner),
+        (
+            "graph::tests::test_graph_park_surfaces_pending_input_completion_error",
+            test_graph_park_surfaces_pending_input_completion_error,
+        ),
+        (
+            "graph::tests::resume_under_executes_on_borrower_binding_and_reparks_there",
+            resume_under_executes_on_borrower_binding_and_reparks_there,
+        ),
+        (
+            "graph::tests::exact_resume_rejects_a_stale_binding_after_borrower_repark",
+            exact_resume_rejects_a_stale_binding_after_borrower_repark,
+        ),
+        (
+            "graph::tests::resume_under_rejects_non_runtime_bound_handles",
+            resume_under_rejects_non_runtime_bound_handles,
+        ),
+        (
+            "graph::tests::test_graph_park_rejects_non_runtime_bound_transfer_handle",
+            test_graph_park_rejects_non_runtime_bound_transfer_handle,
+        ),
+        (
+            "graph::tests::test_graph_retains_one_native_handle_owner_for_one_binding_after_many_hot_hits",
+            test_graph_retains_one_native_handle_owner_for_one_binding_after_many_hot_hits,
+        ),
+        (
+            "graph::tests::test_graph_last_lease_releases_runtime_owner_after_graph_drop",
+            test_graph_last_lease_releases_runtime_owner_after_graph_drop,
+        ),
+        (
+            "graph::tests::test_graph_rejects_runtime_with_different_execution_binding",
+            test_graph_rejects_runtime_with_different_execution_binding,
+        ),
+        (
+            "graph::tests::test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use",
+            test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use,
+        ),
+    ]);
 }
 
-#[test]
 fn test_graph_synchronize_input_reads_releases_owner_before_graph_destruction() {
     let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
@@ -169,7 +205,6 @@ fn test_graph_synchronize_input_reads_releases_owner_before_graph_destruction() 
     graph.park(&entered).expect("completed graph remains parkable");
 }
 
-#[test]
 fn test_graph_synchronize_input_reads_failure_retains_unfinished_owner() {
     let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
@@ -185,7 +220,6 @@ fn test_graph_synchronize_input_reads_failure_retains_unfinished_owner() {
     assert_eq!(Arc::strong_count(&owner), 2, "an unfinished read must continue retaining producer storage");
 }
 
-#[test]
 fn test_graph_park_releases_pending_input_owner() {
     let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
@@ -201,7 +235,6 @@ fn test_graph_park_releases_pending_input_owner() {
     drop(parked);
 }
 
-#[test]
 fn test_graph_park_surfaces_pending_input_completion_error() {
     let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
@@ -226,7 +259,6 @@ fn triangle_parked_graph(handle: &EnteredContext<'_>) -> ParkedGraph<Forward> {
     graph.park(handle).expect("park")
 }
 
-#[test]
 fn resume_under_executes_on_borrower_binding_and_reparks_there() {
     let storage_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let borrower_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
@@ -255,7 +287,6 @@ fn resume_under_executes_on_borrower_binding_and_reparks_there() {
     }
 }
 
-#[test]
 fn exact_resume_rejects_a_stale_binding_after_borrower_repark() {
     let storage_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let borrower_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
@@ -279,7 +310,6 @@ fn exact_resume_rejects_a_stale_binding_after_borrower_repark() {
     }
 }
 
-#[test]
 fn resume_under_rejects_non_runtime_bound_handles() {
     let storage_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let storage_handle = ResourceHandle::for_runtime(Arc::clone(&storage_runtime)).expect("handle");
@@ -297,7 +327,6 @@ fn resume_under_rejects_non_runtime_bound_handles() {
     }
 }
 
-#[test]
 fn test_graph_park_rejects_non_runtime_bound_transfer_handle() {
     let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let build_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
@@ -313,7 +342,6 @@ fn test_graph_park_rejects_non_runtime_bound_transfer_handle() {
     assert_eq!(err.operation(), "Graph::park");
 }
 
-#[test]
 fn test_graph_retains_one_native_handle_owner_for_one_binding_after_many_hot_hits() {
     let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let build_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
@@ -339,7 +367,6 @@ fn test_graph_retains_one_native_handle_owner_for_one_binding_after_many_hot_hit
     assert_eq!(graph.resource_handle_leases.borrow().len(), 1);
 }
 
-#[test]
 fn test_graph_last_lease_releases_runtime_owner_after_graph_drop() {
     let (runtime, released) = probed_runtime();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
@@ -567,7 +594,6 @@ fn runtime_bound_native_owner_runs_graph_work_across_threads_and_drops_on_anothe
     assert!(released.load(Ordering::SeqCst), "cross-thread final drop must release the runtime owner without a cycle");
 }
 
-#[test]
 fn test_graph_rejects_runtime_with_different_execution_binding() {
     let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let build_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
@@ -588,7 +614,6 @@ fn test_graph_rejects_runtime_with_different_execution_binding() {
     assert_eq!(graph.resource_handle_leases.borrow().len(), 1);
 }
 
-#[test]
 fn test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use() {
     let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let runtime_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("runtime handle");
@@ -606,235 +631,6 @@ fn test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use() {
     let err = graph.park(&runtime_entered).expect_err("park should reject tainted graph");
     assert_eq!(err.kind(), ErrorKind::InvalidState);
     assert_eq!(err.operation(), "Graph::park");
-}
-
-#[test]
-fn test_graph_creation_rejects_mismatched_src_dst_lengths() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_graph_creation_rejects_mismatched_src_dst_lengths").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2]).expect("dst");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-
-    let err = match GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered) {
-        Ok(_) => panic!("should reject mismatched edge-list lengths"),
-        Err(err) => err,
-    };
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-}
-
-#[test]
-fn test_graph_creation_with_edge_ids_and_edge_type_ids() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_graph_creation_with_edge_ids_and_edge_type_ids").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-    let edge_ids = DeviceArray::from_slice(&entered, &[100i32, 101, 102]).expect("edge_ids");
-    let edge_types = DeviceArray::from_slice(&entered, &[0i32, 1, 0]).expect("edge_types");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let edge_ids_view = edge_ids.view().expect("edge_ids_view");
-    let edge_types_view = edge_types.view().expect("edge_types_view");
-
-    let graph = GraphBuilder::new(&src_view, &dst_view)
-        .edge_ids(&edge_ids_view)
-        .edge_type_ids(&edge_types_view)
-        .renumber()
-        .build::<Forward>(&entered);
-    assert!(graph.is_ok(), "graph creation with edge_ids and edge_type_ids failed: {:?}", graph.err());
-}
-
-#[test]
-fn test_graph_creation_with_weights_and_edge_properties() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_graph_creation_with_weights_and_edge_properties").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2, 3]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 3, 0]).expect("dst");
-    let wgt = DeviceArray::from_slice(&entered, &[1.0f32, 2.0, 3.0, 4.0]).expect("wgt");
-    let edge_ids = DeviceArray::from_slice(&entered, &[0i32, 1, 2, 3]).expect("edge_ids");
-    let edge_types = DeviceArray::from_slice(&entered, &[0i32, 0, 1, 1]).expect("edge_types");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let wgt_view = wgt.view().expect("wgt_view");
-    let edge_ids_view = edge_ids.view().expect("edge_ids_view");
-    let edge_types_view = edge_types.view().expect("edge_types_view");
-
-    let graph = GraphBuilder::new(&src_view, &dst_view)
-        .weights(&wgt_view)
-        .edge_ids(&edge_ids_view)
-        .edge_type_ids(&edge_types_view)
-        .renumber()
-        .build::<Forward>(&entered);
-    assert!(graph.is_ok(), "graph creation with weights + edge properties failed: {:?}", graph.err());
-}
-
-#[test]
-fn test_graph_creation_rejects_mismatched_edge_ids_length() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_graph_creation_rejects_mismatched_edge_ids_length").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-    let edge_ids = DeviceArray::from_slice(&entered, &[10i32, 20]).expect("edge_ids");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let edge_ids_view = edge_ids.view().expect("edge_ids_view");
-
-    let err = GraphBuilder::new(&src_view, &dst_view)
-        .edge_ids(&edge_ids_view)
-        .build::<Forward>(&entered)
-        .expect_err("should reject mismatched edge_ids length");
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert!(err.message().contains("edge_ids"));
-}
-
-#[test]
-fn test_graph_creation_rejects_mismatched_edge_ids_dtype() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_graph_creation_rejects_mismatched_edge_ids_dtype").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-    let edge_ids = DeviceArray::from_slice(&entered, &[10i64, 20, 30]).expect("edge_ids");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let edge_ids_view = edge_ids.view().expect("edge_ids_view");
-
-    let err = GraphBuilder::new(&src_view, &dst_view)
-        .edge_ids(&edge_ids_view)
-        .build::<Forward>(&entered)
-        .expect_err("should reject edge_ids dtype mismatch");
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert!(err.message().contains("edge_ids must have the same dtype as src/dst"));
-}
-
-#[test]
-fn test_graph_creation_rejects_mismatched_edge_type_ids_length() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_graph_creation_rejects_mismatched_edge_type_ids_length").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-    let edge_types = DeviceArray::from_slice(&entered, &[0i32, 1]).expect("edge_types");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let edge_types_view = edge_types.view().expect("edge_types_view");
-
-    let err = GraphBuilder::new(&src_view, &dst_view)
-        .edge_type_ids(&edge_types_view)
-        .build::<Forward>(&entered)
-        .expect_err("should reject mismatched edge_type_ids length");
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert!(err.message().contains("edge_type_ids"));
-}
-
-#[test]
-fn test_rejects_symmetrize_with_edge_ids() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_rejects_symmetrize_with_edge_ids").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-    let eids = DeviceArray::from_slice(&entered, &[10i32, 20, 30]).expect("eids");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let eids_view = eids.view().expect("eids_view");
-
-    let err = GraphBuilder::new(&src_view, &dst_view)
-        .edge_ids(&eids_view)
-        .symmetrize()
-        .build::<Forward>(&entered)
-        .expect_err("should reject symmetrize + edge_ids");
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert!(err.message().contains("symmetrize"));
-    assert!(err.message().contains("edge_ids"));
-}
-
-#[test]
-fn test_rejects_symmetrize_with_edge_type_ids() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_rejects_symmetrize_with_edge_type_ids").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-    let etids = DeviceArray::from_slice(&entered, &[0i32, 1, 0]).expect("etids");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let etids_view = etids.view().expect("etids_view");
-
-    let err = GraphBuilder::new(&src_view, &dst_view)
-        .edge_type_ids(&etids_view)
-        .symmetrize()
-        .build::<Forward>(&entered)
-        .expect_err("should reject symmetrize + edge_type_ids");
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert!(err.message().contains("symmetrize"));
-    assert!(err.message().contains("edge_type_ids"));
-}
-
-#[test]
-fn test_rejects_start_time_without_end_time() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_rejects_start_time_without_end_time").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-    let start = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("start");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let start_view = start.view().expect("start_view");
-
-    let err = GraphBuilder::new(&src_view, &dst_view)
-        .edge_start_time_ids(&start_view)
-        .build::<Forward>(&entered)
-        .expect_err("should reject start_time without end_time");
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert!(err.message().contains("edge_end_time_ids"));
-    assert!(err.message().contains("was not"));
-}
-
-#[test]
-fn test_builder_defaults_to_directed() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_builder_defaults_to_directed").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let builder = GraphBuilder::new(&src_view, &dst_view);
-    let debug = format!("{:?}", builder);
-
-    // properties defaults to directed simple graph
-    assert!(debug.contains("is_symmetric: false"), "should default to directed");
-    assert!(debug.contains("is_multigraph: false"), "should default to simple graph");
-}
-
-#[test]
-fn test_from_raw_views_preserves_known_dtypes_in_builder_state() {
-    let handle = ResourceHandle::new().expect("handle");
-    let entered = handle.enter("test_from_raw_views_preserves_known_dtypes_in_builder_state").expect("entered");
-
-    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
-    let wgt = DeviceArray::from_slice(&entered, &[1.0f64, 2.0, 3.0]).expect("wgt");
-
-    let src_raw = src.raw_view().expect("src_raw");
-    let dst_raw = dst.raw_view().expect("dst_raw");
-    let wgt_raw = wgt.raw_view().expect("wgt_raw");
-
-    let builder = GraphBuilder::from_raw_views(GraphProperties::default(), &src_raw, &dst_raw)
-        .expect("builder from raw views")
-        .weights_raw(&wgt_raw)
-        .expect("weights_raw");
-
-    assert_eq!(builder.vertex_dtype, DataType::Int32);
-    assert_eq!(builder.weight_dtype, DataType::Float64);
 }
 
 #[test]
@@ -902,7 +698,7 @@ fn test_weighted_graph_frugal_quarters_preserve_edges_under_cap() {
         let source = read_column(cugraph_edgelist_get_sources, DataType::Int64);
         let destination = read_column(cugraph_edgelist_get_destinations, DataType::Int64);
         let weight = read_column(cugraph_edgelist_get_edge_weights, DataType::Float64);
-        let mut edges = source
+        let edges = source
             .as_chunks::<8>()
             .0
             .iter()
@@ -912,8 +708,40 @@ fn test_weighted_graph_frugal_quarters_preserve_edges_under_cap() {
                 (i64::from_ne_bytes(*source), i64::from_ne_bytes(*destination), u64::from_ne_bytes(*weight))
             })
             .collect::<Vec<_>>();
-        edges.sort_unstable();
         (edges, construction_peak)
+    }
+
+    fn source_for_row(row: usize, skewed: bool) -> i64 {
+        if skewed { if row < ROWS * 7 / 8 { 0 } else { 1 + (row % 16) as i64 } } else { (row / 1024) as i64 }
+    }
+
+    fn verify_edges(edges: &[(i64, i64, u64)], skewed: bool, description: &str) {
+        assert_eq!(edges.len(), ROWS, "{description} edge count, skewed={skewed}");
+        let mut remaining = vec![true; ROWS];
+        for &(source, destination, weight_bits) in edges {
+            assert!((0..1024).contains(&destination), "{description} unexpected destination {destination}");
+            let weight_index = ((f64::from_bits(weight_bits) - 1.0) * 256.0) as i64;
+            assert!((0..251).contains(&weight_index), "{description} unexpected weight {weight_bits}");
+            assert_eq!((1.0 + weight_index as f64 / 256.0).to_bits(), weight_bits, "{description} weight bits");
+            // Destination and weight encode row modulo 1024 and 251. These moduli are coprime,
+            // and 113 is the inverse of 1024 modulo 251, so this enumerates every exact input tuple.
+            let first_row = destination + 1024 * (((weight_index - destination).rem_euclid(251) * 113).rem_euclid(251));
+            let mut row = first_row as usize;
+            let mut matched = false;
+            while row < ROWS {
+                if remaining[row] && source_for_row(row, skewed) == source {
+                    remaining[row] = false;
+                    matched = true;
+                    break;
+                }
+                row += 1024 * 251;
+            }
+            assert!(
+                matched,
+                "{description} extra or changed edge ({source}, {destination}, {weight_bits}), skewed={skewed}"
+            );
+        }
+        assert!(remaining.iter().all(|row| !row), "{description} missing input edges, skewed={skewed}");
     }
 
     const ROWS: usize = 1 << 20;
@@ -921,38 +749,12 @@ fn test_weighted_graph_frugal_quarters_preserve_edges_under_cap() {
     let destination = (0..ROWS).map(|row| (row % 1024) as i64).collect::<Vec<_>>();
     let weights = (0..ROWS).map(|row| 1.0 + (row % 251) as f64 / 256.0).collect::<Vec<_>>();
     for skewed in [false, true] {
-        let source =
-            (0..ROWS)
-                .map(|row| {
-                    if skewed {
-                        if row < ROWS * 7 / 8 { 0 } else { 1 + (row % 16) as i64 }
-                    } else {
-                        (row / 1024) as i64
-                    }
-                })
-                .collect::<Vec<_>>();
-        let mut expected = source
-            .iter()
-            .zip(&destination)
-            .zip(&weights)
-            .map(|((&source, &destination), &weight)| (source, destination, weight.to_bits()))
-            .collect::<Vec<_>>();
-        expected.sort_unstable();
+        let source = (0..ROWS).map(|row| source_for_row(row, skewed)).collect::<Vec<_>>();
         let (nonfrugal, _) = construct_edges(&source, &destination, &weights, 512 * MIB);
         let cap = if skewed { 80 * MIB } else { 58 * MIB };
         let (frugal, peak) = construct_edges(&source, &destination, &weights, cap);
-        for (description, actual, expected) in
-            [("nonfrugal input", &nonfrugal, &expected), ("frugal versus nonfrugal", &frugal, &nonfrugal)]
-        {
-            assert_eq!(actual.len(), expected.len(), "{description} edge count, skewed={skewed}");
-            if let Some((row, (actual, expected))) =
-                actual.iter().zip(expected).enumerate().find(|(_, (actual, expected))| actual != expected)
-            {
-                panic!(
-                    "{description} mismatch at row {row}, skewed={skewed}: actual={actual:?}, expected={expected:?}"
-                );
-            }
-        }
+        verify_edges(&nonfrugal, skewed, "nonfrugal input");
+        verify_edges(&frugal, skewed, "frugal input");
         assert!(peak <= cap as u64);
         eprintln!("weighted graph construction skewed={skewed}, peak={peak}, cap={cap}");
     }

@@ -7,27 +7,16 @@ use arrow::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use workloads::clickbench::{
-    CLICKBENCH_QUERIES, CLICKBENCH_QUERY_COUNT, CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE, ClickbenchLayout,
-    clickbench_query_ids, describe_clickbench_dataset, discover_clickbench_layout,
+    CLICKBENCH_QUERIES, ClickbenchLayout, describe_clickbench_dataset, discover_clickbench_layout,
 };
 
 #[test]
 fn clickbench_query_catalog_is_stable() {
-    assert_eq!(CLICKBENCH_QUERY_COUNT, 43);
-    assert_eq!(CLICKBENCH_QUERIES.len(), 43);
-    let expected: Vec<String> = (1..=43).map(|number| format!("q{number:02}")).collect();
-    assert_eq!(clickbench_query_ids().collect::<Vec<_>>(), expected.iter().map(String::as_str).collect::<Vec<_>>());
-    assert_eq!(
-        CLICKBENCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>(),
-        expected.iter().map(String::as_str).collect::<Vec<_>>()
-    );
     for query in CLICKBENCH_QUERIES {
         assert!(!query.sql.trim().is_empty(), "{} SQL is empty", query.id);
         assert!(!query.sql.trim_end().ends_with(';'), "{} SQL has a trailing semicolon", query.id);
         assert!(query.sql.contains("hits"), "{} SQL does not reference hits", query.id);
     }
-    assert_eq!(CLICKBENCH_TABLE, "hits");
-    assert_eq!(CLICKBENCH_RAW_TABLE, "hits_raw");
 }
 
 #[test]

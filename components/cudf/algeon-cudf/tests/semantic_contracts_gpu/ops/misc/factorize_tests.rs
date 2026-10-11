@@ -16,7 +16,7 @@ use cudf::{
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, dataframe_from_columns, error_context_value,
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    run_named_cases, series,
+    series,
 };
 
 fn factorize_column(column: Column) -> (Series, Series) {
@@ -344,38 +344,38 @@ fn test_testing_hook_locks_codebook_key_count_limit_contract() {
     assert_eq!(error_context_value(&err, "len").as_deref(), None);
 }
 
-#[test]
-fn factorize_tests_cases() {
-    run_named_cases(&[
-        ("test_factorize_i32_with_duplicates", test_factorize_i32_with_duplicates),
-        ("test_factorize_string_column", test_factorize_string_column),
-        ("test_factorize_with_nulls", test_factorize_with_nulls),
-        ("test_factorize_empty_column", test_factorize_empty_column),
-        ("test_factorize_single_element", test_factorize_single_element),
-        ("test_factorize_already_unique", test_factorize_already_unique),
-        ("test_factorize_f64_column", test_factorize_f64_column),
-        ("test_factorize_codes_are_owned_independent_of_input", test_factorize_codes_are_owned_independent_of_input),
-        ("test_dataframe_factorize_by_name", test_dataframe_factorize_by_name),
-        ("test_dataframe_factorize_missing_column", test_dataframe_factorize_missing_column),
-        (
-            "test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques",
-            test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques,
-        ),
-        (
-            "test_factorize_uniques_support_safe_positional_codebook_round_trip",
-            test_factorize_uniques_support_safe_positional_codebook_round_trip,
-        ),
-        (
-            "test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end",
-            test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end,
-        ),
-        (
-            "test_testing_hook_locks_factorize_empty_row_code_dtype_contract",
-            test_testing_hook_locks_factorize_empty_row_code_dtype_contract,
-        ),
-        (
-            "test_testing_hook_locks_codebook_key_count_limit_contract",
-            test_testing_hook_locks_codebook_key_count_limit_contract,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("factorize_tests::test_factorize_i32_with_duplicates", test_factorize_i32_with_duplicates),
+    ("factorize_tests::test_factorize_string_column", test_factorize_string_column),
+    ("factorize_tests::test_factorize_with_nulls", test_factorize_with_nulls),
+    ("factorize_tests::test_factorize_empty_column", test_factorize_empty_column),
+    ("factorize_tests::test_factorize_single_element", test_factorize_single_element),
+    ("factorize_tests::test_factorize_already_unique", test_factorize_already_unique),
+    ("factorize_tests::test_factorize_f64_column", test_factorize_f64_column),
+    (
+        "factorize_tests::test_factorize_codes_are_owned_independent_of_input",
+        test_factorize_codes_are_owned_independent_of_input,
+    ),
+    ("factorize_tests::test_dataframe_factorize_by_name", test_dataframe_factorize_by_name),
+    ("factorize_tests::test_dataframe_factorize_missing_column", test_dataframe_factorize_missing_column),
+    (
+        "factorize_tests::test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques",
+        test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques,
+    ),
+    (
+        "factorize_tests::test_factorize_uniques_support_safe_positional_codebook_round_trip",
+        test_factorize_uniques_support_safe_positional_codebook_round_trip,
+    ),
+    (
+        "factorize_tests::test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end",
+        test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end,
+    ),
+    (
+        "factorize_tests::test_testing_hook_locks_factorize_empty_row_code_dtype_contract",
+        test_testing_hook_locks_factorize_empty_row_code_dtype_contract,
+    ),
+    (
+        "factorize_tests::test_testing_hook_locks_codebook_key_count_limit_contract",
+        test_testing_hook_locks_codebook_key_count_limit_contract,
+    ),
+];

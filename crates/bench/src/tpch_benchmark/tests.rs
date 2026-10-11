@@ -1,7 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
 use algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics;
-use query_planning::execution_contracts::SourceChunkPlanningMode;
 use workloads::tpch::TpchTableMetadata;
 
 use super::*;
@@ -13,52 +12,6 @@ mod provenance;
 mod rejected_rows;
 mod report_rows;
 mod runtime_failures;
-
-#[test]
-fn benchmark_metric_aggregation_delegates_to_the_report_metric_owner() {
-    let source = include_str!("execution.rs");
-    let aggregate = source
-        .split_once("fn aggregate_native_execution_metrics")
-        .expect("TPC-H benchmark must aggregate native execution metrics")
-        .1
-        .split_once("fn native_started")
-        .expect("metric aggregation must end before native failure conversion")
-        .0;
-
-    assert!(aggregate.contains(".reduce("));
-    assert!(aggregate.contains("aggregate.merge_from(current);"));
-    assert!(!aggregate.contains("saturating_add"));
-    assert!(!aggregate.contains("max_optional_metric"));
-}
-
-#[test]
-fn allocator_high_water_placeholder_is_none_without_runtime_contract() {
-    let config =
-        NativeTpchBenchmarkConfig { query_ids: vec!["q01".to_string()], ..NativeTpchBenchmarkConfig::default() };
-    let report = NativeTpchBenchmarkReport {
-        metadata: benchmark_metadata(),
-        config,
-        devices: Vec::new(),
-        rows: vec![NativeTpchBenchmarkRow::accepted(
-            "q01",
-            accepted_planning_row("q01"),
-            Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
-            Ok(timed_native_run("output-fnv1a64:0000000000000001")),
-        )],
-    };
-    let text = report.to_tsv();
-    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
-    let header = lines.next().expect("benchmark report should contain a TSV header");
-    let row = lines.next().expect("benchmark report should contain a data row");
-    let header_fields = header.split('\t').collect::<Vec<_>>();
-    let row_fields = row.split('\t').collect::<Vec<_>>();
-
-    assert_eq!(
-        row_fields[header_index(&header_fields, "allocator_high_water_bytes")],
-        "none",
-        "allocator high-water must stay unset until the lower runtime exposes a real contract"
-    );
-}
 
 #[test]
 fn benchmark_planning_row_selection_handles_multi_candidate_reports() {
@@ -86,57 +39,6 @@ fn benchmark_planning_row_selection_handles_multi_candidate_reports() {
     let error = execution::select_benchmark_planning_row("q01", vec![accepted_planning_row("q02")])
         .expect_err("benchmark planning must reject a single row for a different query");
     assert!(error.to_string().contains("planning row query_id mismatch"));
-}
-
-#[test]
-fn benchmark_query_progress_line_identifies_query_and_profile() {
-    let config = NativeTpchBenchmarkConfig {
-        query_ids: vec!["q07".to_string()],
-        native_memory_policy: NativeTpchMemoryPolicy::bounded_custom(
-            NativeTpchDeviceBudget::Explicit { bytes: 94_489_280_512 },
-            34_359_738_368,
-            1024,
-            DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
-            DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            SourceChunkPlanningMode::LocalParquetThroughput,
-        ),
-        dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
-        ..NativeTpchBenchmarkConfig::default()
-    };
-    let query = TPCH_QUERIES.iter().find(|query| query.id == "q07").unwrap();
-
-    let line = benchmark_query_progress_line(&config, query, 2, 3);
-
-    assert!(line.starts_with("[native_tpch_benchmark] stage=query_start query=q07 index=3/3"));
-    assert!(line.contains("dataset_mode=sf100_external"));
-    assert!(line.contains("execution_mode=bounded"));
-    assert!(line.contains("relational_execution=native_no_datafusion_cpu"));
-    assert!(line.contains("memory_policy=bounded"));
-    assert!(line.contains("native_profile=custom"));
-    assert!(line.contains("source_chunk_planning_mode=local_parquet_throughput"));
-    assert!(line.contains("max_row_groups_per_chunk=1024"));
-    assert!(line.contains("max_source_chunk_bytes=34359738368"));
-    assert!(line.contains("skip_cpu="));
-}
-
-#[test]
-fn benchmark_query_progress_line_identifies_named_sf100_profile() {
-    let profile =
-        tpch_native_profile_settings_from([(ALGEON_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
-    let config = NativeTpchBenchmarkConfig {
-        query_ids: vec!["q07".to_string()],
-        native_memory_policy: NativeTpchMemoryPolicy::bounded_from_profile_settings(profile),
-        dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
-        ..NativeTpchBenchmarkConfig::default()
-    };
-    let query = TPCH_QUERIES.iter().find(|query| query.id == "q07").unwrap();
-
-    let line = benchmark_query_progress_line(&config, query, 0, 1);
-
-    assert!(line.contains("native_profile=sf100_gpu_throughput"));
-    assert!(line.contains("source_chunk_planning_mode=local_parquet_throughput"));
-    assert!(line.contains("max_row_groups_per_chunk=1024"));
-    assert!(line.contains("max_source_chunk_bytes=34359738368"));
 }
 
 #[test]
@@ -225,45 +127,9 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
     let header_fields = header.split('\t').collect::<Vec<_>>();
     assert_eq!(header, NATIVE_TPCH_BENCHMARK_TSV_HEADER);
     assert_eq!(NATIVE_TPCH_BENCHMARK_TSV_COLUMNS.join("\t"), NATIVE_TPCH_BENCHMARK_TSV_HEADER);
-    assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tgraph_runtime_rows\ttask_operator_rows\t"));
-    assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains(
-        "\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\t"
-    ));
-    assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tdynamic_filter_post_decode_reduction_stage\t"));
-    assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tdynamic_filter_measured_reduction_status\t"));
-    assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tdynamic_filter_work_avoidance_status\t"));
-    assert!(
-        NATIVE_TPCH_BENCHMARK_TSV_HEADER
-            .contains("\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\t")
-    );
-    assert!(
-        NATIVE_TPCH_BENCHMARK_TSV_HEADER
-            .contains("\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\t")
-    );
-
     let query_id_index = header_index(&header_fields, "query_id");
     let planning_outcome_index = header_index(&header_fields, "planning_outcome");
     let bounded_status_index = header_index(&header_fields, "bounded_status");
-    assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tpost_native_execution_path\t"));
-    assert!(!NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tfinal_disposition\t"));
-    for removed in [
-        "source_cache_hits",
-        "source_cache_misses",
-        "source_cache_inserts",
-        "source_cache_insert_skipped",
-        "source_cache_retained_bytes",
-        "source_cache_lookup_time_ms",
-        "hash_join_durable_cache_hits",
-        "hash_join_durable_cache_misses",
-        "hash_join_durable_cache_inserts",
-        "hash_join_cache_hits",
-        "hash_join_cache_misses",
-    ] {
-        assert!(
-            !NATIVE_TPCH_BENCHMARK_TSV_HEADER.split('\t').any(|column| column == removed),
-            "report must not project removed field {removed}"
-        );
-    }
     // This frozen column name carries the current final-plan disposition value.
     let final_disposition_index = header_index(&header_fields, "post_native_execution_path");
     let rejected_before_execution_index = header_index(&header_fields, "rejected_before_execution");

@@ -1,3 +1,5 @@
+use cudf::testing::run_named_cases;
+
 use super::*;
 
 #[test]
@@ -72,7 +74,6 @@ fn outer_join_null_rejection_preserves_left_join_build_side_after_build_side_sel
     assert_eq!(rewritten_join.spec.build_side, JoinSide::Right);
 }
 
-#[test]
 fn outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side() {
     let plan = inner_join_over_projected_left_join_left_key_plan();
 
@@ -90,6 +91,35 @@ fn outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side(
 }
 
 #[test]
+fn t_outer_join_keeps_cases() {
+    run_named_cases(&[
+        (
+            "optimizer_contracts::outer_join_null_rejection::outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side",
+            outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side,
+        ),
+        (
+            "optimizer_contracts::outer_join_null_rejection::outer_join_null_rejection_keeps_left_join_below_limit",
+            outer_join_null_rejection_keeps_left_join_below_limit,
+        ),
+        (
+            "optimizer_contracts::outer_join_null_rejection::outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join",
+            outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join,
+        ),
+        (
+            "optimizer_contracts::outer_join_null_rejection::outer_join_null_rejection_keeps_marker_null_filter_when_marker_escapes_projection",
+            outer_join_null_rejection_keeps_marker_null_filter_when_marker_escapes_projection,
+        ),
+        (
+            "optimizer_contracts::outer_join_null_rejection::outer_join_null_rejection_keeps_large_null_introducing_input",
+            outer_join_null_rejection_keeps_large_null_introducing_input,
+        ),
+        (
+            "optimizer_contracts::outer_join_null_rejection::outer_join_null_rejection_rejects_shared_outer_join_output",
+            outer_join_null_rejection_rejects_shared_outer_join_output,
+        ),
+    ]);
+}
+
 fn outer_join_null_rejection_rejects_shared_outer_join_output() {
     let plan = shared_left_join_output_with_one_null_rejecting_consumer_plan();
 
@@ -111,7 +141,6 @@ fn outer_join_null_rejection_rejects_shared_outer_join_output() {
     );
 }
 
-#[test]
 fn outer_join_null_rejection_keeps_left_join_below_limit() {
     let plan = inner_join_over_limited_projected_left_join_right_key_plan();
 
@@ -128,7 +157,6 @@ fn outer_join_null_rejection_keeps_left_join_below_limit() {
     assert_eq!(result.diagnostics.outer_join_null_rejection.applied_count, 0);
 }
 
-#[test]
 fn outer_join_null_rejection_keeps_large_null_introducing_input() {
     let plan = inner_join_over_large_left_join_right_key_plan();
 
@@ -271,7 +299,6 @@ fn outer_join_null_rejection_converts_marker_null_filter_when_key_schema_is_null
     assert_eq!(join.spec.join_type, JoinType::LEFT_ANTI);
 }
 
-#[test]
 fn outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::NullsMatch);
 
@@ -288,7 +315,6 @@ fn outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join() {
     assert!(result.diagnostics.outer_join_null_rejection.is_empty());
 }
 
-#[test]
 fn outer_join_null_rejection_keeps_marker_null_filter_when_marker_escapes_projection() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::MarkerEscapes);
 

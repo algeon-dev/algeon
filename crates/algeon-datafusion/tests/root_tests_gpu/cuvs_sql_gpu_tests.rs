@@ -3,7 +3,7 @@
 use std::{fs::File, sync::Arc, time::Duration};
 
 use algeon_datafusion::{
-    attempt::{AttemptOptions, RuntimeTerminalOutcome},
+    attempt::AttemptOptions,
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
@@ -15,6 +15,7 @@ use algeon_datafusion::{
 };
 #[cfg(feature = "cugraph")]
 use algeon_datafusion::{
+    attempt::RuntimeTerminalOutcome,
     cugraph_sql::CugraphSqlConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::{FinalPlanDisposition, classify_final_plan},
@@ -28,9 +29,12 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::testing::arrow::{
-    arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
-    reset_arrow_host_interop_observation_for_test,
+use cudf::{
+    testing,
+    testing::arrow::{
+        arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+        reset_arrow_host_interop_observation_for_test,
+    },
 };
 #[cfg(feature = "cugraph")]
 use datafusion::physical_plan::{execute_stream, metrics::MetricsSet};
@@ -43,6 +47,7 @@ use datafusion::{
 };
 use futures::StreamExt;
 use parquet::arrow::ArrowWriter;
+use tokio::runtime::Builder as TestRuntimeBuilder;
 #[cfg(feature = "cugraph")]
 use tokio::{
     task::yield_now,
@@ -50,7 +55,47 @@ use tokio::{
 };
 
 #[cfg(feature = "cugraph")]
-#[tokio::test]
+#[test]
+fn cuvs_sql_cugraph_lineage_cases_1() {
+    testing::run_named_cases(&[
+        ("native_required_accepts_a_raw_cugraph_function_root", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_required_accepts_a_raw_cugraph_function_root())
+        }),
+        ("functions_only_executes_cugraph_through_cpu_join_into_cuvs_under_one_admission", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(functions_only_executes_cugraph_through_cpu_join_into_cuvs_under_one_admission())
+        }),
+        ("functions_only_binds_shared_cugraph_cte_lineage_to_two_cuvs_consumers", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(functions_only_binds_shared_cugraph_cte_lineage_to_two_cuvs_consumers())
+        }),
+        ("native_preferred_binds_nested_host_lineage_inside_composed_consumers", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_preferred_binds_nested_host_lineage_inside_composed_consumers())
+        }),
+        ("functions_only_executes_two_gpu_branches_through_a_cpu_join_under_one_admission", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(functions_only_executes_two_gpu_branches_through_a_cpu_join_under_one_admission())
+        }),
+    ]);
+}
+#[cfg(feature = "cugraph")]
 async fn native_required_accepts_a_raw_cugraph_function_root() {
     let backend = cuvs_test_backend_with_mode(AlgeonGpuExecutionMode::NativeRequired);
     let state = backend
@@ -76,7 +121,6 @@ async fn native_required_accepts_a_raw_cugraph_function_root() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn cagra_sql_executes_with_admitted_pool_coverage() {
     let (backend, ctx) = cuvs_bounded_context();
     let rows = 512;
@@ -111,7 +155,6 @@ async fn cagra_sql_executes_with_admitted_pool_coverage() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn int8_fixed_size_list_ivf_flat_matches_self_distance_oracle() {
     let (backend, ctx) = cuvs_bounded_context();
     let item = Arc::new(Field::new("item", DataType::Int8, false));
@@ -144,7 +187,6 @@ async fn int8_fixed_size_list_ivf_flat_matches_self_distance_oracle() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn uint8_wide_ivf_flat_and_float64_pairwise_kmeans_execute() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);
@@ -186,7 +228,6 @@ async fn uint8_wide_ivf_flat_and_float64_pairwise_kmeans_execute() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn ivf_flat_sql_matches_exact_search_and_omits_missing_neighbors() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);
@@ -218,7 +259,6 @@ async fn ivf_flat_sql_matches_exact_search_and_omits_missing_neighbors() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn ivf_pq_sql_executes_and_omits_missing_neighbors() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);
@@ -247,7 +287,6 @@ async fn ivf_pq_sql_executes_and_omits_missing_neighbors() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn pairwise_and_top_k_sql_produce_ranked_device_results() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);
@@ -283,7 +322,6 @@ async fn pairwise_and_top_k_sql_produce_ranked_device_results() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn pairwise_and_top_k_preserve_empty_schemas_and_order_ties_by_position() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);
@@ -332,7 +370,6 @@ async fn pairwise_and_top_k_preserve_empty_schemas_and_order_ties_by_position() 
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn top_k_rejects_k_above_evaluated_list_dimension() {
     let (backend, ctx) = cuvs_bounded_context();
     let item = Arc::new(Field::new("item", DataType::Float32, false));
@@ -380,7 +417,6 @@ const ARRAY_AGG_DATASET: &str = "SELECT id, array_agg(v ORDER BY k) AS vector FR
          SELECT item_id AS id, 0 AS k, d0 AS v FROM dataset_vectors \
          UNION ALL SELECT item_id AS id, 1 AS k, d1 AS v FROM dataset_vectors) GROUP BY id";
 
-#[tokio::test]
 async fn nullable_typed_null_free_relations_match_the_non_null_results() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);
@@ -420,7 +456,6 @@ async fn nullable_typed_null_free_relations_match_the_non_null_results() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn null_ids_features_and_list_values_fail_naming_the_function_role_and_column() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);
@@ -568,7 +603,6 @@ async fn functions_only_keeps_native_supported_sql_on_cpu_without_gpu_activity()
 }
 
 #[cfg(feature = "cugraph")]
-#[tokio::test]
 async fn functions_only_executes_cugraph_through_cpu_join_into_cuvs_under_one_admission() {
     let backend = cuvs_test_backend_with_mode(AlgeonGpuExecutionMode::FunctionsOnly);
     let state = backend
@@ -696,18 +730,15 @@ async fn assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(mode: AlgeonGpu
 }
 
 #[cfg(feature = "cugraph")]
-#[tokio::test]
 async fn functions_only_binds_shared_cugraph_cte_lineage_to_two_cuvs_consumers() {
     assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(AlgeonGpuExecutionMode::FunctionsOnly).await;
 }
 
 #[cfg(feature = "cugraph")]
-#[tokio::test]
 async fn native_preferred_binds_nested_host_lineage_inside_composed_consumers() {
     assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(AlgeonGpuExecutionMode::NativePreferred).await;
 }
 
-#[tokio::test]
 async fn functions_only_executes_cuvs_through_cpu_limit_into_cuvs() {
     let (backend, ctx) = cuvs_bounded_context_with_mode(AlgeonGpuExecutionMode::FunctionsOnly);
     register_tables(&ctx);
@@ -749,7 +780,6 @@ async fn functions_only_executes_cuvs_through_cpu_limit_into_cuvs() {
 }
 
 #[cfg(feature = "cugraph")]
-#[tokio::test]
 async fn functions_only_executes_two_gpu_branches_through_a_cpu_join_under_one_admission() {
     let backend = cuvs_test_backend_with_mode(AlgeonGpuExecutionMode::FunctionsOnly);
     let state = backend
@@ -829,7 +859,6 @@ async fn functions_only_stream_drop_releases_admission_and_the_plan_can_run_agai
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn cuvs_sql_executes_uniform_list_float32_vectors_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context();
     let item = Arc::new(Field::new("item", DataType::Float32, false));
@@ -892,7 +921,6 @@ async fn cuvs_sql_executes_uniform_list_float32_vectors_with_bounded_memory() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn cuvs_sql_executes_multi_partition_input_and_relational_operators_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context();
     let dataset_schema = wide_vector_schema("item_id");
@@ -953,7 +981,6 @@ async fn cuvs_sql_executes_multi_partition_input_and_relational_operators_with_b
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn row_ordinal_follows_the_input_order_by_across_partitions() {
     for (mode, planned_input) in [
         (AlgeonGpuExecutionMode::NativePreferred, "AlgeonNativeGpuProducerExec"),
@@ -989,7 +1016,6 @@ async fn row_ordinal_follows_the_input_order_by_across_partitions() {
     }
 }
 
-#[tokio::test]
 async fn cuvs_sql_executes_parquet_relations_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context_with_mode(AlgeonGpuExecutionMode::FunctionsOnly);
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
@@ -1032,7 +1058,150 @@ async fn cuvs_sql_executes_parquet_relations_with_bounded_memory() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
+#[test]
+fn cuvs_sql_gpu_tests_cases_1() {
+    testing::run_named_cases(&[
+        ("cuvs_sql_executes_fixed_size_list_float32_parquet_relations_with_bounded_memory", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cuvs_sql_executes_fixed_size_list_float32_parquet_relations_with_bounded_memory())
+        }),
+        ("cuvs_kmeans_and_pca_execute_over_parquet_with_bounded_memory", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cuvs_kmeans_and_pca_execute_over_parquet_with_bounded_memory())
+        }),
+        ("int8_fixed_size_list_ivf_flat_matches_self_distance_oracle", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(int8_fixed_size_list_ivf_flat_matches_self_distance_oracle())
+        }),
+        ("composed_cuvs_attempt_seals_metrics_of_every_native_wrapper", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(composed_cuvs_attempt_seals_metrics_of_every_native_wrapper())
+        }),
+        ("uint8_wide_ivf_flat_and_float64_pairwise_kmeans_execute", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(uint8_wide_ivf_flat_and_float64_pairwise_kmeans_execute())
+        }),
+        ("ivf_flat_sql_matches_exact_search_and_omits_missing_neighbors", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(ivf_flat_sql_matches_exact_search_and_omits_missing_neighbors())
+        }),
+    ]);
+}
+
+#[test]
+fn cuvs_sql_gpu_tests_cases_2() {
+    testing::run_named_cases(&[
+        ("ivf_pq_sql_executes_and_omits_missing_neighbors", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(ivf_pq_sql_executes_and_omits_missing_neighbors())
+        }),
+        ("pairwise_and_top_k_sql_produce_ranked_device_results", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(pairwise_and_top_k_sql_produce_ranked_device_results())
+        }),
+        ("pairwise_and_top_k_preserve_empty_schemas_and_order_ties_by_position", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(pairwise_and_top_k_preserve_empty_schemas_and_order_ties_by_position())
+        }),
+        ("top_k_rejects_k_above_evaluated_list_dimension", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(top_k_rejects_k_above_evaluated_list_dimension())
+        }),
+        ("nullable_typed_null_free_relations_match_the_non_null_results", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(nullable_typed_null_free_relations_match_the_non_null_results())
+        }),
+        ("null_ids_features_and_list_values_fail_naming_the_function_role_and_column", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(null_ids_features_and_list_values_fail_naming_the_function_role_and_column())
+        }),
+    ]);
+}
+
+#[test]
+fn cuvs_sql_gpu_tests_cases_3() {
+    testing::run_named_cases(&[
+        ("functions_only_executes_cuvs_through_cpu_limit_into_cuvs", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(functions_only_executes_cuvs_through_cpu_limit_into_cuvs())
+        }),
+        ("cagra_sql_executes_with_admitted_pool_coverage", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cagra_sql_executes_with_admitted_pool_coverage())
+        }),
+        ("cuvs_sql_executes_uniform_list_float32_vectors_with_bounded_memory", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cuvs_sql_executes_uniform_list_float32_vectors_with_bounded_memory())
+        }),
+        ("cuvs_sql_executes_multi_partition_input_and_relational_operators_with_bounded_memory", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cuvs_sql_executes_multi_partition_input_and_relational_operators_with_bounded_memory())
+        }),
+        ("row_ordinal_follows_the_input_order_by_across_partitions", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(row_ordinal_follows_the_input_order_by_across_partitions())
+        }),
+        ("cuvs_sql_executes_parquet_relations_with_bounded_memory", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cuvs_sql_executes_parquet_relations_with_bounded_memory())
+        }),
+    ]);
+}
+
 async fn cuvs_sql_executes_fixed_size_list_float32_parquet_relations_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context();
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
@@ -1107,7 +1276,6 @@ async fn cuvs_sql_executes_fixed_size_list_float32_parquet_relations_with_bounde
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn cuvs_kmeans_and_pca_execute_over_parquet_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context();
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
@@ -1162,7 +1330,6 @@ async fn cuvs_kmeans_and_pca_execute_over_parquet_with_bounded_memory() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-#[tokio::test]
 async fn composed_cuvs_attempt_seals_metrics_of_every_native_wrapper() {
     let (backend, ctx) = cuvs_bounded_context();
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");

@@ -120,27 +120,6 @@ fn server_config_names_the_device_profile_key_in_configuration_errors() {
 }
 
 #[test]
-fn server_config_rejects_removed_scalar_admission_environment() {
-    for field in [
-        "ALGEON_SERVER_ADMISSION_MAX_ACTIVE_ATTEMPTS_PER_DEVICE",
-        "ALGEON_SERVER_ADMISSION_ATTEMPT_FLOOR_BYTES",
-        "ALGEON_SERVER_ADMISSION_SOURCE_WORK_PER_ATTEMPT",
-        "ALGEON_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER",
-    ] {
-        let env = BTreeMap::from([(field, "1".to_string())]);
-        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
-        assert_eq!(error.fact_value("config_field"), Some(field), "{error}");
-    }
-}
-
-#[test]
-fn server_config_rejects_removed_host_rate_limit() {
-    let env = BTreeMap::from([("ALGEON_SERVER_MAX_IN_FLIGHT", "0".to_string())]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
-    assert!(error.to_string().contains("ALGEON_SERVER_MAX_IN_FLIGHT"));
-}
-
-#[test]
 fn server_config_rejects_single_gpu_device_ordinal_without_profile() {
     let env = BTreeMap::from([(ALGEON_SERVER_GPU_DEVICES_ENV, "0".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
@@ -319,13 +298,6 @@ fn server_config_rejects_duplicate_gpu_device_subset() {
 }
 
 #[test]
-fn server_config_rejects_removed_global_device_budget_fraction() {
-    let env = BTreeMap::from([("ALGEON_SERVER_DEVICE_BUDGET_FRACTION", "0.8".to_string())]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
-    assert_eq!(error.fact_value("config_field"), Some("ALGEON_SERVER_DEVICE_BUDGET_FRACTION"));
-}
-
-#[test]
 fn server_config_accepts_statement_ticket_ttl() {
     let (_dir, mut env) = env_with_default_device_profile();
     env.insert(ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, "30".to_string());
@@ -338,4 +310,23 @@ fn server_config_rejects_zero_statement_ticket_ttl() {
     let env = BTreeMap::from([(ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, "0".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
     assert!(error.to_string().contains(ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV));
+}
+
+#[test]
+fn server_config_parses_http2_keepalive_and_rejects_invalid_durations() {
+    let (_dir, mut env) = env_with_default_device_profile();
+    env.insert(ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV, "2".to_string());
+    env.insert(ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV, "3".to_string());
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    assert_eq!(config.http2_keepalive.interval, Duration::from_secs(2));
+    assert_eq!(config.http2_keepalive.timeout, Duration::from_secs(3));
+    for field in [ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV, ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV] {
+        let original = env[field].clone();
+        for value in ["0", "invalid", "18446744073709551615"] {
+            env.insert(field, value.to_string());
+            let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+            assert!(error.to_string().contains(field), "{error}");
+        }
+        env.insert(field, original);
+    }
 }

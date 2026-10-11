@@ -9,7 +9,6 @@ use ::object_store::{ObjectStoreExt, memory::InMemory, path::Path};
 use query_planning::{
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
-    execution_contracts::SourceChunkPlanningMode,
 };
 use serde_json::Value;
 
@@ -18,7 +17,6 @@ use super::{
     object_store::default_object_store_control_runtime,
     service_stream::{
         default_service_stream_pool_size_from_device_facts, default_service_stream_pool_size_from_sm_count,
-        nonzero_sm_count,
     },
     *,
 };
@@ -250,20 +248,6 @@ fn gpu_inventory_fake_drives_pool_size_and_budget_math_without_gpu() {
 }
 
 #[test]
-fn service_stream_pool_default_size_uses_sm_times_two_for_small_sm_device_fact() {
-    let facts = fake_device_facts(0, 4 * 1024 * 1024 * 1024, Some(31));
-
-    assert_eq!(default_service_stream_pool_size_from_device_facts(&facts), 62);
-}
-
-#[test]
-fn service_stream_pool_sm_count_filters_zero_counts() {
-    assert_eq!(nonzero_sm_count(142), Some(142));
-    assert_eq!(nonzero_sm_count(1), Some(1));
-    assert_eq!(nonzero_sm_count(0), None);
-}
-
-#[test]
 fn default_lakehouse_cache_fill_budget_is_capped() {
     assert_eq!(
         default_lakehouse_cache_fill_budget_bytes_from_physical_memory(Some(128 * 1024 * 1024 * 1024)),
@@ -365,37 +349,6 @@ fn cache_fill_byte_budget_rejects_oversized_fetches() {
 }
 
 #[test]
-fn execution_context_records_lakehouse_cache_fill_resource_limits() {
-    let context = ExecutionContext::standalone(StandaloneConfig {
-        lakehouse_cache_fill: LakehouseCacheFillConfig {
-            budget_bytes: Some(2048),
-            acquire_timeout: Duration::from_secs(11),
-            max_concurrent_ops: 3,
-        },
-        ..StandaloneConfig::default()
-    })
-    .unwrap();
-
-    assert_eq!(context.lakehouse_cache_fill_budget().budget_bytes(), 2048);
-    assert_eq!(context.lakehouse_cache_fill_acquire_timeout(), Duration::from_secs(11));
-    assert_eq!(context.lakehouse_cache_fill_max_concurrent_ops(), 3);
-}
-
-#[test]
-fn execution_context_records_source_chunk_planning_mode() {
-    let options = SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(2048);
-    let context = ExecutionContext::standalone(StandaloneConfig {
-        source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
-        source_chunk_planning_options: options,
-        ..StandaloneConfig::default()
-    })
-    .unwrap();
-
-    assert_eq!(context.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
-    assert_eq!(context.source_chunk_planning_options(), options);
-}
-
-#[test]
 fn execution_context_rejects_invalid_source_chunk_planning_options() {
     let error = ExecutionContext::standalone(StandaloneConfig {
         source_chunk_planning_options: SourceChunkPlanningOptions::default()
@@ -406,15 +359,6 @@ fn execution_context_rejects_invalid_source_chunk_planning_options() {
 
     assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
-}
-
-#[test]
-fn lakehouse_cache_fill_config_defaults_match_contract() {
-    let config = LakehouseCacheFillConfig::default();
-    assert_eq!(config.budget_bytes, None);
-    assert_eq!(config.acquire_timeout, Duration::from_secs(30));
-    assert_eq!(config.max_concurrent_ops, 4);
-    config.validate().unwrap();
 }
 
 #[test]

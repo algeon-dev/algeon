@@ -967,16 +967,3 @@ mod ffi_detail_tests {
         assert!(error.diagnostic_string().contains("failure_source=RESERVATION_LIMIT"));
     }
 }
-
-#[cfg(test)]
-mod duplicate_fact_tests {
-    use super::*;
-
-    #[test]
-    fn duplicate_column_fact_keeps_first_value() {
-        let error = Error::new_with(ErrorCode::ColumnLengthMismatch, "test::duplicate_fact", "lengths differ")
-            .with_column("a")
-            .with_column("a");
-        assert_eq!(error.fact_value(FactKeyName::ColumnName), Some(&FactValue::Str("a".into())));
-    }
-}

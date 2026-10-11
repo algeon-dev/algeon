@@ -11,7 +11,7 @@ use cudf::{
 
 use crate::common::{
     error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation, run_named_cases, sample_runtime,
+    reset_sync_observation, sample_runtime,
 };
 
 fn test_testing_hook_locks_concatenate_column_count_limit_contract() {
@@ -63,20 +63,17 @@ fn test_series_concat_succeeds_with_mixed_domains_and_uses_first_provenance() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
-fn concatenate_tests_cases() {
-    run_named_cases(&[
-        (
-            "test_testing_hook_locks_concatenate_column_count_limit_contract",
-            test_testing_hook_locks_concatenate_column_count_limit_contract,
-        ),
-        (
-            "test_testing_hook_locks_concatenate_table_count_limit_contract",
-            test_testing_hook_locks_concatenate_table_count_limit_contract,
-        ),
-        (
-            "test_series_concat_succeeds_with_mixed_domains_and_uses_first_provenance",
-            test_series_concat_succeeds_with_mixed_domains_and_uses_first_provenance,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "concatenate_tests::test_testing_hook_locks_concatenate_column_count_limit_contract",
+        test_testing_hook_locks_concatenate_column_count_limit_contract,
+    ),
+    (
+        "concatenate_tests::test_testing_hook_locks_concatenate_table_count_limit_contract",
+        test_testing_hook_locks_concatenate_table_count_limit_contract,
+    ),
+    (
+        "concatenate_tests::test_series_concat_succeeds_with_mixed_domains_and_uses_first_provenance",
+        test_series_concat_succeeds_with_mixed_domains_and_uses_first_provenance,
+    ),
+];

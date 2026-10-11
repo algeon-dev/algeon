@@ -18,7 +18,7 @@ use rapids_interop::{
     ReadStartAuthority, SemanticColumn,
 };
 
-use crate::common::{self, run_named_cases};
+use crate::common::{self};
 
 fn sample_edge_list(runtime: &Runtime) -> DataFrame {
     let src = runtime.series(&[1i32, 2, 1, 3, 2]).unwrap();
@@ -154,16 +154,13 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
     assert_eq!(handed_off.testing_execution_domain_stream_value(), handoff_runtime.stream().testing_raw_handle_value());
 }
 
-#[test]
-fn single_gpu_contract_validation_tests_cases() {
-    run_named_cases(&[
-        (
-            "single_gpu_prepared_export_supports_graph_construction_shaped_consumption",
-            single_gpu_prepared_export_supports_graph_construction_shaped_consumption,
-        ),
-        (
-            "single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_result",
-            single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_result,
-        ),
-    ]);
-}
+pub(crate) const CASES: &[(&str, fn())] = &[
+    (
+        "single_gpu_contract_validation_tests::single_gpu_prepared_export_supports_graph_construction_shaped_consumption",
+        single_gpu_prepared_export_supports_graph_construction_shaped_consumption,
+    ),
+    (
+        "single_gpu_contract_validation_tests::single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_result",
+        single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_result,
+    ),
+];

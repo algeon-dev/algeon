@@ -4,7 +4,6 @@ use query_planning::expr::ColumnRef;
 
 use super::*;
 
-#[test]
 fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_reservations() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-conditional-join");
@@ -71,6 +70,35 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
 }
 
 #[test]
+fn keyless_cases() {
+    run_named_cases(&[
+        (
+            "bounded_joins::root_joins::keyless::bounded_native_query_executes_root_keyless_conditional_join_with_ordered_reservations",
+            bounded_native_query_executes_root_keyless_conditional_join_with_ordered_reservations,
+        ),
+        (
+            "bounded_joins::root_joins::keyless::bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatched_left_rows",
+            bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatched_left_rows,
+        ),
+        (
+            "bounded_joins::root_joins::keyless::bounded_native_query_executes_root_keyless_conditional_full_join_with_retained_size_data",
+            bounded_native_query_executes_root_keyless_conditional_full_join_with_retained_size_data,
+        ),
+        (
+            "bounded_joins::root_joins::keyless::bounded_native_query_executes_keyless_predicate_free_left_join_as_outer_cross",
+            bounded_native_query_executes_keyless_predicate_free_left_join_as_outer_cross,
+        ),
+        (
+            "bounded_joins::root_joins::keyless::bounded_native_query_null_extends_keyless_predicate_free_left_join_when_right_is_empty",
+            bounded_native_query_null_extends_keyless_predicate_free_left_join_when_right_is_empty,
+        ),
+        (
+            "bounded_joins::root_joins::keyless::bounded_native_query_null_extends_keyless_predicate_free_full_join_when_left_is_empty",
+            bounded_native_query_null_extends_keyless_predicate_free_full_join_when_left_is_empty,
+        ),
+    ]);
+}
+
 fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatched_left_rows() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-conditional-left-join");
@@ -138,7 +166,6 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retained_size_data() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-root-conditional-full-join");
@@ -227,7 +254,6 @@ fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retaine
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_keyless_predicate_free_left_join_as_outer_cross() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-keyless-left-outer-cross");
@@ -286,7 +312,6 @@ fn bounded_native_query_executes_keyless_predicate_free_left_join_as_outer_cross
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_null_extends_keyless_predicate_free_left_join_when_right_is_empty() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-keyless-left-outer-cross-empty-right");
@@ -325,7 +350,6 @@ fn bounded_native_query_null_extends_keyless_predicate_free_left_join_when_right
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_null_extends_keyless_predicate_free_full_join_when_left_is_empty() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-keyless-full-outer-cross-empty-left");

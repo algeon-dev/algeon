@@ -1,7 +1,6 @@
 use super::*;
 
-#[test]
-fn source_alias_residency_does_not_preserve_graph_residency_descriptor() {
+pub(super) fn source_alias_residency_does_not_preserve_graph_residency_descriptor() {
     let runtime = backend_runtime();
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),

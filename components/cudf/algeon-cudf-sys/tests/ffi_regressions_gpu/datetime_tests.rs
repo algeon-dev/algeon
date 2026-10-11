@@ -4,8 +4,8 @@ use crate::{
     helpers::make_column_view,
     support::{
         NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device_resource_raw, last_error_message,
-        last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state,
-        make_stats_memory_resource, required_exec_options, reset_exec_observation, stream_value,
+        last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value, make_stats_memory_resource,
+        required_exec_options, reset_exec_observation, stream_value,
     },
 };
 
@@ -77,7 +77,6 @@ fn assert_column_type(col: cudf_sys::cudf_column_handle, expected_type: cudf_sys
 
 #[test]
 fn test_datetime_extract_component_returns_int16_values() {
-    let _shim_state = lock_shim_state();
     let input = make_timestamp_days_column(&[0, 10_561, 18_321]);
     let view = make_column_view(input);
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -99,9 +98,7 @@ fn test_datetime_extract_component_returns_int16_values() {
     }
 }
 
-#[test]
 fn test_datetime_extract_component_ex_uses_explicit_stream_and_mr() {
-    let _shim_state = lock_shim_state();
     let input = make_timestamp_days_column(&[0, 10_561]);
     let view = make_column_view(input);
     let stream = OwnedStream::new();
@@ -133,9 +130,7 @@ fn test_datetime_extract_component_ex_uses_explicit_stream_and_mr() {
     }
 }
 
-#[test]
 fn test_datetime_extract_component_validates_null_handles_and_invalid_component() {
-    let _shim_state = lock_shim_state();
     let input = make_timestamp_days_column(&[0]);
     let view = make_column_view(input);
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -163,3 +158,14 @@ fn test_datetime_extract_component_validates_null_handles_and_invalid_component(
         cudf_sys::cudf_column_destroy(input);
     }
 }
+
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "datetime_tests::test_datetime_extract_component_ex_uses_explicit_stream_and_mr",
+        test_datetime_extract_component_ex_uses_explicit_stream_and_mr,
+    ),
+    (
+        "datetime_tests::test_datetime_extract_component_validates_null_handles_and_invalid_component",
+        test_datetime_extract_component_validates_null_handles_and_invalid_component,
+    ),
+];

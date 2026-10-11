@@ -2,7 +2,7 @@
 
 use cudf::{AggSpec, ErrorCode, ErrorKind, Exec, GroupByAgg};
 
-use crate::common::{column_from_slice, dataframe_from_columns, error_context_value, run_named_cases};
+use crate::common::{column_from_slice, dataframe_from_columns, error_context_value};
 
 fn assert_empty_group_key_contract(err: &cudf::Error, operation: &str) {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -27,10 +27,7 @@ fn high_level_group_key_apis_share_empty_key_contract() {
     assert_empty_group_key_contract(&cumcount_err, "dataframe::group_cumcount");
 }
 
-#[test]
-fn shared_group_key_validation_tests_cases() {
-    run_named_cases(&[(
-        "high_level_group_key_apis_share_empty_key_contract",
-        high_level_group_key_apis_share_empty_key_contract,
-    )]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[(
+    "shared_group_key_validation_tests::high_level_group_key_apis_share_empty_key_contract",
+    high_level_group_key_apis_share_empty_key_contract,
+)];

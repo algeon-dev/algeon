@@ -23,6 +23,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
+use cudf::testing;
 use datafusion::{
     datasource::MemTable,
     error::DataFusionError,
@@ -32,7 +33,7 @@ use datafusion::{
 };
 use futures::StreamExt;
 use parquet::arrow::ArrowWriter;
-use tokio::{task::yield_now, time::timeout};
+use tokio::{runtime::Builder as TestRuntimeBuilder, task::yield_now, time::timeout};
 
 fn backend() -> AlgeonGpuBackend {
     let profile = AlgeonGpuDeviceProfile::new(0)
@@ -128,7 +129,75 @@ fn check_oracle(batches: &[RecordBatch]) {
     }
 }
 
-#[tokio::test]
+#[test]
+fn cuml_sql_gpu_tests_cases_1() {
+    testing::run_named_cases(&[
+        ("tsvd_wide_sql_matches_host_oracle_with_gpu_resident_input", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(tsvd_wide_sql_matches_host_oracle_with_gpu_resident_input())
+        }),
+        ("nullable_typed_null_free_relations_match_the_non_null_results", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(nullable_typed_null_free_relations_match_the_non_null_results())
+        }),
+        ("null_ids_features_list_values_and_labels_fail_naming_the_function_role_and_column", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(null_ids_features_list_values_and_labels_fail_naming_the_function_role_and_column())
+        }),
+        ("hdbscan_and_umap_wide_and_fixed_list_sql_return_stable_shapes", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(hdbscan_and_umap_wide_and_fixed_list_sql_return_stable_shapes())
+        }),
+        ("hdbscan_three_blob_sql_preserves_noise_and_row_identity", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(hdbscan_three_blob_sql_preserves_noise_and_row_identity())
+        }),
+        ("logistic_sql_scores_independent_predict_relation_for_binary_and_three_classes", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(logistic_sql_scores_independent_predict_relation_for_binary_and_three_classes())
+        }),
+        ("random_forest_sql_classifies_and_regresses_independent_relations", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(random_forest_sql_classifies_and_regresses_independent_relations())
+        }),
+        ("fixed_size_list_and_parquet_sources_execute", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(fixed_size_list_and_parquet_sources_execute())
+        }),
+        ("forest_predict_sql_matches_reference_scores_and_class_indices", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(forest_predict_sql_matches_reference_scores_and_class_indices())
+        }),
+    ]);
+}
+
 async fn tsvd_wide_sql_matches_host_oracle_with_gpu_resident_input() {
     let (backend, ctx) = context();
     let sql = "SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => (SELECT id, d0, d1, d2 FROM t), n_components => 2)";
@@ -147,7 +216,6 @@ const NULLABLE_TYPED_INPUTS: [&str; 2] = [
     "SELECT id, make_array(d0, d1, d2) AS vector FROM t",
 ];
 
-#[tokio::test]
 async fn nullable_typed_null_free_relations_match_the_non_null_results() {
     let (backend, ctx) = context();
     for input in NULLABLE_TYPED_INPUTS {
@@ -168,7 +236,6 @@ async fn nullable_typed_null_free_relations_match_the_non_null_results() {
     close(backend, ctx);
 }
 
-#[tokio::test]
 async fn null_ids_features_list_values_and_labels_fail_naming_the_function_role_and_column() {
     let (backend, ctx) = context();
     let tsvd = [
@@ -231,7 +298,6 @@ fn assert_null_input_error(error: &DataFusionError, function: &str, role: &str, 
     assert_eq!(detail.value("column"), Some(column), "{error}");
 }
 
-#[tokio::test]
 async fn hdbscan_and_umap_wide_and_fixed_list_sql_return_stable_shapes() {
     let (backend, ctx) = context();
     let item = Arc::new(Field::new("item", DataType::Float32, false));
@@ -286,7 +352,6 @@ async fn hdbscan_and_umap_wide_and_fixed_list_sql_return_stable_shapes() {
     close(backend, ctx);
 }
 
-#[tokio::test]
 async fn hdbscan_three_blob_sql_preserves_noise_and_row_identity() {
     let (backend, ctx) = context();
     let schema = Arc::new(Schema::new(vec![
@@ -330,7 +395,6 @@ async fn hdbscan_three_blob_sql_preserves_noise_and_row_identity() {
     close(backend, ctx);
 }
 
-#[tokio::test]
 async fn logistic_sql_scores_independent_predict_relation_for_binary_and_three_classes() {
     let (backend, ctx) = context();
     for classes in [2, 3] {
@@ -402,7 +466,6 @@ async fn logistic_sql_scores_independent_predict_relation_for_binary_and_three_c
     close(backend, ctx);
 }
 
-#[tokio::test]
 async fn random_forest_sql_classifies_and_regresses_independent_relations() {
     let (backend, ctx) = context();
     let x = (0..48).map(|i| i as f32 - 24.0).collect::<Vec<_>>();
@@ -477,7 +540,6 @@ async fn random_forest_sql_classifies_and_regresses_independent_relations() {
     close(backend, ctx);
 }
 
-#[tokio::test]
 async fn fixed_size_list_and_parquet_sources_execute() {
     let (backend, ctx) = context();
     let item = Arc::new(Field::new("item", DataType::Float32, false));
@@ -609,7 +671,6 @@ fn register_forest_input(ctx: &SessionContext, fixture: &str) {
     ctx.register_table(fixture, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
 }
 
-#[tokio::test]
 async fn forest_predict_sql_matches_reference_scores_and_class_indices() {
     let models = tempfile::tempdir().unwrap();
     for name in [

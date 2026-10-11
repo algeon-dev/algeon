@@ -4,7 +4,7 @@
 //! constructors take explicit output names, and `Series` values are nameless.
 use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series, testing::prelude::*};
 
-use crate::common::{assert_duplicate_name_error, column_from_slice, error_context_value, run_named_cases, series};
+use crate::common::{assert_duplicate_name_error, column_from_slice, error_context_value, series};
 
 fn assert_length_mismatch_contract(
     err: &cudf::Error,
@@ -99,22 +99,19 @@ fn test_dataframe_macro_uses_from_series() {
     assert_eq!(df.column_names(), vec!["a", "b"]);
 }
 
-#[test]
-fn construction_contract_tests_cases() {
-    run_named_cases(&[
-        ("test_from_series_uses_explicit_names", test_from_series_uses_explicit_names),
-        ("test_from_series_accepts_unnamed_series", test_from_series_accepts_unnamed_series),
-        ("test_from_series_rejects_duplicate_names", test_from_series_rejects_duplicate_names),
-        ("test_from_series_empty_iterator", test_from_series_empty_iterator),
-        (
-            "test_runtime_empty_dataframe_creates_explicit_zero_by_zero_frame",
-            test_runtime_empty_dataframe_creates_explicit_zero_by_zero_frame,
-        ),
-        ("test_from_series_mismatched_lengths", test_from_series_mismatched_lengths),
-        (
-            "test_dataframe_series_accessor_uses_schema_name_not_original_series_name",
-            test_dataframe_series_accessor_uses_schema_name_not_original_series_name,
-        ),
-        ("test_dataframe_macro_uses_from_series", test_dataframe_macro_uses_from_series),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("construction_contract_tests::test_from_series_uses_explicit_names", test_from_series_uses_explicit_names),
+    ("construction_contract_tests::test_from_series_accepts_unnamed_series", test_from_series_accepts_unnamed_series),
+    ("construction_contract_tests::test_from_series_rejects_duplicate_names", test_from_series_rejects_duplicate_names),
+    ("construction_contract_tests::test_from_series_empty_iterator", test_from_series_empty_iterator),
+    (
+        "construction_contract_tests::test_runtime_empty_dataframe_creates_explicit_zero_by_zero_frame",
+        test_runtime_empty_dataframe_creates_explicit_zero_by_zero_frame,
+    ),
+    ("construction_contract_tests::test_from_series_mismatched_lengths", test_from_series_mismatched_lengths),
+    (
+        "construction_contract_tests::test_dataframe_series_accessor_uses_schema_name_not_original_series_name",
+        test_dataframe_series_accessor_uses_schema_name_not_original_series_name,
+    ),
+    ("construction_contract_tests::test_dataframe_macro_uses_from_series", test_dataframe_macro_uses_from_series),
+];

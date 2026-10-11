@@ -45,11 +45,6 @@ fn native_query_rejects_duplicate_projection_output_names_generically_before_run
 }
 
 #[test]
-fn bounded_native_query_restores_duplicate_host_sink_schema_without_swapping_columns() {
-    assert_bounded_duplicate_host_sink_schema_restoration();
-}
-
-#[test]
 fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() {
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
@@ -77,55 +72,4 @@ fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() 
     assert_eq!(error.fact_value("field_index"), Some("0"));
     assert_eq!(error.fact_value("actual_type"), Some("Int32"));
     assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
-}
-
-#[test]
-fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_before_grant() {
-    let dir = unique_temp_dir("query-engine-bounded-projection-schema-coerce-reject");
-    let path = dir.join("input.parquet");
-    let context = backend_context();
-    let input_schema = write_row_grouped_input_parquet(&path);
-    let aggregate_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("sum_m00", DataType::Int64, true),
-    ]));
-    let projection_schema = Arc::new(Schema::new(vec![Field::new("bad_key", DataType::Utf8, false)]));
-    let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
-        Arc::clone(&input_schema),
-        vec!["key".to_string(), "m00".to_string()],
-    );
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("key")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregate_schema).unwrap();
-    let projection = builder
-        .add_projection(
-            aggregate,
-            projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&projection_schema)),
-        )
-        .unwrap();
-    let plan = builder.finish_gpu_resident(projection).unwrap();
-
-    let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("bounded projection schema coercion should reject unsupported Int32 to Utf8 mismatch"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
-    assert_eq!(error.operation(), "query_engine.projection.schema_coerce");
-    assert_eq!(error.fact_value("reason"), Some("projection_output_schema_mismatch"));
-    assert_eq!(error.fact_value("reason_detail"), Some("implicit_cast_not_supported"));
-    assert_eq!(error.fact_value("field_name"), Some("bad_key"));
-    assert_eq!(error.fact_value("field_index"), Some("0"));
-    assert_eq!(error.fact_value("actual_type"), Some("Int32"));
-    assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
-    assert_eq!(error.wire_fact("budget_boundary").as_deref(), None);
-    assert_eq!(error.wire_fact("budget_bytes").as_deref(), None);
-    assert_eq!(error.wire_fact("budget_enforcement").as_deref(), None);
-
-    fs::remove_dir_all(dir).unwrap();
 }

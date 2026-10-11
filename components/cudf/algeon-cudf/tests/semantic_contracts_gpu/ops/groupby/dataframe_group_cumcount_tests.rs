@@ -2,7 +2,7 @@
 
 use cudf::{DataFrame, ErrorCode, ErrorKind, Exec, SortOptions};
 
-use crate::common::{error_context_value, run_named_cases, sample_runtime};
+use crate::common::{error_context_value, sample_runtime};
 
 fn assert_group_cumcount_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -83,21 +83,21 @@ fn group_cumcount_rejects_empty_group_keys_with_stable_contract() {
     );
 }
 
-#[test]
-fn dataframe_group_cumcount_tests_cases() {
-    run_named_cases(&[
-        (
-            "group_cumcount_returns_zero_based_positions_for_each_sorted_group",
-            group_cumcount_returns_zero_based_positions_for_each_sorted_group,
-        ),
-        ("group_cumcount_supports_multi_column_group_keys", group_cumcount_supports_multi_column_group_keys),
-        (
-            "group_cumcount_treats_repeated_key_names_as_one_group_key",
-            group_cumcount_treats_repeated_key_names_as_one_group_key,
-        ),
-        (
-            "group_cumcount_rejects_empty_group_keys_with_stable_contract",
-            group_cumcount_rejects_empty_group_keys_with_stable_contract,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "dataframe_group_cumcount_tests::group_cumcount_returns_zero_based_positions_for_each_sorted_group",
+        group_cumcount_returns_zero_based_positions_for_each_sorted_group,
+    ),
+    (
+        "dataframe_group_cumcount_tests::group_cumcount_supports_multi_column_group_keys",
+        group_cumcount_supports_multi_column_group_keys,
+    ),
+    (
+        "dataframe_group_cumcount_tests::group_cumcount_treats_repeated_key_names_as_one_group_key",
+        group_cumcount_treats_repeated_key_names_as_one_group_key,
+    ),
+    (
+        "dataframe_group_cumcount_tests::group_cumcount_rejects_empty_group_keys_with_stable_contract",
+        group_cumcount_rejects_empty_group_keys_with_stable_contract,
+    ),
+];

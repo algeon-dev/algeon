@@ -1,3 +1,5 @@
+use cudf::testing::run_named_cases;
+
 use super::*;
 
 #[test]
@@ -199,7 +201,6 @@ fn native_optimizer_keeps_decimal_contract_source_reuse_isolated() {
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "customer_address"), 2);
 }
 
-#[test]
 fn native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order() {
     let plan = compatible_local_parquet_source_variants_with_different_file_order_plan();
     let options = NativeOptimizerOptions {
@@ -226,6 +227,31 @@ fn native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order
 }
 
 #[test]
+fn t_source_reuse_rejects_cases() {
+    run_named_cases(&[
+        (
+            "optimizer_contracts::local_parquet_source_reuse::native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order",
+            native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order,
+        ),
+        (
+            "optimizer_contracts::local_parquet_source_reuse::native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_names",
+            native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_names,
+        ),
+        (
+            "optimizer_contracts::local_parquet_source_reuse::native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indices",
+            native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indices,
+        ),
+        (
+            "optimizer_contracts::local_parquet_source_reuse::native_optimizer_rejects_count_star_probe_source_reuse",
+            native_optimizer_rejects_count_star_probe_source_reuse,
+        ),
+        (
+            "optimizer_contracts::local_parquet_source_reuse::native_optimizer_rejects_renaming_output_schema_override_source_reuse_contract",
+            native_optimizer_rejects_renaming_output_schema_override_source_reuse_contract,
+        ),
+    ]);
+}
+
 fn native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_names() {
     let plan = conflicting_file_index_local_parquet_source_variants_plan();
     let options = NativeOptimizerOptions {
@@ -252,7 +278,6 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_name
     );
 }
 
-#[test]
 fn native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indices() {
     let plan = conflicting_column_name_local_parquet_source_variants_plan();
     let options = NativeOptimizerOptions {
@@ -279,7 +304,6 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indic
     );
 }
 
-#[test]
 fn native_optimizer_rejects_count_star_probe_source_reuse() {
     let plan = count_star_probe_source_reuse_plan();
     let options = NativeOptimizerOptions {
@@ -307,7 +331,6 @@ fn native_optimizer_rejects_count_star_probe_source_reuse() {
     assert_eq!(count_star_probe_source_count(&result.plan), 2);
 }
 
-#[test]
 fn native_optimizer_rejects_renaming_output_schema_override_source_reuse_contract() {
     let plan = renaming_output_schema_override_source_reuse_plan();
     let options = NativeOptimizerOptions {

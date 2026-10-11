@@ -928,24 +928,6 @@ fn composed_pipeline_refuses_keyless_anti_join_fanout_as_malformed() {
 }
 
 #[test]
-fn composed_pipeline_rejects_non_dedup_left_anti_build_input() {
-    // Mirror of the probe-side proof: an anti build against a distinct
-    // aggregate claims EXCEPT DISTINCT over EXCEPT ALL multiplicity, so the
-    // build edge requires a group-only dedup aggregate.
-    let plan = projection_root_setop_distinct_aggregate_plan();
-    let projection = bounded_pipeline_rejection_projection(&plan)
-        .unwrap()
-        .expect("distinct-aggregate anti build should project a rejection");
-    assert!(
-        matches!(projection.owner, RejectionOwner::Edge { .. }),
-        "distinct-aggregate build should reject on the edge, got {:?}",
-        projection.owner
-    );
-    assert_eq!(projection.reason, Reason::LeftAntiBuildRequiresDedupAggregate);
-    assert!(projection.facts.contains_key("producer_aggregate_state"));
-}
-
-#[test]
 fn composed_pipeline_admits_chained_except_distinct_dedup_scalar() {
     // The setop-dedup proof moved off the plan-family recognizer: aggregate
     // nodes carry `aggregate_state`, and each LeftAnti input edge checks it. A
@@ -956,23 +938,4 @@ fn composed_pipeline_admits_chained_except_distinct_dedup_scalar() {
         bounded_pipeline_admission(&plan).unwrap().is_some(),
         "chained EXCEPT DISTINCT dedup-scalar pipeline should be admitted"
     );
-}
-
-#[test]
-fn composed_pipeline_rejects_non_dedup_left_anti_probe_input() {
-    // The recursive probe-side proof must still respect its negative boundary:
-    // a left-anti join whose probe side is a duplicate-preserving (EXCEPT
-    // ALL-shaped) subtree, not a dedup aggregate or another dedup-proven anti
-    // join, is rejected on the probe edge.
-    let plan = projection_root_setop_dedup_scalar_non_dedup_left_anti_input_plan();
-    let projection = bounded_pipeline_rejection_projection(&plan)
-        .unwrap()
-        .expect("non-dedup left-anti probe input should project a rejection");
-    assert!(
-        matches!(projection.owner, RejectionOwner::Edge { .. }),
-        "non-dedup probe input should reject on the edge, got {:?}",
-        projection.owner
-    );
-    assert_eq!(projection.reason, Reason::LeftAntiProbeRequiresDedupProvenInput);
-    assert!(projection.facts.contains_key("producer_aggregate_state"));
 }

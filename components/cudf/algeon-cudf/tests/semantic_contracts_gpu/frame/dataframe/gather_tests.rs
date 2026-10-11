@@ -9,9 +9,7 @@ use arrow::{
 };
 use cudf::{DataFrame, Exec, testing::prelude::*};
 
-use crate::common::{
-    column_from_slice, column_from_strs, dataframe_from_columns, run_named_cases, sample_runtime, series,
-};
+use crate::common::{column_from_slice, column_from_strs, dataframe_from_columns, sample_runtime, series};
 
 fn test_gather_sequential_indices() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -133,15 +131,12 @@ fn test_gather_multi_type() {
     );
 }
 
-#[test]
-fn gather_tests_cases() {
-    run_named_cases(&[
-        ("test_gather_sequential_indices", test_gather_sequential_indices),
-        ("test_gather_reversed", test_gather_reversed),
-        ("test_gather_out_of_bounds_nullify", test_gather_out_of_bounds_nullify),
-        ("test_gather_duplicate_indices", test_gather_duplicate_indices),
-        ("test_gather_preserves_schema", test_gather_preserves_schema),
-        ("test_gather_empty_indices", test_gather_empty_indices),
-        ("test_gather_multi_type", test_gather_multi_type),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("gather_tests::test_gather_sequential_indices", test_gather_sequential_indices),
+    ("gather_tests::test_gather_reversed", test_gather_reversed),
+    ("gather_tests::test_gather_out_of_bounds_nullify", test_gather_out_of_bounds_nullify),
+    ("gather_tests::test_gather_duplicate_indices", test_gather_duplicate_indices),
+    ("gather_tests::test_gather_preserves_schema", test_gather_preserves_schema),
+    ("gather_tests::test_gather_empty_indices", test_gather_empty_indices),
+    ("gather_tests::test_gather_multi_type", test_gather_multi_type),
+];

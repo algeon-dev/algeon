@@ -5,7 +5,7 @@ use crate::{
         make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data,
         read_i32_column_data_with_exec,
     },
-    support::{OwnedMemoryResource, OwnedStream, lock_shim_state, required_exec_options},
+    support::{OwnedMemoryResource, OwnedStream, required_exec_options},
 };
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
@@ -103,7 +103,6 @@ fn read_all_i32_with_exec(col: cudf_sys::cudf_column_handle, exec: &cudf_sys::cu
 
 #[test]
 fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
-    let _shim_state = lock_shim_state();
     let stream = OwnedStream::new();
     let mr = OwnedMemoryResource::new_cuda();
     let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
@@ -155,7 +154,6 @@ fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
 
 #[test]
 fn conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate() {
-    let _shim_state = lock_shim_state();
     let stream = OwnedStream::new();
     let mr = OwnedMemoryResource::new_cuda();
     let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
@@ -175,9 +173,7 @@ fn conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate() {
     assert!(size_data.is_null());
 }
 
-#[test]
 fn conditional_full_join_size_data_materialized_indices_survive_destroy_before_stream_sync() {
-    let _shim_state = lock_shim_state();
     let stream = OwnedStream::new();
     let mr = OwnedMemoryResource::new_cuda();
     let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
@@ -219,5 +215,44 @@ fn conditional_full_join_size_data_materialized_indices_survive_destroy_before_s
     unsafe {
         cudf_sys::cudf_column_destroy(right_indices);
         cudf_sys::cudf_column_destroy(left_indices);
+    }
+}
+
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "conditional_full_join_size_data_tests::conditional_full_join_size_data_materialized_indices_survive_destroy_before_stream_sync",
+        conditional_full_join_size_data_materialized_indices_survive_destroy_before_stream_sync,
+    ),
+    (
+        "conditional_full_join_size_data_retains_destroy_provenance_after_owner_drop",
+        conditional_full_join_size_data_retains_destroy_provenance_after_owner_drop,
+    ),
+];
+
+fn conditional_full_join_size_data_retains_destroy_provenance_after_owner_drop() {
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_test_stats();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
+    let inputs = ConditionalJoinInputs::new(&[2, 5, 9], &[1, 3, 6]);
+    let mut state = ptr::null_mut();
+    unsafe {
+        assert_eq!(
+            cudf_sys::cudf_conditional_full_join_begin_size_data_ex(
+                inputs.left,
+                inputs.right,
+                inputs.predicate,
+                &mut state,
+                &exec
+            ),
+            cudf_sys::CUDF_SUCCESS
+        );
+    }
+    assert!(!state.is_null());
+    stream.synchronize();
+    assert!(mr.active_allocation_count() > 0);
+    drop(stream);
+    drop(mr);
+    unsafe {
+        assert_eq!(cudf_sys::cudf_conditional_full_join_size_data_destroy(state), cudf_sys::CUDF_SUCCESS);
     }
 }

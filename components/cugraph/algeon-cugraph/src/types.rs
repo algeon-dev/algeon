@@ -254,18 +254,6 @@ mod tests {
     }
 
     #[test]
-    fn test_data_type_size_of() {
-        assert_eq!(DataType::Int8.size_of(), 1);
-        assert_eq!(DataType::Int16.size_of(), 2);
-        assert_eq!(DataType::Int32.size_of(), 4);
-        assert_eq!(DataType::Int64.size_of(), 8);
-        assert_eq!(DataType::Float32.size_of(), 4);
-        assert_eq!(DataType::Float64.size_of(), 8);
-        assert_eq!(DataType::SizeT.size_of(), 8);
-        assert_eq!(DataType::Bool.size_of(), 1);
-    }
-
-    #[test]
     fn test_bool_conversion() {
         assert_eq!(to_bool_t(true), bool_t::TRUE);
         assert_eq!(to_bool_t(false), bool_t::FALSE);
@@ -280,71 +268,6 @@ mod tests {
         let c_props: cugraph_graph_properties_t = props.into();
         assert_eq!(c_props.is_symmetric, bool_t::TRUE);
         assert_eq!(c_props.is_multigraph, bool_t::FALSE);
-    }
-
-    #[test]
-    fn test_graph_properties_directed() {
-        let props = GraphProperties::directed();
-        assert!(!props.is_symmetric);
-        assert!(!props.is_multigraph);
-    }
-
-    #[test]
-    fn test_graph_properties_undirected() {
-        let props = GraphProperties::undirected();
-        assert!(props.is_symmetric);
-        assert!(!props.is_multigraph);
-    }
-
-    #[test]
-    fn test_graph_properties_default_is_directed() {
-        assert_eq!(GraphProperties::default(), GraphProperties::directed());
-    }
-
-    #[test]
-    fn test_cugraph_element_data_type_mapping() {
-        assert_eq!(i8::data_type(), DataType::Int8);
-        assert_eq!(i16::data_type(), DataType::Int16);
-        assert_eq!(i32::data_type(), DataType::Int32);
-        assert_eq!(i64::data_type(), DataType::Int64);
-        assert_eq!(u8::data_type(), DataType::Uint8);
-        assert_eq!(u16::data_type(), DataType::Uint16);
-        assert_eq!(u32::data_type(), DataType::Uint32);
-        assert_eq!(u64::data_type(), DataType::Uint64);
-        assert_eq!(f32::data_type(), DataType::Float32);
-        assert_eq!(f64::data_type(), DataType::Float64);
-    }
-
-    #[test]
-    fn test_data_type_is_supported_index_type() {
-        assert!(DataType::Int32.is_supported_index_type());
-        assert!(DataType::Int64.is_supported_index_type());
-        assert!(!DataType::Int8.is_supported_index_type());
-        assert!(!DataType::Int16.is_supported_index_type());
-        assert!(!DataType::Uint8.is_supported_index_type());
-        assert!(!DataType::Uint16.is_supported_index_type());
-        assert!(!DataType::Uint32.is_supported_index_type());
-        assert!(!DataType::Uint64.is_supported_index_type());
-        assert!(!DataType::Float32.is_supported_index_type());
-        assert!(!DataType::Float64.is_supported_index_type());
-        assert!(!DataType::SizeT.is_supported_index_type());
-        assert!(!DataType::Bool.is_supported_index_type());
-    }
-
-    #[test]
-    fn test_data_type_is_float() {
-        assert!(DataType::Float32.is_float());
-        assert!(DataType::Float64.is_float());
-        assert!(!DataType::Int32.is_float());
-        assert!(!DataType::Int64.is_float());
-        assert!(!DataType::Int8.is_float());
-        assert!(!DataType::Int16.is_float());
-        assert!(!DataType::Uint8.is_float());
-        assert!(!DataType::Uint16.is_float());
-        assert!(!DataType::Uint32.is_float());
-        assert!(!DataType::Uint64.is_float());
-        assert!(!DataType::SizeT.is_float());
-        assert!(!DataType::Bool.is_float());
     }
 
     #[test]

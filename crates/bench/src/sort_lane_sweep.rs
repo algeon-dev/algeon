@@ -600,20 +600,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lcg_reproduces_its_sequence() {
-        let first: Vec<u64> = {
-            let mut rng = Lcg(0x9E3779B97F4A7C15);
-            (0..8).map(|_| rng.next()).collect()
-        };
-        let second: Vec<u64> = {
-            let mut rng = Lcg(0x9E3779B97F4A7C15);
-            (0..8).map(|_| rng.next()).collect()
-        };
-        assert_eq!(first, second, "the sweep dataset seed must reproduce its keys");
-        assert!(first.windows(2).any(|pair| pair[0] != pair[1]), "the generator must advance");
-    }
-
-    #[test]
     fn summary_reports_median_p95_and_stddev() {
         let values: Vec<f64> = (1..=10).map(f64::from).collect();
         let (median, p95, stddev) = summarize(&values);

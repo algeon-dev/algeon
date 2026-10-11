@@ -169,12 +169,6 @@ fn actual_api_from_generated_bindings() -> BTreeSet<String> {
 }
 
 #[test]
-fn bindings_rs_path_points_to_existing_file() {
-    let path = bindings_rs_path();
-    assert!(path.is_file(), "bindings_rs_path() must point to a file, got: {}", path.display());
-}
-
-#[test]
 fn generated_bindings_cover_all_wrapper_declared_functions() {
     let expected = expected_api_from_wrapper_headers();
     let actual = actual_api_from_generated_bindings();

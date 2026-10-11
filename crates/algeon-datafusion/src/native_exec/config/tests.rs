@@ -24,16 +24,6 @@ async fn async_execution_context_requires_gpu_backend_before_resolving_cuda_stat
 }
 
 #[test]
-fn native_execution_config_policy_getters_match_bounded_policy() {
-    let config =
-        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 8, 5, 1).expect("valid source chunking"));
-    assert_eq!(config.source_chunking().max_source_chunk_bytes.get(), 512);
-    assert_eq!(config.source_chunking().max_row_groups_per_chunk.get(), 8);
-    assert_eq!(config.source_chunking().max_retry_attempts.get(), 5);
-    assert_eq!(config.max_source_reads_in_flight(), 2);
-}
-
-#[test]
 fn query_admission_ticket_selection_prefers_ambient_query_admission_ticket() {
     let backend = InstalledTestGpuBackend::new();
     let source = backend

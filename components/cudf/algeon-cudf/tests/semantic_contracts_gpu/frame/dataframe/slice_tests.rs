@@ -9,8 +9,7 @@ use cudf::{
 };
 
 use crate::common::{
-    column_from_slice, dataframe_from_columns, error_context_value, execution_budget_token, run_named_cases,
-    with_test_runtime,
+    column_from_slice, dataframe_from_columns, error_context_value, execution_budget_token, with_test_runtime,
 };
 
 /// Helper: build a 5-row, 2-column DataFrame for slicing tests.
@@ -214,38 +213,35 @@ fn test_testing_hook_locks_dataframe_row_range_overflow_contract() {
     assert_eq!(error_context_value(&err, "length").as_deref(), None);
 }
 
-#[test]
-fn slice_tests_cases() {
-    run_named_cases(&[
-        ("test_head_basic", test_head_basic),
-        ("test_head_zero_rows", test_head_zero_rows),
-        ("test_head_clamps_to_num_rows", test_head_clamps_to_num_rows),
-        ("test_head_preserves_schema", test_head_preserves_schema),
-        ("test_tail_basic", test_tail_basic),
-        ("test_tail_clamps_to_num_rows", test_tail_clamps_to_num_rows),
-        ("test_tail_zero_rows", test_tail_zero_rows),
-        ("test_tail_preserves_schema", test_tail_preserves_schema),
-        ("test_slice_basic", test_slice_basic),
-        ("test_slice_clamps_length", test_slice_clamps_length),
-        ("test_slice_zero_length", test_slice_zero_length),
-        ("test_slice_preserves_schema", test_slice_preserves_schema),
-        ("test_slice_offset_at_end", test_slice_offset_at_end),
-        ("test_slice_offset_beyond_end", test_slice_offset_beyond_end),
-        (
-            "test_slice_with_budget_reports_member_accounting_on_rejection",
-            test_slice_with_budget_reports_member_accounting_on_rejection,
-        ),
-        (
-            "test_testing_hook_locks_dataframe_row_range_start_limit_contract",
-            test_testing_hook_locks_dataframe_row_range_start_limit_contract,
-        ),
-        (
-            "test_testing_hook_locks_dataframe_row_range_end_limit_contract",
-            test_testing_hook_locks_dataframe_row_range_end_limit_contract,
-        ),
-        (
-            "test_testing_hook_locks_dataframe_row_range_overflow_contract",
-            test_testing_hook_locks_dataframe_row_range_overflow_contract,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("slice_tests::test_head_basic", test_head_basic),
+    ("slice_tests::test_head_zero_rows", test_head_zero_rows),
+    ("slice_tests::test_head_clamps_to_num_rows", test_head_clamps_to_num_rows),
+    ("slice_tests::test_head_preserves_schema", test_head_preserves_schema),
+    ("slice_tests::test_tail_basic", test_tail_basic),
+    ("slice_tests::test_tail_clamps_to_num_rows", test_tail_clamps_to_num_rows),
+    ("slice_tests::test_tail_zero_rows", test_tail_zero_rows),
+    ("slice_tests::test_tail_preserves_schema", test_tail_preserves_schema),
+    ("slice_tests::test_slice_basic", test_slice_basic),
+    ("slice_tests::test_slice_clamps_length", test_slice_clamps_length),
+    ("slice_tests::test_slice_zero_length", test_slice_zero_length),
+    ("slice_tests::test_slice_preserves_schema", test_slice_preserves_schema),
+    ("slice_tests::test_slice_offset_at_end", test_slice_offset_at_end),
+    ("slice_tests::test_slice_offset_beyond_end", test_slice_offset_beyond_end),
+    (
+        "slice_tests::test_slice_with_budget_reports_member_accounting_on_rejection",
+        test_slice_with_budget_reports_member_accounting_on_rejection,
+    ),
+    (
+        "slice_tests::test_testing_hook_locks_dataframe_row_range_start_limit_contract",
+        test_testing_hook_locks_dataframe_row_range_start_limit_contract,
+    ),
+    (
+        "slice_tests::test_testing_hook_locks_dataframe_row_range_end_limit_contract",
+        test_testing_hook_locks_dataframe_row_range_end_limit_contract,
+    ),
+    (
+        "slice_tests::test_testing_hook_locks_dataframe_row_range_overflow_contract",
+        test_testing_hook_locks_dataframe_row_range_overflow_contract,
+    ),
+];

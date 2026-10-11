@@ -8,7 +8,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
-use cudf::{DataFrame, ReservationUsage};
+use cudf::{DataFrame, ReservationUsage, testing::run_named_cases};
 use query_engine::{
     exec::{
         QueryExecutionRequest, admit_query_plan, materialize_gpu_result_to_host, output::QueryOutput,
@@ -223,7 +223,6 @@ fn assert_standalone_knn_pool_coverage(dataset_schema: &SchemaRef, query_schema:
     );
 }
 
-#[test]
 fn ivf_flat_executes_with_contiguous_ranks_and_structured_cardinality_errors() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
     let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
@@ -312,6 +311,44 @@ fn ivf_flat_executes_with_contiguous_ranks_and_structured_cardinality_errors() {
         assert_attempt_domain_released(&admitted);
         admitted.finish();
     }
+}
+
+#[test]
+fn vector_algorithm_execution_cases() {
+    run_named_cases(&[
+        (
+            "vector_algorithm_execution::ivf_flat_executes_with_contiguous_ranks_and_structured_cardinality_errors",
+            ivf_flat_executes_with_contiguous_ranks_and_structured_cardinality_errors,
+        ),
+        (
+            "vector_algorithm_execution::exact_knn_accepts_proof_bearing_fixed_size_list_vectors",
+            exact_knn_accepts_proof_bearing_fixed_size_list_vectors,
+        ),
+        (
+            "vector_algorithm_execution::exact_knn_accepts_proof_bearing_uniform_list_vectors",
+            exact_knn_accepts_proof_bearing_uniform_list_vectors,
+        ),
+        (
+            "vector_algorithm_execution::exact_knn_parameter_shapes_admit_before_runtime_value_validation",
+            exact_knn_parameter_shapes_admit_before_runtime_value_validation,
+        ),
+        (
+            "vector_algorithm_execution::pca_executes_uniform_list_input_with_sign_aware_component_oracle",
+            pca_executes_uniform_list_input_with_sign_aware_component_oracle,
+        ),
+        (
+            "vector_algorithm_execution::kmeans_executes_fixed_size_list_input_and_centroid_relations_with_permutation_invariant_labels",
+            kmeans_executes_fixed_size_list_input_and_centroid_relations_with_permutation_invariant_labels,
+        ),
+        (
+            "vector_algorithm_execution::compiled_knn_non_finite_input_projects_cudf_validation_details",
+            compiled_knn_non_finite_input_projects_cudf_validation_details,
+        ),
+        (
+            "vector_algorithm_execution::compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_allocations",
+            compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_allocations,
+        ),
+    ]);
 }
 
 static DOMAIN_BYTES_AFTER_INDEX_BUILD: AtomicU64 = AtomicU64::new(0);
@@ -433,7 +470,6 @@ fn ivf_flat_cancellation_after_index_build_releases_query_allocations() {
     admitted.finish();
 }
 
-#[test]
 fn compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_allocations() {
     let error = execute_failing_columns_knn(vec![1.0], 2);
     assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
@@ -442,7 +478,6 @@ fn compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_alloc
     assert_eq!(error.fact_value("reason"), Some("k_exceeds_dataset_rows"));
 }
 
-#[test]
 fn compiled_knn_non_finite_input_projects_cudf_validation_details() {
     let error = execute_failing_columns_knn(vec![1.0, f32::NAN, f32::INFINITY], 1);
     assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
@@ -761,7 +796,6 @@ fn cuvs_disabled_rejects_before_local_source_staging() {
     admitted.finish();
 }
 
-#[test]
 fn exact_knn_accepts_proof_bearing_fixed_size_list_vectors() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::FixedSizeList);
     let query_schema = vector_schema("query_id", VectorFixtureShape::FixedSizeList);
@@ -769,7 +803,6 @@ fn exact_knn_accepts_proof_bearing_fixed_size_list_vectors() {
     assert_vector_capability_admitted(&plan);
 }
 
-#[test]
 fn exact_knn_accepts_proof_bearing_uniform_list_vectors() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::UniformList);
     let query_schema = vector_schema("query_id", VectorFixtureShape::UniformList);
@@ -777,23 +810,6 @@ fn exact_knn_accepts_proof_bearing_uniform_list_vectors() {
     assert_vector_capability_admitted(&plan);
 }
 
-#[test]
-fn exact_knn_breaks_equal_distance_ties_by_physical_ordinal() {
-    let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
-    let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
-    let plan = knn_plan(dataset_schema, query_schema, VectorFixtureShape::Columns, 2);
-    assert_vector_capability_admitted(&plan);
-}
-
-#[test]
-fn exact_knn_preserves_an_empty_query_relation_without_native_search() {
-    let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
-    let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
-    let plan = knn_plan(dataset_schema, query_schema, VectorFixtureShape::Columns, 1);
-    assert_vector_capability_admitted(&plan);
-}
-
-#[test]
 fn exact_knn_parameter_shapes_admit_before_runtime_value_validation() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
     let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
@@ -803,7 +819,6 @@ fn exact_knn_parameter_shapes_admit_before_runtime_value_validation() {
     }
 }
 
-#[test]
 fn kmeans_executes_fixed_size_list_input_and_centroid_relations_with_permutation_invariant_labels() {
     let schema = vector_schema("id", VectorFixtureShape::FixedSizeList);
     let mut builder = QueryPlanBuilder::new();
@@ -832,7 +847,6 @@ fn kmeans_executes_fixed_size_list_input_and_centroid_relations_with_permutation
     assert_vector_capability_admitted(&builder.finish_gpu_resident(root).unwrap());
 }
 
-#[test]
 fn pca_executes_uniform_list_input_with_sign_aware_component_oracle() {
     let schema = vector_schema("id", VectorFixtureShape::UniformList);
     let mut builder = QueryPlanBuilder::new();

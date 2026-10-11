@@ -3,6 +3,7 @@ use std::{os::raw::c_void, ptr};
 use cudf_sys::test_support;
 
 use super::*;
+use crate::support::run_named_cases;
 
 fn column_len(col: cudf_sys::cudf_column_handle) -> usize {
     let view = make_column_view(col);
@@ -239,57 +240,40 @@ fn assert_filtered_join_indices_invalid_null_equality_rejected(
         cudf_sys::cudf_table_destroy(left_keys_tbl);
     }
 }
-#[test]
+
 fn test_inner_join_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     assert_join_invalid_null_equality_rejected(cudf_inner_join_raw);
 }
 
-#[test]
 fn test_left_join_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     assert_join_invalid_null_equality_rejected(cudf_left_join_raw);
 }
 
-#[test]
 fn test_full_join_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     assert_join_invalid_null_equality_rejected(cudf_full_join_raw);
 }
 
-#[test]
 fn test_inner_join_indices_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     assert_join_indices_invalid_null_equality_rejected(cudf_inner_join_indices_raw);
 }
 
-#[test]
 fn test_left_join_indices_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     assert_join_indices_invalid_null_equality_rejected(cudf_left_join_indices_raw);
 }
 
-#[test]
 fn test_full_join_indices_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     assert_join_indices_invalid_null_equality_rejected(cudf_full_join_indices_raw);
 }
 
-#[test]
 fn test_left_semi_join_indices_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     assert_filtered_join_indices_invalid_null_equality_rejected(cudf_left_semi_join_indices_raw);
 }
 
-#[test]
 fn test_left_anti_join_indices_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     assert_filtered_join_indices_invalid_null_equality_rejected(cudf_left_anti_join_indices_raw);
 }
 
-#[test]
 fn test_distinct_hash_join_create_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -308,9 +292,7 @@ fn test_distinct_hash_join_create_invalid_null_equality_rejected() {
     }
 }
 
-#[test]
 fn test_hash_join_create_invalid_nullable_join_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -338,9 +320,7 @@ fn test_hash_join_create_invalid_nullable_join_rejected() {
     }
 }
 
-#[test]
 fn test_hash_join_create_invalid_null_equality_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -359,10 +339,7 @@ fn test_hash_join_create_invalid_null_equality_rejected() {
     }
 }
 
-#[test]
 fn test_ast_invalid_table_reference_operator_and_null_handle_clear_output() {
-    let _shim_state = lock_shim_state();
-
     let mut out = std::ptr::NonNull::<cudf_sys::cudf_ast_expression_handle_state>::dangling().as_ptr();
     let status = unsafe { cudf_ast_column_reference_create_raw(0, 99, raw_out_handle(&mut out)) };
     assert_eq!(raw_status(status), cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
@@ -398,9 +375,7 @@ fn test_ast_invalid_table_reference_operator_and_null_handle_clear_output() {
     }
 }
 
-#[test]
 fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs() {
-    let _shim_state = lock_shim_state();
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 4]));
     let right_tbl = make_table_from_one_column(make_i32_column(&[2]));
     let left_tv = make_table_view(left_tbl);
@@ -500,9 +475,7 @@ fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs()
     }
 }
 
-#[test]
 fn test_filter_join_indices_invalid_join_kind_rejected_and_clears_outputs() {
-    let _shim_state = lock_shim_state();
     let inputs = FilterJoinTestInputs::new();
     let (_stream, _mr, exec) = strict_exec_owners();
     let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
@@ -529,9 +502,7 @@ fn test_filter_join_indices_invalid_join_kind_rejected_and_clears_outputs() {
     assert!(last_error_message().contains("invalid join_kind"));
 }
 
-#[test]
 fn test_filter_join_indices_unsupported_join_kinds_rejected_and_clear_outputs() {
-    let _shim_state = lock_shim_state();
     let inputs = FilterJoinTestInputs::new();
     let stream = OwnedStream::new();
     let mr = OwnedMemoryResource::new_cuda();
@@ -561,9 +532,7 @@ fn test_filter_join_indices_unsupported_join_kinds_rejected_and_clear_outputs() 
     }
 }
 
-#[test]
 fn test_filter_join_indices_mismatched_index_lengths_rejected_and_clear_outputs() {
-    let _shim_state = lock_shim_state();
     let inputs = FilterJoinTestInputs::new();
     let short_right_indices_col = make_i32_column(&[0, 1]);
     let short_right_indices_view = make_column_view(short_right_indices_col);
@@ -599,9 +568,7 @@ fn test_filter_join_indices_mismatched_index_lengths_rejected_and_clear_outputs(
     }
 }
 
-#[test]
 fn test_filter_join_indices_null_handles_clear_outputs() {
-    let _shim_state = lock_shim_state();
     let inputs = FilterJoinTestInputs::new();
     let (_stream, _mr, exec) = strict_exec_owners();
     let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
@@ -711,9 +678,7 @@ fn test_filter_join_indices_null_handles_clear_outputs() {
     }
 }
 
-#[test]
 fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
     let inputs = FilterJoinTestInputs::new();
     let stream = OwnedStream::new();
@@ -769,10 +734,7 @@ fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and
     );
 }
 
-#[test]
 fn test_hash_join_pre_build_sizing_allocates_no_device_payload_and_uses_explicit_context() {
-    let _shim_state = lock_shim_state();
-
     let strings = [
         std::ffi::CString::new("alpha").unwrap(),
         std::ffi::CString::new("null-payload").unwrap(),
@@ -828,9 +790,7 @@ fn test_hash_join_pre_build_sizing_allocates_no_device_payload_and_uses_explicit
     drop(input_stream);
 }
 
-#[test]
 fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -876,10 +836,7 @@ fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations(
     }
 }
 
-#[test]
 fn test_hash_join_device_allocated_size_reports_retained_build_artifact_bytes() {
-    let _shim_state = lock_shim_state();
-
     let col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -923,9 +880,7 @@ fn test_hash_join_device_allocated_size_reports_retained_build_artifact_bytes() 
     }
 }
 
-#[test]
 fn test_hash_join_size_apis_report_exact_output_rows() {
-    let _shim_state = lock_shim_state();
     let build_col = make_i32_column(&[2, 2, 4, 6]);
     let build_tbl = make_table_from_one_column(build_col);
     let build_tv = make_table_view(build_tbl);
@@ -1030,9 +985,7 @@ fn test_hash_join_size_apis_report_exact_output_rows() {
     }
 }
 
-#[test]
 fn test_conditional_join_size_apis_report_exact_output_rows() {
-    let _shim_state = lock_shim_state();
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 3, 5]));
     let right_tbl = make_table_from_one_column(make_i32_column(&[2, 4]));
     let left_tv = make_table_view(left_tbl);
@@ -1159,9 +1112,7 @@ fn test_conditional_join_size_apis_report_exact_output_rows() {
     }
 }
 
-#[test]
 fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -1236,9 +1187,7 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
     }
 }
 
-#[test]
 fn test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 3]));
@@ -1299,9 +1248,7 @@ fn test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_proven
     }
 }
 
-#[test]
 fn test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 3, 5, 8, 13, 21]));
@@ -1353,9 +1300,7 @@ fn test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_a
     }
 }
 
-#[test]
 fn test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 4]));
@@ -1452,9 +1397,7 @@ fn test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocation
     }
 }
 
-#[test]
 fn test_mixed_join_invalid_null_equality_rejected_and_clears_outputs() {
-    let _shim_state = lock_shim_state();
     let left_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 1, 2, 3]));
     let right_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 4]));
     let left_cond_tbl = make_table_from_one_column(make_i32_column(&[10, 30, 5, 7]));
@@ -1529,9 +1472,7 @@ fn test_mixed_join_invalid_null_equality_rejected_and_clears_outputs() {
     }
 }
 
-#[test]
 fn test_mixed_join_null_handles_clear_outputs() {
-    let _shim_state = lock_shim_state();
     let left_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 1, 2, 3]));
     let right_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 4]));
     let left_cond_tbl = make_table_from_one_column(make_i32_column(&[10, 30, 5, 7]));
@@ -1735,9 +1676,7 @@ fn test_mixed_join_null_handles_clear_outputs() {
     }
 }
 
-#[test]
 fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 1, 2, 3]));
@@ -1871,9 +1810,7 @@ fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_
     }
 }
 
-#[test]
 fn test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -1921,7 +1858,6 @@ fn test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allo
 
 #[test]
 fn test_join_indices_publish_no_outputs_when_second_handle_release_fails() {
-    let _shim_state = lock_shim_state();
     let left_tbl = make_table_from_columns(vec![make_i32_column(&[1, 2, 3])]);
     let right_tbl = make_table_from_columns(vec![make_i32_column(&[2, 3, 4])]);
     let left_tv = make_table_view(left_tbl);
@@ -1960,9 +1896,7 @@ fn test_join_indices_publish_no_outputs_when_second_handle_release_fails() {
     }
 }
 
-#[test]
 fn test_distinct_hash_join_left_join_returns_build_indices() {
-    let _shim_state = lock_shim_state();
     let build_col = make_i32_column(&[10, 20, 30]);
     let build_tbl = make_table_from_one_column(build_col);
     let build_tv = make_table_view(build_tbl);
@@ -1996,4 +1930,114 @@ fn test_distinct_hash_join_left_join_returns_build_indices() {
         cudf_sys::cudf_table_view_destroy(build_tv);
         cudf_sys::cudf_table_destroy(build_tbl);
     }
+}
+
+#[test]
+fn join_cases() {
+    run_named_cases(&[
+        (
+            "test_hash_join_device_allocated_size_reports_retained_build_artifact_bytes",
+            test_hash_join_device_allocated_size_reports_retained_build_artifact_bytes,
+        ),
+        ("test_mixed_join_null_handles_clear_outputs", test_mixed_join_null_handles_clear_outputs),
+        (
+            "test_mixed_join_invalid_null_equality_rejected_and_clears_outputs",
+            test_mixed_join_invalid_null_equality_rejected_and_clears_outputs,
+        ),
+        (
+            "test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance",
+            test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance,
+        ),
+        ("test_hash_join_size_apis_report_exact_output_rows", test_hash_join_size_apis_report_exact_output_rows),
+        (
+            "test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance",
+            test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance,
+        ),
+        (
+            "test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance",
+            test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance,
+        ),
+        (
+            "test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance",
+            test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance,
+        ),
+        (
+            "test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations",
+            test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations,
+        ),
+        ("test_inner_join_invalid_null_equality_rejected", test_inner_join_invalid_null_equality_rejected),
+        ("test_filter_join_indices_null_handles_clear_outputs", test_filter_join_indices_null_handles_clear_outputs),
+        (
+            "test_hash_join_pre_build_sizing_allocates_no_device_payload_and_uses_explicit_context",
+            test_hash_join_pre_build_sizing_allocates_no_device_payload_and_uses_explicit_context,
+        ),
+        ("test_full_join_invalid_null_equality_rejected", test_full_join_invalid_null_equality_rejected),
+        (
+            "test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations",
+            test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations,
+        ),
+        (
+            "test_full_join_indices_invalid_null_equality_rejected",
+            test_full_join_indices_invalid_null_equality_rejected,
+        ),
+        (
+            "test_left_join_indices_invalid_null_equality_rejected",
+            test_left_join_indices_invalid_null_equality_rejected,
+        ),
+        (
+            "test_inner_join_indices_invalid_null_equality_rejected",
+            test_inner_join_indices_invalid_null_equality_rejected,
+        ),
+        ("test_hash_join_create_invalid_null_equality_rejected", test_hash_join_create_invalid_null_equality_rejected),
+        (
+            "test_filter_join_indices_invalid_join_kind_rejected_and_clears_outputs",
+            test_filter_join_indices_invalid_join_kind_rejected_and_clears_outputs,
+        ),
+        (
+            "test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance",
+            test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance,
+        ),
+        (
+            "test_conditional_join_default_forms_validate_null_handles_and_clear_outputs",
+            test_conditional_join_default_forms_validate_null_handles_and_clear_outputs,
+        ),
+        (
+            "test_filter_join_indices_mismatched_index_lengths_rejected_and_clear_outputs",
+            test_filter_join_indices_mismatched_index_lengths_rejected_and_clear_outputs,
+        ),
+        (
+            "test_filter_join_indices_unsupported_join_kinds_rejected_and_clear_outputs",
+            test_filter_join_indices_unsupported_join_kinds_rejected_and_clear_outputs,
+        ),
+        (
+            "test_distinct_hash_join_left_join_returns_build_indices",
+            test_distinct_hash_join_left_join_returns_build_indices,
+        ),
+        (
+            "test_left_semi_join_indices_invalid_null_equality_rejected",
+            test_left_semi_join_indices_invalid_null_equality_rejected,
+        ),
+        (
+            "test_conditional_join_size_apis_report_exact_output_rows",
+            test_conditional_join_size_apis_report_exact_output_rows,
+        ),
+        ("test_left_join_invalid_null_equality_rejected", test_left_join_invalid_null_equality_rejected),
+        ("test_hash_join_create_invalid_nullable_join_rejected", test_hash_join_create_invalid_nullable_join_rejected),
+        (
+            "test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations",
+            test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations,
+        ),
+        (
+            "test_distinct_hash_join_create_invalid_null_equality_rejected",
+            test_distinct_hash_join_create_invalid_null_equality_rejected,
+        ),
+        (
+            "test_left_anti_join_indices_invalid_null_equality_rejected",
+            test_left_anti_join_indices_invalid_null_equality_rejected,
+        ),
+        (
+            "test_ast_invalid_table_reference_operator_and_null_handle_clear_output",
+            test_ast_invalid_table_reference_operator_and_null_handle_clear_output,
+        ),
+    ]);
 }

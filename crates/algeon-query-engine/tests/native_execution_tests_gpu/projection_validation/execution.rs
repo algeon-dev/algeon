@@ -4,7 +4,6 @@ use query_planning::expr::CaseWhen;
 
 use super::*;
 
-#[test]
 fn native_boolean_and_or_use_sql_three_valued_logic() {
     let context = backend_context();
     let input_schema =
@@ -84,7 +83,6 @@ fn assert_boolean_values(array: &BooleanArray, expected: &[Option<bool>]) {
     }
 }
 
-#[test]
 fn native_query_executes_filter_projection_over_tpch_like_types() {
     let dir = unique_temp_dir("query-engine-native-execution-tpch-like-types");
     let path = dir.join("tpch-like.parquet");
@@ -204,7 +202,6 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_projection_coerces_decimal_output_to_declared_scale() {
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(20, 0), false)]));
@@ -251,7 +248,6 @@ fn native_projection_coerces_decimal_output_to_declared_scale() {
     admitted.finish();
 }
 
-#[test]
 fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
     let dir = unique_temp_dir("query-engine-bounded-projection-decimal-schema-coerce");
     let path = dir.join("input.parquet");
@@ -308,6 +304,39 @@ fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
 }
 
 #[test]
+fn execution_cases() {
+    run_named_cases(&[
+        (
+            "projection_validation::execution::bounded_native_projection_coerces_decimal_output_to_declared_scale",
+            bounded_native_projection_coerces_decimal_output_to_declared_scale,
+        ),
+        (
+            "projection_validation::execution::bounded_native_projection_decimal_division_uses_declared_binary_output_type",
+            bounded_native_projection_decimal_division_uses_declared_binary_output_type,
+        ),
+        (
+            "projection_validation::execution::bounded_native_query_executes_decimal_sum_ratio_at_output_scale",
+            bounded_native_query_executes_decimal_sum_ratio_at_output_scale,
+        ),
+        (
+            "projection_validation::execution::native_query_executes_filter_projection_over_tpch_like_types",
+            native_query_executes_filter_projection_over_tpch_like_types,
+        ),
+        (
+            "projection_validation::execution::native_boolean_and_or_use_sql_three_valued_logic",
+            native_boolean_and_or_use_sql_three_valued_logic,
+        ),
+        (
+            "projection_validation::execution::native_projection_decimal_division_uses_declared_binary_output_type",
+            native_projection_decimal_division_uses_declared_binary_output_type,
+        ),
+        (
+            "projection_validation::execution::native_projection_coerces_decimal_output_to_declared_scale",
+            native_projection_coerces_decimal_output_to_declared_scale,
+        ),
+    ]);
+}
+
 fn native_projection_decimal_division_uses_declared_binary_output_type() {
     let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
@@ -361,7 +390,6 @@ fn native_projection_decimal_division_uses_declared_binary_output_type() {
     admitted.finish();
 }
 
-#[test]
 fn bounded_native_projection_decimal_division_uses_declared_binary_output_type() {
     let dir = unique_temp_dir("query-engine-bounded-projection-decimal-division");
     let path = dir.join("input.parquet");
@@ -413,7 +441,6 @@ fn bounded_native_projection_decimal_division_uses_declared_binary_output_type()
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_decimal_sum_ratio_at_output_scale() {
     let dir = unique_temp_dir("query-engine-bounded-market-share-decimal-ratio");
     let path = dir.join("input.parquet");

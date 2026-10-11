@@ -359,8 +359,7 @@ fn admitted_attempt_holds_complete_envelope_before_context_acquisition() {
 /// An async admission builds its envelope's root stream, allocation domain,
 /// and root member on the placed device's GPU pool, not on the caller's Tokio
 /// worker.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn async_admission_builds_its_envelope_on_the_device_gpu_pool() {
+async fn async_admission_builds_its_envelope_on_the_device_gpu_pool_case() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for envelope placement");
     let probe = Arc::new(AdmissionTransactionProbe::disabled());
 
@@ -377,9 +376,14 @@ async fn async_admission_builds_its_envelope_on_the_device_gpu_pool() {
     drop(handle);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn async_admission_builds_its_envelope_on_the_device_gpu_pool() {
+    async_admission_builds_its_envelope_on_the_device_gpu_pool_case().await;
+    blocking_admission_builds_its_envelope_on_the_device_gpu_pool();
+}
+
 /// A blocking admission builds its envelope on the placed device's GPU pool,
 /// as an async admission does, not on the calling thread.
-#[test]
 fn blocking_admission_builds_its_envelope_on_the_device_gpu_pool() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for envelope placement");
     let probe = Arc::new(AdmissionTransactionProbe::disabled());

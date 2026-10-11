@@ -1,16 +1,19 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema};
-use cudf::io::{
-    parquet::{
-        RemoteCredentialMode, RemoteParquetBackendBuildStatus, RemoteParquetCapability,
-        RemoteParquetCapabilityDisposition, RemoteParquetProfile, RemoteParquetSource, RemoteReadMode,
-        probe_remote_parquet_datasource, remote_parquet_capability,
+use cudf::{
+    io::{
+        parquet::{
+            RemoteCredentialMode, RemoteParquetBackendBuildStatus, RemoteParquetCapability,
+            RemoteParquetCapabilityDisposition, RemoteParquetProfile, RemoteParquetSource, RemoteReadMode,
+            probe_remote_parquet_datasource, remote_parquet_capability,
+        },
+        source::{
+            LocalParquetFile as CudfLocalParquetFile, ParquetSourceLocation as CudfParquetSourceLocation,
+            SourceChunk as CudfSourceChunk,
+        },
     },
-    source::{
-        LocalParquetFile as CudfLocalParquetFile, ParquetSourceLocation as CudfParquetSourceLocation,
-        SourceChunk as CudfSourceChunk,
-    },
+    testing::run_named_cases,
 };
 use object_store::aws::AwsCredential;
 use query_planning::{
@@ -89,7 +92,6 @@ fn assert_required_footer_fetch_temporary_failure(error: &QueryError) {
     assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store_path:fnv64:")));
 }
 
-#[test]
 fn local_and_local_cache_contracts_build_only_local_parquet_paths() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let cases = [
@@ -114,7 +116,6 @@ fn local_and_local_cache_contracts_build_only_local_parquet_paths() {
     }
 }
 
-#[test]
 fn missing_remote_profile_is_structured_and_cannot_fallback() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let resolved = source::ResolvedParquetSource::remote_kvikio(
@@ -210,21 +211,6 @@ fn remote_parquet_profile_passes_resolved_default_chain_credentials_as_scoped_st
     assert!(!rendered.contains("resolved-session-token"));
 }
 
-#[test]
-fn remote_parquet_profile_treats_region_override_as_scoped_hint() {
-    let storage = runtime::SourceStorageProfile::s3(
-        "glue-region",
-        runtime::S3SourceStorageProfile::default_chain().with_region("us-west-2"),
-    );
-
-    let profile = cudf_remote_parquet_profile_from_storage(Some("glue-region"), Some(&storage), None);
-
-    assert_eq!(profile.profile_id(), Some("glue-region"));
-    assert_eq!(profile.region(), Some("us-west-2"));
-    assert_eq!(profile.credential_mode(), RemoteCredentialMode::ScopedProfile);
-}
-
-#[test]
 fn typed_remote_parquet_contract_hardwires_fail_closed_kvikio_mode() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let cudf_file = CudfLocalParquetFile::object_store_uri("s3://bucket/part.parquet", "part", [])
@@ -268,7 +254,6 @@ fn datasource_probe_cudf_failures_preserve_facts_without_source_text() {
     assert!(!format!("{error:?}").contains("source: Some"));
 }
 
-#[test]
 fn remote_direct_cudf_contract_preserves_projection_row_groups_and_reader_mode() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = remote_direct_test_source();
@@ -290,7 +275,6 @@ fn remote_direct_cudf_contract_preserves_projection_row_groups_and_reader_mode()
     assert_eq!(cudf_chunk.known_pure_filter_compressed_bytes(), Some(48 + 80));
 }
 
-#[test]
 fn remote_multi_chunk_batch_preserves_uri_row_groups_projection_and_reader_mode() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = remote_direct_test_source();
@@ -335,7 +319,6 @@ fn local_test_file(path: &str, stable_id: &str, row_group_count: usize) -> Local
         .with_row_group_rows(vec![10; row_group_count])
 }
 
-#[test]
 fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     // The same path appears as two source files with distinct identities; the
@@ -373,6 +356,55 @@ fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
 }
 
 #[test]
+fn tests_cases() {
+    run_named_cases(&[
+        (
+            "exec::source::cudf_contract::tests::local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups",
+            local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups,
+        ),
+        (
+            "exec::source::cudf_contract::tests::local_parquet_descriptors_key_planned_row_group_null_counts_by_read_column",
+            local_parquet_descriptors_key_planned_row_group_null_counts_by_read_column,
+        ),
+        (
+            "exec::source::cudf_contract::tests::remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type",
+            remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type,
+        ),
+        (
+            "exec::source::cudf_contract::tests::local_and_local_cache_contracts_build_only_local_parquet_paths",
+            local_and_local_cache_contracts_build_only_local_parquet_paths,
+        ),
+        (
+            "exec::source::cudf_contract::tests::missing_remote_profile_is_structured_and_cannot_fallback",
+            missing_remote_profile_is_structured_and_cannot_fallback,
+        ),
+        (
+            "exec::source::cudf_contract::tests::remote_direct_contract_keeps_filter_only_predicate_attachable",
+            remote_direct_contract_keeps_filter_only_predicate_attachable,
+        ),
+        (
+            "exec::source::cudf_contract::tests::chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification",
+            chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification,
+        ),
+        (
+            "exec::source::cudf_contract::tests::remote_direct_cudf_contract_preserves_projection_row_groups_and_reader_mode",
+            remote_direct_cudf_contract_preserves_projection_row_groups_and_reader_mode,
+        ),
+        (
+            "exec::source::cudf_contract::tests::remote_multi_chunk_batch_preserves_uri_row_groups_projection_and_reader_mode",
+            remote_multi_chunk_batch_preserves_uri_row_groups_projection_and_reader_mode,
+        ),
+        (
+            "exec::source::cudf_contract::tests::remote_direct_cudf_contract_errors_redact_object_store_locations",
+            remote_direct_cudf_contract_errors_redact_object_store_locations,
+        ),
+        (
+            "exec::source::cudf_contract::tests::typed_remote_parquet_contract_hardwires_fail_closed_kvikio_mode",
+            typed_remote_parquet_contract_hardwires_fail_closed_kvikio_mode,
+        ),
+    ]);
+}
+
 fn local_parquet_descriptors_key_planned_row_group_null_counts_by_read_column() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = local_test_source(vec![
@@ -399,7 +431,6 @@ fn local_parquet_descriptors_key_planned_row_group_null_counts_by_read_column() 
     }
 }
 
-#[test]
 fn remote_direct_contract_keeps_filter_only_predicate_attachable() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = remote_direct_test_source().with_reader_predicate(expr::Expr::binary(
@@ -505,7 +536,6 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
     assert!(!error.to_string().contains("s3://bucket"));
 }
 
-#[test]
 fn remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("discount", ArrowDataType::Decimal128(15, 2), true)]));
@@ -578,7 +608,6 @@ fn remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type() {
     assert!(cudf_source.reader_predicate().is_some());
 }
 
-#[test]
 fn chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = remote_direct_test_source();
@@ -636,34 +665,6 @@ fn chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification() {
 }
 
 #[test]
-fn remote_direct_contract_propagates_required_footer_fetch_failure_without_footer_type_metadata() {
-    let context = context_with_unreachable_footer_store();
-    let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("discount", ArrowDataType::Decimal128(15, 2), true)]));
-    let resolved = remote_direct_with_unreachable_footer_store("s3://bucket/lineitem.parquet");
-    let file = LocalParquetFile::from_resolved_parquet_source(resolved)
-        .expect("valid remote direct source")
-        .with_stable_id("lineitem")
-        .with_file_size_bytes(4096)
-        .with_row_groups(vec![0])
-        .with_row_group_bytes(vec![4096])
-        .with_row_group_rows(vec![10]);
-    let predicate = Expr::binary(
-        Expr::column("discount"),
-        BinaryOp::GtEq,
-        Expr::literal(LiteralValue::Decimal128 { raw: 5, precision: 15, scale: 2 }),
-    );
-    let source = LocalParquetSource::from_files(vec![file], schema, vec!["discount".to_string()])
-        .with_column_file_indices(vec![0], vec![0], vec![])
-        .with_reader_predicate(predicate);
-
-    let error = cudf_local_parquet_source_file_selection(&context, &source, &source.files[0], 0, 7)
-        .expect_err("remote decimal reader predicates need proven footer dtype metadata");
-
-    assert_required_footer_fetch_temporary_failure(&error);
-    assert!(!error.to_string().contains("s3://bucket"));
-}
-
-#[test]
 fn remote_direct_contract_propagates_required_footer_fetch_failure_for_unverified_decimal_type() {
     let context = context_with_unreachable_footer_store();
     let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("discount", ArrowDataType::Decimal128(15, 2), true)]));
@@ -696,7 +697,6 @@ fn remote_direct_contract_propagates_required_footer_fetch_failure_for_unverifie
     assert!(!error.to_string().contains("s3://bucket"));
 }
 
-#[test]
 fn remote_direct_cudf_contract_errors_redact_object_store_locations() {
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let sensitive_uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";

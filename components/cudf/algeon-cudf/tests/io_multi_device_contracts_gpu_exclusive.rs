@@ -11,12 +11,10 @@ use cudf::{
 use tempfile::TempDir;
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn concurrent_parquet_reads_across_devices_do_not_need_a_process_global_io_lock() {
     let device_count = DeviceId::count().unwrap().min(4);
-    if device_count < 2 {
-        eprintln!("skipping multi-device IO concurrency test; fewer than two CUDA devices are visible");
-        return;
-    }
+    assert!(device_count >= 2, "requires at least 2 GPUs");
 
     let dir = TempDir::new().unwrap();
     let mut fixtures = Vec::new();

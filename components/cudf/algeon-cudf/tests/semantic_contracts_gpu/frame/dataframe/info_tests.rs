@@ -14,7 +14,7 @@ use cudf::{
 };
 use cudf_sys::test_support::{cudf_test_exec_last_stream_value, cudf_test_exec_reset_observation};
 
-use crate::common::{dataframe_from_columns, nullable_series, run_named_cases, sample_runtime, series};
+use crate::common::{dataframe_from_columns, nullable_series, sample_runtime, series};
 
 fn obs_reset() {
     unsafe { cudf_test_exec_reset_observation() };
@@ -274,44 +274,44 @@ fn test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_
     assert_eq!(info.memory_accounting.unwrap().payload_bytes, Some((4 * 4) + 5));
 }
 
-#[test]
-fn info_tests_cases() {
-    run_named_cases(&[
-        ("backing_allocations_preserve_shared_column_identity", backing_allocations_preserve_shared_column_identity),
-        ("backing_allocations_identify_fresh_sliced_output", backing_allocations_identify_fresh_sliced_output),
-        ("backing_allocations_include_nested_children_once", backing_allocations_include_nested_children_once),
-        (
-            "backing_allocations_are_empty_for_allocation_free_output",
-            backing_allocations_are_empty_for_allocation_free_output,
-        ),
-        ("test_info_default_returns_only_summary_metadata", test_info_default_returns_only_summary_metadata),
-        (
-            "test_info_with_columns_and_null_counts_reports_schema_order_and_counts",
-            test_info_with_columns_and_null_counts_reports_schema_order_and_counts,
-        ),
-        (
-            "test_info_with_payload_memory_accounting_reports_expected_bytes",
-            test_info_with_payload_memory_accounting_reports_expected_bytes,
-        ),
-        (
-            "test_info_with_device_allocated_memory_accounting_reports_only_device_allocated_bytes",
-            test_info_with_device_allocated_memory_accounting_reports_only_device_allocated_bytes,
-        ),
-        (
-            "test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_columns",
-            test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_columns,
-        ),
-        (
-            "test_info_payload_and_device_allocated_memory_for_dictionary_column",
-            test_info_payload_and_device_allocated_memory_for_dictionary_column,
-        ),
-        (
-            "test_info_empty_dataframe_returns_valid_empty_snapshot",
-            test_info_empty_dataframe_returns_valid_empty_snapshot,
-        ),
-        (
-            "test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream",
-            test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "info_tests::backing_allocations_preserve_shared_column_identity",
+        backing_allocations_preserve_shared_column_identity,
+    ),
+    ("info_tests::backing_allocations_identify_fresh_sliced_output", backing_allocations_identify_fresh_sliced_output),
+    ("info_tests::backing_allocations_include_nested_children_once", backing_allocations_include_nested_children_once),
+    (
+        "info_tests::backing_allocations_are_empty_for_allocation_free_output",
+        backing_allocations_are_empty_for_allocation_free_output,
+    ),
+    ("info_tests::test_info_default_returns_only_summary_metadata", test_info_default_returns_only_summary_metadata),
+    (
+        "info_tests::test_info_with_columns_and_null_counts_reports_schema_order_and_counts",
+        test_info_with_columns_and_null_counts_reports_schema_order_and_counts,
+    ),
+    (
+        "info_tests::test_info_with_payload_memory_accounting_reports_expected_bytes",
+        test_info_with_payload_memory_accounting_reports_expected_bytes,
+    ),
+    (
+        "info_tests::test_info_with_device_allocated_memory_accounting_reports_only_device_allocated_bytes",
+        test_info_with_device_allocated_memory_accounting_reports_only_device_allocated_bytes,
+    ),
+    (
+        "info_tests::test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_columns",
+        test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_columns,
+    ),
+    (
+        "info_tests::test_info_payload_and_device_allocated_memory_for_dictionary_column",
+        test_info_payload_and_device_allocated_memory_for_dictionary_column,
+    ),
+    (
+        "info_tests::test_info_empty_dataframe_returns_valid_empty_snapshot",
+        test_info_empty_dataframe_returns_valid_empty_snapshot,
+    ),
+    (
+        "info_tests::test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream",
+        test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream,
+    ),
+];

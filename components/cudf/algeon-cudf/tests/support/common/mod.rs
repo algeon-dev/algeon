@@ -3,6 +3,7 @@
 use std::{
     ffi::c_void,
     fs::File,
+    path::Path,
     ptr, slice,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
@@ -11,8 +12,8 @@ use std::{
 };
 
 use arrow::{
-    array::{ArrayRef, Int64Array, Int64Builder, ListBuilder, StringArray, StructArray},
-    datatypes::Field,
+    array::{ArrayRef, Int32Array, Int64Array, Int64Builder, ListBuilder, StringArray, StructArray},
+    datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use cudf::{
@@ -45,7 +46,7 @@ use cudf_sys::{
         cudf_test_table_view_fail_next_negative_num_columns, cudf_test_table_view_fail_next_negative_num_rows,
     },
 };
-use parquet::arrow::ArrowWriter;
+use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use rapids_interop::{ColumnLayout, InteropError, Placement};
 use tempfile::TempDir;
 
@@ -523,26 +524,17 @@ pub fn assert_duplicate_name_error(err: &cudf::Error, expected_name: &str) {
     assert!(error_context_value(err, "remedy").is_some(), "duplicate-name contract should expose a remedy");
 }
 
-/// Runs named cases in order on the current thread, then fails once listing
-/// every case that panicked. Cases share the thread's test runtime, so a table
-/// pays for one CUDA context instead of one per test process.
-pub fn run_named_cases(cases: &[(&str, fn())]) {
-    let failed = cases
-        .iter()
-        .filter(|(name, case)| {
-            let panicked = std::panic::catch_unwind(*case).is_err();
-            if panicked {
-                eprintln!("case `{name}` failed; its panic message is above");
-            }
-            panicked
-        })
-        .map(|(name, _)| *name)
-        .collect::<Vec<_>>();
-    assert!(failed.is_empty(), "{} of {} cases failed: {}", failed.len(), cases.len(), failed.join(", "));
-}
-
 pub fn int64_array(values: &[i64]) -> ArrayRef {
     Arc::new(Int64Array::from(values.to_vec()))
+}
+
+pub fn write_i32_parquet_fixture(path: &Path, name: &str, values: &[i32], row_group_size: usize) {
+    let schema = Arc::new(Schema::new(vec![Field::new(name, ArrowDataType::Int32, true)]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(values.to_vec()))]).unwrap();
+    let properties = WriterProperties::builder().set_max_row_group_row_count(Some(row_group_size)).build();
+    let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), batch.schema(), Some(properties)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
 
 pub fn utf8_array(values: &[&str]) -> ArrayRef {

@@ -2010,6 +2010,11 @@ pub fn algeon_datafusion::server::FlightSqlServerBuilder::config(self, algeon_da
 pub fn algeon_datafusion::server::FlightSqlServerBuilder::listener(self, std::net::tcp::TcpListener) -> Self
 pub fn algeon_datafusion::server::FlightSqlServerBuilder::session_context(self, alloc::sync::Arc<datafusion::execution::context::SessionContext>) -> Self
 pub fn algeon_datafusion::server::FlightSqlServerBuilder::shutdown(self, algeon_datafusion::server::ServerShutdown) -> Self
+pub struct algeon_datafusion::server::Http2Keepalive
+pub algeon_datafusion::server::Http2Keepalive::interval: core::time::Duration
+pub algeon_datafusion::server::Http2Keepalive::timeout: core::time::Duration
+impl core::default::Default for algeon_datafusion::server::Http2Keepalive
+pub fn algeon_datafusion::server::Http2Keepalive::default() -> Self
 pub struct algeon_datafusion::server::ServerConfig
 pub algeon_datafusion::server::ServerConfig::auth: algeon_datafusion::server::AuthConfig
 pub algeon_datafusion::server::ServerConfig::bind_addr: core::net::socket_addr::SocketAddr
@@ -2017,6 +2022,7 @@ pub algeon_datafusion::server::ServerConfig::cugraph: core::option::Option<algeo
 pub algeon_datafusion::server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<query_runtime::runtime::backend_core::GpuBackendDeviceProfile>
 pub algeon_datafusion::server::ServerConfig::gpu_devices: alloc::vec::Vec<usize>
 pub algeon_datafusion::server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, query_runtime::runtime::backend_core::GpuMemoryOwnership)>
+pub algeon_datafusion::server::ServerConfig::http2_keepalive: algeon_datafusion::server::Http2Keepalive
 pub algeon_datafusion::server::ServerConfig::models: core::option::Option<algeon_datafusion::cuml_sql::CumlModelStoreConfig>
 pub algeon_datafusion::server::ServerConfig::native_optimizer_config: algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub algeon_datafusion::server::ServerConfig::observability: algeon_datafusion::server::ServerObservabilityConfig
@@ -2075,6 +2081,8 @@ pub const algeon_datafusion::server::ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_E
 pub const algeon_datafusion::server::ALGEON_SERVER_CUGRAPH_ENABLED_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_EXECUTION_MODE_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_GPU_DEVICES_ENV: &str
+pub const algeon_datafusion::server::ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS_ENV: &str
+pub const algeon_datafusion::server::ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_LOG_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_CONFIG_OPTIONS: &[algeon_datafusion::server::AlgeonServerNativeConfigOption]
 pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV: &str

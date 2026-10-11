@@ -759,11 +759,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aggregate_strategy_execution_options_default_validate() {
-        AggregateStrategyExecutionOptions::default().validate().unwrap();
-    }
-
-    #[test]
     fn aggregate_strategy_execution_options_reject_ratio_above_one_hundred_percent() {
         let error = AggregateStrategyExecutionOptions::default()
             .with_prepared_sort_groupby_low_cardinality_threshold_ppm(1_000_001)

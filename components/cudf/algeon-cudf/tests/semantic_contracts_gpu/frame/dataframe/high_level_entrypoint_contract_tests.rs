@@ -7,8 +7,7 @@ use cudf::{DataFrame, Exec, TypeId, testing::prelude::*};
 use crate::common::{
     assert_missing_column_error, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
     last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
-    reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime, scalar, unnamed_nullable_series,
-    unnamed_series,
+    reset_exec_observation, reset_sync_observation, sample_runtime, scalar, unnamed_nullable_series, unnamed_series,
 };
 
 // ===========================================================================
@@ -282,49 +281,55 @@ fn test_runtime_sequence_uses_runtime_execution_domain() {
     assert_eq!(seq.to_vec_strict::<i32>().unwrap(), vec![3, 5, 7, 9]);
 }
 
-#[test]
-fn high_level_entrypoint_contract_tests_cases() {
-    run_named_cases(&[
-        ("test_gather_with_series", test_gather_with_series),
-        (
-            "test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance",
-            test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance,
-        ),
-        ("test_filter_isin_with_series", test_filter_isin_with_series),
-        (
-            "test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance",
-            test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance,
-        ),
-        (
-            "test_filter_isin_with_series_no_matches_preserves_schema",
-            test_filter_isin_with_series_no_matches_preserves_schema,
-        ),
-        ("test_filter_isin_with_series_rejects_missing_column", test_filter_isin_with_series_rejects_missing_column),
-        ("test_fillna_with_plain_value", test_fillna_with_plain_value),
-        ("test_fillna_with_scalar_still_works", test_fillna_with_scalar_still_works),
-        ("test_fillna_rejects_missing_column", test_fillna_rejects_missing_column),
-        ("test_factorize_returns_typed_result", test_factorize_returns_typed_result),
-        ("test_with_encoded_and_decoded_column_workflows", test_with_encoded_and_decoded_column_workflows),
-        (
-            "test_with_decoded_column_preserves_null_codes_as_null_values",
-            test_with_decoded_column_preserves_null_codes_as_null_values,
-        ),
-        (
-            "test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain",
-            test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain,
-        ),
-        (
-            "test_with_encoded_column_rejects_missing_input_column_with_canonical_context",
-            test_with_encoded_column_rejects_missing_input_column_with_canonical_context,
-        ),
-        (
-            "test_with_decoded_column_rejects_missing_input_column_with_canonical_context",
-            test_with_decoded_column_rejects_missing_input_column_with_canonical_context,
-        ),
-        (
-            "test_runtime_sequence_creates_device_side_fixed_width_series",
-            test_runtime_sequence_creates_device_side_fixed_width_series,
-        ),
-        ("test_runtime_sequence_uses_runtime_execution_domain", test_runtime_sequence_uses_runtime_execution_domain),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("high_level_entrypoint_contract_tests::test_gather_with_series", test_gather_with_series),
+    (
+        "high_level_entrypoint_contract_tests::test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance",
+        test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance,
+    ),
+    ("high_level_entrypoint_contract_tests::test_filter_isin_with_series", test_filter_isin_with_series),
+    (
+        "high_level_entrypoint_contract_tests::test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance",
+        test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance,
+    ),
+    (
+        "high_level_entrypoint_contract_tests::test_filter_isin_with_series_no_matches_preserves_schema",
+        test_filter_isin_with_series_no_matches_preserves_schema,
+    ),
+    (
+        "high_level_entrypoint_contract_tests::test_filter_isin_with_series_rejects_missing_column",
+        test_filter_isin_with_series_rejects_missing_column,
+    ),
+    ("high_level_entrypoint_contract_tests::test_fillna_with_plain_value", test_fillna_with_plain_value),
+    ("high_level_entrypoint_contract_tests::test_fillna_with_scalar_still_works", test_fillna_with_scalar_still_works),
+    ("high_level_entrypoint_contract_tests::test_fillna_rejects_missing_column", test_fillna_rejects_missing_column),
+    ("high_level_entrypoint_contract_tests::test_factorize_returns_typed_result", test_factorize_returns_typed_result),
+    (
+        "high_level_entrypoint_contract_tests::test_with_encoded_and_decoded_column_workflows",
+        test_with_encoded_and_decoded_column_workflows,
+    ),
+    (
+        "high_level_entrypoint_contract_tests::test_with_decoded_column_preserves_null_codes_as_null_values",
+        test_with_decoded_column_preserves_null_codes_as_null_values,
+    ),
+    (
+        "high_level_entrypoint_contract_tests::test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain",
+        test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain,
+    ),
+    (
+        "high_level_entrypoint_contract_tests::test_with_encoded_column_rejects_missing_input_column_with_canonical_context",
+        test_with_encoded_column_rejects_missing_input_column_with_canonical_context,
+    ),
+    (
+        "high_level_entrypoint_contract_tests::test_with_decoded_column_rejects_missing_input_column_with_canonical_context",
+        test_with_decoded_column_rejects_missing_input_column_with_canonical_context,
+    ),
+    (
+        "high_level_entrypoint_contract_tests::test_runtime_sequence_creates_device_side_fixed_width_series",
+        test_runtime_sequence_creates_device_side_fixed_width_series,
+    ),
+    (
+        "high_level_entrypoint_contract_tests::test_runtime_sequence_uses_runtime_execution_domain",
+        test_runtime_sequence_uses_runtime_execution_domain,
+    ),
+];

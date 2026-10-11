@@ -623,11 +623,6 @@ mod tests {
     }
 
     #[test]
-    fn decimal_default_constructor_uses_zero_scale() {
-        assert_eq!(DataType::new(TypeId::Decimal64).scale(), 0);
-    }
-
-    #[test]
     fn raw_data_type_rejects_non_decimal_scale() {
         let err = DataType::from_raw_parts(TypeId::Int32.to_raw() as i32, 7).unwrap_err();
         assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);

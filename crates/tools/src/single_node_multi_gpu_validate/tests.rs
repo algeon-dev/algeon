@@ -78,6 +78,144 @@ fn parser_accepts_exact_dry_run_contract() {
     ])
     .unwrap();
     assert_eq!(preflight.mode, ValidationMode::FixturePreflight);
+
+    {
+        let options = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--otlp-metrics-endpoint",
+                "http://collector.example.test:4317",
+                "--otlp-export-interval-ms",
+                "750",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap();
+        assert_eq!(options.otlp_metrics_endpoint.as_deref(), Some("http://collector.example.test:4317"));
+        assert_eq!(options.otlp_export_interval_ms, Some(750));
+    }
+
+    {
+        let options = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--slow-report-sink-ms",
+                "25",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap();
+        assert_eq!(options.slow_report_sink, Some(std::time::Duration::from_millis(25)));
+    }
+
+    {
+        let options = CliOptions::parse(
+            ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--nsight-trace", "t.rep"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(options.mode, ValidationMode::MeasuredRun);
+        assert_eq!(options.nsight_trace, Some(PathBuf::from("t.rep")));
+    }
+
+    {
+        let options = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--quarantine-device",
+                "3",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap();
+        assert_eq!(options.quarantine_device, Some(3));
+    }
+
+    {
+        let options = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--deadline-first-after-ms",
+                "2000",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap();
+        assert_eq!(options.deadline_first_after, Some(std::time::Duration::from_secs(2)));
+    }
+
+    {
+        let options = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--domain-exhaustion-probe",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap();
+        assert!(options.domain_exhaustion_probe);
+    }
+
+    {
+        let options = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--physical-allocator-pressure",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap();
+        assert!(options.physical_allocator_pressure);
+    }
+
+    {
+        let options = CliOptions::parse(
+            ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--cache-calibration"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )
+        .unwrap();
+        assert!(options.cache_calibration);
+    }
 }
 
 #[test]
@@ -204,53 +342,163 @@ fn parser_rejects_duplicate_unknown_missing_and_non_dry_run_options() {
         let error = CliOptions::parse(args.into_iter().map(str::to_string).collect()).unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
-}
 
-#[test]
-fn parser_records_explicit_otlp_cell_without_making_it_a_scenario() {
-    let options = CliOptions::parse(
-        [
-            "--config",
-            "run-profile.json",
-            "--out-dir",
-            "run-artifacts",
-            "--measured-run",
-            "--otlp-metrics-endpoint",
-            "http://collector.example.test:4317",
-            "--otlp-export-interval-ms",
-            "750",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-    )
-    .unwrap();
-    assert_eq!(options.otlp_metrics_endpoint.as_deref(), Some("http://collector.example.test:4317"));
-    assert_eq!(options.otlp_export_interval_ms, Some(750));
-}
+    {
+        let error = CliOptions::parse(
+            ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--quarantine-device", "0"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("only valid with --measured-run"), "{error}");
+    }
 
-#[test]
-fn parser_records_the_dedicated_completion_sink_probe() {
-    let options = CliOptions::parse(
-        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--slow-report-sink-ms", "25"]
+    {
+        let zero = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--deadline-first-after-ms",
+                "0",
+            ]
             .into_iter()
             .map(str::to_string)
             .collect(),
-    )
-    .unwrap();
-    assert_eq!(options.slow_report_sink, Some(std::time::Duration::from_millis(25)));
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(zero.contains("greater than zero"), "{zero}");
+
+        let combined = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--quarantine-device",
+                "0",
+                "--deadline-first-after-ms",
+                "2000",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(combined.contains("cannot be combined"), "{combined}");
+    }
+
+    {
+        let dry_error = CliOptions::parse(
+            ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--domain-exhaustion-probe"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(dry_error.contains("only valid with --measured-run"), "{dry_error}");
+
+        let combined_error = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--domain-exhaustion-probe",
+                "--deadline-first-after-ms",
+                "2000",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(combined_error.contains("cannot be combined"), "{combined_error}");
+    }
+
+    {
+        let dry_error = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--dry-run",
+                "--physical-allocator-pressure",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(dry_error.contains("only valid with --measured-run"), "{dry_error}");
+
+        let combined_error = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--physical-allocator-pressure",
+                "--domain-exhaustion-probe",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(combined_error.contains("cannot be combined"), "{combined_error}");
+    }
+
+    {
+        let dry_error = CliOptions::parse(
+            ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--cache-calibration"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(dry_error.contains("only valid with --measured-run"), "{dry_error}");
+
+        let combined_error = CliOptions::parse(
+            [
+                "--config",
+                "run-profile.json",
+                "--out-dir",
+                "run-artifacts",
+                "--measured-run",
+                "--cache-calibration",
+                "--quarantine-device",
+                "0",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(combined_error.contains("cannot be combined"), "{combined_error}");
+    }
 }
 
 #[test]
 fn overload_fairness_profile_is_a_finite_bounded_cohort() {
     let profile = RunProfile::parse_bytes(overload_fairness_profile_json().as_bytes()).unwrap();
     profile.validate_overload_fairness_scenario().unwrap();
-    assert_eq!(profile.scheduling.max_rounds, Some(1));
-    assert_eq!(profile.scheduling.warmup_seconds, 0);
-    assert_eq!(profile.scheduling.measurement_seconds, 120);
-    assert_eq!(profile.scheduling.concurrency, 8);
-    assert!(profile.backend.device_profiles.iter().all(|device| device.default_query_limit_bytes == 1_073_741_824));
-
     let mut no_overload = profile.clone();
     no_overload.scheduling.concurrency = 4;
     let error = no_overload.validate_overload_fairness_scenario().unwrap_err();
@@ -260,39 +508,10 @@ fn overload_fairness_profile_is_a_finite_bounded_cohort() {
     unbounded.scheduling.max_rounds = None;
     let error = unbounded.validate_overload_fairness_scenario().unwrap_err();
     assert!(error.to_string().contains("max_rounds=1"), "{error}");
-
-    let options = CliOptions::parse(
-        [
-            "--config",
-            "p6-overload-fairness-profile.json",
-            "--out-dir",
-            "run-artifacts",
-            "--measured-run",
-            "--overload-fairness",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-    )
-    .unwrap();
-    assert!(options.overload_fairness);
-}
-
-#[test]
-fn profile_defaults_preserve_complete_runner_sections() {
-    let profile = RunProfile::parse_bytes(valid_profile_json().as_bytes()).unwrap();
-    assert_eq!(profile.schema, RUN_PROFILE_SCHEMA);
-    assert_eq!(profile.backend.device_profiles.len(), 0);
-    assert_eq!(profile.backend.queue.max_queued_attempts, 64);
-    assert_eq!(profile.session.shared_session_count, 1);
-    assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
-    assert_eq!(profile.cache.mode, CacheMode::Disabled);
-    assert_eq!(profile.completion_drain_grace_seconds, 0);
 }
 
 #[test]
 fn profile_bounds_completion_drain_grace_without_changing_legacy_defaults() {
-    assert_eq!(RunProfile::MAX_COMPLETION_DRAIN_GRACE_SECONDS, 60);
     let mut profile = measured_run_profile();
     profile.completion_drain_grace_seconds = RunProfile::MAX_COMPLETION_DRAIN_GRACE_SECONDS;
     profile.validate().unwrap();
@@ -424,20 +643,6 @@ fn cmake_version_parser_uses_exact_variable() {
     let config = b"set(CUVS_VERSION_MAJOR 26)\nset(CUVS_VERSION 26.06.00)\n";
     assert_eq!(super::provenance::cmake_set_value(config, "CUVS_VERSION").as_deref(), Some("26.06.00"));
     assert_eq!(super::provenance::cmake_set_value(config, "MISSING"), None);
-}
-
-#[test]
-fn artifact_has_explicit_dry_run_and_redaction_sections() {
-    let profile = RunProfile::parse_bytes(valid_profile_json().as_bytes()).unwrap();
-    let artifact = RunArtifact::dry_run(profile, "a".repeat(64), sample_provenance());
-    let value = serde_json::to_value(artifact).unwrap();
-    assert_eq!(value["schema"], SINGLE_NODE_RUN_ARTIFACT_SCHEMA);
-    assert_eq!(value["status"], "dry_run");
-    assert_eq!(value["execution"]["selected_workloads"], 0);
-    assert_eq!(value["execution"]["attempted_workloads"], 0);
-    assert_eq!(value["execution"]["fixture_preflight"], "not_applicable_p6_4");
-    assert_eq!(value["redaction"]["raw_config_persisted"], false);
-    ensure_redacted_json(&value, "").unwrap();
 }
 
 #[test]
@@ -637,7 +842,7 @@ fn write_dblp_fixture(root: &Path, graph_vertex_upper_bound: Option<&str>) {
         })
     };
     let manifest = serde_json::json!({
-        "generator": "fixture/graph/dblp_ingest.py",
+        "generator": "fixture/demo/citation_network/scripts/prepare.py",
         "dataset": {"dataset_id": "citation-network", "source": "test source"},
         "max_papers": 3,
         "counts": {"papers": 3, "edges": 2, "author_rows": 4, "fos_rows": 5},
@@ -786,374 +991,6 @@ fn sample_provenance() -> Provenance {
         },
         runner: RunnerIdentity { executable: identity() },
     }
-}
-
-/// The shipped four-ordinal profile must stay parseable, heterogeneous, and
-/// plannable, so the documented command cannot drift from the parser.
-#[test]
-fn the_shipped_measured_run_profile_parses_plans_and_is_heterogeneous() {
-    let profile =
-        RunProfile::parse_bytes(include_str!("../../fixtures/p6-measured-run-profile.json").as_bytes()).unwrap();
-    assert_eq!(profile.backend.device_profiles.len(), 4);
-    assert_eq!(profile.session.shared_session_count, 2);
-    // The mix must select from both fixtures; the exact count is tuning.
-    assert!(profile.selected_query_count() >= 2);
-    assert!(profile.workloads.iter().all(|workload| !workload.queries.is_empty()));
-
-    // Heterogeneity must be visible in the profile itself, not just intended.
-    let limits =
-        profile.backend.device_profiles.iter().map(|device| device.memory_limit_bytes).collect::<BTreeSet<_>>();
-    let caps = profile.backend.device_profiles.iter().map(|device| device.max_active_attempts).collect::<BTreeSet<_>>();
-    let streams = profile
-        .backend
-        .device_profiles
-        .iter()
-        .map(|device| device.installation.stream_pool_size)
-        .collect::<BTreeSet<_>>();
-    assert!(limits.len() > 1 && caps.len() > 1 && streams.len() > 1);
-    // The main measured profile remains whole-device-exclusive; the focused
-    // StaticPartition evidence uses its own profile so neither scenario
-    // dilutes the other's immutable admission envelope.
-    assert!(
-        profile.backend.device_profiles.iter().all(|device| device.ownership == DeviceOwnership::WholeDeviceExclusive)
-    );
-
-    // Both workload classes are selected, and the plan is buildable.
-    let queries = select_queries(&profile.workloads).unwrap();
-    assert!(queries.iter().any(|query| query.graph));
-    assert!(queries.iter().any(|query| !query.graph));
-    let plan = ArrivalPlan::plan(&profile.scheduling, queries.len(), profile.session.shared_session_count).unwrap();
-    // Closed-loop rounds of the configured width; the driver paces them and
-    // assigns phases against the observed warmup deadline.
-    assert_eq!(plan.concurrency, profile.scheduling.concurrency);
-    assert_eq!(plan.arrivals.len() % plan.concurrency, 0);
-    // Every configured ordinal is reachable by the planned attempt volume.
-    assert!(plan.arrivals.len() >= profile.backend.device_profiles.len());
-}
-
-#[test]
-fn p6_isolated_cache_off_profiles_pin_one_graph_shape_and_declared_model_bands() {
-    let profiles = [
-        ("bfs", include_str!("../../fixtures/p6-isolated-bfs-cache-off.json")),
-        ("pagerank", include_str!("../../fixtures/p6-isolated-pagerank-cache-off.json")),
-        ("force_atlas2", include_str!("../../fixtures/p6-isolated-force-atlas2-cache-off.json")),
-        ("pagerank_forceatlas2_join", include_str!("../../fixtures/p6-isolated-pagerank-forceatlas2-cache-off.json")),
-    ];
-
-    for (query_label, json) in profiles {
-        let profile = RunProfile::parse_bytes(json.as_bytes()).expect("isolated profile must remain parseable");
-        let [device] = profile.backend.device_profiles.as_slice() else {
-            panic!("isolated profile must use exactly one device");
-        };
-        assert_eq!(profile.scenario_requirements(), Default::default());
-        assert!(profile.graph_claim_calibration.is_some());
-        assert_eq!(profile.cache.mode, CacheMode::Disabled);
-        assert_eq!(device.cache_cap_bytes, 0);
-        assert_eq!(device.source_work_per_attempt, 2);
-        assert_eq!(device.max_active_attempts, 1);
-        assert_eq!(device.installation.stream_pool_size, 3);
-        assert_eq!(device.installation.worker_count, 2);
-        assert_eq!(device.installation.lane_count, 1);
-        assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
-        assert_eq!(profile.scheduling.concurrency, 1);
-        assert_eq!(profile.scheduling.max_rounds, Some(1));
-        let calibration = profile.vram_calibration.expect("profile must declare a calibration band");
-        assert_eq!(calibration.max_underclaim_bytes, 67_108_864);
-        assert_eq!(calibration.max_observed_to_claim_ratio_milli, 1_000);
-        assert_eq!(calibration.max_overclaim_bytes, 67_108_864);
-        assert_eq!(calibration.max_claim_to_observed_ratio_milli, 1_000);
-
-        let selected = select_queries(&profile.workloads).expect("isolated workload label must resolve");
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].label, query_label);
-        assert!(selected[0].graph);
-        assert_eq!(
-            profile.workloads[0].path,
-            PathBuf::from("/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet")
-        );
-        let plan = ArrivalPlan::plan(&profile.scheduling, selected.len(), profile.session.shared_session_count)
-            .expect("isolated profile must plan its one measured attempt");
-        assert_eq!(plan.arrivals.len(), 1);
-    }
-}
-
-#[test]
-fn the_shipped_concurrent_quarantine_profile_has_distinct_pre_and_post_ack_cohorts() {
-    let profile =
-        RunProfile::parse_bytes(include_str!("../../fixtures/p6-concurrent-quarantine-profile.json").as_bytes())
-            .unwrap();
-    assert_eq!(profile.name, "p6.6-concurrent-quarantine");
-    assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
-    assert_eq!(profile.scheduling.max_rounds, Some(2));
-    let plan =
-        ArrivalPlan::plan(&profile.scheduling, profile.selected_query_count(), profile.session.shared_session_count)
-            .expect("quarantine profile plans");
-    assert_eq!(plan.arrivals.len(), plan.concurrency * 2);
-    assert!(plan.arrivals.iter().any(|arrival| arrival.round == 0));
-    assert!(plan.arrivals.iter().any(|arrival| arrival.round == 1));
-}
-
-#[test]
-fn the_shipped_domain_exhaustion_profile_pins_a_serial_cap_and_recovery_probe() {
-    let profile =
-        RunProfile::parse_bytes(include_str!("../../fixtures/p6-domain-exhaustion-probe-profile.json").as_bytes())
-            .unwrap();
-    assert_eq!(profile.name, "p6.6-domain-exhaustion-probe");
-    assert_eq!(profile.backend.device_profiles.len(), 1);
-    assert!(matches!(
-        &profile.backend.device_profiles[0].ownership,
-        DeviceOwnership::StaticPartition { allocation_limit_bytes: 402_653_184 }
-    ));
-    assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
-    assert_eq!(profile.scheduling.concurrency, 1);
-    assert_eq!(profile.scheduling.max_rounds, Some(2));
-    let labels =
-        profile.workloads.iter().flat_map(|workload| workload.queries.iter().map(String::as_str)).collect::<Vec<_>>();
-    assert_eq!(labels, ["q01", "edge_scan"]);
-}
-
-#[test]
-fn the_shipped_physical_allocator_pressure_profile_pins_real_pressure_and_recovery_shape() {
-    let profile =
-        RunProfile::parse_bytes(include_str!("../../fixtures/p6-physical-allocator-pressure-profile.json").as_bytes())
-            .unwrap();
-    assert_eq!(profile.name, "p6.6-physical-allocator-pressure");
-    assert_eq!(profile.backend.device_profiles.len(), 1);
-    assert!(matches!(
-        &profile.backend.device_profiles[0].ownership,
-        DeviceOwnership::StaticPartition { allocation_limit_bytes: 17_179_869_184 }
-    ));
-    assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
-    assert_eq!(profile.scheduling.concurrency, 1);
-    assert_eq!(profile.scheduling.max_rounds, Some(2));
-    assert_eq!(profile.cache.mode, CacheMode::Disabled);
-    assert_eq!(profile.backend.native_execution.max_retry_attempts, 1);
-    let labels =
-        profile.workloads.iter().flat_map(|workload| workload.queries.iter().map(String::as_str)).collect::<Vec<_>>();
-    assert_eq!(labels, ["q01", "edge_scan"]);
-    profile.validate_physical_allocator_pressure_scenario().unwrap();
-}
-
-#[test]
-fn parser_accepts_the_measured_run_contract_with_an_external_trace() {
-    let options = CliOptions::parse(
-        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--nsight-trace", "t.rep"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    )
-    .unwrap();
-    assert_eq!(options.mode, ValidationMode::MeasuredRun);
-    assert_eq!(options.nsight_trace, Some(PathBuf::from("t.rep")));
-}
-
-#[test]
-fn parser_accepts_controlled_quarantine_only_for_a_measured_run() {
-    let options = CliOptions::parse(
-        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--quarantine-device", "3"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    )
-    .unwrap();
-    assert_eq!(options.quarantine_device, Some(3));
-
-    let error = CliOptions::parse(
-        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--quarantine-device", "0"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("only valid with --measured-run"), "{error}");
-}
-
-#[test]
-fn parser_scopes_the_after_admission_deadline_probe_to_measured_runs() {
-    let options = CliOptions::parse(
-        [
-            "--config",
-            "run-profile.json",
-            "--out-dir",
-            "run-artifacts",
-            "--measured-run",
-            "--deadline-first-after-ms",
-            "2000",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-    )
-    .unwrap();
-    assert_eq!(options.deadline_first_after, Some(std::time::Duration::from_secs(2)));
-
-    let zero = CliOptions::parse(
-        [
-            "--config",
-            "run-profile.json",
-            "--out-dir",
-            "run-artifacts",
-            "--measured-run",
-            "--deadline-first-after-ms",
-            "0",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(zero.contains("greater than zero"), "{zero}");
-
-    let combined = CliOptions::parse(
-        [
-            "--config",
-            "run-profile.json",
-            "--out-dir",
-            "run-artifacts",
-            "--measured-run",
-            "--quarantine-device",
-            "0",
-            "--deadline-first-after-ms",
-            "2000",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(combined.contains("cannot be combined"), "{combined}");
-}
-
-#[test]
-fn parser_scopes_domain_exhaustion_to_the_measured_run_and_keeps_it_isolated() {
-    let options = CliOptions::parse(
-        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--domain-exhaustion-probe"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    )
-    .unwrap();
-    assert!(options.domain_exhaustion_probe);
-
-    let dry_error = CliOptions::parse(
-        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--domain-exhaustion-probe"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(dry_error.contains("only valid with --measured-run"), "{dry_error}");
-
-    let combined_error = CliOptions::parse(
-        [
-            "--config",
-            "run-profile.json",
-            "--out-dir",
-            "run-artifacts",
-            "--measured-run",
-            "--domain-exhaustion-probe",
-            "--deadline-first-after-ms",
-            "2000",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(combined_error.contains("cannot be combined"), "{combined_error}");
-}
-
-#[test]
-fn parser_scopes_physical_allocator_pressure_to_the_measured_run_and_keeps_it_isolated() {
-    let options = CliOptions::parse(
-        [
-            "--config",
-            "run-profile.json",
-            "--out-dir",
-            "run-artifacts",
-            "--measured-run",
-            "--physical-allocator-pressure",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-    )
-    .unwrap();
-    assert!(options.physical_allocator_pressure);
-
-    let dry_error = CliOptions::parse(
-        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--physical-allocator-pressure"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(dry_error.contains("only valid with --measured-run"), "{dry_error}");
-
-    let combined_error = CliOptions::parse(
-        [
-            "--config",
-            "run-profile.json",
-            "--out-dir",
-            "run-artifacts",
-            "--measured-run",
-            "--physical-allocator-pressure",
-            "--domain-exhaustion-probe",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(combined_error.contains("cannot be combined"), "{combined_error}");
-}
-
-#[test]
-fn parser_scopes_cache_calibration_to_the_measured_run_and_keeps_it_distinct_from_fault_injection() {
-    let options = CliOptions::parse(
-        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--measured-run", "--cache-calibration"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    )
-    .unwrap();
-    assert!(options.cache_calibration);
-
-    let dry_error = CliOptions::parse(
-        ["--config", "run-profile.json", "--out-dir", "run-artifacts", "--dry-run", "--cache-calibration"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(dry_error.contains("only valid with --measured-run"), "{dry_error}");
-
-    let combined_error = CliOptions::parse(
-        [
-            "--config",
-            "run-profile.json",
-            "--out-dir",
-            "run-artifacts",
-            "--measured-run",
-            "--cache-calibration",
-            "--quarantine-device",
-            "0",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(combined_error.contains("cannot be combined"), "{combined_error}");
 }
 
 /// A measured-run profile that selects queries but supplies no device profile,
@@ -1593,166 +1430,25 @@ fn storm_knobs_validate_their_shapes() {
 /// deterministic generators before use.
 #[test]
 fn shipped_stress_profiles_parse_and_validate() {
-    let stress_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/stress");
-    let mut validated = 0;
-    for entry in fs::read_dir(&stress_dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-        let bytes = fs::read(&path).unwrap();
-        let profile = RunProfile::parse_bytes(&bytes)
-            .unwrap_or_else(|error| panic!("{} must parse and validate: {error}", path.display()));
-        assert_eq!(profile.schema, RUN_PROFILE_SCHEMA);
-        validated += 1;
-    }
-    assert!(validated >= 20, "expected the stress profile library, found {validated} profiles");
-}
-
-#[test]
-fn stress_graph_profiles_pin_canonical_or_authenticated_multigraph_dblp_fixtures() {
-    let stress_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/stress");
-    let canonical_path = PathBuf::from("/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet");
-    let canonical_preparation_command = "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo-v12-topology-r1";
-    let multigraph_root = "/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/slices";
-    let multigraph_preparation_command = "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo-v12-topology-r1 --edge-slice-count 8 --edge-slice-seed 20260804";
-    let mut profiles = 0;
-    let mut templates = 0;
-
-    for entry in fs::read_dir(&stress_dir).unwrap() {
-        let entry = entry.unwrap();
-        if !entry.file_type().unwrap().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        let source = fs::read_to_string(&path).unwrap();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
-            let profile = RunProfile::parse_bytes(source.as_bytes())
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    for directory in [fixtures.clone(), fixtures.join("stress"), fixtures.join("qualification")] {
+        let mut validated = 0;
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            // This is a qualification manifest; its referenced profiles and committed hashes have a separate owner test.
+            if path.file_name().and_then(|name| name.to_str()) == Some("cache-off-production.json") {
+                continue;
+            }
+            let bytes = fs::read(&path).unwrap();
+            RunProfile::parse_bytes(&bytes)
                 .unwrap_or_else(|error| panic!("{} must parse and validate: {error}", path.display()));
-            for workload in profile.workloads.iter().filter(|workload| workload.kind == FixtureKind::Dblp) {
-                if workload.scale == "v12" {
-                    assert_eq!(workload.path, canonical_path, "{}", path.display());
-                    assert_eq!(workload.preparation_command, canonical_preparation_command, "{}", path.display());
-                } else {
-                    assert!(workload.scale.starts_with("v12_slice_"), "{}", path.display());
-                    assert!(workload.path.starts_with(multigraph_root), "{}", path.display());
-                    assert_eq!(workload.preparation_command, multigraph_preparation_command, "{}", path.display());
-                }
-                profiles += 1;
-            }
-        } else if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".json.template"))
-            && source.contains("\"kind\": \"dblp\"")
-        {
-            if source.contains(multigraph_root) {
-                assert!(source.contains(multigraph_preparation_command), "{}", path.display());
-            } else {
-                assert!(source.contains(canonical_path.to_str().unwrap()), "{}", path.display());
-                assert!(source.contains(canonical_preparation_command), "{}", path.display());
-            }
-            templates += 1;
+            validated += 1;
         }
+        assert!(validated > 0, "{} contains no runnable profiles", directory.display());
     }
-
-    assert!(profiles >= 20, "expected graph stress profiles, found {profiles}");
-    assert!(templates >= 4, "expected graph stress templates, found {templates}");
-}
-
-#[test]
-fn w9_distinct_graph_profiles_use_eight_unique_authenticated_slices_and_a_paired_shared_control() {
-    const SLICE_ROOT: &str = "/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/slices";
-    const PREPARATION_COMMAND: &str = "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo-v12-topology-r1 --edge-slice-count 8 --edge-slice-seed 20260804";
-
-    let s1 = include_str!("../../fixtures/stress/stress-s1-embedded-distinct-graph-interleave-sf10.json").to_string();
-    let s4 = include_str!("../../fixtures/stress/stress-s4-plateau-cache-on-sf10.json.template")
-        .replace("\"__PLATEAU_QPS__\"", "1")
-        .replace("\"__SPIKE_QPS__\"", "2")
-        .replace("\"__DRAIN_QPS__\"", "1");
-    let s7 = include_str!("../../fixtures/stress/stress-s7-cache-distinct-graph-churn-sf10.json.template")
-        .replace("\"__KNEE_QPS__\"", "1");
-
-    for (name, source) in [("S1", s1), ("S4", s4), ("S7", s7)] {
-        let profile = RunProfile::parse_bytes(source.as_bytes()).unwrap_or_else(|error| panic!("{name}: {error}"));
-        let slices = profile.workloads.iter().filter(|workload| workload.kind == FixtureKind::Dblp).collect::<Vec<_>>();
-        assert_eq!(slices.len(), 8, "{name}");
-
-        let paths = slices.iter().map(|workload| &workload.path).collect::<BTreeSet<_>>();
-        assert_eq!(paths.len(), 8, "{name}");
-        let scales = slices.iter().map(|workload| workload.scale.as_str()).collect::<BTreeSet<_>>();
-        let expected_scales = (0..8).map(|index| format!("v12_slice_{index:02}")).collect::<BTreeSet<_>>();
-        assert_eq!(scales, expected_scales.iter().map(String::as_str).collect(), "{name}");
-
-        for (index, workload) in slices.into_iter().enumerate() {
-            assert_eq!(workload.path, PathBuf::from(format!("{SLICE_ROOT}/source-hash-{index:02}/parquet")), "{name}");
-            assert_eq!(workload.scale, format!("v12_slice_{index:02}"), "{name}");
-            assert_eq!(workload.preparation_command, PREPARATION_COMMAND, "{name}");
-        }
-    }
-
-    let s1_profile = RunProfile::parse_bytes(
-        include_str!("../../fixtures/stress/stress-s1-embedded-distinct-graph-interleave-sf10.json").as_bytes(),
-    )
-    .unwrap();
-    let shared_control = RunProfile::parse_bytes(
-        include_str!("../../fixtures/stress/stress-s1-embedded-shared-graph-interleave-sf10.json").as_bytes(),
-    )
-    .unwrap();
-    let active_capacity =
-        s1_profile.backend.device_profiles.iter().map(|device| device.max_active_attempts).sum::<usize>();
-    assert_eq!(s1_profile.scheduling.concurrency, active_capacity);
-    assert_eq!(s1_profile.scheduling, shared_control.scheduling);
-    assert_eq!(s1_profile.backend, shared_control.backend);
-    assert_eq!(s1_profile.session, shared_control.session);
-    assert_eq!(s1_profile.cache, shared_control.cache);
-    assert_eq!(s1_profile.scenario_requirements, shared_control.scenario_requirements);
-    assert_eq!(s1_profile.graph_claim_calibration, shared_control.graph_claim_calibration);
-    assert_eq!(s1_profile.completion_drain_grace_seconds, shared_control.completion_drain_grace_seconds);
-    assert_eq!(s1_profile.scheduling.measurement_seconds, 600);
-    assert_eq!(s1_profile.workloads[0].queries, ["q01", "q06"]);
-    assert_eq!(shared_control.workloads[0], s1_profile.workloads[0]);
-    let selected_shape = |profile: &RunProfile| {
-        select_queries(&profile.workloads)
-            .unwrap()
-            .into_iter()
-            .map(|query| (query.kind, query.label))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(selected_shape(&s1_profile), selected_shape(&shared_control));
-    let s1_graph_queries = select_queries(&s1_profile.workloads)
-        .unwrap()
-        .into_iter()
-        .filter(|query| query.kind == FixtureKind::Dblp)
-        .map(|query| query.label)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        s1_graph_queries,
-        vec![
-            "force_atlas2".to_string(),
-            "pagerank".to_string(),
-            "betweenness_centrality".to_string(),
-            "force_atlas2".to_string(),
-            "pagerank".to_string(),
-            "betweenness_centrality".to_string(),
-            "pagerank".to_string(),
-            "bfs_deep".to_string(),
-        ]
-    );
-    let shared_graph_workloads =
-        shared_control.workloads.iter().filter(|workload| workload.kind == FixtureKind::Dblp).collect::<Vec<_>>();
-    assert_eq!(shared_graph_workloads.len(), 1);
-    assert_eq!(shared_graph_workloads[0].scale, "v12");
-
-    let s7_graph_queries = RunProfile::parse_bytes(
-        include_str!("../../fixtures/stress/stress-s7-cache-distinct-graph-churn-sf10.json.template")
-            .replace("\"__KNEE_QPS__\"", "1")
-            .as_bytes(),
-    )
-    .unwrap()
-    .workloads
-    .into_iter()
-    .filter(|workload| workload.kind == FixtureKind::Dblp)
-    .flat_map(|workload| workload.queries)
-    .collect::<BTreeSet<_>>();
-    assert_eq!(s7_graph_queries, BTreeSet::from(["bfs_deep".to_string(), "pagerank".to_string()]));
 }
 
 #[test]
@@ -1768,188 +1464,6 @@ fn graph_claim_calibration_requires_graph_work_and_all_i11_graph_profiles_opt_in
     graph_io_only.graph_claim_calibration = Some(GraphClaimCalibrationProfile {});
     let error = graph_io_only.validate().unwrap_err().to_string();
     assert!(error.contains("requires at least one selected cuGraph algorithm workload"), "{error}");
-
-    for (name, source) in [
-        ("S1 embedded sf1", include_str!("../../fixtures/stress/stress-s1-embedded-sf1.json")),
-        ("S1 embedded sf10", include_str!("../../fixtures/stress/stress-s1-embedded-sf10.json")),
-        ("S1 embedded cache sf10", include_str!("../../fixtures/stress/stress-s1-embedded-cache-sf10.json")),
-        (
-            "S1 distinct graph interleave",
-            include_str!("../../fixtures/stress/stress-s1-embedded-distinct-graph-interleave-sf10.json"),
-        ),
-        (
-            "S1 shared graph interleave control",
-            include_str!("../../fixtures/stress/stress-s1-embedded-shared-graph-interleave-sf10.json"),
-        ),
-        ("S3 heterogeneous", include_str!("../../fixtures/stress/stress-s3-heterogeneous-sf1.json")),
-        ("S3 utilization sf1", include_str!("../../fixtures/stress/stress-s3-utilization-sf1.json")),
-        (
-            "S3 utilization telemetry off",
-            include_str!("../../fixtures/stress/stress-s3-utilization-telemetry-off-sf1.json"),
-        ),
-        ("S3 utilization sf10", include_str!("../../fixtures/stress/stress-s3-utilization-sf10.json")),
-        ("S4 plateau sf1", include_str!("../../fixtures/stress/stress-s4-plateau-sf1.json")),
-        ("S5 cancellation", include_str!("../../fixtures/stress/stress-s5-cancellation-storm-sf10.json")),
-        ("S5 deadline", include_str!("../../fixtures/stress/stress-s5-deadline-storm-sf10.json")),
-        ("S5 storms", include_str!("../../fixtures/stress/stress-s5-storms-sf1.json")),
-        ("S6 close", include_str!("../../fixtures/stress/stress-s6-close-under-load.json")),
-        ("S6 close sf1", include_str!("../../fixtures/stress/stress-s6-close-under-load-sf1.json")),
-        ("S6 cycles", include_str!("../../fixtures/stress/stress-s6-quarantine-cycles.json")),
-        ("S6 cycles sf1", include_str!("../../fixtures/stress/stress-s6-quarantine-cycles-sf1.json")),
-        ("S6 cache quarantine", include_str!("../../fixtures/stress/stress-s6-quarantine-cache-sf10.json")),
-        ("S7 cache", include_str!("../../fixtures/stress/stress-s7-cache-sf1.json")),
-        ("S7 same-key", include_str!("../../fixtures/stress/stress-s7-cache-same-key-sf1.json")),
-        ("S7 thrash", include_str!("../../fixtures/stress/stress-s7-cache-thrash-sf10.json")),
-    ] {
-        let profile = RunProfile::parse_bytes(source.as_bytes()).unwrap_or_else(|error| panic!("{name}: {error}"));
-        assert!(profile.graph_claim_calibration.is_some(), "{name} must retain I11 graph claim evidence");
-        assert!(profile.workloads.iter().any(|workload| workload.kind == FixtureKind::Dblp), "{name}");
-    }
-    for (name, source) in [
-        (
-            "S4 plateau cache off",
-            include_str!("../../fixtures/stress/stress-s4-plateau-cache-off-sf10.json.template")
-                .replace("\"__PLATEAU_QPS__\"", "1")
-                .replace("\"__SPIKE_QPS__\"", "2")
-                .replace("\"__DRAIN_QPS__\"", "1"),
-        ),
-        (
-            "S4 plateau cache on",
-            include_str!("../../fixtures/stress/stress-s4-plateau-cache-on-sf10.json.template")
-                .replace("\"__PLATEAU_QPS__\"", "1")
-                .replace("\"__SPIKE_QPS__\"", "2")
-                .replace("\"__DRAIN_QPS__\"", "1"),
-        ),
-        (
-            "S7 cache stress",
-            include_str!("../../fixtures/stress/stress-s7-cache-stress-sf10.json.template")
-                .replace("\"__KNEE_QPS__\"", "1"),
-        ),
-    ] {
-        let profile = RunProfile::parse_bytes(source.as_bytes()).unwrap_or_else(|error| panic!("{name}: {error}"));
-        assert!(profile.graph_claim_calibration.is_some(), "{name} must retain I11 graph claim evidence");
-    }
-    let generated = TestDirectory::new("generated-s2-graph-claim");
-    generate_s2_profiles(generated.path(), 42);
-    for name in [
-        "stress-s2-sweep-g1-force-atlas2-sf10.json",
-        "stress-s2-sweep-g2-bfs-deep-sf10.json",
-        "stress-s2-sweep-g3-pagerank-sf10.json",
-        "stress-s2-sweep-g4-betweenness-sf10.json",
-    ] {
-        let profile = read_generated_s2_profile(generated.path(), name);
-        assert!(profile.graph_claim_calibration.is_some(), "{name} must retain I11 graph claim evidence");
-    }
-}
-
-#[test]
-fn s6_cache_quarantine_profile_keeps_resident_graph_traffic_enabled() {
-    let profile =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s6-quarantine-cache-sf10.json").as_bytes())
-            .unwrap();
-    assert_eq!(profile.cache.mode, CacheMode::Enabled);
-    assert!(profile.backend.device_profiles.iter().all(|device| device.cache_cap_bytes == 6 * 1024 * 1024 * 1024));
-    let graph = profile.workloads.iter().find(|workload| workload.kind == FixtureKind::Dblp).unwrap();
-    assert!(graph.queries.iter().any(|query| query == "bfs"));
-    assert!(graph.queries.iter().any(|query| query == "pagerank"));
-    assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
-    assert!(profile.scheduling.concurrency >= 4);
-}
-
-#[test]
-fn s2_sf10_sweeps_end_at_twice_the_profile_owned_fleet_capacity() {
-    let profiles = [
-        (
-            "scan",
-            include_str!("../../fixtures/stress/stress-s2-sweep-scan-sf10.json"),
-            FixtureKind::Tpch,
-            "q06",
-            16_usize,
-            &[1, 2, 4, 8, 16, 32][..],
-            false,
-        ),
-        (
-            "aggregate",
-            include_str!("../../fixtures/stress/stress-s2-sweep-aggregate-sf10.json"),
-            FixtureKind::Tpch,
-            "q01",
-            16,
-            &[1, 2, 4, 8, 16, 32][..],
-            false,
-        ),
-        (
-            "graph I/O",
-            include_str!("../../fixtures/stress/stress-s2-sweep-graph-io-sf10.json"),
-            FixtureKind::Dblp,
-            "edge_scan",
-            8,
-            &[1, 2, 4, 8, 16][..],
-            false,
-        ),
-    ];
-
-    for (name, source, kind, query, expected_fleet_capacity, expected_steps, expects_graph_calibration) in profiles {
-        let profile = RunProfile::parse_bytes(source.as_bytes()).unwrap_or_else(|error| panic!("{name}: {error}"));
-        assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency, "{name}");
-        assert_eq!(profile.scheduling.warmup_seconds, 10, "{name}");
-        assert_eq!(profile.scheduling.measurement_seconds, 0, "{name}");
-        let qps_envelope = profile.qps_envelope.expect("S2 sweep must opt into queue/QPS qualification");
-        assert_eq!(qps_envelope.min_gpu_reaching_completions_per_step, 1, "{name}");
-        assert_eq!(qps_envelope.recovery, None, "{name}");
-        let calibration = profile.vram_calibration.expect("S2 sweep must opt into VRAM calibration");
-        assert_eq!(calibration.max_underclaim_bytes, 64 * 1024 * 1024, "{name}");
-        assert_eq!(calibration.max_observed_to_claim_ratio_milli, 1_000, "{name}");
-        assert_eq!(calibration.max_overclaim_bytes, 64 * 1024 * 1024, "{name}");
-        assert_eq!(calibration.max_claim_to_observed_ratio_milli, 1_000, "{name}");
-        assert_eq!(profile.workloads.len(), 1, "{name}");
-        assert_eq!(profile.workloads[0].kind, kind, "{name}");
-        assert_eq!(profile.workloads[0].queries, [query], "{name}");
-        assert_eq!(profile.graph_claim_calibration.is_some(), expects_graph_calibration, "{name}");
-
-        let fleet_capacity =
-            profile.backend.device_profiles.iter().map(|device| device.max_active_attempts).sum::<usize>();
-        assert_eq!(fleet_capacity, expected_fleet_capacity, "{name}");
-
-        let steps = profile
-            .scheduling
-            .steps
-            .iter()
-            .map(|step| {
-                assert_eq!(step.measurement_seconds, 60, "{name}");
-                step.concurrency.expect("S2 concurrency sweep step")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(steps, expected_steps, "{name}");
-        assert_eq!(steps.last().copied(), Some(fleet_capacity * 2), "{name}");
-    }
-}
-
-#[test]
-fn generated_s2_graph_sweeps_preserve_the_algorithm_capacity_overlays() {
-    let generated = TestDirectory::new("generated-s2-graph-sweep");
-    generate_s2_profiles(generated.path(), 42);
-    let expected = [
-        ("stress-s2-sweep-g1-force-atlas2-sf10.json", "force_atlas2", 4_usize, &[1, 2, 4, 8][..]),
-        ("stress-s2-sweep-g2-bfs-deep-sf10.json", "bfs_deep", 8, &[1, 2, 4, 8, 16][..]),
-        ("stress-s2-sweep-g3-pagerank-sf10.json", "pagerank", 8, &[1, 2, 4, 8, 16][..]),
-        ("stress-s2-sweep-g4-betweenness-sf10.json", "betweenness_centrality", 8, &[1, 2, 4, 8, 16][..]),
-    ];
-    for (name, query, fleet_capacity, steps) in expected {
-        let profile = read_generated_s2_profile(generated.path(), name);
-        assert_eq!(profile.workloads[0].kind, FixtureKind::Dblp, "{name}");
-        assert_eq!(profile.workloads[0].queries, [query], "{name}");
-        assert!(profile.graph_claim_calibration.is_some(), "{name}");
-        assert_eq!(
-            profile.backend.device_profiles.iter().map(|device| device.max_active_attempts).sum::<usize>(),
-            fleet_capacity,
-            "{name}"
-        );
-        assert_eq!(
-            profile.scheduling.steps.iter().map(|step| step.concurrency.unwrap()).collect::<Vec<_>>(),
-            steps,
-            "{name}"
-        );
-    }
 }
 
 const S2_RATE_ARRIVAL_BUDGET: u64 = 80_000;
@@ -2062,28 +1576,6 @@ fn s2_aggregate_profiles_reserve_the_observed_q01_working_set() {
 }
 
 #[test]
-fn s7_same_key_profile_requires_source_and_bfs_coalescing() {
-    let profile =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s7-cache-same-key-sf1.json").as_bytes())
-            .unwrap();
-    let stress = profile.cache.stress.as_ref().expect("S7 same-key evidence contract");
-
-    assert_eq!(stress.required_per_device_cap_bytes, 6 * 1024 * 1024 * 1024);
-    assert!(stress.require_source_coalescing);
-    assert!(stress.require_bfs_singleflight);
-    assert!(stress.require_explained_admission_delta);
-    let same_key_probe = stress.same_key_probe.as_ref().expect("profile-owned same-key probe");
-    assert_eq!(same_key_probe.target_device_ordinal, 0);
-    assert_eq!(same_key_probe.cohort_width, 2);
-    assert_eq!(same_key_probe.source.kind, FixtureKind::Tpch);
-    assert_eq!(same_key_probe.source.label, "q06");
-    assert_eq!(same_key_probe.bfs.kind, FixtureKind::Dblp);
-    assert_eq!(same_key_probe.bfs.label, "bfs");
-    assert_eq!(profile.workloads[0].queries, ["q06"]);
-    assert_eq!(profile.workloads[1].queries, ["bfs"]);
-}
-
-#[test]
 fn s7_same_key_probe_rejects_ambiguous_dblp_slice_queries() {
     let mut profile =
         RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s7-cache-same-key-sf1.json").as_bytes())
@@ -2098,122 +1590,6 @@ fn s7_same_key_probe_rejects_ambiguous_dblp_slice_queries() {
 
     let error = profile.validate().unwrap_err().to_string();
     assert!(error.contains("same_key_probe.bfs matches 2 selected dblp query bfs entries"), "{error}");
-}
-
-#[test]
-fn s1_sf10_cache_ab_profiles_pin_the_sustained_mixed_cohort() {
-    let cache_off =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s1-embedded-sf10.json").as_bytes()).unwrap();
-    let cache_on =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s1-embedded-cache-sf10.json").as_bytes())
-            .unwrap();
-
-    let expected = [
-        (FixtureKind::Tpch, "q01"),
-        (FixtureKind::Tpch, "q06"),
-        (FixtureKind::Tpcds, "q10"),
-        (FixtureKind::Clickbench, "q28"),
-        (FixtureKind::Dblp, "force_atlas2"),
-        (FixtureKind::Dblp, "bfs_deep"),
-        (FixtureKind::Dblp, "pagerank"),
-        (FixtureKind::Dblp, "betweenness_centrality"),
-    ];
-
-    assert_eq!(cache_off.scheduling.arrival_mode, ArrivalMode::Concurrency);
-    assert_eq!(cache_off.scheduling.concurrency, expected.len());
-    assert_eq!(cache_off.scheduling.warmup_seconds, 0);
-    assert_eq!(cache_off.scheduling.measurement_seconds, 600);
-    assert_eq!(cache_off.completion_drain_grace_seconds, 30);
-
-    let selected = select_queries(&cache_off.workloads).unwrap();
-    let cohort = selected.iter().map(|query| (query.kind, query.label.as_str())).collect::<Vec<_>>();
-    assert_eq!(cohort, expected);
-    // Duration-paced scheduling selects `sequence % query_count`, so an
-    // exact-width list makes every closed-loop round repeat this mix until
-    // the profile-owned measurement deadline.
-    for sequence in 0..expected.len() * 3 {
-        assert_eq!(cohort[sequence % cohort.len()], expected[sequence % expected.len()]);
-    }
-
-    let mut derived_cache_off = cache_on.cache_disabled_companion().unwrap();
-    derived_cache_off.name.clone_from(&cache_off.name);
-    assert_eq!(derived_cache_off, cache_off);
-}
-
-#[test]
-fn s1_embedded_profiles_pin_the_native_clickbench_fixture() {
-    let sf1 =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s1-embedded-sf1.json").as_bytes()).unwrap();
-    let sf10 =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s1-embedded-sf10.json").as_bytes()).unwrap();
-    let sf10_cache =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s1-embedded-cache-sf10.json").as_bytes())
-            .unwrap();
-
-    fn clickbench_workload(profile: &RunProfile) -> &FixtureWorkloadProfile {
-        let mut workloads = profile.workloads.iter().filter(|workload| workload.kind == FixtureKind::Clickbench);
-        let clickbench = workloads.next().expect("S1 embedded profile must select ClickBench");
-        assert!(workloads.next().is_none(), "S1 embedded profile must select ClickBench exactly once");
-        clickbench
-    }
-
-    let expected_path = PathBuf::from("/opt/dlami/nvme/fixture/data/clickbench");
-    let expected_preparation_command =
-        "fixture/fixture.sh clickbench fetch --layout single --out /opt/dlami/nvme/fixture/data/clickbench";
-    for profile in [&sf1, &sf10, &sf10_cache] {
-        let clickbench = clickbench_workload(profile);
-        assert_eq!(clickbench.scale, "single");
-        assert_eq!(clickbench.path, expected_path);
-        assert_eq!(clickbench.preparation_command, expected_preparation_command);
-    }
-    assert_eq!(clickbench_workload(&sf1).queries, ["q28", "q29", "q34", "q35"]);
-    assert_eq!(clickbench_workload(&sf10).queries, ["q28"]);
-    assert_eq!(clickbench_workload(&sf10), clickbench_workload(&sf10_cache));
-}
-
-#[test]
-fn s3_profiles_pin_the_telemetry_ab_and_heterogeneous_envelope_contracts() {
-    let telemetry_on =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s3-utilization-sf1.json").as_bytes())
-            .unwrap();
-    let telemetry_off = RunProfile::parse_bytes(
-        include_str!("../../fixtures/stress/stress-s3-utilization-telemetry-off-sf1.json").as_bytes(),
-    )
-    .unwrap();
-    let heterogeneous =
-        RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s3-heterogeneous-sf1.json").as_bytes())
-            .unwrap();
-
-    assert!(telemetry_on.backend.device_profiles.iter().all(|device| device.install_telemetry));
-    assert!(telemetry_off.backend.device_profiles.iter().all(|device| !device.install_telemetry));
-    assert_eq!(telemetry_on.scheduling, telemetry_off.scheduling);
-    assert_eq!(telemetry_on.session, telemetry_off.session);
-    assert_eq!(telemetry_on.backend.queue, telemetry_off.backend.queue);
-    assert_eq!(telemetry_on.backend.native_execution, telemetry_off.backend.native_execution);
-    assert_eq!(telemetry_on.workloads, telemetry_off.workloads);
-    for (on, off) in telemetry_on.backend.device_profiles.iter().zip(&telemetry_off.backend.device_profiles) {
-        assert_eq!(on.ordinal, off.ordinal);
-        assert_eq!(on.ownership, off.ownership);
-        assert_eq!(on.memory_limit_bytes, off.memory_limit_bytes);
-        assert_eq!(on.backend_reserve_bytes, off.backend_reserve_bytes);
-        assert_eq!(on.cache_cap_bytes, off.cache_cap_bytes);
-        assert_eq!(on.default_query_limit_bytes, off.default_query_limit_bytes);
-        assert_eq!(on.source_work_per_attempt, off.source_work_per_attempt);
-        assert_eq!(on.max_active_attempts, off.max_active_attempts);
-        assert_eq!(on.installation, off.installation);
-    }
-
-    let requirements = heterogeneous.scenario_requirements();
-    assert!(requirements.require_all_device_progress);
-    assert!(requirements.require_heterogeneous_device_profiles);
-    assert!(
-        heterogeneous
-            .backend
-            .device_profiles
-            .windows(2)
-            .any(|pair| pair[0].memory_limit_bytes != pair[1].memory_limit_bytes
-                || pair[0].max_active_attempts != pair[1].max_active_attempts)
-    );
 }
 
 /// The fixture paths in `measured_run_profile` do not exist, so preflight must

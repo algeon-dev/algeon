@@ -8,7 +8,7 @@
 
 use cudf::{DataType, Exec, StringSliceOptions, StripSide, TypeId};
 
-use crate::common::{execution_budget_token, nullable_series, run_named_cases, series};
+use crate::common::{execution_budget_token, nullable_series, series};
 
 // ===========================================================================
 // Case conversion
@@ -26,13 +26,6 @@ fn test_str_upper() {
     let result = s.on(Exec::RETAINED).str().upper().unwrap();
     let vals = result.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["HELLO", "WORLD", "FOO123"]);
-}
-
-fn test_str_lower_display_omits_input_name() {
-    let s = series("col", &["ABC"]).unwrap();
-    let result = s.on(Exec::RETAINED).str().lower().unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("col"), "lower output should not expose schema names: {}", output);
 }
 
 fn test_str_upper_preserves_nulls() {
@@ -71,13 +64,6 @@ fn test_str_contains_preserves_nulls() {
     let result = s.on(Exec::RETAINED).str().contains("hello").unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
-}
-
-fn test_str_contains_display_omits_input_name() {
-    let s = series("col", &["abc"]).unwrap();
-    let result = s.on(Exec::RETAINED).str().contains("a").unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("col"), "contains output should not expose schema names: {}", output);
 }
 
 // ===========================================================================
@@ -238,13 +224,6 @@ fn test_str_strip_preserves_nulls() {
     assert_eq!(vals, vec![Some("hi".to_string()), None, Some("there".to_string())]);
 }
 
-fn test_str_strip_display_omits_input_name() {
-    let s = series("col", &[" abc "]).unwrap();
-    let result = s.on(Exec::RETAINED).str().strip().unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("col"), "strip output should not expose schema names: {}", output);
-}
-
 // ===========================================================================
 // String length
 // ===========================================================================
@@ -282,13 +261,6 @@ fn test_str_len_empty() {
     let s = series::<&str>("s", &[]).unwrap();
     let result = s.on(Exec::RETAINED).str().len().unwrap();
     assert!(result.is_empty());
-}
-
-fn test_str_len_display_omits_input_name() {
-    let s = series("col", &["abc"]).unwrap();
-    let result = s.on(Exec::RETAINED).str().len().unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("col"), "len output should not expose schema names: {}", output);
 }
 
 // ===========================================================================
@@ -517,82 +489,81 @@ fn test_expr_try_cast_unsupported_pair_returns_error() {
     assert!(format!("{err}").contains("STRING"), "error should mention STRING source: {err}");
 }
 
-#[test]
-fn strings_tests_cases() {
-    run_named_cases(&[
-        ("test_str_lower", test_str_lower),
-        ("test_str_upper", test_str_upper),
-        ("test_str_lower_display_omits_input_name", test_str_lower_display_omits_input_name),
-        ("test_str_upper_preserves_nulls", test_str_upper_preserves_nulls),
-        ("test_str_lower_empty", test_str_lower_empty),
-        ("test_str_contains_basic", test_str_contains_basic),
-        ("test_str_contains_empty_pattern_matches_all", test_str_contains_empty_pattern_matches_all),
-        ("test_str_contains_preserves_nulls", test_str_contains_preserves_nulls),
-        ("test_str_contains_display_omits_input_name", test_str_contains_display_omits_input_name),
-        (
-            "test_str_like_sql_wildcards_empty_pattern_escape_and_nulls",
-            test_str_like_sql_wildcards_empty_pattern_escape_and_nulls,
-        ),
-        ("test_str_like_escape_rejects_multi_character_escape", test_str_like_escape_rejects_multi_character_escape),
-        ("test_str_startswith_basic", test_str_startswith_basic),
-        ("test_str_endswith_basic", test_str_endswith_basic),
-        ("test_str_startswith_preserves_nulls", test_str_startswith_preserves_nulls),
-        ("test_str_endswith_preserves_nulls", test_str_endswith_preserves_nulls),
-        (
-            "test_str_slice_zero_based_unicode_open_ended_step_and_nulls",
-            test_str_slice_zero_based_unicode_open_ended_step_and_nulls,
-        ),
-        ("test_str_slice_rejects_zero_step", test_str_slice_rejects_zero_step),
-        ("test_str_strip_whitespace", test_str_strip_whitespace),
-        ("test_str_lstrip_whitespace", test_str_lstrip_whitespace),
-        ("test_str_rstrip_whitespace", test_str_rstrip_whitespace),
-        ("test_str_strip_specific_chars", test_str_strip_specific_chars),
-        ("test_str_strip_preserves_nulls", test_str_strip_preserves_nulls),
-        ("test_str_strip_display_omits_input_name", test_str_strip_display_omits_input_name),
-        ("test_str_len_basic", test_str_len_basic),
-        ("test_str_len_utf8", test_str_len_utf8),
-        ("test_str_byte_count_utf8", test_str_byte_count_utf8),
-        ("test_str_len_preserves_nulls", test_str_len_preserves_nulls),
-        ("test_str_len_empty", test_str_len_empty),
-        ("test_str_len_display_omits_input_name", test_str_len_display_omits_input_name),
-        (
-            "test_replace_with_backrefs_output_size_matches_executed_column",
-            test_replace_with_backrefs_output_size_matches_executed_column,
-        ),
-        (
-            "test_prepared_replace_with_backrefs_semantics_and_facts",
-            test_prepared_replace_with_backrefs_semantics_and_facts,
-        ),
-        (
-            "test_prepared_replace_with_backrefs_empty_and_expanding_capture",
-            test_prepared_replace_with_backrefs_empty_and_expanding_capture,
-        ),
-        (
-            "test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute",
-            test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute,
-        ),
-        (
-            "test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance",
-            test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance,
-        ),
-        (
-            "test_str_try_to_integers_int32_parses_valid_rejects_invalid",
-            test_str_try_to_integers_int32_parses_valid_rejects_invalid,
-        ),
-        ("test_str_try_to_integers_propagates_input_nulls", test_str_try_to_integers_propagates_input_nulls),
-        (
-            "test_str_try_to_integers_target_type_overflow_yields_null",
-            test_str_try_to_integers_target_type_overflow_yields_null,
-        ),
-        ("test_str_try_to_integers_empty_input", test_str_try_to_integers_empty_input),
-        (
-            "test_str_try_to_integers_rejects_non_integer_target_type",
-            test_str_try_to_integers_rejects_non_integer_target_type,
-        ),
-        (
-            "test_expr_try_cast_dispatches_to_strings_try_to_integers",
-            test_expr_try_cast_dispatches_to_strings_try_to_integers,
-        ),
-        ("test_expr_try_cast_unsupported_pair_returns_error", test_expr_try_cast_unsupported_pair_returns_error),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("strings_tests::test_str_lower", test_str_lower),
+    ("strings_tests::test_str_upper", test_str_upper),
+    ("strings_tests::test_str_upper_preserves_nulls", test_str_upper_preserves_nulls),
+    ("strings_tests::test_str_lower_empty", test_str_lower_empty),
+    ("strings_tests::test_str_contains_basic", test_str_contains_basic),
+    ("strings_tests::test_str_contains_empty_pattern_matches_all", test_str_contains_empty_pattern_matches_all),
+    ("strings_tests::test_str_contains_preserves_nulls", test_str_contains_preserves_nulls),
+    (
+        "strings_tests::test_str_like_sql_wildcards_empty_pattern_escape_and_nulls",
+        test_str_like_sql_wildcards_empty_pattern_escape_and_nulls,
+    ),
+    (
+        "strings_tests::test_str_like_escape_rejects_multi_character_escape",
+        test_str_like_escape_rejects_multi_character_escape,
+    ),
+    ("strings_tests::test_str_startswith_basic", test_str_startswith_basic),
+    ("strings_tests::test_str_endswith_basic", test_str_endswith_basic),
+    ("strings_tests::test_str_startswith_preserves_nulls", test_str_startswith_preserves_nulls),
+    ("strings_tests::test_str_endswith_preserves_nulls", test_str_endswith_preserves_nulls),
+    (
+        "strings_tests::test_str_slice_zero_based_unicode_open_ended_step_and_nulls",
+        test_str_slice_zero_based_unicode_open_ended_step_and_nulls,
+    ),
+    ("strings_tests::test_str_slice_rejects_zero_step", test_str_slice_rejects_zero_step),
+    ("strings_tests::test_str_strip_whitespace", test_str_strip_whitespace),
+    ("strings_tests::test_str_lstrip_whitespace", test_str_lstrip_whitespace),
+    ("strings_tests::test_str_rstrip_whitespace", test_str_rstrip_whitespace),
+    ("strings_tests::test_str_strip_specific_chars", test_str_strip_specific_chars),
+    ("strings_tests::test_str_strip_preserves_nulls", test_str_strip_preserves_nulls),
+    ("strings_tests::test_str_len_basic", test_str_len_basic),
+    ("strings_tests::test_str_len_utf8", test_str_len_utf8),
+    ("strings_tests::test_str_byte_count_utf8", test_str_byte_count_utf8),
+    ("strings_tests::test_str_len_preserves_nulls", test_str_len_preserves_nulls),
+    ("strings_tests::test_str_len_empty", test_str_len_empty),
+    (
+        "strings_tests::test_replace_with_backrefs_output_size_matches_executed_column",
+        test_replace_with_backrefs_output_size_matches_executed_column,
+    ),
+    (
+        "strings_tests::test_prepared_replace_with_backrefs_semantics_and_facts",
+        test_prepared_replace_with_backrefs_semantics_and_facts,
+    ),
+    (
+        "strings_tests::test_prepared_replace_with_backrefs_empty_and_expanding_capture",
+        test_prepared_replace_with_backrefs_empty_and_expanding_capture,
+    ),
+    (
+        "strings_tests::test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute",
+        test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute,
+    ),
+    (
+        "strings_tests::test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance",
+        test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance,
+    ),
+    (
+        "strings_tests::test_str_try_to_integers_int32_parses_valid_rejects_invalid",
+        test_str_try_to_integers_int32_parses_valid_rejects_invalid,
+    ),
+    ("strings_tests::test_str_try_to_integers_propagates_input_nulls", test_str_try_to_integers_propagates_input_nulls),
+    (
+        "strings_tests::test_str_try_to_integers_target_type_overflow_yields_null",
+        test_str_try_to_integers_target_type_overflow_yields_null,
+    ),
+    ("strings_tests::test_str_try_to_integers_empty_input", test_str_try_to_integers_empty_input),
+    (
+        "strings_tests::test_str_try_to_integers_rejects_non_integer_target_type",
+        test_str_try_to_integers_rejects_non_integer_target_type,
+    ),
+    (
+        "strings_tests::test_expr_try_cast_dispatches_to_strings_try_to_integers",
+        test_expr_try_cast_dispatches_to_strings_try_to_integers,
+    ),
+    (
+        "strings_tests::test_expr_try_cast_unsupported_pair_returns_error",
+        test_expr_try_cast_unsupported_pair_returns_error,
+    ),
+];

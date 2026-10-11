@@ -5,9 +5,7 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{
-    column_from_device_buffer, column_from_device_buffer_nullable, error_context_value, run_named_cases,
-};
+use crate::common::{column_from_device_buffer, column_from_device_buffer_nullable, error_context_value};
 
 // ---------------------------------------------------------------------------
 // DeviceBuffer lifecycle
@@ -481,96 +479,96 @@ fn adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract() {
     assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
 }
 
-#[test]
-fn device_buffer_tests_cases() {
-    run_named_cases(&[
-        ("new_allocates_requested_size", new_allocates_requested_size),
-        ("new_zero_bytes_succeeds", new_zero_bytes_succeeds),
-        (
-            "const_and_mut_pointers_are_non_null_for_non_empty_buffer",
-            const_and_mut_pointers_are_non_null_for_non_empty_buffer,
-        ),
-        (
-            "const_pointer_for_zero_size_succeeds_even_if_pointer_is_null",
-            const_pointer_for_zero_size_succeeds_even_if_pointer_is_null,
-        ),
-        ("device_buffer_reports_owning_runtime_binding", device_buffer_reports_owning_runtime_binding),
-        (
-            "float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding",
-            float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding,
-        ),
-        (
-            "float32_device_buffer_finite_proof_rejects_nan_and_infinities",
-            float32_device_buffer_finite_proof_rejects_nan_and_infinities,
-        ),
-        (
-            "typed_device_buffer_validation_rejects_misaligned_allocation_size",
-            typed_device_buffer_validation_rejects_misaligned_allocation_size,
-        ),
-        (
-            "typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs",
-            typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs,
-        ),
-        (
-            "int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding",
-            int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding,
-        ),
-        (
-            "int64_device_buffer_range_proof_rejects_both_bound_violations",
-            int64_device_buffer_range_proof_rejects_both_bound_violations,
-        ),
-        (
-            "int64_device_buffer_range_proof_rejects_empty_interval_before_execution",
-            int64_device_buffer_range_proof_rejects_empty_interval_before_execution,
-        ),
-        (
-            "float32_device_buffer_add_scalar_preserves_infinite_slots",
-            float32_device_buffer_add_scalar_preserves_infinite_slots,
-        ),
-        (
-            "buffer_sentinel_operations_reject_out_of_range_int64_and_non_finite_float32",
-            buffer_sentinel_operations_reject_out_of_range_int64_and_non_finite_float32,
-        ),
-        ("from_host_data_creates_correct_size", from_host_data_creates_correct_size),
-        ("from_host_data_empty_slice", from_host_data_empty_slice),
-        ("adopt_i32_roundtrip", adopt_i32_roundtrip),
-        ("adopt_f64_roundtrip", adopt_f64_roundtrip),
-        ("adopted_bool8_decodes_non_canonical_non_zero_bytes", adopted_bool8_decodes_non_canonical_non_zero_bytes),
-        (
-            "adopted_nullable_bool8_never_materializes_null_slot_as_bool",
-            adopted_nullable_bool8_never_materializes_null_slot_as_bool,
-        ),
-        ("adopt_proves_zero_copy", adopt_proves_zero_copy),
-        ("adopt_zero_elements", adopt_zero_elements),
-        ("adopt_rejects_string_type", adopt_rejects_string_type),
-        (
-            "runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy",
-            runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy,
-        ),
-        ("adopt_rejects_size_mismatch", adopt_rejects_size_mismatch),
-        ("adopt_rejects_row_count_exceeding_i32_max", adopt_rejects_row_count_exceeding_i32_max),
-        ("adopt_nullable_with_nulls", adopt_nullable_with_nulls),
-        ("adopt_nullable_all_valid", adopt_nullable_all_valid),
-        (
-            "runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy",
-            runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy,
-        ),
-        (
-            "adopt_nullable_rejects_null_count_exceeding_row_count",
-            adopt_nullable_rejects_null_count_exceeding_row_count,
-        ),
-        (
-            "adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract",
-            adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract,
-        ),
-        ("adopt_nullable_rejects_mask_too_small", adopt_nullable_rejects_mask_too_small),
-        (
-            "adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size",
-            adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size,
-        ),
-        (
-            "adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract",
-            adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("device_buffer_tests::new_allocates_requested_size", new_allocates_requested_size),
+    ("device_buffer_tests::new_zero_bytes_succeeds", new_zero_bytes_succeeds),
+    (
+        "device_buffer_tests::const_and_mut_pointers_are_non_null_for_non_empty_buffer",
+        const_and_mut_pointers_are_non_null_for_non_empty_buffer,
+    ),
+    (
+        "device_buffer_tests::const_pointer_for_zero_size_succeeds_even_if_pointer_is_null",
+        const_pointer_for_zero_size_succeeds_even_if_pointer_is_null,
+    ),
+    ("device_buffer_tests::device_buffer_reports_owning_runtime_binding", device_buffer_reports_owning_runtime_binding),
+    (
+        "device_buffer_tests::float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding",
+        float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding,
+    ),
+    (
+        "device_buffer_tests::float32_device_buffer_finite_proof_rejects_nan_and_infinities",
+        float32_device_buffer_finite_proof_rejects_nan_and_infinities,
+    ),
+    (
+        "device_buffer_tests::typed_device_buffer_validation_rejects_misaligned_allocation_size",
+        typed_device_buffer_validation_rejects_misaligned_allocation_size,
+    ),
+    (
+        "device_buffer_tests::typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs",
+        typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs,
+    ),
+    (
+        "device_buffer_tests::int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding",
+        int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding,
+    ),
+    (
+        "device_buffer_tests::int64_device_buffer_range_proof_rejects_both_bound_violations",
+        int64_device_buffer_range_proof_rejects_both_bound_violations,
+    ),
+    (
+        "device_buffer_tests::int64_device_buffer_range_proof_rejects_empty_interval_before_execution",
+        int64_device_buffer_range_proof_rejects_empty_interval_before_execution,
+    ),
+    (
+        "device_buffer_tests::float32_device_buffer_add_scalar_preserves_infinite_slots",
+        float32_device_buffer_add_scalar_preserves_infinite_slots,
+    ),
+    (
+        "device_buffer_tests::buffer_sentinel_operations_reject_out_of_range_int64_and_non_finite_float32",
+        buffer_sentinel_operations_reject_out_of_range_int64_and_non_finite_float32,
+    ),
+    ("device_buffer_tests::from_host_data_creates_correct_size", from_host_data_creates_correct_size),
+    ("device_buffer_tests::from_host_data_empty_slice", from_host_data_empty_slice),
+    ("device_buffer_tests::adopt_i32_roundtrip", adopt_i32_roundtrip),
+    ("device_buffer_tests::adopt_f64_roundtrip", adopt_f64_roundtrip),
+    (
+        "device_buffer_tests::adopted_bool8_decodes_non_canonical_non_zero_bytes",
+        adopted_bool8_decodes_non_canonical_non_zero_bytes,
+    ),
+    (
+        "device_buffer_tests::adopted_nullable_bool8_never_materializes_null_slot_as_bool",
+        adopted_nullable_bool8_never_materializes_null_slot_as_bool,
+    ),
+    ("device_buffer_tests::adopt_proves_zero_copy", adopt_proves_zero_copy),
+    ("device_buffer_tests::adopt_zero_elements", adopt_zero_elements),
+    ("device_buffer_tests::adopt_rejects_string_type", adopt_rejects_string_type),
+    (
+        "device_buffer_tests::runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy",
+        runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy,
+    ),
+    ("device_buffer_tests::adopt_rejects_size_mismatch", adopt_rejects_size_mismatch),
+    ("device_buffer_tests::adopt_rejects_row_count_exceeding_i32_max", adopt_rejects_row_count_exceeding_i32_max),
+    ("device_buffer_tests::adopt_nullable_with_nulls", adopt_nullable_with_nulls),
+    ("device_buffer_tests::adopt_nullable_all_valid", adopt_nullable_all_valid),
+    (
+        "device_buffer_tests::runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy",
+        runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy,
+    ),
+    (
+        "device_buffer_tests::adopt_nullable_rejects_null_count_exceeding_row_count",
+        adopt_nullable_rejects_null_count_exceeding_row_count,
+    ),
+    (
+        "device_buffer_tests::adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract",
+        adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract,
+    ),
+    ("device_buffer_tests::adopt_nullable_rejects_mask_too_small", adopt_nullable_rejects_mask_too_small),
+    (
+        "device_buffer_tests::adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size",
+        adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size,
+    ),
+    (
+        "device_buffer_tests::adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract",
+        adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract,
+    ),
+];

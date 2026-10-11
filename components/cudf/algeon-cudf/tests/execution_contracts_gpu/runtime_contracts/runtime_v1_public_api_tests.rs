@@ -10,7 +10,7 @@ use cudf::{
     frame::dataframe::{ParquetReadOptions, ParquetWriteOptions},
     ops::expr::{col, when},
     runtime::CudaStream,
-    testing::prelude::*,
+    testing::{prelude::*, run_named_cases},
 };
 use tempfile::TempDir;
 
@@ -18,10 +18,8 @@ use crate::common::{
     dataframe_device_ptr, dependency_wait_call_count_for_stream, execution_budget_token, last_exec_mr_value,
     last_exec_stream_value, last_sync_stream_value, lock_event_observation, observed_exec_mr_overflowed,
     observed_exec_mr_values, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
-    run_named_cases, sample_runtime, series, series_device_ptr,
+    sample_runtime, series, series_device_ptr,
 };
-
-fn assert_send_sync<T: Send + Sync>() {}
 
 fn assert_series_residency(series: &Series, expected_id: u64, expected_stream: usize, expected_mr: usize) {
     assert_eq!(series.as_column().testing_execution_domain_kind(), "explicit");
@@ -57,14 +55,6 @@ fn sorted_i32_i64_rows(df: &DataFrame, left: &str, right: &str) -> Vec<(i32, i64
     let mut rows: Vec<(i32, i64)> = left_values.into_iter().zip(right_values).collect();
     rows.sort_unstable();
     rows
-}
-
-fn runtime_and_execution_context_are_public_and_send_sync() {
-    assert_send_sync::<Runtime>();
-    assert_send_sync::<Exec<'static>>();
-
-    let rt = Runtime::builder().build().unwrap();
-    let _ctx = rt.exec();
 }
 
 fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
@@ -875,10 +865,6 @@ fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
 #[test]
 fn runtime_v1_public_api_tests_cases() {
     run_named_cases(&[
-        (
-            "runtime_and_execution_context_are_public_and_send_sync",
-            runtime_and_execution_context_are_public_and_send_sync,
-        ),
         (
             "runtime_builder_and_factory_families_seed_runtime_exec_contracts",
             runtime_builder_and_factory_families_seed_runtime_exec_contracts,

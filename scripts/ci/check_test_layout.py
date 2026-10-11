@@ -238,7 +238,7 @@ def check(root, metadata, artifacts=None):
         bases = [Path(p['manifest_path']).parent.resolve() for p in packages]
         for name in filter(None, tracked):
             path = (root / name).resolve()
-            if any(path.is_relative_to(base) for base in bases) and path not in compiled:
+            if path.is_file() and any(path.is_relative_to(base) for base in bases) and path not in compiled:
                 errors.append(f'{name}: tracked Rust source was not compiled by this clippy run')
     return errors
 

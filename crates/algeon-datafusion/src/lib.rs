@@ -66,6 +66,9 @@ extern crate self as algeon_datafusion;
 pub mod attempt;
 pub mod backend;
 pub mod capability;
+#[cfg(all(test, any(feature = "cugraph", feature = "server")))]
+#[path = "../tests/support/closing_backend.rs"]
+mod closing_backend;
 pub mod cugraph_sql;
 pub mod cuml_sql;
 pub mod cuvs_sql;

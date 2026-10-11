@@ -40,24 +40,36 @@ conditional `cfg_attr(..., path = ...)` attributes fail closed. A unit-test
 module beside its owner uses `foo/tests.rs` with `#[cfg(test)] mod tests;` in
 `foo.rs`.
 
-Integration targets end in `_cpu`, `_gpu` or `_gpu_exclusive`. Their names
-select their nextest lanes. The explicit CPU binary list contains only lib
-and bin unit-test targets, whose names cannot carry these suffixes. A target
+Integration targets end in `_cpu`, `_gpu` or `_gpu_exclusive`. Their suffix selects the default nextest lane. CPU overrides also list lib
+and bin unit-test targets, audited CPU modules, and exact CPU case names in
+mixed targets. All tests selected by a CPU override must run without a
+device context or GPU operation. New unmatched cases in a mixed target stay
+in the GPU lane. Prefer a `_cpu` target for separable CPU modules. A target
 that requires a feature declares Cargo `required-features`; it must not
 replace that requirement with a crate-level `#![cfg(feature = ...)]` that
 produces an empty test binary when the feature is disabled.
 
-Because every test process pays for its own CUDA context, the cudf
-contract binaries `semantic_contracts_gpu`, `execution_contracts_gpu`, and
-`interop_contracts_gpu` group small tests into one table per file. The test
-functions are plain `fn`s, and a single `#[test] fn <file_stem>_cases` passes
-them to `common::run_named_cases`, which runs each case on the thread's shared
-test runtime and fails once, naming every failing case. Add a new case to its
-file's table. Keep a test as its own `#[test]` only when it arms one-shot
-native fault injection, installs process-global or device-safety state, spawns
-threads, is `#[should_panic]`, or uses a device other than 0. A table is run
-like any test, for example
-`cargo nt -E 'binary_id(algeon-cudf::semantic_contracts_gpu) & test(expr_tests_cases)'`.
+GPU tests in separate processes repeat CUDA context initialization. Group at least five related
+cases taking less than three seconds each into a table, and split tables by
+topic to keep each near ten seconds. The case functions are plain `fn`s;
+one `#[test]` passes them to `cudf::testing::run_named_cases` through the
+`test-hooks` feature. Table runners import the helper from that owner module.
+Cases execute on the same thread in one process, with runtimes supplied by
+their fixtures. The helper reports all failing case names. A lazily installed default device memory manager is allowed
+shared table state. Thread-local, self-clearing one-shot native faults do
+not by themselves require a separate process; faults that can remain armed
+after a panic need an unwind guard or an independent test. Keep separate
+tests for process-global or device-safety installation, spawned threads,
+`#[should_panic]`, and devices other than 0. A table is run like any test:
+`cargo nt -E 'binary_id(algeon-cudf::semantic_contracts_gpu) & test(filter_misc_sorting_cases)'`.
+
+`ALGEON_TEST_CASES` selects case names containing any comma-separated
+substring, for example `ALGEON_TEST_CASES=left_build,null_keys cargo nt -E
+'test(join_cases)'`. An unset or empty value runs the complete table. A
+nonempty selector matching no case fails; panicking cases still allow the
+remaining selected cases to run. Each case must restore state during
+unwinding when later cases depend on it. The sys crate keeps an equivalent
+private helper because depending on cuDF would create a dependency cycle.
 
 ## Layout checks
 
@@ -72,8 +84,9 @@ python3 scripts/ci/check_test_layout.py
 ```
 
 The full gate's `orphan-sources` phase compares tracked workspace Rust files
-with dep-info for the compiler artifacts reported by that run's successful
-clippy commands. It follows no old dep-info through shared `target` caches.
+present in the working tree with dep-info for the compiler artifacts reported
+by that run's successful clippy commands. Pending deletions are excluded from
+source coverage. It follows no old dep-info through shared `target` caches.
 The main clippy command selects `--workspace --all-targets --all-features`;
 a second command selects `algeon-query-engine` and `algeon-datafusion` with
 `--all-targets --no-default-features` to compile feature-off implementations
@@ -105,16 +118,16 @@ gpu = { max-threads = 8 }
 gpu-exclusive = { max-threads = 1 }
 ```
 
-Every test binary lands in one lane:
+Every test lands in one lane:
 
 | Lane | How a binary lands there | GPU lock | Max concurrent | Timeout (`default` / `gate`) |
 | --- | --- | --- | --- | --- |
-| CPU (opt-in) | A `_cpu` integration-target suffix, or a lib/bin unit-test `binary_id` listed in the CPU override in `.config/nextest.toml`. | None | The run's global thread limit | 2 min / 2 min |
-| `gpu-exclusive` | A target whose name ends `_gpu_exclusive`, or a test under a module named `gpu_exclusive` inside a crate's own unit-test binary. | Exclusive | 1, alone and last (`priority = -100`) | 5 min / 20 min |
+| CPU (opt-in) | A `_cpu` integration-target suffix, a lib/bin unit-test `binary_id`, or an audited CPU module or exact case filter within a mixed binary in `.config/nextest.toml`. | None | The run's global thread limit | 2 min / 2 min |
+| `gpu-exclusive` | A `_gpu_exclusive` target, a test under a `gpu_exclusive` module, or an audited hardware case filter. | Exclusive | 1, alone and last (`priority = -100`) | 5 min / 20 min |
 | `gpu` | Every remaining test, matched last. | Shared | 8 | 5 min / 20 min |
 
-- An unlisted binary defaults into `gpu`. A misclassification is only slower
-  and stays safe to schedule.
+- An unlisted binary or case defaults into `gpu`, so an omitted CPU override
+  stays safe to schedule.
 - The NVIDIA driver serializes CUDA context creation. On one GPU, test
   throughput peaks around 4-8 concurrent processes, and `gpu` caps at 8.
 - `gpu-exclusive` is reserved for binaries that observe or occupy an entire
@@ -122,6 +135,24 @@ Every test binary lands in one lane:
   covers ordinary process-global state; exclusivity is for tests that need
   the *device* to themselves.
 - GPU timeouts include lock waits.
+
+The gate exports one canonical native `LD_LIBRARY_PATH` before all phases;
+doctests inherit it without prepending directories again. It prints Cargo's
+effective toolchain values from the merged configuration with shell and
+`force` precedence applied. During `test-build`, the gate captures fresh
+Cargo metadata and builds the workspace with all features through a
+binaries-only nextest list. Both metadata files belong to that gate run.
+The tests phase reuses them without another Cargo build or metadata query,
+so static compilation cannot delay test execution through Cargo's build lock.
+Policy checks run during `test-build`; static
+and hygiene compilation starts after that phase completes with niceness
+increased by 10, up to 19. A compile failure skips nextest execution while
+the remaining checks continue. The isolated orchestration suite covers these conditions without
+building Rust or loading native libraries:
+
+```bash
+python3 scripts/ci/tests/check_check_all_tests.py
+```
 
 `scripts/ci/nextest_gpu_lock.sh` is the run-wrapper nextest invokes for every
 test (`[scripts.wrapper.gpu-lock]`, applied through

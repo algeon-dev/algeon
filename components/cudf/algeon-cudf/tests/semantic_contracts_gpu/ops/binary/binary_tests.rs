@@ -11,7 +11,7 @@ use cudf::{
 
 use crate::common::{
     explicit_i32_series, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, nullable_series,
-    reset_exec_observation, reset_sync_observation, run_named_cases, series,
+    reset_exec_observation, reset_sync_observation, series,
 };
 
 fn test_div_scalar_column() {
@@ -938,101 +938,122 @@ fn test_float_remainder_matches_the_rust_remainder_for_edge_values() {
     assert_same_float_bits(&actual32, &expected32);
 }
 
-#[test]
-fn binary_tests_cases() {
-    run_named_cases(&[
-        ("test_div_scalar_column", test_div_scalar_column),
-        (
-            "test_binary_operation_error_contains_operation_context",
-            test_binary_operation_error_contains_operation_context,
-        ),
-        ("test_null_logical_or_uses_sql_three_valued_logic", test_null_logical_or_uses_sql_three_valued_logic),
-        ("test_null_logical_and_uses_sql_three_valued_logic", test_null_logical_and_uses_sql_three_valued_logic),
-        (
-            "test_mixed_domain_binary_operation_vv_uses_lhs_provenance",
-            test_mixed_domain_binary_operation_vv_uses_lhs_provenance,
-        ),
-        (
-            "test_series_scalar_binary_operation_uses_series_provenance",
-            test_series_scalar_binary_operation_uses_series_provenance,
-        ),
-        (
-            "test_integer_division_values_and_failures_follow_arrow_row_semantics",
-            test_integer_division_values_and_failures_follow_arrow_row_semantics,
-        ),
-        (
-            "test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics",
-            test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics,
-        ),
-        (
-            "test_timestamp_arithmetic_values_and_failures_follow_arrow_checked_arithmetic",
-            test_timestamp_arithmetic_values_and_failures_follow_arrow_checked_arithmetic,
-        ),
-        ("test_timestamp_arithmetic_never_fails_in_a_null_row", test_timestamp_arithmetic_never_fails_in_a_null_row),
-        (
-            "test_float_remainder_matches_the_rust_remainder_for_edge_values",
-            test_float_remainder_matches_the_rust_remainder_for_edge_values,
-        ),
-        ("test_string_equal_vv", test_string_equal_vv),
-        ("test_string_not_equal_vv", test_string_not_equal_vv),
-        ("test_string_less_vv", test_string_less_vv),
-        ("test_string_greater_vv", test_string_greater_vv),
-        ("test_string_less_equal_vv", test_string_less_equal_vv),
-        ("test_string_greater_equal_vv", test_string_greater_equal_vv),
-        ("test_string_equal_empty", test_string_equal_empty),
-        ("test_string_equal_case_sensitive", test_string_equal_case_sensitive),
-        ("test_string_add_vv_error", test_string_add_vv_error),
-        ("test_is_comparison_true_for_comparison_ops", test_is_comparison_true_for_comparison_ops),
-        ("test_is_comparison_false_for_arithmetic_ops", test_is_comparison_false_for_arithmetic_ops),
-        ("test_infer_same_type_arithmetic", test_infer_same_type_arithmetic),
-        ("test_infer_int_float_promotion", test_infer_int_float_promotion),
-        ("test_infer_float_float_promotion", test_infer_float_float_promotion),
-        ("test_infer_int_int_promotion", test_infer_int_int_promotion),
-        ("test_infer_signed_unsigned_promotion", test_infer_signed_unsigned_promotion),
-        ("test_infer_comparison_always_bool", test_infer_comparison_always_bool),
-        ("test_infer_string_comparison_bool", test_infer_string_comparison_bool),
-        ("test_infer_string_arithmetic_error", test_infer_string_arithmetic_error),
-        ("test_infer_string_int_arithmetic_error", test_infer_string_int_arithmetic_error),
-        ("test_infer_non_numeric_error", test_infer_non_numeric_error),
-        ("test_infer_bool_arithmetic", test_infer_bool_arithmetic),
-        ("test_infer_error_context_keys", test_infer_error_context_keys),
-        (
-            "test_infer_error_operator_detail_uses_stable_snake_case",
-            test_infer_error_operator_detail_uses_stable_snake_case,
-        ),
-        (
-            "test_infer_decimal_same_and_mixed_scale_add_sub_dtype",
-            test_infer_decimal_same_and_mixed_scale_add_sub_dtype,
-        ),
-        ("test_infer_decimal_mul_div_scales_dtype", test_infer_decimal_mul_div_scales_dtype),
-        ("test_infer_decimal_comparison_bool", test_infer_decimal_comparison_bool),
-        ("test_infer_mixed_resolution_temporal_comparison_bool", test_infer_mixed_resolution_temporal_comparison_bool),
-        ("test_infer_temporal_typeid_rules", test_infer_temporal_typeid_rules),
-        (
-            "test_infer_decimal_float_arithmetic_rejected_with_type_facts_dtype",
-            test_infer_decimal_float_arithmetic_rejected_with_type_facts_dtype,
-        ),
-        (
-            "test_infer_same_resolution_timestamp_duration_arithmetic_dtype",
-            test_infer_same_resolution_timestamp_duration_arithmetic_dtype,
-        ),
-        (
-            "test_infer_timestamp_timestamp_subtracts_to_matching_duration_dtype",
-            test_infer_timestamp_timestamp_subtracts_to_matching_duration_dtype,
-        ),
-        (
-            "test_infer_duration_integer_arithmetic_preserves_duration_dtype",
-            test_infer_duration_integer_arithmetic_preserves_duration_dtype,
-        ),
-        ("test_infer_duration_modulo_rules_dtype", test_infer_duration_modulo_rules_dtype),
-        ("test_infer_duration_float_arithmetic_rejected_dtype", test_infer_duration_float_arithmetic_rejected_dtype),
-        ("test_infer_mixed_temporal_resolution_rejected_dtype", test_infer_mixed_temporal_resolution_rejected_dtype),
-        ("test_infer_uint8_uint16_promotion", test_infer_uint8_uint16_promotion),
-        ("test_infer_int8_uint8_promotion", test_infer_int8_uint8_promotion),
-        ("test_infer_int64_uint64_error", test_infer_int64_uint64_error),
-        ("test_infer_signed_wider_than_unsigned_keeps_signed", test_infer_signed_wider_than_unsigned_keeps_signed),
-        ("test_infer_float32_int64_promotion", test_infer_float32_int64_promotion),
-        ("test_infer_non_numeric_comparison_is_bool", test_infer_non_numeric_comparison_is_bool),
-        ("test_infer_mixed_string_numeric_comparison_rejected", test_infer_mixed_string_numeric_comparison_rejected),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("binary_tests::test_div_scalar_column", test_div_scalar_column),
+    (
+        "binary_tests::test_binary_operation_error_contains_operation_context",
+        test_binary_operation_error_contains_operation_context,
+    ),
+    (
+        "binary_tests::test_null_logical_or_uses_sql_three_valued_logic",
+        test_null_logical_or_uses_sql_three_valued_logic,
+    ),
+    (
+        "binary_tests::test_null_logical_and_uses_sql_three_valued_logic",
+        test_null_logical_and_uses_sql_three_valued_logic,
+    ),
+    (
+        "binary_tests::test_mixed_domain_binary_operation_vv_uses_lhs_provenance",
+        test_mixed_domain_binary_operation_vv_uses_lhs_provenance,
+    ),
+    (
+        "binary_tests::test_series_scalar_binary_operation_uses_series_provenance",
+        test_series_scalar_binary_operation_uses_series_provenance,
+    ),
+    (
+        "binary_tests::test_integer_division_values_and_failures_follow_arrow_row_semantics",
+        test_integer_division_values_and_failures_follow_arrow_row_semantics,
+    ),
+    (
+        "binary_tests::test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics",
+        test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics,
+    ),
+    (
+        "binary_tests::test_timestamp_arithmetic_values_and_failures_follow_arrow_checked_arithmetic",
+        test_timestamp_arithmetic_values_and_failures_follow_arrow_checked_arithmetic,
+    ),
+    (
+        "binary_tests::test_timestamp_arithmetic_never_fails_in_a_null_row",
+        test_timestamp_arithmetic_never_fails_in_a_null_row,
+    ),
+    (
+        "binary_tests::test_float_remainder_matches_the_rust_remainder_for_edge_values",
+        test_float_remainder_matches_the_rust_remainder_for_edge_values,
+    ),
+    ("binary_tests::test_string_equal_vv", test_string_equal_vv),
+    ("binary_tests::test_string_not_equal_vv", test_string_not_equal_vv),
+    ("binary_tests::test_string_less_vv", test_string_less_vv),
+    ("binary_tests::test_string_greater_vv", test_string_greater_vv),
+    ("binary_tests::test_string_less_equal_vv", test_string_less_equal_vv),
+    ("binary_tests::test_string_greater_equal_vv", test_string_greater_equal_vv),
+    ("binary_tests::test_string_equal_empty", test_string_equal_empty),
+    ("binary_tests::test_string_equal_case_sensitive", test_string_equal_case_sensitive),
+    ("binary_tests::test_string_add_vv_error", test_string_add_vv_error),
+    ("binary_tests::test_is_comparison_true_for_comparison_ops", test_is_comparison_true_for_comparison_ops),
+    ("binary_tests::test_is_comparison_false_for_arithmetic_ops", test_is_comparison_false_for_arithmetic_ops),
+    ("binary_tests::test_infer_same_type_arithmetic", test_infer_same_type_arithmetic),
+    ("binary_tests::test_infer_int_float_promotion", test_infer_int_float_promotion),
+    ("binary_tests::test_infer_float_float_promotion", test_infer_float_float_promotion),
+    ("binary_tests::test_infer_int_int_promotion", test_infer_int_int_promotion),
+    ("binary_tests::test_infer_signed_unsigned_promotion", test_infer_signed_unsigned_promotion),
+    ("binary_tests::test_infer_comparison_always_bool", test_infer_comparison_always_bool),
+    ("binary_tests::test_infer_string_comparison_bool", test_infer_string_comparison_bool),
+    ("binary_tests::test_infer_string_arithmetic_error", test_infer_string_arithmetic_error),
+    ("binary_tests::test_infer_string_int_arithmetic_error", test_infer_string_int_arithmetic_error),
+    ("binary_tests::test_infer_non_numeric_error", test_infer_non_numeric_error),
+    ("binary_tests::test_infer_bool_arithmetic", test_infer_bool_arithmetic),
+    ("binary_tests::test_infer_error_context_keys", test_infer_error_context_keys),
+    (
+        "binary_tests::test_infer_error_operator_detail_uses_stable_snake_case",
+        test_infer_error_operator_detail_uses_stable_snake_case,
+    ),
+    (
+        "binary_tests::test_infer_decimal_same_and_mixed_scale_add_sub_dtype",
+        test_infer_decimal_same_and_mixed_scale_add_sub_dtype,
+    ),
+    ("binary_tests::test_infer_decimal_mul_div_scales_dtype", test_infer_decimal_mul_div_scales_dtype),
+    ("binary_tests::test_infer_decimal_comparison_bool", test_infer_decimal_comparison_bool),
+    (
+        "binary_tests::test_infer_mixed_resolution_temporal_comparison_bool",
+        test_infer_mixed_resolution_temporal_comparison_bool,
+    ),
+    ("binary_tests::test_infer_temporal_typeid_rules", test_infer_temporal_typeid_rules),
+    (
+        "binary_tests::test_infer_decimal_float_arithmetic_rejected_with_type_facts_dtype",
+        test_infer_decimal_float_arithmetic_rejected_with_type_facts_dtype,
+    ),
+    (
+        "binary_tests::test_infer_same_resolution_timestamp_duration_arithmetic_dtype",
+        test_infer_same_resolution_timestamp_duration_arithmetic_dtype,
+    ),
+    (
+        "binary_tests::test_infer_timestamp_timestamp_subtracts_to_matching_duration_dtype",
+        test_infer_timestamp_timestamp_subtracts_to_matching_duration_dtype,
+    ),
+    (
+        "binary_tests::test_infer_duration_integer_arithmetic_preserves_duration_dtype",
+        test_infer_duration_integer_arithmetic_preserves_duration_dtype,
+    ),
+    ("binary_tests::test_infer_duration_modulo_rules_dtype", test_infer_duration_modulo_rules_dtype),
+    (
+        "binary_tests::test_infer_duration_float_arithmetic_rejected_dtype",
+        test_infer_duration_float_arithmetic_rejected_dtype,
+    ),
+    (
+        "binary_tests::test_infer_mixed_temporal_resolution_rejected_dtype",
+        test_infer_mixed_temporal_resolution_rejected_dtype,
+    ),
+    ("binary_tests::test_infer_uint8_uint16_promotion", test_infer_uint8_uint16_promotion),
+    ("binary_tests::test_infer_int8_uint8_promotion", test_infer_int8_uint8_promotion),
+    ("binary_tests::test_infer_int64_uint64_error", test_infer_int64_uint64_error),
+    (
+        "binary_tests::test_infer_signed_wider_than_unsigned_keeps_signed",
+        test_infer_signed_wider_than_unsigned_keeps_signed,
+    ),
+    ("binary_tests::test_infer_float32_int64_promotion", test_infer_float32_int64_promotion),
+    ("binary_tests::test_infer_non_numeric_comparison_is_bool", test_infer_non_numeric_comparison_is_bool),
+    (
+        "binary_tests::test_infer_mixed_string_numeric_comparison_rejected",
+        test_infer_mixed_string_numeric_comparison_rejected,
+    ),
+];

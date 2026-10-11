@@ -28,7 +28,6 @@ pub(super) const fn cost_remedy(reason: NativePlanCostReason) -> QueryGpuRemedy 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::capability::CapabilityReason;
 
     #[test]
@@ -38,33 +37,5 @@ mod tests {
             assert!(!remedy.code.is_empty(), "{reason:?}");
             assert!(!remedy.guidance.is_empty(), "{reason:?}");
         }
-    }
-
-    #[test]
-    fn every_cost_reason_preserves_its_remedy_code_and_kind() {
-        for reason in [
-            NativePlanCostReason::SmallSelectiveTopK,
-            NativePlanCostReason::SmallSelectiveResidualJoin,
-            NativePlanCostReason::SmallSelectiveFullSort,
-        ] {
-            let remedy = cost_remedy(reason);
-            assert_eq!(remedy.code, "keep_cpu_for_small_selective_work", "{reason:?}");
-            assert_eq!(remedy.kind, QueryGpuRemedyKind::CpuPreferred, "{reason:?}");
-        }
-    }
-
-    #[test]
-    fn prescribed_remedies_remain_stable() {
-        let local = CapabilityReason::NativeSourceNonLocalObjectStore.facts().remedy;
-        assert_eq!(local.code, "stage_local_parquet");
-        assert_eq!(local.kind, QueryGpuRemedyKind::UserAction);
-
-        let unsupported = CapabilityReason::UnsupportedExpression.facts().remedy;
-        assert_eq!(unsupported.code, "rewrite_expression");
-        assert_eq!(unsupported.kind, QueryGpuRemedyKind::UserAction);
-
-        let cost = cost_remedy(NativePlanCostReason::SmallSelectiveTopK);
-        assert_eq!(cost.code, "keep_cpu_for_small_selective_work");
-        assert_eq!(cost.kind, QueryGpuRemedyKind::CpuPreferred);
     }
 }

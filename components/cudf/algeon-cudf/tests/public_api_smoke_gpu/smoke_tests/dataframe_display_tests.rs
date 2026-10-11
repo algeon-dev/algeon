@@ -2,7 +2,6 @@
 
 use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, dataframe_from_columns};
 
-#[test]
 fn test_display_smoke_reports_schema_metadata_without_materializing_values() {
     let df = dataframe_from_columns(
         vec!["id".to_string(), "city".to_string()],
@@ -36,7 +35,6 @@ fn test_display_smoke_reports_schema_metadata_without_materializing_values() {
     assert!(!output.contains("tokyo"), "output should not materialize string payloads: {}", output);
 }
 
-#[test]
 fn test_debug_smoke_reports_schema_metadata_without_materializing_values() {
     let df = dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
@@ -72,3 +70,14 @@ fn test_debug_smoke_reports_schema_metadata_without_materializing_values() {
     assert!(!output.contains("7"), "debug output should not materialize integer payloads: {}", output);
     assert!(!output.contains("11.25"), "debug output should not materialize float payloads: {}", output);
 }
+
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "dataframe_display_tests::test_display_smoke_reports_schema_metadata_without_materializing_values",
+        test_display_smoke_reports_schema_metadata_without_materializing_values,
+    ),
+    (
+        "dataframe_display_tests::test_debug_smoke_reports_schema_metadata_without_materializing_values",
+        test_debug_smoke_reports_schema_metadata_without_materializing_values,
+    ),
+];

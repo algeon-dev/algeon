@@ -1,3 +1,5 @@
+use cudf::testing::run_named_cases;
+
 use super::*;
 
 #[test]
@@ -368,7 +370,6 @@ fn native_optimizer_routes_q02_like_shared_partsupp_source_when_all_key_consumer
     );
 }
 
-#[test]
 fn native_optimizer_rejects_q02_like_shared_source_filter_with_unconstrained_extra_consumer() {
     let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
         extra_unconstrained_partsupp_consumer: true,
@@ -404,6 +405,35 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_with_unconstrained_ext
 }
 
 #[test]
+fn t_q02_like_cases() {
+    run_named_cases(&[
+        (
+            "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_with_unconstrained_extra_consumer",
+            native_optimizer_rejects_q02_like_shared_source_filter_with_unconstrained_extra_consumer,
+        ),
+        (
+            "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_outer_joined",
+            native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_outer_joined,
+        ),
+        (
+            "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_uses_null_equal_join",
+            native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_uses_null_equal_join,
+        ),
+        (
+            "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_group_key_is_derived",
+            native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_group_key_is_derived,
+        ),
+        (
+            "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_when_constraint_uses_same_source_but_not_keyset",
+            native_optimizer_rejects_q02_like_shared_source_filter_when_constraint_uses_same_source_but_not_keyset,
+        ),
+        (
+            "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_when_constrained_consumer_is_below_limit",
+            native_optimizer_rejects_q02_like_shared_source_filter_when_constrained_consumer_is_below_limit,
+        ),
+    ]);
+}
+
 fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_outer_joined() {
     let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
         final_join_type: JoinType::Left,
@@ -436,7 +466,6 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_
     assert!(result.plan.dynamic_filter_routes().is_empty());
 }
 
-#[test]
 fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_uses_null_equal_join() {
     let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
         final_join_null_equality: JoinNullEquality::NullsMatch,
@@ -469,7 +498,6 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_use
     assert!(result.plan.dynamic_filter_routes().is_empty());
 }
 
-#[test]
 fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_group_key_is_derived() {
     let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
         derived_aggregate_group_key: true,
@@ -502,7 +530,6 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_group_k
     assert!(result.plan.dynamic_filter_routes().is_empty());
 }
 
-#[test]
 fn native_optimizer_rejects_q02_like_shared_source_filter_when_constraint_uses_same_source_but_not_keyset() {
     let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
         filter_part_build_keyset: true,
@@ -538,7 +565,6 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_constraint_uses_s
     }));
 }
 
-#[test]
 fn native_optimizer_rejects_q02_like_shared_source_filter_when_constrained_consumer_is_below_limit() {
     // A shared-partsupp consumer constrained by the same `part` keyset, but only after an
     // intervening `Limit`. Applying the keyset filter in place at the source would change which

@@ -10,7 +10,7 @@ use cudf_sys::test_support;
 use crate::{
     helpers::*,
     support::{
-        OwnedMemoryResource, OwnedStream, last_error_message, last_exec_mr_raw, lock_shim_state, required_exec_options,
+        OwnedMemoryResource, OwnedStream, last_error_message, last_exec_mr_raw, required_exec_options, run_named_cases,
     },
 };
 
@@ -54,9 +54,7 @@ fn test_error_detail_ffi_layout() {
     assert_eq!(size_of::<[c_char; cudf_sys::CUDF_ERROR_MESSAGE_CAPACITY as usize]>(), 512);
 }
 
-#[test]
 fn test_table_view_null_handle_clears_out() {
-    let _shim_state = lock_shim_state();
     let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_view_handle_state>();
     let status = unsafe { cudf_sys::cudf_table_view(ptr::null_mut(), &mut out) };
 
@@ -64,9 +62,7 @@ fn test_table_view_null_handle_clears_out() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_io_read_parquet_missing_file_clears_out() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
@@ -78,9 +74,7 @@ fn test_io_read_parquet_missing_file_clears_out() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_io_read_parquet_from_host_buffer_invalid_args_clear_out() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
     let status = unsafe {
@@ -102,9 +96,7 @@ fn test_io_read_parquet_from_host_buffer_invalid_args_clear_out() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_io_read_parquet_from_host_buffer_empty_buffer_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let bytes = [0u8; 1];
     let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
@@ -127,9 +119,7 @@ fn test_io_read_parquet_from_host_buffer_empty_buffer_rejected() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_non_io_runtime_error_maps_to_unknown() {
-    let _shim_state = lock_shim_state();
     let status = unsafe { test_support::cudf_test_throw_runtime_error() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_UNKNOWN);
@@ -138,16 +128,13 @@ fn test_non_io_runtime_error_maps_to_unknown() {
 
 #[test]
 fn test_bad_alloc_maps_to_out_of_memory() {
-    let _shim_state = lock_shim_state();
     let status = unsafe { test_support::cudf_test_throw_bad_alloc() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(!last_error_message().is_empty());
 }
 
-#[test]
 fn test_bad_alloc_publishes_copyable_typed_error_detail() {
-    let _shim_state = lock_shim_state();
     let status = unsafe { test_support::cudf_test_throw_bad_alloc() };
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
 
@@ -171,18 +158,14 @@ fn test_bad_alloc_publishes_copyable_typed_error_detail() {
     assert!(unsafe { cudf_sys::cudf_last_error_detail() }.is_null());
 }
 
-#[test]
 fn test_invalid_argument_maps_to_invalid_argument() {
-    let _shim_state = lock_shim_state();
     let status = unsafe { test_support::cudf_test_throw_invalid_argument() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
     assert!(last_error_message().contains("invalid argument"));
 }
 
-#[test]
 fn test_shim_invariant_error_publishes_invariant_status_with_unknown_source() {
-    let _shim_state = lock_shim_state();
     let status = unsafe { test_support::cudf_test_throw_invariant_error() };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVARIANT_VIOLATION);
 
@@ -197,9 +180,7 @@ fn test_shim_invariant_error_publishes_invariant_status_with_unknown_source() {
     assert!(message.contains("ownership invariant from test shim"), "{message}");
 }
 
-#[test]
 fn test_owning_handle_size_arithmetic_overflow_is_typed_and_does_not_wrap() {
-    let _shim_state = lock_shim_state();
     let mut out = usize::MAX;
 
     let add_status = unsafe { test_support::cudf_test_checked_owning_handle_size_add(usize::MAX, 1, &mut out) };
@@ -214,9 +195,7 @@ fn test_owning_handle_size_arithmetic_overflow_is_typed_and_does_not_wrap() {
     assert!(last_error_message().contains("overflow"));
 }
 
-#[test]
 fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut out_table = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
@@ -244,9 +223,7 @@ fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
     assert_eq!(out_num_names, 0);
 }
 
-#[test]
 fn test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut filepaths = [path.as_ptr()];
@@ -305,9 +282,7 @@ fn test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles() {
     assert_eq!(pruning_evidence.input_row_groups, -1);
 }
 
-#[test]
 fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_outputs() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let bytes = [0u8; 8];
     let mut out_table = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
@@ -346,9 +321,7 @@ fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_output
     assert_eq!(pruning_evidence.input_row_groups, -1);
 }
 
-#[test]
 fn test_io_read_parquet_negative_num_columns_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
@@ -359,9 +332,7 @@ fn test_io_read_parquet_negative_num_columns_rejected() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_io_read_parquet_null_column_name_entry_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut columns = [ptr::null()];
@@ -383,9 +354,7 @@ fn test_io_read_parquet_null_column_name_entry_rejected() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_io_read_parquet_negative_skip_rows_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
@@ -396,9 +365,7 @@ fn test_io_read_parquet_negative_skip_rows_rejected() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_io_read_parquet_invalid_num_rows_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
@@ -409,9 +376,7 @@ fn test_io_read_parquet_invalid_num_rows_rejected() {
     assert!(out.is_null());
 }
 
-#[test]
 fn test_io_write_parquet_negative_num_columns_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
@@ -427,9 +392,7 @@ fn test_io_write_parquet_negative_num_columns_rejected() {
     }
 }
 
-#[test]
 fn test_io_write_parquet_null_column_name_entry_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
@@ -446,9 +409,7 @@ fn test_io_write_parquet_null_column_name_entry_rejected() {
     }
 }
 
-#[test]
 fn test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries() {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let col = make_i32_column(&[10, 20, 30, 40, 50, 60]);
@@ -474,9 +435,7 @@ fn test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries
     }
 }
 
-#[test]
 fn test_io_probe_path_datasource_reports_local_file_capability_and_size() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let col = make_i32_column(&[10, 20, 30]);
     let tbl = make_table_from_one_column(col);
@@ -523,7 +482,6 @@ fn test_io_probe_path_datasource_reports_local_file_capability_and_size() {
 
 #[test]
 fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
@@ -549,9 +507,7 @@ fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
     assert!(out_names.is_null());
 }
 
-#[test]
 fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut columns = [ptr::null()];
@@ -579,9 +535,7 @@ fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
     assert_eq!(out_num_names, 0);
 }
 
-#[test]
 fn test_io_read_parquet_with_metadata_negative_skip_rows_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
@@ -607,9 +561,7 @@ fn test_io_read_parquet_with_metadata_negative_skip_rows_rejected() {
     assert!(out_names.is_null());
 }
 
-#[test]
 fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
-    let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
     let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
@@ -635,9 +587,7 @@ fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
     assert!(out_names.is_null());
 }
 
-#[test]
 fn test_dictionary_match_dictionaries_invalid_num_columns_clears_outputs() {
-    let _shim_state = lock_shim_state();
     let dict_columns = std::ptr::NonNull::<cudf_sys::cudf_column_view_handle>::dangling().as_ptr();
     let mut out_columns = std::ptr::NonNull::<cudf_sys::cudf_column_handle>::dangling().as_ptr();
     let mut out_count: i32 = -1;
@@ -652,9 +602,7 @@ fn test_dictionary_match_dictionaries_invalid_num_columns_clears_outputs() {
     assert_eq!(out_count, 0);
 }
 
-#[test]
 fn test_replace_nulls_policy_rejects_invalid_policy_value() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column_nullable(&[1, 0, 3], &[true, false, true]);
     let view = make_column_view(col);
 
@@ -676,9 +624,7 @@ fn test_replace_nulls_policy_rejects_invalid_policy_value() {
     }
 }
 
-#[test]
 fn test_dictionary_match_dictionaries_null_entry_clears_outputs() {
-    let _shim_state = lock_shim_state();
     let dict = make_dictionary_i32_column(&[1, 2, 1]);
     let dict_view = make_column_view(dict);
     let dict_columns = [dict_view, ptr::null_mut()];
@@ -706,9 +652,7 @@ fn test_dictionary_match_dictionaries_null_entry_clears_outputs() {
     }
 }
 
-#[test]
 fn test_dictionary_match_dictionaries_returns_heap_array() {
-    let _shim_state = lock_shim_state();
     let left = make_dictionary_i32_column(&[10, 20, 10, 30]);
     let right = make_dictionary_i32_column(&[20, 30, 40, 20]);
     let left_view = make_column_view(left);
@@ -751,4 +695,88 @@ fn test_dictionary_match_dictionaries_returns_heap_array() {
         cudf_sys::cudf_column_destroy(right);
         cudf_sys::cudf_column_destroy(left);
     }
+}
+
+#[test]
+fn io_and_dictionary_tests_cases() {
+    run_named_cases(&[
+        (
+            "test_dictionary_match_dictionaries_null_entry_clears_outputs",
+            test_dictionary_match_dictionaries_null_entry_clears_outputs,
+        ),
+        (
+            "test_dictionary_match_dictionaries_returns_heap_array",
+            test_dictionary_match_dictionaries_returns_heap_array,
+        ),
+        (
+            "test_io_probe_path_datasource_reports_local_file_capability_and_size",
+            test_io_probe_path_datasource_reports_local_file_capability_and_size,
+        ),
+        ("test_io_read_parquet_invalid_num_rows_rejected", test_io_read_parquet_invalid_num_rows_rejected),
+        (
+            "test_io_read_parquet_from_host_buffer_invalid_args_clear_out",
+            test_io_read_parquet_from_host_buffer_invalid_args_clear_out,
+        ),
+        ("test_io_read_parquet_null_column_name_entry_rejected", test_io_read_parquet_null_column_name_entry_rejected),
+        (
+            "test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries",
+            test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries,
+        ),
+        (
+            "test_io_read_parquet_from_host_buffer_empty_buffer_rejected",
+            test_io_read_parquet_from_host_buffer_empty_buffer_rejected,
+        ),
+        (
+            "test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles",
+            test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles,
+        ),
+        (
+            "test_io_read_parquet_with_metadata_invalid_num_rows_rejected",
+            test_io_read_parquet_with_metadata_invalid_num_rows_rejected,
+        ),
+        (
+            "test_io_read_parquet_with_metadata_negative_skip_rows_rejected",
+            test_io_read_parquet_with_metadata_negative_skip_rows_rejected,
+        ),
+        (
+            "test_io_read_parquet_with_metadata_null_column_name_entry_rejected",
+            test_io_read_parquet_with_metadata_null_column_name_entry_rejected,
+        ),
+        (
+            "test_io_write_parquet_null_column_name_entry_rejected",
+            test_io_write_parquet_null_column_name_entry_rejected,
+        ),
+        (
+            "test_dictionary_match_dictionaries_invalid_num_columns_clears_outputs",
+            test_dictionary_match_dictionaries_invalid_num_columns_clears_outputs,
+        ),
+        ("test_io_write_parquet_negative_num_columns_rejected", test_io_write_parquet_negative_num_columns_rejected),
+        (
+            "test_io_read_parquet_with_metadata_invalid_args_clear_outputs",
+            test_io_read_parquet_with_metadata_invalid_args_clear_outputs,
+        ),
+        ("test_io_read_parquet_missing_file_clears_out", test_io_read_parquet_missing_file_clears_out),
+        ("test_io_read_parquet_negative_skip_rows_rejected", test_io_read_parquet_negative_skip_rows_rejected),
+        (
+            "test_replace_nulls_policy_rejects_invalid_policy_value",
+            test_replace_nulls_policy_rejects_invalid_policy_value,
+        ),
+        ("test_io_read_parquet_negative_num_columns_rejected", test_io_read_parquet_negative_num_columns_rejected),
+        (
+            "test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_outputs",
+            test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_outputs,
+        ),
+        ("test_invalid_argument_maps_to_invalid_argument", test_invalid_argument_maps_to_invalid_argument),
+        ("test_bad_alloc_publishes_copyable_typed_error_detail", test_bad_alloc_publishes_copyable_typed_error_detail),
+        ("test_non_io_runtime_error_maps_to_unknown", test_non_io_runtime_error_maps_to_unknown),
+        (
+            "test_owning_handle_size_arithmetic_overflow_is_typed_and_does_not_wrap",
+            test_owning_handle_size_arithmetic_overflow_is_typed_and_does_not_wrap,
+        ),
+        (
+            "test_shim_invariant_error_publishes_invariant_status_with_unknown_source",
+            test_shim_invariant_error_publishes_invariant_status_with_unknown_source,
+        ),
+        ("test_table_view_null_handle_clears_out", test_table_view_null_handle_clears_out),
+    ]);
 }

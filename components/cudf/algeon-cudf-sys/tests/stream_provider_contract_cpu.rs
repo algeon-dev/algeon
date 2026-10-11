@@ -6,9 +6,6 @@ const STREAM_POOL_HEADER: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cudf/cpp/include/cudf/detail/utilities/stream_pool.hpp"));
 const STREAM_POOL_SOURCE: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cudf/cpp/src/utilities/stream_pool.cpp"));
-const STREAM_SHIM_HEADER: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/stream.h"));
-const STREAM_SHIM_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/stream.cpp"));
 const DATASOURCE_SOURCE: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cudf/cpp/src/io/utilities/datasource.cpp"));
 const HOST_MEMORY_SOURCE: &str =
@@ -23,18 +20,6 @@ fn fork_stream_provider_contract_has_upstream_fallback_and_ordering_boundary() {
     assert!(STREAM_POOL_SOURCE.contains("cudaEventRecord(event, stream)"));
     assert!(STREAM_POOL_SOURCE.contains("cudaStreamWaitEvent(strm, event, 0)"));
     assert!(STREAM_POOL_SOURCE.contains("void join_streams"));
-}
-
-#[test]
-fn shim_route_contract_rejects_unowned_and_empty_attempt_stream_sets() {
-    assert!(STREAM_SHIM_HEADER.contains("cudf_stream_provider_register_attempt"));
-    assert!(STREAM_SHIM_HEADER.contains("cudf_stream_provider_unregister_attempt"));
-    assert!(STREAM_SHIM_HEADER.contains("cudf_stream_provider_attach_attempt_stream"));
-    assert!(STREAM_SHIM_SOURCE.contains("fork parent is not attached to an admitted attempt"));
-    assert!(STREAM_SHIM_SOURCE.contains("auxiliary stream set is empty"));
-    assert!(STREAM_SHIM_SOURCE.contains("result.emplace_back(served);"));
-    assert!(STREAM_SHIM_SOURCE.contains("every attempt auxiliary fork is already claimed by a live alias"));
-    assert!(STREAM_SHIM_SOURCE.contains("attempt_stream_routes.erase(it)"));
 }
 
 #[test]

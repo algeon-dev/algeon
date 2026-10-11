@@ -375,38 +375,6 @@ pub(super) fn assert_empty_bounded_filtered_join_result(result: &QueryExecutionR
     assert_eq!(metrics.filtered_join_probe_state_bytes, join_metrics.filtered_probe_state_bytes);
 }
 
-pub(super) fn execute_left_only_residual_join(
-    _runtime: &Arc<cudf::Runtime>,
-    left_path: &Path,
-    right_path: &Path,
-    left_schema: &Arc<Schema>,
-    right_schema: &Arc<Schema>,
-    join_type: JoinType,
-) -> QueryExecutionResult {
-    let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
-
-    let mut builder = QueryPlanBuilder::new();
-    let left =
-        builder.add_source(SourceNode::LocalParquet(join_left_source(left_path, left_schema, &["order_id", "qty"])));
-    let right =
-        builder.add_source(SourceNode::LocalParquet(join_right_source(right_path, right_schema, &["order_id"])));
-    let join = builder
-        .add_join(
-            left,
-            right,
-            JoinSpec::new(join_type, vec![join_order_id_key()])
-                .with_residual_predicate(qty_gt_right_order_id_times_ten())
-                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-                .with_build_side(JoinSide::Right),
-            Arc::clone(&output_schema),
-        )
-        .unwrap();
-    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)])).unwrap();
-    let plan = builder.finish_with_host_sink(sort).unwrap();
-    let context = backend_context();
-    execute_query_plan(&context, &plan).unwrap()
-}
-
 pub(super) fn execute_bounded_left_only_residual_join(
     runtime: &Arc<cudf::Runtime>,
     left_path: &Path,

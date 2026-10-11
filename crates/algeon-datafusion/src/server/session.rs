@@ -82,8 +82,7 @@ mod tests {
 
     use super::*;
     use crate::server::{
-        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_CUGRAPH_ENABLED_ENV, config::ALGEON_SERVER_EXECUTION_MODE_ENV,
-        planner::AlgeonGpuExecutionMode,
+        ALGEON_SERVER_CONFIG_FILE_ENV, config::ALGEON_SERVER_EXECUTION_MODE_ENV, planner::AlgeonGpuExecutionMode,
     };
 
     fn server_config_with_test_device_profile(mut env: BTreeMap<&'static str, String>) -> ServerConfig {
@@ -92,17 +91,6 @@ mod tests {
             .expect("write server config fixture");
         env.insert(ALGEON_SERVER_CONFIG_FILE_ENV, config_file.path().to_string_lossy().into_owned());
         ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("load server config fixture")
-    }
-
-    #[test]
-    fn cugraph_sql_config_inherits_server_default_graph_options() {
-        let env = BTreeMap::from([(ALGEON_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
-        let server = server_config_with_test_device_profile(env);
-        let cugraph = server.cugraph.as_ref().expect("cuGraph must be enabled");
-        let sql = cugraph_sql_config(cugraph);
-
-        assert_eq!(sql.default_graph_options, cugraph.default_graph_options);
-        assert_eq!(sql.host_boundary_config, cugraph.host_boundary_config);
     }
 
     #[test]

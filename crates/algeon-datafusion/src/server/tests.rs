@@ -3,18 +3,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+use cudf::testing;
 use datafusion::{execution::SessionStateBuilder, prelude::SessionConfig};
 use query_runtime::observability::RuntimeObservationConfig;
-use tokio::time::timeout;
+use tokio::{runtime::Builder as TestRuntimeBuilder, time::timeout};
 
 use super::*;
-use crate::server::{
-    adapter_error::ErrorCode,
-    backend::{
-        AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+use crate::{
+    closing_backend::ClosingBackend,
+    server::{
+        adapter_error::ErrorCode,
+        backend::{
+            AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
+            GpuMemoryOwnership,
+        },
+        native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
+        planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     },
-    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
-    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
 };
 
 const TEST_DEVICE_BUDGET_BYTES: u64 = 4096;
@@ -45,6 +50,7 @@ fn base_config() -> ServerConfig {
         gpu_devices: vec![0],
         gpu_memory_ownership: vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)],
         statement_ticket_ttl: Duration::from_secs(60),
+        http2_keepalive: Http2Keepalive::default(),
         observability: ServerObservabilityConfig::default(),
         native_optimizer_config: AlgeonNativeOptimizerConfig::default(),
         auth: AuthConfig::default(),
@@ -74,35 +80,37 @@ fn bounded_config(max_active_attempts_per_device: usize) -> ServerConfig {
     config
 }
 
-fn runtime_backend(max_active_attempts_per_device: usize) -> AlgeonGpuBackend {
+fn runtime_backend(max_active_attempts_per_device: usize) -> ClosingBackend {
     runtime_backend_with_policy(max_active_attempts_per_device, AlgeonGpuExecutionMode::NativePreferred)
 }
 
-fn strict_runtime_backend(max_active_attempts_per_device: usize) -> AlgeonGpuBackend {
+fn strict_runtime_backend(max_active_attempts_per_device: usize) -> ClosingBackend {
     runtime_backend_with_policy(max_active_attempts_per_device, AlgeonGpuExecutionMode::NativeRequired)
 }
 
 fn runtime_backend_with_policy(
     max_active_attempts_per_device: usize,
     execution_mode: AlgeonGpuExecutionMode,
-) -> AlgeonGpuBackend {
+) -> ClosingBackend {
     let profile = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
         .with_max_active_attempts(max_active_attempts_per_device);
-    AlgeonGpuBackend::builder()
-        .devices([AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .with_native_execution_config(AlgeonNativeExecutionConfig::new(
-            SourceChunking::try_new(
-                TEST_MAX_SOURCE_CHUNK_BYTES,
-                TEST_MAX_ROW_GROUPS_PER_CHUNK,
-                TEST_MAX_RETRY_ATTEMPTS,
-                TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
-            )
-            .expect("valid source chunking"),
-        ))
-        .with_execution_mode(execution_mode)
-        .build()
-        .expect("runtime backend should build")
+    ClosingBackend::new(
+        AlgeonGpuBackend::builder()
+            .devices([AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(
+                    TEST_MAX_SOURCE_CHUNK_BYTES,
+                    TEST_MAX_ROW_GROUPS_PER_CHUNK,
+                    TEST_MAX_RETRY_ATTEMPTS,
+                    TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+                )
+                .expect("valid source chunking"),
+            ))
+            .with_execution_mode(execution_mode)
+            .build()
+            .expect("runtime backend should build"),
+    )
 }
 
 #[test]
@@ -305,7 +313,6 @@ fn builder_rejects_injected_backend_admission_conflict() {
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.max_active_attempts"));
 }
 
-#[test]
 fn builder_rejects_injected_backend_default_query_limit_conflict() {
     let backend = runtime_backend(1);
     let mut config = bounded_config(1);
@@ -317,42 +324,30 @@ fn builder_rejects_injected_backend_default_query_limit_conflict() {
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.default_query_limit_bytes"));
 }
 
-#[test]
-fn builder_rejects_injected_backend_per_device_limit_conflict() {
-    let backend = runtime_backend(1);
-    let mut config = bounded_config(1);
-    config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_max_active_attempts(2);
-
-    let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
-
-    assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.max_active_attempts"));
-}
-
-#[test]
 fn builder_accepts_matching_explicit_per_device_cap() {
     let profile = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
         .with_max_active_attempts(1);
-    let backend = AlgeonGpuBackend::builder()
-        .devices([AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .with_native_execution_config(AlgeonNativeExecutionConfig::new(
-            SourceChunking::try_new(
-                TEST_MAX_SOURCE_CHUNK_BYTES,
-                TEST_MAX_ROW_GROUPS_PER_CHUNK,
-                TEST_MAX_RETRY_ATTEMPTS,
-                TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
-            )
-            .expect("valid source chunking"),
-        ))
-        .build()
-        .expect("injected backend should build");
+    let backend = ClosingBackend::new(
+        AlgeonGpuBackend::builder()
+            .devices([AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(
+                    TEST_MAX_SOURCE_CHUNK_BYTES,
+                    TEST_MAX_ROW_GROUPS_PER_CHUNK,
+                    TEST_MAX_RETRY_ATTEMPTS,
+                    TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+                )
+                .expect("valid source chunking"),
+            ))
+            .build()
+            .expect("injected backend should build"),
+    );
     let config = bounded_config(1);
 
     validate_injected_backend_matches_config(&backend, &config).unwrap();
 }
 
-#[test]
 fn builder_rejects_injected_backend_queue_limit_conflict() {
     let backend = runtime_backend(1);
     let mut config = bounded_config(1);
@@ -365,6 +360,39 @@ fn builder_rejects_injected_backend_queue_limit_conflict() {
 }
 
 #[test]
+fn tests_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "builder_rejects_injected_backend_wait_timeout_conflict",
+            builder_rejects_injected_backend_wait_timeout_conflict,
+        ),
+        (
+            "builder_rejects_injected_backend_default_query_limit_conflict",
+            builder_rejects_injected_backend_default_query_limit_conflict,
+        ),
+        ("builder_accepts_matching_explicit_per_device_cap", builder_accepts_matching_explicit_per_device_cap),
+        (
+            "builder_rejects_injected_backend_queue_limit_conflict",
+            builder_rejects_injected_backend_queue_limit_conflict,
+        ),
+        ("builder_rejects_injected_backend_gpu_device_conflict", builder_rejects_injected_backend_gpu_device_conflict),
+        ("server_base_and_flight_style_clone_retain_cuvs_query_planner", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(server_base_and_flight_style_clone_retain_cuvs_query_planner())
+        }),
+        ("builder_rejects_strict_backend_session_with_incompatible_target_partitions", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(builder_rejects_strict_backend_session_with_incompatible_target_partitions())
+        }),
+    ]);
+}
+
 fn builder_rejects_injected_backend_wait_timeout_conflict() {
     let backend = runtime_backend(1);
     let mut config = bounded_config(1);
@@ -376,7 +404,6 @@ fn builder_rejects_injected_backend_wait_timeout_conflict() {
     assert_eq!(error.fact_value("config_field"), Some("admission.max_queue_wait_ms"));
 }
 
-#[test]
 fn builder_rejects_injected_backend_gpu_device_conflict() {
     let backend = runtime_backend(1);
     let mut config = bounded_config(1);
@@ -415,7 +442,6 @@ async fn strict_injected_backend_is_the_session_policy_authority() {
     assert_eq!(ctx.state().config_options().execution.target_partitions, 1);
 }
 
-#[tokio::test]
 async fn builder_rejects_strict_backend_session_with_incompatible_target_partitions() {
     let mut caller_config = bounded_config(1);
     caller_config.native_optimizer_config = AlgeonNativeOptimizerConfig::default();
@@ -427,7 +453,7 @@ async fn builder_rejects_strict_backend_session_with_incompatible_target_partiti
     let incompatible_ctx = Arc::new(SessionContext::new_with_state(incompatible_state));
 
     let error = builder_error(
-        FlightSqlServer::builder().config(caller_config).backend(backend).session_context(incompatible_ctx),
+        FlightSqlServer::builder().config(caller_config).backend(backend.clone()).session_context(incompatible_ctx),
     )
     .await;
 
@@ -439,7 +465,6 @@ async fn builder_rejects_strict_backend_session_with_incompatible_target_partiti
     assert_eq!(error.fact_value("actual_value"), Some("8"));
 }
 
-#[tokio::test]
 async fn server_base_and_flight_style_clone_retain_cuvs_query_planner() {
     let config = bounded_config(1);
     let backend = runtime_backend(1);
@@ -448,13 +473,6 @@ async fn server_base_and_flight_style_clone_retain_cuvs_query_planner() {
     assert!(format!("{:?}", ctx.state().query_planner()).contains("AlgeonQueryPlanner"));
     let cloned = SessionStateBuilder::new_from_existing(ctx.state()).build();
     assert!(format!("{:?}", cloned.query_planner()).contains("AlgeonQueryPlanner"));
-}
-
-#[test]
-fn builder_rejects_injected_session_context_from_different_backend() {
-    let error = validate_injected_session_backend_binding(false).unwrap_err();
-
-    assert_eq!(error.fact_value("reason"), Some("server_session_backend_mismatch"));
 }
 
 async fn builder_error(builder: FlightSqlServerBuilder) -> ServerError {

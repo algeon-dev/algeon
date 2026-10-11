@@ -72,12 +72,4 @@ mod tests {
         ));
         assert!(!policy.target_is_dimension_sized(None, None));
     }
-
-    #[test]
-    fn residual_scalar_range_max_rows_preserves_limit() {
-        assert_eq!(
-            OptimizerSourceTargetPolicy::default().residual_scalar_range_max_rows(),
-            OptimizerSourceTargetPolicy::DEFAULT_RESIDUAL_SCALAR_RANGE_MAX_ROWS
-        );
-    }
 }

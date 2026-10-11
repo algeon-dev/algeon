@@ -7,6 +7,8 @@ use arrow::{
     datatypes::{DataType, Field, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
+#[cfg(test)]
+use cudf::testing;
 use datafusion::{
     catalog::{Session, TableFunction, TableFunctionImpl, TableProvider},
     common::{DataFusionError, Result, ScalarValue},
@@ -15,6 +17,8 @@ use datafusion::{
     logical_expr::Expr,
     physical_plan::ExecutionPlan,
 };
+#[cfg(test)]
+use tokio::runtime::Builder as TestRuntimeBuilder;
 
 use crate::{
     error::{Error, ErrorCode},
@@ -305,7 +309,47 @@ mod tests {
         assert!(state.table_functions().contains_key(ALGEON_EXPLAIN_COVERAGE_FUNCTION));
     }
 
-    #[tokio::test]
+    #[test]
+    fn sql_cases_1() {
+        testing::run_named_cases(&[
+            ("coverage_table_function_returns_summary_candidate_rows_and_json", || {
+                TestRuntimeBuilder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("case runtime")
+                    .block_on(coverage_table_function_returns_summary_candidate_rows_and_json())
+            }),
+            ("coverage_table_function_promotes_candidate_remedies_to_columns", || {
+                TestRuntimeBuilder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("case runtime")
+                    .block_on(coverage_table_function_promotes_candidate_remedies_to_columns())
+            }),
+            ("coverage_table_function_rejects_recursive_validation", || {
+                TestRuntimeBuilder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("case runtime")
+                    .block_on(coverage_table_function_rejects_recursive_validation())
+            }),
+            ("coverage_table_function_rejects_view_indirect_recursive_validation", || {
+                TestRuntimeBuilder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("case runtime")
+                    .block_on(coverage_table_function_rejects_view_indirect_recursive_validation())
+            }),
+            ("coverage_table_function_physical_plan_applies_cpu_boundary", || {
+                TestRuntimeBuilder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("case runtime")
+                    .block_on(coverage_table_function_physical_plan_applies_cpu_boundary())
+            }),
+        ]);
+    }
+
     async fn coverage_table_function_returns_summary_candidate_rows_and_json() {
         let backend = InstalledTestGpuBackend::new();
         let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();
@@ -337,7 +381,6 @@ mod tests {
         assert_eq!(json["validated_under"]["final_plan_requirements"], serde_json::json!([]));
     }
 
-    #[tokio::test]
     async fn coverage_table_function_promotes_candidate_remedies_to_columns() {
         let backend = InstalledTestGpuBackend::new();
         let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();
@@ -368,7 +411,6 @@ mod tests {
         assert_eq!(detail["blocking"]["expression"], "random()");
     }
 
-    #[tokio::test]
     async fn coverage_table_function_rejects_recursive_validation() {
         let backend = InstalledTestGpuBackend::new();
         let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();
@@ -398,7 +440,6 @@ mod tests {
         assert_eq!(json["planning_outcome"]["rejection"]["reason_code"], "coverage_validator_recursion_unsupported");
     }
 
-    #[tokio::test]
     async fn coverage_table_function_rejects_view_indirect_recursive_validation() {
         let backend = InstalledTestGpuBackend::new();
         let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();
@@ -434,7 +475,6 @@ mod tests {
         assert_eq!(json["planning_outcome"]["rejection"]["reason_code"], "coverage_validator_recursion_unsupported");
     }
 
-    #[tokio::test]
     async fn coverage_table_function_physical_plan_applies_cpu_boundary() {
         let backend = InstalledTestGpuBackend::new();
         let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();

@@ -4,12 +4,10 @@ use cudf_sys::test_support;
 
 use crate::{
     helpers::*,
-    support::{last_error_message, lock_shim_state},
+    support::{last_error_message, run_named_cases},
 };
 
-#[test]
 fn test_table_create_failure_does_not_partially_consume_columns() {
-    let _shim_state = lock_shim_state();
     let c1 = make_i32_column(&[1, 2, 3]);
     let c2 = make_i32_column(&[4, 5, 6]);
     let mut columns = [c1, ptr::null_mut(), c2];
@@ -42,7 +40,6 @@ fn test_table_create_failure_does_not_partially_consume_columns() {
 
 #[test]
 fn test_table_release_columns_single_column() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[10, 20, 30]);
     let tbl = make_table_from_one_column(col);
 
@@ -67,7 +64,6 @@ fn test_table_release_columns_single_column() {
 
 #[test]
 fn test_table_release_columns_multiple_columns() {
-    let _shim_state = lock_shim_state();
     let c1 = make_i32_column(&[1, 2, 3]);
     let c2 = make_i32_column(&[4, 5, 6]);
     let mut col_arr = [c1, c2];
@@ -97,9 +93,7 @@ fn test_table_release_columns_multiple_columns() {
     }
 }
 
-#[test]
 fn test_table_release_columns_empty_table() {
-    let _shim_state = lock_shim_state();
     let mut tbl: cudf_sys::cudf_table_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(ptr::null_mut(), 0, &mut tbl) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -112,9 +106,7 @@ fn test_table_release_columns_empty_table() {
     assert!(out_columns.is_null());
 }
 
-#[test]
 fn test_table_create_with_num_rows_preserves_zero_column_row_count() {
-    let _shim_state = lock_shim_state();
     let mut tbl: cudf_sys::cudf_table_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create_with_num_rows(ptr::null_mut(), 0, 3, &mut tbl) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -134,9 +126,7 @@ fn test_table_create_with_num_rows_preserves_zero_column_row_count() {
     }
 }
 
-#[test]
 fn test_table_release_columns_null_table_rejected() {
-    let _shim_state = lock_shim_state();
     let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_count: i32 = 0;
     let status = unsafe { cudf_sys::cudf_table_release_columns(ptr::null_mut(), &mut out_columns, &mut out_count) };
@@ -145,7 +135,6 @@ fn test_table_release_columns_null_table_rejected() {
 
 #[test]
 fn test_table_release_columns_null_out_columns_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
 
@@ -156,9 +145,7 @@ fn test_table_release_columns_null_out_columns_rejected() {
     unsafe { cudf_sys::cudf_table_destroy(tbl) };
 }
 
-#[test]
 fn test_table_release_columns_null_out_count_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
 
@@ -169,9 +156,7 @@ fn test_table_release_columns_null_out_count_rejected() {
     unsafe { cudf_sys::cudf_table_destroy(tbl) };
 }
 
-#[test]
 fn test_table_release_columns_failure_does_not_consume_table() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[7, 8, 9]);
     let tbl = make_table_from_one_column(col);
 
@@ -206,7 +191,6 @@ fn test_table_release_columns_failure_does_not_consume_table() {
 
 #[test]
 fn test_table_release_columns_allocation_failure_does_not_consume_table() {
-    let _shim_state = lock_shim_state();
     const NUM_COLUMNS: usize = 2;
 
     let mut columns: Vec<cudf_sys::cudf_column_handle> = (0..NUM_COLUMNS).map(|_| make_empty_i32_column()).collect();
@@ -252,7 +236,6 @@ fn test_table_release_columns_allocation_failure_does_not_consume_table() {
 
 #[test]
 fn test_table_release_columns_publish_failure_does_not_consume_table() {
-    let _shim_state = lock_shim_state();
     let mut columns = vec![make_i32_column(&[1, 2, 3]), make_i32_column(&[4, 5, 6])];
     let mut tbl: cudf_sys::cudf_table_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), columns.len() as i32, &mut tbl) };
@@ -296,9 +279,7 @@ fn test_table_release_columns_publish_failure_does_not_consume_table() {
     }
 }
 
-#[test]
 fn test_table_view_from_column_views_two_columns() {
-    let _shim_state = lock_shim_state();
     let c1 = make_i32_column(&[1, 2, 3]);
     let c2 = make_i32_column(&[4, 5, 6]);
     let cv1 = make_column_view(c1);
@@ -331,7 +312,6 @@ fn test_table_view_from_column_views_two_columns() {
 
 #[test]
 fn test_table_view_from_column_views_single_column() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[10, 20]);
     let cv = make_column_view(col);
 
@@ -358,9 +338,7 @@ fn test_table_view_from_column_views_single_column() {
     }
 }
 
-#[test]
 fn test_table_view_from_column_views_null_out_rejected() {
-    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1]);
     let cv = make_column_view(col);
 
@@ -374,27 +352,21 @@ fn test_table_view_from_column_views_null_out_rejected() {
     }
 }
 
-#[test]
 fn test_table_view_from_column_views_negative_count_rejected() {
-    let _shim_state = lock_shim_state();
     let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views(ptr::null_mut(), -1, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 }
 
-#[test]
 fn test_table_view_from_column_views_null_array_with_nonzero_count_rejected() {
-    let _shim_state = lock_shim_state();
     let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views(ptr::null_mut(), 2, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
 }
 
-#[test]
 fn test_table_view_from_column_views_null_element_rejected() {
-    let _shim_state = lock_shim_state();
     let c1 = make_i32_column(&[1, 2, 3]);
     let cv1 = make_column_view(c1);
 
@@ -410,9 +382,7 @@ fn test_table_view_from_column_views_null_element_rejected() {
     }
 }
 
-#[test]
 fn test_table_view_from_column_views_zero_columns_succeeds() {
-    let _shim_state = lock_shim_state();
     let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views(ptr::null_mut(), 0, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -433,9 +403,7 @@ fn test_table_view_from_column_views_zero_columns_succeeds() {
     }
 }
 
-#[test]
 fn test_table_view_from_column_views_with_num_rows_preserves_zero_column_row_count() {
-    let _shim_state = lock_shim_state();
     let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views_with_num_rows(ptr::null_mut(), 0, 3, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -451,9 +419,7 @@ fn test_table_view_from_column_views_with_num_rows_preserves_zero_column_row_cou
     unsafe { cudf_sys::cudf_table_view_destroy(out) };
 }
 
-#[test]
 fn test_table_view_from_column_views_with_num_rows_rejects_mismatched_columns() {
-    let _shim_state = lock_shim_state();
     let column = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(column);
     let mut views = [view];
@@ -470,9 +436,7 @@ fn test_table_view_from_column_views_with_num_rows_rejects_mismatched_columns() 
     }
 }
 
-#[test]
 fn test_table_view_select_zero_columns_preserves_source_row_count() {
-    let _shim_state = lock_shim_state();
     let tbl = make_table_from_columns(vec![make_i32_column(&[1, 2, 3]), make_i32_column(&[4, 5, 6])]);
     let source = make_table_view(tbl);
     let mut projected: cudf_sys::cudf_table_view_handle = ptr::null_mut();
@@ -492,4 +456,55 @@ fn test_table_view_select_zero_columns_preserves_source_row_count() {
         cudf_sys::cudf_table_view_destroy(source);
         cudf_sys::cudf_table_destroy(tbl);
     }
+}
+
+#[test]
+fn table_tests_cases() {
+    run_named_cases(&[
+        ("test_table_view_from_column_views_two_columns", test_table_view_from_column_views_two_columns),
+        (
+            "test_table_view_select_zero_columns_preserves_source_row_count",
+            test_table_view_select_zero_columns_preserves_source_row_count,
+        ),
+        (
+            "test_table_create_failure_does_not_partially_consume_columns",
+            test_table_create_failure_does_not_partially_consume_columns,
+        ),
+        (
+            "test_table_view_from_column_views_null_element_rejected",
+            test_table_view_from_column_views_null_element_rejected,
+        ),
+        (
+            "test_table_release_columns_failure_does_not_consume_table",
+            test_table_release_columns_failure_does_not_consume_table,
+        ),
+        ("test_table_view_from_column_views_null_out_rejected", test_table_view_from_column_views_null_out_rejected),
+        ("test_table_release_columns_null_out_count_rejected", test_table_release_columns_null_out_count_rejected),
+        (
+            "test_table_view_from_column_views_with_num_rows_rejects_mismatched_columns",
+            test_table_view_from_column_views_with_num_rows_rejects_mismatched_columns,
+        ),
+        ("test_table_release_columns_null_table_rejected", test_table_release_columns_null_table_rejected),
+        (
+            "test_table_view_from_column_views_negative_count_rejected",
+            test_table_view_from_column_views_negative_count_rejected,
+        ),
+        (
+            "test_table_view_from_column_views_null_array_with_nonzero_count_rejected",
+            test_table_view_from_column_views_null_array_with_nonzero_count_rejected,
+        ),
+        (
+            "test_table_view_from_column_views_with_num_rows_preserves_zero_column_row_count",
+            test_table_view_from_column_views_with_num_rows_preserves_zero_column_row_count,
+        ),
+        (
+            "test_table_create_with_num_rows_preserves_zero_column_row_count",
+            test_table_create_with_num_rows_preserves_zero_column_row_count,
+        ),
+        (
+            "test_table_view_from_column_views_zero_columns_succeeds",
+            test_table_view_from_column_views_zero_columns_succeeds,
+        ),
+        ("test_table_release_columns_empty_table", test_table_release_columns_empty_table),
+    ]);
 }

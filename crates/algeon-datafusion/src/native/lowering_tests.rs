@@ -81,19 +81,13 @@ use crate::{
 
 mod advisory;
 
-#[path = "../../tests/support/analytical_olap_workload.rs"]
-mod analytical_olap_workload;
 #[path = "../../tests/support/tpch_fallback_workload.rs"]
 mod tpch_fallback_workload;
 #[path = "../../tests/support/tpch_session.rs"]
 mod tpch_session;
 
-use self::{
-    analytical_olap_workload::*, tpch_fallback_workload::tpch_fallback_pressure_workload_items,
-    tpch_session::tpch_report_session_config,
-};
+use self::{tpch_fallback_workload::tpch_fallback_pressure_workload_items, tpch_session::tpch_report_session_config};
 
-mod analytical_olap;
 mod demand_plans;
 mod fixtures;
 mod full_gpu_gap_analysis;

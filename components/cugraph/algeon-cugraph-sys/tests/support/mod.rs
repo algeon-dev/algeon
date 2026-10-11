@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
 #[path = "../../build_support.rs"]
 mod build_support;
@@ -8,16 +8,14 @@ pub fn manifest_dir() -> PathBuf {
 }
 
 pub fn include_dir() -> PathBuf {
-    let manifest_dir = manifest_dir();
-    let contract = build_support::resolve_native_build_contract(
-        &manifest_dir,
-        std::env::var_os("CUGRAPH_NATIVE_INCLUDE_DIRS"),
-        std::env::var_os("CUGRAPH_NATIVE_LINK_DIRS"),
-        std::env::var_os("CUGRAPH_RUNTIME_LIB_DIRS"),
-        std::env::var_os("CUGRAPH_CMAKE_BUILD_DIR"),
-    )
-    .unwrap_or_else(|err| panic!("{err}"));
-    build_support::primary_cugraph_include_dir(&contract.native_include_dirs).unwrap_or_else(|err| panic!("{err}"))
+    #[expect(
+        clippy::option_env_unwrap,
+        reason = "DOCS_RS compiles these targets without native include metadata; execution requires it"
+    )]
+    let resolved = option_env!("CUGRAPH_SYS_NATIVE_INCLUDE_DIRS")
+        .expect("native header contract tests require a build with resolved cuGraph includes");
+    let native_include_dirs = env::split_paths(resolved).collect::<Vec<_>>();
+    build_support::primary_cugraph_include_dir(&native_include_dirs).unwrap_or_else(|err| panic!("{err}"))
 }
 
 pub fn strip_c_comments(source: &str) -> String {

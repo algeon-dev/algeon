@@ -10,7 +10,6 @@ use super::*;
 
 #[test]
 fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_read() {
-    let runtime = backend_runtime();
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -90,7 +89,7 @@ fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_re
     assert_eq!(facts.get("expression_family").map(String::as_str), Some("like"));
     assert_eq!(facts.get("reason").map(String::as_str), Some("join_residual_expression_family_not_supported"));
 
-    let context = bounded_join_execution_context(&runtime);
+    let context = backend_context_with_grant(1024 * 1024_u64);
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("unsupported bounded multi-join residual should fail before source reads"),
         Err(error) => error,

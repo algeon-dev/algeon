@@ -30,7 +30,7 @@ use cudf::{
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, column_from_strs_nullable, dataframe_from_columns,
-    error_context_value, nullable_series, run_named_cases, sample_runtime, series,
+    error_context_value, nullable_series, sample_runtime, series,
 };
 
 fn import_record_batch(batch: &RecordBatch) -> cudf::Result<DataFrame> {
@@ -2069,249 +2069,258 @@ fn test_from_record_batches_rejects_schema_mismatch() {
     assert_eq!(error.code(), ErrorCode::TypeMismatch);
 }
 
-#[test]
-fn arrow_tests_cases() {
-    run_named_cases(&[
-        (
-            "test_arrow_datatype_try_from_type_id_supported_mappings",
-            test_arrow_datatype_try_from_type_id_supported_mappings,
-        ),
-        (
-            "test_arrow_datatype_try_from_type_id_rejects_unsupported_types",
-            test_arrow_datatype_try_from_type_id_rejects_unsupported_types,
-        ),
-        (
-            "test_type_id_try_from_arrow_datatype_supported_mappings",
-            test_type_id_try_from_arrow_datatype_supported_mappings,
-        ),
-        (
-            "test_type_id_try_from_arrow_datatype_rejects_unsupported_types",
-            test_type_id_try_from_arrow_datatype_rejects_unsupported_types,
-        ),
-        (
-            "test_arrow_host_dtype_mapping_preserves_logical_metadata",
-            test_arrow_host_dtype_mapping_preserves_logical_metadata,
-        ),
-        (
-            "test_arrow_host_rejects_non_positive_fixed_size_list_dimension",
-            test_arrow_host_rejects_non_positive_fixed_size_list_dimension,
-        ),
-        (
-            "test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children",
-            test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children,
-        ),
-        (
-            "test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation",
-            test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation,
-        ),
-        ("test_arrow_host_duration_import_export_mappings", test_arrow_host_duration_import_export_mappings),
-        (
-            "test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range",
-            test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range,
-        ),
-        (
-            "test_arrow_host_schema_validation_exposes_planner_metadata",
-            test_arrow_host_schema_validation_exposes_planner_metadata,
-        ),
-        (
-            "test_arrow_host_schema_validation_accepts_empty_schema_without_copying",
-            test_arrow_host_schema_validation_accepts_empty_schema_without_copying,
-        ),
-        (
-            "test_arrow_host_record_batch_schema_validation_uses_batch_row_count_without_copying",
-            test_arrow_host_record_batch_schema_validation_uses_batch_row_count_without_copying,
-        ),
-        (
-            "test_arrow_host_record_batch_schema_validation_reanchors_schema_errors",
-            test_arrow_host_record_batch_schema_validation_reanchors_schema_errors,
-        ),
-        (
-            "test_arrow_host_schema_validation_accepts_timezone_and_fixed_width_lists_before_copy",
-            test_arrow_host_schema_validation_accepts_timezone_and_fixed_width_lists_before_copy,
-        ),
-        (
-            "test_arrow_host_schema_validation_rejects_duplicate_names_before_copy",
-            test_arrow_host_schema_validation_rejects_duplicate_names_before_copy,
-        ),
-        ("test_arrow_numeric_wrapper_preserves_source_chain", test_arrow_numeric_wrapper_preserves_source_chain),
-        ("test_to_record_batch_wrapper_preserves_source_chain", test_to_record_batch_wrapper_preserves_source_chain),
-        (
-            "test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract",
-            test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract,
-        ),
-        (
-            "test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_family",
-            test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_family,
-        ),
-        (
-            "test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code",
-            test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code,
-        ),
-        (
-            "test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_scale_values_and_nulls",
-            test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_scale_values_and_nulls,
-        ),
-        (
-            "test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale",
-            test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale,
-        ),
-        ("test_round_trip_i32", test_round_trip_i32),
-        ("test_zero_column_export_preserves_logical_row_count", test_zero_column_export_preserves_logical_row_count),
-        (
-            "test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count",
-            test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count,
-        ),
-        ("test_round_trip_i64", test_round_trip_i64),
-        ("test_round_trip_f32_f64", test_round_trip_f32_f64),
-        (
-            "test_to_record_batch_exports_decimal128_date32_and_timestamp_units",
-            test_to_record_batch_exports_decimal128_date32_and_timestamp_units,
-        ),
-        (
-            "test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls",
-            test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls,
-        ),
-        (
-            "test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract",
-            test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract,
-        ),
-        (
-            "test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export",
-            test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export,
-        ),
-        (
-            "test_list_utf8_import_exports_arrow_list_with_null_lists_and_null_elements",
-            test_list_utf8_import_exports_arrow_list_with_null_lists_and_null_elements,
-        ),
-        (
-            "test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_export",
-            test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_export,
-        ),
-        ("test_sliced_list_utf8_import_normalizes_offsets", test_sliced_list_utf8_import_normalizes_offsets),
-        (
-            "test_list_float32_import_exports_numeric_child_with_root_and_child_validity",
-            test_list_float32_import_exports_numeric_child_with_root_and_child_validity,
-        ),
-        (
-            "test_sliced_large_list_float64_import_preserves_non_null_special_values_and_empty_rows",
-            test_sliced_large_list_float64_import_preserves_non_null_special_values_and_empty_rows,
-        ),
-        (
-            "test_integer_list_widths_round_trip_across_list_shapes",
-            test_integer_list_widths_round_trip_across_list_shapes,
-        ),
-        (
-            "test_list_boolean_import_unpacks_bool8_and_reexports_exact_values",
-            test_list_boolean_import_unpacks_bool8_and_reexports_exact_values,
-        ),
-        (
-            "test_large_list_boolean_slice_and_zero_child_shapes_round_trip",
-            test_large_list_boolean_slice_and_zero_child_shapes_round_trip,
-        ),
-        (
-            "test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets",
-            test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets,
-        ),
-        (
-            "test_sliced_fixed_size_list_float32_import_uses_active_child_range",
-            test_sliced_fixed_size_list_float32_import_uses_active_child_range,
-        ),
-        (
-            "test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema",
-            test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema,
-        ),
-        (
-            "test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema",
-            test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema,
-        ),
-        (
-            "test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schema",
-            test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schema,
-        ),
-        (
-            "test_arrow_list_constructor_rejects_child_length_mismatch_before_import",
-            test_arrow_list_constructor_rejects_child_length_mismatch_before_import,
-        ),
-        (
-            "test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construction",
-            test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construction,
-        ),
-        (
-            "test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_length",
-            test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_length,
-        ),
-        (
-            "test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows",
-            test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows,
-        ),
-        (
-            "test_round_trip_nullable_decimal128_date32_and_timestamp_units",
-            test_round_trip_nullable_decimal128_date32_and_timestamp_units,
-        ),
-        (
-            "test_gpu_record_batch_preserves_date64_and_time_schema_contract",
-            test_gpu_record_batch_preserves_date64_and_time_schema_contract,
-        ),
-        ("test_round_trip_nullable_i32", test_round_trip_nullable_i32),
-        ("test_round_trip_nullable_f64", test_round_trip_nullable_f64),
-        ("test_round_trip_bool8", test_round_trip_bool8),
-        ("test_round_trip_nullable_bool8", test_round_trip_nullable_bool8),
-        (
-            "test_to_record_batch_nullable_bool_from_comparison_preserves_nulls",
-            test_to_record_batch_nullable_bool_from_comparison_preserves_nulls,
-        ),
-        ("test_schema_preserved_multi_column", test_schema_preserved_multi_column),
-        ("test_from_record_batch_creates_dataframe", test_from_record_batch_creates_dataframe),
-        (
-            "test_from_record_batch_binds_caller_runtime_provenance",
-            test_from_record_batch_binds_caller_runtime_provenance,
-        ),
-        ("test_from_record_batch_with_nulls", test_from_record_batch_with_nulls),
-        (
-            "test_from_record_batch_primitive_slice_import_uses_logical_values",
-            test_from_record_batch_primitive_slice_import_uses_logical_values,
-        ),
-        (
-            "test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls",
-            test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls,
-        ),
-        ("test_round_trip_string_only", test_round_trip_string_only),
-        ("test_round_trip_mixed_string_and_numeric", test_round_trip_mixed_string_and_numeric),
-        ("test_round_trip_nullable_string", test_round_trip_nullable_string),
-        ("test_round_trip_string_with_empty_values", test_round_trip_string_with_empty_values),
-        ("test_round_trip_string_unicode", test_round_trip_string_unicode),
-        ("test_from_record_batch_string_array", test_from_record_batch_string_array),
-        ("test_from_record_batch_nullable_string_array", test_from_record_batch_nullable_string_array),
-        (
-            "test_from_record_batch_string_slice_import_uses_logical_range",
-            test_from_record_batch_string_slice_import_uses_logical_range,
-        ),
-        ("test_from_record_batch_large_string_array", test_from_record_batch_large_string_array),
-        (
-            "test_from_record_batch_large_string_slice_import_uses_logical_range",
-            test_from_record_batch_large_string_slice_import_uses_logical_range,
-        ),
-        ("test_from_record_batch_string_view_array", test_from_record_batch_string_view_array),
-        (
-            "test_from_record_batch_string_view_slice_import_uses_logical_range",
-            test_from_record_batch_string_view_slice_import_uses_logical_range,
-        ),
-        (
-            "test_gpu_record_batch_accepts_utf8_view_schema_contract",
-            test_gpu_record_batch_accepts_utf8_view_schema_contract,
-        ),
-        ("test_round_trip_empty_string_schema", test_round_trip_empty_string_schema),
-        ("test_from_record_batches_matches_per_batch_import", test_from_record_batches_matches_per_batch_import),
-        ("test_from_record_batches_supports_sliced_batches", test_from_record_batches_supports_sliced_batches),
-        (
-            "test_from_record_batches_crosses_staging_slab_boundaries",
-            test_from_record_batches_crosses_staging_slab_boundaries,
-        ),
-        (
-            "test_from_record_batches_nullable_and_string_fallback",
-            test_from_record_batches_nullable_and_string_fallback,
-        ),
-        ("test_from_record_batches_rejects_empty_input", test_from_record_batches_rejects_empty_input),
-        ("test_from_record_batches_rejects_schema_mismatch", test_from_record_batches_rejects_schema_mismatch),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "arrow_tests::test_arrow_datatype_try_from_type_id_supported_mappings",
+        test_arrow_datatype_try_from_type_id_supported_mappings,
+    ),
+    (
+        "arrow_tests::test_arrow_datatype_try_from_type_id_rejects_unsupported_types",
+        test_arrow_datatype_try_from_type_id_rejects_unsupported_types,
+    ),
+    (
+        "arrow_tests::test_type_id_try_from_arrow_datatype_supported_mappings",
+        test_type_id_try_from_arrow_datatype_supported_mappings,
+    ),
+    (
+        "arrow_tests::test_type_id_try_from_arrow_datatype_rejects_unsupported_types",
+        test_type_id_try_from_arrow_datatype_rejects_unsupported_types,
+    ),
+    (
+        "arrow_tests::test_arrow_host_dtype_mapping_preserves_logical_metadata",
+        test_arrow_host_dtype_mapping_preserves_logical_metadata,
+    ),
+    (
+        "arrow_tests::test_arrow_host_rejects_non_positive_fixed_size_list_dimension",
+        test_arrow_host_rejects_non_positive_fixed_size_list_dimension,
+    ),
+    (
+        "arrow_tests::test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children",
+        test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children,
+    ),
+    (
+        "arrow_tests::test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation",
+        test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation,
+    ),
+    ("arrow_tests::test_arrow_host_duration_import_export_mappings", test_arrow_host_duration_import_export_mappings),
+    (
+        "arrow_tests::test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range",
+        test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range,
+    ),
+    (
+        "arrow_tests::test_arrow_host_schema_validation_exposes_planner_metadata",
+        test_arrow_host_schema_validation_exposes_planner_metadata,
+    ),
+    (
+        "arrow_tests::test_arrow_host_schema_validation_accepts_empty_schema_without_copying",
+        test_arrow_host_schema_validation_accepts_empty_schema_without_copying,
+    ),
+    (
+        "arrow_tests::test_arrow_host_record_batch_schema_validation_uses_batch_row_count_without_copying",
+        test_arrow_host_record_batch_schema_validation_uses_batch_row_count_without_copying,
+    ),
+    (
+        "arrow_tests::test_arrow_host_record_batch_schema_validation_reanchors_schema_errors",
+        test_arrow_host_record_batch_schema_validation_reanchors_schema_errors,
+    ),
+    (
+        "arrow_tests::test_arrow_host_schema_validation_accepts_timezone_and_fixed_width_lists_before_copy",
+        test_arrow_host_schema_validation_accepts_timezone_and_fixed_width_lists_before_copy,
+    ),
+    (
+        "arrow_tests::test_arrow_host_schema_validation_rejects_duplicate_names_before_copy",
+        test_arrow_host_schema_validation_rejects_duplicate_names_before_copy,
+    ),
+    (
+        "arrow_tests::test_arrow_numeric_wrapper_preserves_source_chain",
+        test_arrow_numeric_wrapper_preserves_source_chain,
+    ),
+    (
+        "arrow_tests::test_to_record_batch_wrapper_preserves_source_chain",
+        test_to_record_batch_wrapper_preserves_source_chain,
+    ),
+    (
+        "arrow_tests::test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract",
+        test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract,
+    ),
+    (
+        "arrow_tests::test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_family",
+        test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_family,
+    ),
+    (
+        "arrow_tests::test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code",
+        test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code,
+    ),
+    (
+        "arrow_tests::test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_scale_values_and_nulls",
+        test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_scale_values_and_nulls,
+    ),
+    (
+        "arrow_tests::test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale",
+        test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale,
+    ),
+    ("arrow_tests::test_round_trip_i32", test_round_trip_i32),
+    (
+        "arrow_tests::test_zero_column_export_preserves_logical_row_count",
+        test_zero_column_export_preserves_logical_row_count,
+    ),
+    (
+        "arrow_tests::test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count",
+        test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count,
+    ),
+    ("arrow_tests::test_round_trip_i64", test_round_trip_i64),
+    ("arrow_tests::test_round_trip_f32_f64", test_round_trip_f32_f64),
+    (
+        "arrow_tests::test_to_record_batch_exports_decimal128_date32_and_timestamp_units",
+        test_to_record_batch_exports_decimal128_date32_and_timestamp_units,
+    ),
+    (
+        "arrow_tests::test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls",
+        test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls,
+    ),
+    (
+        "arrow_tests::test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract",
+        test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract,
+    ),
+    (
+        "arrow_tests::test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export",
+        test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export,
+    ),
+    (
+        "arrow_tests::test_list_utf8_import_exports_arrow_list_with_null_lists_and_null_elements",
+        test_list_utf8_import_exports_arrow_list_with_null_lists_and_null_elements,
+    ),
+    (
+        "arrow_tests::test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_export",
+        test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_export,
+    ),
+    ("arrow_tests::test_sliced_list_utf8_import_normalizes_offsets", test_sliced_list_utf8_import_normalizes_offsets),
+    (
+        "arrow_tests::test_list_float32_import_exports_numeric_child_with_root_and_child_validity",
+        test_list_float32_import_exports_numeric_child_with_root_and_child_validity,
+    ),
+    (
+        "arrow_tests::test_sliced_large_list_float64_import_preserves_non_null_special_values_and_empty_rows",
+        test_sliced_large_list_float64_import_preserves_non_null_special_values_and_empty_rows,
+    ),
+    (
+        "arrow_tests::test_integer_list_widths_round_trip_across_list_shapes",
+        test_integer_list_widths_round_trip_across_list_shapes,
+    ),
+    (
+        "arrow_tests::test_list_boolean_import_unpacks_bool8_and_reexports_exact_values",
+        test_list_boolean_import_unpacks_bool8_and_reexports_exact_values,
+    ),
+    (
+        "arrow_tests::test_large_list_boolean_slice_and_zero_child_shapes_round_trip",
+        test_large_list_boolean_slice_and_zero_child_shapes_round_trip,
+    ),
+    (
+        "arrow_tests::test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets",
+        test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets,
+    ),
+    (
+        "arrow_tests::test_sliced_fixed_size_list_float32_import_uses_active_child_range",
+        test_sliced_fixed_size_list_float32_import_uses_active_child_range,
+    ),
+    (
+        "arrow_tests::test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema",
+        test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema,
+    ),
+    (
+        "arrow_tests::test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema",
+        test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema,
+    ),
+    (
+        "arrow_tests::test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schema",
+        test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schema,
+    ),
+    (
+        "arrow_tests::test_arrow_list_constructor_rejects_child_length_mismatch_before_import",
+        test_arrow_list_constructor_rejects_child_length_mismatch_before_import,
+    ),
+    (
+        "arrow_tests::test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construction",
+        test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construction,
+    ),
+    (
+        "arrow_tests::test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_length",
+        test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_length,
+    ),
+    (
+        "arrow_tests::test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows",
+        test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows,
+    ),
+    (
+        "arrow_tests::test_round_trip_nullable_decimal128_date32_and_timestamp_units",
+        test_round_trip_nullable_decimal128_date32_and_timestamp_units,
+    ),
+    (
+        "arrow_tests::test_gpu_record_batch_preserves_date64_and_time_schema_contract",
+        test_gpu_record_batch_preserves_date64_and_time_schema_contract,
+    ),
+    ("arrow_tests::test_round_trip_nullable_i32", test_round_trip_nullable_i32),
+    ("arrow_tests::test_round_trip_nullable_f64", test_round_trip_nullable_f64),
+    ("arrow_tests::test_round_trip_bool8", test_round_trip_bool8),
+    ("arrow_tests::test_round_trip_nullable_bool8", test_round_trip_nullable_bool8),
+    (
+        "arrow_tests::test_to_record_batch_nullable_bool_from_comparison_preserves_nulls",
+        test_to_record_batch_nullable_bool_from_comparison_preserves_nulls,
+    ),
+    ("arrow_tests::test_schema_preserved_multi_column", test_schema_preserved_multi_column),
+    ("arrow_tests::test_from_record_batch_creates_dataframe", test_from_record_batch_creates_dataframe),
+    (
+        "arrow_tests::test_from_record_batch_binds_caller_runtime_provenance",
+        test_from_record_batch_binds_caller_runtime_provenance,
+    ),
+    ("arrow_tests::test_from_record_batch_with_nulls", test_from_record_batch_with_nulls),
+    (
+        "arrow_tests::test_from_record_batch_primitive_slice_import_uses_logical_values",
+        test_from_record_batch_primitive_slice_import_uses_logical_values,
+    ),
+    (
+        "arrow_tests::test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls",
+        test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls,
+    ),
+    ("arrow_tests::test_round_trip_string_only", test_round_trip_string_only),
+    ("arrow_tests::test_round_trip_mixed_string_and_numeric", test_round_trip_mixed_string_and_numeric),
+    ("arrow_tests::test_round_trip_nullable_string", test_round_trip_nullable_string),
+    ("arrow_tests::test_round_trip_string_with_empty_values", test_round_trip_string_with_empty_values),
+    ("arrow_tests::test_round_trip_string_unicode", test_round_trip_string_unicode),
+    ("arrow_tests::test_from_record_batch_string_array", test_from_record_batch_string_array),
+    ("arrow_tests::test_from_record_batch_nullable_string_array", test_from_record_batch_nullable_string_array),
+    (
+        "arrow_tests::test_from_record_batch_string_slice_import_uses_logical_range",
+        test_from_record_batch_string_slice_import_uses_logical_range,
+    ),
+    ("arrow_tests::test_from_record_batch_large_string_array", test_from_record_batch_large_string_array),
+    (
+        "arrow_tests::test_from_record_batch_large_string_slice_import_uses_logical_range",
+        test_from_record_batch_large_string_slice_import_uses_logical_range,
+    ),
+    ("arrow_tests::test_from_record_batch_string_view_array", test_from_record_batch_string_view_array),
+    (
+        "arrow_tests::test_from_record_batch_string_view_slice_import_uses_logical_range",
+        test_from_record_batch_string_view_slice_import_uses_logical_range,
+    ),
+    (
+        "arrow_tests::test_gpu_record_batch_accepts_utf8_view_schema_contract",
+        test_gpu_record_batch_accepts_utf8_view_schema_contract,
+    ),
+    ("arrow_tests::test_round_trip_empty_string_schema", test_round_trip_empty_string_schema),
+    (
+        "arrow_tests::test_from_record_batches_matches_per_batch_import",
+        test_from_record_batches_matches_per_batch_import,
+    ),
+    ("arrow_tests::test_from_record_batches_supports_sliced_batches", test_from_record_batches_supports_sliced_batches),
+    (
+        "arrow_tests::test_from_record_batches_crosses_staging_slab_boundaries",
+        test_from_record_batches_crosses_staging_slab_boundaries,
+    ),
+    (
+        "arrow_tests::test_from_record_batches_nullable_and_string_fallback",
+        test_from_record_batches_nullable_and_string_fallback,
+    ),
+    ("arrow_tests::test_from_record_batches_rejects_empty_input", test_from_record_batches_rejects_empty_input),
+    ("arrow_tests::test_from_record_batches_rejects_schema_mismatch", test_from_record_batches_rejects_schema_mismatch),
+];

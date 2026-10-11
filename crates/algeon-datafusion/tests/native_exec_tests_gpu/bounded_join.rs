@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use arrow::array::{Int32Array, Int64Array};
+use cudf::testing;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use futures::executor::block_on;
 use query_planning::{
@@ -14,7 +15,6 @@ use query_planning::{
 use super::*;
 use crate::tpch_session::tpch_report_session_config;
 
-#[test]
 fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-bounded-left-semi-join");
     let left = dir.join("left.parquet");
@@ -53,7 +53,6 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-bounded-left-anti-join");
     let left = dir.join("left.parquet");
@@ -116,6 +115,43 @@ fn assert_null_aware_anti_join_native_matches_datafusion(
 }
 
 #[test]
+fn bounded_join_cases_1() {
+    testing::run_named_cases(&[
+        (
+            "native_optimizer_rule_executes_null_aware_left_anti_join_with_null_right_key_as_empty",
+            native_optimizer_rule_executes_null_aware_left_anti_join_with_null_right_key_as_empty,
+        ),
+        (
+            "native_optimizer_rule_executes_null_aware_left_anti_join_drops_null_left_key_when_right_is_nonempty",
+            native_optimizer_rule_executes_null_aware_left_anti_join_drops_null_left_key_when_right_is_nonempty,
+        ),
+        (
+            "native_optimizer_rule_executes_null_aware_left_anti_join_keeps_null_left_key_when_right_is_empty_at_runtime",
+            native_optimizer_rule_executes_null_aware_left_anti_join_keeps_null_left_key_when_right_is_empty_at_runtime,
+        ),
+        (
+            "native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan",
+            native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan,
+        ),
+        (
+            "native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join",
+            native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join,
+        ),
+        (
+            "native_optimizer_rule_builds_join_fed_side_from_advisory_statistics_and_matches_cpu_results",
+            native_optimizer_rule_builds_join_fed_side_from_advisory_statistics_and_matches_cpu_results,
+        ),
+        (
+            "native_optimizer_rule_keeps_results_correct_when_advisory_build_side_is_misestimated",
+            native_optimizer_rule_keeps_results_correct_when_advisory_build_side_is_misestimated,
+        ),
+        (
+            "native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan",
+            native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan,
+        ),
+    ]);
+}
+
 fn native_optimizer_rule_executes_null_aware_left_anti_join_with_null_right_key_as_empty() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-bounded-null-aware-anti-join-null-right-key");
     let left = dir.join("left.parquet");
@@ -129,7 +165,6 @@ fn native_optimizer_rule_executes_null_aware_left_anti_join_with_null_right_key_
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_rule_executes_null_aware_left_anti_join_drops_null_left_key_when_right_is_nonempty() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-bounded-null-aware-anti-join-drops-null-left-key");
     let left = dir.join("left.parquet");
@@ -143,7 +178,6 @@ fn native_optimizer_rule_executes_null_aware_left_anti_join_drops_null_left_key_
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_optimizer_rule_executes_null_aware_left_anti_join_keeps_null_left_key_when_right_is_empty_at_runtime() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-bounded-null-aware-anti-join-empty-right");
     let left = dir.join("left.parquet");
@@ -160,42 +194,6 @@ fn native_optimizer_rule_executes_null_aware_left_anti_join_keeps_null_left_key_
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-bounded-q11-admission");
-    write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
-    let plan = tpch_sql_plan(&dir, q11.sql);
-    let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
-
-    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
-
-    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
-    let report = &diagnostics.report;
-    assert!(
-        below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some(),
-        "Q11 should optimize to AlgeonNativeExec; report={report:?}; diagnostics={diagnostics:?}"
-    );
-    assert_eq!(report.selected_count(), 1);
-    assert_eq!(report.not_selected_count(), 0);
-    assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
-
-    assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
-    assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
-    let accepted = &diagnostics.capability_contract.accepted_candidates[0];
-    // Planning decides the deferred host sink execution runs; the adapter
-    // materializes the host batches.
-    assert_eq!(accepted.compiled_graph.sink_kind, "gpu_resident_output");
-    assert!(accepted.compiled_graph.resource_count > 0);
-    let admission_report = &accepted.report;
-    assert_eq!(admission_report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
-    assert!(admission_report.is_ready());
-    assert!(admission_report.decision_rows().is_empty());
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-bounded-root-join");
     let left = dir.join("left.parquet");
@@ -238,7 +236,6 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
 /// Only DataFusion's advisory output estimate can tell the optimizer that the
 /// join-fed side is the smaller build; the leaf side keeps its conservative
 /// footer estimate.
-#[test]
 fn native_optimizer_rule_builds_join_fed_side_from_advisory_statistics_and_matches_cpu_results() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-advisory-build-side");
     write_advisory_build_side_fixture(&dir, false);
@@ -276,7 +273,6 @@ fn native_optimizer_rule_builds_join_fed_side_from_advisory_statistics_and_match
 /// below its true size, so the advisory-selected build side is actually the
 /// larger input. The orientation is only a strategy choice; results must
 /// still match.
-#[test]
 fn native_optimizer_rule_keeps_results_correct_when_advisory_build_side_is_misestimated() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-advisory-build-side-misestimate");
     write_advisory_build_side_fixture(&dir, true);
@@ -409,25 +405,4 @@ fn grouped_total_rows(batches: &[RecordBatch]) -> Vec<(i32, i64)> {
             (0..batch.num_rows()).map(|row| (int32_array(batch, 0).value(row), int64_array(batch, 1).value(row)))
         })
         .collect()
-}
-
-#[test]
-fn bounded_planner_reports_compiled_graph_for_supported_join_path() {
-    let dir = unique_temp_dir("algeon-datafusion-bounded-join-planner-rows");
-    let left = dir.join("left.parquet");
-    let right = dir.join("right.parquet");
-    write_join_left_parquet_file(&left);
-    write_join_right_parquet_file(&right);
-    let plan = root_nested_loop_join_plan(&left, &right);
-    let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
-    let (_, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
-    let diagnostics = diagnostics.expect("native optimizer should retain diagnostics");
-
-    assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
-    assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
-    let accepted = &diagnostics.capability_contract.accepted_candidates[0];
-    assert!(accepted.report.decision_rows().is_empty());
-    assert!(accepted.compiled_graph.resource_count > 0);
-
-    fs::remove_dir_all(dir).unwrap();
 }

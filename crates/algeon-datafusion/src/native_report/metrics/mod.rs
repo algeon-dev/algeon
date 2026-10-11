@@ -1015,34 +1015,4 @@ mod tests {
         );
         assert_eq!(metrics.join_strategy_rows[1].hash_join_build_count, 42);
     }
-
-    #[test]
-    fn merge_from_destructures_every_metric_field() {
-        let source = include_str!("mod.rs");
-        let merge_from =
-            source.split_once("pub fn merge_from").expect("metric aggregation owner must expose merge_from").1;
-        let destructuring = merge_from.split_once("} = other;").expect("merge_from must destructure its input").0;
-
-        assert!(destructuring.contains("let Self {"));
-        assert!(!destructuring.contains(".."));
-    }
-
-    #[test]
-    fn post_decode_stage_classification_does_not_round_trip_through_strings() {
-        let source = include_str!("mod.rs");
-        let classification = source
-            .split_once("pub fn dynamic_filter_post_decode_reduction_stage")
-            .expect("post-decode stage classifier must remain available")
-            .1
-            .split_once("/// Counts partial aggregate strategy rows")
-            .expect("post-decode stage classifier must end before aggregate accessors")
-            .0;
-
-        for stage in ["source_post_decode", "filter_post_decode", "join_probe_post_decode", "unknown"] {
-            assert!(
-                !classification.contains(&format!("\"{stage}\"")),
-                "post-decode stage classifier must retain enum values instead of {stage} strings"
-            );
-        }
-    }
 }

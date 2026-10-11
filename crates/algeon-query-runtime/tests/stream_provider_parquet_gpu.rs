@@ -38,10 +38,7 @@ fn test_service() -> QueryService {
 
 #[test]
 fn same_device_attempt_routes_overlap_parquet_reads_and_drain_after_failure() {
-    if DeviceId::count().unwrap_or(0) == 0 {
-        eprintln!("skipping attempt stream-provider parquet test; no CUDA device is visible");
-        return;
-    }
+    assert!(DeviceId::count().expect("CUDA device inventory") >= 1, "requires at least one GPU");
 
     let path = unique_fixture_path();
     let service = test_service();

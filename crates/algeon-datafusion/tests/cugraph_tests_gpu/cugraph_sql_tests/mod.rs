@@ -1,3 +1,6 @@
+#[path = "../../support/closing_backend.rs"]
+mod closing_backend;
+
 use algeon_datafusion::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, GpuMemoryOwnership},
     cugraph_sql::{

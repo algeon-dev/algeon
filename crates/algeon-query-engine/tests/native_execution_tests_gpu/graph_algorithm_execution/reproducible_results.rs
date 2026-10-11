@@ -81,8 +81,7 @@ fn int32_edge_batch(pairs: &[(i32, i32)]) -> (Arc<Schema>, RecordBatch) {
 /// three runs disagree on nearly every row and no label equals a caller vertex
 /// id. Vertex ids here are deliberately non-contiguous so an internal
 /// renumber id cannot coincide with a caller id by accident.
-#[test]
-fn wcc_labels_are_min_vertex_ids_and_stable_across_runs() {
+pub(super) fn wcc_labels_are_min_vertex_ids_and_stable_across_runs() {
     let (edge_schema, edge_batch) = int32_edge_batch(&[(3, 7), (7, 9), (9, 3), (100, 200)]);
     let context = backend_context();
     let params = GraphAlgorithmParams::WeaklyConnectedComponents(GraphWccParams);
@@ -103,8 +102,7 @@ fn wcc_labels_are_min_vertex_ids_and_stable_across_runs() {
 
 /// SCC labels must be the minimum vertex id of each component and identical
 /// across runs, matching the WCC contract.
-#[test]
-fn scc_labels_are_min_vertex_ids_and_stable_across_runs() {
+pub(super) fn scc_labels_are_min_vertex_ids_and_stable_across_runs() {
     // Two directed cycles joined by a one-way edge: {3,7,9} and {100,200} stay
     // separate strongly connected components.
     let (edge_schema, edge_batch) = int32_edge_batch(&[(3, 7), (7, 9), (9, 3), (100, 200), (200, 100), (9, 100)]);
@@ -131,8 +129,7 @@ fn scc_labels_are_min_vertex_ids_and_stable_across_runs() {
 /// relaxed atomics in schedule order, so ~9% of vertices drifted by f32 ulps
 /// between runs while the nonzero set stayed fixed. Fixed-order accumulation
 /// makes every score bit-stable; comparing raw bits (not values) is the point.
-#[test]
-fn betweenness_scores_are_bitwise_stable_across_runs() {
+pub(super) fn betweenness_scores_are_bitwise_stable_across_runs() {
     // Hub 0 -> 8 middles -> 4 leaves each. Seeded at 0, every middle lies on
     // shortest paths and must score nonzero.
     let mut pairs = Vec::new();
@@ -185,8 +182,7 @@ fn betweenness_scores_are_bitwise_stable_across_runs() {
 /// the cap. Grants below ~6MiB cannot fit this query and fail loudly with
 /// `QueryMemoryLimitExceeded`; that is the designed behavior and is not
 /// exercised here.
-#[test]
-fn betweenness_scores_are_bitwise_stable_across_device_budgets() {
+pub(super) fn betweenness_scores_are_bitwise_stable_across_device_budgets() {
     // Hub 0 -> 200 middles -> 20 leaves each, seeded at 0..32. Enough seeds
     // that small grants split them into several batches while the default
     // grant processes them at once.

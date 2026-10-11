@@ -25,8 +25,9 @@ while IFS= read -r -d '' entry; do
   fi
 
   if [[ ! -e ${ROOT}/${path} && ! -L ${ROOT}/${path} ]]; then
-    echo "ERROR: tracked path is missing from the worktree: ${path}" >&2
-    status=1
+    # Pending deletions have no working-tree content; their indexed blob was
+    # still checked above, including unstaged deletions.
+    continue
   elif [[ -L ${ROOT}/${path} ]]; then
     target=$(readlink -- "${ROOT}/${path}")
     if [[ ${target,,} == *"${legacy_brand}"* ]]; then

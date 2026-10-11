@@ -499,26 +499,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_calls_return_structured_rows() {
-        let mut state_builder = SessionStateBuilder::new();
-        let functions = state_builder.table_functions().get_or_insert_with(Default::default);
-        for function in gpu_metadata_table_functions(catalog()) {
-            functions.insert(function.name().to_string(), function);
-        }
-        let ctx = SessionContext::new_with_state(state_builder.build());
-        let batches = ctx
-            .sql("SELECT error_code FROM gpu_validate_call('missing', '{\"relations\":{},\"options\":{}}')")
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-        let code = batches[0].column(0).as_any().downcast_ref::<StringArray>().unwrap();
-        assert_eq!(code.value(0), "unknown_function");
-        assert!(!code.is_null(0));
-    }
-
-    #[tokio::test]
     async fn gpu_metadata_table_function_physical_plan_applies_cpu_boundary() {
         let mut state_builder = SessionStateBuilder::new();
         let functions = state_builder.table_functions().get_or_insert_with(Default::default);

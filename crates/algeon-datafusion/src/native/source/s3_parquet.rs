@@ -531,31 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn s3_auto_cache_read_bypass_skips_existing_local_cache_hit() {
-        let root = tempfile::tempdir().unwrap();
-        let config = ParquetReadStrategyConfig {
-            lakehouse_cache_root: Some(root.path().to_path_buf()),
-            lakehouse_cache_read_policy: LakehouseCacheReadPolicy::Disabled,
-            lakehouse_cache_policy: LakehouseByteCacheFill::ReadThrough,
-            ..Default::default()
-        };
-        let metadata = metadata_with_identity("etag:abc123");
-        let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
-        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-        fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
-
-        let result = resolve_parquet_source_with_metadata("s3://bucket/table/part-0.parquet", &config, &metadata);
-
-        let Some(source) = assert_expected_remote_foreground_source(result) else {
-            return;
-        };
-        assert_eq!(source.cache_status, LakehouseCacheStatus::Bypassed);
-        assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Background);
-        assert_eq!(source.reader_location(), "s3://bucket/table/part-0.parquet");
-        assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
-    }
-
-    #[test]
     fn explicit_local_cache_read_bypass_skips_existing_local_cache_hit() {
         let root = tempfile::tempdir().unwrap();
         let config = ParquetReadStrategyConfig {
@@ -575,6 +550,7 @@ mod tests {
             return;
         };
         assert_eq!(source.cache_status, LakehouseCacheStatus::Bypassed);
+        assert_eq!(source.reader_location(), "s3://bucket/table/part-0.parquet");
         assert_eq!(source.lakehouse_cache_read_mode, LakehouseCacheReadMode::Bypassed);
         assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Background);
         assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));

@@ -1,6 +1,7 @@
 use cudf::{
     CacheAllocationDomain, CacheAllocationLease, CacheAllocationScope, DeviceId, DeviceMemoryManager, ErrorCode,
-    ErrorKind, testing::prelude::*,
+    ErrorKind,
+    testing::{prelude::*, run_named_cases},
 };
 use static_assertions::assert_impl_all;
 
@@ -16,7 +17,6 @@ fn zero_cache_capacity_cannot_create_an_allocation_domain() {
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
 fn source_and_graph_leases_share_one_domain_and_one_live_byte_counter() {
     let cache_cap_bytes = 16 * 1024 * 1024;
     let source_bytes = 4 * 1024 * 1024;
@@ -54,7 +54,6 @@ fn source_and_graph_leases_share_one_domain_and_one_live_byte_counter() {
     assert_eq!(domain.usage().unwrap().current_bytes, 0);
 }
 
-#[test]
 fn allocation_scopes_report_exact_operation_usage_with_shared_provenance() {
     let cache_cap_bytes = 16 * 1024 * 1024;
     let source_bytes = 4 * 1024 * 1024;
@@ -121,7 +120,6 @@ fn allocation_scopes_report_exact_operation_usage_with_shared_provenance() {
     assert_eq!(graph_scope.usage().unwrap().current_bytes, graph_allocation.size_bytes().unwrap() as u64);
 }
 
-#[test]
 fn graph_scope_usage_is_exact_when_parent_snapshots_span_another_scope_release() {
     let cache_cap_bytes = 16 * 1024 * 1024;
     let source_bytes = 4 * 1024 * 1024;
@@ -156,7 +154,6 @@ fn graph_scope_usage_is_exact_when_parent_snapshots_span_another_scope_release()
     assert_eq!(domain.usage().unwrap().current_bytes, 0);
 }
 
-#[test]
 fn cache_cap_is_enforced_across_independent_leases() {
     let cache_cap_bytes = 8 * 1024 * 1024;
     let domain = CacheAllocationDomain::new(DeviceId::current().unwrap(), cache_cap_bytes).unwrap();
@@ -175,7 +172,6 @@ fn cache_cap_is_enforced_across_independent_leases() {
     assert_eq!(usage.failed_allocation_count, 1);
 }
 
-#[test]
 fn cache_cap_is_enforced_across_independently_tracked_scopes() {
     let cache_cap_bytes = 8 * 1024 * 1024;
     let domain = CacheAllocationDomain::new(DeviceId::current().unwrap(), cache_cap_bytes).unwrap();
@@ -200,4 +196,27 @@ fn cache_cap_is_enforced_across_independently_tracked_scopes() {
     let domain_usage = domain.usage().unwrap();
     assert_eq!(domain_usage.current_bytes, source_allocation.size_bytes().unwrap() as u64);
     assert_eq!(domain_usage.failed_allocation_count, 1);
+}
+
+#[test]
+fn cache_allocation_domain_cases() {
+    run_named_cases(&[
+        (
+            "cache_cap_is_enforced_across_independently_tracked_scopes",
+            cache_cap_is_enforced_across_independently_tracked_scopes,
+        ),
+        (
+            "source_and_graph_leases_share_one_domain_and_one_live_byte_counter",
+            source_and_graph_leases_share_one_domain_and_one_live_byte_counter,
+        ),
+        (
+            "allocation_scopes_report_exact_operation_usage_with_shared_provenance",
+            allocation_scopes_report_exact_operation_usage_with_shared_provenance,
+        ),
+        (
+            "graph_scope_usage_is_exact_when_parent_snapshots_span_another_scope_release",
+            graph_scope_usage_is_exact_when_parent_snapshots_span_another_scope_release,
+        ),
+        ("cache_cap_is_enforced_across_independent_leases", cache_cap_is_enforced_across_independent_leases),
+    ]);
 }

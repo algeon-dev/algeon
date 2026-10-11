@@ -3,7 +3,7 @@ use cudf::{
     io::parquet::{ParquetTableReadOptions, read_parquet_table},
 };
 
-use crate::common::{column_from_slice, dataframe_from_columns, error_context_value, run_named_cases, sample_runtime};
+use crate::common::{column_from_slice, dataframe_from_columns, error_context_value, sample_runtime};
 
 fn test_dataframe_new_mismatched_column_lengths() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -52,13 +52,13 @@ fn test_dataframe_new_duplicate_names() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
-fn error_path_tests_cases() {
-    run_named_cases(&[
-        ("test_dataframe_new_mismatched_column_lengths", test_dataframe_new_mismatched_column_lengths),
-        ("test_dataframe_series_miss_returns_err", test_dataframe_series_miss_returns_err),
-        ("test_parquet_read_nonexistent_file", test_parquet_read_nonexistent_file),
-        ("test_dataframe_new_names_columns_count_mismatch", test_dataframe_new_names_columns_count_mismatch),
-        ("test_dataframe_new_duplicate_names", test_dataframe_new_duplicate_names),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("error_path_tests::test_dataframe_new_mismatched_column_lengths", test_dataframe_new_mismatched_column_lengths),
+    ("error_path_tests::test_dataframe_series_miss_returns_err", test_dataframe_series_miss_returns_err),
+    ("error_path_tests::test_parquet_read_nonexistent_file", test_parquet_read_nonexistent_file),
+    (
+        "error_path_tests::test_dataframe_new_names_columns_count_mismatch",
+        test_dataframe_new_names_columns_count_mismatch,
+    ),
+    ("error_path_tests::test_dataframe_new_duplicate_names", test_dataframe_new_duplicate_names),
+];

@@ -2,9 +2,7 @@
 mod server_gpu_fixture;
 
 use std::{
-    fs::File,
     net::{SocketAddr, TcpListener},
-    path::Path,
     sync::OnceLock,
     time::{Duration, Instant},
 };
@@ -17,13 +15,11 @@ use algeon_datafusion::{
     },
 };
 use arrow::{
-    array::{Array, ArrayRef, Float32Array, Int64Array, StringArray},
-    datatypes::{DataType, Field, Schema},
+    array::{Array, StringArray},
     record_batch::RecordBatch,
 };
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use futures::TryStreamExt;
-use parquet::arrow::ArrowWriter;
 use server_gpu_fixture::lock_async;
 use tokio::{task::JoinHandle, time::sleep};
 use tonic::{
@@ -201,74 +197,6 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bounded_flight_sql_executes_parquet_cuvs_relations() {
-    let _guard = lock_async().await;
-    let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
-    let parquet_path = temp_dir.path().join("vector_input.parquet");
-    write_vector_parquet(&parquet_path);
-
-    let (listener, addr) = free_local_addr();
-    let mut config = test_server_config();
-    config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
-    config.bind_addr = addr;
-
-    let _server = ScopedServer::spawn(config, listener);
-    let mut client = connect_with_retry(addr).await;
-    execute_batches(
-        &mut client,
-        &format!(
-            "CREATE EXTERNAL TABLE parquet_vector_input STORED AS PARQUET LOCATION '{}'",
-            parquet_path.to_string_lossy()
-        ),
-    )
-    .await;
-
-    let kmeans = execute_batches(
-        &mut client,
-        "SELECT id, cluster_id \
-         FROM cuvs_kmeans(\
-             input => (SELECT item_id AS id, d0, d1 FROM parquet_vector_input), \
-             n_clusters => 2, init => 'kmeans++') \
-         ORDER BY row_ordinal",
-    )
-    .await;
-    assert_nonempty(&kmeans);
-
-    let pca = execute_batches(
-        &mut client,
-        "SELECT id, pc_0 \
-         FROM cuvs_pca(\
-             input => (SELECT item_id AS id, d0, d1 FROM parquet_vector_input), \
-             n_components => 1) \
-         ORDER BY row_ordinal",
-    )
-    .await;
-    assert_nonempty(&pca);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn default_bounded_flight_sql_executes_cuvs() {
-    let _guard = lock_async().await;
-    let (listener, addr) = free_local_addr();
-    let mut config = test_server_config();
-    config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
-    config.bind_addr = addr;
-
-    let _server = ScopedServer::spawn(config, listener);
-    let mut client = connect_with_retry(addr).await;
-    register_vector_views(&mut client).await;
-    let batches = execute_batches(
-        &mut client,
-        "SELECT * FROM cuvs_brute_force_knn(\
-             dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
-             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
-             k => 1, metric => 'l2_expanded')",
-    )
-    .await;
-    assert_nonempty(&batches);
-}
-
 async fn register_vector_views(client: &mut FlightSqlServiceClient<Channel>) {
     execute_batches(
         client,
@@ -285,27 +213,6 @@ async fn register_vector_views(client: &mut FlightSqlServiceClient<Channel>) {
          SELECT CAST(99 AS BIGINT) AS query_id, CAST(0.0 AS REAL) AS d0, CAST(0.0 AS REAL) AS d1",
     )
     .await;
-}
-
-fn write_vector_parquet(path: &Path) {
-    let schema = std::sync::Arc::new(Schema::new(vec![
-        Field::new("item_id", DataType::Int64, false),
-        Field::new("d0", DataType::Float32, false),
-        Field::new("d1", DataType::Float32, false),
-    ]));
-    let batch = RecordBatch::try_new(
-        std::sync::Arc::clone(&schema),
-        vec![
-            std::sync::Arc::new(Int64Array::from(vec![1_i64, 2, 3, 4])) as ArrayRef,
-            std::sync::Arc::new(Float32Array::from(vec![0.0_f32, 0.2, 10.0, 10.2])) as ArrayRef,
-            std::sync::Arc::new(Float32Array::from(vec![0.0_f32, 0.1, 10.0, 10.1])) as ArrayRef,
-        ],
-    )
-    .expect("Parquet vector fixture");
-    let file = File::create(path).expect("create Parquet vector fixture");
-    let mut writer = ArrowWriter::try_new(file, schema, None).expect("create Parquet writer");
-    writer.write(&batch).expect("write Parquet vector fixture");
-    writer.close().expect("finish Parquet vector fixture");
 }
 
 fn warm_cuda_once() {

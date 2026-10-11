@@ -9,6 +9,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
+use cudf::testing;
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
@@ -34,7 +35,7 @@ use query_runtime::{
     observability::{QueryAttemptReport, RuntimeTerminalOutcome},
     runtime::{DeviceCapabilities, GpuDeviceMemoryLimit},
 };
-use tokio::time::timeout;
+use tokio::{runtime::Builder as TestRuntimeBuilder, time::timeout};
 
 use super::*;
 use crate::{
@@ -206,7 +207,6 @@ fn resident_host_plan(input_name: &str) -> QueryPlan {
     builder.finish_with_host_sink(source).unwrap()
 }
 
-#[test]
 fn host_occurrence_dependencies_complete_once_and_fail_closed_on_drop() {
     let backend = InstalledTestGpuBackend::new();
     let first_plan = resident_host_plan("first");
@@ -247,7 +247,6 @@ fn host_occurrence_dependencies_complete_once_and_fail_closed_on_drop() {
         .complete();
 }
 
-#[tokio::test(flavor = "current_thread")]
 async fn fragments_bound_after_the_claim_join_its_grant() {
     let backend = InstalledTestGpuBackend::new();
     let first_plan = resident_host_plan("first-fragment");
@@ -301,63 +300,6 @@ async fn fragments_bound_after_the_claim_join_its_grant() {
     assert_eq!(backend.backend().diagnostics().unwrap().admission, admitted);
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_grant_for_successive_admission() {
-    // One active attempt per device, so the second admission can only succeed after the first grant is released.
-    let backend = InstalledTestGpuBackend::with_config(
-        AlgeonNativeExecutionConfig::new(
-            SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
-        ),
-        AlgeonGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
-            .with_max_active_attempts(1),
-        AlgeonGpuQueuePolicy::default(),
-    );
-    let (attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
-    assert!(ticket.attempt_capability_evidence().is_none());
-
-    let context = ticket
-        .acquire_context(Arc::new(TaskContext::default()))
-        .await
-        .expect("installed backend must acquire a real admission context");
-    let facts = context.admission_facts();
-    assert!(facts.admission_sequence > 0);
-    assert!(facts.query_grant_bytes > 0);
-    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 1);
-
-    drop(context);
-    assert_eq!(
-        backend.backend().diagnostics().unwrap().admission.active_queries,
-        1,
-        "the grant belongs to the attempt, not to the context"
-    );
-    drop(attempt);
-    let (_next_attempt, next_ticket) = attempt_ticket_for_test(admission_source(&backend), None);
-    let next_context =
-        timeout(std::time::Duration::from_secs(5), next_ticket.acquire_context(Arc::new(TaskContext::default())))
-            .await
-            .expect("ending the attempt must eventually return the real ledger grant")
-            .expect("released capacity must admit the next attempt");
-    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 1);
-    drop(next_context);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn admission_ticket_propagates_attempt_cancellation_to_admission() {
-    let backend = InstalledTestGpuBackend::new();
-    let (attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
-    attempt.cancellation().cancel();
-
-    let error = ticket
-        .acquire_context(Arc::new(TaskContext::default()))
-        .await
-        .expect_err("cancelled admission must not acquire a real handle");
-
-    assert_eq!(error.code(), QueryErrorCode::Cancelled);
-    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 0);
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn a_failed_admission_is_the_outcome_every_later_fragment_gets() {
     let backend = InstalledTestGpuBackend::new();
     let (attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
@@ -390,7 +332,6 @@ async fn a_failed_admission_is_the_outcome_every_later_fragment_gets() {
 
 /// Fragments waiting while another fragment claims the attempt's admission
 /// get that admission's outcome; none of them claims again.
-#[tokio::test(flavor = "current_thread")]
 async fn concurrent_fragments_share_the_one_admission_outcome() {
     let backend = InstalledTestGpuBackend::with_config(
         AlgeonNativeExecutionConfig::new(
@@ -440,7 +381,6 @@ async fn concurrent_fragments_share_the_one_admission_outcome() {
     drop(holder_attempt);
 }
 
-#[tokio::test(flavor = "current_thread")]
 async fn pending_context_cancellation_keeps_the_shared_grant_until_the_attempt_ends() {
     let backend = InstalledTestGpuBackend::with_config(
         AlgeonNativeExecutionConfig::new(
@@ -455,6 +395,9 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_attempt_e
     let task_context = Arc::new(TaskContext::default());
     let first_context =
         ticket.acquire_context(Arc::clone(&task_context)).await.expect("the first context must be admitted");
+
+    let facts = first_context.admission_facts();
+    assert!(facts.admission_sequence > 0 && facts.query_grant_bytes > 0);
 
     attempt.cancellation().cancel();
     let error = ticket
@@ -481,7 +424,6 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_attempt_e
     drop(replacement);
 }
 
-#[tokio::test(flavor = "current_thread")]
 async fn admission_deadline_cancels_a_waiter_without_leaking_admission_state_or_capacity() {
     let backend = InstalledTestGpuBackend::with_config(
         AlgeonNativeExecutionConfig::new(
@@ -531,7 +473,6 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_admission_state_or_
     drop(replacement);
 }
 
-#[tokio::test(flavor = "current_thread")]
 async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_before_admission() {
     let mut unavailable = explicit_sink_capability_evidence();
     unavailable.required_capabilities = vec![ExecutionCapability::new("unavailable")];
@@ -569,7 +510,6 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
 async fn panic_in_the_inner_stream_poll_reports_panicked_once() {
     let backend = InstalledTestGpuBackend::new();
     let exec =
@@ -583,7 +523,6 @@ async fn panic_in_the_inner_stream_poll_reports_panicked_once() {
     assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Panicked);
 }
 
-#[test]
 fn panic_in_the_input_execute_reports_panicked_once() {
     let backend = InstalledTestGpuBackend::new();
     let exec =
@@ -596,9 +535,67 @@ fn panic_in_the_input_execute_reports_panicked_once() {
     assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Panicked);
 }
 
+#[test]
+fn tests_tg_admticket_cases_1() {
+    testing::run_named_cases(&[
+        ("one_attempt_invocation_mints_one_admission_ticket", || {
+            TestRuntimeBuilder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(one_attempt_invocation_mints_one_admission_ticket())
+        }),
+        ("concurrent_fragments_share_the_one_admission_outcome", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(concurrent_fragments_share_the_one_admission_outcome())
+        }),
+        ("fragments_bound_after_the_claim_join_its_grant", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(fragments_bound_after_the_claim_join_its_grant())
+        }),
+        (
+            "host_occurrence_dependencies_complete_once_and_fail_closed_on_drop",
+            host_occurrence_dependencies_complete_once_and_fail_closed_on_drop,
+        ),
+        ("pending_context_cancellation_keeps_the_shared_grant_until_the_attempt_ends", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(pending_context_cancellation_keeps_the_shared_grant_until_the_attempt_ends())
+        }),
+        ("planner_capability_evidence_rejects_at_the_native_ticket_boundary_before_admission", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(planner_capability_evidence_rejects_at_the_native_ticket_boundary_before_admission())
+        }),
+        ("a_failed_admission_is_the_outcome_every_later_fragment_gets", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(a_failed_admission_is_the_outcome_every_later_fragment_gets())
+        }),
+        ("admission_deadline_cancels_a_waiter_without_leaking_admission_state_or_capacity", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(admission_deadline_cancels_a_waiter_without_leaking_admission_state_or_capacity())
+        }),
+    ]);
+}
 /// An attempt mints its one admission ticket while planning; executing the
 /// plan admits under that ticket without minting another.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_attempt_invocation_mints_one_admission_ticket() {
     use arrow::array::{Int64Array, StringArray};
     use datafusion::{
@@ -639,7 +636,6 @@ async fn one_attempt_invocation_mints_one_admission_ticket() {
     assert_eq!(after - before - 1, 1, "the attempt minted exactly one admission ticket");
 }
 
-#[tokio::test(flavor = "current_thread")]
 async fn internal_attempt_reports_success_once_at_consumer_eof() {
     let backend = InstalledTestGpuBackend::new();
     let observed_ticket = Arc::new(Mutex::new(None));
@@ -657,7 +653,6 @@ async fn internal_attempt_reports_success_once_at_consumer_eof() {
     assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Succeeded);
 }
 
-#[tokio::test(flavor = "current_thread")]
 async fn ambient_attempt_ticket_owns_the_round_without_an_internal_attempt() {
     let backend = InstalledTestGpuBackend::new();
     let (_attempt, active_ticket) = attempt_ticket_for_test(admission_source(&backend), None);
@@ -682,7 +677,6 @@ async fn ambient_attempt_ticket_owns_the_round_without_an_internal_attempt() {
     );
 }
 
-#[test]
 fn internal_attempt_input_execute_error_reports_one_failure() {
     let backend = InstalledTestGpuBackend::new();
     let exec =
@@ -696,7 +690,6 @@ fn internal_attempt_input_execute_error_reports_one_failure() {
     assert!(matches!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Failed { .. }));
 }
 
-#[tokio::test(flavor = "current_thread")]
 async fn internal_attempt_stream_error_reports_one_failure() {
     let backend = InstalledTestGpuBackend::new();
     let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::StreamError, Arc::new(Mutex::new(None))));
@@ -709,7 +702,57 @@ async fn internal_attempt_stream_error_reports_one_failure() {
     assert!(matches!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Failed { .. }));
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[test]
+fn tests_tg_admlife_cases_1() {
+    testing::run_named_cases(&[
+        ("internal_attempt_stream_cancellation_reports_cancelled", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(internal_attempt_stream_cancellation_reports_cancelled())
+        }),
+        ("panic_in_the_input_execute_reports_panicked_once", panic_in_the_input_execute_reports_panicked_once),
+        ("ambient_attempt_ticket_owns_the_round_without_an_internal_attempt", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(ambient_attempt_ticket_owns_the_round_without_an_internal_attempt())
+        }),
+        ("internal_attempt_stream_error_reports_one_failure", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(internal_attempt_stream_error_reports_one_failure())
+        }),
+        (
+            "dropping_task_context_before_stream_does_not_end_the_internal_attempt",
+            dropping_task_context_before_stream_does_not_end_the_internal_attempt,
+        ),
+        ("panic_in_the_inner_stream_poll_reports_panicked_once", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(panic_in_the_inner_stream_poll_reports_panicked_once())
+        }),
+        ("internal_attempt_reports_success_once_at_consumer_eof", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(internal_attempt_reports_success_once_at_consumer_eof())
+        }),
+        ("dropping_stream_without_polling_reports_dropped_once", dropping_stream_without_polling_reports_dropped_once),
+        (
+            "internal_attempt_input_execute_error_reports_one_failure",
+            internal_attempt_input_execute_error_reports_one_failure,
+        ),
+    ]);
+}
+
 async fn internal_attempt_stream_cancellation_reports_cancelled() {
     let backend = InstalledTestGpuBackend::new();
     let exec =
@@ -723,7 +766,6 @@ async fn internal_attempt_stream_cancellation_reports_cancelled() {
     assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Cancelled);
 }
 
-#[test]
 fn dropping_task_context_before_stream_does_not_end_the_internal_attempt() {
     let backend = InstalledTestGpuBackend::new();
     let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::Success, Arc::new(Mutex::new(None))));
@@ -739,7 +781,6 @@ fn dropping_task_context_before_stream_does_not_end_the_internal_attempt() {
     assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Dropped);
 }
 
-#[test]
 fn dropping_stream_without_polling_reports_dropped_once() {
     let backend = InstalledTestGpuBackend::new();
     let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::Success, Arc::new(Mutex::new(None))));

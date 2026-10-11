@@ -3,16 +3,14 @@ use std::{ffi::c_void, ptr};
 use crate::{
     helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data_with_exec},
     support::{
-        OwnedMemoryResource, OwnedStream, last_exec_mr_raw, last_exec_stream_value, lock_shim_state,
-        required_exec_options, reset_exec_observation, stream_value,
+        OwnedMemoryResource, OwnedStream, last_exec_mr_raw, last_exec_stream_value, required_exec_options,
+        reset_exec_observation, run_named_cases, stream_value,
     },
 };
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
-#[test]
 fn mixed_left_state_requires_eof_and_retains_predicate_owner() {
-    let _lock = lock_shim_state();
     let stream = OwnedStream::new();
     let mr = OwnedMemoryResource::new_test_stats();
     let target_stream = stream.borrowed();
@@ -263,7 +261,6 @@ fn assert_size_data_case(
     expected_left_indices: &[i32],
     expected_right_indices: &[i32],
 ) {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
@@ -315,7 +312,6 @@ fn assert_size_data_case(
 }
 
 fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_size: usize, expected_indices: &[i32]) {
-    let _shim_state = lock_shim_state();
     let target_mr = OwnedMemoryResource::new_test_stats();
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
@@ -384,12 +380,10 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
     }
 }
 
-#[test]
 fn mixed_inner_join_size_data_reports_exact_size_and_materializes_indices() {
     assert_size_data_case("inner", cudf_sys::cudf_mixed_inner_join_begin_size_data_ex, 1, &[0], &[0]);
 }
 
-#[test]
 fn mixed_left_join_size_data_reports_exact_size_and_materializes_indices() {
     assert_size_data_case(
         "left",
@@ -400,7 +394,6 @@ fn mixed_left_join_size_data_reports_exact_size_and_materializes_indices() {
     );
 }
 
-#[test]
 fn mixed_full_join_size_data_reports_exact_size_and_materializes_indices() {
     assert_size_data_case(
         "full",
@@ -411,19 +404,15 @@ fn mixed_full_join_size_data_reports_exact_size_and_materializes_indices() {
     );
 }
 
-#[test]
 fn mixed_left_semi_join_size_data_reports_exact_size_and_materializes_indices() {
     assert_single_size_data_case("semi", cudf_sys::cudf_mixed_left_semi_join_begin_size_data_ex, 1, &[0]);
 }
 
-#[test]
 fn mixed_left_anti_join_size_data_reports_exact_size_and_materializes_indices() {
     assert_single_size_data_case("anti", cudf_sys::cudf_mixed_left_anti_join_begin_size_data_ex, 2, &[1, 2]);
 }
 
-#[test]
 fn mixed_join_size_data_ex_forms_reject_null_exec_options() {
-    let _shim_state = lock_shim_state();
     let inputs = MixedJoinInputs::new();
 
     for (name, begin) in [
@@ -467,5 +456,76 @@ fn mixed_join_size_data_ex_forms_reject_null_exec_options() {
         };
         assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION, "{name} begin must reject null options");
         assert!(size_data.is_null(), "{name} begin must not publish size-data handle");
+    }
+}
+
+#[test]
+fn mixed_join_size_data_tests_cases() {
+    run_named_cases(&[
+        (
+            "mixed_left_anti_join_size_data_reports_exact_size_and_materializes_indices",
+            mixed_left_anti_join_size_data_reports_exact_size_and_materializes_indices,
+        ),
+        (
+            "mixed_left_semi_join_size_data_reports_exact_size_and_materializes_indices",
+            mixed_left_semi_join_size_data_reports_exact_size_and_materializes_indices,
+        ),
+        (
+            "mixed_join_size_data_ex_forms_reject_null_exec_options",
+            mixed_join_size_data_ex_forms_reject_null_exec_options,
+        ),
+        (
+            "mixed_inner_join_size_data_reports_exact_size_and_materializes_indices",
+            mixed_inner_join_size_data_reports_exact_size_and_materializes_indices,
+        ),
+        (
+            "mixed_full_join_size_data_reports_exact_size_and_materializes_indices",
+            mixed_full_join_size_data_reports_exact_size_and_materializes_indices,
+        ),
+        (
+            "mixed_left_state_requires_eof_and_retains_predicate_owner",
+            mixed_left_state_requires_eof_and_retains_predicate_owner,
+        ),
+        (
+            "mixed_left_join_size_data_reports_exact_size_and_materializes_indices",
+            mixed_left_join_size_data_reports_exact_size_and_materializes_indices,
+        ),
+        (
+            "mixed_join_size_data_retains_destroy_provenance_after_owner_drop",
+            mixed_join_size_data_retains_destroy_provenance_after_owner_drop,
+        ),
+    ]);
+}
+
+fn mixed_join_size_data_retains_destroy_provenance_after_owner_drop() {
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_test_stats();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
+    let inputs = MixedJoinInputs::new();
+    let predicate = make_left_less_than_right_predicate();
+    let mut state = ptr::null_mut();
+    unsafe {
+        assert_eq!(
+            cudf_sys::cudf_mixed_inner_join_begin_size_data_ex(
+                inputs.left_equality,
+                inputs.right_equality,
+                inputs.left_conditional,
+                inputs.right_conditional,
+                predicate,
+                cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
+                &mut state,
+                &exec
+            ),
+            cudf_sys::CUDF_SUCCESS
+        );
+    }
+    assert!(!state.is_null());
+    stream.synchronize();
+    assert!(mr.active_allocation_count() > 0);
+    drop(stream);
+    drop(mr);
+    unsafe {
+        assert_eq!(cudf_sys::cudf_mixed_join_size_data_destroy(state), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(cudf_sys::cudf_ast_expression_destroy(predicate), cudf_sys::CUDF_SUCCESS);
     }
 }

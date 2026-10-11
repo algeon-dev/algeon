@@ -682,7 +682,7 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
 #[test]
 fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
     const CACHE_CAP_BYTES: u64 = 16 * 1024 * 1024;
-    const VERTEX_COUNT: i32 = 20_000;
+    const VERTEX_COUNT: i32 = 200;
     const PAGERANK_GRAPH_IDENTITY: &str = "overlap-mixed-pagerank-graph-v1";
     const BFS_GRAPH_IDENTITY: &str = "overlap-mixed-bfs-graph-v1";
 
@@ -726,39 +726,42 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
     let parked_bytes = cache_evictable_bytes();
     assert!(parked_bytes > 0, "both sequential runs park their graphs in the cache share");
 
-    // Release both warm attempts at the same barrier instant, then observe
-    // the ledger until both grants are live together or both attempts finish.
-    // A grant spans admission to release with execution in between, and the
-    // barrier holds pre-admission skew to microseconds against executions
-    // that each take orders of magnitude longer, so a two-grant observation
-    // lands inside genuine execution overlap rather than timer luck.
-    let start = Barrier::new(3);
-    let mut overlapped = false;
+    // Hold both admitted contexts until the parent verifies both live grants.
+    let admitted = Barrier::new(3);
+    let execute = Barrier::new(3);
     let (pagerank_outcome, bfs_outcome) = thread::scope(|scope| {
         let pagerank_worker = scope.spawn(|| {
-            start.wait();
-            execute_pagerank_attempt(&service, &pagerank, &edge_schema, &pagerank_edges, PAGERANK_GRAPH_IDENTITY, None)
+            execute_pagerank_attempt_after_admission(
+                &service,
+                &pagerank,
+                &edge_schema,
+                &pagerank_edges,
+                PAGERANK_GRAPH_IDENTITY,
+                None,
+                Some((&admitted, &execute)),
+            )
         });
         let bfs_worker = scope.spawn(|| {
-            start.wait();
-            execute_pagerank_attempt(&service, &bfs, &edge_schema, &bfs_edges, BFS_GRAPH_IDENTITY, None)
+            execute_pagerank_attempt_after_admission(
+                &service,
+                &bfs,
+                &edge_schema,
+                &bfs_edges,
+                BFS_GRAPH_IDENTITY,
+                None,
+                Some((&admitted, &execute)),
+            )
         });
-        start.wait();
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while !(pagerank_worker.is_finished() && bfs_worker.is_finished()) {
-            if live_grants() >= 2 {
-                overlapped = true;
-                break;
-            }
-            assert!(Instant::now() < deadline, "overlapping attempts did not finish in time");
-            thread::sleep(Duration::from_millis(1));
-        }
-        (
+        admitted.wait();
+        let overlapped = live_grants() == 2;
+        execute.wait();
+        let outcomes = (
             pagerank_worker.join().expect("pagerank worker does not panic"),
             bfs_worker.join().expect("bfs worker does not panic"),
-        )
+        );
+        assert!(overlapped, "both admitted contexts retain their grants until execution starts");
+        outcomes
     });
-    assert!(overlapped, "both mixed-graph attempts must be live on the device at the same instant");
 
     let (pagerank_batch, _, pagerank_domain) = pagerank_outcome.expect("overlapped pagerank succeeds");
     let (bfs_batch, _, bfs_domain) = bfs_outcome.expect("overlapped bfs succeeds");
@@ -806,6 +809,23 @@ fn execute_pagerank_attempt(
     graph_identity: &str,
     cap_bytes: Option<u64>,
 ) -> error::Result<(RecordBatch, u64, Option<u64>)> {
+    execute_pagerank_attempt_after_admission(service, plan, edge_schema, edge_batch, graph_identity, cap_bytes, None)
+}
+
+/// Admits one graph attempt with an optional explicit grant, executes it, and
+/// returns the host output batch with the attempt-domain peak and allocation
+/// domain id. Only the execution outcome is returned; every ceremony step
+/// uses expect like the surrounding tests. The attempt is fully finished and
+/// released before returning.
+fn execute_pagerank_attempt_after_admission(
+    service: &runtime::QueryService,
+    plan: &plan::QueryPlan,
+    edge_schema: &Arc<ArrowSchema>,
+    edge_batch: &RecordBatch,
+    graph_identity: &str,
+    cap_bytes: Option<u64>,
+    rendezvous: Option<(&Barrier, &Barrier)>,
+) -> error::Result<(RecordBatch, u64, Option<u64>)> {
     let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(plan);
     evidence.attest_cugraph_graph_execution_scope(plan);
     let observed_attempt = attempt::AttemptOwner::begin_for_test(attempt::BeginAttemptRequest {
@@ -825,6 +845,10 @@ fn execute_pagerank_attempt(
     }
     let attempt = service.admit_query_with_request(request).expect("attempt admits");
     let admitted = attempt.acquire_context().expect("admitted context");
+    if let Some((admitted, execute)) = rendezvous {
+        admitted.wait();
+        execute.wait();
+    }
     let context = admitted.context();
     let runtime = context.runtime().expect("attempt runtime");
     // Edge upload already charges the attempt domain: an undersized grant

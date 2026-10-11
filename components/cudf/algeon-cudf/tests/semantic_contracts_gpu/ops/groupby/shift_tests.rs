@@ -2,7 +2,7 @@
 
 use cudf::{ErrorCode, Exec, ScalarValue, ShiftSpec, TypeId};
 
-use crate::common::{column_from_slice, dataframe_from_columns, run_named_cases, scalar};
+use crate::common::{column_from_slice, dataframe_from_columns, scalar};
 
 /// Restore input row order on the resulting DataFrame by sorting on the key
 /// and value columns. libcudf does not promise inter-group output ordering,
@@ -180,14 +180,11 @@ fn groupby_shift_missing_column_rejects() {
     assert_eq!(err.code(), ErrorCode::MissingColumn);
 }
 
-#[test]
-fn shift_tests_cases() {
-    run_named_cases(&[
-        ("groupby_shift_forward_with_null_fill", groupby_shift_forward_with_null_fill),
-        ("groupby_shift_lead_with_value_fill", groupby_shift_lead_with_value_fill),
-        ("groupby_shift_sorted_keys_hint_matches_unsorted", groupby_shift_sorted_keys_hint_matches_unsorted),
-        ("groupby_shift_dtype_mismatch_rejects", groupby_shift_dtype_mismatch_rejects),
-        ("groupby_shift_empty_specs_rejects", groupby_shift_empty_specs_rejects),
-        ("groupby_shift_missing_column_rejects", groupby_shift_missing_column_rejects),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("shift_tests::groupby_shift_forward_with_null_fill", groupby_shift_forward_with_null_fill),
+    ("shift_tests::groupby_shift_lead_with_value_fill", groupby_shift_lead_with_value_fill),
+    ("shift_tests::groupby_shift_sorted_keys_hint_matches_unsorted", groupby_shift_sorted_keys_hint_matches_unsorted),
+    ("shift_tests::groupby_shift_dtype_mismatch_rejects", groupby_shift_dtype_mismatch_rejects),
+    ("shift_tests::groupby_shift_empty_specs_rejects", groupby_shift_empty_specs_rejects),
+    ("shift_tests::groupby_shift_missing_column_rejects", groupby_shift_missing_column_rejects),
+];

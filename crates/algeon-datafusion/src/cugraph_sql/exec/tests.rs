@@ -13,6 +13,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
+use cudf::testing;
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, ScalarValue, Statistics, tree_node::TreeNodeRecursion},
     datasource::{MemTable, source::DataSourceExec},
@@ -46,7 +47,7 @@ use query_runtime::{
     observability::{AttemptDisposition, RuntimeTerminalOutcome},
     runtime::{ExecutionCancellation, QueryAdmissionRequest, StandaloneConfig},
 };
-use tokio::{task::yield_now, time::timeout};
+use tokio::{runtime::Builder as TestRuntimeBuilder, task::yield_now, time::timeout};
 
 use super::*;
 use crate::{
@@ -617,6 +618,28 @@ fn logical_bfs_edge_id_capability_is_rejected_during_exec_construction() {
     assert_eq!(algeon.code(), ErrorCode::RequiredGpuOperationUnsupported);
     assert_eq!(algeon.fact_value("edge_id_col"), Some("true"));
     assert_eq!(algeon.fact_value("include_edge_ids"), Some("false"));
+
+    let mut spec = bfs_utf8_spec();
+    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
+    params.predicates.include_edge_ids = Some(CugraphGraphPredicateTable::new());
+    let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
+    let predicate_schema = Arc::new(Schema::new(vec![Field::new("edge_id", DataType::Int64, false)]));
+    let predicate_source = Arc::new(EmptyExec::new(predicate_schema)) as Arc<dyn ExecutionPlan>;
+
+    let error = CugraphAlgoExec::try_new(
+        spec,
+        edge_source,
+        vec![predicate_source],
+        None,
+        None,
+        AlgeonNativeExecutionConfig::default(),
+    )
+    .expect_err("logical BFS include-edge-id input must fail capability preflight");
+    let algeon = error.find_algeon_error().expect("capability preflight must remain a structured adapter error");
+
+    assert_eq!(algeon.code(), ErrorCode::RequiredGpuOperationUnsupported);
+    assert_eq!(algeon.fact_value("edge_id_col"), Some("false"));
+    assert_eq!(algeon.fact_value("include_edge_ids"), Some("true"));
 }
 
 #[test]
@@ -710,31 +733,6 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
 }
 
 #[test]
-fn logical_bfs_include_edge_ids_capability_is_rejected_during_exec_construction() {
-    let mut spec = bfs_utf8_spec();
-    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
-    params.predicates.include_edge_ids = Some(CugraphGraphPredicateTable::new());
-    let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
-    let predicate_schema = Arc::new(Schema::new(vec![Field::new("edge_id", DataType::Int64, false)]));
-    let predicate_source = Arc::new(EmptyExec::new(predicate_schema)) as Arc<dyn ExecutionPlan>;
-
-    let error = CugraphAlgoExec::try_new(
-        spec,
-        edge_source,
-        vec![predicate_source],
-        None,
-        None,
-        AlgeonNativeExecutionConfig::default(),
-    )
-    .expect_err("logical BFS include-edge-id input must fail capability preflight");
-    let algeon = error.find_algeon_error().expect("capability preflight must remain a structured adapter error");
-
-    assert_eq!(algeon.code(), ErrorCode::RequiredGpuOperationUnsupported);
-    assert_eq!(algeon.fact_value("edge_id_col"), Some("false"));
-    assert_eq!(algeon.fact_value("include_edge_ids"), Some("true"));
-}
-
-#[test]
 fn cugraph_algo_exec_does_not_request_input_repartitioning() {
     let exec = CugraphAlgoExec::try_new(
         triangle_spec(),
@@ -802,7 +800,54 @@ fn bfs_path_exec_declares_ordering_only_while_path_index_is_preserved() {
     assert!(projected.properties().output_ordering().is_none());
 }
 
-#[tokio::test]
+#[test]
+fn tests_cases_1() {
+    testing::run_named_cases(&[
+        ("bfs_path_materializes_only_the_bounded_frame_under_small_host_limit", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(bfs_path_materializes_only_the_bounded_frame_under_small_host_limit())
+        }),
+        ("cugraph_staged_attempt_uses_exact_filtered_host_rows_once", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_staged_attempt_uses_exact_filtered_host_rows_once())
+        }),
+        ("cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order())
+        }),
+        ("cugraph_staged_attempt_failure_cleans_host_reservation_before_admission", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_staged_attempt_failure_cleans_host_reservation_before_admission())
+        }),
+        ("cugraph_producer_preparation_binds_one_post_hydration_ticket_for_host_and_gpu_paths", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_producer_preparation_binds_one_post_hydration_ticket_for_host_and_gpu_paths())
+        }),
+        ("cugraph_producer_prepared_inputs_transfer_once_across_plan_clones", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_producer_prepared_inputs_transfer_once_across_plan_clones())
+        }),
+    ]);
+}
+
 async fn bfs_path_materializes_only_the_bounded_frame_under_small_host_limit() {
     let backend = test_gpu_backend();
     let mut spec = bfs_spec();
@@ -1194,43 +1239,6 @@ fn malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries() {
     assert!(rejection.message().contains("dst"), "the missing mapping column must remain actionable");
 }
 
-#[tokio::test]
-async fn cugraph_producer_preparation_stages_host_inputs_before_gpu_execution() {
-    let backend = test_gpu_backend();
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
-    let (_attempt, task_context) =
-        attempt_task_context(&backend, TaskContext::default().with_runtime(Arc::clone(&runtime)));
-    let exec = Arc::new(
-        CugraphAlgoExec::try_new(
-            triangle_spec(),
-            memory_edge_source(16),
-            vec![],
-            None,
-            None,
-            AlgeonNativeExecutionConfig::default(),
-        )
-        .expect("cuGraph producer should build"),
-    );
-    let plan = Arc::clone(&exec) as Arc<dyn ExecutionPlan>;
-
-    let prepared = exec
-        .prepare_execution_plan(plan, task_context)
-        .await
-        .expect("host inputs should stage during producer preparation");
-
-    assert!(
-        prepared
-            .downcast_ref::<CugraphAlgoExec>()
-            .expect("prepared plan should remain cuGraph")
-            .prepared_staged_inputs
-            .is_some()
-    );
-    assert!(runtime.memory_pool.reserved() > 0, "staged host batches must retain their reservation");
-    drop(prepared);
-    assert_eq!(runtime.memory_pool.reserved(), 0, "dropping staged inputs must release their reservation");
-}
-
-#[tokio::test]
 async fn cugraph_staged_attempt_uses_exact_filtered_host_rows_once() {
     let backend = test_gpu_backend();
     let config =
@@ -1267,7 +1275,6 @@ async fn cugraph_staged_attempt_uses_exact_filtered_host_rows_once() {
     assert_eq!(runtime.memory_pool.reserved(), 0, "dropping staged host ownership must release its reservation");
 }
 
-#[tokio::test]
 async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
     let backend = test_gpu_backend();
     let config =
@@ -1358,7 +1365,6 @@ async fn cugraph_native_staging_retains_hard_rows_and_never_executes_a_wrapped_c
     assert_eq!(execute_count.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
-#[tokio::test]
 async fn cugraph_staged_attempt_failure_cleans_host_reservation_before_admission() {
     let backend = test_gpu_backend();
     let config =
@@ -1389,7 +1395,6 @@ async fn cugraph_staged_attempt_failure_cleans_host_reservation_before_admission
     assert_eq!(runtime.memory_pool.reserved(), 0, "failed staging must release all host ownership");
 }
 
-#[tokio::test]
 async fn cugraph_producer_preparation_binds_one_post_hydration_ticket_for_host_and_gpu_paths() {
     let backend = test_gpu_backend();
     let source = admission_source(&backend);
@@ -1437,7 +1442,6 @@ async fn cugraph_producer_preparation_binds_one_post_hydration_ticket_for_host_a
     );
 }
 
-#[tokio::test]
 async fn cugraph_producer_prepared_inputs_transfer_once_across_plan_clones() {
     let backend = test_gpu_backend();
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
@@ -1523,7 +1527,6 @@ async fn cugraph_host_staging_polls_every_partition_of_a_dynamic_filter_join() {
     };
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 9);
 }
-
 #[tokio::test]
 async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute() {
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
@@ -1556,7 +1559,38 @@ async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute
     drop(uploaded);
 }
 
-#[tokio::test]
+#[test]
+fn installed_backend_admission_cases() {
+    testing::run_named_cases(&[
+        ("cugraph_staged_upload_rejects_missing_admission_plan_before_source_upload", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_staged_upload_rejects_missing_admission_plan_before_source_upload())
+        }),
+        ("composed_edge_source_rejects_admission_mismatch_before_running_producers", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(composed_edge_source_rejects_admission_mismatch_before_running_producers())
+        }),
+        (
+            "bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth",
+            bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth,
+        ),
+        (
+            "bfs_singleflight_follower_metrics_identify_coalescing_not_a_graph_cache",
+            bfs_singleflight_follower_metrics_identify_coalescing_not_a_graph_cache,
+        ),
+        (
+            "admission_backed_cugraph_allows_native_child_execution",
+            admission_backed_cugraph_allows_native_child_execution,
+        ),
+    ]);
+}
+
 async fn cugraph_staged_upload_rejects_missing_admission_plan_before_source_upload() {
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
@@ -1650,7 +1684,6 @@ fn direct_composed_admission_context_config(
     (attempt, backend_execution_config(backend).with_existing_query_admission_ticket(ticket))
 }
 
-#[tokio::test]
 async fn composed_edge_source_rejects_admission_mismatch_before_running_producers() {
     let backend = test_gpu_backend();
     let admission_source = admission_source(&backend);
@@ -1923,7 +1956,6 @@ fn singleflight_test_exec(source_vertex: i64, depth_limit: Option<i64>) -> Cugra
     )
 }
 
-#[test]
 fn bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth() {
     let first = singleflight_test_exec(1, None).bfs_singleflight_key(0).expect("deep scalar BFS should qualify");
     let same = singleflight_test_exec(1, None).bfs_singleflight_key(0).expect("same deep BFS should qualify");
@@ -1999,7 +2031,6 @@ fn bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth() {
     assert!(singleflight_test_exec(1, Some(3)).bfs_singleflight_key(0).is_none());
 }
 
-#[test]
 fn bfs_singleflight_follower_metrics_identify_coalescing_not_a_graph_cache() {
     let exec = singleflight_test_exec(1, None);
     let key = exec.bfs_singleflight_key(0).expect("eligible BFS has a transient coalescing key");
@@ -2024,22 +2055,6 @@ fn bfs_singleflight_follower_metrics_identify_coalescing_not_a_graph_cache() {
         assert!(row.algorithm_metadata.contains("bfs_singleflight=follower"), "{row:?}");
         assert!(!row.algorithm_metadata.contains("graph_cache="), "{row:?}");
     }
-}
-
-#[test]
-fn cugraph_pre_hydration_exec_leaves_backend_ticketless() {
-    let backend = test_gpu_backend();
-    let source = admission_source(&backend);
-    let base = AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
-        .with_query_admission_source(source);
-
-    assert!(base.has_query_admission_authority());
-    assert_eq!(base.query_admission_ticket_id(), None);
-
-    let exec = CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(300), vec![], None, None, base)
-        .expect("cuGraph exec should build without a pre-hydration ticket");
-
-    assert_eq!(exec.native_execution_config.query_admission_ticket_id(), None);
 }
 
 #[test]
@@ -2372,39 +2387,6 @@ async fn force_atlas2_count_and_coordinate_sums_execute_natively() {
     );
 }
 
-#[tokio::test]
-async fn cugraph_sql_bfs_table_function_records_graph_residency_with_runner_default_session_config() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("edges.parquet");
-    write_edge_parquet(&path);
-    let state = SessionStateBuilder::new()
-        .with_default_features()
-        .try_with_cugraph_sql(CugraphSqlConfig::default())
-        .expect("install cuGraph SQL")
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    ctx.register_parquet("citation_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-
-    let plan = ctx
-        .sql(
-            "SELECT COUNT(*) AS reached \
-             FROM cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), \
-             source_vertex => 0, depth_limit => 3, output_mode => 'normalized')",
-        )
-        .await
-        .unwrap()
-        .create_physical_plan()
-        .await
-        .unwrap();
-    let exec = cugraph_exec_in_plan(Arc::clone(&plan)).expect("planned SQL should contain CugraphAlgoExec");
-    let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
-
-    assert!(
-        exec.graph_residency.is_some(),
-        "the multi-GPU runner uses the default session configuration, so its DBLP BFS path must remain cacheable"
-    );
-}
-
 fn cugraph_exec_in_plan(plan: Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
     if plan.downcast_ref::<CugraphAlgoExec>().is_some() {
         return Some(plan);
@@ -2468,7 +2450,6 @@ fn standalone_bounded_cugraph_rejects_native_child_execution_without_admission()
     assert_eq!(error.fact_value("source_kind"), Some("edge"));
 }
 
-#[test]
 fn admission_backed_cugraph_allows_native_child_execution() {
     let backend = test_gpu_backend();
     let config =

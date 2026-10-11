@@ -4,7 +4,7 @@
 
 use cudf::{ErrorCode, ErrorKind, Exec, Runtime, Series, TypeId};
 
-use crate::common::{error_context_value, nullable_series, run_named_cases, series};
+use crate::common::{error_context_value, nullable_series, series};
 
 // ===========================================================================
 // Basic concatenation
@@ -121,17 +121,17 @@ fn test_concat_type_mismatch_returns_error() {
     );
 }
 
-#[test]
-fn series_concat_tests_cases() {
-    run_named_cases(&[
-        ("test_concat_two_i32_series", test_concat_two_i32_series),
-        ("test_concat_in_uses_borrowed_execution_overrides", test_concat_in_uses_borrowed_execution_overrides),
-        ("test_concat_three_f64_series", test_concat_three_f64_series),
-        ("test_concat_strings", test_concat_strings),
-        ("test_concat_single_series", test_concat_single_series),
-        ("test_concat_with_empty_series", test_concat_with_empty_series),
-        ("test_concat_preserves_nulls", test_concat_preserves_nulls),
-        ("test_concat_empty_slice_returns_error", test_concat_empty_slice_returns_error),
-        ("test_concat_type_mismatch_returns_error", test_concat_type_mismatch_returns_error),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("series_concat_tests::test_concat_two_i32_series", test_concat_two_i32_series),
+    (
+        "series_concat_tests::test_concat_in_uses_borrowed_execution_overrides",
+        test_concat_in_uses_borrowed_execution_overrides,
+    ),
+    ("series_concat_tests::test_concat_three_f64_series", test_concat_three_f64_series),
+    ("series_concat_tests::test_concat_strings", test_concat_strings),
+    ("series_concat_tests::test_concat_single_series", test_concat_single_series),
+    ("series_concat_tests::test_concat_with_empty_series", test_concat_with_empty_series),
+    ("series_concat_tests::test_concat_preserves_nulls", test_concat_preserves_nulls),
+    ("series_concat_tests::test_concat_empty_slice_returns_error", test_concat_empty_slice_returns_error),
+    ("series_concat_tests::test_concat_type_mismatch_returns_error", test_concat_type_mismatch_returns_error),
+];

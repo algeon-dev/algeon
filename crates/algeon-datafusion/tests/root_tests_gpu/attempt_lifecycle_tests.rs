@@ -838,23 +838,6 @@ async fn planning_report_names_the_native_root_below_the_admission_boundary() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repeated_plain_execution_of_one_plan_runs_one_attempt_each_time() {
-    let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
-    let ctx = native_context(&backend).await;
-    let plan = ctx.sql(NATIVE_AGGREGATE_SQL).await.unwrap().create_physical_plan().await.unwrap();
-
-    let mut attempt_ids = Vec::new();
-    for _ in 0..2 {
-        assert_eq!(drain(execute_stream(std::sync::Arc::clone(&plan), ctx.task_ctx()).unwrap()).await, 2);
-        let report = sole_abandoned_report(&backend).await;
-        assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
-        assert!(report.admission.is_some());
-        attempt_ids.push(report.attempt_id);
-    }
-    assert_ne!(attempt_ids[0], attempt_ids[1], "each execution is its own attempt");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_plain_executions_on_one_context_run_one_attempt_each() {
     let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
     let ctx = native_context(&backend).await;

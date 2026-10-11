@@ -1,8 +1,6 @@
 //! Multi-GPU integration tests.
 //!
-//! These tests run by default on hosts with 2+ visible GPUs and skip cleanly
-//! on single-GPU hosts. Set `CUDF_SKIP_MULTI_GPU=1` to disable them
-//! explicitly.
+//! Run these ignored tests explicitly on hosts with at least two visible GPUs.
 use cudf::testing::prelude::*;
 
 use crate::common::{
@@ -31,13 +29,9 @@ use tempfile::TempDir;
 
 use crate::common::scalar;
 
-const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
-
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_matrix_pack_rejects_cross_device_input() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
     let (device0, device1) = first_two_test_devices();
     let input_runtime = Runtime::builder().with_device(device0).build().unwrap();
     let output_runtime = Runtime::builder().with_device(device1).build().unwrap();
@@ -54,10 +48,8 @@ fn runtime_matrix_pack_rejects_cross_device_input() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn cross_device_value_drop_does_not_quarantine_teardown_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
     let (device_a, device_b) = first_two_test_devices();
     let runtime_b = Runtime::builder().with_device(device_b).build().unwrap();
     let series_b = runtime_b.series(&[1i32, 2, 3]).unwrap();
@@ -80,10 +72,8 @@ fn cross_device_value_drop_does_not_quarantine_teardown_device() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn cross_device_pool_resource_release_does_not_quarantine_its_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
     let (device_a, device_b) = first_two_test_devices();
     let pool_b = DeviceMemoryResource::pool_on(device_b, 16 * 1024 * 1024, None).unwrap();
     // Building a runtime on the pool registers the runtime stream, so the
@@ -105,23 +95,9 @@ fn cross_device_pool_resource_release_does_not_quarantine_its_device() {
     assert_eq!(runtime_b.series(&[4i32]).unwrap().len(), 1, "B still admits work after the release");
 }
 
-fn should_run_multi_gpu_test() -> bool {
-    if std::env::var(SKIP_MULTI_GPU_ENV).unwrap_or_default() == "1" {
-        eprintln!("skipping multi-GPU test because {SKIP_MULTI_GPU_ENV}=1");
-        return false;
-    }
-
-    let count = DeviceId::count().expect("failed to query visible CUDA devices");
-    if count < 2 {
-        eprintln!("skipping multi-GPU test because only {count} CUDA device is visible");
-        return false;
-    }
-
-    true
-}
-
 fn available_test_devices() -> Vec<DeviceId> {
     let count = DeviceId::count().expect("failed to query visible CUDA devices");
+    assert!(count >= 2, "requires at least 2 GPUs");
     (0..count).map(|ordinal| DeviceId::new(ordinal).expect("device count returned an invalid ordinal")).collect()
 }
 
@@ -328,11 +304,8 @@ fn assert_cross_device_result_any_operation<T>(
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn two_runtimes_on_different_devices() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (device0, device1) = first_two_test_devices();
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
@@ -343,11 +316,8 @@ fn two_runtimes_on_different_devices() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtimes_execute_on_every_visible_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     for device in available_test_devices() {
         let rt = Runtime::builder().with_device(device).build().unwrap();
         assert_eq!(rt.device(), device, "runtime should report its pinned device");
@@ -367,11 +337,8 @@ fn runtimes_execute_on_every_visible_device() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_operations_on_different_devices_produce_correct_results() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (device0, device1) = first_two_test_devices();
 
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
@@ -404,11 +371,8 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn with_column_requires_explicit_relocation_for_cross_device_series() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
     let df = dataframe1("id", left_rt.series(&[1i32, 2, 3]).unwrap());
     let foreign = right_rt.series(&[10i32, 20, 30]).unwrap();
@@ -425,11 +389,8 @@ fn with_column_requires_explicit_relocation_for_cross_device_series() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn assign_requires_explicit_relocation_for_cross_device_series() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
     let df = dataframe1("id", left_rt.series(&[1i32, 2, 3]).unwrap());
     let foreign = right_rt.series(&[10i32, 20, 30]).unwrap();
@@ -446,11 +407,8 @@ fn assign_requires_explicit_relocation_for_cross_device_series() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn device_guard_restores_device_across_scopes() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -466,11 +424,8 @@ fn device_guard_restores_device_across_scopes() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn memory_resource_drop_restores_previous_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -487,11 +442,8 @@ fn memory_resource_drop_restores_previous_device() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn columns_from_different_devices_have_different_domains() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -523,11 +475,8 @@ fn columns_from_different_devices_have_different_domains() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn adopted_device_buffer_uses_matching_runtime_provenance_after_current_device_switch() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -548,11 +497,8 @@ fn adopted_device_buffer_uses_matching_runtime_provenance_after_current_device_s
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn adopted_nullable_device_buffer_uses_matching_runtime_provenance_after_current_device_switch() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -576,11 +522,8 @@ fn adopted_nullable_device_buffer_uses_matching_runtime_provenance_after_current
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn adopted_nullable_device_buffer_rejects_cross_device_data_and_mask_buffers() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
 
@@ -608,11 +551,8 @@ fn adopted_nullable_device_buffer_rejects_cross_device_data_and_mask_buffers() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_adopted_device_buffer_rejects_cross_device_runtime() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
 
@@ -636,11 +576,8 @@ fn runtime_adopted_device_buffer_rejects_cross_device_runtime() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_adopted_nullable_device_buffer_rejects_cross_device_runtime() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
 
@@ -674,11 +611,8 @@ fn runtime_adopted_nullable_device_buffer_rejects_cross_device_runtime() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_pinned_device_is_used_for_execution() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -709,11 +643,8 @@ fn runtime_pinned_device_is_used_for_execution() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_device_flows_through_sort() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (_, device1) = first_two_test_devices();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
@@ -733,11 +664,8 @@ fn runtime_device_flows_through_sort() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_device_flows_through_manual_mask_filter_paths() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -781,11 +709,8 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_gt_scalar_mask_filter_regression() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -814,11 +739,8 @@ fn runtime_gt_scalar_mask_filter_regression() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_device_flows_through_host_materialization() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (_, device1) = first_two_test_devices();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let series = rt1.series(&[10, 20]).unwrap();
@@ -836,11 +758,8 @@ fn runtime_device_flows_through_host_materialization() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn concurrent_runtimes_on_different_devices() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (device0, device1) = first_two_test_devices();
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
@@ -865,11 +784,8 @@ fn concurrent_runtimes_on_different_devices() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn shared_runtime_concurrent_access() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (_, device1) = first_two_test_devices();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let rt1_clone = rt1.clone();
@@ -908,11 +824,8 @@ fn shared_runtime_concurrent_access() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn stream_records_creation_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -927,11 +840,8 @@ fn stream_records_creation_device() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn memory_resource_records_creation_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -946,11 +856,8 @@ fn memory_resource_records_creation_device() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn builder_pool_memory_resource_ignores_ambient_device_and_uses_runtime_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -977,11 +884,8 @@ fn builder_pool_memory_resource_ignores_ambient_device_and_uses_runtime_device()
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn explicit_device_memory_resource_constructors_ignore_ambient_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -1017,11 +921,8 @@ fn explicit_device_memory_resource_constructors_ignore_ambient_device() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn builder_rejects_cross_device_stream() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -1038,11 +939,8 @@ fn builder_rejects_cross_device_stream() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn builder_rejects_cross_device_mr() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -1059,11 +957,8 @@ fn builder_rejects_cross_device_mr() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn builder_rejects_mismatched_handle_devices() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -1081,11 +976,8 @@ fn builder_rejects_mismatched_handle_devices() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn builder_infers_device_from_handles() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (_, device1) = first_two_test_devices();
 
     // Create handles on the secondary device through a runtime.
@@ -1104,11 +996,8 @@ fn builder_infers_device_from_handles() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn same_provenance_differs_by_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (device0, device1) = first_two_test_devices();
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
@@ -1123,11 +1012,8 @@ fn same_provenance_differs_by_device() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn dataframe_constructors_share_mixed_provenance_rejection_contract() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (device0, device1) = first_two_test_devices();
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
@@ -1143,11 +1029,8 @@ fn dataframe_constructors_share_mixed_provenance_rejection_contract() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn borrowed_stream_override_rejects_cross_device_context_with_canonical_keys() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_device, right_device) = first_two_test_devices();
     let (left_rt, right_rt) = first_two_test_runtimes();
 
@@ -1160,11 +1043,8 @@ fn borrowed_stream_override_rejects_cross_device_context_with_canonical_keys() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn query_execution_context_rejects_cross_device_input_runtime() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_device, right_device) = first_two_test_devices();
     let (left_rt, right_rt) = first_two_test_runtimes();
 
@@ -1175,11 +1055,8 @@ fn query_execution_context_rejects_cross_device_input_runtime() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn with_columns_borrowed_stream_override_rejects_cross_device_context_with_canonical_keys() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_device, right_device) = first_two_test_devices();
     let (left_rt, right_rt) = first_two_test_runtimes();
 
@@ -1192,11 +1069,8 @@ fn with_columns_borrowed_stream_override_rejects_cross_device_context_with_canon
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn borrowed_memory_resource_override_rejects_cross_device_context_with_canonical_keys() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_device, right_device) = first_two_test_devices();
     let (left_rt, right_rt) = first_two_test_runtimes();
 
@@ -1209,11 +1083,8 @@ fn borrowed_memory_resource_override_rejects_cross_device_context_with_canonical
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn with_columns_borrowed_memory_resource_override_rejects_cross_device_context_with_canonical_keys() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_device, right_device) = first_two_test_devices();
     let (left_rt, right_rt) = first_two_test_runtimes();
 
@@ -1226,11 +1097,8 @@ fn with_columns_borrowed_memory_resource_override_rejects_cross_device_context_w
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn merge_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left =
@@ -1257,11 +1125,8 @@ fn merge_without_relocation_rejects_cross_device_runtime_inputs() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn gather_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (data_rt, indices_rt) = first_two_test_runtimes();
 
     let df = dataframe1("id", data_rt.series(&[10i32, 20, 30]).unwrap());
@@ -1275,11 +1140,8 @@ fn gather_without_relocation_rejects_cross_device_runtime_inputs() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn series_fillna_with_series_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (input_rt, fill_rt) = first_two_test_runtimes();
 
     let input = input_rt.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap();
@@ -1293,11 +1155,8 @@ fn series_fillna_with_series_without_relocation_rejects_cross_device_runtime_inp
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn dataframe_fillna_with_scalar_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (df_rt, scalar_rt) = first_two_test_runtimes();
 
     let df = dataframe1("value", df_rt.nullable_series(&[1i32, 0, 3], &[true, false, true]).unwrap());
@@ -1311,11 +1170,8 @@ fn dataframe_fillna_with_scalar_without_relocation_rejects_cross_device_runtime_
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn join_indices_without_relocation_reject_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left = dataframe1("id", left_rt.series(&[1i32, 2, 3]).unwrap());
@@ -1329,11 +1185,8 @@ fn join_indices_without_relocation_reject_cross_device_runtime_inputs() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn conditional_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left = dataframe1("left_val", left_rt.series(&[1i32, 2, 3]).unwrap());
@@ -1349,11 +1202,8 @@ fn conditional_join_indices_without_relocation_reject_cross_device_runtime_input
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn conditional_join_indices_in_without_relocation_reject_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left = dataframe1("left_val", left_rt.series(&[1i32, 2, 3]).unwrap());
@@ -1370,11 +1220,8 @@ fn conditional_join_indices_in_without_relocation_reject_cross_device_runtime_in
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn mixed_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left =
@@ -1392,11 +1239,8 @@ fn mixed_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn mixed_join_indices_in_without_relocation_reject_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left =
@@ -1415,11 +1259,8 @@ fn mixed_join_indices_in_without_relocation_reject_cross_device_runtime_inputs()
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn filter_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left = dataframe1("left_val", left_rt.series(&[1i32, 3, 5]).unwrap());
@@ -1444,11 +1285,8 @@ fn filter_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn filter_join_indices_in_without_relocation_reject_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left = dataframe1("left_val", left_rt.series(&[1i32, 3, 5]).unwrap());
@@ -1474,11 +1312,8 @@ fn filter_join_indices_in_without_relocation_reject_cross_device_runtime_inputs(
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn hash_join_probe_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (build_rt, probe_rt) = first_two_test_runtimes();
 
     let build = DataFrame::from_series([("id", build_rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
@@ -1500,11 +1335,8 @@ fn hash_join_probe_without_relocation_rejects_cross_device_runtime_inputs() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_expr_literal_with_columns_regression() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -1534,11 +1366,8 @@ fn runtime_expr_literal_with_columns_regression() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_head_tail_slice_regression() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -1583,11 +1412,8 @@ fn runtime_head_tail_slice_regression() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_nulls_factory_executes_on_target_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -1607,11 +1433,8 @@ fn runtime_nulls_factory_executes_on_target_device() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn dataframe_write_parquet_with_options_without_relocation_rejects_cross_device_runtime_override() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let (_data_rt, target_rt, df) = cross_device_write_dataframe();
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("cross_device_write.parquet");
@@ -1628,11 +1451,8 @@ fn dataframe_write_parquet_with_options_without_relocation_rejects_cross_device_
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_series_from_scalar_executes_on_target_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -1654,11 +1474,8 @@ fn runtime_series_from_scalar_executes_on_target_device() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn runtime_column_from_scalar_executes_on_target_device() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
@@ -1683,10 +1500,8 @@ fn runtime_column_from_scalar_executes_on_target_device() {
 /// installed, work completes correctly on both, and neither pipeline blocks
 /// on host-side state owned by the other.
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn concurrent_per_device_pipelines_share_no_state() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
     let (device0, device1) = first_two_test_devices();
 
     let domain0 = cudf::DeviceMemoryManager::install(device0, InstallSpec::default()).unwrap().0;

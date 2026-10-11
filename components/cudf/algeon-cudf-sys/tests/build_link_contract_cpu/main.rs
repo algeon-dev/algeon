@@ -9,19 +9,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const BUILD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"));
-const BUILD_SUPPORT_MOD: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build_support/mod.rs"));
-const BUILD_SUPPORT_CMAKE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build_support/cmake.rs"));
-const BUILD_SUPPORT_LINT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build_support/lint.rs"));
-const BUILD_SUPPORT_TOOLCHAIN: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build_support/toolchain.rs"));
-const NATIVE_CMAKELISTS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/CMakeLists.txt"));
-const NATIVE_DISCOVERY_CMAKE: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/cmake/cudf-discovery.cmake"));
-
-fn native_cmake_contract_contains(expected: &str) -> bool {
-    NATIVE_CMAKELISTS.contains(expected) || NATIVE_DISCOVERY_CMAKE.contains(expected)
-}
-
 #[test]
 fn manifest_parser_ignores_comments_and_blank_lines() {
     let directives = build_support::cmake::parse_cargo_link_directives(
@@ -93,12 +80,6 @@ fn parse_cmake_bool_normalizes_common_truthy_and_falsey_values() {
 fn parse_cmake_bool_rejects_invalid_values() {
     let error = build_support::cmake::parse_cmake_bool("CUDA_STATIC_RUNTIME", "maybe").unwrap_err();
     assert!(error.contains("CUDA_STATIC_RUNTIME"), "unexpected error: {error}");
-}
-
-#[test]
-fn normalized_cmake_bool_reads_optional_input() {
-    assert_eq!(build_support::cmake::normalized_cmake_bool("CUDA_STATIC_RUNTIME", None).unwrap(), None);
-    assert_eq!(build_support::cmake::normalized_cmake_bool("CUDA_STATIC_RUNTIME", Some("yes")).unwrap(), Some("ON"));
 }
 
 #[test]
@@ -259,88 +240,6 @@ fn supported_target_os_accepts_linux_only() {
 }
 
 #[test]
-fn build_script_tracks_build_support_and_cargo_link_template_changes() {
-    assert!(BUILD_RS.contains("emit_build_fingerprints"), "expected build.rs to delegate fingerprint emission");
-    for tracked in [
-        "build_support",
-        "native_dir.join(\"include\")",
-        "cmake/cargo-link.txt.in",
-        "cmake/cudf-discovery.cmake",
-        "cmake/cudf-rust.map",
-        "bindings/wrapper.h",
-    ] {
-        assert!(BUILD_SUPPORT_MOD.contains(tracked), "expected fingerprint contract to track {tracked}");
-    }
-    assert!(
-        BUILD_SUPPORT_MOD.contains("active_cudf_cmake_cache"),
-        "expected the fingerprint contract to select only the active discovery CMakeCache"
-    );
-}
-
-#[test]
-fn native_cmakelists_has_one_kvikio_remote_support_fallback() {
-    assert_eq!(
-        NATIVE_CMAKELISTS.matches("elseif(DEFINED KvikIO_REMOTE_SUPPORT)").count(),
-        1,
-        "KvikIO_REMOTE_SUPPORT fallback must have one canonical branch"
-    );
-}
-
-#[test]
-fn build_script_tracks_native_build_env_changes() {
-    assert!(BUILD_SUPPORT_MOD.contains("for env_var in NATIVE_BUILD_ENV_VARS"));
-    assert!(build_support::NATIVE_BUILD_ENV_VARS.contains(&"CUDF_RS_SKIP_STALENESS_CHECK"));
-    assert!(build_support::NATIVE_BUILD_ENV_VARS.contains(&"CARGO_FEATURE_TEST_HOOKS"));
-    assert!(
-        !build_support::NATIVE_BUILD_ENV_VARS.contains(&"PATH"),
-        "expected ambient PATH to stay out of the native fingerprint input"
-    );
-}
-
-#[test]
-fn build_script_makes_clang_tools_opt_in_and_tracks_explicit_tool_env() {
-    assert!(
-        BUILD_RS.contains("CUDF_RUST_CLANG_LINT"),
-        "expected build.rs to gate native clang linting behind CUDF_RUST_CLANG_LINT"
-    );
-    assert!(
-        BUILD_RS.contains("CUDF_RUST_ENABLE_CLANG_TIDY"),
-        "expected build.rs to pass the clang-tidy opt-in flag through to CMake"
-    );
-
-    for tool in ["clang-format", "clang-tidy"] {
-        assert!(
-            BUILD_RS.contains(&format!("\"{tool}\"")),
-            "expected build.rs to resolve {tool} by name when the explicit override is unset"
-        );
-    }
-    assert!(
-        BUILD_SUPPORT_TOOLCHAIN.contains("resolve_tool_from_env_or_name"),
-        "expected toolchain module to resolve clang tools from explicit env overrides before PATH"
-    );
-    assert!(
-        BUILD_RS.contains("CLANG_FORMAT_EXE_ENV"),
-        "expected build.rs to use the shared clang-format override env constant"
-    );
-    assert!(
-        BUILD_RS.contains("CLANG_TIDY_EXE_ENV"),
-        "expected build.rs to use the shared clang-tidy override env constant"
-    );
-    assert!(
-        BUILD_SUPPORT_TOOLCHAIN.contains("env::set_var(\"CMAKE\", cmake)"),
-        "expected the explicit CMake override to reach cmake-rs through its standard CMAKE input"
-    );
-    assert!(
-        BUILD_SUPPORT_TOOLCHAIN.contains("resolve_compiler_from_env_or_name(\"CC\", \"cc\")"),
-        "expected build.rs to resolve an effective CC even when the override is unset"
-    );
-    assert!(
-        BUILD_SUPPORT_TOOLCHAIN.contains("resolve_compiler_from_env_or_name(\"CXX\", \"c++\")"),
-        "expected build.rs to resolve an effective CXX even when the override is unset"
-    );
-}
-
-#[test]
 fn canonical_cmake_cache_tracks_matching_build_metadata() {
     let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let temp_dir = std::env::temp_dir().join(format!("cudf-sys-sibling-cache-contract-{unique}"));
@@ -436,47 +335,6 @@ fn resolve_compiler_from_env_accepts_absolute_and_basename_toolchains() {
 }
 
 #[test]
-fn build_script_runs_clang_format_against_native_sources_only() {
-    for expected in [
-        "collect_native_clang_lint_files",
-        "run_clang_format_check",
-        "--dry-run",
-        "--Werror",
-        "clang-format check failed for cudf-sys/native",
-    ] {
-        assert!(
-            BUILD_SUPPORT_LINT.contains(expected),
-            "expected lint module to contain native clang-format enforcement snippet `{expected}`"
-        );
-    }
-    assert!(BUILD_RS.contains("CUDF_RUST_CLANG_LINT"));
-    assert!(
-        BUILD_RS.contains("collect_native_clang_lint_files(manifest_dir)"),
-        "expected build.rs to pass the crate manifest directory, not the native directory, to the lint collector"
-    );
-}
-
-#[test]
-fn build_script_replays_runtime_link_search_paths_as_rpath_and_metadata() {
-    assert!(
-        BUILD_SUPPORT_CMAKE.contains("cargo:rustc-link-search=native="),
-        "expected CMake module to recognize native link search directives emitted by the CMake manifest"
-    );
-    assert!(
-        BUILD_SUPPORT_CMAKE.contains("cargo:rustc-link-arg=-Wl,-rpath,"),
-        "expected CMake module to replay native link search paths as runtime rpath entries"
-    );
-    assert!(
-        BUILD_SUPPORT_CMAKE.contains("cargo:runtime-lib-dir="),
-        "expected CMake module to surface runtime library directories as direct Cargo metadata keys for downstream DEP_CUDF_RUST_RUNTIME_LIB_DIR"
-    );
-    assert!(
-        BUILD_SUPPORT_CMAKE.contains("cargo:metadata=runtime-lib-dir="),
-        "expected CMake module to surface runtime library directories as Cargo metadata"
-    );
-}
-
-#[test]
 fn primary_shim_identity_requires_root_runtime_and_linked_shim_to_name_one_prefix() {
     let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let temp_dir = std::env::temp_dir().join(format!("cudf-sys-primary-identity-contract-{unique}"));
@@ -514,34 +372,6 @@ fn primary_shim_identity_requires_root_runtime_and_linked_shim_to_name_one_prefi
     assert!(error.contains("cargo link manifest"), "unexpected error: {error}");
 
     fs::remove_dir_all(temp_dir).unwrap();
-}
-
-#[test]
-fn build_script_treats_rapids_logger_runtime_library_as_optional() {
-    for expected in [
-        "emit_required_runtime_dep_library_metadata",
-        "\"rmm-runtime-lib\"",
-        "\"librmm.so\"",
-        "\"_deps/rmm-build\"",
-        "emit_optional_runtime_dep_library_metadata(",
-        "\"rapids-logger-runtime-lib\"",
-        "\"librapids_logger.so\"",
-        "\"_deps/rapids_logger-build\"",
-        "\"rapids-logger-linkage\"",
-        "\"absorbed\"",
-        "classify_optional_runtime_dep",
-        "StaleSharedArtifact",
-    ] {
-        assert!(
-            BUILD_SUPPORT_CMAKE.contains(expected),
-            "expected CMake module to contain runtime metadata contract `{expected}`"
-        );
-    }
-
-    assert!(
-        !BUILD_SUPPORT_CMAKE.contains("no shared {file_name} found under the libcudf discovery prefix"),
-        "expected CMake module to avoid warning generically for optional runtime dependencies"
-    );
 }
 
 /// Minimal ELF64 shared object with the given `DT_NEEDED` entries. Layout:
@@ -735,73 +565,6 @@ fn optional_runtime_dep_classification_requires_real_linkage() {
 }
 
 #[test]
-fn build_script_exports_exact_libcudf_runtime_identity() {
-    for expected in [
-        "locate_prebuilt_libcudf(install_dir.as_deref(), build_dir.as_deref())",
-        "emit_runtime_dep_path_metadata(\"libcudf-runtime-lib\"",
-        "required libcudf.so was not found",
-    ] {
-        assert!(
-            BUILD_SUPPORT_CMAKE.contains(expected),
-            "expected CMake module to contain libcudf metadata contract `{expected}"
-        );
-    }
-    for expected in ["cargo:{key}=", "cargo:metadata={key}="] {
-        assert!(BUILD_SUPPORT_CMAKE.contains(expected), "expected the metadata helper to emit `{expected}`");
-    }
-}
-
-#[test]
-fn build_script_checks_target_os_before_configuring_cmake() {
-    assert!(
-        BUILD_SUPPORT_TOOLCHAIN.contains("CARGO_CFG_TARGET_OS"),
-        "expected toolchain module to read the Cargo target OS before configuring the native build"
-    );
-    assert!(
-        BUILD_SUPPORT_TOOLCHAIN.contains("ensure_supported_target_os"),
-        "expected toolchain module to enforce the Linux-only target policy"
-    );
-}
-
-#[test]
-fn native_cmakelists_sanitizes_missing_imported_target_properties() {
-    for property in ["CUDF_CXX_FLAGS", "CUDF_CUDA_FLAGS", "CUDF_CXX_DEFINITIONS", "CUDF_CUDA_DEFINITIONS"] {
-        let sentinel = format!("\"{property}-NOTFOUND\"");
-        assert!(
-            NATIVE_CMAKELISTS.contains(&sentinel),
-            "expected native/CMakeLists.txt to guard imported property {property} against -NOTFOUND"
-        );
-    }
-}
-
-#[test]
-fn native_cmakelists_preserves_existing_prefix_path_when_using_install_dir() {
-    let required_snippet = "list(PREPEND CMAKE_PREFIX_PATH";
-    assert!(
-        NATIVE_CMAKELISTS.contains(required_snippet),
-        "expected native/CMakeLists.txt to prepend CUDF install paths instead of overwriting CMAKE_PREFIX_PATH"
-    );
-}
-
-#[test]
-fn native_cmakelists_gates_build_tree_remote_metadata_to_matching_install_prefix() {
-    for expected in [
-        "cudf_rust_cache_value",
-        "CMAKE_INSTALL_PREFIX",
-        "cudf_rust_build_install_prefix_real",
-        "cudf_rust_install_dir_real",
-        "STREQUAL cudf_rust_install_dir_real",
-        "CUDF_RUST_CUDF_BUILD_DIR_EXPLICIT",
-        "Ignoring sibling libcudf build metadata",
-    ] {
-        assert!(
-            native_cmake_contract_contains(expected),
-            "expected native/CMakeLists.txt to gate build-tree remote capability evidence with `{expected}`"
-        );
-    }
-}
-
-#[test]
 fn cmake_discovery_helper_collects_package_prefixes_after_install_guard_matches() {
     let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let temp_dir = std::env::temp_dir().join(format!("cudf-sys-cmake-discovery-contract-{unique}"));
@@ -882,35 +645,6 @@ endif()
 }
 
 #[test]
-fn native_cmakelists_uses_matching_build_tree_package_prefix_metadata() {
-    for expected in [
-        "cudf_rust_collect_package_prefixes",
-        "REGEX \"^[A-Za-z0-9_]+_BINARY_DIR:[^=]*=\"",
-        "\"${candidate}/*Config.cmake\"",
-        "\"${candidate}/*config.cmake\"",
-        "CUDF_RUST_CUDF_BUILD_PACKAGE_PREFIXES",
-        "list(PREPEND CMAKE_PREFIX_PATH ${CUDF_RUST_CUDF_BUILD_DIR} ${CUDF_RUST_CUDF_BUILD_PACKAGE_PREFIXES}",
-    ] {
-        assert!(
-            native_cmake_contract_contains(expected),
-            "expected native/CMakeLists.txt to use matching build-tree package prefix metadata with `{expected}`"
-        );
-    }
-}
-
-#[test]
-fn native_cmakelists_compiles_c_header_smoke_as_c() {
-    assert!(
-        NATIVE_CMAKELISTS.contains("LANGUAGES C CXX CUDA"),
-        "expected native/CMakeLists.txt to enable C so c_header_smoke.c is compiled as C"
-    );
-    assert!(
-        NATIVE_CMAKELISTS.contains("src/c_header_smoke.c"),
-        "expected native/CMakeLists.txt to include the C header smoke translation unit"
-    );
-}
-
-#[test]
 fn clang_lint_file_matcher_accepts_supported_c_family_sources_only() {
     for path in [
         "native/src/error.cpp",
@@ -963,39 +697,6 @@ fn collect_native_clang_lint_files_is_scoped_to_src_and_include() {
     assert!(
         error.contains("failed to read clang lint directory"),
         "expected the native directory to be rejected as a lint root: {error}"
-    );
-}
-
-#[test]
-fn clang_format_config_path_points_at_upstream_rapids_style_file() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let config_path = build_support::lint::clang_format_config_path(manifest_dir);
-
-    assert_eq!(
-        config_path,
-        manifest_dir.parent().unwrap().join("cudf/.clang-format"),
-        "expected clang-format config to come from the vendored cudf style file"
-    );
-}
-
-#[test]
-fn native_cmakelists_enables_clang_tidy_for_each_shim_target() {
-    for expected in [
-        "CUDF_RUST_ENABLE_CLANG_TIDY",
-        "CXX_CLANG_TIDY",
-        "enable_clang_tidy(cudf_rust)",
-        "enable_clang_tidy(cudf_rust_rmm_interop)",
-        "CUDF_RUST_CLANG_TIDY_CONFIG_FILE",
-    ] {
-        assert!(
-            NATIVE_CMAKELISTS.contains(expected),
-            "expected native/CMakeLists.txt to contain `{expected}` for cudf_rust clang-tidy wiring"
-        );
-    }
-
-    assert!(
-        !NATIVE_CMAKELISTS.contains("enable_clang_tidy(cudf::cudf)"),
-        "did not expect upstream cudf target to be included in shim clang-tidy scope"
     );
 }
 

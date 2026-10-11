@@ -1,6 +1,5 @@
 use super::*;
 
-#[test]
 fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
     let dir = unique_temp_dir("query-engine-native-source-scan-limit");
     let path = dir.join("input.parquet");
@@ -36,7 +35,6 @@ fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_local_parquet_source_materializes_missing_nullable_carry_columns() {
     let dir = unique_temp_dir("query-engine-native-missing-nullable-source-columns");
     let path = dir.join("input.parquet");
@@ -115,7 +113,6 @@ fn native_local_parquet_source_materializes_missing_nullable_carry_columns() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_local_parquet_source_materializes_missing_nullable_boolean_lists() {
     let dir = unique_temp_dir("query-engine-bounded-missing-nullable-source-columns");
     let path = dir.join("input.parquet");
@@ -160,7 +157,6 @@ fn bounded_native_local_parquet_source_materializes_missing_nullable_boolean_lis
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn native_zero_read_column_source_materializes_missing_integer_lists_for_nonzero_and_zero_rows() {
     let dir = unique_temp_dir("query-engine-native-zero-read-missing-list");
     let path = dir.join("input.parquet");
@@ -201,7 +197,6 @@ fn native_zero_read_column_source_materializes_missing_integer_lists_for_nonzero
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler() {
     let dir = unique_temp_dir("query-engine-bounded-generic-source-scheduler");
     let path = dir.join("input.parquet");
@@ -257,6 +252,35 @@ fn bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler() 
 }
 
 #[test]
+fn source_cache_cases() {
+    run_named_cases(&[
+        (
+            "core_execution::source_cache::bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler",
+            bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler,
+        ),
+        (
+            "core_execution::source_cache::bounded_generic_local_parquet_source_batches_adjacent_files",
+            bounded_generic_local_parquet_source_batches_adjacent_files,
+        ),
+        (
+            "core_execution::source_cache::native_local_parquet_source_scan_limit_applies_before_parent_operators",
+            native_local_parquet_source_scan_limit_applies_before_parent_operators,
+        ),
+        (
+            "core_execution::source_cache::native_zero_read_column_source_materializes_missing_integer_lists_for_nonzero_and_zero_rows",
+            native_zero_read_column_source_materializes_missing_integer_lists_for_nonzero_and_zero_rows,
+        ),
+        (
+            "core_execution::source_cache::native_local_parquet_source_materializes_missing_nullable_carry_columns",
+            native_local_parquet_source_materializes_missing_nullable_carry_columns,
+        ),
+        (
+            "core_execution::source_cache::bounded_native_local_parquet_source_materializes_missing_nullable_boolean_lists",
+            bounded_native_local_parquet_source_materializes_missing_nullable_boolean_lists,
+        ),
+    ]);
+}
+
 fn bounded_generic_local_parquet_source_batches_adjacent_files() {
     let dir = unique_temp_dir("query-engine-bounded-generic-source-batch");
     let paths = [dir.join("input-0.parquet"), dir.join("input-1.parquet"), dir.join("input-2.parquet")];

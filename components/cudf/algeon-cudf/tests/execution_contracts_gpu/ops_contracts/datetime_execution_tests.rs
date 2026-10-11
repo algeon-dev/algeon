@@ -2,7 +2,6 @@ use cudf::{Exec, Runtime, TypeId};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    run_named_cases,
 };
 
 fn timestamp_us_series_in_runtime(runtime: &Runtime, values: &[i64]) -> cudf::Result<cudf::Series> {
@@ -37,10 +36,7 @@ fn test_datetime_extract_in_uses_explicit_execution_context_and_output_provenanc
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
-fn datetime_execution_tests_cases() {
-    run_named_cases(&[(
-        "test_datetime_extract_in_uses_explicit_execution_context_and_output_provenance",
-        test_datetime_extract_in_uses_explicit_execution_context_and_output_provenance,
-    )]);
-}
+pub(crate) const CASES: &[(&str, fn())] = &[(
+    "ops_contracts::datetime_execution_tests::test_datetime_extract_in_uses_explicit_execution_context_and_output_provenance",
+    test_datetime_extract_in_uses_explicit_execution_context_and_output_provenance,
+)];

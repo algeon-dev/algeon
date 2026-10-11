@@ -17,7 +17,7 @@ use cudf::{
 use crate::common::{
     arm_next_groupby_negative_total_columns_fault, assert_missing_column_error, column_from_slice,
     dataframe_from_columns, error_context_value, execution_budget_token, last_exec_mr_value, reset_exec_observation,
-    run_named_cases, with_test_runtime,
+    with_test_runtime,
 };
 
 fn assert_high_level_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
@@ -628,67 +628,76 @@ fn test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract(
     assert_eq!(error_context_value(&err, "agg_index").as_deref(), Some("0"));
 }
 
-#[test]
-fn dataframe_groupby_tests_cases() {
-    run_named_cases(&[
-        ("test_groupby_single_key_sum", test_groupby_single_key_sum),
-        (
-            "test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg",
-            test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg,
-        ),
-        (
-            "test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_handle",
-            test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_handle,
-        ),
-        (
-            "test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics",
-            test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics,
-        ),
-        (
-            "test_groupby_agg_with_budget_reports_exceeded_budget_details",
-            test_groupby_agg_with_budget_reports_exceeded_budget_details,
-        ),
-        (
-            "test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details",
-            test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details,
-        ),
-        (
-            "test_groupby_agg_with_budget_preserves_missing_column_validation_without_budget_details",
-            test_groupby_agg_with_budget_preserves_missing_column_validation_without_budget_details,
-        ),
-        (
-            "test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_details",
-            test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_details,
-        ),
-        (
-            "test_groupby_rejects_empty_group_keys_with_stable_contract",
-            test_groupby_rejects_empty_group_keys_with_stable_contract,
-        ),
-        (
-            "test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract",
-            test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract,
-        ),
-        (
-            "test_groupby_single_key_multiple_aggregations_same_column",
-            test_groupby_single_key_multiple_aggregations_same_column,
-        ),
-        ("test_groupby_multiple_keys", test_groupby_multiple_keys),
-        ("test_groupby_nonexistent_agg_column_returns_error", test_groupby_nonexistent_agg_column_returns_error),
-        ("test_groupby_nonexistent_key_column_returns_error", test_groupby_nonexistent_key_column_returns_error),
-        ("test_groupby_result_column_naming_convention", test_groupby_result_column_naming_convention),
-        ("test_groupby_interleaved_multi_column_agg_ordering", test_groupby_interleaved_multi_column_agg_ordering),
-        ("test_groupby_no_aggregations_returns_error", test_groupby_no_aggregations_returns_error),
-        (
-            "test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract",
-            test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract,
-        ),
-        (
-            "test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract",
-            test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract,
-        ),
-        (
-            "test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract",
-            test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("dataframe_groupby_tests::test_groupby_single_key_sum", test_groupby_single_key_sum),
+    (
+        "dataframe_groupby_tests::test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg",
+        test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg,
+    ),
+    (
+        "dataframe_groupby_tests::test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_handle",
+        test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_handle,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics",
+        test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_agg_with_budget_reports_exceeded_budget_details",
+        test_groupby_agg_with_budget_reports_exceeded_budget_details,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details",
+        test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_agg_with_budget_preserves_missing_column_validation_without_budget_details",
+        test_groupby_agg_with_budget_preserves_missing_column_validation_without_budget_details,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_details",
+        test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_details,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_rejects_empty_group_keys_with_stable_contract",
+        test_groupby_rejects_empty_group_keys_with_stable_contract,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract",
+        test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_single_key_multiple_aggregations_same_column",
+        test_groupby_single_key_multiple_aggregations_same_column,
+    ),
+    ("dataframe_groupby_tests::test_groupby_multiple_keys", test_groupby_multiple_keys),
+    (
+        "dataframe_groupby_tests::test_groupby_nonexistent_agg_column_returns_error",
+        test_groupby_nonexistent_agg_column_returns_error,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_nonexistent_key_column_returns_error",
+        test_groupby_nonexistent_key_column_returns_error,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_result_column_naming_convention",
+        test_groupby_result_column_naming_convention,
+    ),
+    (
+        "dataframe_groupby_tests::test_groupby_interleaved_multi_column_agg_ordering",
+        test_groupby_interleaved_multi_column_agg_ordering,
+    ),
+    ("dataframe_groupby_tests::test_groupby_no_aggregations_returns_error", test_groupby_no_aggregations_returns_error),
+    (
+        "dataframe_groupby_tests::test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract",
+        test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract,
+    ),
+    (
+        "dataframe_groupby_tests::test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract",
+        test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract,
+    ),
+    (
+        "dataframe_groupby_tests::test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract",
+        test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract,
+    ),
+];

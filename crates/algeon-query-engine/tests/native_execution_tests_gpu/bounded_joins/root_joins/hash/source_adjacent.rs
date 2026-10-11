@@ -1,6 +1,5 @@
 use super::*;
 
-#[test]
 fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_reads() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-chunked-source");
     let left_path = dir.join("lineitem.parquet");
@@ -60,6 +59,39 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
 }
 
 #[test]
+fn source_adjacent_cases() {
+    run_named_cases(&[
+        (
+            "bounded_joins::root_joins::hash::source_adjacent::bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_reads",
+            bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_reads,
+        ),
+        (
+            "bounded_joins::root_joins::hash::source_adjacent::bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode",
+            bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode,
+        ),
+        (
+            "bounded_joins::root_joins::hash::source_adjacent::bounded_native_query_skips_streamed_join_probe_prefetch_without_minimum_decode_headroom",
+            bounded_native_query_skips_streamed_join_probe_prefetch_without_minimum_decode_headroom,
+        ),
+        (
+            "bounded_joins::root_joins::hash::source_adjacent::bounded_native_query_streams_source_adjacent_filter_projection_into_hash_probe",
+            bounded_native_query_streams_source_adjacent_filter_projection_into_hash_probe,
+        ),
+        (
+            "bounded_joins::root_joins::hash::source_adjacent::bounded_native_query_executes_source_adjacent_join_filter_predicate",
+            bounded_native_query_executes_source_adjacent_join_filter_predicate,
+        ),
+        (
+            "bounded_joins::root_joins::hash::source_adjacent::bounded_native_query_streams_source_adjacent_filter_projection_into_hash_build",
+            bounded_native_query_streams_source_adjacent_filter_projection_into_hash_build,
+        ),
+        (
+            "bounded_joins::root_joins::hash::source_adjacent::bounded_native_query_streams_source_adjacent_filter_projection_into_partitioned_probe_materialization",
+            bounded_native_query_streams_source_adjacent_filter_projection_into_partitioned_probe_materialization,
+        ),
+    ]);
+}
+
 fn bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-prefetch-reconcile");
     let left_path = dir.join("lineitem.parquet");
@@ -128,7 +160,6 @@ fn bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_skips_streamed_join_probe_prefetch_without_minimum_decode_headroom() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-prefetch-no-headroom");
     let left_path = dir.join("lineitem.parquet");
@@ -186,7 +217,6 @@ fn bounded_native_query_skips_streamed_join_probe_prefetch_without_minimum_decod
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_probe() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-streamed-source-unary");
     let left_path = dir.join("lineitem.parquet");
@@ -249,7 +279,6 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_executes_source_adjacent_join_filter_predicate() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-source-filter");
     let left_path = dir.join("lineitem_part.parquet");
@@ -402,7 +431,6 @@ fn bounded_native_query_defers_single_chunk_source_adjacent_filter_projection_in
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_build() {
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-streamed-build-source-unary");
     let left_path = dir.join("lineitem.parquet");
@@ -465,7 +493,6 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_buil
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
 fn bounded_native_query_streams_source_adjacent_filter_projection_into_partitioned_probe_materialization() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("query-engine-bounded-one-shot-probe-streamed-source-unary");

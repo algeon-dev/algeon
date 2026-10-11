@@ -187,6 +187,7 @@ fn serve_s3_request(stream: &mut TcpStream, payload: &[u8]) {
         Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
     });
     let (status, body, content_range) = match (method, range) {
+        _ if payload.is_empty() => ("404 Not Found", &[][..], None),
         ("HEAD", _) => ("200 OK", &[][..], None),
         ("GET", Some((start, end))) if start < payload.len() => {
             let end = end.min(payload.len() - 1);
@@ -232,24 +233,22 @@ fn prunable_object_store_source(
     ))
 }
 
-// Engine-side S3 access for these fixtures must stay on loopback. Without a
-// profile the engine falls back to the default AWS chain and public endpoint,
-// and a host that reaches S3 turns the fixture's footer fetch into a
-// `NoSuchBucket` failure before the chunk read these tests assert.
-fn unreachable_s3_storage() -> S3SourceStorageProfile {
+// Chunk reads fail with a non-retryable status while footer metadata is served
+// by the registered object store, keeping the failure at the native read boundary.
+fn failing_s3_storage(endpoint: &str) -> S3SourceStorageProfile {
     S3SourceStorageProfile::default_chain()
         .with_region("us-east-1")
-        .with_endpoint("http://127.0.0.1:9")
+        .with_endpoint(endpoint)
         .with_path_style_access(true)
         .with_unsigned_requests()
 }
 
-fn hermetic_backend() -> InstalledTestGpuBackend {
+fn hermetic_backend(endpoint: &str) -> InstalledTestGpuBackend {
     InstalledTestGpuBackend::with_config(
         AlgeonNativeExecutionConfig::new(
             SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
         )
-        .with_s3_storage(unreachable_s3_storage()),
+        .with_s3_storage(failing_s3_storage(endpoint)),
         AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
         AlgeonGpuQueuePolicy::default(),
@@ -271,29 +270,7 @@ fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: boo
     (plan, source)
 }
 
-/// A config carrying the ticket of an attempt that the caller keeps alive
-/// while the config executes.
-fn admission_execution_config(
-    backend: &InstalledTestGpuBackend,
-    plan: &QueryPlan,
-) -> (AlgeonAttempt, AlgeonNativeExecutionConfig) {
-    let source = backend
-        .optimizer_config()
-        .native_execution_config()
-        .query_admission_source()
-        .expect("installed backend must provide admission authority");
-    let (attempt, ticket) =
-        attempt_ticket_for_test(source.clone(), Some(AttemptCapabilityEvidence::for_query_plan(plan)));
-    let config =
-        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
-            .with_query_admission_source(source)
-            .with_existing_query_admission_ticket(ticket)
-            .with_lakehouse_footer_pruning(true);
-    (attempt, config)
-}
-
-/// [`admission_execution_config`] for a composed root, whose evidence
-/// completion extends the attempt's ticket.
+/// Keeps an attempt alive while composed-root evidence extends its ticket.
 fn composed_admission_execution_config(
     backend: &InstalledTestGpuBackend,
 ) -> (AlgeonAttempt, AlgeonNativeExecutionConfig) {
@@ -365,7 +342,8 @@ async fn product_pruning_prefers_a_registered_store_over_the_s3_storage() {
         .put(&ObjectStorePath::from("table/data.parquet"), bytes.clone().into())
         .await
         .expect("test object-store payload should be writable");
-    let state = install_s3_storage(SessionStateBuilder::new(), &unreachable_s3_storage())
+    let server = TestS3Server::start(Vec::new());
+    let state = install_s3_storage(SessionStateBuilder::new(), &failing_s3_storage(&server.endpoint))
         .expect("the S3 storage registry should install")
         .build();
     let runtime_env = Arc::clone(state.runtime_env());
@@ -410,36 +388,9 @@ async fn product_pruning_reads_footers_through_the_installed_s3_storage() {
 }
 
 #[tokio::test]
-async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
-    let backend = hermetic_backend();
-    let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-before-admission");
-    let runtime_env = Arc::new(RuntimeEnv::default());
-    let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-source", &bytes).await;
-    let (plan, _) = prunable_query_plan("s3://host-source/table/data.parquet", bytes.len(), false);
-    let (_attempt, config) = admission_execution_config(&backend, &plan);
-    let exec =
-        AlgeonNativeExec::try_new_host_for_test(plan.clone(), config).expect("test native host execution should build");
-
-    let mut stream = exec
-        .execute(0, task_context_with_runtime(runtime_env))
-        .expect("native host execution should return a lazy stream");
-    let result = stream.next().await.expect("native host stream should resolve once");
-
-    let error = result.expect_err("the object-store fixture reaches native execution after admission");
-    let native = error.find_algeon_error().expect("native execution failure remains structured");
-    assert_eq!(
-        native.operation(),
-        "algeon_datafusion.native_exec.execute",
-        "metadata resolution must complete before the real admission context reaches the intentionally unsupported read"
-    );
-    assert_eq!(native.fact_value("native_operation"), Some("query_engine.local_parquet_chunk.read"));
-    assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before context acquisition");
-    remove_fixture(dir);
-}
-
-#[tokio::test]
 async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evidence() {
-    let backend = hermetic_backend();
+    // HTTP 404 stops at footer metadata instead of the native read this fixture exercises.
+    let backend = hermetic_backend("http://127.0.0.1:9");
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-combined-ticket");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-combined", &bytes).await;
@@ -472,6 +423,7 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
     let error = result.expect_err("the fixture reaches the intentionally unsupported native read");
     let native = error.find_algeon_error().expect("native execution failure remains structured");
     assert_eq!(native.operation(), "algeon_datafusion.native_exec.execute");
+    assert_eq!(native.fact_value("native_operation"), Some("query_engine.local_parquet_chunk.read"));
     assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before ticket validation");
     let refined = ticket.attempt_capability_evidence_for_rebind().expect("combined evidence remains bound");
     assert!(
@@ -502,7 +454,8 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
 /// then reaches the fixture's intentionally unsupported native read.
 #[tokio::test]
 async fn native_host_refined_after_the_claim_joins_its_grant() {
-    let backend = hermetic_backend();
+    let server = TestS3Server::start(Vec::new());
+    let backend = hermetic_backend(&server.endpoint);
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-after-claim");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let first_gets = register_tracking_parquet_store(&runtime_env, "s3://host-claim-first", &bytes).await;
@@ -547,7 +500,8 @@ async fn native_host_refined_after_the_claim_joins_its_grant() {
 
 #[tokio::test]
 async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
-    let backend = hermetic_backend();
+    let server = TestS3Server::start(Vec::new());
+    let backend = hermetic_backend(&server.endpoint);
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-unrelated-ticket");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-unrelated", &bytes).await;
@@ -586,7 +540,8 @@ async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
 
 #[tokio::test]
 async fn native_composed_resolves_consumer_and_producer_metadata_before_admission_context() {
-    let backend = hermetic_backend();
+    // HTTP 404 stops at footer metadata instead of the native read this fixture exercises.
+    let backend = hermetic_backend("http://127.0.0.1:9");
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-composed-before-admission");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let consumer_gets = register_tracking_parquet_store(&runtime_env, "s3://consumer-source", &bytes).await;

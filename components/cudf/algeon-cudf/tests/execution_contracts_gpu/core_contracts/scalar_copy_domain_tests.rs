@@ -11,7 +11,7 @@ use arrow::array::ArrayRef;
 use cudf::{
     Exec, Runtime, ScalarValue, Series, TimestampResolution,
     core::{DataType, TypeId},
-    testing::prelude::*,
+    testing::{prelude::*, run_named_cases},
 };
 use rapids_interop::{
     BufferBinding, ColumnLayout, PhysicalValidity, PreparedExportProfile, SemanticColumn, TypeId as InteropTypeId,
@@ -20,8 +20,8 @@ use rapids_interop::{
 use crate::common::{
     dependency_wait_call_count_for_stream, int64_array, int64_list_array, last_exec_mr_value, last_exec_stream_value,
     lock_event_observation, nested_dataframe, nullable_series, reset_dependency_observation, reset_exec_observation,
-    run_named_cases, sample_runtime as common_sample_runtime, scalar, series as common_series, struct_array,
-    utf8_array, with_test_runtime,
+    sample_runtime as common_sample_runtime, scalar, series as common_series, struct_array, utf8_array,
+    with_test_runtime,
 };
 
 fn sample_runtime() -> Runtime {

@@ -85,20 +85,6 @@ fn large_keyed_join_strategy_gate_rejects_large_one_shot_without_partitioned_fal
     assert!(error.to_string().contains("q07:n8:one_shot_equi"));
 }
 
-#[test]
-fn large_keyed_join_strategy_gate_can_select_q7_from_larger_report() {
-    let report = sf100_matrix_report(vec![q07_large_partitioned_join_row()]);
-    let config = strategy_gate::LargeKeyedJoinStrategyGateConfig {
-        enabled: true,
-        query_ids: Some(["q07".to_string()].into_iter().collect()),
-    };
-
-    let summary = strategy_gate::validate_large_keyed_join_strategy_gate_tsv(&report.to_tsv(), &config).unwrap();
-
-    assert_eq!(summary.query_ids, vec!["q07"]);
-    assert_eq!(summary.large_partitioned_sites, 1);
-}
-
 fn sf100_matrix_report(q07_join_strategy_rows: Vec<NativeJoinStrategyMetricRow>) -> NativeTpchBenchmarkReport {
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q03".to_string(), "q04".to_string(), "q07".to_string()],

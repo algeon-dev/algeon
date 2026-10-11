@@ -7,7 +7,9 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "${ROOT}" || exit 2
 
-readonly REQUIRED_NEXTEST_VERSION=0.9.144
+# Keep build-script fingerprints and doctest loading identical across phases.
+export LD_LIBRARY_PATH="${ROOT}/target/native/cudf-install/lib:${ROOT}/target/native/cuvs-install/lib:${ROOT}/target/native/cugraph-install/lib:${ROOT}/target/native/cuml-install/lib:${ROOT}/target/native/cugraph-build"
+
 readonly REQUIRED_CARGO_HACK_VERSION=0.6.45
 readonly GPU_LOCK=/tmp/cudf-gpu.lock
 
@@ -42,12 +44,18 @@ require_version() {
     exit 2
   fi
 }
-require_version "cargo-nextest ${REQUIRED_NEXTEST_VERSION}" \
-  "cargo install --locked --version ${REQUIRED_NEXTEST_VERSION} cargo-nextest" cargo nextest --version
+if ! cargo nextest --version; then
+  echo "ERROR: cargo-nextest is required. Install it with: cargo install --locked cargo-nextest" >&2
+  exit 2
+fi
 if [[ "${mode}" == full ]]; then
   require_version "cargo-hack ${REQUIRED_CARGO_HACK_VERSION}" \
     "cargo install --locked --version ${REQUIRED_CARGO_HACK_VERSION} cargo-hack" cargo hack --version
 fi
+
+cargo +nightly -Z unstable-options config get env --format toml --show-origin \
+  | python3 scripts/ci/cargo_toolchain_environment.py || exit 2
+echo "check_all: LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"
 
 mkdir -p target/check-all || exit 2
 if [[ -n "${CHECK_ALL_PHASE_LOG_DIR:-}" ]]; then
@@ -120,6 +128,8 @@ policy_scripts() {
     echo "==> ${script}"
     bash "${script}" || { echo "FAIL: ${script}"; status=1; }
   done
+  python3 scripts/ci/tests/check_check_all_tests.py || status=1
+  python3 scripts/ci/tests/check_single_brand_tests.py || status=1
   test_layout_policy || status=1
   return "${status}"
 }
@@ -129,10 +139,10 @@ test_layout_policy() {
 }
 
 clippy() {
-  cargo clippy --workspace --all-targets --all-features --message-format=json-render-diagnostics -- -D warnings \
+  nice -n 10 cargo clippy --workspace --all-targets --all-features --message-format=json-render-diagnostics -- -D warnings \
     >"${LOG_DIR}/clippy-all-features.jsonl" || return $?
   # These owners have source files selected only when native features are off.
-  cargo clippy -p algeon-query-engine -p algeon-datafusion --all-targets --no-default-features \
+  nice -n 10 cargo clippy -p algeon-query-engine -p algeon-datafusion --all-targets --no-default-features \
     --message-format=json-render-diagnostics -- -D warnings >"${LOG_DIR}/clippy-feature-off.jsonl"
 }
 
@@ -144,13 +154,14 @@ checked_bindings() {
   return "${status}"
 }
 
+test_build() {
+  cargo metadata --all-features --format-version 1 >"${LOG_DIR}/cargo-metadata.json" || return $?
+  cargo nextest list --workspace --all-features --cargo-metadata "${LOG_DIR}/cargo-metadata.json" \
+    --list-type binaries-only --message-format json >"${LOG_DIR}/binaries-metadata.json"
+}
+
 doctests() {
-  # rustdoc does not pass the build scripts' rpath link arguments to doctest
-  # binaries, and runs them from temporary directories, so the loader needs
-  # absolute native library directories.
-  local native="${ROOT}/target/native"
   NEXTEST_TEST_GROUP=gpu scripts/ci/nextest_gpu_lock.sh "${GPU_LOCK}" \
-    env "LD_LIBRARY_PATH=${native}/cudf-install/lib:${native}/cuvs-install/lib:${native}/cugraph-install/lib:${native}/cuml-install/lib:${native}/cugraph-build${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
     cargo test --workspace --all-features --doc --no-fail-fast
 }
 
@@ -177,7 +188,7 @@ feature_isolation() {
     args=()
     for pkg in ${FEATURE_ISOLATION_SHARDS[index]}; do args+=(-p "${pkg}"); done
     CARGO_TARGET_DIR="${ROOT}/target/check-all/feature-isolation-shard-${index}" CARGO_BUILD_JOBS=6 \
-      cargo hack check "${args[@]}" --each-feature --exclude-features default --all-targets --locked --keep-going \
+      nice -n 10 cargo hack check "${args[@]}" --each-feature --exclude-features default --all-targets --locked --keep-going \
       >"${shards}/shard-${index}.log" 2>&1 &
     pids+=($!)
   done
@@ -215,12 +226,12 @@ feature_isolation() {
 shipped_clippy() {
   local features
   features=$(python3 scripts/build/cpu_packaging_policy.py shipped-features) || return 1
-  cargo clippy --manifest-path crates/algeon-server/Cargo.toml --bin algeon_server --no-default-features \
+  nice -n 10 cargo clippy --manifest-path crates/algeon-server/Cargo.toml --bin algeon_server --no-default-features \
     --features "${features}" --locked --target-dir "${ROOT}/target/check-all/shipped-clippy" -- -D warnings
 }
 
 if [[ "${mode}" == full ]]; then
-  PHASES=(gate rustfmt native-sources checked-bindings policy-scripts tests doctests clippy orphan-sources rustdoc
+  PHASES=(gate rustfmt native-sources checked-bindings policy-scripts test-build tests doctests clippy orphan-sources rustdoc
     public-api-surface feature-isolation shipped-clippy msrv native-free public-api-consumers publication-policy)
 else
   PHASES=(gate rustfmt native-sources policy-scripts cpu-tests)
@@ -268,7 +279,14 @@ run native-sources bash scripts/ci/check_native_sources.sh &
 run policy-scripts policy_scripts &
 if [[ "${mode}" == full ]]; then
   run checked-bindings checked_bindings &
-  { run tests cargo nt -P gate; run doctests doctests; } &
+  if run test-build test_build; then
+    { run tests cargo nextest run -P gate --cargo-metadata "${LOG_DIR}/cargo-metadata.json" \
+        --binaries-metadata "${LOG_DIR}/binaries-metadata.json"; run doctests doctests; } &
+  else
+    printf '%s\n' 'SKIP: nextest execution requires a successful test build.' >"${LOG_DIR}/tests.log"
+    record tests 'SKIP(test-build-failed)' - -
+    run doctests doctests &
+  fi
   { if run clippy clippy; then
       run orphan-sources python3 scripts/ci/check_test_layout.py "${ROOT}" \
         --clippy-artifacts "${LOG_DIR}/clippy-all-features.jsonl" \
@@ -277,14 +295,14 @@ if [[ "${mode}" == full ]]; then
       printf '%s\n' 'SKIP: orphan-source verification requires successful clippy streams.' >"${LOG_DIR}/orphan-sources.log"
       record orphan-sources 'SKIP(clippy-failed)' - -
     fi
-    RUSTDOCFLAGS="${RUSTDOCFLAGS:+${RUSTDOCFLAGS} }-D warnings" run rustdoc cargo doc --workspace --all-features --no-deps --keep-going
-    run public-api-surface bash scripts/ci/check_public_api_surface.sh check --all-features; } &
+    RUSTDOCFLAGS="${RUSTDOCFLAGS:+${RUSTDOCFLAGS} }-D warnings" run rustdoc nice -n 10 cargo doc --workspace --all-features --no-deps --keep-going
+    run public-api-surface nice -n 10 bash scripts/ci/check_public_api_surface.sh check --all-features; } &
   run feature-isolation feature_isolation &
   run shipped-clippy shipped_clippy &
   CARGO_TARGET_DIR="${ROOT}/target/check-all/msrv" \
-    run msrv cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo &
-  DOCS_RS=1 run native-free cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check &
-  run public-api-consumers python3 scripts/ci/check_public_api_consumers.py "${ROOT}" .config/policies/public-api \
+    run msrv nice -n 10 cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo &
+  DOCS_RS=1 run native-free nice -n 10 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check &
+  run public-api-consumers nice -n 10 python3 scripts/ci/check_public_api_consumers.py "${ROOT}" .config/policies/public-api \
     target/check-all/public-api-consumers &
   run publication-policy python3 scripts/ci/check_workspace_publication.py &
 else

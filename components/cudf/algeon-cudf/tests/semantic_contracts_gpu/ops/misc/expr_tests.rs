@@ -26,7 +26,7 @@ use cudf::{
 };
 use rapids_interop::{ColumnLayout, DataType as InteropDataType, Placement};
 
-use crate::common::{error_context_value, execution_budget_token, nullable_series, run_named_cases, series};
+use crate::common::{error_context_value, execution_budget_token, nullable_series, series};
 
 // ===========================================================================
 // Helpers
@@ -1096,13 +1096,6 @@ fn is_not_in_list_expression_propagates_nulls_for_all_null_haystack() {
     assert_eq!(result.to_optional_vec::<bool>().unwrap(), vec![None, None, None]);
 }
 
-fn eval_unary_op_display_omits_input_name() {
-    let df = xy_df();
-    let result = eval(col("x").abs(), &df);
-    let output = format!("{}", result);
-    assert!(!output.contains("x"), "expr unary output should not expose schema names: {}", output);
-}
-
 fn log_expr() {
     let df = f64_df("x", &[1.0, std::f64::consts::E, std::f64::consts::E * std::f64::consts::E]);
     let result = eval(col("x").log().alias("ln_x"), &df);
@@ -1123,28 +1116,6 @@ fn exp_expr() {
     assert_eq!(values[0], 1.0);
     assert!((values[1] - std::f64::consts::E).abs() < 1e-12);
     assert_eq!(values[2], 0.0);
-}
-
-fn eval_fillna_display_omits_input_name() {
-    let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
-    let result = eval(col("v").fillna(99i32), &df);
-    let output = format!("{}", result);
-    assert!(!output.contains("v"), "expr fillna output should not expose schema names: {}", output);
-}
-
-fn eval_cumsum_preserves_name() {
-    let df = i32_df("x", &[1, 2, 3]);
-    let _result = eval(col("x").cumsum(), &df);
-}
-
-fn eval_reduce_has_no_implicit_name() {
-    let df = i32_df("x", &[10, 20, 30]);
-    let _result = eval(col("x").agg().sum(), &df);
-}
-
-fn eval_string_op_returns_values() {
-    let df = str_df("s", &["Hello", "WORLD"]);
-    let _result = eval(col("s").str().lower(), &df);
 }
 
 // ===========================================================================
@@ -1497,228 +1468,235 @@ fn when_then_otherwise_composite() {
     assert_eq!(df2.series("category").unwrap().to_strings_strict().unwrap(), vec!["adult", "minor", "adult"]);
 }
 
-#[test]
-fn expr_tests_cases() {
-    run_named_cases(&[
-        ("col_resolves_existing_column", col_resolves_existing_column),
-        ("col_missing_column_errors", col_missing_column_errors),
-        ("lit_i32_broadcasts", lit_i32_broadcasts),
-        (
-            "into_lit_and_into_expr_resolve_unambiguously_after_glob_import",
-            into_lit_and_into_expr_resolve_unambiguously_after_glob_import,
-        ),
-        ("lit_f64_broadcasts", lit_f64_broadcasts),
-        ("lit_string_broadcasts", lit_string_broadcasts),
-        ("lit_null_broadcasts_typed_nulls", lit_null_broadcasts_typed_nulls),
-        ("lit_decimal32_broadcasts_dtype_scale_and_raw_values", lit_decimal32_broadcasts_dtype_scale_and_raw_values),
-        ("lit_decimal64_broadcasts_dtype_scale_and_raw_values", lit_decimal64_broadcasts_dtype_scale_and_raw_values),
-        ("lit_decimal128_broadcasts_dtype_scale_and_raw_values", lit_decimal128_broadcasts_dtype_scale_and_raw_values),
-        (
-            "binary_expr_aligns_mixed_decimal_storage_before_arithmetic",
-            binary_expr_aligns_mixed_decimal_storage_before_arithmetic,
-        ),
-        ("lit_timestamp_broadcasts_dtype_and_raw_values", lit_timestamp_broadcasts_dtype_and_raw_values),
-        ("lit_duration_broadcasts_dtype_and_raw_values", lit_duration_broadcasts_dtype_and_raw_values),
-        (
-            "raw_literals_eval_in_use_resolved_override_domain_for_allocations",
-            raw_literals_eval_in_use_resolved_override_domain_for_allocations,
-        ),
-        (
-            "alias_sets_output_name_without_materializing_series_metadata",
-            alias_sets_output_name_without_materializing_series_metadata,
-        ),
-        ("add_col_col", add_col_col),
-        ("add_col_lit", add_col_lit),
-        ("add_col_scalar_without_lit", add_col_scalar_without_lit),
-        ("add_scalar_lhs_without_lit", add_scalar_lhs_without_lit),
-        ("compound_expr_add_mul", compound_expr_add_mul),
-        ("sub_col_col", sub_col_col),
-        ("mul_col_col", mul_col_col),
-        ("div_col_col", div_col_col),
-        (
-            "binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale",
-            binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale,
-        ),
-        (
-            "with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output",
-            with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output,
-        ),
-        (
-            "binary_expr_decimal128_div_truncates_toward_zero_and_skips_rows_with_a_null_operand",
-            binary_expr_decimal128_div_truncates_toward_zero_and_skips_rows_with_a_null_operand,
-        ),
-        (
-            "binary_expr_decimal128_div_fails_on_a_zero_divisor_in_a_valid_row",
-            binary_expr_decimal128_div_fails_on_a_zero_divisor_in_a_valid_row,
-        ),
-        (
-            "binary_expr_decimal128_div_fails_when_scaling_a_valid_dividend_overflows_i128",
-            binary_expr_decimal128_div_fails_when_scaling_a_valid_dividend_overflows_i128,
-        ),
-        (
-            "binary_expr_decimal128_div_fails_on_the_minimum_value_divided_by_minus_one",
-            binary_expr_decimal128_div_fails_on_the_minimum_value_divided_by_minus_one,
-        ),
-        (
-            "binary_expr_decimal64_div_checks_zero_divisors_and_dividend_scaling_in_its_storage_width",
-            binary_expr_decimal64_div_checks_zero_divisors_and_dividend_scaling_in_its_storage_width,
-        ),
-        ("rem_col_lit", rem_col_lit),
-        (
-            "binary_expr_type_error_preserves_eval_operation_and_operator_detail",
-            binary_expr_type_error_preserves_eval_operation_and_operator_detail,
-        ),
-        ("neg_expr", neg_expr),
-        ("bitand_bool", bitand_bool),
-        ("bitand_bool_scalar_lhs_without_lit", bitand_bool_scalar_lhs_without_lit),
-        ("bitor_bool", bitor_bool),
-        ("pow_builder", pow_builder),
-        ("pow_builder_scalar_without_lit", pow_builder_scalar_without_lit),
-        ("floor_div_builder", floor_div_builder),
-        ("abs_builder", abs_builder),
-        ("sqrt_builder", sqrt_builder),
-        ("ceil_floor_builder", ceil_floor_builder),
-        ("round_builder_uses_half_up_semantics", round_builder_uses_half_up_semantics),
-        ("round_builder_supports_decimal128", round_builder_supports_decimal128),
-        ("gt_lit_produces_bool", gt_lit_produces_bool),
-        ("gt_scalar_without_lit_produces_bool", gt_scalar_without_lit_produces_bool),
-        ("eq_col_col", eq_col_col),
-        ("lt_lit_with_alias", lt_lit_with_alias),
-        ("ne_col_col", ne_col_col),
-        ("ge_and_le", ge_and_le),
-        (
-            "timestamp_days_literal_comparison_matches_tpch_date_filter_shape",
-            timestamp_days_literal_comparison_matches_tpch_date_filter_shape,
-        ),
-        (
-            "timestamp_days_plus_duration_expr_preserves_timestamp_resolution",
-            timestamp_days_plus_duration_expr_preserves_timestamp_resolution,
-        ),
-        (
-            "timestamp_days_datetime_offset_adds_calendrical_months",
-            timestamp_days_datetime_offset_adds_calendrical_months,
-        ),
-        (
-            "timestamp_days_datetime_offset_rejects_non_exact_duration_resolution",
-            timestamp_days_datetime_offset_rejects_non_exact_duration_resolution,
-        ),
-        (
-            "datetime_offset_zero_interval_still_rejects_non_timestamp_input",
-            datetime_offset_zero_interval_still_rejects_non_timestamp_input,
-        ),
-        (
-            "timestamp_expr_datetime_namespace_extracts_components",
-            timestamp_expr_datetime_namespace_extracts_components,
-        ),
-        ("is_null_expr", is_null_expr),
-        ("is_not_null_expr", is_not_null_expr),
-        ("cast_i32_to_f64", cast_i32_to_f64),
-        ("cast_f64_to_i64_truncates_and_preserves_nulls", cast_f64_to_i64_truncates_and_preserves_nulls),
-        (
-            "cast_f64_to_i64_rejects_nan_and_unrepresentable_values",
-            cast_f64_to_i64_rejects_nan_and_unrepresentable_values,
-        ),
-        (
-            "dataframe_cast_column_f64_to_i64_uses_checked_semantics",
-            dataframe_cast_column_f64_to_i64_uses_checked_semantics,
-        ),
-        ("cast_decimal128_to_f64_uses_decimal_scale", cast_decimal128_to_f64_uses_decimal_scale),
-        (
-            "filter_expr_falls_back_to_boolean_mask_for_cast_predicates",
-            filter_expr_falls_back_to_boolean_mask_for_cast_predicates,
-        ),
-        ("not_operator", not_operator),
-        ("with_columns_adds_new_column", with_columns_adds_new_column),
-        ("with_columns_replaces_existing", with_columns_replaces_existing),
-        ("with_columns_multiple_exprs", with_columns_multiple_exprs),
-        (
-            "with_columns_named_pair_allows_binary_expr_without_alias",
-            with_columns_named_pair_allows_binary_expr_without_alias,
-        ),
-        ("with_columns_named_pair_allows_if_else_without_alias", with_columns_named_pair_allows_if_else_without_alias),
-        ("with_columns_named_pair_overrides_inner_alias", with_columns_named_pair_overrides_inner_alias),
-        (
-            "with_columns_named_pair_overrides_inherited_output_name",
-            with_columns_named_pair_overrides_inherited_output_name,
-        ),
-        ("with_columns_no_alias_errors", with_columns_no_alias_errors),
-        ("with_columns_sees_original_state", with_columns_sees_original_state),
-        ("with_columns_bare_col_uses_column_name", with_columns_bare_col_uses_column_name),
-        ("output_name_propagates_through_cast", output_name_propagates_through_cast),
-        ("output_name_propagates_through_is_null", output_name_propagates_through_is_null),
-        ("output_name_propagates_through_is_not_null", output_name_propagates_through_is_not_null),
-        ("output_name_propagates_through_unary_op", output_name_propagates_through_unary_op),
-        ("output_name_propagates_through_log", output_name_propagates_through_log),
-        ("with_columns_cast_no_alias_needed", with_columns_cast_no_alias_needed),
-        ("with_columns_is_null_no_alias_needed", with_columns_is_null_no_alias_needed),
-        (
-            "in_list_expression_evaluates_literal_membership_with_nulls",
-            in_list_expression_evaluates_literal_membership_with_nulls,
-        ),
-        ("in_list_expression_rejects_empty_haystack", in_list_expression_rejects_empty_haystack),
-        (
-            "is_not_in_list_expression_propagates_nulls_for_all_null_input",
-            is_not_in_list_expression_propagates_nulls_for_all_null_input,
-        ),
-        (
-            "is_not_in_list_expression_propagates_nulls_for_all_null_haystack",
-            is_not_in_list_expression_propagates_nulls_for_all_null_haystack,
-        ),
-        ("eval_unary_op_display_omits_input_name", eval_unary_op_display_omits_input_name),
-        ("log_expr", log_expr),
-        ("exp_expr", exp_expr),
-        ("eval_fillna_display_omits_input_name", eval_fillna_display_omits_input_name),
-        ("eval_cumsum_preserves_name", eval_cumsum_preserves_name),
-        ("eval_reduce_has_no_implicit_name", eval_reduce_has_no_implicit_name),
-        ("eval_string_op_returns_values", eval_string_op_returns_values),
-        ("fillna_scalar_replaces_nulls", fillna_scalar_replaces_nulls),
-        ("fillna_scalar_preserves_output_name", fillna_scalar_preserves_output_name),
-        ("fillna_with_column_path", fillna_with_column_path),
-        ("fillna_with_preserves_output_name", fillna_with_preserves_output_name),
-        ("ffill_expr", ffill_expr),
-        ("bfill_expr", bfill_expr),
-        ("cumsum_expr", cumsum_expr),
-        ("cummin_expr", cummin_expr),
-        ("cummax_expr", cummax_expr),
-        ("cumprod_expr", cumprod_expr),
-        ("cumsum_preserves_output_name", cumsum_preserves_output_name),
-        ("with_columns_fillna_no_alias_needed", with_columns_fillna_no_alias_needed),
-        ("with_columns_cumsum_no_alias_needed", with_columns_cumsum_no_alias_needed),
-        ("agg_sum", agg_sum),
-        ("agg_mean", agg_mean),
-        ("agg_min_max", agg_min_max),
-        ("agg_std_var", agg_std_var),
-        ("agg_median", agg_median),
-        ("agg_any_all", agg_any_all),
-        ("agg_product", agg_product),
-        (
-            "agg_sum_string_reports_expr_reduce_operation_on_type_error",
-            agg_sum_string_reports_expr_reduce_operation_on_type_error,
-        ),
-        ("reduce_requires_explicit_output_name", reduce_requires_explicit_output_name),
-        ("pct_pattern", pct_pattern),
-        ("with_columns_rejects_unaliased_reduce", with_columns_rejects_unaliased_reduce),
-        ("with_columns_reduce_requires_alias_or_explicit_name", with_columns_reduce_requires_alias_or_explicit_name),
-        ("str_lower_expr", str_lower_expr),
-        ("str_upper_expr", str_upper_expr),
-        ("str_strip_expr", str_strip_expr),
-        ("str_len_expr", str_len_expr),
-        ("str_byte_count_expr", str_byte_count_expr),
-        ("str_contains_expr", str_contains_expr),
-        ("str_like_expr", str_like_expr),
-        ("str_slice_expr", str_slice_expr),
-        ("str_startswith_expr", str_startswith_expr),
-        ("str_endswith_expr", str_endswith_expr),
-        ("str_preserves_output_name", str_preserves_output_name),
-        ("with_columns_str_lower_no_alias", with_columns_str_lower_no_alias),
-        ("when_then_otherwise_basic", when_then_otherwise_basic),
-        ("when_then_otherwise_scalar_literals_without_lit", when_then_otherwise_scalar_literals_without_lit),
-        ("when_then_otherwise_column_branches", when_then_otherwise_column_branches),
-        ("when_then_otherwise_with_nulls_in_condition", when_then_otherwise_with_nulls_in_condition),
-        ("when_then_otherwise_string_branches", when_then_otherwise_string_branches),
-        ("if_else_output_name_is_none", if_else_output_name_is_none),
-        ("if_else_requires_alias_in_with_columns", if_else_requires_alias_in_with_columns),
-        ("if_else_with_alias_in_with_columns", if_else_with_alias_in_with_columns),
-        ("when_then_otherwise_composite", when_then_otherwise_composite),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("expr_tests::col_resolves_existing_column", col_resolves_existing_column),
+    ("expr_tests::col_missing_column_errors", col_missing_column_errors),
+    ("expr_tests::lit_i32_broadcasts", lit_i32_broadcasts),
+    (
+        "expr_tests::into_lit_and_into_expr_resolve_unambiguously_after_glob_import",
+        into_lit_and_into_expr_resolve_unambiguously_after_glob_import,
+    ),
+    ("expr_tests::lit_f64_broadcasts", lit_f64_broadcasts),
+    ("expr_tests::lit_string_broadcasts", lit_string_broadcasts),
+    ("expr_tests::lit_null_broadcasts_typed_nulls", lit_null_broadcasts_typed_nulls),
+    (
+        "expr_tests::lit_decimal32_broadcasts_dtype_scale_and_raw_values",
+        lit_decimal32_broadcasts_dtype_scale_and_raw_values,
+    ),
+    (
+        "expr_tests::lit_decimal64_broadcasts_dtype_scale_and_raw_values",
+        lit_decimal64_broadcasts_dtype_scale_and_raw_values,
+    ),
+    (
+        "expr_tests::lit_decimal128_broadcasts_dtype_scale_and_raw_values",
+        lit_decimal128_broadcasts_dtype_scale_and_raw_values,
+    ),
+    (
+        "expr_tests::binary_expr_aligns_mixed_decimal_storage_before_arithmetic",
+        binary_expr_aligns_mixed_decimal_storage_before_arithmetic,
+    ),
+    ("expr_tests::lit_timestamp_broadcasts_dtype_and_raw_values", lit_timestamp_broadcasts_dtype_and_raw_values),
+    ("expr_tests::lit_duration_broadcasts_dtype_and_raw_values", lit_duration_broadcasts_dtype_and_raw_values),
+    (
+        "expr_tests::raw_literals_eval_in_use_resolved_override_domain_for_allocations",
+        raw_literals_eval_in_use_resolved_override_domain_for_allocations,
+    ),
+    (
+        "expr_tests::alias_sets_output_name_without_materializing_series_metadata",
+        alias_sets_output_name_without_materializing_series_metadata,
+    ),
+    ("expr_tests::add_col_col", add_col_col),
+    ("expr_tests::add_col_lit", add_col_lit),
+    ("expr_tests::add_col_scalar_without_lit", add_col_scalar_without_lit),
+    ("expr_tests::add_scalar_lhs_without_lit", add_scalar_lhs_without_lit),
+    ("expr_tests::compound_expr_add_mul", compound_expr_add_mul),
+    ("expr_tests::sub_col_col", sub_col_col),
+    ("expr_tests::mul_col_col", mul_col_col),
+    ("expr_tests::div_col_col", div_col_col),
+    (
+        "expr_tests::binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale",
+        binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale,
+    ),
+    (
+        "expr_tests::with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output",
+        with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output,
+    ),
+    (
+        "expr_tests::binary_expr_decimal128_div_truncates_toward_zero_and_skips_rows_with_a_null_operand",
+        binary_expr_decimal128_div_truncates_toward_zero_and_skips_rows_with_a_null_operand,
+    ),
+    (
+        "expr_tests::binary_expr_decimal128_div_fails_on_a_zero_divisor_in_a_valid_row",
+        binary_expr_decimal128_div_fails_on_a_zero_divisor_in_a_valid_row,
+    ),
+    (
+        "expr_tests::binary_expr_decimal128_div_fails_when_scaling_a_valid_dividend_overflows_i128",
+        binary_expr_decimal128_div_fails_when_scaling_a_valid_dividend_overflows_i128,
+    ),
+    (
+        "expr_tests::binary_expr_decimal128_div_fails_on_the_minimum_value_divided_by_minus_one",
+        binary_expr_decimal128_div_fails_on_the_minimum_value_divided_by_minus_one,
+    ),
+    (
+        "expr_tests::binary_expr_decimal64_div_checks_zero_divisors_and_dividend_scaling_in_its_storage_width",
+        binary_expr_decimal64_div_checks_zero_divisors_and_dividend_scaling_in_its_storage_width,
+    ),
+    ("expr_tests::rem_col_lit", rem_col_lit),
+    (
+        "expr_tests::binary_expr_type_error_preserves_eval_operation_and_operator_detail",
+        binary_expr_type_error_preserves_eval_operation_and_operator_detail,
+    ),
+    ("expr_tests::neg_expr", neg_expr),
+    ("expr_tests::bitand_bool", bitand_bool),
+    ("expr_tests::bitand_bool_scalar_lhs_without_lit", bitand_bool_scalar_lhs_without_lit),
+    ("expr_tests::bitor_bool", bitor_bool),
+    ("expr_tests::pow_builder", pow_builder),
+    ("expr_tests::pow_builder_scalar_without_lit", pow_builder_scalar_without_lit),
+    ("expr_tests::floor_div_builder", floor_div_builder),
+    ("expr_tests::abs_builder", abs_builder),
+    ("expr_tests::sqrt_builder", sqrt_builder),
+    ("expr_tests::ceil_floor_builder", ceil_floor_builder),
+    ("expr_tests::round_builder_uses_half_up_semantics", round_builder_uses_half_up_semantics),
+    ("expr_tests::round_builder_supports_decimal128", round_builder_supports_decimal128),
+    ("expr_tests::gt_lit_produces_bool", gt_lit_produces_bool),
+    ("expr_tests::gt_scalar_without_lit_produces_bool", gt_scalar_without_lit_produces_bool),
+    ("expr_tests::eq_col_col", eq_col_col),
+    ("expr_tests::lt_lit_with_alias", lt_lit_with_alias),
+    ("expr_tests::ne_col_col", ne_col_col),
+    ("expr_tests::ge_and_le", ge_and_le),
+    (
+        "expr_tests::timestamp_days_literal_comparison_matches_tpch_date_filter_shape",
+        timestamp_days_literal_comparison_matches_tpch_date_filter_shape,
+    ),
+    (
+        "expr_tests::timestamp_days_plus_duration_expr_preserves_timestamp_resolution",
+        timestamp_days_plus_duration_expr_preserves_timestamp_resolution,
+    ),
+    (
+        "expr_tests::timestamp_days_datetime_offset_adds_calendrical_months",
+        timestamp_days_datetime_offset_adds_calendrical_months,
+    ),
+    (
+        "expr_tests::timestamp_days_datetime_offset_rejects_non_exact_duration_resolution",
+        timestamp_days_datetime_offset_rejects_non_exact_duration_resolution,
+    ),
+    (
+        "expr_tests::datetime_offset_zero_interval_still_rejects_non_timestamp_input",
+        datetime_offset_zero_interval_still_rejects_non_timestamp_input,
+    ),
+    (
+        "expr_tests::timestamp_expr_datetime_namespace_extracts_components",
+        timestamp_expr_datetime_namespace_extracts_components,
+    ),
+    ("expr_tests::is_null_expr", is_null_expr),
+    ("expr_tests::is_not_null_expr", is_not_null_expr),
+    ("expr_tests::cast_i32_to_f64", cast_i32_to_f64),
+    ("expr_tests::cast_f64_to_i64_truncates_and_preserves_nulls", cast_f64_to_i64_truncates_and_preserves_nulls),
+    (
+        "expr_tests::cast_f64_to_i64_rejects_nan_and_unrepresentable_values",
+        cast_f64_to_i64_rejects_nan_and_unrepresentable_values,
+    ),
+    (
+        "expr_tests::dataframe_cast_column_f64_to_i64_uses_checked_semantics",
+        dataframe_cast_column_f64_to_i64_uses_checked_semantics,
+    ),
+    ("expr_tests::cast_decimal128_to_f64_uses_decimal_scale", cast_decimal128_to_f64_uses_decimal_scale),
+    (
+        "expr_tests::filter_expr_falls_back_to_boolean_mask_for_cast_predicates",
+        filter_expr_falls_back_to_boolean_mask_for_cast_predicates,
+    ),
+    ("expr_tests::not_operator", not_operator),
+    ("expr_tests::with_columns_adds_new_column", with_columns_adds_new_column),
+    ("expr_tests::with_columns_replaces_existing", with_columns_replaces_existing),
+    ("expr_tests::with_columns_multiple_exprs", with_columns_multiple_exprs),
+    (
+        "expr_tests::with_columns_named_pair_allows_binary_expr_without_alias",
+        with_columns_named_pair_allows_binary_expr_without_alias,
+    ),
+    (
+        "expr_tests::with_columns_named_pair_allows_if_else_without_alias",
+        with_columns_named_pair_allows_if_else_without_alias,
+    ),
+    ("expr_tests::with_columns_named_pair_overrides_inner_alias", with_columns_named_pair_overrides_inner_alias),
+    (
+        "expr_tests::with_columns_named_pair_overrides_inherited_output_name",
+        with_columns_named_pair_overrides_inherited_output_name,
+    ),
+    ("expr_tests::with_columns_no_alias_errors", with_columns_no_alias_errors),
+    ("expr_tests::with_columns_sees_original_state", with_columns_sees_original_state),
+    ("expr_tests::with_columns_bare_col_uses_column_name", with_columns_bare_col_uses_column_name),
+    ("expr_tests::output_name_propagates_through_cast", output_name_propagates_through_cast),
+    ("expr_tests::output_name_propagates_through_is_null", output_name_propagates_through_is_null),
+    ("expr_tests::output_name_propagates_through_is_not_null", output_name_propagates_through_is_not_null),
+    ("expr_tests::output_name_propagates_through_unary_op", output_name_propagates_through_unary_op),
+    ("expr_tests::output_name_propagates_through_log", output_name_propagates_through_log),
+    ("expr_tests::with_columns_cast_no_alias_needed", with_columns_cast_no_alias_needed),
+    ("expr_tests::with_columns_is_null_no_alias_needed", with_columns_is_null_no_alias_needed),
+    (
+        "expr_tests::in_list_expression_evaluates_literal_membership_with_nulls",
+        in_list_expression_evaluates_literal_membership_with_nulls,
+    ),
+    ("expr_tests::in_list_expression_rejects_empty_haystack", in_list_expression_rejects_empty_haystack),
+    (
+        "expr_tests::is_not_in_list_expression_propagates_nulls_for_all_null_input",
+        is_not_in_list_expression_propagates_nulls_for_all_null_input,
+    ),
+    (
+        "expr_tests::is_not_in_list_expression_propagates_nulls_for_all_null_haystack",
+        is_not_in_list_expression_propagates_nulls_for_all_null_haystack,
+    ),
+    ("expr_tests::log_expr", log_expr),
+    ("expr_tests::exp_expr", exp_expr),
+    ("expr_tests::fillna_scalar_replaces_nulls", fillna_scalar_replaces_nulls),
+    ("expr_tests::fillna_scalar_preserves_output_name", fillna_scalar_preserves_output_name),
+    ("expr_tests::fillna_with_column_path", fillna_with_column_path),
+    ("expr_tests::fillna_with_preserves_output_name", fillna_with_preserves_output_name),
+    ("expr_tests::ffill_expr", ffill_expr),
+    ("expr_tests::bfill_expr", bfill_expr),
+    ("expr_tests::cumsum_expr", cumsum_expr),
+    ("expr_tests::cummin_expr", cummin_expr),
+    ("expr_tests::cummax_expr", cummax_expr),
+    ("expr_tests::cumprod_expr", cumprod_expr),
+    ("expr_tests::cumsum_preserves_output_name", cumsum_preserves_output_name),
+    ("expr_tests::with_columns_fillna_no_alias_needed", with_columns_fillna_no_alias_needed),
+    ("expr_tests::with_columns_cumsum_no_alias_needed", with_columns_cumsum_no_alias_needed),
+    ("expr_tests::agg_sum", agg_sum),
+    ("expr_tests::agg_mean", agg_mean),
+    ("expr_tests::agg_min_max", agg_min_max),
+    ("expr_tests::agg_std_var", agg_std_var),
+    ("expr_tests::agg_median", agg_median),
+    ("expr_tests::agg_any_all", agg_any_all),
+    ("expr_tests::agg_product", agg_product),
+    (
+        "expr_tests::agg_sum_string_reports_expr_reduce_operation_on_type_error",
+        agg_sum_string_reports_expr_reduce_operation_on_type_error,
+    ),
+    ("expr_tests::reduce_requires_explicit_output_name", reduce_requires_explicit_output_name),
+    ("expr_tests::pct_pattern", pct_pattern),
+    ("expr_tests::with_columns_rejects_unaliased_reduce", with_columns_rejects_unaliased_reduce),
+    (
+        "expr_tests::with_columns_reduce_requires_alias_or_explicit_name",
+        with_columns_reduce_requires_alias_or_explicit_name,
+    ),
+    ("expr_tests::str_lower_expr", str_lower_expr),
+    ("expr_tests::str_upper_expr", str_upper_expr),
+    ("expr_tests::str_strip_expr", str_strip_expr),
+    ("expr_tests::str_len_expr", str_len_expr),
+    ("expr_tests::str_byte_count_expr", str_byte_count_expr),
+    ("expr_tests::str_contains_expr", str_contains_expr),
+    ("expr_tests::str_like_expr", str_like_expr),
+    ("expr_tests::str_slice_expr", str_slice_expr),
+    ("expr_tests::str_startswith_expr", str_startswith_expr),
+    ("expr_tests::str_endswith_expr", str_endswith_expr),
+    ("expr_tests::str_preserves_output_name", str_preserves_output_name),
+    ("expr_tests::with_columns_str_lower_no_alias", with_columns_str_lower_no_alias),
+    ("expr_tests::when_then_otherwise_basic", when_then_otherwise_basic),
+    ("expr_tests::when_then_otherwise_scalar_literals_without_lit", when_then_otherwise_scalar_literals_without_lit),
+    ("expr_tests::when_then_otherwise_column_branches", when_then_otherwise_column_branches),
+    ("expr_tests::when_then_otherwise_with_nulls_in_condition", when_then_otherwise_with_nulls_in_condition),
+    ("expr_tests::when_then_otherwise_string_branches", when_then_otherwise_string_branches),
+    ("expr_tests::if_else_output_name_is_none", if_else_output_name_is_none),
+    ("expr_tests::if_else_requires_alias_in_with_columns", if_else_requires_alias_in_with_columns),
+    ("expr_tests::if_else_with_alias_in_with_columns", if_else_with_alias_in_with_columns),
+    ("expr_tests::when_then_otherwise_composite", when_then_otherwise_composite),
+];

@@ -4,7 +4,7 @@ use cudf::{DataFrame, ErrorCode, ErrorKind, Exec, testing::prelude::*};
 use crate::common::{
     dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value, last_exec_stream_value,
     last_sync_stream_value, lock_event_observation, reset_dependency_observation, reset_exec_observation,
-    reset_sync_observation, run_named_cases, sample_df, sample_runtime, series,
+    reset_sync_observation, sample_df, sample_runtime, series,
 };
 
 // ---------------------------------------------------------------------------
@@ -147,20 +147,32 @@ fn test_filter_series_with_le_scalar_mask() {
     assert_eq!(filtered.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 15.0]);
 }
 
-#[test]
-fn dataframe_high_level_filter_tests_cases() {
-    run_named_cases(&[
-        ("test_filter_series_mask_basic", test_filter_series_mask_basic),
-        (
-            "test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance",
-            test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance,
-        ),
-        ("test_filter_series_mask_all_true", test_filter_series_mask_all_true),
-        ("test_filter_series_mask_all_false", test_filter_series_mask_all_false),
-        ("test_filter_series_preserves_column_names", test_filter_series_preserves_column_names),
-        ("test_filter_series_rejects_wrong_length_mask", test_filter_series_rejects_wrong_length_mask),
-        ("test_filter_series_rejects_non_bool_mask", test_filter_series_rejects_non_bool_mask),
-        ("test_filter_series_with_eq_scalar_mask", test_filter_series_with_eq_scalar_mask),
-        ("test_filter_series_with_le_scalar_mask", test_filter_series_with_le_scalar_mask),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("dataframe_high_level_filter_tests::test_filter_series_mask_basic", test_filter_series_mask_basic),
+    (
+        "dataframe_high_level_filter_tests::test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance",
+        test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance,
+    ),
+    ("dataframe_high_level_filter_tests::test_filter_series_mask_all_true", test_filter_series_mask_all_true),
+    ("dataframe_high_level_filter_tests::test_filter_series_mask_all_false", test_filter_series_mask_all_false),
+    (
+        "dataframe_high_level_filter_tests::test_filter_series_preserves_column_names",
+        test_filter_series_preserves_column_names,
+    ),
+    (
+        "dataframe_high_level_filter_tests::test_filter_series_rejects_wrong_length_mask",
+        test_filter_series_rejects_wrong_length_mask,
+    ),
+    (
+        "dataframe_high_level_filter_tests::test_filter_series_rejects_non_bool_mask",
+        test_filter_series_rejects_non_bool_mask,
+    ),
+    (
+        "dataframe_high_level_filter_tests::test_filter_series_with_eq_scalar_mask",
+        test_filter_series_with_eq_scalar_mask,
+    ),
+    (
+        "dataframe_high_level_filter_tests::test_filter_series_with_le_scalar_mask",
+        test_filter_series_with_le_scalar_mask,
+    ),
+];

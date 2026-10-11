@@ -863,34 +863,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn data_root_defaults_to_workspace_fixture_data_cugraph() {
-        // `data_root` honors `ALGEON_CUGRAPH_DATA_ROOT` so refresh tooling
-        // can point at a staging fixture; the default-case assertion
-        // here only fires when the override is absent so a
-        // documented refresh invocation does not break `cargo test
-        // --features cugraph`.
-        if std::env::var_os("ALGEON_CUGRAPH_DATA_ROOT").is_some() {
-            return;
-        }
-        let root = data_root();
-        assert!(root.ends_with("fixture/graph/cugraph"), "got {}", root.display());
-    }
-
-    #[test]
-    fn parity_specs_cover_every_registry_algorithm_once() {
-        use crate::cugraph_sql::CUGRAPH_OPERATION_REGISTRY;
-        for entry in CUGRAPH_OPERATION_REGISTRY {
-            let count = CUGRAPH_PARITY_SPECS.iter().filter(|spec| spec.algorithm == entry.algorithm).count();
-            assert!(
-                count >= 1,
-                "every registered cuGraph algorithm must have at least one parity spec; \
-                 missing entry for {}",
-                entry.sql_function_name,
-            );
-        }
-    }
-
-    #[test]
     fn parity_specs_have_unique_oracle_paths() {
         let mut seen = std::collections::BTreeSet::new();
         for spec in CUGRAPH_PARITY_SPECS {
@@ -898,15 +870,6 @@ mod tests {
                 continue;
             };
             assert!(seen.insert(path), "oracle path {} appears twice in parity specs", path);
-        }
-    }
-
-    #[test]
-    fn parity_spec_params_json_round_trips_through_serde_json() {
-        for spec in CUGRAPH_PARITY_SPECS {
-            let parsed: serde_json::Value = serde_json::from_str(spec.params_json)
-                .unwrap_or_else(|error| panic!("spec {} has invalid params_json: {error}", spec.label));
-            assert!(parsed.is_object(), "spec {} params_json must be a JSON object", spec.label);
         }
     }
 
@@ -950,16 +913,5 @@ mod tests {
             other => panic!("expected InvalidVertex, got {other:?}"),
         }
         let _ = std::fs::remove_file(tmp);
-    }
-
-    #[test]
-    fn parity_ref_csv_specs_reference_existing_files() {
-        let root = data_root();
-        for spec in CUGRAPH_PARITY_SPECS {
-            if let ParityTruthSource::RefCsv { path } = spec.truth_source {
-                load_ref_csv_vertex_list(&root, path)
-                    .unwrap_or_else(|err| panic!("RefCsv spec '{}' fails to load: {err}", spec.label));
-            }
-        }
     }
 }

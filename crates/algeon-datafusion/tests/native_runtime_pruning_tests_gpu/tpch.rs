@@ -1,15 +1,18 @@
 use std::{fs, fs::File, sync::Arc};
 
 use arrow::array::{Date32Array, Int32Array, Int64Array, StringArray};
-use cudf::testing::arrow::{
-    arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
-    reset_arrow_host_interop_observation_for_test,
+use cudf::{
+    testing,
+    testing::arrow::{
+        arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+        reset_arrow_host_interop_observation_for_test,
+    },
 };
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use tokio::runtime::Builder as TestRuntimeBuilder;
 
 use super::{fixtures::date32, *};
 
-#[tokio::test]
 async fn native_runtime_tpch_q6_tiny_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q6-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -19,7 +22,6 @@ async fn native_runtime_tpch_q6_tiny_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q1_tiny_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q1-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -46,7 +48,6 @@ async fn native_runtime_tpch_q1_tiny_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q3_tiny_bounded_join_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q3-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -68,7 +69,6 @@ async fn native_runtime_tpch_q3_tiny_bounded_join_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q7-tiny-bounded");
     write_q7_nonempty_tpch_parquet_dataset(&dir);
@@ -101,7 +101,116 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
+#[test]
+fn tpch_cases_1() {
+    testing::run_named_cases(&[
+        ("native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_matches_cpu())
+        }),
+        ("native_runtime_tpch_q6_tiny_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q6_tiny_matches_cpu())
+        }),
+        ("native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu())
+        }),
+        ("native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu())
+        }),
+        ("native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu())
+        }),
+        ("native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cpu())
+        }),
+        ("native_runtime_tpch_q1_tiny_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q1_tiny_matches_cpu())
+        }),
+    ]);
+}
+
+#[test]
+fn tpch_cases_2() {
+    testing::run_named_cases(&[
+        ("native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter_matches_cpu())
+        }),
+        ("native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu())
+        }),
+        ("native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs_matches_cpu())
+        }),
+        ("native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu())
+        }),
+        ("native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu())
+        }),
+        ("native_runtime_tpch_q3_tiny_bounded_join_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q3_tiny_bounded_join_matches_cpu())
+        }),
+        ("native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_cpu())
+        }),
+    ]);
+}
+
 async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q2-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -127,7 +236,6 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q19-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -149,7 +257,6 @@ async fn native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu(
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q04-tiny-bounded");
     write_q04_nonempty_tpch_parquet_dataset(&dir);
@@ -183,7 +290,6 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q15-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -205,7 +311,6 @@ async fn native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q18-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -239,7 +344,6 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q20-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -273,7 +377,6 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q16-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -295,7 +398,6 @@ async fn native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q11-tiny-bounded");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -321,7 +423,6 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q17-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -344,7 +445,6 @@ async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[tokio::test]
 async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q22-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();

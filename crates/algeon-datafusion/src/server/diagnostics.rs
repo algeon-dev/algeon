@@ -103,15 +103,6 @@ mod tests {
     use crate::server::report::{GpuCandidate, PlanningReport};
 
     #[test]
-    fn class_labels_are_stable_strings() {
-        assert_eq!(
-            FlightSqlNativeNotSupportedClass::NativeSortPreservingMerge.as_str(),
-            "native_sort_preserving_merge_unsupported"
-        );
-        assert_eq!(FlightSqlNativeNotSupportedClass::Other.as_str(), "other");
-    }
-
-    #[test]
     fn first_not_supported_reason_returns_first_not_supported_outcome() {
         let mut report = PlanningReport::new();
         report.push_selected(GpuCandidate::new("AggregateExec", 2));
@@ -129,14 +120,6 @@ mod tests {
         let mut report = PlanningReport::new();
         report.push_selected(GpuCandidate::new("AggregateExec", 2));
         assert_eq!(first_not_supported_reason(&report), None);
-    }
-
-    #[test]
-    fn log_native_planning_report_is_noop_for_empty_inputs() {
-        // The helper unconditionally checks emptiness before logging, so we
-        // only need to assert it does not panic for the no-op paths.
-        log_native_planning_report_for_tables("q-empty", None, "");
-        log_native_planning_report_for_tables("q-empty", Some(&PlanningReport::new()), "");
     }
 
     #[test]

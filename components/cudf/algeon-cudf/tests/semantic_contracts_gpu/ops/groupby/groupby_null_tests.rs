@@ -10,7 +10,7 @@
 
 use cudf::{AggSpec, DataFrame, Exec, GroupByAgg};
 
-use crate::common::{column_from_slice, column_from_slice_nullable, dataframe_from_columns, run_named_cases};
+use crate::common::{column_from_slice, column_from_slice_nullable, dataframe_from_columns};
 
 /// Helper: build a DataFrame with key and value columns for groupby tests.
 fn df_with_nullable_values() -> DataFrame {
@@ -227,18 +227,21 @@ fn test_groupby_null_keys_included_when_requested() {
     assert_eq!(null_key_count, 1);
 }
 
-#[test]
-fn groupby_null_tests_cases() {
-    run_named_cases(&[
-        ("test_groupby_sum_skips_nulls_in_values", test_groupby_sum_skips_nulls_in_values),
-        ("test_groupby_min_skips_nulls", test_groupby_min_skips_nulls),
-        ("test_groupby_max_skips_nulls", test_groupby_max_skips_nulls),
-        ("test_groupby_mean_skips_nulls", test_groupby_mean_skips_nulls),
-        ("test_groupby_count_excludes_nulls_by_default", test_groupby_count_excludes_nulls_by_default),
-        ("test_groupby_count_includes_nulls_when_requested", test_groupby_count_includes_nulls_when_requested),
-        ("test_groupby_sum_all_null_group", test_groupby_sum_all_null_group),
-        ("test_groupby_min_all_null_group", test_groupby_min_all_null_group),
-        ("test_groupby_null_keys_excluded_by_default", test_groupby_null_keys_excluded_by_default),
-        ("test_groupby_null_keys_included_when_requested", test_groupby_null_keys_included_when_requested),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("groupby_null_tests::test_groupby_sum_skips_nulls_in_values", test_groupby_sum_skips_nulls_in_values),
+    ("groupby_null_tests::test_groupby_min_skips_nulls", test_groupby_min_skips_nulls),
+    ("groupby_null_tests::test_groupby_max_skips_nulls", test_groupby_max_skips_nulls),
+    ("groupby_null_tests::test_groupby_mean_skips_nulls", test_groupby_mean_skips_nulls),
+    ("groupby_null_tests::test_groupby_count_excludes_nulls_by_default", test_groupby_count_excludes_nulls_by_default),
+    (
+        "groupby_null_tests::test_groupby_count_includes_nulls_when_requested",
+        test_groupby_count_includes_nulls_when_requested,
+    ),
+    ("groupby_null_tests::test_groupby_sum_all_null_group", test_groupby_sum_all_null_group),
+    ("groupby_null_tests::test_groupby_min_all_null_group", test_groupby_min_all_null_group),
+    ("groupby_null_tests::test_groupby_null_keys_excluded_by_default", test_groupby_null_keys_excluded_by_default),
+    (
+        "groupby_null_tests::test_groupby_null_keys_included_when_requested",
+        test_groupby_null_keys_included_when_requested,
+    ),
+];

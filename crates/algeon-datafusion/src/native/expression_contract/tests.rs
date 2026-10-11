@@ -20,8 +20,7 @@ use datafusion::{
     physical_plan::joins::utils::{ColumnIndex, JoinFilter},
 };
 use query_planning::expr::{
-    AggregateFunction as NativeAggregateFunction, BinaryOp as NativeBinaryOp, Expr as NativeExpr,
-    LiteralValue as NativeLiteralValue, UnaryMathOp,
+    AggregateFunction as NativeAggregateFunction, Expr as NativeExpr, LiteralValue as NativeLiteralValue, UnaryMathOp,
 };
 
 use super::{
@@ -102,18 +101,6 @@ fn join_residual_rejects_a_column_index_missing_from_its_declared_side_schema() 
 
     assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualSideSchema);
     assert_eq!(rejection.capability_reason(), CapabilityReason::UnsupportedExpression);
-}
-
-#[test]
-fn validated_expression_and_lowering_have_capability_parity() {
-    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
-    let expr: Arc<dyn PhysicalExpr> =
-        binary(col("value", &schema).unwrap(), Operator::Plus, lit(ScalarValue::Int64(Some(1))), &schema).unwrap();
-
-    let validated = validate_physical_expr_contract(&expr, &schema).expect("expression should satisfy contract");
-    assert!(Arc::ptr_eq(validated.expr(), &expr));
-    let lowered = lower_physical_expr_for_test(&expr, &schema).expect("validated expression must lower");
-    assert!(matches!(lowered, NativeExpr::Binary { op: NativeBinaryOp::Add, .. }));
 }
 
 #[test]
@@ -618,7 +605,7 @@ fn decimal_division_is_restricted_inside_case_branches_whatever_the_divisor() {
 }
 
 #[test]
-fn join_residual_rejects_decimal_division_because_it_is_not_restricted_to_the_rows_a_case_guards() {
+fn join_residual_admits_decimal_division_for_checked_post_join_evaluation() {
     let decimal = || DataType::Decimal128(10, 2);
     let left_schema = Arc::new(Schema::new(vec![Field::new("l", decimal(), false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("r", decimal(), false)]));
@@ -637,9 +624,8 @@ fn join_residual_rejects_decimal_division_because_it_is_not_restricted_to_the_ro
     let comparison =
         binary(quotient, Operator::Gt, lit(ScalarValue::Decimal128(Some(100), 10, 2)), &filter_schema).unwrap();
 
-    let rejection = validate_join_residual(&filter(comparison), &left_schema, &right_schema).map(|_| ()).unwrap_err();
-
-    assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualShape);
+    let filter = filter(comparison);
+    validate_join_residual(&filter, &left_schema, &right_schema).expect("decimal residual uses checked GPU evaluation");
 }
 
 #[test]

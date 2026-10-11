@@ -592,44 +592,22 @@ mod tests {
 
     #[test]
     fn direct_typed_cugraph_oom_without_allocator_event_is_incomplete() {
-        for source in ["cugraph_rmm_bad_alloc", "cugraph_std_bad_alloc"] {
-            let observation = cugraph_oom_observation(source, false);
-            let attribution = attribution_for(&observation);
-            assert!(attribution.allocator_event_required, "{source}");
-            assert!(!attribution.complete, "{source}");
-            assert_eq!(attribution.missing_fields, vec!["allocator_event"], "{source}");
-            assert_eq!(AttributionCompleteness::from_observations(&[observation]).status, ClauseStatus::Failed);
+        for source in ["cugraph_rmm_bad_alloc", "cugraph_std_bad_alloc", "cugraph_rmm_out_of_memory"] {
+            for exact_allocator_event in [false, true] {
+                let observation = cugraph_oom_observation(source, exact_allocator_event);
+                let attribution = attribution_for(&observation);
+                assert!(attribution.allocator_event_required, "{source}, event={exact_allocator_event}");
+                assert_eq!(attribution.complete, exact_allocator_event, "{source}, event={exact_allocator_event}");
+                if !exact_allocator_event {
+                    assert_eq!(attribution.missing_fields, vec!["allocator_event"], "{source}");
+                }
+                assert_eq!(
+                    AttributionCompleteness::from_observations(&[observation]).status,
+                    if exact_allocator_event { ClauseStatus::Evidenced } else { ClauseStatus::Failed },
+                    "{source}, event={exact_allocator_event}"
+                );
+            }
         }
-    }
-
-    #[test]
-    fn direct_typed_cugraph_oom_with_exact_allocator_event_is_complete() {
-        for source in ["cugraph_rmm_bad_alloc", "cugraph_std_bad_alloc"] {
-            let observation = cugraph_oom_observation(source, true);
-            let attribution = attribution_for(&observation);
-            assert!(attribution.allocator_event_required, "{source}");
-            assert!(attribution.complete, "{source}");
-            assert_eq!(AttributionCompleteness::from_observations(&[observation]).status, ClauseStatus::Evidenced);
-        }
-    }
-
-    #[test]
-    fn callback_backed_cugraph_oom_without_allocator_event_is_incomplete() {
-        let observation = cugraph_oom_observation("cugraph_rmm_out_of_memory", false);
-        let attribution = attribution_for(&observation);
-        assert!(attribution.allocator_event_required);
-        assert!(!attribution.complete);
-        assert_eq!(attribution.missing_fields, vec!["allocator_event"]);
-        assert_eq!(AttributionCompleteness::from_observations(&[observation]).status, ClauseStatus::Failed);
-    }
-
-    #[test]
-    fn callback_backed_cugraph_oom_with_exact_allocator_event_is_complete() {
-        let observation = cugraph_oom_observation("cugraph_rmm_out_of_memory", true);
-        let attribution = attribution_for(&observation);
-        assert!(attribution.allocator_event_required);
-        assert!(attribution.complete);
-        assert_eq!(AttributionCompleteness::from_observations(&[observation]).status, ClauseStatus::Evidenced);
     }
 
     #[test]
@@ -681,30 +659,31 @@ mod tests {
 
     #[test]
     fn otlp_not_requested_passes_an_ordinary_cell() {
-        let evidence = OtlpExportEvidence::not_requested();
-        assert_eq!(evidence.status, ClauseStatus::NotEvidenced);
-        assert!(evidence.passes());
-    }
-
-    #[test]
-    fn otlp_requested_without_a_success_fails_qualification() {
-        let evidence = OtlpExportEvidence::requested("127.0.0.1:4317".to_string(), 1_000, 0, 0, 0);
-        assert_eq!(evidence.status, ClauseStatus::NotEvidenced);
-        assert!(!evidence.passes());
-    }
-
-    #[test]
-    fn otlp_requested_success_passes_qualification() {
-        let evidence = OtlpExportEvidence::requested("127.0.0.1:4317".to_string(), 1_000, 3, 1, 0);
-        assert_eq!(evidence.status, ClauseStatus::Evidenced);
-        assert!(evidence.passes());
-    }
-
-    #[test]
-    fn otlp_requested_failure_fails_qualification() {
-        let evidence = OtlpExportEvidence::requested("127.0.0.1:4317".to_string(), 1_000, 3, 2, 1);
-        assert_eq!(evidence.status, ClauseStatus::Failed);
-        assert!(!evidence.passes());
+        let cases = [
+            ("not requested", OtlpExportEvidence::not_requested(), ClauseStatus::NotEvidenced, true),
+            (
+                "no success",
+                OtlpExportEvidence::requested("127.0.0.1:4317".to_string(), 1_000, 0, 0, 0),
+                ClauseStatus::NotEvidenced,
+                false,
+            ),
+            (
+                "success",
+                OtlpExportEvidence::requested("127.0.0.1:4317".to_string(), 1_000, 3, 1, 0),
+                ClauseStatus::Evidenced,
+                true,
+            ),
+            (
+                "failure",
+                OtlpExportEvidence::requested("127.0.0.1:4317".to_string(), 1_000, 3, 2, 1),
+                ClauseStatus::Failed,
+                false,
+            ),
+        ];
+        for (name, evidence, status, passes) in cases {
+            assert_eq!(evidence.status, status, "{name}");
+            assert_eq!(evidence.passes(), passes, "{name}");
+        }
     }
 
     #[test]

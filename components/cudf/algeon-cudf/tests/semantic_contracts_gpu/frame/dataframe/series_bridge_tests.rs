@@ -6,9 +6,7 @@ use std::sync::Arc;
 
 use cudf::{DataFrame, ErrorCode, ErrorKind, Series, TypeId, testing::prelude::*};
 
-use crate::common::{
-    assert_duplicate_name_error, assert_missing_column_error, error_context_value, run_named_cases, series,
-};
+use crate::common::{assert_duplicate_name_error, assert_missing_column_error, error_context_value, series};
 
 // ---------------------------------------------------------------------------
 // from_series: happy path
@@ -222,27 +220,27 @@ fn test_from_series_preserves_arc_sharing() {
     assert!(Arc::ptr_eq(&arc_before, &retrieved.into_inner()));
 }
 
-#[test]
-fn series_bridge_tests_cases() {
-    run_named_cases(&[
-        ("test_from_series_happy_path_dynamic_iterator", test_from_series_happy_path_dynamic_iterator),
-        ("test_from_series_single_column", test_from_series_single_column),
-        ("test_from_series_empty_series", test_from_series_empty_series),
-        ("test_from_series_rejects_duplicate_names", test_from_series_rejects_duplicate_names),
-        (
-            "test_from_series_rejects_length_mismatch_dynamic_iterator",
-            test_from_series_rejects_length_mismatch_dynamic_iterator,
-        ),
-        ("test_from_series_happy_path", test_from_series_happy_path),
-        ("test_from_series_with_str_keys", test_from_series_with_str_keys),
-        ("test_from_series_empty_iterator", test_from_series_empty_iterator),
-        ("test_from_series_rejects_duplicates", test_from_series_rejects_duplicates),
-        ("test_from_series_rejects_length_mismatch", test_from_series_rejects_length_mismatch),
-        ("test_series_returns_series_values", test_series_returns_series_values),
-        ("test_series_shares_arc_with_dataframe", test_series_shares_arc_with_dataframe),
-        ("test_series_nonexistent_column_returns_error", test_series_nonexistent_column_returns_error),
-        ("test_round_trip_from_explicit_columns_to_series", test_round_trip_from_explicit_columns_to_series),
-        ("test_round_trip_from_series_to_series", test_round_trip_from_series_to_series),
-        ("test_from_series_preserves_arc_sharing", test_from_series_preserves_arc_sharing),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("series_bridge_tests::test_from_series_happy_path_dynamic_iterator", test_from_series_happy_path_dynamic_iterator),
+    ("series_bridge_tests::test_from_series_single_column", test_from_series_single_column),
+    ("series_bridge_tests::test_from_series_empty_series", test_from_series_empty_series),
+    ("series_bridge_tests::test_from_series_rejects_duplicate_names", test_from_series_rejects_duplicate_names),
+    (
+        "series_bridge_tests::test_from_series_rejects_length_mismatch_dynamic_iterator",
+        test_from_series_rejects_length_mismatch_dynamic_iterator,
+    ),
+    ("series_bridge_tests::test_from_series_happy_path", test_from_series_happy_path),
+    ("series_bridge_tests::test_from_series_with_str_keys", test_from_series_with_str_keys),
+    ("series_bridge_tests::test_from_series_empty_iterator", test_from_series_empty_iterator),
+    ("series_bridge_tests::test_from_series_rejects_duplicates", test_from_series_rejects_duplicates),
+    ("series_bridge_tests::test_from_series_rejects_length_mismatch", test_from_series_rejects_length_mismatch),
+    ("series_bridge_tests::test_series_returns_series_values", test_series_returns_series_values),
+    ("series_bridge_tests::test_series_shares_arc_with_dataframe", test_series_shares_arc_with_dataframe),
+    ("series_bridge_tests::test_series_nonexistent_column_returns_error", test_series_nonexistent_column_returns_error),
+    (
+        "series_bridge_tests::test_round_trip_from_explicit_columns_to_series",
+        test_round_trip_from_explicit_columns_to_series,
+    ),
+    ("series_bridge_tests::test_round_trip_from_series_to_series", test_round_trip_from_series_to_series),
+    ("series_bridge_tests::test_from_series_preserves_arc_sharing", test_from_series_preserves_arc_sharing),
+];

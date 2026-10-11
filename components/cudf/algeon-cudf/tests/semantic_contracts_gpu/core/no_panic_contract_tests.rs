@@ -5,7 +5,7 @@ use std::{
 
 use cudf::{DataFrame, ErrorCode, ErrorKind, Series, core::Table, testing::BorrowedViewTestingExt};
 
-use crate::common::{column_from_slice, error_context_value, run_named_cases, scalar};
+use crate::common::{column_from_slice, error_context_value, scalar};
 
 fn dataframe_from_series_empty_iterator_returns_error_instead_of_panicking() {
     let result = panic::catch_unwind(|| DataFrame::from_series(iter::empty::<(&str, Series)>()));
@@ -39,20 +39,17 @@ fn scalar_type_mismatch_returns_error_instead_of_panicking() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int32"));
 }
 
-#[test]
-fn no_panic_contract_tests_cases() {
-    run_named_cases(&[
-        (
-            "dataframe_from_series_empty_iterator_returns_error_instead_of_panicking",
-            dataframe_from_series_empty_iterator_returns_error_instead_of_panicking,
-        ),
-        (
-            "table_view_select_columns_out_of_bounds_returns_error_instead_of_panicking",
-            table_view_select_columns_out_of_bounds_returns_error_instead_of_panicking,
-        ),
-        (
-            "scalar_type_mismatch_returns_error_instead_of_panicking",
-            scalar_type_mismatch_returns_error_instead_of_panicking,
-        ),
-    ]);
-}
+pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "no_panic_contract_tests::dataframe_from_series_empty_iterator_returns_error_instead_of_panicking",
+        dataframe_from_series_empty_iterator_returns_error_instead_of_panicking,
+    ),
+    (
+        "no_panic_contract_tests::table_view_select_columns_out_of_bounds_returns_error_instead_of_panicking",
+        table_view_select_columns_out_of_bounds_returns_error_instead_of_panicking,
+    ),
+    (
+        "no_panic_contract_tests::scalar_type_mismatch_returns_error_instead_of_panicking",
+        scalar_type_mismatch_returns_error_instead_of_panicking,
+    ),
+];
