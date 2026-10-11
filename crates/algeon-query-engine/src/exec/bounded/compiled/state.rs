@@ -1,3 +1,16 @@
+//! Ledger of resident resource payloads for one compiled pipeline run.
+//!
+//! The ledger enforces the resident lifetimes the compiled pipeline declares
+//! (`TaskLocal`, `BetweenTasks`, `SinkOutput`): a payload is produced once by
+//! its recorded producer, read only while live, and leaves the ledger once.
+//! It is generic over the payload so the scheduler can be tested with
+//! plain values; the GPU run stores `CompiledGpuResource`.
+//!
+//! Every error here is `InvalidPlan`. The pipeline validator rules out each
+//! condition before execution, so reaching one means the executor or the
+//! scheduler broke the compiled contract, and the facts name the task and
+//! resource involved.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use query_planning::{
@@ -10,13 +23,21 @@ use query_planning::{
 const OPERATION: &str = "query_engine.exec.bounded.compiled.state";
 
 /// Mutable execution state for one compiled pipeline run.
+///
+/// Owned by the scheduler for the run and lent to the executor by mutable
+/// reference during each task, so no lock is involved: lane workers never see
+/// it and commit their outputs through the coordinator.
 #[derive(Debug)]
 pub struct CompiledPipelineState<T> {
     completed_tasks: BTreeSet<PipelineTaskId>,
+    /// Completion order, appended in `complete_task`. Diagnostics only; the
+    /// scheduler reads `completed_tasks`.
     execution_order: Vec<PipelineTaskId>,
     resources: BTreeMap<ResidentResourceId, ResidentResourceSlot<T>>,
 }
 
+/// One declared resource and where its payload is. The definition is the
+/// pipeline's and never changes; only `state` moves.
 #[derive(Debug)]
 struct ResidentResourceSlot<T> {
     definition: ResidentResource,
@@ -31,7 +52,9 @@ enum SlotState<T> {
     Unproduced,
     /// The payload is stored and its consumers read it from the state.
     Live(T),
-    /// The resource's sole consumer took the payload out of the state.
+    /// The resource's sole consumer took the payload out of the state. The
+    /// consumer owns releasing it; `complete_task` for that consumer treats
+    /// the input as satisfied and does not release it a second time.
     Consumed { by: PipelineTaskId },
     /// The payload left the state when its lifetime ended.
     Released,
@@ -60,6 +83,9 @@ impl<T> SlotState<T> {
 }
 
 /// A resident resource payload released after its last compiled consumer.
+///
+/// Once one of these exists the ledger has no record of the payload any more;
+/// the holder must pass it to the executor's release hook or drop it.
 #[derive(Debug)]
 pub(in crate::exec::bounded) struct ReleasedCompiledResource<T> {
     id: ResidentResourceId,
@@ -119,6 +145,9 @@ impl<T> CompiledPipelineState<T> {
         self.resources.values().filter(|slot| slot.state.is_live()).count()
     }
 
+    /// Takes every live payload out for error cleanup, leaving each slot
+    /// `Released`. Lifetimes are ignored here: after a failed run nothing will
+    /// read the sink output either.
     pub(in crate::exec::bounded) fn drain_live_resources(&mut self) -> Vec<ReleasedCompiledResource<T>> {
         let mut released = Vec::new();
         for (id, slot) in &mut self.resources {
@@ -141,6 +170,10 @@ impl<T> CompiledPipelineState<T> {
         }
     }
 
+    /// Swaps the payload of a live resource and returns the previous one. The
+    /// slot stays live and keeps its lifetime, so the caller owns releasing
+    /// the returned payload. Used to install a filtered copy of a shared
+    /// source frame for the consumers that have not read it yet.
     pub(crate) fn replace_resource_payload(&mut self, resource: ResidentResourceId, payload: T) -> Result<T> {
         match &mut self.resource_slot_mut(resource)?.state {
             SlotState::Live(stored) => Ok(std::mem::replace(stored, payload)),
@@ -153,6 +186,9 @@ impl<T> CompiledPipelineState<T> {
         }
     }
 
+    /// Checks that `task` can run: not yet completed, a recorded consumer of
+    /// each declared input, and every input live. Read-only, so a rejected
+    /// claim leaves the ledger as it was.
     pub(crate) fn prepare_task(&self, task: &PipelineTask) -> Result<()> {
         if self.completed_tasks.contains(&task.id()) {
             return Err(invalid("compiled task executed more than once")
@@ -174,6 +210,8 @@ impl<T> CompiledPipelineState<T> {
         Ok(())
     }
 
+    /// Whether `consume_task_input_resource` would succeed: a live
+    /// between-tasks resource whose only recorded consumer is `task`.
     pub(crate) fn can_consume_task_input_resource(&self, task: &PipelineTask, resource: ResidentResourceId) -> bool {
         self.resource_slot(resource).is_ok_and(|slot| {
             task.input_resources().contains(&resource)
@@ -183,6 +221,13 @@ impl<T> CompiledPipelineState<T> {
         })
     }
 
+    /// Moves a sole-consumer input out of the ledger into `task`'s ownership.
+    ///
+    /// From here on the executor releases the payload, including when the
+    /// task then fails; error cleanup will not see it. Only `BetweenTasks`
+    /// resources with a single consumer qualify: a shared resource must
+    /// stay stored for its other consumers, and a task-local resource is never
+    /// an input.
     pub(crate) fn consume_task_input_resource(
         &mut self,
         task: &PipelineTask,
@@ -225,6 +270,15 @@ impl<T> CompiledPipelineState<T> {
         Ok(slot.state.take_live(SlotState::Consumed { by: task.id() }).expect("live input resource has a payload"))
     }
 
+    /// Commits `task`: installs its outputs, marks it complete, and returns
+    /// the payloads whose lifetime ended with it.
+    ///
+    /// Those are the task's own `TaskLocal` outputs and each `BetweenTasks`
+    /// input whose every recorded consumer has now completed. Validation runs
+    /// before any mutation, but output installation itself is not atomic. An
+    /// undeclared or duplicate output fails the call after earlier outputs
+    /// were installed live, and the task is not marked complete; error cleanup
+    /// drains those live payloads.
     pub(in crate::exec::bounded) fn complete_task(
         &mut self,
         task: &PipelineTask,
@@ -255,6 +309,9 @@ impl<T> CompiledPipelineState<T> {
         Ok(released)
     }
 
+    /// Final check after the last task: every task completed and every
+    /// `TaskLocal` or `BetweenTasks` payload left the ledger. Sink outputs are
+    /// exempt because the caller takes them from the returned state.
     pub(crate) fn ensure_finished(&self, pipeline: &CompiledPipeline) -> Result<()> {
         for task in pipeline.tasks() {
             if !self.completed_tasks.contains(&task.id()) {
@@ -279,6 +336,8 @@ impl<T> CompiledPipelineState<T> {
         Ok(())
     }
 
+    /// Takes the one `SinkOutput` payload produced by the sink's input task.
+    /// Succeeds once per run; a second call finds the slot released.
     pub(in crate::exec::bounded) fn take_sink_output_resource(
         &mut self,
         pipeline: &CompiledPipeline,
@@ -370,6 +429,9 @@ impl<T> CompiledPipelineState<T> {
         Ok(produced_ids)
     }
 
+    /// Whether completing `consumer` ends the lifetime of its input `resource`.
+    /// An already released slot (taken by `consume_task_input_resource`)
+    /// answers `false` so the payload is not released twice.
     fn should_release_after_consumer_completion(
         &self,
         resource: ResidentResourceId,
@@ -399,6 +461,9 @@ impl<T> CompiledPipelineState<T> {
         }
     }
 
+    /// `prepare_task` for the completion side: the same checks, except that an
+    /// input this task consumed during execution is accepted in its
+    /// `Consumed` state.
     fn prepare_task_completion(&self, task: &PipelineTask) -> Result<()> {
         if self.completed_tasks.contains(&task.id()) {
             return Err(invalid("compiled task completed more than once")

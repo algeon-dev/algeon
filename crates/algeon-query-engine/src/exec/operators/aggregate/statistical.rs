@@ -1,3 +1,18 @@
+//! GPU-native variance and standard deviation from algebraic moments
+//! (`statistical_aggregate_execution_mode = gpu_native_tolerant`).
+//!
+//! Per group the groupby computes the sum of the Float64 value, the count of non-NULL values and
+//! the sum of squares; a column expression then applies
+//! `(sum_squares - sum * sum / count) / (count - ddof)`. Moments are plain sums, so chunk states
+//! merge by summing them. A groupby `Std` or `Variance` output cannot be merged across chunks
+//! (`lower_final_aggregate_function` has no form for it), so the partial and final stages use
+//! moments.
+//!
+//! Precision follows the formula. `sum_squares - sum * sum / count` cancels when the mean is
+//! large relative to the spread, so the result can differ from DataFusion's in the low bits and,
+//! at extreme ratios, lose significant digits. A negative result from cancellation is clamped to
+//! zero. `host_exact.rs` is the mode that reproduces DataFusion's bits.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
@@ -55,6 +70,9 @@ struct StatisticalFinalMergePlan {
     expected_output_names: Vec<String>,
 }
 
+/// True for a grouped aggregate with a floating statistical aggregate when the mode is not
+/// DataFusion-exact. Aggregates with no group keys do not qualify and use libcudf reductions in
+/// the global path. Grouping sets are excluded.
 pub(super) fn should_execute_gpu_native_statistical_aggregate(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -65,6 +83,9 @@ pub(super) fn should_execute_gpu_native_statistical_aggregate(
         && spec.grouping_sets.is_none()
 }
 
+/// Partial-stage form of `should_execute_gpu_native_statistical_aggregate`. It also requires no
+/// DISTINCT, no FILTER, and only statistical aggregates and AVG, the functions the partial and
+/// final moment plans can lower; any other function fails lowering with `UnsupportedOperator`.
 pub(in crate::exec) fn should_execute_gpu_native_statistical_partial_aggregate(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -284,6 +305,9 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     Ok(GpuDataFrame::new(output))
 }
 
+/// Chunk state for the moment merge: group keys, then one (sum, count, sum of squares) triple per
+/// distinct input column and the sum and count of each AVG. Statistical aggregates over the same
+/// input column share one triple.
 pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -367,6 +391,9 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
     Ok(GpuDataFrame::new(output))
 }
 
+/// Final merge of chunk states from the partial function: sums the moments per key, applies the
+/// variance formula and finalizes AVG. Fails when a statistical output field is not Float32 or
+/// Float64.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -527,6 +554,10 @@ fn record_gpu_native_statistical_decision(
     );
 }
 
+/// Builds the single-stage plan: expressions that add the Float64 value and its square, one
+/// groupby that sums them and counts the non-NULL values, and final expressions that apply the
+/// variance formula for each statistical aggregate. Aggregates over the same input column share
+/// moment columns through `statistical_states`.
 fn lower_gpu_native_statistical_aggregate_plan(
     frame: &DataFrame,
     spec: &AggregateSpec,
@@ -770,6 +801,8 @@ fn statistical_state_aliases_for_input_names(
     }
 }
 
+/// Names the moment columns after the aggregate index. A numeric suffix is added when a name
+/// collides with an input column, an aggregate alias or a group key alias.
 fn statistical_state_aliases_for_names(
     spec: &AggregateSpec,
     input_names: &BTreeSet<String>,
@@ -837,6 +870,9 @@ fn statistical_state_input_exprs(
     Ok(vec![(state.value.clone(), lower_expr(&value)?), (state.square.clone(), lower_expr(&square)?)])
 }
 
+/// Column expression for one statistical aggregate over its moments: variance is
+/// `(sum_squares - sum * sum / count) / (count - ddof)`, standard deviation its square root, and
+/// the result is NULL when `count <= ddof`. Cast to the output field's type.
 fn finalize_statistical_expr(
     expr: &AggregateExpr,
     state: &StatisticalStateAliases,
@@ -875,6 +911,8 @@ fn finalize_statistical_expr(
         ArrowDataType::Float64,
     );
     let variance = Expr::binary_with_output_type(numerator, BinaryOp::Divide, denominator, ArrowDataType::Float64);
+    // Cancellation in `sum_squares - sum * sum / count` can leave a small negative variance, which
+    // would make the square root NaN. It is clamped to zero.
     let negative_variance = Expr::binary(variance.clone(), BinaryOp::Lt, Expr::literal(LiteralValue::Float64(0.0)));
     let safe_variance =
         Expr::case(vec![CaseWhen::new(negative_variance, Expr::literal(LiteralValue::Float64(0.0)))], variance);

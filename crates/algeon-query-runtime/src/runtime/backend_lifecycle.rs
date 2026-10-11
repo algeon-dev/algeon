@@ -15,6 +15,10 @@ use std::{
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
+// One state word: the top bit is the close flag and the remaining bits split
+// evenly into the observation count (low half) and the GPU count (high half).
+// Packing both counts with the flag is what lets one compare-and-exchange
+// decide "counted before close" or "rejected" with no lock.
 const COUNT_BITS: u32 = (usize::BITS - 1) / 2;
 const OBSERVATION_COUNT_MASK: usize = (1usize << COUNT_BITS) - 1;
 const GPU_COUNT_SHIFT: u32 = COUNT_BITS;
@@ -235,6 +239,9 @@ impl BackendLifecycle {
         self.wait_for_count_until(deadline, CountKind::Gpu)
     }
 
+    /// Waits for one count to reach zero. The close bit is already set by the
+    /// caller, so the count can only decrease; a notification is sent only on
+    /// the transition to zero while closing, which is the one a waiter needs.
     fn wait_for_count_until(&self, deadline: Instant, kind: CountKind) -> Result<()> {
         let mut wait = match super::deadline::mutex_lock_until(&self.inner.wait, deadline) {
             Ok(wait) => wait,
@@ -284,6 +291,9 @@ impl BackendLifecycle {
     }
 
     fn release_gpu(&self) {
+        // Same lock discipline as `release_observation`: the decrement and its
+        // notification happen under the coordination mutex so a waiter cannot
+        // miss the release between its count check and its wait.
         let _wait = self.inner.wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = self.inner.state.fetch_sub(GPU_COUNT_ONE, Ordering::AcqRel);
         debug_assert!(previous & GPU_COUNT_MASK != 0, "backend GPU permit count underflow");

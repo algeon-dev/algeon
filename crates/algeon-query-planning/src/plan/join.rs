@@ -45,7 +45,9 @@ pub struct JoinSpec {
     /// builder default before a frontend sets the projection; execution
     /// validation rejects it.
     pub output_projection: Vec<JoinOutputColumn>,
-    /// Null matching behavior for equality keys.
+    /// Null matching behavior for equality keys. `NullsMatch` is what a
+    /// `IS NOT DISTINCT FROM` join condition lowers to; SQL `=` keys use
+    /// `NullsDoNotMatch`.
     pub null_equality: JoinNullEquality,
     /// Input chosen to build reusable/hash state.
     ///
@@ -158,6 +160,9 @@ impl JoinSpec {
         self
     }
 
+    /// Whether a lowering path proved that each `bounded_side` row matches at
+    /// most one row of the other side. Row bounds and uniqueness derivation
+    /// read it; strategy choice does not.
     pub(crate) fn has_at_most_one_match_per_bounded_row(&self, bounded_side: JoinSide) -> bool {
         self.at_most_one_match_side == Some(bounded_side)
     }
@@ -259,6 +264,10 @@ pub enum JoinType {
     /// Keep every row from both sides, with nullable columns for unmatched side.
     Full,
     /// Keep left rows that have a match; output only left-side columns.
+    ///
+    /// Semi, anti and mark joins emit each left row at most once, which is why
+    /// row bounds and uniqueness keys carry the left input's bound and keys
+    /// through them.
     LeftSemi,
     /// Keep left rows that do not have a match; output only left-side columns.
     LeftAnti {

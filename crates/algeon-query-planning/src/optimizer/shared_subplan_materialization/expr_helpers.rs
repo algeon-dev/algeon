@@ -1,3 +1,6 @@
+//! Expression and aggregate-spec predicates shared by signature, rewrite
+//! planning and the rewriter.
+
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Field, Schema};
@@ -11,6 +14,9 @@ use crate::{
     validation::walk_join_residual_column_sides,
 };
 
+/// Whether every aggregate of a scalar spec can take a `FILTER` clause in the
+/// shared aggregate: no existing filter, `DISTINCT` only on `COUNT`, no median
+/// or statistical function, and plain column or count-star arguments.
 pub(super) fn scalar_filtered_aggregate_supported(spec: &AggregateSpec) -> bool {
     spec.group_exprs.is_empty()
         && spec.grouping_sets.is_none()
@@ -41,6 +47,8 @@ fn scalar_filtered_aggregate_expr_supported(expr: &AggregateExpr) -> bool {
     }
 }
 
+/// Whether the executor can accumulate every aggregate of the spec chunk by
+/// chunk; a distinct count needs the whole input and is excluded.
 pub(super) fn scalar_filtered_aggregate_streaming_supported(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().all(|expr| {
         !expr.distinct
@@ -55,6 +63,8 @@ pub(super) fn scalar_filtered_aggregate_streaming_supported(spec: &AggregateSpec
     })
 }
 
+/// Whether the argument is the planner's count-star form, a non-null literal
+/// (see `AggregateExpr`).
 pub(super) fn scalar_count_star_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Literal(value) if !matches!(value, LiteralValue::Null(_)))
         || matches!(expr, Expr::Alias { expr, .. } if scalar_count_star_expr(expr))
@@ -71,6 +81,8 @@ pub(super) fn scalar_count_star_aggregate_expr(plan: &QueryPlan, input: NodeId, 
     }
 }
 
+/// Whether `column` is non-null on every row, so counting it counts rows: a
+/// projected count-star literal, or the hidden presence column a join emits.
 fn projected_count_preserving_column(plan: &QueryPlan, node_id: NodeId, column: &str) -> bool {
     const HIDDEN_JOIN_ROW_PRESENCE_COLUMN: &str = "__algeon_native_join_row_presence";
     let Some(node) = plan.node(node_id) else {
@@ -97,6 +109,9 @@ fn projected_count_preserving_column(plan: &QueryPlan, node_id: NodeId, column: 
     }
 }
 
+/// Whether a filter repeats its source's reader predicate. The source already
+/// applied it, so the filter changes no rows and is left out of input shapes
+/// and clones.
 pub(super) fn source_reader_predicate_filter_is_elidable(plan: &QueryPlan, filter: &FilterNode) -> bool {
     let Some(node) = plan.node(filter.input) else {
         return false;
@@ -131,11 +146,14 @@ pub(super) fn materialization_family_aggregate_exprs(family: &[AggregateMaterial
     aggregate_exprs
 }
 
+/// `p0 AND (p1 AND (... AND pn))`, or `None` for no predicates. The shape is
+/// fixed because predicate text takes part in signatures.
 pub(super) fn conjunction(mut predicates: Vec<Expr>) -> Option<Expr> {
     let first = predicates.pop()?;
     Some(predicates.into_iter().fold(first, |right, left| Expr::binary(left, BinaryOp::And, right)))
 }
 
+/// `p0 OR (p1 OR (... OR pn))`, or `None` for no predicates.
 pub(super) fn disjunction(mut predicates: Vec<Expr>) -> Option<Expr> {
     let first = predicates.pop()?;
     Some(predicates.into_iter().fold(first, |right, left| Expr::binary(left, BinaryOp::Or, right)))

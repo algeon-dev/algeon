@@ -4,6 +4,15 @@
 //! row-group selection application.  The adapter supplies only the
 //! DataFusion/object-store operations needed to resolve Parquet metadata and
 //! filtered dimension key ranges.
+//!
+//! This is the object-store counterpart of the local pass in
+//! `dimension_pruning`, with the same two rewrites: static reader predicates
+//! narrow their own source's row groups, then dimension-derived key ranges
+//! narrow fact sources. Both are refined-source rewrites, so the plan's nodes
+//! and dynamic-filter routes keep their identity. Every outcome is reported as
+//! a [`LakehouseFooterPruningEvent`]; its reason strings are report contracts.
+//! A resolver error for one candidate is recorded and the next candidate still
+//! runs; only a `QueryPlan::rewrite` failure propagates as `Err`.
 
 use super::{
     DimensionDerivedPruningRequest, DimensionKeyFilter, KeyRange, LocalParquetRowGroupSelection,
@@ -75,6 +84,7 @@ pub enum LakehouseFooterPruningEvent {
 #[derive(Debug, Clone)]
 pub struct LakehouseFooterPruningResult {
     /// Original plan when no row-group selection narrowed; otherwise the patched plan.
+    /// Seeded dimension reader predicates are kept only in the patched case.
     pub plan: QueryPlan,
     /// Ordered adapter-observable outcomes from the pruning attempt.
     pub events: Vec<LakehouseFooterPruningEvent>,
@@ -137,6 +147,10 @@ where
     let mut any_applied = false;
     let mut events = Vec::new();
 
+    // Static pruning runs first so dimension-derived requests, which read key
+    // ranges for the fact source's current selection, see the narrower one. The
+    // file caps are checked before any footer read because each remote footer
+    // is a network round trip.
     let static_source_node_ids = static_reader_predicate_source_node_ids(&plan);
     let static_target_file_count: usize = static_source_node_ids
         .iter()
@@ -214,6 +228,8 @@ where
         return Ok(LakehouseFooterPruningResult { plan: if any_applied { plan } else { original_plan }, events });
     }
 
+    // Each request resolves against the latest plan so narrowings of one fact
+    // source by several dimensions compose instead of the last one winning.
     for request in requests {
         let target_source_node_id = request.target_source_node_id;
         match resolve_dimension_derived_request(plan.clone(), resolver, &request).await? {
@@ -238,6 +254,8 @@ where
     Ok(LakehouseFooterPruningResult { plan: if any_applied { plan } else { original_plan }, events })
 }
 
+/// Sources whose every file is an object-store URI and which carry a reader
+/// predicate. Local-path sources are pruned by the local pass instead.
 fn static_reader_predicate_source_node_ids(plan: &QueryPlan) -> Vec<NodeId> {
     plan.nodes()
         .iter()
@@ -260,6 +278,8 @@ fn static_reader_predicate_source_node_ids(plan: &QueryPlan) -> Vec<NodeId> {
         .collect()
 }
 
+/// Result of one request. `Skipped` is an engine decision with a stable reason;
+/// `Error` is a resolver failure whose text the adapter logger redacts.
 enum DimensionDerivedRequestOutcome {
     Applied { plan: Box<QueryPlan>, before: usize, after: usize },
     Skipped { reason: &'static str },

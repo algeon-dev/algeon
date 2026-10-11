@@ -210,6 +210,9 @@ impl Drop for RuntimeObservationBuildError {
         let Some(observation) = self.observation.take() else {
             return;
         };
+        // A caller that discards the error without `into_parts` would lose the
+        // session's records; sealing as `Dropped` publishes them. The seal is
+        // guarded because this drop may run during a panic unwind.
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let _ = observation.seal(RuntimeTerminalOutcome::Dropped);
         }));
@@ -334,6 +337,8 @@ impl StandaloneScopes {
         let cap = usize::try_from(memory_control_policy.device_budget_bytes).map_err(|_| {
             QueryError::new(QueryErrorCode::InvalidPlan, operation, "standalone query cap exceeds usize")
         })?;
+        // Process-wide so standalone domains never share an id on one device
+        // memory manager. An admitted domain's id is its grant generation.
         static NEXT_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
         let domain = runtime
             .device_memory_manager()

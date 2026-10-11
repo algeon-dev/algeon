@@ -81,11 +81,14 @@ pub(in crate::runtime) struct DeviceRuntime {
 /// grant and its allocation domain.
 #[derive(Debug, Clone)]
 pub(super) enum QueryScope {
+    /// No service admitted this query; its cap is its own allocation domain
+    /// and nothing revokes it.
     #[cfg_attr(
         not(any(test, feature = "test-hooks")),
         expect(dead_code, reason = "standalone contexts are built only under test-hooks")
     )]
     Standalone(Arc<StandaloneQuery>),
+    /// One admitted attempt; every context of the attempt shares this value.
     Admitted(Arc<AdmittedAttempt>),
 }
 
@@ -93,6 +96,8 @@ pub(super) enum QueryScope {
 #[derive(Debug)]
 pub(super) struct StandaloneQuery {
     pub(super) allocation_domain: QueryMemoryDomain,
+    /// Member ids are unique within a domain. A standalone query mints them
+    /// here because no admission envelope does it for it.
     pub(super) next_member_id: AtomicU64,
     pub(super) memory_control_policy: MemoryControlPolicy,
     pub(super) cancellation: ExecutionCancellation,
@@ -149,6 +154,8 @@ pub(in crate::runtime) struct AdmittedAttempt {
     pub(in crate::runtime) service_epoch: QueryServiceEpoch,
     /// Revocable lifetime for this attempt's outward resources.
     pub(in crate::runtime) query_epoch: QueryResourceEpoch,
+    /// The attempt's token, shared with `AttemptHandle::cancellation`.
+    /// `ExecutionContext::check_cancellation` reads it after both epochs.
     pub(in crate::runtime) cancellation: ExecutionCancellation,
     /// The attempt this context executes under; its plans record their
     /// boundaries on its observation.
@@ -162,6 +169,8 @@ pub(in crate::runtime) struct AdmittedAttempt {
     pub(in crate::runtime) plan_identities: Arc<AdmittedPlanIdentities>,
     /// The service policy with its device budget set to the grant, fixed at admission.
     pub(in crate::runtime) memory_control_policy: MemoryControlPolicy,
+    /// Owned by the query handle lifetime and shared by every context of the
+    /// attempt, so permits taken on any clone draw from the one `S_d`.
     pub(in crate::runtime) auxiliary_slots: Arc<AttemptAuxiliarySlots>,
     pub(in crate::runtime) allocation_domain: AttemptAllocationDomain,
     /// Declared after the allocation domain so the domain's native resources

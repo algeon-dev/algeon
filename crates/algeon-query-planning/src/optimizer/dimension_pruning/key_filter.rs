@@ -1,3 +1,10 @@
+//! Dimension key filters: disjoint inclusive key runs and the row-group overlap
+//! test both pruning paths share.
+//!
+//! The filter is exact up to [`DIMENSION_KEY_FILTER_MAX_RUNS`] runs. Beyond
+//! that it collapses to its bounding range, which only widens it, so a collapse
+//! can retain more row groups and never fewer.
+
 use std::collections::BTreeSet;
 
 use super::{Expr, RecordBatch, array_i64_value, eval_bool};

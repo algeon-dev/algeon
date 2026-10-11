@@ -1,3 +1,12 @@
+//! Text projection of optimizer diagnostics for planning reports.
+//!
+//! Every row and candidate format here is a report contract: the key order,
+//! the `none` placeholder, and the `|`, `+` and `;` separators are read by the
+//! planning TSV consumers and their goldens. A change to a rule's diagnostics
+//! struct lands here in the same change. A value that can carry a tab or a
+//! newline passes through [`stable_diagnostic_field`], since either would
+//! split the row.
+
 use super::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics,
     COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME, CountNonNullColumnPruningCandidateDiagnostics,
@@ -20,7 +29,8 @@ impl NativeOptimizerDiagnostics {
     ///
     /// The DataFusion adapter owns only the outer report escaping and joining.
     /// Rule-specific diagnostic shape lives here with the native optimizer
-    /// contracts so adding a native rule cannot silently drop adapter evidence.
+    /// contracts, so adding a native rule cannot leave its evidence out of the
+    /// adapter report.
     pub fn stable_rule_rows(&self) -> Vec<String> {
         let mut rows = Vec::new();
 
@@ -292,6 +302,8 @@ fn format_stream_fanout_replay_candidate(candidate: &StreamFanoutReplayCandidate
     } else {
         candidate.join_probe_consumer_node_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join("+")
     };
+    // Stream fanout replay has one rejection cause and stores no reason field,
+    // so the row derives it from `applied`.
     let rejected_reason = if candidate.applied { "none" } else { "NotReachableFromSink" };
     format!(
         "rule={},fanout_node_id={},consumer_count={},join_probe_consumer_node_ids={},applied={},rejected_reason={}",
@@ -560,6 +572,8 @@ fn format_semijoin_cost_signal(signal: &SemijoinReductionCostSignal) -> String {
     }
 }
 
+/// The filtered-source cost signal prints `unknown` where other fields print
+/// `none`; both spellings are part of the row contract.
 fn optional_semijoin_u64(value: Option<u64>) -> String {
     value.map_or_else(|| "unknown".to_string(), |value| value.to_string())
 }

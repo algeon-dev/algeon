@@ -1,3 +1,28 @@
+//! DataFusion-exact host execution of aggregates that contain floating variance or standard
+//! deviation (`statistical_aggregate_execution_mode = datafusion_exact_host_welford`).
+//!
+//! DataFusion accumulates variance with Welford's online update in input row order, so the low
+//! bits of its f64 result depend on both the update formula and the order rows arrive in. The
+//! GPU path in `statistical.rs` reduces in parallel from sum and sum-of-squares moments. It
+//! cannot reproduce those bits, and it loses precision when values are large relative to their
+//! spread. This mode instead copies the aggregate input to host memory and replays DataFusion's
+//! accumulators row by row inside the native wrapper. The native-lowering design page
+//! ("Require GPU execution") and the native settings of the configuration page state the
+//! user-visible contract.
+//!
+//! The flow is `prepare_datafusion_exact_host_aggregate_input_frame` (stable sort by the hidden
+//! `__algeon_native_df_order_*` columns, when the query tracks DataFusion order),
+//! `materialize_datafusion_exact_host_aggregate_input` (device frame to Arrow `RecordBatch`),
+//! `execute_datafusion_exact_host_aggregate_batch` (hash grouping and accumulation) and
+//! `upload_datafusion_exact_host_aggregate_output` (result back to the device). Every aggregate
+//! in the spec runs here, including those that are not statistical. Accumulators come from
+//! `datafusion_exact_host_accumulator`: integer sums wrap, MIN and MAX keep their input width,
+//! and NaN ordering follows DataFusion.
+//!
+//! The batch and the accumulator tables occupy system RAM, outside the GPU grant. Only the
+//! callers' input preparation runs under an `ExecutionBudgetToken`; the order sort and the
+//! upload allocate through the context runtime.
+
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, hash_map::Entry},
@@ -25,6 +50,11 @@ use crate::prepared::{
     DataFusionExactHostAccumulator, datafusion_exact_host_accumulator, datafusion_exact_host_group_key_supported,
 };
 
+/// One group key value reduced to 64 bits.
+///
+/// `is_null` is part of the identity, so NULL keys form one group distinct from every value,
+/// as GROUP BY requires. `bits` holds the integer value, the bit pattern of a Float64 (so
+/// floats compare by bits), or the interned code of a string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct HostEncodedKeyPart {
     bits: u64,
@@ -41,6 +71,8 @@ impl HostEncodedKeyPart {
     }
 }
 
+/// Hash-map key for one row's group. Variants up to four key columns keep the lookup key of the
+/// common key counts free of a `Vec` allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum HostGroupLookupKey {
     Empty,
@@ -121,6 +153,14 @@ impl HostValue {
     }
 }
 
+/// Running state of one aggregate for one group, selected by its `DataFusionExactHostAccumulator`.
+///
+/// `seen` marks that at least one non-NULL input arrived, so a group with only NULL inputs
+/// evaluates to NULL. COUNT, AVG and Welford carry a count instead.
+///
+/// `Welford` is Welford's online update as DataFusion's variance accumulator applies it, and
+/// `m2` is the running sum of squared deviations from the mean. The order of the
+/// floating-point operations in `update` is what makes the result match DataFusion's bits.
 #[derive(Debug, Clone)]
 enum HostAggregateState {
     Count { count: u64 },
@@ -231,6 +271,7 @@ impl HostAggregateState {
                 *sum += input.as_f64();
                 *count += 1;
             },
+            // Same operation order as `update` in DataFusion's `variance.rs`.
             (Self::Welford { count, mean, m2, .. }, Accumulator::Welford) => {
                 let value = input.as_f64();
                 let new_count = *count + 1;
@@ -273,6 +314,7 @@ impl HostAggregateState {
         match self {
             Self::Float { value, seen } => seen.then_some(*value),
             Self::Avg { sum, count } => (*count > 0).then(|| *sum / *count as f64),
+            // Variance is undefined for `count <= ddof`; DataFusion yields NULL there.
             Self::Welford { function, count, m2, .. } => {
                 let ddof = function.statistical_ddof().expect("statistical state must carry ddof") as u64;
                 if *count <= ddof {
@@ -291,11 +333,17 @@ impl HostAggregateState {
     }
 }
 
+/// One group in first-seen order of the input rows. Output rows follow this order.
 struct HostAggregateGroup {
     key: HostGroupLookupKey,
     aggregates: Vec<HostAggregateState>,
 }
 
+/// Runs the whole exact-host flow for `input`: order sort, copy to host, accumulate, upload.
+///
+/// Takes no budget token. The order sort and the upload allocate through the context runtime,
+/// and the host copy is system RAM. `extra_strategy_facts` carries the filtered-aggregate
+/// materialization facts of the caller's single-pass decision into the recorded strategy row.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -327,6 +375,9 @@ pub(super) fn execute_datafusion_exact_host_aggregate(
     Ok(GpuDataFrame::new(output))
 }
 
+/// Stable-sorts `input` by its hidden DataFusion order columns, when it has them, and extends
+/// `input_schema` with those columns. Rows are then visited in the order DataFusion's
+/// accumulators would see them, which the floating-point results depend on.
 pub(in crate::exec) fn prepare_datafusion_exact_host_aggregate_input_frame(
     context: &ExecutionContext,
     input: GpuDataFrame,
@@ -338,6 +389,7 @@ pub(in crate::exec) fn prepare_datafusion_exact_host_aggregate_input_frame(
     Ok((GpuDataFrame::new(frame), schema))
 }
 
+/// Copies `input` to host memory as one Arrow `RecordBatch` with `schema`.
 pub(in crate::exec) fn materialize_datafusion_exact_host_aggregate_input(
     context: &ExecutionContext,
     input: GpuDataFrame,
@@ -347,6 +399,13 @@ pub(in crate::exec) fn materialize_datafusion_exact_host_aggregate_input(
     handle.to_host_record_batch()
 }
 
+/// Aggregates `batch` row by row into `output_schema`: group keys first, then one column per
+/// aggregate in spec order. Groups appear in order of first occurrence.
+///
+/// A global aggregate over zero rows returns one row of identity values (COUNT is 0, everything
+/// else NULL); a grouped aggregate over zero rows returns none. Fails with `UnsupportedType`
+/// when a group key type or an aggregate has no exact accumulator, and `UnsupportedExpression`
+/// when an aggregate argument is neither a prepared column nor a literal.
 pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -433,6 +492,7 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
             .collect::<Vec<_>>()
     };
     let row_count = batch.num_rows();
+    // The group count is unknown until the scan ends, so reservation is capped at 2^20 entries.
     let mut group_indices = fast_hash_map_with_capacity::<HostGroupLookupKey, usize>(row_count.min(1_048_576));
     let mut groups = Vec::<HostAggregateGroup>::new();
     let mut aggregate_input_values = vec![None; aggregate_accessors.len()];
@@ -498,6 +558,7 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     Ok(output)
 }
 
+/// Copies the host result back to the device through the context runtime.
 pub(in crate::exec) fn upload_datafusion_exact_host_aggregate_output(
     context: &ExecutionContext,
     output: &RecordBatch,
@@ -511,6 +572,9 @@ pub(in crate::exec) fn upload_datafusion_exact_host_aggregate_output(
     })
 }
 
+/// Records the strategy row for the host path. Fields that describe GPU strategy choices carry
+/// fixed placeholders (`unknown`, `none`, `not_applicable`) because this path selects no GPU
+/// strategy.
 #[expect(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
@@ -599,6 +663,9 @@ fn record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
     );
 }
 
+/// Copies the filtered-aggregate materialization facts of the caller's single-pass decision into
+/// the host strategy row. `aggregate_filter_count` is copied over the row's own value, because
+/// the spec reaching this path has had its filters masked into columns and would report 0.
 fn add_filtered_materialization_facts(
     facts: &mut BTreeMap<&'static str, String>,
     extra_strategy_facts: &BTreeMap<&'static str, String>,
@@ -834,6 +901,8 @@ fn aggregate_function_list_for_metrics(spec: &AggregateSpec) -> String {
         .join(",")
 }
 
+/// Where an aggregate reads its values. A literal reads no column: a non-NULL literal (and
+/// COUNT(*)) yields a value on every row, a NULL literal on none.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum HostAggregateInput {
     Column(String),
@@ -865,6 +934,8 @@ impl<'a> HostAggregateInputAccessor<'a> {
     }
 }
 
+/// Typed view of one group key column of the host batch. String keys are interned to integer
+/// codes when the view is built, so every key part is fixed-width.
 enum HostKeyColumn<'a> {
     Boolean(&'a BooleanArray),
     Int32(&'a Int32Array),
@@ -907,6 +978,7 @@ impl HostStringKeyColumn {
     }
 }
 
+/// Interns each distinct string to a dense code in first-seen order. NULL rows get no code.
 fn encode_host_string_keys<'a>(row_count: usize, value_at: impl Fn(usize) -> Option<&'a str>) -> HostStringKeyColumn {
     let mut interned = FastHashMap::<&'a str, u64>::default();
     let mut values = Vec::<String>::new();

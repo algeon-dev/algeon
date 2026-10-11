@@ -1,3 +1,6 @@
+//! Entry point that assembles one [`CapabilityAnalysis`] from the node, edge,
+//! and subgraph passes.
+
 use super::{
     QueryPlan,
     edge::{analyze_input_edges, analyze_sink_edge, mark_shared_producer_edge_contracts},
@@ -25,6 +28,8 @@ pub(crate) fn analyze_query_capabilities(plan: &QueryPlan, ctx: AnalysisContext<
     edges.push(analyze_sink_edge(plan));
     mark_shared_producer_edge_contracts(plan, &mut edges);
 
+    // Invariants read the edge contracts, including the shared-producer
+    // marks, so both edge passes must finish before this call.
     let invariants = analyze_invariants(plan, &edges);
     CapabilityAnalysis { nodes, edges, invariants, policy: ctx.policy() }
 }

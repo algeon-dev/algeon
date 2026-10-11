@@ -1,4 +1,17 @@
 //! Revocable service and query resource epochs.
+//!
+//! A `QueryServiceEpoch` spans one query service. `QueryService::close` and
+//! the drain path invalidate it, then wait for its users to drain. A
+//! `QueryResourceEpoch` spans one admitted query handle; the handle lifetime
+//! invalidates it when release is requested and releases the envelope from
+//! its idle callback. Each epoch closes once and never reopens.
+//!
+//! Neither epoch holds a lock around `open` and its user count. Acquisition
+//! therefore re-checks `open` after incrementing, and a user created inside
+//! that window is dropped again, so a closer that observes a zero count after
+//! its close store is never followed by a surviving user. Idle completion is
+//! the transition to zero users after the close; it runs the one-shot callback
+//! and, for the service epoch, wakes `wait_for_idle_until`.
 
 use std::{
     fmt, sync,
@@ -26,14 +39,20 @@ pub(crate) struct QueryServiceEpoch {
 }
 
 struct QueryServiceEpochInner {
+    /// Cleared once by `invalidate`, never set again.
     open: AtomicBool,
+    /// Live `QueryServiceEpochUser`s, including the `_user` inside every
+    /// `QueryServiceResourceEpoch`.
     active_users: AtomicUsize,
+    /// Guards the one-shot callback and the completion flag that
+    /// `wait_for_idle_until` sleeps on.
     idle_state: Mutex<QueryServiceEpochIdleState>,
     idle_changed: Condvar,
 }
 
 struct QueryServiceEpochIdleState {
     on_idle: Option<QueryServiceEpochIdleCallback>,
+    /// Set once, under `idle_state`, after the callback has run.
     complete: bool,
 }
 
@@ -59,11 +78,19 @@ impl QueryServiceEpoch {
         }
     }
 
+    /// Adds a user without checking `open`. For callers whose own membership
+    /// already proves the epoch admitted them, such as a query handle
+    /// retaining the service for its lifetime, and for
+    /// `QueryServiceResourceEpoch::service_generation_only`, which re-checks
+    /// around the call.
     pub(crate) fn retain_existing_user(&self) -> QueryServiceEpochUser {
         self.inner.active_users.fetch_add(1, Ordering::AcqRel);
         QueryServiceEpochUser { epoch: self.clone() }
     }
 
+    /// Takes a counted user if the epoch is open. The re-check after the
+    /// increment is what makes the count a reliable drain census; see the
+    /// module docs.
     fn acquire(&self, operation: &'static str) -> Result<QueryServiceEpochUser> {
         if !self.inner.open.load(Ordering::Acquire) {
             return Err(query_service_epoch_closed(operation));
@@ -80,6 +107,10 @@ impl QueryServiceEpoch {
         if self.inner.open.load(Ordering::Acquire) { Ok(()) } else { Err(query_service_epoch_closed(operation)) }
     }
 
+    /// Closes the epoch and wakes idle waiters. Idempotent. Idle completion
+    /// itself runs on the last user release or inside `wait_for_idle_until`,
+    /// so an epoch closed with no users and no waiter runs its callback only
+    /// when a waiter arrives.
     pub(crate) fn invalidate(&self) {
         self.inner.open.store(false, Ordering::Release);
         self.inner.idle_changed.notify_all();
@@ -93,6 +124,10 @@ impl QueryServiceEpoch {
         }
     }
 
+    /// Runs the idle callback and records completion, once, when the epoch is
+    /// closed with no users. The callback runs under `idle_state`, which
+    /// serializes it against a `wait_for_idle_until` caller reaching the same
+    /// conclusion at the same time.
     fn release_if_idle(&self) {
         if self.inner.open.load(Ordering::Acquire) || self.inner.active_users.load(Ordering::Acquire) != 0 {
             return;
@@ -116,6 +151,15 @@ impl QueryServiceEpoch {
         self.inner.idle_changed.notify_all();
     }
 
+    /// Blocks until the epoch is closed with no users, or `deadline` passes.
+    ///
+    /// The waiter completes idle itself when it finds the condition already
+    /// met, so the callback is not lost when the last release happened before
+    /// any waiter existed. A completion first observed after the deadline, by
+    /// a caller that had to wait or that completed it here, is still reported
+    /// as the timeout error, which carries the live user count and the
+    /// cleanup-deadline marker. A caller that finds completion already
+    /// recorded returns `Ok` whatever the deadline.
     pub(crate) fn wait_for_idle_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         let mut state = match mutex_lock_until(&self.inner.idle_state, deadline) {
             Ok(state) => state,
@@ -193,6 +237,8 @@ fn query_service_epoch_idle_timeout(operation: &'static str, active_users: usize
     .with_cleanup_deadline_elapsed()
 }
 
+/// Counted membership in a service epoch. Dropping the last user after the
+/// close completes idle.
 #[derive(Debug)]
 pub(crate) struct QueryServiceEpochUser {
     epoch: QueryServiceEpoch,
@@ -209,8 +255,12 @@ pub(crate) struct QueryResourceEpoch {
 }
 
 struct QueryResourceEpochInner {
+    /// Cleared once by `invalidate`.
     open: AtomicBool,
+    /// Live `QueryResourceAnchor`s.
     active_users: AtomicUsize,
+    /// Taken once, by whichever of `invalidate` and the last anchor drop finds
+    /// the epoch closed and idle.
     on_idle: Mutex<Option<QueryResourceEpochIdleCallback>>,
 }
 
@@ -235,6 +285,10 @@ impl QueryResourceEpoch {
         }
     }
 
+    /// Mints a counted anchor that keeps `owner` alive. The anchor holds the
+    /// owner and the epoch holds none, so an owner may hold the epoch without
+    /// a reference cycle; the query handle lifetime passes itself here. Fails
+    /// with `Cancelled` and reason `query_handle_released` once closed.
     pub(crate) fn acquire(
         &self,
         owner: Arc<dyn Send + Sync>,
@@ -254,6 +308,8 @@ impl QueryResourceEpoch {
         if self.inner.open.load(Ordering::Acquire) { Ok(()) } else { Err(query_resource_epoch_closed(operation)) }
     }
 
+    /// Closes the epoch and, when no anchor is live, runs the idle callback
+    /// at once. Otherwise the last anchor drop runs it.
     pub(crate) fn invalidate(&self) {
         self.inner.open.store(false, Ordering::Release);
         self.notify_if_idle();
@@ -271,6 +327,9 @@ impl QueryResourceEpoch {
         }
     }
 
+    /// Runs the idle callback once the epoch is closed with no live anchor.
+    /// The callback runs after the `on_idle` lock is released because it
+    /// releases the query handle's envelope, which drops further resources.
     fn notify_if_idle(&self) {
         if self.inner.open.load(Ordering::Acquire) || !self.is_idle() {
             return;
@@ -324,6 +383,12 @@ fn query_resource_epoch_closed(operation: &'static str) -> QueryError {
 }
 
 /// Shared counted owner attached to cloneable service-derived resources.
+///
+/// `_user` keeps the service epoch from reaching idle while the resource
+/// lives; `query_anchor` does the same for the query handle when the resource
+/// was derived from an outward context. `check_open` consults both, so a pool
+/// clone, grant clone, or stream lease bound to this epoch fails after either
+/// close.
 #[derive(Debug)]
 pub(crate) struct QueryServiceResourceEpoch {
     epoch: QueryServiceEpoch,
@@ -332,6 +397,10 @@ pub(crate) struct QueryServiceResourceEpoch {
 }
 
 impl QueryServiceResourceEpoch {
+    /// Takes a service user and, when an anchor is given, verifies the query
+    /// epoch is still open. Fails when either lifetime is closed; the user is
+    /// released on the anchor check failing, so a failed acquisition leaves
+    /// the drain census unchanged.
     pub(crate) fn acquire(
         epoch: &QueryServiceEpoch,
         query_anchor: Option<&Arc<QueryResourceAnchor>>,

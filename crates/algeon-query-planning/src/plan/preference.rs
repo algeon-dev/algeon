@@ -271,6 +271,12 @@ impl NativePlanCostDecision {
 /// place of the native candidate. A plan that reads no column data stays with
 /// the frontend whenever it may; the threshold rules in `options` apply only
 /// when they are enabled.
+///
+/// Every threshold rule requires complete evidence: when any local Parquet
+/// source lacks row-group or byte metadata the decision is `ContinueNative`,
+/// because a rule that fired on partial evidence could leave a large query on
+/// the CPU. The literal-only rules need no evidence and run even when the
+/// thresholds are disabled.
 pub fn native_plan_cost_decision(
     plan: &QueryPlan,
     options: &NativePlanCostOptions,
@@ -351,6 +357,9 @@ fn passes_host_literals_through(plan: &QueryPlan) -> bool {
         })
 }
 
+/// Folds one source into the plan facts. Zero selected row groups is read as
+/// missing metadata rather than an empty scan, because a source without footer
+/// facts reports zero and the two cases cannot be told apart here.
 fn accumulate_local_parquet_source_facts(facts: &mut NativePlanCostFacts, source: &LocalParquetSource) {
     let row_groups = source.selected_row_group_count();
     if row_groups == 0 {

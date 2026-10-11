@@ -1,3 +1,27 @@
+//! Local filesystem cache of S3 Parquet objects, read back through the cuDF local-path reader.
+//!
+//! An entry is a whole object at the planned `lakehouse_cache_path`. A `LocalCacheKvikio` read
+//! that finds no complete file fills the entry inline; a read served directly from S3 can enqueue
+//! a background fill instead. Both follow one protocol, implemented in `cache`:
+//!
+//! - A `<entry>.lock` file, created exclusively and holding the owner's pid, serializes fills of
+//!   one entry across threads and processes. A lock is stale when its pid is gone, or when it has
+//!   no readable pid and is older than the malformed-lock age. Both checks need `/proc`; where it
+//!   is absent a dead owner's lock is never removed and waiters time out.
+//! - The object is fetched by `maintenance` under the host cache-fill byte and concurrency
+//!   budgets, written to a temporary file, synced and renamed into place. A reader therefore
+//!   sees either no file or a complete one. A footer sidecar is written after the rename.
+//! - A hit is a regular file whose size equals the planned object size. The source must carry a
+//!   content identity; without one the entry is neither served nor filled, because the bytes
+//!   cannot be attributed to the current object version.
+//! - A reader holds a read-pin file for the duration of its read. After each publish, eviction
+//!   removes least-recently-used entries until the total fits `cache_max_bytes`, skipping the
+//!   entry published by the caller and any entry with a lock or an active pin.
+//!
+//! `policy` holds the thresholds for the optimized batch cache and the lock retry; it does not
+//! decide eviction. `s3` parses source URIs for maintenance fetches. Design owner:
+//! `website/docs/design/data-path.mdx`.
+
 use super::{DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, SourceChunk, cudf_query_error};
 #[cfg(test)]
 use crate::parquet_metadata::parquet_footer_sidecar_path;

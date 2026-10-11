@@ -1,3 +1,16 @@
+//! Expression type checking for single-input nodes.
+//!
+//! [`validate_expr`] returns the Arrow type an expression evaluates to, or the
+//! first contract it misses. Types are derived from the IR and the input
+//! schema; the backend is asked only whether it represents a type, supports a
+//! cast, or infers a decimal result. A column is resolved against two facts:
+//! `available_columns` is what the input produces at execution time and the
+//! schema supplies the type, and the two differ for a local Parquet source
+//! whose execution frame carries fewer columns than its declared schema. Join
+//! residuals have their own checker in `join`, because the cuDF AST that
+//! evaluates them admits fewer forms than the column-wise kernels admitted
+//! here.
+
 use std::collections::BTreeSet;
 
 use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
@@ -166,6 +179,9 @@ pub(crate) fn validate_expr(
     }
 }
 
+/// `TRY_CAST` runs natively only from a string to an integer, the one pair the
+/// engine implements with null-on-failure semantics by masking rows that fail
+/// the integer parse check.
 fn validate_try_cast_expr(
     input: &Expr,
     target_type: &ArrowDataType,
@@ -190,6 +206,8 @@ fn is_string_arrow_type(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
 }
 
+/// The cast target doubles as the expected type of a nested decimal division,
+/// so `CAST(a / b AS DECIMAL(p, s))` declares the division's result scale.
 fn validate_cast_expr(
     expr: &Expr,
     target_type: &ArrowDataType,
@@ -210,6 +228,8 @@ fn validate_cast_expr(
     Ok(target_type.clone())
 }
 
+/// `EXTRACT(MINUTE)` runs natively only over a timezone-free second timestamp
+/// cast from an integer; see `DatePart::EXTRACT_FIELDS`.
 fn validate_timestamp_second_integer_cast_expr(
     expr: &Expr,
     input_schema: &SchemaRef,
@@ -238,6 +258,10 @@ pub(crate) fn validate_projection_output_expr(
     validate_expr_with_expected_type(&output.expr, Some(output.field.data_type()), input_schema, available_columns, ctx)
 }
 
+/// [`validate_expr`] with the type a projection field or enclosing cast
+/// declares for the expression. Only decimal division consumes the hint,
+/// because its result scale is a frontend contract the backend cannot infer;
+/// the hint passes through aliases and casts and is dropped everywhere else.
 fn validate_expr_with_expected_type(
     expr: &Expr,
     expected_type: Option<&ArrowDataType>,
@@ -267,6 +291,9 @@ fn validate_expr_with_expected_type(
     }
 }
 
+/// Availability is checked before the schema lookup, so a column the schema
+/// declares but the input does not produce reports the availability error,
+/// which lists what the input does produce.
 pub(crate) fn validate_column(
     name: &str,
     input_schema: &SchemaRef,
@@ -366,15 +393,23 @@ fn validate_binary_expr_with_expected_type(
             ctx,
         );
     }
+    // Same-operator AND / OR chains are flattened iteratively. Recursing
+    // through `validate_expr` once per conjunct would make stack depth grow
+    // with the number of predicates a frontend conjoins.
     if matches!(op, BinaryOp::And | BinaryOp::Or) && output_type.is_none() {
         return validate_logical_binary_expr(left, op, right, input_schema, available_columns, ctx);
     }
 
     let left_type = validate_expr(left, input_schema, available_columns, ctx)?;
     let right_type = validate_expr(right, input_schema, available_columns, ctx)?;
+    // Temporal arithmetic is resolved before the arithmetic rules below, which
+    // would reject a timestamp or duration operand.
     if let Some(output_type) = temporal_duration_binary_output_type(op, &left_type, &right_type)? {
         return Ok(output_type);
     }
+    // A declared output type is honored only for decimal division, the one
+    // operator whose result scale the frontend owns. Anywhere else it would let
+    // the IR assert a type execution does not produce.
     if output_type.is_some()
         && !(op == BinaryOp::Divide && (is_decimal_type(&left_type) || is_decimal_type(&right_type)))
     {
@@ -450,6 +485,11 @@ fn validate_logical_binary_expr(
     Ok(ArrowDataType::Boolean)
 }
 
+/// Result type of decimal arithmetic. Division requires the declared
+/// `Decimal128` output: cuDF fixed-point division derives its result scale from
+/// the operand scales, which differs from the SQL result scale DataFusion
+/// declares, so execution casts to the declared type. For the other operators
+/// the backend infers the result from the operand types.
 fn decimal_arithmetic_output_type(
     op: BinaryOp,
     left_type: &ArrowDataType,
@@ -509,6 +549,10 @@ fn decimal_arithmetic_output_type(
     clippy::too_many_arguments,
     reason = "expression/join residual validation threads the shared schema pair plus the backend context"
 )]
+/// An interval literal is legal only as one operand of `datetime + interval`,
+/// `datetime - interval` or `interval + datetime`, and the result keeps the
+/// datetime operand's type. `validate_literal` rejects an interval anywhere
+/// else, so no bare interval value reaches a kernel.
 fn validate_interval_binary_expr(
     left: &Expr,
     op: BinaryOp,
@@ -574,6 +618,9 @@ fn validate_in_list_expr(
                 "native IN list values must be literals",
             ));
         };
+        // A null in the list makes SQL `x IN (...)` null, rather than false,
+        // for every non-matching row; the native membership kernel has no
+        // three-valued form.
         if matches!(value, LiteralValue::Null(_)) {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedExpression,
@@ -587,6 +634,9 @@ fn validate_in_list_expr(
     Ok(ArrowDataType::Boolean)
 }
 
+/// `CONCAT` evaluates to the widest string representation among its inputs:
+/// `Utf8View` if any input is one, otherwise `LargeUtf8` if any is, otherwise
+/// `Utf8`.
 fn validate_concat_expr(
     exprs: &[Expr],
     input_schema: &SchemaRef,
@@ -613,6 +663,8 @@ fn validate_concat_expr(
     Ok(output_type)
 }
 
+/// A searched `CASE` evaluates to its `ELSE` type; every `THEN` must be
+/// compatible with it through an implicit cast.
 fn validate_case_expr(
     branches: &[CaseWhen],
     else_expr: &Expr,
@@ -646,6 +698,8 @@ fn interval_literal(expr: &Expr) -> Option<(i32, i32, i64)> {
     }
 }
 
+/// cuDF `slice_strings` takes zero-based `i32` start and stop positions, so
+/// `start` must be at least one and `(start - 1) + length` must fit in `i32`.
 fn validate_substring_bounds(start: i32, length: Option<i32>) -> Result<()> {
     if start < 1 {
         return Err(QueryError::new(
@@ -674,6 +728,9 @@ pub fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
     zero_based_start.checked_add(length)
 }
 
+/// cuDF `like` takes one escape character, and an empty string means none.
+/// Only ASCII is accepted so the one-character bound holds in bytes as well as
+/// code points.
 fn validate_like_escape_contract(escape: &str) -> Result<()> {
     if escape.len() <= 1 && escape.is_ascii() {
         Ok(())
@@ -702,6 +759,11 @@ fn unary_math_type_contexts(op: UnaryMathOp) -> (&'static str, &'static str) {
     }
 }
 
+/// Input and output type rules per function. Negation is in place over signed
+/// integers and floats; an unsigned input would need a wider signed output the
+/// IR does not model. `FLOOR` and `CEIL` are floating-point operations that
+/// keep the input type. `SQRT`, `LN` and `EXP` accept any arithmetic input and
+/// leave the output type to the caller's decimal consistency check.
 pub(super) fn validate_unary_math_types(
     op: UnaryMathOp,
     input_type: &ArrowDataType,

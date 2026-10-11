@@ -52,15 +52,26 @@ impl AdvisoryOutputStatistics {
     }
 }
 
-/// Why a shadow volume has no usable estimate.
+/// Why an advisory volume has no usable estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdvisoryUnknownReason {
+    /// The frontend had no statistics for the occurrence.
     MissingStatistics,
+    /// The frontend's statistics computation returned an error.
     StatisticsComputationFailed,
+    /// The native occurrence's schema no longer matches the statistics.
     OutputSchemaChanged,
+    /// A limit clipped the row estimate; the byte model has no per-row figure
+    /// to clip bytes by (see `QueryPlanBuilder::add_limit`).
     LimitBytesUnavailable,
+    /// The frontend's join estimate fell back to the Cartesian product of its
+    /// inputs, which it reports as unknown.
     CartesianFallback,
+    /// An optimizer rule changed the node or one of its dependencies, so the
+    /// estimate describes a subtree that no longer exists.
     RewrittenSubtree,
+    /// Two frontend occurrences with different statistics were interned to one
+    /// native node, so neither value can be attributed to it.
     ConflictingOccurrences,
 }
 
@@ -76,9 +87,14 @@ pub enum AdvisoryUnknownReason {
 /// dependencies change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdvisoryOutputBinding {
+    /// Native occurrence the statistics describe; remapped by every rewrite.
     pub node: super::NodeId,
+    /// Output schema the frontend estimated for; must equal the node's output
+    /// schema when bound (`QueryPlanBuilder::set_advisory_output`).
     pub schema: super::SchemaRef,
+    /// Frontend that produced the estimate, for diagnostics only.
     pub frontend: String,
+    /// Version string of that frontend, for diagnostics only.
     pub frontend_version: String,
     pub statistics: AdvisoryOutputStatistics,
     /// Explains absent quantities; a present quantity retains its precision.

@@ -30,8 +30,15 @@ struct DeviceContextInner {
     memory_manager_installation: cudf::DeviceMemoryManagerInstallationState,
     engine_health_identity: EngineDeviceHealthIdentity,
     memory_failure_tracker: DeviceMemoryFailureTracker,
+    /// The device's single admission authority. Shared as an `Arc` because
+    /// the fault observer below holds a `Weak` to it, and because grants
+    /// outlive the context that admitted them.
     ledger: Arc<DeviceLedger>,
+    /// Inventory facts from the pre-install discovery; diagnostics only, the
+    /// ledger profile carries the frozen capacity.
     facts: DeviceFacts,
+    /// `A_d` lanes, sized from the ledger profile so a lane always exists for
+    /// an attempt the ledger admitted.
     lane_permits: Arc<DeviceLanePermits>,
     // Keep-alive registration: a fault reported for this device closes the
     // ledger at once, as a ledger transition that wakes queued admissions.

@@ -1,3 +1,23 @@
+//! Structural and backend-support validation of a [`QueryPlan`].
+//!
+//! [`validate_query_plan`] is the first step of admission (`admission::admit`)
+//! and runs ahead of capability analysis, which assumes a plan that passed
+//! here. Two outcomes are told apart by error code. A malformed plan, such as
+//! a column its input does not produce, a schema that disagrees with the node
+//! payload, or a visible alias that collides with a reserved state column, is
+//! `InvalidPlan` (kind `Planning`) and has no correct fallback. A well-formed
+//! plan that uses a type, operator or expression the backend cannot run is
+//! `UnsupportedType`, `UnsupportedOperator` or `UnsupportedExpression` (kind
+//! `Unsupported`); admission turns that into a rejection a frontend may fall
+//! back from, and `UnsupportedPart::from_code` maps the code to the blocked
+//! element the planning report names. Error codes, `operation` strings and
+//! `reason` facts are contracts read by tests and reports.
+//!
+//! Questions only a backend can answer, whether it represents a type, binds an
+//! expression, or infers a decimal result, go through the [`AnalysisContext`];
+//! everything else is decided from Arrow and IR semantics. `check_node` holds
+//! every node rule once so validation and capability analysis cannot disagree.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef};
@@ -75,6 +95,9 @@ pub fn projection_schema_mismatch_error(
     .with_fact("expected_type", format!("{expected_type:?}"))
 }
 
+/// Rows a fused top-k must retain to answer `spec`: `skip + fetch`. An
+/// offset-only limit has no finite bound and is `UnsupportedOperator`; an
+/// overflowing sum is a malformed plan.
 #[doc(hidden)]
 pub fn topk_candidate_rows(spec: LimitSpec) -> Result<usize> {
     let fetch = spec.fetch.ok_or_else(|| {
@@ -137,6 +160,10 @@ impl PlanColumns {
                     },
                 },
                 // Plan construction orders every input before its consumers.
+                // A filter, sort or limit forwards what its input makes
+                // available, intersected with its own schema; the schema alone
+                // would re-admit a column a local Parquet source declares but
+                // does not read into its execution frame.
                 PlanNode::Filter(FilterNode { input, .. })
                 | PlanNode::Sort(SortNode { input, .. })
                 | PlanNode::Limit(LimitNode { input, .. }) => {
@@ -210,6 +237,9 @@ pub(crate) fn check_node(
                 } else {
                     validate_projection_output_expr(output, input.output_schema(), input_available, ctx)?
                 };
+                // The declared field may differ from the evaluated type when
+                // execution can insert an implicit cast for it; list child
+                // field names are Arrow metadata cuDF does not carry.
                 let expected_type = output.field.data_type();
                 if !arrow_data_types_match_except_list_child_names(&actual_type, expected_type)
                     && !is_supported_arrow_implicit_cast(&actual_type, expected_type, ctx.backend())
@@ -540,6 +570,9 @@ fn validate_schema_supported(schema: &SchemaRef, operation: &'static str, ctx: A
     Ok(())
 }
 
+/// cuDF tables address columns by position, so the IR resolves names to
+/// positions itself; a duplicate output name would make every consumer's
+/// lookup ambiguous.
 fn validate_output_names_unique(node: &QueryNode) -> Result<()> {
     let output_names = node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     let mut first_output_indexes = HashMap::with_capacity(output_names.len());
@@ -1188,6 +1221,13 @@ fn validate_union_node(
     Ok(())
 }
 
+/// Frame, ordering and output-type rules of each window function.
+///
+/// A whole-partition aggregate is accepted only without `ORDER BY`: with one,
+/// SQL's default frame is `RANGE ... UNBOUNDED PRECEDING AND CURRENT ROW`, a
+/// different result that the IR spells as `RowsUnboundedPrecedingToCurrent`.
+/// Rank, row number and LAG / LEAD read positions in window order and so need
+/// an `ORDER BY`.
 fn validate_window_capability(window: &WindowNode) -> Result<()> {
     if window.spec.functions.is_empty() {
         return Err(QueryError::new(
@@ -1282,11 +1322,10 @@ fn validate_window_capability(window: &WindowNode) -> Result<()> {
                 for partition_expr in &window.spec.partition_by {
                     lower_column_expr(partition_expr, "query_engine.window.validate_partition")?;
                 }
-                // LAG / LEAD output dtype matches the input expression dtype as declared
-                // by the planner. Verify the planner-declared field is nullable, because
-                // the shift always produces nullable rows on partition boundaries even
-                // when a non-null default is supplied (libcudf models the absence of a
-                // fill scalar as a null-yielding shift).
+                // With a default, the literal must have the output field's
+                // type: libcudf's shift fills boundary rows from a scalar of
+                // the column type. Without one, boundary rows are null, so the
+                // declared field must be nullable.
                 if let Some(value) = default {
                     if &value.data_type() != field.data_type() {
                         return Err(QueryError::new(

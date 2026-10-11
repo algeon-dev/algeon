@@ -6,15 +6,27 @@ use crate::exec::bounded::{
 };
 
 /// GPU-resident payload stored in the compiled scheduler resource table.
+///
+/// The payload form is decided by the producing task and settled against the
+/// resource's declared data form before it is stored; consumers accept the
+/// forms their operator can read and reject the rest as a contract error.
 pub struct CompiledGpuResource {
     pub(super) payload: CompiledGpuResourcePayload,
 }
 
 // Payloads encode which tasks may consume a value and whether it owns resident storage.
 pub(super) enum CompiledGpuResourcePayload {
+    /// One complete frame. `applied_limit` names the limit node a fused top-k
+    /// already applied; the limit task then passes the frame through, because
+    /// applying the limit again would skip the offset rows a second time.
     ResidentFrame { frame: Box<ResidentGpuFrame>, applied_limit: Option<NodeId> },
+    /// Frames pulled on demand; needs the attempt to release.
     ResidentFrameStream(ResidentFrameStreamPayload),
+    /// A planned source read that has not started. Holds no device memory, so
+    /// it releases by `Drop`.
     JoinLeafLocalParquetSource(Box<BoundedJoinLeafLocalParquetSourceStream>),
+    /// A source read already running on a pool worker. Release must join or
+    /// abandon that worker through the attempt.
     PendingJoinLeafLocalParquetSource(Box<BoundedJoinLeafLocalParquetSourcePrefetch>),
 }
 

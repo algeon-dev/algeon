@@ -42,6 +42,9 @@ pub(crate) trait ProcessExitShutdown: Send + Sync {
     fn shutdown_for_process_exit(&self);
 }
 
+/// Proof that an owner was offered to the registry. `id` is `None` when the
+/// exit snapshot had already been taken, in which case the owner was shut
+/// down synchronously at registration and there is nothing to unregister.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProcessExitRegistration {
     id: Option<u64>,
@@ -98,6 +101,9 @@ impl ProcessExitRegistry {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registrations.remove(&id);
     }
 
+    /// Runs every registered owner once, in phase order. The registry lock is
+    /// released before any owner runs, because owners unregister themselves
+    /// and may register late arrivals while this iterates.
     fn shutdown(&self) {
         let mut registrations = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

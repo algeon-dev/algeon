@@ -11,6 +11,11 @@ use std::{
 
 use crate::observability::QueryAttemptReport;
 
+/// Process-lifetime counters for one backend's attempts. Each is monotonic
+/// and exact. `attempts_begun` is incremented under the observation permit
+/// that `begin_attempt` takes, and every begun attempt publishes one
+/// report, so `attempts_begun - reports_ready` is the number of attempts
+/// whose report is still pending.
 #[derive(Debug, Default)]
 pub struct AttemptBackendCounters {
     pub(crate) attempts_begun: AtomicU64,
@@ -38,6 +43,11 @@ impl AttemptBackendCounters {
     }
 }
 
+/// Reports whose attempt had no completion receiver when it published.
+///
+/// Routing is decided under the attempt lock at publication; this queue only
+/// stores. Capacity is fixed at construction, and a full queue rejects, which
+/// the publisher counts as `completion_queue_overflowed`.
 #[derive(Debug)]
 pub struct AttemptCompletionQueue {
     capacity: usize,
@@ -45,9 +55,12 @@ pub struct AttemptCompletionQueue {
 }
 
 impl AttemptCompletionQueue {
+    /// `None` for a zero capacity, so a disabled queue is an absent one.
     pub fn new(capacity: usize) -> Option<Self> {
         (capacity > 0).then(|| Self { capacity, queue: Mutex::new(VecDeque::new()) })
     }
+
+    /// Returns `false` only when the queue is full; a contended lock waits.
     pub(crate) fn try_push(&self, report: Arc<QueryAttemptReport>) -> bool {
         // Blocking is bounded by one VecDeque push or drain; a failed try_lock
         // used to miscount a contended push as a capacity overflow.

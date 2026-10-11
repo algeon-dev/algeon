@@ -1,3 +1,29 @@
+//! Dimension-derived fact row-group pruning.
+//!
+//! The rule matches an inner single-key equi join without residual or build
+//! artifact, where one side's key traces to a filtered local Parquet dimension
+//! source and the other side's key traces to a local Parquet fact source. In the
+//! rewrite, the dimension predicate is evaluated over the dimension rows the
+//! resolver reads, the surviving keys form a [`DimensionKeyFilter`], and fact row
+//! groups whose key statistics overlap no run are dropped from the fact source's
+//! selection. Row groups without statistics are kept, and a selection is never
+//! emptied or widened.
+//!
+//! The rewrite preserves semantics because an inner equi join keeps a fact row
+//! only when its key equals a surviving dimension key; a row group whose key
+//! range contains no such key contributes no output row. The dimension lineage
+//! must be unique and the fact lineage must not cross a shared path, since a
+//! fact source read by another consumer would lose rows that consumer needs.
+//! Only what sources read changes, so the plan is rebuilt as
+//! `RewrittenNodes::refined_sources` and dynamic-filter routes keep their
+//! endpoints. Before pruning, `seed` mirrors post-aggregate group-key filters
+//! onto dimension reader predicates so the derived range is selective; a plan
+//! that was seeded but pruned nothing is returned as it arrived.
+//!
+//! The pass reads no files itself. A [`LocalParquetPruningResolver`] answers
+//! row counts, decoded keys and footer statistics, and every unanswered question
+//! skips the candidate. Rejection reasons are report contracts.
+
 use std::collections::BTreeSet;
 
 use arrow::{
@@ -175,6 +201,8 @@ pub enum DimensionDerivedRowGroupPruningRejectedReason {
     NoRowGroupReduction,
 }
 
+/// Outcome of one run of the pass. `change` is `Changed` only when at least one
+/// fact source was narrowed; seeded reader predicates alone do not count.
 pub(crate) struct DimensionDerivedRowGroupPruningResult {
     pub plan: QueryPlan,
     pub change: super::NativeOptimizerChange,
@@ -189,6 +217,13 @@ fn record_dimension_pruning_candidate(
     diagnostics.candidates.push(candidate);
 }
 
+/// Runs the pass over every supported join in both orientations.
+///
+/// Both join inputs are tried as the dimension because the IR does not mark
+/// one; the dimension is the side whose key has a unique lineage to a source
+/// with a reader predicate. Each target lineage of the other side is a separate
+/// candidate with its own diagnostics row. An `Err` comes only from
+/// `QueryPlan::rewrite`.
 #[doc(hidden)]
 pub(crate) fn optimize_dimension_derived_row_group_pruning(
     plan: QueryPlan,
@@ -204,6 +239,9 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
         });
     }
 
+    // Seeded reader predicates exist to make the dimension range selective.
+    // When no fact source is narrowed they are discarded with the seeded plan
+    // below, so the pass adds reader work only where it pruned something.
     let original_plan = plan.clone();
     let (plan, seeded_reader_predicates) = seed_reader_predicates_from_group_key_filters(plan, ctx)?;
     let mut nodes = plan.nodes().to_vec();
@@ -462,6 +500,10 @@ pub fn discover_dimension_derived_pruning_requests(plan: &QueryPlan) -> Vec<Dime
     requests
 }
 
+/// The join shape whose output rows the derived key range provably bounds. An
+/// outer join keeps unmatched fact rows, so only inner joins qualify; the range
+/// describes one key column, so only single-key joins do. A join with a build
+/// artifact shares its build input beyond this join and is left alone.
 fn join_shape_supported(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && join.spec.keys.len() == 1
@@ -488,6 +530,7 @@ fn candidate_orientations(join: &JoinNode) -> [PruningOrientation<'_>; 2] {
     ]
 }
 
+/// One assignment of a join's two inputs to the dimension and target roles.
 struct PruningOrientation<'a> {
     dimension_input: NodeId,
     target_input: NodeId,
@@ -495,6 +538,9 @@ struct PruningOrientation<'a> {
     target_key: &'a ColumnRef,
 }
 
+/// Row-group counts before and after one target prune. `applied` is false when
+/// the statistics admitted no strict narrowing, which the caller reports as
+/// `NoRowGroupReduction`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TargetPruneResult {
     before: usize,
@@ -502,6 +548,14 @@ struct TargetPruneResult {
     applied: bool,
 }
 
+/// Narrows `source`'s row-group selection in place to the row groups whose key
+/// statistics overlap `key_filter`.
+///
+/// `None` means statistics were unavailable: the key is not a file column, the
+/// resolver could not read the footers, the per-file ranges did not line up with
+/// the current selection, or no row group exposed a key range. An empty result
+/// is reported as not applied, because this patching API has no representation
+/// for a source proven empty.
 fn prune_target_source(
     source: &mut LocalParquetSource,
     key_column: &str,
@@ -632,6 +686,10 @@ pub(crate) fn apply_local_parquet_row_group_selections(
         if candidates.iter().any(|row_group| *row_group >= selection.total_row_groups) {
             return unchanged(nodes);
         }
+        // The supplied ids must be a strictly increasing subsequence of the
+        // current selection: a duplicate or reordered id would change the row
+        // order the reader emits, and an id outside the selection would widen
+        // what the source reads.
         let candidate_set = candidates.iter().copied().collect::<BTreeSet<_>>();
         let mut seen = BTreeSet::new();
         let mut previous_candidate_position = None;

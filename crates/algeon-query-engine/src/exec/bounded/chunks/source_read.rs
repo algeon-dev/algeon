@@ -17,6 +17,10 @@ use crate::{
     rapids_backend::rapids_analysis_context,
 };
 
+/// Reads every chunk of a generic source on the calling attempt, one batch at
+/// a time, with split-and-retry on resource failures. Outputs come back in
+/// chunk order. The whole read is serial on the caller's stream; lane
+/// expansion applies only to aggregate and join source streams.
 pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -25,6 +29,10 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only(
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     read_local_parquet_chunks_serial(execution, source, chunks, memory_boundary)
 }
+
+/// Joins chunk frames into one resident frame. A single chunk is returned as
+/// is; several are copied into a new frame by `concat_many`, so inputs and
+/// output are resident together for the duration of the copy.
 pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -85,6 +93,13 @@ fn read_local_parquet_chunks_serial(
     Ok(outputs)
 }
 
+/// Reads one batch, or on a retryable failure splits it and reads the halves.
+///
+/// A batch splits into smaller batches first and only a singleton batch
+/// splits its chunk by row group. The chunk attempt counter therefore starts
+/// at 1 when a batch degrades to single chunks; batch splitting shrinks the
+/// read without consuming the chunk's own retry budget. A batch that cannot
+/// split returns the original error.
 fn read_local_parquet_source_batch_or_split(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -209,6 +224,10 @@ fn read_local_parquet_chunk_required_only(
     Ok(output)
 }
 
+/// Decodes a whole batch in one reader call without recording a commit.
+/// Callers that may still split or retry the batch record the commit
+/// themselves once the output is final. The returned output is attributed to
+/// the batch's first chunk, the one the retry facts name.
 pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_commit(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -285,6 +304,10 @@ fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatc
         .collect()
 }
 
+/// A reader predicate over columns the projection does not keep makes the
+/// decoder hold those columns as scratch during the read. Batching then
+/// multiplies that scratch, so the batch target shrinks when any chunk
+/// reports filter-only bytes.
 fn source_chunk_batch_decode_scratch_risk(source: &LocalParquetSource, chunks: &[SourceChunk]) -> bool {
     source.reader_predicate.is_some()
         && chunks.iter().any(|chunk| {

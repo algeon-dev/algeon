@@ -28,6 +28,15 @@ impl QueryServiceStreamPool {
         self.pool.device()
     }
 
+    /// Leases one service stream for this context's query, blocking while the
+    /// pool is full.
+    ///
+    /// The resource epoch is taken before the pool wait and re-checked after
+    /// it, because that wait can span a service or query close and a lease
+    /// issued past the close would hold a stream the drain is waiting
+    /// for. When the re-check fails the lease drops here and returns to the
+    /// pool. The returned lease retains the epoch, so the service cannot reach
+    /// idle until the cleanup thread has returned the stream.
     pub fn acquire(&self) -> Result<StreamLease> {
         let operation = "query_engine.runtime.context.service_stream_pool.acquire";
         let resource_epoch = self.acquire_resource_epoch(operation)?;
@@ -38,6 +47,8 @@ impl QueryServiceStreamPool {
         Ok(self.attach_resource_epoch(lease, resource_epoch))
     }
 
+    /// [`Self::acquire`] with a cancellable wait and host-side wait evidence
+    /// recorded under `scope`; the epoch contract is the same.
     pub(super) fn acquire_observed_with_cancellation(
         &self,
         cancellation: &ExecutionCancellation,

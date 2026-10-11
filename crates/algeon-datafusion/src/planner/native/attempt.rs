@@ -1,3 +1,15 @@
+//! One lowering candidate, from native IR to a decided replacement.
+//!
+//! `replace_lowered_root_or_keep_plan_for_sink` applies the decisions in a
+//! fixed order: native optimizer, ordering reproduction, sink form, plan cost,
+//! the exact statistical-aggregate partition rule, then capability admission
+//! of the candidate and of every shared producer the optimizer extracted. A
+//! decline at any step returns the original DataFusion plan with
+//! `rewritten: false` and a report that names the step; malformed IR or an
+//! invalid configuration is an error. The decision is made on the sink form
+//! execution runs (deferred host materialization or GPU-resident), so the
+//! admitted plan and the executed plan are the same object.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -53,6 +65,7 @@ pub(super) struct NativeOptimizationAttempt {
     pub(super) native_optimizer: NativeOptimizerDiagnostics,
     pub(super) source_diagnostics: Vec<SourceDiagnostics>,
     pub(super) capability_contract: NativeCapabilityContractDiagnostics,
+    /// Whether `plan` replaces the input; `false` keeps the DataFusion plan.
     pub(super) rewritten: bool,
 }
 
@@ -254,6 +267,12 @@ pub(super) enum NativeReplacementSink {
     GpuResidentProducer { input_name: String },
 }
 
+/// Decides `lowering`'s candidate for `sink` and returns either the native unit
+/// that replaces `plan` or `plan` itself with the report of the decline.
+///
+/// `lowering.plan` being `None` means lowering already reported the decline.
+/// The optimizer runs before the ordering check because it can remove or add
+/// the operators that reproduce the declared ordering.
 pub(super) fn replace_lowered_root_or_keep_plan_for_sink(
     plan: Arc<dyn ExecutionPlan>,
     lowering: NativeLoweringResult,
@@ -527,6 +546,8 @@ fn native_datafusion_exec_for_plan(
             None,
         )?));
     }
+    // Children are sorted by input name, the order `shared_resident` rebinding
+    // also uses, so child order depends on the plan alone.
     gpu_inputs.sort_by(|left, right| {
         gpu_resident_producer_input_name(left.as_ref()).cmp(&gpu_resident_producer_input_name(right.as_ref()))
     });
@@ -714,6 +735,8 @@ fn native_candidate_error(message: &'static str) -> Error {
     Error::new(ErrorCode::InvalidExecutionPlan, "algeon_datafusion.native.pipeline_candidate_diagnostics", message)
 }
 
+/// `OutputRequirementExec` exists only during optimization; DataFusion removes
+/// it before execution, so the probe lowers what it wraps.
 fn peel_output_requirement_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     if plan.name() == "OutputRequirementExec"
         && let [child] = plan.children().as_slice()
@@ -723,6 +746,11 @@ fn peel_output_requirement_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn Executi
     plan
 }
 
+/// The host leaf unit under a `CooperativeExec`, when that is all the wrapper
+/// holds. DataFusion's `EnsureCooperative` rule wraps leaves after the
+/// count-only probe selected one, so the final rewrite peels the wrapper to
+/// recognize its earlier selection and to root admission directly above the
+/// unit.
 pub(super) fn peel_cooperative_native_exec(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
     if plan.name() != "CooperativeExec" {
         return None;

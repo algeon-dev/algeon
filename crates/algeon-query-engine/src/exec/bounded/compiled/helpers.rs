@@ -111,6 +111,13 @@ pub(super) fn join_strategy_needs_build_key_uniqueness_probe(
     )
 }
 
+/// Measures whether the build keys are distinct by running `drop_duplicates`
+/// over the key columns on the device.
+///
+/// The probe allocates a second key table under its own budget token, so it
+/// can fail with a resource error on a large build side; the caller decides
+/// whether such a failure is a fallback or fatal. Its time is charged to
+/// operator time on every path.
 pub(super) fn measure_join_build_key_unique(
     execution: &mut BoundedExecutionAttempt<'_>,
     node: &JoinNode,
@@ -196,6 +203,8 @@ pub(super) fn limit_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: 
     Ok(limit)
 }
 
+/// Adds the task identity to an operator error without overwriting facts an
+/// inner boundary already recorded, so the innermost location wins.
 pub(super) fn attach_task_facts(error: QueryError, task: &PipelineTask, node_id: NodeId) -> QueryError {
     error
         .with_fact_if_absent("compiled_task_id", task.id())

@@ -9,12 +9,19 @@ use crate::error::{QueryError, QueryErrorCode, Result};
 /// attempt's budget is its grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MemoryControlPolicy {
+    /// Allocation cap of the attempt. The runtime's device ledger enforces it;
+    /// planning only sizes chunks against it.
     pub device_budget_bytes: u64,
     /// Source-byte grouping target. `u64::MAX` leaves the configured target
     /// unset; source tasks derive a finite target from the admitted grant.
     pub max_source_chunk_bytes: u64,
+    /// Row groups coalesced into one source chunk. The throughput planning
+    /// mode may raise it under the thresholds `crate::chunk` owns.
     pub max_row_groups_per_chunk: usize,
+    /// Attempts the engine's retry may spend splitting one chunk after an
+    /// allocation failure.
     pub max_retry_attempts: usize,
+    /// Smallest chunk, in row groups, a retry may split down to.
     pub min_retry_chunk_row_groups: usize,
 }
 
@@ -26,6 +33,9 @@ impl MemoryControlPolicy {
     pub const DEFAULT_MAX_RETRY_ATTEMPTS: usize = 3;
     pub const DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 
+    /// Rejects a zero in any field; the error names the field in its `field`
+    /// fact. Zero is not a "disabled" value here, since each field bounds a
+    /// loop or a division in chunk planning.
     pub fn validate(self) -> Result<()> {
         let Self {
             device_budget_bytes,
@@ -42,10 +52,16 @@ impl MemoryControlPolicy {
     }
 }
 
+/// How source chunk planning sizes local Parquet chunks. The chosen mode and
+/// the reason for it are recorded in each chunk plan.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceChunkPlanningMode {
+    /// Chunks follow `max_row_groups_per_chunk`, one row group by default, so
+    /// every chunk is a retryable unit.
     #[default]
     Conservative,
+    /// May coalesce many row groups into one chunk when the device budget is
+    /// large enough; `crate::chunk` owns the row-group and budget thresholds.
     LocalParquetThroughput,
 }
 

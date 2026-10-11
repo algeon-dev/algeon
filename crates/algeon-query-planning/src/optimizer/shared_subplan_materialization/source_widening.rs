@@ -1,3 +1,6 @@
+//! Widening a cloned local Parquet source with another member's columns, and
+//! the uniqueness checks that make widening safe.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -17,6 +20,8 @@ use crate::{
     source::{LocalParquetSource, SourceColumnRef, SourceNode},
 };
 
+/// Looks a source up by abstract fingerprint, the key of grouped families,
+/// then by rowset fingerprint, the key of scalar families.
 pub(super) fn matching_source_entry<'a, T>(
     entries: &'a BTreeMap<String, T>,
     signature: &LocalSourceMaterializationSignature,
@@ -24,6 +29,10 @@ pub(super) fn matching_source_entry<'a, T>(
     entries.get(&signature.abstract_fingerprint).or_else(|| entries.get(&signature.rowset_fingerprint))
 }
 
+/// Adds `source`'s columns to `target`. A column already present must agree
+/// in file index, source reference and field; a disagreement means two
+/// members read different data under one name, which is a
+/// `PredicateColumnPropagationUnsupported` rejection.
 pub(super) fn merge_source_columns(
     target: &mut BTreeMap<String, SourceColumnMaterialization>,
     source: &BTreeMap<String, SourceColumnMaterialization>,
@@ -70,6 +79,8 @@ fn source_fingerprints_are_unique(signature: &AggregateMaterializationSignature)
     signature.source_fingerprints.iter().all(|fingerprint| seen.insert(fingerprint))
 }
 
+/// Whether each local Parquet source node below `node_id` is reached once.
+/// `None` when a node id is out of range.
 pub(super) fn local_parquet_source_node_occurrences_are_unique(plan: &QueryPlan, node_id: NodeId) -> Option<bool> {
     let mut source_nodes = BTreeSet::new();
     let mut active = BTreeSet::new();
@@ -103,6 +114,9 @@ fn local_parquet_source_node_occurrences_are_unique_inner(
     Some(unique)
 }
 
+/// Stricter form for scalar families: every source must be local Parquet,
+/// reached once, and read a distinct rowset, because the rewrite keys their
+/// widened predicates by rowset fingerprint.
 pub(super) fn scalar_source_occurrences_are_unique(plan: &QueryPlan, node_id: NodeId) -> Option<bool> {
     let mut source_nodes = BTreeSet::new();
     let mut rowsets = BTreeSet::new();
@@ -141,6 +155,8 @@ fn scalar_source_occurrences_are_unique_inner(
     Some(unique)
 }
 
+/// Adds `columns` to what `source` reads and emits. Returns `false`, leaving
+/// the source untouched, when it already reads them all.
 pub(super) fn widen_local_parquet_source(
     source: &mut LocalParquetSource,
     columns: &BTreeMap<String, SourceColumnMaterialization>,

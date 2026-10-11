@@ -1,3 +1,20 @@
+//! GROUPING SETS, ROLLUP and CUBE aggregates.
+//!
+//! Each grouping set is a mask over the group keys, where `true` marks a key that is NULLed in
+//! that set. The grouping id (`grouping_id_value`) packs the mask into an integer with the first
+//! key as the most significant bit, and `lower_aggregate_spec_keys` appends it to the lowered key
+//! list, so the final merge keeps sets apart. A set is computed by its own groupby over the
+//! input; the keys it omits are then filled with typed NULLs and the sets are concatenated in
+//! plan order. A complete prefix ROLLUP takes a shortcut: only the finest level reads the input,
+//! and each coarser level re-aggregates the next finer level's output.
+//!
+//! cuDF behaviors handled here. A groupby over zero rows returns zero groups, but SQL keeps the
+//! grand-total set, so the single-stage path synthesizes its identity row (COUNT 0, other
+//! aggregates NULL). The partial stage does not, so an empty chunk stays empty and still
+//! concatenates with other partials. A set with no active key does not run a keyless groupby;
+//! it groups by constant columns (NULL-filled keys and the grouping id) with
+//! `include_null_keys`, which gives one group for non-empty input.
+
 use std::time::Instant;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
@@ -13,6 +30,13 @@ use super::{
     validate_avg_output_fields,
 };
 
+/// Single-stage grouping-sets aggregate; `token` selects the bounded form.
+///
+/// Aggregations are lowered as partial state, so AVG runs as a (sum, count) pair that
+/// `finalize_avg_output_columns` divides after the sets are concatenated; reductions and counts
+/// are then cast to the output schema's types. An empty input still yields the grand-total
+/// set's identity row. Floating statistical aggregates fail with `UnsupportedOperator`, which
+/// backs up the planning rejection `grouping_sets_floating_statistical_aggregate_not_supported`.
 pub(super) fn execute_grouping_sets_aggregate(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -72,6 +96,11 @@ pub(super) fn execute_grouping_sets_aggregate(
     Ok(GpuDataFrame::new(output))
 }
 
+/// Partial-stage grouping sets for one chunk, under `token`.
+///
+/// Runs the same per-set groupby as the single stage but leaves AVG as state and synthesizes no
+/// grand-total row, so a chunk without rows returns no rows. The grouping id is a key column of
+/// the returned state; the final merge groups by it and keeps the sets apart.
 pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -120,6 +149,9 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     Ok(GpuDataFrame::new(output))
 }
 
+/// Computes every grouping set of `spec` and concatenates them in plan order. Uses the prefix
+/// ROLLUP shortcut when the masks form a complete ROLLUP and every aggregate can be
+/// re-aggregated, and one independent groupby per set otherwise.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -194,6 +226,13 @@ fn execute_grouping_sets_groupby(
     concat_grouping_set_outputs(context, outputs, token, operation)
 }
 
+/// Prefix ROLLUP over `levels` (the count of leading keys each plan-order set keeps).
+///
+/// Only the full-key level reads `frame`. Each coarser level groups the next finer level's
+/// output again, with the aggregates in their final-merge form (SUM for SUM and COUNT, MIN, MAX),
+/// so coarser levels read finer-level output and never touch the input again. Outputs are
+/// returned in plan order. If the finest level is empty, the grand-total level is synthesized as an
+/// identity row when `synthesize_empty_grand_total` is set.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -267,6 +306,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
             outputs_by_level[level] = Some(output);
             continue;
         }
+        // The grand-total level has no key left, so it groups by the constant grouping-id column.
         let source = if level == 0 {
             with_grouping_id_column(
                 context,
@@ -327,6 +367,12 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     concat_grouping_set_outputs(context, outputs, token, operation)
 }
 
+/// Aggregates `frame` for one grouping set `group`, where `true` marks a NULLed key.
+///
+/// With active keys the groupby runs on those keys only, and `complete_grouping_set_output`
+/// adds the omitted keys as NULLs and the grouping id afterward. The grand-total set has no
+/// active key, so `prepare_grouping_set_frame` overwrites every key with a typed NULL literal
+/// and adds the constant grouping id, and the groupby runs on those constant columns.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -429,10 +475,14 @@ fn execute_single_grouping_set_groupby(
     )
 }
 
+/// True for a set that NULLs every key.
 fn is_grand_total_grouping_set(group: &[bool]) -> bool {
     !group.is_empty() && group.iter().all(|is_null| *is_null)
 }
 
+/// One-row identity result of the grand-total set over empty input: NULL keys, the grouping id,
+/// 0 for COUNT, distinct-count and AVG count-state columns, and NULL for every other aggregate
+/// column.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -701,6 +751,8 @@ fn empty_grouping_set_literal_series(
     }
 }
 
+/// Restricts `aggregate` to the keys `group` keeps. The grouping id key, the last lowered key, is
+/// dropped because `complete_grouping_set_output` adds it as a literal.
 fn aggregate_for_grouping_set(aggregate: &LoweredAggregate, group: &[bool]) -> LoweredAggregate {
     let mut key_columns = Vec::with_capacity(group.len());
     let mut output_key_names = Vec::with_capacity(group.len());
@@ -716,6 +768,8 @@ fn aggregate_for_grouping_set(aggregate: &LoweredAggregate, group: &[bool]) -> L
     LoweredAggregate { key_columns, output_key_names, aggregations: aggregate.aggregations.clone(), output_names }
 }
 
+/// Adds the columns a one-set groupby does not produce: a typed NULL for each omitted key, and
+/// the grouping id unless the groupby already grouped by it (the grand-total set does).
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -791,6 +845,8 @@ fn complete_grouping_set_output(
     }
 }
 
+/// Sets the constant grouping-id column of the grand-total prefix-rollup level, which then
+/// serves as that level's only groupby key.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -836,6 +892,8 @@ fn with_grouping_id_column(
     }
 }
 
+/// The prefix shortcut re-aggregates finer levels, which holds for SUM, COUNT, MIN and MAX
+/// without DISTINCT or FILTER. Any other aggregate, such as AVG, takes one groupby per set.
 fn rollup_prefix_fast_path_supported(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().all(|expr| {
         !expr.distinct
@@ -847,6 +905,10 @@ fn rollup_prefix_fast_path_supported(spec: &AggregateSpec) -> bool {
     })
 }
 
+/// Returns, for each mask in `groups`, the number of leading keys it keeps, when `groups` is a
+/// complete ROLLUP: `key_count + 1` masks that each keep a leading run of keys and NULL the
+/// rest, with every level present once. `None` for CUBE, explicit GROUPING SETS lists and any
+/// other shape.
 fn prefix_rollup_levels(groups: &[Vec<bool>], key_count: usize) -> Option<Vec<usize>> {
     if groups.len() != key_count + 1 {
         return None;
@@ -871,6 +933,9 @@ fn prefix_rollup_group(key_count: usize, level: usize) -> Vec<bool> {
     (0..key_count).map(|index| index >= level).collect()
 }
 
+/// Final-merge form of `aggregate` for re-aggregating a finer rollup level: SUM and COUNT merge
+/// by SUM, MIN and MAX by themselves, each reading and writing its own output column. Other
+/// functions fail with `UnsupportedOperator`.
 fn lower_final_aggregate_spec_for_prefix_rollup(aggregate: &LoweredAggregate) -> Result<LoweredAggregate> {
     let aggregations = aggregate
         .aggregations
@@ -901,6 +966,7 @@ fn lower_final_aggregate_spec_for_prefix_rollup(aggregate: &LoweredAggregate) ->
     })
 }
 
+/// Restricts `aggregate` to the first `level` keys. Level 0 uses the grouping id as its only key.
 fn aggregate_for_prefix_rollup_level(
     aggregate: &LoweredAggregate,
     level: usize,
@@ -918,6 +984,8 @@ fn aggregate_for_prefix_rollup_level(
     LoweredAggregate { key_columns, output_key_names, aggregations: aggregate.aggregations.clone(), output_names }
 }
 
+/// Replaces the NULLed key columns of `frame` with typed NULL literals and adds the constant
+/// grouping-id column. Used for the grand-total set, where every key is NULLed.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -992,6 +1060,7 @@ fn prepare_grouping_set_frame(
     }
 }
 
+/// Packs a mask into the grouping id: key `i` of `n` sets bit `n - 1 - i` when it is NULLed.
 fn grouping_id_value(group: &[bool]) -> u64 {
     group.iter().fold(0u64, |acc, is_null| (acc << 1) | u64::from(*is_null))
 }
@@ -1020,6 +1089,8 @@ fn grouping_id_literal_expr(data_type: &ArrowDataType, value: u64, operation: &'
     }
 }
 
+/// Concatenates the per-set outputs in the order given. A single output is returned as is, and
+/// an empty list fails with `InvalidPlan`.
 fn concat_grouping_set_outputs(
     context: &ExecutionContext,
     mut outputs: Vec<DataFrame>,

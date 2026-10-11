@@ -1,3 +1,14 @@
+//! Arrow type predicates and operand rules shared by expression, join and node
+//! validation.
+//!
+//! Every `require_*` rule records the operator context in its error, so one
+//! `UnsupportedType` code can say which operand failed. Two families the
+//! backend represents are refused as operator inputs here. Lists and narrow
+//! decimals are carry types: a node may read and project them unchanged but no
+//! kernel computes on them. Timestamps with a timezone have no cuDF
+//! representation beyond the raw instant. Keys, comparison operands and
+//! arithmetic operands must therefore be scalar, timezone-free types.
+
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 
 use super::{BinaryOp, QueryError, QueryErrorCode, Result};
@@ -70,6 +81,8 @@ pub(crate) fn require_timestamp_preserving_output(
     }
 }
 
+/// Rule for group, sort, join, partition and order keys: scalar and
+/// timezone-free. Carry types cannot be hashed or compared by a kernel.
 pub(crate) fn require_timezone_free_operator_key(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_timestamp_with_timezone(data_type) {
         unsupported_type(context, data_type, "expected timezone-free operator key")
@@ -80,6 +93,8 @@ pub(crate) fn require_timezone_free_operator_key(data_type: &ArrowDataType, cont
     }
 }
 
+/// The key rule applied to a value operand (`IS NULL` input, window aggregate
+/// input); it differs only in the wording of the expectation.
 pub(crate) fn require_scalar_operator_value(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_timestamp_with_timezone(data_type) {
         unsupported_type(context, data_type, "expected timezone-free scalar operator value")
@@ -110,6 +125,10 @@ pub(crate) fn require_arithmetic_type(data_type: &ArrowDataType, context: &'stat
     }
 }
 
+/// Operands of arithmetic, `IN` lists and `CASE` branches may differ only by
+/// an implicit cast the backend supports in either direction. The carry and
+/// timezone rejections come first so their `reason` fact names the family
+/// instead of a generic incompatibility.
 pub(crate) fn require_compatible_types(
     left: &ArrowDataType,
     right: &ArrowDataType,
@@ -148,6 +167,10 @@ pub(crate) fn require_compatible_types(
     }
 }
 
+/// Comparison admits any two numeric or decimal types, any two string
+/// representations (Utf8, LargeUtf8 and Utf8View compare by value), and any two
+/// temporal types, without consulting the backend; the engine casts the
+/// operands to a common type when the kernel needs one.
 pub(crate) fn require_comparable_types(left: &ArrowDataType, right: &ArrowDataType) -> Result<()> {
     if is_timestamp_with_timezone(left)
         || is_timestamp_with_timezone(right)

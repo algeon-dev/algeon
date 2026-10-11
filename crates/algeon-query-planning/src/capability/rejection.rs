@@ -40,6 +40,12 @@ impl UnsupportedPart {
 
 /// Why a capability, edge, invariant, compiled contract, or admission gate
 /// refuses a plan. `as_str` is the report label.
+///
+/// Labels are report contracts: planning reports, TSV families and tests match
+/// on them, so a variant is renamed only together with every consumer. A new
+/// variant needs an `as_str` and a `category` arm, and a `boundary` arm when it
+/// is a pipeline, validation, or execution-mode refusal rather than a
+/// capability analysis result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reason {
     UnsupportedAggregateGroupingSetsCapability,
@@ -446,7 +452,10 @@ impl fmt::Display for RejectionOwner {
 /// One rejection: who refused, why, and diagnostic facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rejection {
+    /// Scope that refused; decides the reported scope and, for capability
+    /// analysis reasons, the boundary.
     pub owner: RejectionOwner,
+    /// Decides the report label and category.
     pub reason: Reason,
     /// Diagnostics only; they never change the category or boundary.
     pub facts: BTreeMap<&'static str, String>,

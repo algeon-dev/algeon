@@ -1,3 +1,33 @@
+//! Hash-partitioned equi join (`PartitionedHashEqui`): keyed inner, left (build side right) and
+//! full joins without a residual predicate whose build or probe side is too large for one pass.
+//!
+//! Three entry points cover the input shapes.
+//!
+//! - Two resident frames from a `Prepared` state (`..._materialize`): both sides are
+//!   hash-partitioned and `run_partitioned_join_driver` joins the partition pairs. This path also
+//!   serves full joins and left joins that build the left side, which cannot stream.
+//! - A deferred Parquet leaf probe (`..._probe_from_stream`): the resident build frame is
+//!   partitioned once, then each leaf chunk is partitioned to match and joined, and the outputs
+//!   are collected into a `PartitionedStreamed` state.
+//! - A frame-stream probe, or a build side that was partitioned while it streamed in
+//!   (`..._probe_from_frame_stream`, `..._probe_from_split_build_frame_stream`): a lazy
+//!   `PartitionedLazyStream` state. A pull joins one partition of one probe chunk
+//!   (`PartitionedHashEquiJoinProbeStreamSource`). Several eager chunks can instead be probed in
+//!   parallel lanes against one shared build (`parallel_partitioned_lazy_drain`).
+//!
+//! Only inner joins and left joins that preserve the probe side stream, because their output for
+//! one probe chunk does not depend on the other chunks (`partitioned_streaming_probe_supported`).
+//!
+//! Every partition pair runs the one-shot sequence of `one_shot.rs` (hash table over the build
+//! partition, probe-size call, probe with that size, gather). The table is rebuilt for each pair
+//! and dropped before the gather. The partition count follows `partitioned_join_partition_count`
+//! (see `partitioned/mod.rs`); for a stream probe the probe size is an estimate, and an unknown
+//! estimate leaves the build size to decide.
+//!
+//! The partitioned build side stays resident until the probe finishes, together with the current
+//! probe piece in partitioned form until its last partition is joined. Per-partition outputs wait
+//! in a queue until they are pulled.
+
 use super::{
     BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedCompiledPartitionedJoinBuildState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
@@ -17,6 +47,8 @@ use super::{
 };
 use crate::exec::bounded::{compiled::lanes::AggregateLaneDispatch, release_bounded_compiled_join_probe_state};
 
+/// Joins two resident sides partition by partition and concatenates the partition outputs into one
+/// frame.
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -41,6 +73,9 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     }
 }
 
+/// Runs the same join but returns the partition outputs as separate frames
+/// (`BoundedCompiledJoinMaterializeOutput::Stream`) so the consumer sees partition-sized frames.
+/// The outputs are computed eagerly; only the final concatenation is skipped.
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -60,6 +95,12 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     )
 }
 
+/// Partitions both sides, joins every pair through the driver, and reports the join metrics.
+///
+/// The partition count comes from the two sides' bytes. The driver consumes both frames and
+/// releases the partitioned sides on success and on error. Metrics are recorded after
+/// concatenation; the reported output bytes then reflect the concatenated frame when
+/// `preserve_stream` is false.
 fn execute_compiled_partitioned_hash_equi_join_materialize_output(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -100,6 +141,14 @@ fn execute_compiled_partitioned_hash_equi_join_materialize_output(
     }
 }
 
+/// Joins one partition pair with the one-shot sequence and returns its output with sizing facts.
+///
+/// `left` and `right` are the driver's slices of the stored partitions. A split partition read in
+/// full shares its columns with the stored partition and any other slice is a copy. The transaction
+/// therefore releases only this call's references, and the stored partitions stay intact for a
+/// retry after a retryable resource error. Every failure path rolls the transaction back before the
+/// error returns. `output_reservation_bytes` is an upper bound recorded for observation; nothing is
+/// reserved.
 fn materialize_partitioned_hash_equi_join_partition(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -180,6 +229,19 @@ fn materialize_partitioned_hash_equi_join_partition(
     })
 }
 
+/// Partitions the resident build frame once and joins a deferred Parquet leaf chunk by chunk.
+///
+/// The partition count is sized from the build bytes and the leaf's estimated read bytes (zero when
+/// unknown) and is at least the hash-frame-stream minimum. Each chunk is projected,
+/// hash-partitioned to the same count, and joined partition by partition against the build
+/// partitions with the driver's retry. The chunk's partitioned copy is released after its last
+/// partition. The leaf stream may call the consumer again with a smaller piece of the same chunk
+/// after a retryable resource error. A chunk's outputs and summary counters are therefore published
+/// only after every partition succeeded.
+///
+/// The build partitions are released before returning, on success and on error. The result is a
+/// `PartitionedStreamed` state that holds outputs and a summary, with no GPU state besides the
+/// outputs.
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_probe_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -302,6 +364,11 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     }
 }
 
+/// Partitions the resident build frame once and returns a lazy `PartitionedLazyStream` state. No
+/// probe chunk is joined yet.
+///
+/// The inputs' largest frame size stands in for the probe size when sizing the partition count. If
+/// the probe columns cannot be resolved, the inputs and the build partitions are released here.
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -369,8 +436,11 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     }))
 }
 
-// Probe a build side that was partitioned while its input streamed in. The
-// partition count is fixed by the build; probe chunks are partitioned to match.
+/// Returns a lazy probe over a build side that was partitioned while its input streamed in.
+///
+/// The partition count is fixed by the build, and probe chunks are partitioned to match it. Takes
+/// ownership of the build partitions and the inputs: every early return releases both, and on
+/// success they move into the returned `PartitionedLazyStream` state.
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_probe_from_split_build_frame_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -432,6 +502,9 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     }))
 }
 
+/// Wraps a lazy probe state in a `ResidentFrameStreamPayload` whose producer joins one partition
+/// per pull. The payload's frame size hint is the partition byte target, because each yielded frame
+/// is one partition's output.
 pub(in crate::exec::bounded::join::compiled) fn partitioned_hash_equi_join_frame_stream_probe_to_payload(
     node_id: NodeId,
     node: &JoinNode,
@@ -474,6 +547,18 @@ pub(in crate::exec::bounded::join::compiled) fn partitioned_hash_equi_join_frame
     )
 }
 
+/// Producer behind a lazy partitioned probe. Each pull yields one partition's output frame.
+///
+/// Per probe piece, `load_next_probe_chunk` reads the next chunk, prepares it and hash-partitions
+/// it into `active_probe_partitioned`. `materialize_next_active_partition` then joins partition
+/// `next_partition` against the build partitions and queues the outputs, and the partitioned copy
+/// is released after its last partition is joined. A chunk that fails to partition under a resource
+/// limit is split into row ranges (`pending_probe_chunk`) and its pieces are partitioned in order.
+///
+/// The source retains the build partitions, the unread inputs, the active partitioned piece and the
+/// queued outputs until `release`. The owning payload calls it after the stream drains, on early
+/// stop and on error, and the source also releases itself at exhaustion and on its own errors.
+/// Metrics are recorded once, at exhaustion.
 struct PartitionedHashEquiJoinProbeStreamSource {
     node_id: NodeId,
     node: JoinNode,
@@ -513,6 +598,9 @@ impl PartitionedHashEquiJoinProbeStreamSource {
         );
     }
 
+    /// Makes the next probe piece the active partitioned piece. `None` means the inputs are
+    /// exhausted; `Some(Ok(true))` means `active_probe_partitioned` is set and `next_partition` is
+    /// 0.
     fn load_next_probe_chunk(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<bool>> {
         if self.pending_probe_chunk.is_none() {
             let inputs = self.inputs.as_mut()?;
@@ -557,6 +645,9 @@ impl PartitionedHashEquiJoinProbeStreamSource {
         Some(Ok(true))
     }
 
+    /// Joins the active piece's next partition against its build partition with the driver's retry
+    /// and queues the outputs. The piece's partitioned copy is released once its last partition is
+    /// joined. On error the copy stays in place for `release`.
     fn materialize_next_active_partition(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<()> {
         let partition = self.next_partition;
         self.next_partition += 1;
@@ -704,6 +795,8 @@ impl SharedPartitionedBuild {
     }
 }
 
+/// Clones the frame handles. Cloned frames share their columns. The clone adds no device memory and
+/// frees none when dropped while another handle lives.
 fn clone_partitioned_side(side: &PartitionedJoinSide) -> PartitionedJoinSide {
     match side {
         PartitionedJoinSide::Contiguous { frame, device_bytes, offsets } => PartitionedJoinSide::Contiguous {
@@ -725,6 +818,9 @@ fn clone_partitioned_side(side: &PartitionedJoinSide) -> PartitionedJoinSide {
 /// serially, collect). Outputs keep chunk order; the build is constructed
 /// once regardless of chunk count. The `outer` dispatcher contract matches
 /// the hash parallel probe.
+///
+/// A failure does not run a source `release`: the shared build and the frames still queued drop
+/// with this call's scope.
 pub(in crate::exec::bounded) fn parallel_partitioned_lazy_drain(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -783,6 +879,8 @@ pub(in crate::exec::bounded) fn parallel_partitioned_lazy_drain(
     Ok(state.outputs)
 }
 
+/// Drains a probe of at most one chunk through the lazy source on the calling thread, without
+/// lanes.
 fn serial_partitioned_single_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -800,6 +898,11 @@ fn serial_partitioned_single_stream(
     Ok(outputs)
 }
 
+/// Lane body: joins one probe chunk against a clone of the shared build.
+///
+/// The chunk goes through the same split-build lazy path as a serial probe, drained to completion.
+/// The cloned partitions alias the shared build's columns. Releasing the lane's state therefore
+/// frees nothing the other lanes read.
 fn partitioned_probe_one_chunk(
     lane_execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

@@ -205,8 +205,12 @@ pub enum ResidualRequirement {
 
 /// Producer-consumer capability for one dependency edge.
 ///
-/// Every edge requires its producer to yield a GPU-resident cudf frame;
-/// `decision` is rejected with `missing_edge_required_property` otherwise.
+/// Every edge requires its producer to exist in the plan and to yield a
+/// GPU-resident cudf frame. `decision` carries `missing_edge_producer` when the
+/// producer is absent, which plan construction already rules out, and the
+/// left-anti dedup reasons when an anti join's aggregate build or probe is not
+/// a proven distinct relation; every other edge is satisfied here and judged
+/// by the compiled pipeline contracts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeContract {
     /// Producer node for this dependency.
@@ -289,6 +293,8 @@ pub enum ResultSinkKind {
     /// Host Arrow batches are materialized for the caller.
     HostArrow,
     /// Output remains resident on the GPU for a native downstream consumer.
+    /// A deferred host sink is analyzed as this kind, because execution treats
+    /// it as GPU-resident and the frontend materializes the host result.
     GpuResident,
 }
 
@@ -390,7 +396,8 @@ impl VectorInputRole {
     }
 }
 
-/// Stable identifier for an invariant inside one analysis result.
+/// Stable identifier for an invariant inside one analysis result. Its index is
+/// the invariant's position in `CapabilityAnalysis::invariants`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InvariantId(pub usize);
 
@@ -441,6 +448,10 @@ pub enum SubgraphInvariantKind {
     AggregateDerivesFromSharedProducer,
     /// A final ordering barrier consumes the resident input after all upstream
     /// producers are complete and does not feed back into its input.
+    ///
+    /// Capability analysis does not emit this kind; the compiled pipeline's
+    /// barrier dominance validation owns the property. The variant stays so
+    /// the report vocabulary keeps its name.
     FinalBarrierOrder,
     /// A projection wrapper can be ignored for residency only when both the
     /// peeled producer and the projection output are resident frames.
@@ -553,6 +564,12 @@ impl CapabilityAnalysis {
     }
 
     /// The first local rejection of a node, edge, or invariant.
+    ///
+    /// Nodes are searched before edges and edges before invariants, each in
+    /// plan order, so the most local owner is reported. A rejected node often
+    /// makes a dependent invariant fail as well; reporting the node names the
+    /// operator, type, or expression that blocked the candidate, and planning
+    /// reports show that node as the blocking element.
     pub fn first_rejection(&self) -> Option<Rejection> {
         self.nodes
             .iter()

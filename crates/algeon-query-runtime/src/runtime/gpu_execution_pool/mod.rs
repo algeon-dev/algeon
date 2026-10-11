@@ -4,6 +4,31 @@
 //! on a serving runtime therefore pins serving workers until the GPU call
 //! returns. A `GpuExecutionPool` gives each device a separately sized Tokio
 //! runtime and keeps that blocking work away from the serving runtime.
+//!
+//! Work reaches the device along two paths that share one admission layer.
+//! A job-class permit is taken at submission and bounds how many accepted
+//! jobs exist; a saturated class fails with `ServiceOverloaded` rather than
+//! queueing, except for the admission envelope of a placed attempt, which is
+//! the one bounded waiter. The capacities derive from the device profile
+//! (`A_d` active attempts, `S_d` auxiliary slots per attempt); the design
+//! contract lives in `website/docs/design/admission.mdx`.
+//!
+//! An async job (`run*`, `spawn*`) is an `async` block whose body is
+//! synchronous GPU work. The runtime serves as a fixed-width thread pool for
+//! it: the spawned task awaits one of `worker_count` seats and holds it until
+//! the body returns, so at most `worker_count` async job bodies run at once
+//! and the number of seat waiters is bounded by the class capacities.
+//! Blocking work (`submit_blocking*`) runs on the runtime's blocking threads
+//! instead and takes no seat; its concurrency is bounded only by its class
+//! capacity. Chunk lanes and source reads use this path so a decode never
+//! occupies an async worker. Concurrent GPU calls per device are therefore
+//! bounded by `worker_count` plus the class capacities, with the class
+//! permits as the shared limit.
+//!
+//! Shutdown closes submissions, asks the supervisor to drop the runtime,
+//! waits for the job census to drain, and joins the supervisor thread, each
+//! under the caller's deadline. The process-exit hook runs the same sequence
+//! without a deadline so no CUDA-owning task outlives libcudart.
 
 use std::{
     cell::Cell,
@@ -219,9 +244,18 @@ impl GpuExecutionQueryTracker {
 }
 
 /// Fixed-width, per-device executor for work that can block on the GPU.
+///
+/// Clones share one runtime and one set of counters. Dropping the last clone
+/// closes submissions and asks the supervisor to drop the runtime; an owner
+/// that needs bounded, observed teardown calls the explicit shutdown methods
+/// before that.
 #[derive(Clone)]
 pub(crate) struct GpuExecutionPool {
     inner: Arc<GpuExecutionPoolInner>,
+    /// Query-service epoch this clone is bound to, when it was obtained
+    /// through an admitted context. Submissions are refused once the epoch
+    /// closes, and each spawned task retains the epoch so the service cannot
+    /// reach idle while a job it admitted is still running.
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
 }
 
@@ -518,6 +552,11 @@ impl GpuExecutionPool {
         T: Send + 'static,
     {
         let job = self.new_job_observation(kind, observation);
+        // A submission from a worker of this same pool runs inline on that
+        // worker. Spawning would wait for a second seat while the caller
+        // keeps its own, which deadlocks at width one and otherwise spends a
+        // worker on waiting. The class permit is still held so the inline
+        // run counts against its class like any other job.
         if current_pool_id() == Some(self.inner.id) {
             let _class_permit = class_permit;
             let worker_id = job.started(current_worker_index());
@@ -812,6 +851,9 @@ impl GpuExecutionPool {
         Ok(PoolBlockingWork { receiver, job, device_ordinal, kind })
     }
 
+    /// Allocates the job's identity and records it as enqueued. Job ids are
+    /// unique per pool instance, so a backend generation change yields fresh
+    /// ids rather than continuing the previous pool's sequence.
     fn new_job_observation(
         &self,
         kind: GpuExecutionJobKind,
@@ -929,6 +971,8 @@ impl GpuExecutionPool {
         // after this terminal path starts draining the runtime.
         let submission = self.inner.submission_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.inner.submissions_closed.store(true, Ordering::Release);
+        // Rejected submitters take the gate to report closure; holding it
+        // through the drain below would block them behind running jobs.
         drop(submission);
         self.inner.supervisor.request_exit_from_drop();
         let mut state = self.inner.drain.changed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -937,14 +981,27 @@ impl GpuExecutionPool {
         {
             state = self.inner.drain.wake.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+        // Job guards take the drain lock in their `Drop`; the supervisor join
+        // below waits for those drops to finish.
         drop(state);
         self.inner.supervisor.join_for_process_exit();
     }
 
+    /// Returns a clone whose submissions are additionally bound to
+    /// `resource_epoch`. Admitted contexts use this so jobs they submit fail
+    /// once their query service closes, while the device pool itself can
+    /// outlive that service.
     pub(crate) fn with_resource_epoch(&self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
         Self { inner: Arc::clone(&self.inner), resource_epoch: Some(resource_epoch) }
     }
 
+    /// Rejects a closing pool or a closed epoch before any permit is taken.
+    ///
+    /// Both reads are unsynchronized. Pool closure is re-checked under the
+    /// submission gate (`spawn_task` and the blocking submission path), which
+    /// is what makes "closed" authoritative. The epoch is checked only here;
+    /// the spawned task then retains it, so an epoch that closes after this
+    /// point waits for the job to finish instead of cancelling it.
     fn check_resource_epoch(&self, operation: &'static str) -> Result<()> {
         if self.inner.submissions_closed.load(Ordering::Acquire) {
             return Err(QueryError::new(QueryErrorCode::Cancelled, operation, "GPU execution pool is closing")

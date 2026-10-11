@@ -1,3 +1,17 @@
+//! Cost-model selection among grouped partial-aggregate strategies.
+//!
+//! Capability validation in query-planning (`aggregate_strategy_capability_decision`)
+//! decides which strategies an aggregate shape admits. This module applies the
+//! runtime cost model on top of that decision. `LibcudfGroupby` stays selected
+//! unless completed partial evidence for the same structural key shows a
+//! reduction ratio low enough for `EncodedKeyPartial` or `PreparedSortGroupby`,
+//! or a source-adjacent prepared-groupby preflight on the actual input returns
+//! exact group facts. No disposable cardinality probe runs on this path.
+//!
+//! Every selection and rejection writes its reason into `decision.facts`. Those
+//! keys feed the aggregate strategy TSV family and are a public contract: a new
+//! branch must write the same keys as the existing ones, with a new value.
+
 use std::{collections::BTreeMap, time::Duration};
 
 use arrow::datatypes::{Schema as ArrowSchema, SchemaRef as ArrowSchemaRef};
@@ -36,6 +50,21 @@ pub(super) fn select_partial_aggregate_strategy_decision(
     )
 }
 
+/// Applies the cost model to a capability decision for one partial aggregate.
+///
+/// The capability decision names the admissible strategies through the
+/// `*_contract_status` facts. Selection then proceeds in order: an input below
+/// the encoded-key minimum keeps libcudf groupby; without completed prior
+/// evidence for the structural key, both candidates are rejected and the
+/// `partial_strategy_unseen_*` facts record which path an unseen shape takes;
+/// with evidence, the reduction ratio picks prepared sort-groupby, then
+/// encoded-key, else libcudf. Prior evidence is the latest completed partial
+/// with the same structural key, preferring the same node and falling back to
+/// any node (`ExecutionMetrics::prior_partial_aggregate_cardinality`).
+///
+/// `input_evidence` is also part of the structural key, so source-adjacent
+/// partials reuse evidence only across the same chunk set and partition shape;
+/// partials without chunk evidence share one key per aggregate shape.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -152,6 +181,15 @@ pub(super) fn select_partial_aggregate_strategy_decision_with_options(
     }
 }
 
+/// Whether the caller may run the prepared sort-groupby preflight on the
+/// actual input after the cost model kept libcudf groupby.
+///
+/// The preflight sorts the group keys of the input frame itself, which is the cost of
+/// the prepared path itself. It is affordable only for a source-adjacent
+/// partial whose input is one group-key partition batch with a bounded fan-in,
+/// because that batch is already sized by the partition policy. The exact
+/// group facts it returns then decide the strategy through
+/// [`prepared_sort_groupby_should_select_for_runtime_facts`].
 pub(super) fn source_adjacent_prepared_sort_groupby_runtime_candidate(
     decision: &AggregateStrategyCapabilityDecision,
     input_rows: u64,
@@ -186,6 +224,10 @@ pub(super) fn add_prepared_sort_groupby_facts(
     decision.facts.insert("prepared_sort_groupby_max_group_size", max_group_size.to_string());
 }
 
+/// Selection from exact preflight facts. A single string key is judged by an
+/// absolute group count, because its grouped key output is proportional to the
+/// distinct strings rather than to the reduction ratio; every other key shape
+/// uses the ratio threshold.
 pub(super) fn prepared_sort_groupby_should_select_for_runtime_facts(
     decision: &AggregateStrategyCapabilityDecision,
     input_rows: u64,
@@ -338,6 +380,8 @@ fn optional_strategy_fact_u64(value: Option<u64>) -> String {
     value.map_or_else(|| "unknown".to_string(), |value| value.to_string())
 }
 
+/// A completed partial's cardinality, read back from the facts an earlier
+/// `record_grouped_aggregate_strategy_decision` call stored.
 #[derive(Debug, Clone)]
 struct PriorAggregateCardinalityEvidence {
     input_rows: u64,
@@ -399,6 +443,11 @@ fn prepared_sort_groupby_contract_available(decision: &AggregateStrategyCapabili
     decision.facts.get("prepared_sort_groupby_contract_status").map(String::as_str) == Some("available")
 }
 
+/// Whether low prior cardinality should select prepared sort-groupby rather
+/// than encoded-key partial. A single simple string key prefers encoded-key,
+/// whose dictionary encode is cheaper than sorting the strings; prepared
+/// sort-groupby wins once a fixed-width key or a second key is present, and
+/// always when the prior run already used it.
 fn prepared_sort_groupby_should_run_for_prior_evidence(
     decision: &AggregateStrategyCapabilityDecision,
     evidence: &PriorAggregateCardinalityEvidence,
@@ -433,6 +482,11 @@ fn exact_cardinality_probe_values_should_select_prepared_sort_groupby(
     reduction_ratio_ppm <= options.prepared_sort_groupby_low_cardinality_threshold_ppm()
 }
 
+/// First-sight path: without completed evidence both optimized candidates are
+/// rejected, and the `partial_strategy_unseen_*` facts say whether the shape
+/// counts as a large variable-width input. Reports use that to tell a string
+/// grouped aggregate that will stream through group-key partitioning from one
+/// that libcudf groupby handles whole.
 fn reject_partial_strategies_without_completed_cardinality_evidence(
     mut decision: AggregateStrategyCapabilityDecision,
     encoded_key_partial_available: bool,
@@ -518,6 +572,10 @@ fn select_prepared_sort_groupby_for_prior_cardinality(
     )
 }
 
+/// Selecting prepared sort-groupby supersedes an available encoded-key
+/// candidate rather than leaving it unmentioned: the encoded-key facts are
+/// rewritten and its rejection is inserted first, so the TSV row explains
+/// both outcomes.
 fn select_prepared_sort_groupby_with_cost_model(
     mut decision: AggregateStrategyCapabilityDecision,
     cost_model_status: &'static str,
@@ -551,6 +609,9 @@ fn select_prepared_sort_groupby_with_cost_model(
     decision
 }
 
+/// Rejection after a runtime preflight. Unlike [`reject_prepared_sort_groupby_for_cost_model`]
+/// this also resets the selected strategy, because the preflight may run after
+/// prior evidence had already selected prepared sort-groupby.
 fn reject_prepared_sort_groupby_with_cost_model(
     mut decision: AggregateStrategyCapabilityDecision,
     rejection_reason: &'static str,
@@ -726,6 +787,14 @@ pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
     );
 }
 
+/// Publishes one grouped aggregate's strategy decision with its runtime facts.
+///
+/// Recording a `Partial` stage row is also what creates prior evidence: the
+/// metrics store parses `aggregate_structural_key`, `input_rows`,
+/// `output_group_count`, `reduction_ratio_ppm` and `selected_strategy` back out
+/// of these facts for later selections, so those keys must stay present and
+/// numeric. `chunk_row_count` is the partial's input rows and zero for the
+/// other stages.
 #[expect(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a projection DTO"
@@ -769,6 +838,8 @@ pub(in crate::exec) fn record_grouped_aggregate_strategy_decision(
         .record_aggregate_strategy_decision(node_id.unwrap_or_else(|| format!("aggregate.{}", stage.as_str())), &facts);
 }
 
+/// Output groups per million input rows; zero for an empty input, which the
+/// evidence store also refuses to retain.
 pub(super) fn reduction_ratio_ppm(input_rows: u64, output_rows: u64) -> u64 {
     if input_rows == 0 {
         return 0;
@@ -780,6 +851,14 @@ fn duration_ns(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// Identity under which partial cardinality evidence is reused.
+///
+/// The key hashes the group and aggregate expressions with their input dtypes,
+/// the full input schema, and the source-chunk evidence. Including the chunk
+/// evidence keeps a reduction ratio measured on one chunk set from steering a
+/// partial over a differently shaped input; the trade-off is that evidence
+/// rarely carries across chunks of a source-adjacent aggregate unless the
+/// chunk fingerprint and partition shape repeat.
 pub(super) fn aggregate_structural_key(
     spec: &AggregateSpec,
     input_schema: &ArrowSchema,

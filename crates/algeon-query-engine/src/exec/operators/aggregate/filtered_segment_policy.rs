@@ -1,3 +1,12 @@
+//! Single-pass versus segmented execution of aggregates with `FILTER` clauses.
+//!
+//! A filtered aggregate evaluates each distinct filter predicate into a boolean
+//! mask that stays resident beside the input while the aggregate runs. When the
+//! input plus its masks would take too much of the operator budget, the input
+//! is cut into row segments and each segment is aggregated into partial state.
+//! This policy decides the threshold and the segment size; `filtered_global`
+//! and `filtered_grouped` own the execution and report scope-specific facts.
+
 use std::cmp;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
@@ -34,14 +43,22 @@ impl FilteredAggregateSegmentationPolicy {
     pub(in crate::exec::operators::aggregate) const GROUPED_TEST_SEGMENT_TARGET_TEMPORARY_BYTES_FACT: &str =
         "__algeon_filtered_grouped_segment_target_bytes";
 
+    /// Materialized input bytes (input columns plus retained predicate masks)
+    /// below which the whole filtered aggregate runs in one pass. The fraction
+    /// leaves the rest of the budget to the aggregate's own groupby or
+    /// reduction state.
     pub(in crate::exec::operators::aggregate) fn single_pass_threshold_bytes(self, budget_bytes: u64) -> u64 {
         budget_bytes / self.single_pass_budget_fraction_denominator
     }
 
+    /// The threshold's fraction as reported in the strategy facts.
     pub(in crate::exec::operators::aggregate) fn single_pass_budget_fraction_label(self) -> String {
         format!("1/{}", self.single_pass_budget_fraction_denominator)
     }
 
+    /// Bytes per input row that the distinct filter predicates hold while the
+    /// aggregate runs. A cuDF BOOL8 mask is one byte per row plus a validity
+    /// bitmap; the per-predicate constant rounds that up.
     pub(in crate::exec::operators::aggregate) fn retained_filter_predicate_bytes_per_row(
         self,
         unique_filter_predicate_count: usize,
@@ -51,6 +68,9 @@ impl FilteredAggregateSegmentationPolicy {
             .saturating_mul(self.filter_predicate_bytes_per_row)
     }
 
+    /// Rows per segment such that one segment's input and masks fit the
+    /// temporary target. The minimum keeps a row wider than the target from
+    /// yielding an empty segment.
     pub(in crate::exec::operators::aggregate) fn rows_per_segment(
         self,
         max_segment_input_bytes_per_row: u64,
@@ -63,6 +83,10 @@ impl FilteredAggregateSegmentationPolicy {
         usize::try_from(self.min_segment_rows).unwrap_or(usize::MAX)
     }
 
+    /// Temporary byte target for one segment: the default, or the scope's
+    /// test override carried in the input schema metadata, then capped at a
+    /// share of the budget. The override lets tests force segmentation on a
+    /// small input without shrinking the whole budget.
     pub(in crate::exec::operators::aggregate) fn segment_target_temporary_bytes(
         self,
         scope: FilteredAggregateScope,

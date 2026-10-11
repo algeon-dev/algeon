@@ -5,15 +5,31 @@ use std::time::Duration;
 /// These values shape lakehouse cache files and lock retry behavior. They are
 /// not exposed as user-facing query knobs; production controls remain the
 /// lakehouse cache configuration and cache-fill resource policies.
+///
+/// The optimized batch cache rewrites a batch of cache-served chunks into one Parquet file. This
+/// policy decides from three numbers only: the batch's chunk count, its estimated source read
+/// bytes, and the row count of the frame being written. It reads no memory, GPU or cache
+/// occupancy state, and it takes no part in eviction, which `cache` performs by last use against
+/// the configured `cache_max_bytes`. Callers build it with `Default`; a given value always
+/// returns the same answer for the same inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec::source) struct LakehouseCachePolicy {
+    /// Smaller batches are not rewritten; the per-file entries already serve them.
     optimized_batch_min_files: usize,
+    /// Inclusive cap on a batch's estimated source read bytes. A larger batch is not rewritten.
     optimized_batch_max_source_read_bytes: u64,
+    /// Number of row groups the rewritten file aims for, before the row bounds below apply.
     optimized_batch_target_row_groups: usize,
     optimized_batch_min_rows_per_group: usize,
     optimized_batch_max_rows_per_group: usize,
+    /// Sleep between attempts to take another owner's fill lock.
     cache_lock_wait: Duration,
+    /// Attempts before a fill gives up on the lock with a `lock_timeout` error. With the default
+    /// wait this bounds the wait for another owner at about one minute.
     cache_lock_max_attempts: usize,
+    /// A lock file with no readable `pid=` line is treated as abandoned once its modification time
+    /// is older than this. It covers the gap between a creator's exclusive create and its pid
+    /// write, so it must stay longer than that gap.
     malformed_cache_lock_stale_age: Duration,
 }
 
@@ -35,6 +51,8 @@ impl LakehouseCachePolicy {
         source_read_bytes <= self.optimized_batch_max_source_read_bytes
     }
 
+    /// Row-group size for the writer: `row_count` divided by the target group count, rounded up and
+    /// clamped to the row bounds. Zero rows return 0, which selects the libcudf writer default.
     pub(in crate::exec::source) fn optimized_batch_row_group_size_rows(self, row_count: usize) -> i32 {
         if row_count == 0 {
             return 0;

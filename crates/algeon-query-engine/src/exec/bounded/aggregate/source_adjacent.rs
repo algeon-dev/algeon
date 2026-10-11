@@ -1,3 +1,27 @@
+//! Grouped and global aggregates whose input is a local Parquet source.
+//!
+//! A source-adjacent aggregate (`BoundedPlan`) has only a filter and
+//! projections between the source and the aggregate, so each source chunk can
+//! be read, staged and partially aggregated without any other operator
+//! holding a resident input. Two paths exist. The plain path commits one
+//! partial per chunk batch into `CompiledStreamPartials` and lets the final
+//! merge regroup them. The partitioned path, selected by
+//! `should_execute_partitioned_source_adjacent_grouped_aggregate`, reads raw
+//! batches, hash-partitions each by group key, retains the slices of every
+//! partition until the batching policy releases them, aggregates each
+//! partition's slices together, and feeds an incremental merge that keeps one
+//! merged state per partition.
+//!
+//! The partitioned path sizes its next raw batch from what the previous
+//! batches decoded and staged (`SourceAdjacentRawBatchFeedback`), and from the
+//! attempt's current allocation. The partition count is fixed by the first
+//! batch and never changes within a run. With an `AggregateLaneDispatch`,
+//! raw batches and ready partitions run as lane work and their results are
+//! folded on the coordinator; without one everything runs inline. Retry is
+//! local: a raw batch that fails on a resource error splits by chunk, and a
+//! partition whose partial state is bounded above the cap splits by rows
+//! before it runs.
+
 use std::time::Instant;
 
 use query_planning::{naming::unique_alias_with_suffix, util::sum_optional_u64};
@@ -22,6 +46,10 @@ use crate::{
 
 /// Source and aggregate ownership needed by a batch worker; downstream plan
 /// stages remain with the compiled coordinator.
+///
+/// Lane jobs are `'static` pool closures, so they cannot borrow the
+/// coordinator's `BoundedPlan`. One `Arc` of this clone is shared by every
+/// lane job of a run and `plan()` rebuilds a borrowed plan view per batch.
 struct OwnedSourceAdjacentAggregate {
     source_id: NodeId,
     source: LocalParquetSource,
@@ -74,6 +102,12 @@ impl OwnedSourceAdjacentAggregate {
     }
 }
 
+/// Runs a source-adjacent aggregate over `chunks` to its merged output.
+///
+/// `partitioned` selects the group-key partitioned path; otherwise chunks are
+/// batched per the lane width and each batch yields one partial. A chunk's
+/// source commit is recorded only after its partial has been accepted, so a
+/// batch that fails leaves no committed chunk behind.
 pub(in crate::exec::bounded) fn execute_source_aggregate_with_dispatch(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -128,12 +162,20 @@ pub(in crate::exec::bounded) fn execute_source_aggregate_with_dispatch(
     state.1.finish(execution, false)
 }
 
+/// One partition's slice of a staged raw batch, resident until its partition
+/// is aggregated. `chunks` is kept for the input evidence of that aggregate.
 struct SourceAdjacentPartitionInput {
     chunks: Vec<SourceChunk>,
     partial: CommittedPartial,
     source_row_group_count: u64,
 }
 
+/// Inputs of one raw batch worker.
+///
+/// `pending` carries the retained partition inputs only on the inline path;
+/// lane workers receive `None` because the coordinator keeps the retained
+/// inputs and folds each worker's new slices in afterwards. `partition_count`
+/// is `None` only before the first batch has fixed it.
 struct PartitionedSourceBatchWork {
     batch: SourceChunkBatch,
     pending: Option<Vec<Vec<SourceAdjacentPartitionInput>>>,
@@ -143,6 +185,10 @@ struct PartitionedSourceBatchWork {
     min_partition_count: usize,
 }
 
+/// Outputs of one raw batch worker: partials ready for the final merge,
+/// slices still pending per partition, one feedback sample per raw input, and
+/// the (chunk count, row group count) commits the coordinator records once
+/// the outputs are accepted.
 struct PartitionedSourceBatchOutput {
     pending: Option<Vec<Vec<SourceAdjacentPartitionInput>>>,
     partition_count: Option<usize>,
@@ -159,6 +205,13 @@ struct SourceAdjacentAlignedPartial {
     partial: CommittedPartial,
 }
 
+/// Final merge sink of the partitioned path.
+///
+/// Group-key partitions are hash-aligned with the merge's own partitions, so
+/// the aligned incremental merge pushes each partial straight into its
+/// partition without re-hashing. Row-balanced partitions use the unaligned
+/// incremental merge when the aggregate shape admits one, and otherwise fall
+/// back to collecting partials for the compiled final merge.
 enum SourceAdjacentPartitionedFinal<'a> {
     Incremental { merge: Box<CompiledIncrementalPartitionedMerge<'a>>, aligned_key_columns: Option<Vec<String>> },
     Stream(super::stream::CompiledStreamPartials<'a>),
@@ -263,6 +316,13 @@ impl<'a> SourceAdjacentPartitionedFinal<'a> {
     }
 }
 
+/// How a staged raw batch is split into partitions.
+///
+/// `GroupKey` hashes the group-key columns, so every row of one group lands in
+/// the same partition and each partition can be aggregated to final groups
+/// independently. `RowBalanced` hashes a synthetic row position instead, which
+/// bounds each partition's size but leaves groups spread over partitions, so
+/// its partials still need a cross-partition merge.
 #[derive(Clone, Debug)]
 enum SourceAdjacentAggregatePartitioner {
     RowBalanced,
@@ -291,6 +351,10 @@ impl SourceAdjacentAggregatePartitioner {
         }
     }
 
+    /// Whether an empty partition slice is kept as a zero-row partial.
+    /// Row-balanced runs keep every slice so the partition set has a fixed
+    /// shape; group-key runs keep only partition 0, enough for an input with
+    /// no rows to still reach the final merge with one empty partial.
     fn retain_empty_partition(&self, partition: usize) -> bool {
         match self {
             Self::RowBalanced => true,
@@ -419,6 +483,17 @@ impl SourceAdjacentRawBatchFeedback {
     }
 }
 
+/// The partitioned path's coordinator loop.
+///
+/// Each iteration sizes one raw batch from the feedback and the attempt's
+/// current allocation (`attempt_allocation_domain_usage`, which counts every
+/// live allocation of the attempt including retained partition slices),
+/// reads and partitions it, flushes the partitions the batching policy marks
+/// ready, then records the batch's samples. A batch wider than one chunk per
+/// lane is split across lanes; each lane computes the partition count from
+/// the same estimate, so the first batch fixes it consistently. Retained
+/// partition inputs stay on the coordinator at all times. Source commits are
+/// counted as outputs are accepted and recorded once before the final merge.
 fn execute_partitioned_source_adjacent_aggregate(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -615,6 +690,9 @@ fn execute_partitioned_source_adjacent_aggregate(
     final_merge.finish(execution, bounded)
 }
 
+/// Splits one planned raw batch into up to `width` sub-batches by chunk so
+/// every lane reads a share. A batch with fewer chunks than lanes stays whole;
+/// the sub-batches keep consecutive batch indexes for the source read rows.
 fn split_partitioned_raw_batch_for_lanes(batch: SourceChunkBatch, width: usize) -> Vec<SourceChunkBatch> {
     if width < 2 || batch.chunk_count() < width {
         return vec![batch];
@@ -666,6 +744,13 @@ fn execute_partitioned_source_adjacent_batch_work(
     Ok(state.1.expect("one partitioned batch completes before feedback is updated"))
 }
 
+/// Reads one raw batch and turns each of its raw inputs into partition work.
+///
+/// A raw input is either reduced whole first (`local_reduction`, when the
+/// previous batch proved few distinct keys) or hash-partitioned into pending
+/// slices; pending partitions that the batching policy marks ready are
+/// aggregated here. The raw input's staged frame is consumed by whichever
+/// step takes it, so at most one partitioned copy of a raw input is live.
 fn process_partitioned_source_adjacent_batch(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -931,6 +1016,10 @@ fn execute_source_adjacent_batch_local_reduction(
     Ok(outputs)
 }
 
+/// Reads a raw batch through the source-adjacent stages, splitting it by chunk
+/// on a retryable resource error. A singleton batch takes the chunk read's own
+/// row-group split retry instead. Each returned element names the chunks its
+/// raw input covers, so a split batch commits per piece.
 fn execute_source_adjacent_raw_source_batch(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -983,6 +1072,10 @@ fn source_adjacent_next_raw_source_batch(
     batches.pop().expect("non-empty remaining chunks plan at least one batch")
 }
 
+/// Batches `chunks` under the encoded-byte target and the row cap. Partition
+/// columns, a scan limit, and a reader predicate cuDF cannot evaluate over a
+/// multi-source read each force singleton batches, because the batched reader
+/// path cannot reproduce them per file.
 fn source_adjacent_raw_source_batches(
     memory_policy: MemoryControlPolicy,
     bounded: &BoundedPlan<'_>,
@@ -1069,6 +1162,9 @@ fn source_adjacent_partition_batch_ready(context: &ExecutionContext, inputs: &[S
     )
 }
 
+/// Resident bytes of a partition's pending slices, reported as zero for a
+/// single slice so the byte bound alone never flushes a partition with one
+/// input; the row-group bound still can.
 fn source_adjacent_partition_batch_observed_device_bytes(inputs: &[SourceAdjacentPartitionInput]) -> u64 {
     if inputs.len() <= 1 {
         return 0;
@@ -1085,6 +1181,10 @@ fn source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes: u6
     BoundedSourceBatchingPolicy::default().source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes)
 }
 
+/// Aggregates one partition's pending slices into partials. The slices are
+/// taken out of `inputs` first and concatenated into one frame, so a failure
+/// leaves the partition empty rather than half consumed; the caller treats
+/// the error as terminal for the batch.
 fn execute_source_adjacent_partition_aggregate_batch(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -1128,6 +1228,9 @@ fn execute_source_adjacent_partition_aggregate_batch(
         .collect())
 }
 
+/// Group-key partitioning requires every key to be an integer type, or at
+/// least one key to be a string with the rest integers; keys that cannot be
+/// lowered or include other types fall back to row balancing.
 fn source_adjacent_aggregate_partitioner(bounded: &BoundedPlan<'_>) -> SourceAdjacentAggregatePartitioner {
     let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
         return SourceAdjacentAggregatePartitioner::RowBalanced;
@@ -1216,6 +1319,13 @@ fn partition_source_adjacent_raw_chunk(
     Ok(partitions)
 }
 
+/// Hash-partitions one staged raw input under a budget token.
+///
+/// Row balancing appends a row-position column and hashes that, which spreads
+/// rows uniformly regardless of key skew; `original_columns` records the
+/// columns to keep so the slice step removes the helper. The returned token
+/// stays live through slicing so the partition copies are charged to the same
+/// boundary as the partition itself.
 fn hash_partition_source_adjacent_raw_chunk(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -1555,12 +1665,17 @@ fn execute_source_adjacent_partition_aggregate(
     Ok(output)
 }
 
+/// Proactive splits allowed per partition: one fewer than the retry attempts,
+/// so the depth of the split tree matches the depth a failure-driven retry
+/// could reach.
 fn source_adjacent_partition_aggregate_retry_budget(context: &ExecutionContext) -> usize {
     RetryLimits::of(context).max_attempts - 1
 }
 
 /// Splits a partition proactively when its partial state can outgrow the
-/// budget. Without a bound the partition runs whole.
+/// budget. Without a bound the partition runs whole. Callers pass the
+/// attempt's immutable cap as `remaining_bytes`, so the comparison is against
+/// the whole cap; the bytes currently free under it are not consulted.
 fn source_adjacent_partition_aggregate_should_split(
     input_rows: usize,
     upper_bound_bytes: Option<u64>,

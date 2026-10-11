@@ -1,3 +1,12 @@
+//! Lineage from the aggregate's group keys and measures down to one join
+//! input.
+//!
+//! Projections between the aggregate and the join are inlined so every
+//! expression is stated over the join's output columns, then each column is
+//! attributed to a side through the join's output projection. A measure that
+//! reads both sides, or a column with no unique join output, is a rejection
+//! with the reason that names it.
+
 use std::collections::BTreeMap;
 
 use super::{
@@ -6,10 +15,13 @@ use super::{
     unique_join_output_for_name,
 };
 
+/// One group key traced to a join input.
 #[derive(Clone)]
 pub(in crate::optimizer::aggregate_join_pushdown) struct LineageColumn {
     pub(in crate::optimizer::aggregate_join_pushdown) side: JoinSide,
+    /// Column name on the `side` input.
     pub(in crate::optimizer::aggregate_join_pushdown) source_name: String,
+    /// Name the aggregate's output uses for it.
     pub(in crate::optimizer::aggregate_join_pushdown) output_name: String,
 }
 
@@ -365,6 +377,8 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn substitute_unqualified_colu
     }
 }
 
+/// Whether rows from `side` can be null-extended by `join_type`, which makes
+/// every pre-aggregated state column from that side nullable after the join.
 pub(in crate::optimizer::aggregate_join_pushdown) fn join_side_introduces_nulls(
     join_type: &JoinType,
     side: JoinSide,
@@ -372,6 +386,8 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn join_side_introduces_nulls(
     matches!((join_type, side), (JoinType::Left, JoinSide::Right) | (JoinType::Full, JoinSide::Left | JoinSide::Right))
 }
 
+/// The join key with the pre-aggregated side's column renamed to the group
+/// output that now carries it; the other side's reference is unchanged.
 pub(in crate::optimizer::aggregate_join_pushdown) fn rewritten_join_key_after_preagg(
     key: &JoinKey,
     preagg_side: JoinSide,

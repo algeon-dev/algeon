@@ -188,10 +188,20 @@ impl Default for KeyedHashJoinStrategyOptions {
     }
 }
 
+/// Size evidence one keyed hash join is chosen from.
+///
+/// Planning fills the estimates and leaves `observed_build_rows` and
+/// `build_key_unique` empty; the bounded executor refines the same struct once
+/// the build side is materialized, so the choice can move from the planned
+/// strategy to the one the observed sizes justify. A `probe_reuse_count` above
+/// one, or a `build_artifact_id` on the join, means several probes read one
+/// build, and the reusable hash table is then kept whatever its size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyedHashJoinStrategyInputFacts {
     #[doc(hidden)]
     pub estimated_build_rows: Option<u64>,
+    /// Rows counted after the build side materialized; `None` at planning
+    /// time.
     #[doc(hidden)]
     pub observed_build_rows: Option<u64>,
     #[doc(hidden)]
@@ -202,14 +212,23 @@ pub struct KeyedHashJoinStrategyInputFacts {
     pub estimated_output_rows: Option<u64>,
     #[doc(hidden)]
     pub estimated_output_bytes: Option<u64>,
+    /// Whether every build key value is distinct, once measured. Only a left
+    /// join reads it; see
+    /// [`keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness`].
     #[doc(hidden)]
     pub build_key_unique: Option<bool>,
+    /// Probes that read this build. Planning reports one.
     #[doc(hidden)]
     pub probe_reuse_count: u64,
+    /// Whether every build key type supports the hash table pre-build
+    /// reservation; nested Arrow types do not.
     #[doc(hidden)]
     pub reusable_prebuild_supported: bool,
 }
 
+/// Join types the keyless conditional executor runs. A left join must build
+/// its right side and a semi or anti join its left; cross and mark joins have
+/// no keyless conditional form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeylessConditionalJoinKind {
     Inner,
@@ -393,6 +412,9 @@ pub(crate) fn choose_join_strategy(
     }
 }
 
+/// Planning-time facts for `join`: row and byte estimates from the plan's size
+/// model, no observed rows, one probe, and no uniqueness measurement. The
+/// bounded executor fills the observed fields before its own choice.
 pub fn keyed_hash_join_strategy_input_facts_for_plan(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -468,6 +490,10 @@ fn keyed_equi_strategy_choice(
         ))
     };
 
+    // A left join preserves every probe row. When the probe is small and each
+    // probe row matches at most one build row (unique build key), the output is
+    // bounded by the probe even though the build is not small, and only then
+    // may a build above the small thresholds be joined in one shot.
     if join.spec.join_type == JoinType::Left
         && input.reusable_prebuild_supported
         && single_use_without_artifact
@@ -577,6 +603,9 @@ pub fn keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
 pub(crate) fn join_probe_streams_chunks(join: &JoinNode, form: JoinForm, strategy: JoinStrategy) -> bool {
     match form {
         JoinForm::KeyedEqui | JoinForm::KeyedFilteredSemiAnti | JoinForm::KeylessOuterCross => {
+            // A full join, and a left join that builds its left side, report
+            // unmatched build rows only after the whole probe has been seen,
+            // so they take the probe as one frame.
             match join.spec.join_type {
                 JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } => true,
                 JoinType::Left => join.spec.build_side == JoinSide::Right,
@@ -589,6 +618,11 @@ pub(crate) fn join_probe_streams_chunks(join: &JoinNode, form: JoinForm, strateg
     }
 }
 
+/// Residual forms the cuDF mixed join cannot evaluate while matching: it
+/// evaluates the residual as an AST expression, which has no CASE, no
+/// null-aware comparison, and no Decimal128 division. Such a residual runs as a
+/// filter over the matched rows, which keeps SQL semantics only for an inner
+/// join; for any other join type the set of unmatched rows would change.
 fn expr_requires_post_join_filter(expr: &Expr) -> bool {
     expr.any(|expr| {
         matches!(
@@ -608,6 +642,10 @@ fn probe_input_for_join(join: &JoinNode) -> NodeId {
     }
 }
 
+/// Whether every build key column has a type the pre-build reservation
+/// supports. A build input or key column the plan cannot resolve is reported as
+/// supported: node validation owns that rejection, and a second one here would
+/// misname the cause.
 fn reusable_hash_prebuild_supported_for_plan(plan: &QueryPlan, join: &JoinNode) -> bool {
     let build_input = match join.spec.build_side {
         JoinSide::Left => join.inputs[0],

@@ -1,3 +1,25 @@
+//! Dynamic-filter route discovery.
+//!
+//! The rule matches an inner single-key hash join under `NullsDoNotMatch` whose
+//! build key traces to one source column, or to a grouping-only aggregate's key
+//! set, and whose probe key traces to a local Parquet source column, to a filter
+//! above it, or to the join's own probe input. In the rewrite, no node changes.
+//! The pass replaces the plan's [`DynamicFilterRoute`] annotations with routes
+//! that name a producer (the hash build or the aggregate key set) and a consumer;
+//! execution applies the produced key payload at the consumer before rows reach
+//! the join. A route changes no result because such a join emits a probe row only
+//! when its key appears in the build, so removing probe rows whose key cannot
+//! appear removes nothing the join would keep. The consumer must not sit upstream
+//! of the producer, a source read by other consumers must be proven constrained
+//! by the same key set (`keyset_constraints`), and the route must not close a
+//! dependency cycle with earlier routes (`cycle`).
+//!
+//! Discovery is the last step of the pass table because `QueryPlan::rewrite`
+//! drops a route whose endpoint node changed; a rule running afterwards would
+//! lose routes. Equalities in an inner join's residual predicate add further
+//! candidates (`residual_equality`). Rejection reasons and the candidate
+//! diagnostics fields are report contracts.
+
 use std::collections::BTreeSet;
 
 use arrow::datatypes::{DataType as ArrowDataType, Field};
@@ -171,6 +193,9 @@ pub enum DynamicFilterRouteRejectedReason {
     LargeKeysetDimensionSizedLocalParquetConsumer,
 }
 
+/// Whether the producer is a literal batch, possibly projected. Its key set is
+/// exact and already materialized, so the size heuristics that reject a large
+/// producer for a dimension-sized consumer do not apply to it.
 fn producer_input_is_literal_batch_exact_keyset(plan: &QueryPlan, node_id: NodeId) -> bool {
     match plan.node(node_id).map(|node| &node.kind) {
         Some(PlanNode::Source(source)) => matches!(source.as_ref(), SourceNode::LiteralBatch(_)),
@@ -179,6 +204,9 @@ fn producer_input_is_literal_batch_exact_keyset(plan: &QueryPlan, node_id: NodeI
     }
 }
 
+/// The join shape whose probe rows a build key payload may remove. Under
+/// null-equal matching a null probe key matches null build keys, and no payload
+/// kind represents null, so only `NullsDoNotMatch` joins qualify.
 fn join_shape_supported(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && join.spec.keys.len() == 1
@@ -213,6 +241,8 @@ fn input_reference_count(plan: &QueryPlan, target: NodeId) -> usize {
     count
 }
 
+/// One orientation per key: the build side always produces and the probe side
+/// always consumes, because the payload exists once the build is complete.
 fn route_orientations(join: &JoinNode) -> Vec<RouteOrientation<'_>> {
     join.spec
         .keys
@@ -290,6 +320,9 @@ fn consumer_column_type_is_supported(source: &LocalParquetSource, column: &str, 
     source.schema.field_with_name(column).ok().is_some_and(|field| dynamic_filter_key_type_is_supported(field, ctx))
 }
 
+/// The first `Filter` below `node_id`, through renaming projections and sorts,
+/// that still carries `column` with a supported type. A `Limit` ends the walk
+/// because filtering below it would change which rows it keeps.
 fn earliest_filter_consumer_for_column(
     plan: &QueryPlan,
     parent_counts: &[usize],
@@ -340,6 +373,9 @@ fn earliest_filter_consumer_for_column(
     }
 }
 
+/// A consumer that applies the payload after decode: the earliest filter on the
+/// probe side, or, when allowed, the join's own probe. `None` when the probe
+/// key type cannot carry a payload.
 fn post_decode_consumer_for_orientation(
     plan: &QueryPlan,
     parent_counts: &[usize],
@@ -409,6 +445,9 @@ fn consumer_reduction_stage(
     }
 }
 
+/// Whether a join-probe consumer feeds, through unary operators only, a global
+/// aggregate with a `Decimal128` `SUM`. Such a route is declined; see
+/// [`DynamicFilterRouteRejectedReason::PostDecodeConsumerFeedsScalarDecimalSum`].
 fn post_decode_consumer_feeds_scalar_decimal_sum(
     plan: &QueryPlan,
     parent_counts: &[usize],
@@ -460,6 +499,10 @@ fn direct_projection_column_name(expr: &Expr) -> Option<&str> {
     }
 }
 
+/// Where a local Parquet consumer can apply the payload. A source without a
+/// reader predicate takes the payload as its predicate; one with a supported
+/// predicate merges it; one whose static predicate the reader cannot lower
+/// keeps the payload out of the reader.
 fn consumer_lowering(source: &LocalParquetSource, ctx: AnalysisContext<'_>) -> DynamicFilterConsumerLowering {
     match &source.reader_predicate {
         Some(predicate) if source.reader_predicate_is_supported(predicate, ctx) => {

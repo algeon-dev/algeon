@@ -30,6 +30,10 @@ pub(crate) use api::QueryAdmissionOutcome;
 pub use api::{BackendDiagnostics, QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot};
 
 /// Service-level entry point for native query admission.
+///
+/// Clones share one `QueryServiceInner`; dropping clones never closes the
+/// service. Close is driven by the backend close worker, or by the explicit
+/// `close*` methods in tests and embedders that own the service directly.
 #[derive(Clone, Debug)]
 pub struct QueryService {
     pub(in crate::runtime::query_service) inner: Arc<QueryServiceInner>,
@@ -40,6 +44,9 @@ pub(in crate::runtime::query_service) struct QueryServiceInner {
     pub(in crate::runtime::query_service) config: QueryExecutionConfig,
     pub(in crate::runtime::query_service) admission: Arc<AdmissionController>,
     pub(in crate::runtime::query_service) resources: QueryServiceResources,
+    /// Counts admitted handles and admitted-context pool clones as users.
+    /// Close invalidates it, after which no new user can be taken, and the
+    /// drain's resource-epoch phase waits for the count to reach zero.
     pub(in crate::runtime::query_service) service_epoch: QueryServiceEpoch,
     /// Bounded domain-to-attempt state used only after allocator callbacks
     /// return. Callback writers never acquire this engine lock.

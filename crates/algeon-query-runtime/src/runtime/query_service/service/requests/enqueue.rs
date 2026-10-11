@@ -108,6 +108,12 @@ impl QueryService {
         .await
     }
 
+    /// The one async admission path: enqueue, wait for placement on the host
+    /// runtime, then build and publish the envelope on the device pool.
+    ///
+    /// The permits are `None` only for a service used without a backend
+    /// (tests and embedders); a backend-admitted request always carries both,
+    /// and they stay with the request's completion whatever the outcome.
     async fn admit_async_with_request_and_permits(
         &self,
         request: QueryAdmissionRequest,

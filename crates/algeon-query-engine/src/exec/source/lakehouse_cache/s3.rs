@@ -6,6 +6,8 @@ use query_planning::{
 
 use super::cache::stable_log_hash;
 
+/// An S3 object named by a source URI. The region comes from the process environment and not
+/// from the URI.
 pub(in crate::exec::source) struct CacheMaintenanceLocation {
     pub(in crate::exec::source) bucket: String,
     pub(in crate::exec::source) region: String,
@@ -13,6 +15,8 @@ pub(in crate::exec::source) struct CacheMaintenanceLocation {
     pub(in crate::exec::source) storage_profile_id: Option<String>,
 }
 
+/// Resolves the object a cache maintenance fetch reads. Only `s3://` object-store locations are
+/// supported; a local path fails with `InvalidPlan` and another scheme with `UnsupportedOperator`.
 pub(super) fn cache_maintenance_location(
     location: &ParquetSourceLocation,
     resolved_source: &ResolvedParquetSource,
@@ -36,6 +40,10 @@ pub(super) fn cache_maintenance_location(
     parse_s3_source_uri(uri, resolved_source.storage_profile_id().map(str::to_owned))
 }
 
+/// Splits `s3://bucket/key` into bucket and key. The region is `AWS_REGION`, else
+/// `AWS_DEFAULT_REGION`, else `us-east-1`; an object in another region needs one of the variables
+/// set. The result also keys default-chain credential resolution for remote-direct reads. Error
+/// facts name the failed rule and do not echo the URI.
 pub(in crate::exec::source) fn parse_s3_source_uri(
     uri: &str,
     storage_profile_id: Option<String>,
@@ -77,6 +85,7 @@ pub(in crate::exec::source) fn parse_s3_source_uri(
     })
 }
 
+/// Stable hash of the bucket name for error facts, so the name itself is not logged.
 pub(super) fn object_store_bucket_fact(bucket: &str) -> String {
     format!("object_store_bucket:fnv64:{}", stable_log_hash(bucket))
 }

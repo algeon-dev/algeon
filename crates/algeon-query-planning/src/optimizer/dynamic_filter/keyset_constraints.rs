@@ -1,3 +1,15 @@
+//! Proof that filtering a shared source in place cannot change another
+//! consumer's result.
+//!
+//! A local Parquet source with several parents may take a source-level dynamic
+//! filter only when every path upward from it, following the key column through
+//! filters, renaming projections, sorts, grouping-only aggregates and join output
+//! projections, reaches an inner `NullsDoNotMatch` join that equates the column
+//! with the same producer key set. Rows the filter removes then match nothing on
+//! any path and contribute to no output. A limit or window ends a path
+//! negatively because it selects rows by position, so removing rows below it
+//! changes its output even when a join above would constrain the key.
+
 use std::collections::BTreeSet;
 
 use super::{
@@ -5,6 +17,10 @@ use super::{
     QueryPlan, aggregate_group_key_output_name, direct_projection_column_name, subtree_contains_node, unique_lineage,
 };
 
+/// Whether every consumer of `source_column` at `source_node_id` is constrained
+/// by the key set that `producer_keyset_node_id` produces from
+/// `producer_source_column` of `producer_source_node_id`. A path that leaves the
+/// column behind, or revisits a node, fails the proof.
 pub(super) fn shared_source_filter_is_keyset_constrained(
     plan: &QueryPlan,
     parent_counts: &[usize],
@@ -202,6 +218,10 @@ fn join_constrains_or_carries_column(
     )
 }
 
+/// Whether `join` equates `column` on `child_side` with the producer key: the
+/// other input must contain the producer key-set node and the other key's
+/// unique lineage must be the producer's source column, so the two sides are
+/// filtered by the same values.
 #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 fn join_directly_constrains_column(
     plan: &QueryPlan,

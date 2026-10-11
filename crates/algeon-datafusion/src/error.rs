@@ -7,6 +7,22 @@
 //! diagnostic only. Native errors keep their original classification in
 //! `native_*` facts while this layer maps them into adapter-level
 //! [`ErrorCode`] values suitable for DataFusion.
+//!
+//! The boundary rules this module enforces are owned by
+//! `website/docs/design/errors.mdx`:
+//!
+//! - An [`Error`] crosses into DataFusion once, as `DataFusionError::External`,
+//!   through `From`. There is no conversion back; `find_algeon_error` walks
+//!   whatever DataFusion wrapped around it.
+//! - A native `QueryError` is converted when it reaches the adapter, through
+//!   `from_native`. `kind` and `status` are derived from `code`, never chosen
+//!   per site.
+//! - A candidate decline is a report outcome, never an error from here.
+//! - Facts are raw unless a producer opts them into the log-safe projection.
+//!   Caller schema names travel as [`ClientDetail`], outside `message()`,
+//!   logs and `Debug`, because the Flight server logs the message verbatim.
+//! - Ordinary DataFusion errors keep their identity; `classify` assigns them a
+//!   server code without making them Algeon errors.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -479,7 +495,10 @@ pub struct Error {
     operation: &'static str,
     message: String,
     facts: Facts,
+    /// Boxed so an `Error` without detail stays small; the detail is present
+    /// on strict rejections and schema validation failures.
     client_detail: Option<Box<ClientDetail>>,
+    /// Set at most once; later `with_source` calls keep the first cause.
     source: Option<BoxedSourceError>,
 }
 
@@ -806,13 +825,22 @@ impl Error {
         error.with_source(source)
     }
 
+    /// [`Self::from_native`] whose adapter message also carries the native
+    /// message and the allowlisted facts below.
+    ///
+    /// Used at boundaries whose consumers print only the outermost message
+    /// (backend construction, device probing, composed admission), so the
+    /// cause and the byte counts needed to act on it stay visible there. The
+    /// allowlist holds code identifiers and numbers; `column` and `field` name
+    /// the caller's schema, so they become [`ClientDetail`] and stay out of
+    /// the message.
     pub(crate) fn from_native_with_blocking_diagnostics(
         operation: &'static str,
         message: impl Into<String>,
         source: QueryError,
     ) -> Self {
         // `field` and `column` name the caller's schema, so they travel as
-        // client detail rather than in the logged message.
+        // client detail and stay out of the logged message.
         const CLIENT_FACTS: &[&str] = &[
             "device_ordinal",
             "stage",
@@ -911,12 +939,12 @@ impl Error {
         self.facts.get(key)
     }
 
-    /// Returns the underlying source error when one was attached.
     /// Caller schema detail this error names.
     pub fn client_detail(&self) -> Option<&ClientDetail> {
         self.client_detail.as_deref()
     }
 
+    /// Returns the underlying source error when one was attached.
     pub fn source_error(&self) -> Option<&(dyn StdError + 'static)> {
         self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }

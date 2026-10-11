@@ -1,3 +1,11 @@
+//! Family discovery for the late materialization pass.
+//!
+//! Aggregates are grouped by [`AggregateMaterializationSignature::family_key`];
+//! a family needs two members. Each family is planned once through
+//! `shared_aggregate_family_rewrite_plan`, and the result, applied or
+//! rejected, becomes one candidate row. The rewriter later consumes only the
+//! applied plans.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
@@ -15,6 +23,8 @@ use crate::{
 
 pub(super) struct SharedSubplanMaterializationDiscovery {
     pub(super) diagnostics: SharedSubplanMaterializationDiagnostics,
+    /// Rewrite plans of the applied families only, in plan order of their
+    /// first aggregate.
     pub(super) families: Vec<SharedAggregateFamilyRewrite>,
 }
 
@@ -31,6 +41,8 @@ pub(super) fn discover_shared_subplan_materialization_candidates(
         if aggregate.spec.grouping_sets.is_some() {
             continue;
         }
+        // A scalar aggregate is a candidate only in the filtered-family form;
+        // one that cannot take a `FILTER` clause has no shared shape here.
         if aggregate.spec.group_exprs.is_empty() && !scalar_filtered_aggregate_supported(&aggregate.spec) {
             continue;
         }
@@ -63,6 +75,9 @@ pub(super) fn discover_shared_subplan_materialization_candidates(
         let rewrite_plan = shared_aggregate_family_rewrite_plan(plan, &family);
         let applied = rewrite_plan.is_ok();
         let rejected_reason = rewrite_plan.as_ref().err().copied();
+        // The memory estimate is report evidence only. Whether the executor
+        // keeps the filtered input resident or streams it is decided at run
+        // time against the attempt budget, which is not known here.
         let filtered_aggregate_count = shared_scalar_filtered_aggregate_count(&family);
         let filtered_memory_estimate = estimate_shared_scalar_filtered_materialization(&family);
         let filtered_aggregate_memory_shape = if filtered_aggregate_count > 0 {

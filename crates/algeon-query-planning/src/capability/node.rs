@@ -1,7 +1,8 @@
 //! Per-node capability analysis.
 //!
 //! Produces a [`NodeCapability`] for each [`QueryNode`]: operator kind,
-//! executable decision, and produced properties such as ordering and residency.
+//! executable decision, aggregate state contract, and the row bound the
+//! operator alone establishes.
 use std::collections::BTreeMap;
 
 use arrow::datatypes::{DataType as ArrowDataType, Schema as ArrowSchema};
@@ -136,6 +137,14 @@ pub(super) fn source_format_capability(source: &SourceNode) -> SourceFormatCapab
     }
 }
 
+/// Whether a native executor runs this node's operator form.
+///
+/// Source, projection, window and limit nodes have no capability rule beyond
+/// the validator's, so their decision replays `check_node` and reports its
+/// failure under `PlanValidation`; a standalone analysis (reports, `EXPLAIN
+/// GPU`) thereby agrees with admission, which validates first. A join runs its
+/// form and residual checks before `check_node` so the operator-form reason
+/// wins over a type rule.
 fn node_executable_decision(
     plan: &QueryPlan,
     node: &QueryNode,
@@ -244,6 +253,9 @@ fn aggregate_node_executable_decision(
             ],
         );
     }
+    // Median runs single-stage with no mergeable state and the floating
+    // statistical aggregates run through the statistical contract; no
+    // executor evaluates both families in one aggregate node.
     if aggregate.spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Median)
         && aggregate.spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
     {
@@ -323,6 +335,9 @@ fn aggregate_expr_input_data_type<'a>(expr: &'a Expr, input_schema: &'a ArrowSch
     }
 }
 
+/// Input types cuDF's groupby median accepts. The aggregation is a quantile
+/// over a numeric column; decimal, boolean, string, and temporal inputs fail at
+/// execution, so the type is rejected here instead.
 pub fn is_cudf_median_input_type(data_type: &ArrowDataType) -> bool {
     matches!(
         data_type,
@@ -346,6 +361,7 @@ fn validate_grouping_sets_capability(
     if spec.group_exprs.is_empty() {
         return Err("empty_grouping_sets_keys");
     }
+    // The grouping id is a u64 mask with one bit per key.
     if spec.group_exprs.len() > 64 {
         return Err("too_many_grouping_sets_keys");
     }
@@ -419,6 +435,12 @@ fn join_node_executable_decision(node_id: NodeId, join: &JoinNode) -> Capability
     }
 }
 
+/// Checks the edge-list binding against the cuGraph instantiations the engine
+/// links: vertex columns are `Int32` or `Int64` (`vertex_t`), weights are
+/// `Float32` or `Float64` (`weight_t`), and an edge id column has the vertex
+/// type because `edge_t` equals `vertex_t` in those instantiations. The node's
+/// declared output schema must equal the one derived for the vertex type, so a
+/// frontend cannot declare a result shape the algorithm does not produce.
 fn graph_algorithm_node_executable_decision(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -676,6 +698,9 @@ fn graph_similarity_pair_input_decision(
     CapabilityDecision::Satisfied
 }
 
+/// Checks the same vertex, weight, and edge id column types as the graph
+/// algorithm node, since the normalized edge list feeds cuGraph construction.
+/// A weight combiner that reads weights requires a weight column.
 fn edge_normalize_node_executable_decision(
     plan: &QueryPlan,
     node_id: NodeId,

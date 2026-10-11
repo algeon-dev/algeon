@@ -1,19 +1,22 @@
 //! Reusable join build with parallel probe chunks.
 //!
-//! One hash or filtered build serves many probe chunks. Each chunk probes the
-//! shared build on its own execution lane with private workspace: the build
-//! handle is read-only (`&self` probes on `Arc<HashJoinHandle>` Send+Sync,
-//! per-call `Exec` streams, no shared mutable scratch), while
-//! probe frames, indices, and gather maps stay lane-private. The join owner
-//! merges chunk outputs after every lane completes.
+//! One hash build serves many probe chunks. Each chunk probes the shared build on its own
+//! execution lane with private workspace: the build handle is read-only (`&self` probes on
+//! `Arc<HashJoinHandle>` Send+Sync, per-call `Exec` streams, no shared mutable scratch),
+//! while probe frames, indices, and gather maps stay lane-private. The join owner merges
+//! chunk outputs after every lane completes. The filtered semi/anti/mark build has its own
+//! parallel probe in `compiled::filtered`.
 //!
-//! Parallel probe is enabled only where concatenation preserves semantics:
-//! inner joins, probe-preserved left joins, and filtered semi/anti/mark
-//! (membership is per probe row). Build-preserved outer joins (`Left` with a
-//! left build, `Full`) need a global matched-bitmap complement that per-chunk
-//! `full_probe_in` would duplicate, and `MixedKeyedResidual` accumulates
-//! `&mut` native state, so those strategies keep the serial probe path and
-//! are documented as such.
+//! Parallel hash probe is enabled only where concatenation preserves semantics: inner joins
+//! and probe-preserved left joins. Build-preserved outer joins (`Left` with a left build,
+//! `Full`) need a global matched-bitmap complement that per-chunk `full_probe_in` would
+//! duplicate, and `MixedKeyedResidual` accumulates `&mut` native state, so those strategies
+//! keep the serial probe path and are documented as such.
+//!
+//! `AggregateLaneDispatch` decides whether a run gets lanes. Lane leases are taken without
+//! waiting. A run can get fewer lanes than requested, and fewer than two lanes runs every
+//! chunk inline on the coordinator in input order. A caller that already
+//! runs on a lane never nests a second permit and also runs inline.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -78,6 +81,13 @@ struct ProbeWorkState {
 /// `outer` lends the compiled run's dispatcher so probe chunks reuse the
 /// run's own lanes; without it the helper borrows currently available lanes
 /// instead (serial scheduler path).
+///
+/// The first lane error aborts the run. The dispatcher joins sibling lane jobs
+/// still running, drops completed but uncommitted outputs after observing their readiness,
+/// and `Err` returns no frames. `build` is borrowed throughout and the caller releases it
+/// on both paths. Zero or one input frame skips the dispatcher and probes serially. A
+/// `parallel_probe` strategy decision is recorded for every multi-frame run, including one
+/// that resolves to width 1.
 pub(in crate::exec::bounded) fn parallel_hash_probe_frame_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -141,7 +151,9 @@ pub(in crate::exec::bounded) fn parallel_hash_probe_frame_stream(
     Ok(state.outputs)
 }
 
-/// Serial fallback for hash probe frames, used when lanes are unavailable.
+/// Probes the frames one after another on the calling thread. Used for zero or one input
+/// frame; a multi-frame run whose lanes are unavailable stays in the dispatcher, which
+/// executes inline.
 fn serial_hash_probe_frames(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -199,6 +211,10 @@ impl SharedHashBuild {
         }
     }
 
+    /// Rebuilds an owned build state for one lane job. The frame and table handle clones
+    /// share the device buffers, and only the name vectors are copied. Dropping the result
+    /// releases its clones; the buffers free when the last clone, including the
+    /// coordinator's own build, drops. `timer` starts here and no lane reports it.
     fn as_build_ref(&self) -> BoundedRootHashJoinBuildState {
         BoundedRootHashJoinBuildState {
             build_side: self.build_side,

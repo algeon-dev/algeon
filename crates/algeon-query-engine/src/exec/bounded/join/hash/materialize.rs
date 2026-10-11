@@ -16,6 +16,11 @@ use super::{
 };
 use crate::exec::retry::backoff_before_retry;
 
+/// Gathers the whole probe result into one frame and releases the build state.
+///
+/// Consumes `state`. The gather runs once over the full gather maps. The output must fit in
+/// one allocation, and this path has no slice retry. After a failure the
+/// build state, probe frame and gather maps are dropped by the early return.
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -39,6 +44,12 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
     Ok(output)
 }
 
+/// Wraps `state` in a lazy frame stream that gathers the output one slice per pull.
+///
+/// Allocates nothing itself. `state` moves into the stream source. The source releases it at
+/// the end of the stream, on the consumer's `release`, or when the source drops. The
+/// payload hints are the largest slice (`materialize_admission_bytes`) and the bound for
+/// the whole output.
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize_preserving_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -60,6 +71,10 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize_prese
     ))
 }
 
+/// Gathers every output row in one call and records the join operator metrics.
+///
+/// The probe frame and gather maps are consumed and drop when the call returns. `build` is
+/// borrowed and stays with the caller.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -176,6 +191,9 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     Ok(ResidentGpuFrame::with_device_bytes(GpuDataFrame::new(output), output_bytes))
 }
 
+/// One gathered slice. `output_reservation_bytes` is the sizing bound used to choose the
+/// slice and report metrics; it is not charged against the grant. `output_bytes` is the
+/// device size observed after the gather.
 pub(in crate::exec::bounded::join::hash) struct RootHashJoinStreamChunkOutput {
     pub(in crate::exec::bounded::join::hash) frame: ResidentGpuFrame,
     pub(in crate::exec::bounded::join::hash) output_reservation_bytes: Option<u64>,
@@ -183,6 +201,17 @@ pub(in crate::exec::bounded::join::hash) struct RootHashJoinStreamChunkOutput {
     pub(in crate::exec::bounded::join::hash) output_rows: u64,
 }
 
+/// Gathers output rows `offset..offset + len` of the gather maps, splitting the slice when
+/// the query cap rejects an allocation.
+///
+/// Only `QueryMemoryLimitExceeded` shrinks the work (`resource_failure_recovery`). The slice
+/// is halved after a backoff and each half is retried recursively until a one-row slice
+/// fails. Physical device exhaustion and other errors return at once. There is no attempt
+/// limit: depth is bounded by the slice length, and the policy's `max_retry_attempts` does
+/// not apply here. A retry re-slices the borrowed gather maps, which are unchanged, and
+/// recomputes nothing upstream. When a later half fails, the frames of earlier halves are
+/// dropped and the call returns no frames. A successful call returns the halves in row
+/// order and holds more than one frame only after a split.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -255,6 +284,10 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     }
 }
 
+/// One attempt at a slice, without retry: slices both gather maps, bounds the output for
+/// `len` rows and gathers the projected columns.
+///
+/// The output must have exactly `len` rows (checked in debug builds).
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -354,6 +387,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     })
 }
 
+/// Frees already gathered slices before an error propagates.
 pub(in crate::exec::bounded::join::hash) fn release_root_hash_join_stream_outputs(mut outputs: Vec<ResidentGpuFrame>) {
     outputs.clear();
 }

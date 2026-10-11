@@ -1,3 +1,21 @@
+//! The chunk window: dispatching owned work to execution lanes and committing
+//! outputs back on the coordinator in dispatch order.
+//!
+//! The coordinator keeps at most `width` chunks either dispatched or awaiting
+//! commit. Each chunk job is `AttemptWork` blocking work on the pool,
+//! runs on the lane's leased stream, and returns a private output plus a CUDA
+//! event recorded after its last enqueue. The coordinator commits outputs in
+//! ordinal order and synchronizes each event before the commit, so a device
+//! fault from lane `k` surfaces as chunk `k`'s error and never reaches a
+//! later, unrelated fence. Nothing enters coordinator state until that fence
+//! returns, which keeps source retry correct: a chunk whose
+//! partials were committed can never be replayed.
+//!
+//! On cancellation, a commit failure, a saturated pool or a lane panic the
+//! window aborts: completed outputs still have their events synchronized (for
+//! attribution) and are dropped, and `ChunkFlights::drop` joins every job
+//! still running before the run can return its lane leases.
+
 use std::{
     collections::BTreeMap,
     sync::{Arc, mpsc},
@@ -37,14 +55,20 @@ use crate::exec::{
 /// readiness event, and exactly-once ordered commit.
 #[derive(Clone)]
 pub(in crate::exec::bounded) struct AggregateLaneDispatch {
+    /// The coordinator's root context: pool submissions and cancellation
+    /// checks go through it. Lane work runs on each lease's own context.
     context: Arc<ExecutionContext>,
     metrics: Arc<ExecutionMetrics>,
     #[cfg(test)]
     completion_gate: Option<super::AggregateChunkCompletionGate>,
+    /// Empty when the run executes inline. Otherwise at least two leases.
     lanes: Vec<LaneWorkLease>,
     observation_scope: Option<RuntimeExecutionObservationScope>,
 }
 
+/// Jobs dispatched and not yet joined, keyed by chunk ordinal. Dropping it
+/// joins every remaining job, so no lane job can outlive the window that
+/// submitted it.
 #[derive(Default)]
 struct ChunkFlights<O> {
     observation_scope: Option<RuntimeExecutionObservationScope>,
@@ -83,7 +107,9 @@ impl<O> Drop for ChunkFlights<O> {
         // A panic or early error must drain before the enclosing run returns
         // its lane leases. Joined outputs are completion-observed before release so a late
         // lane failure is still attributed instead of surfacing at an unrelated later fence;
-        // uncommitted outputs are released after each join.
+        // uncommitted outputs are released after each join. `join` blocks the
+        // coordinator but holds no pool permit, so the workers it waits for
+        // can always finish.
         while let Some((ordinal, flight)) = self.jobs.pop_first() {
             let result = flight.handle.join().and_then(|result| result);
             match result {
@@ -144,6 +170,7 @@ fn drain_ready_on_abort<O>(
 }
 
 impl AggregateLaneDispatch {
+    /// Number of chunks that may be outstanding at once; 1 for an inline run.
     pub(in crate::exec::bounded) fn width(&self) -> usize {
         self.lanes.len().max(1)
     }
@@ -178,6 +205,11 @@ impl AggregateLaneDispatch {
         run: impl FnOnce(&AggregateLaneDispatch, &mut BoundedExecutionAttempt<'_>) -> Result<R>,
     ) -> Result<R> {
         let context = Arc::new(execution.context().clone());
+        // A context that is itself a lane already holds one auxiliary permit
+        // and must not wait for a second; it runs inline. An admitted root
+        // context is bounded by its fork pool. A standalone context has no
+        // route, so the source scheduler's read bound stands in for width when
+        // prefetch is enabled at all.
         let requested = if context.is_attempt_work_lease_context() {
             0
         } else if let Some(route) = context.attempt_stream_provider_route() {
@@ -246,6 +278,12 @@ impl AggregateLaneDispatch {
     /// Selection and commit share coordinator state; workers receive only
     /// owned work and return private outputs. Ready outputs consume capacity
     /// until their stable ordinal commits, bounding the reorder buffer.
+    ///
+    /// `next` and `commit` run on the coordinator with `state`; `work` runs on
+    /// a lane (or inline) with a `BoundedExecutionAttempt` built on the lane's
+    /// context, and must not touch coordinator state. Commit order equals
+    /// dispatch order. Blocks until every dispatched job has been joined, on
+    /// every exit path; the returned error is the first failure observed.
     pub(in crate::exec::bounded) fn execute_work<S, W: Send + 'static, O: Send + 'static>(
         &self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -254,6 +292,9 @@ impl AggregateLaneDispatch {
         work: impl Fn(&mut BoundedExecutionAttempt<'_>, W) -> Result<O> + Send + Sync + 'static,
         mut commit: impl FnMut(&mut S, &mut BoundedExecutionAttempt<'_>, O) -> Result<()>,
     ) -> Result<()> {
+        // With no lanes the same next/work/commit protocol runs on the
+        // coordinator's own stream, with a host fence standing in for the
+        // readiness event.
         if self.lanes.is_empty() {
             let mut ordinal = 0;
             loop {
@@ -276,6 +317,9 @@ impl AggregateLaneDispatch {
 
         let pool = self.context.gpu_executor()?;
         let work = Arc::new(work);
+        // `completed` outlives the loop, so `recv` below can only return once
+        // a job's completion callback fires; the pool fires it for every
+        // accepted handle, including work discarded by shutdown.
         let (completed, completions) = mpsc::channel();
         let mut flights = ChunkFlights { observation_scope: self.observation_scope.clone(), jobs: BTreeMap::new() };
         let mut ready: BTreeMap<usize, ReadyLaneOutput<O>> = BTreeMap::new();
@@ -288,6 +332,10 @@ impl AggregateLaneDispatch {
                 drain_ready_on_abort(ready, self.observation_scope.as_ref());
                 return Err(error);
             }
+            // Running jobs plus outputs awaiting commit never exceed the
+            // lane count. A lane returns to `free_lanes` when its job is
+            // joined, before the output enters `ready`, so inside this loop
+            // at least one lane is always free.
             while !exhausted && flights.jobs.len() + ready.len() < self.lanes.len() {
                 // Before a pull failure aborts the run, every completed,
                 // uncommitted output has its readiness observed so that a
@@ -307,6 +355,9 @@ impl AggregateLaneDispatch {
                 };
                 let lane = free_lanes.pop().expect("an available window slot owns a free lane");
                 let ordinal = dispatched;
+                // The job owns an `Arc` to its lane lease, so the lease, its
+                // stream and its permit outlive the job even if the window
+                // is torn down while the job still runs.
                 let lease = Arc::clone(&self.lanes[lane].lease);
                 let fork = lease.context().attempt_claimed_fork_index();
                 let work = Arc::clone(&work);
@@ -366,6 +417,10 @@ impl AggregateLaneDispatch {
             };
             let flight = flights.jobs.remove(&ordinal).expect("completion belongs to in-flight chunk");
             free_lanes.push(flight.lane);
+            // The outer `Err` is the pool's: a worker panic or a worker lost
+            // to shutdown, both already typed. Either one aborts the run like
+            // a work failure; the remaining flights drain in `ChunkFlights`'
+            // `Drop`.
             let completed = match flight.handle.join() {
                 Ok(Ok(completed)) => completed,
                 Ok(Err(error)) | Err(error) => {
@@ -469,6 +524,12 @@ fn finish_lane_work<O>(
     }
 }
 
+/// Completes one inline chunk. Inline work already runs on the coordinator's
+/// stream, so its consumers are stream-ordered behind it; the host fence
+/// exists to surface an asynchronous fault before the output enters
+/// coordinator state, where source retry can no longer replay the chunk.
+/// After a work failure the fence runs for the same reason and its own error
+/// is recorded as a cleanup failure, with the work error returned.
 fn finish_chunk_work<O>(
     execution: &BoundedExecutionAttempt<'_>,
     result: Result<O>,

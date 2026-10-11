@@ -1,3 +1,13 @@
+//! Normalization of a DataFusion physical subtree into one native input tree.
+//!
+//! Normalization removes the operators that only move rows (repartition,
+//! coalesce, cooperative yield), reconstructs a partial/final aggregate pair as
+//! one aggregate under the final schema, and turns a sort-preserving merge into
+//! one sort over the concatenated partitions. The result keeps a reference to
+//! each DataFusion operator it represents, so a rejection can name the right
+//! one. A rejection carries the candidate shape, the blocking operator, and
+//! what one partition would change.
+
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;

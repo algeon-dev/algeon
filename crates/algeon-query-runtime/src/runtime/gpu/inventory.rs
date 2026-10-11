@@ -122,6 +122,9 @@ pub struct DeviceFacts {
     pub physical_total_bytes: Option<u64>,
     /// CUDA-visible allocation capacity. This can exclude NVML-reserved framebuffer capacity.
     pub total_bytes: u64,
+    /// Free bytes at sampling time. The registry's post-install capacity
+    /// freeze reads this once per device; it is never consulted during
+    /// admission.
     pub(crate) free_bytes: u64,
     pub(crate) sm_count: Option<u32>,
     pub(crate) utilization_pct: Option<u8>,

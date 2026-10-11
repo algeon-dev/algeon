@@ -1,3 +1,20 @@
+//! Projection simplification: removes identity projections and fuses chains of
+//! renaming projections.
+//!
+//! Pattern one: a projection whose outputs are, in order, every input field
+//! under its own name and type. It is removed and its consumers read the input.
+//! Pattern two: a projection over a projection whose outputs are all bare or
+//! aliased columns; the outer column references are replaced by the inner
+//! outputs' source columns and the inner projection disappears. Both keep every
+//! row and every output field, so the facts at the consumer do not change. Only
+//! unqualified names are matched; a qualified reference names a join input and
+//! is left alone. The node list is rebuilt, so `QueryPlan::rewrite` renumbers
+//! it and drops routes through removed nodes. The rule is safe to run more
+//! than once; other rules introduce projections, and the pass table in
+//! `optimizer.rs` decides where it runs.
+//! Rejection reasons are report contracts; `SchemaMismatch` also covers a plain
+//! rename, whose output field differs from the input field.
+
 use std::collections::BTreeMap;
 
 use arrow::datatypes::SchemaRef;
@@ -119,6 +136,10 @@ pub(crate) fn optimize_projection_simplification(
     })
 }
 
+/// Rebuilds the plan top down. `memo` maps each visited source node to its
+/// image, so a shared subtree is rewritten once and a removed projection maps
+/// to its input's image; `memo` is also the origin map passed to
+/// `RewrittenNodes::rebuilt`.
 struct ProjectionSimplificationRewriter<'a> {
     original: &'a QueryPlan,
     nodes: Vec<QueryNode>,
@@ -224,6 +245,10 @@ fn projection_is_identity(input_schema: &SchemaRef, projection: &ProjectionNode)
         })
 }
 
+/// Outputs of `projection` restated over its input projection's input, when the
+/// inner projection only renames columns. Any computed inner output makes the
+/// chain opaque, since the outer reference would then name a value the fused
+/// node could not read.
 fn compose_direct_projection_chain(
     input_node: &QueryNode,
     projection: &ProjectionNode,

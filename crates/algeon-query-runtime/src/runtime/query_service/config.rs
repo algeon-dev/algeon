@@ -1,3 +1,9 @@
+//! Queue bounds and the execution policy copied into admitted contexts.
+//!
+//! Both values are validated once, by `GpuBackendConfig::validate`, before a
+//! backend claims any process-wide state. Device-local capacity lives in the
+//! device profile (see `website/docs/design/admission.mdx`).
+
 use std::time::{Duration, Instant};
 
 use query_planning::{
@@ -16,7 +22,9 @@ use crate::runtime::{
 /// Bounded admission-queue policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueBounds {
-    /// Maximum queued waiters. Must be nonzero.
+    /// Maximum queued waiters. Must be nonzero. Pending submissions that have
+    /// not yet been queued count toward it, so a burst of submissions is
+    /// rejected with `admission_queue_full` before it can overfill the queue.
     pub max_waiters: usize,
     /// Maximum time one waiter may remain queued. Must be nonzero.
     pub max_wait: Duration,

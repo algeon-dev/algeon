@@ -1,3 +1,19 @@
+//! Serial coordinator for one compiled pipeline run.
+//!
+//! The scheduler runs on the thread of the attempt's root `QueryExecution` pool
+//! job and executes tasks one at a time on the attempt's root stream; the design
+//! contract is
+//! `website/docs/design/gpu-execution.mdx#cuda-streams-and-dependencies`. Any
+//! width comes from inside a task, where an executor may expand chunk work onto
+//! execution lanes, and every lane output is committed back here before the next
+//! task is chosen.
+//!
+//! Across the run, a task starts only after every control and barrier
+//! predecessor has completed and every declared input is live in
+//! [`CompiledPipelineState`]. Each resident payload reaches one of the
+//! executor's release hooks once, or stays in the returned state as the sink
+//! output; this holds on success, on `Err`, and when a task panics.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
@@ -113,12 +129,19 @@ pub(in crate::exec::bounded::compiled) enum CompiledTaskFlight {
 }
 
 /// Coordinator-owned dispatch board for one compiled pipeline run.
+///
+/// The board is separate from [`CompiledPipelineState`] because it tracks a
+/// claim that has not produced anything yet. The state only learns about a
+/// task when its outputs commit, so without the board a task could be
+/// claimed twice between claim and commit.
 #[derive(Debug, Default)]
 pub(in crate::exec::bounded::compiled) struct CompiledFlightBoard {
     flights: BTreeMap<PipelineTaskId, CompiledTaskFlight>,
 }
 
 impl CompiledFlightBoard {
+    /// A task with no recorded flight is `Ready`; the board stores only tasks
+    /// that have been claimed at least once.
     pub(in crate::exec::bounded::compiled) fn flight(&self, task: PipelineTaskId) -> CompiledTaskFlight {
         self.flights.get(&task).copied().unwrap_or(CompiledTaskFlight::Ready)
     }
@@ -137,9 +160,20 @@ impl CompiledFlightBoard {
 }
 
 /// Deterministic single-threaded scheduler for a validated compiled pipeline.
+///
+/// Selection depends only on the pipeline and on which tasks have completed,
+/// and ties break on task index, so two runs of the same pipeline execute
+/// tasks in the same order. The scheduler holds no run state of its own;
+/// [`CompiledPipelineState`] and [`CompiledFlightBoard`] are created per run.
 pub struct CompiledPipelineScheduler<'a> {
     pipeline: &'a CompiledPipeline,
+    /// Control predecessors of each task: the sources of every edge into it
+    /// plus every upstream task of a barrier it sits below. Built once from
+    /// the pipeline; data readiness is checked separately against the state.
     dependencies: BTreeMap<PipelineTaskId, BTreeSet<PipelineTaskId>>,
+    /// Join builds whose join form requires the build side resident before the
+    /// probe side starts. They and the tasks feeding them outrank other ready
+    /// work.
     prioritized_join_builds: BTreeSet<PipelineTaskId>,
 }
 
@@ -173,6 +207,11 @@ impl<'a> CompiledPipelineScheduler<'a> {
     /// dispatch state, control/barrier dependencies, and produced inputs.
     /// Execution cannot start a task whose control predecessor has not
     /// completed, even when the task declares no input resources.
+    ///
+    /// A rejected claim changes nothing: the board entry stays as it was and
+    /// the state is only read. Every rejection is an `InvalidPlan` error
+    /// carrying `compiled_task_id`, because a validated pipeline run by this
+    /// scheduler cannot reach one.
     pub(in crate::exec::bounded::compiled) fn claim_task<T>(
         &self,
         task: PipelineTaskId,
@@ -232,6 +271,12 @@ impl<'a> CompiledPipelineScheduler<'a> {
     }
 
     /// Commits a claimed task's owned outputs into the coordinator state.
+    ///
+    /// On success the returned payloads are the ones whose lifetime ended with
+    /// this completion; the caller owns passing them to the executor's release
+    /// hook. On `Err` the task is marked `Failed` and cannot be claimed again;
+    /// outputs that were installed before the failure stay live in the state
+    /// so error cleanup drains them with everything else.
     pub(in crate::exec::bounded::compiled) fn commit_claimed_task<T>(
         &self,
         task: &PipelineTask,
@@ -255,6 +300,14 @@ impl<'a> CompiledPipelineScheduler<'a> {
         }
     }
 
+    /// Runs every task to completion on the calling thread.
+    ///
+    /// Blocks for the whole run, including any lane work an executor waits on.
+    /// `Ok` returns the state with only sink-output payloads still live. `Err`
+    /// means every live payload has already been passed to the executor's
+    /// cleanup hooks and `cleanup_after_error` has run; the caller has
+    /// nothing left to release. A task panic cleans up the same way and then
+    /// resumes unwinding.
     pub fn run<E>(&self, executor: &mut E) -> Result<CompiledPipelineState<E::Resource>>
     where E: CompiledTaskExecutor {
         self.run_inner(executor, None)
@@ -283,6 +336,12 @@ impl<'a> CompiledPipelineScheduler<'a> {
         let mut state = CompiledPipelineState::new(self.pipeline)?;
         let mut flights = CompiledFlightBoard::default();
 
+        // One task per iteration, claimed, executed, and committed before the
+        // next selection. No task invocation is outstanding between
+        // iterations, which lets `next_runnable_task` read the state without
+        // a board of pending outputs. Work the state holds as a pending
+        // payload (a source prefetch on a pool worker) is finished by its
+        // consumer task, and CUDA work on the stream completes asynchronously.
         while state.completed_task_count() < self.pipeline.tasks().len() {
             if let Err(error) = executor.before_scheduling_cycle() {
                 cleanup_preserving_primary(
@@ -334,6 +393,8 @@ impl<'a> CompiledPipelineScheduler<'a> {
     where
         E: CompiledTaskExecutor,
     {
+        // Each task runs once per pipeline run, so its attempt number is
+        // always 1. The plan span is id 1, so task spans start at 2.
         let attempt_id = task_attempt_id(selected.id().to_string(), 1);
         let task_span_id = RuntimeSpanId::new((selected.id().index() as u64).saturating_add(2));
         let mut task_lifecycle = observation_scope.map(|scope| {
@@ -360,6 +421,12 @@ impl<'a> CompiledPipelineScheduler<'a> {
                 return Err(error);
             },
         };
+        // The panic is caught so that resident payloads are released through
+        // the executor's hooks while the attempt context is still usable; an
+        // unwind through the pool job would drop them with plain `Drop`, and
+        // stream-backed payloads need the attempt to release. The closure is
+        // unwind-safe for this purpose because neither `executor` nor `state`
+        // is used again after cleanup: the panic resumes below.
         let output = match catch_unwind(AssertUnwindSafe(|| executor.execute_task(task, state))) {
             Ok(Ok(output)) => output,
             Ok(Err(error)) => {
@@ -377,6 +444,8 @@ impl<'a> CompiledPipelineScheduler<'a> {
                 if let Some(lifecycle) = task_lifecycle.take() {
                     lifecycle.panicked();
                 }
+                // Cleanup errors are recorded as secondary failures; the panic
+                // payload is the primary outcome and must not be replaced.
                 let _ = release_live_resources_on_error(executor, state, |cleanup_error| {
                     record_cleanup_failure(observation_scope, CleanupFailurePhase::TaskPanic, cleanup_error);
                 });
@@ -428,6 +497,10 @@ impl<'a> CompiledPipelineScheduler<'a> {
             .is_none_or(|dependencies| dependencies.iter().all(|dependency| state.is_task_completed(*dependency)))
     }
 
+    /// Picks the lowest-ranked ready task; see `runnable_task_priority` for
+    /// the rank. `Err` means no task is ready although some are incomplete,
+    /// which a validated pipeline (acyclic, every input produced) cannot
+    /// reach.
     fn next_runnable_task<T>(
         &self,
         state: &CompiledPipelineState<T>,
@@ -456,6 +529,18 @@ impl<'a> CompiledPipelineScheduler<'a> {
         })
     }
 
+    /// Rank tuple, lower first: join-build priority, memory pressure, operator
+    /// class, task index.
+    ///
+    /// Build priority covers a prioritized build itself and, once some build
+    /// has completed and is waiting on its probe, any task upstream of a
+    /// prioritized build that is still incomplete. The effect is that every
+    /// build side of a builds-first join becomes resident before probe-side
+    /// chains start producing frames next to a resident build table.
+    ///
+    /// Memory pressure and operator class apply only while something is
+    /// resident; with nothing live, the ranks collapse to task index so a
+    /// run begins at its first source.
     fn runnable_task_priority<T>(&self, task: &PipelineTask, state: &CompiledPipelineState<T>) -> (u8, u8, u8, usize) {
         let build_priority = task.kind() == PipelineTaskKind::JoinBuild
             && self.prioritized_join_builds.contains(&task.id())
@@ -468,6 +553,10 @@ impl<'a> CompiledPipelineScheduler<'a> {
         (build_rank, pressure_rank, operator_rank, task.id().index())
     }
 
+    /// Prefers work that can shrink the resident set over work that grows it.
+    /// A consumer of a live resource ranks first because completing it may
+    /// release that resource; a task with no outputs holds nothing new; a
+    /// source only adds resident bytes, so it ranks last.
     fn memory_pressure_task_rank<T>(&self, task: &PipelineTask, state: &CompiledPipelineState<T>) -> u8 {
         if task.input_resources().iter().any(|resource| state.is_resource_live(*resource)) {
             return 0;
@@ -506,6 +595,9 @@ impl<'a> CompiledPipelineScheduler<'a> {
         })
     }
 
+    /// Forward search from `task` along the edges that carry data toward a
+    /// build input. Control, probe-input and sink edges end the walk because
+    /// nothing crossing them becomes part of a build table.
     fn task_feeds_incomplete_prioritized_join_build<T>(
         &self,
         task: PipelineTaskId,
@@ -539,12 +631,18 @@ impl<'a> CompiledPipelineScheduler<'a> {
     }
 }
 
+/// Records the task's terminal state once. Taking the `Option` is what makes
+/// a later `finish` or second `fail` a no-op, so each task span ends with
+/// one terminal event.
 pub(super) fn fail_task_lifecycle(lifecycle: &mut Option<RuntimeTaskLifecycle>, error: &QueryError) {
     if let Some(lifecycle) = lifecycle.take() {
         lifecycle.fail(error.code().as_str(), error.code() == QueryErrorCode::Cancelled);
     }
 }
 
+/// Drains every live payload after `primary` failed the run. The primary
+/// error is returned by the caller unchanged; cleanup errors only reach the
+/// observation scope, as `phase`-tagged secondary failures.
 pub(super) fn cleanup_preserving_primary<E>(
     executor: &mut E,
     state: &mut CompiledPipelineState<E::Resource>,
@@ -581,6 +679,10 @@ pub(super) fn record_cleanup_failure(
     );
 }
 
+/// Passes every live payload to `cleanup_resource`, then runs
+/// `cleanup_after_error` once, regardless of earlier hook failures. Every
+/// failure is reported through `record_failure`; the first one is also
+/// returned. After this call the state holds no live payload.
 pub(super) fn release_live_resources_on_error<E, F>(
     executor: &mut E,
     state: &mut CompiledPipelineState<E::Resource>,
@@ -611,6 +713,9 @@ where
     }
 }
 
+/// Releases the payloads one task completion ended. All of them are passed
+/// to the hook even after one fails, so no payload is left owned by nobody;
+/// the first failure is returned and fails the run.
 pub(super) fn release_completed_resources<E, F>(
     executor: &mut E,
     resources: Vec<ReleasedCompiledResource<E::Resource>>,
@@ -635,6 +740,10 @@ where
     }
 }
 
+/// Every edge, whatever its kind, and every barrier becomes a completion
+/// dependency. Data edges are therefore enforced twice, once here and once by
+/// the state's liveness check; the duplication is intended, because a
+/// control-only edge has no resource to check.
 fn build_dependencies(pipeline: &CompiledPipeline) -> BTreeMap<PipelineTaskId, BTreeSet<PipelineTaskId>> {
     let mut dependencies = pipeline.tasks().iter().map(|task| (task.id(), BTreeSet::new())).collect::<BTreeMap<_, _>>();
 
@@ -653,6 +762,9 @@ fn build_dependencies(pipeline: &CompiledPipeline) -> BTreeMap<PipelineTaskId, B
     dependencies
 }
 
+/// Tie-break among tasks under equal memory pressure: the sink first because
+/// it ends the run, then joins, then cheap unary stages, then operators that
+/// build state, with sources last.
 fn operator_class_rank(kind: PipelineTaskKind) -> u8 {
     match kind {
         PipelineTaskKind::SinkMaterialize => 0,

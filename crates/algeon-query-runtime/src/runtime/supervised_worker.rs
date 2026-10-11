@@ -86,7 +86,12 @@ impl<T: Send + 'static> SupervisedWorker<T> {
     }
 }
 
+/// Shared between the consumer's `SupervisedWorker` and the process-exit
+/// registry. Whichever of them reaches `join` first drains the worker; the
+/// other waits for that join to finish and gets `None`.
 struct SupervisedWorkerSupervisor<T> {
+    /// The work's own token. Process exit cancels through it so a worker that
+    /// has not started CUDA work exits at its next check.
     cancellation: ExecutionCancellation,
     state: Mutex<SupervisedWorkerSupervisorState<T>>,
     state_changed: Condvar,
@@ -94,8 +99,14 @@ struct SupervisedWorkerSupervisor<T> {
 }
 
 struct SupervisedWorkerSupervisorState<T> {
+    /// Set once by the exit hook. A submission that observes it refuses to
+    /// spawn, because the hook's join would otherwise miss that worker.
     process_exit_started: bool,
+    /// The one join handle. `Some` from a successful spawn until a joiner
+    /// takes it.
     worker: Option<PoolBlockingWork<T>>,
+    /// A joiner holds the handle and is blocked in `PoolBlockingWork::join`;
+    /// a second joiner waits on `state_changed` until it clears.
     joining: bool,
     joined: bool,
 }
@@ -144,6 +155,10 @@ impl<T> SupervisedWorkerSupervisor<T> {
         self.unregister_process_exit();
     }
 
+    /// Takes the handle for this caller to join, or blocks while another
+    /// caller joins and returns `None` once that join is done. The wait is
+    /// what lets the exit hook return only after the consumer's concurrent
+    /// join has fully drained the worker.
     fn take_or_wait_for_join(&self) -> Option<PoolBlockingWork<T>> {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
@@ -159,6 +174,10 @@ impl<T> SupervisedWorkerSupervisor<T> {
         }
     }
 
+    /// Drains the worker once. `None` means another caller already
+    /// joined it. The classification relies on `PoolBlockingWork::join`
+    /// reporting a worker panic as the pool's `Internal` error and a worker
+    /// lost to shutdown or process exit as `Cancelled`.
     fn join(&self) -> Option<SupervisedWorkerJoin<T>> {
         let worker = self.take_or_wait_for_join()?;
         let outcome = match worker.join() {

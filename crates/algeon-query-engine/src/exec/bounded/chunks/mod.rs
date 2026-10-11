@@ -1,3 +1,14 @@
+//! Source chunk work shared by compiled source tasks and the bounded
+//! aggregate path: reading one chunk or chunk batch, the source-adjacent
+//! filter and projection stages that run on the decoded frame, and the retry
+//! protocol that halves a chunk by row group after a resource failure.
+//!
+//! Everything here runs on whichever execution attempt it is given, so the
+//! same functions serve the coordinator inline and a lane job on its own
+//! stream. Outputs stay private to the caller until it commits them; a
+//! `SourceReadFact::ChunkCommitted` is recorded only by the function that
+//! owns that commit.
+
 use super::*;
 use crate::exec::source::{ScheduledLocalParquetReadOutput, read_local_parquet_chunk, read_local_parquet_chunk_batch};
 

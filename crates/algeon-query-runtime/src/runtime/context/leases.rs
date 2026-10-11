@@ -66,6 +66,12 @@ impl ExecutionContext {
         self.derive_attempt_work_lease(None, attempt_auxiliary_permit).map(Some)
     }
 
+    /// Leases the service stream and derives the work context once the
+    /// auxiliary permit is held. The permit comes first so an attempt waiting
+    /// on its own envelope never holds a global pool stream while it waits.
+    /// The lease carries the plan's stream scope, extended with the source
+    /// worker when one is named, so stream observations correlate to the job
+    /// that issued them.
     fn derive_attempt_work_lease(
         &self,
         source_worker: Option<(RuntimeTaskId, RuntimeWorkerId)>,

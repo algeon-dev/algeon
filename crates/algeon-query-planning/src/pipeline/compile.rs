@@ -1,4 +1,20 @@
 //! QueryPlan to CompiledPipeline graph construction.
+//!
+//! Compilation is a function of the plan alone. Tasks are emitted in a
+//! reachable postorder of the plan from the sink, so every producer task
+//! precedes its consumers and ids equal positions. One plan node becomes one
+//! task, except a join, which becomes a build, probe and materialize trio, and
+//! a host sink, which appends a `sink_materialize` task that belongs to no plan
+//! node. One resident resource is created per plan node for its output. Its
+//! lifetime is `SinkOutput` when it is the GPU-resident result and
+//! `BetweenTasks` when a task reads it; `TaskLocal` is the fallback for an
+//! output nothing reads, which plan validation already rules out. Barriers
+//! follow the blocking operators: a source chunk boundary per Parquet source,
+//! an aggregate boundary per aggregate or window, build-before-probe and
+//! materialization per join, a sort boundary per sort, and one sink boundary.
+//! The schedule validator in `validate` checks the result before anything
+//! executes. The design contract is the section "What the GPU compiler
+//! produces" in `website/docs/design/native-lowering.mdx`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -54,6 +70,11 @@ pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Resu
 }
 
 /// Compiles a plan and reports a refused plan as a structured rejection.
+///
+/// An `InvalidPlan` error from graph construction becomes a
+/// `CompiledPipelineGraphNotConstructible` rejection, because admission reports
+/// it against the plan instead of failing the query. Any other error code is a
+/// defect in the compiler's inputs and propagates.
 pub(crate) fn compile_pipeline_outcome(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<PipelineCompilation> {
     let pipeline = match compile_pipeline_graph(plan, analysis) {
         Ok(GraphCompilation::Graph(pipeline)) => pipeline,
@@ -97,6 +118,10 @@ fn contract_rejection_error(rejection: &Rejection) -> QueryError {
     )
 }
 
+/// Stages run in the dependency order of their outputs: ids, then join plans
+/// because build and probe tasks embed them, then tasks and edges, then the
+/// sink task because it is a consumer the resources must record, then the
+/// task and resource contracts, which read the edges, and finally barriers.
 fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<GraphCompilation> {
     if let Some(rejection) = analysis.first_rejection() {
         return Ok(GraphCompilation::Rejected(rejection));
@@ -129,6 +154,8 @@ fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Re
     Ok(GraphCompilation::Graph(CompiledPipeline::new(tasks, edges, barriers, resources, sink)))
 }
 
+/// One input edge of the plan, with the role the consumer gives that input.
+/// A node that reads one producer through two inputs yields two entries.
 #[derive(Debug, Clone, Copy)]
 struct PlanDependency {
     producer: NodeId,
@@ -136,6 +163,9 @@ struct PlanDependency {
     input_role: InputRole,
 }
 
+/// Pipeline tasks assigned to one plan node. A join owns three consecutive
+/// ids in build, probe, materialize order; every other node owns one. The
+/// materialize task is the join's output task for edges and resources.
 #[derive(Debug, Clone, Copy)]
 enum NodeTasks {
     Single { task: PipelineTaskId },
@@ -155,6 +185,8 @@ impl NodeTasks {
             (Self::Join { build, .. }, InputRole::JoinBuildInput { .. }) => build,
             (Self::Join { probe, .. }, InputRole::JoinProbeInput { .. }) => probe,
             (Self::Single { task }, _) => task,
+            // A join's plan inputs always carry a join role; this arm only
+            // keeps the match total.
             (Self::Join { probe, .. }, _) => probe,
         }
     }
@@ -226,6 +258,9 @@ fn collect_dependencies(
     Ok(dependencies)
 }
 
+/// Rejects an analysis built for a different plan. Edge construction reads
+/// the edge contract by (producer, consumer, role) and would otherwise emit a
+/// wrong edge kind for a dependency the analysis never saw.
 fn validate_analysis_covers_plan(
     plan: &QueryPlan,
     analysis: &CapabilityAnalysis,
@@ -279,6 +314,9 @@ fn assign_task_ids(plan: &QueryPlan, node_order: &[NodeId]) -> Result<BTreeMap<N
     Ok(task_ids)
 }
 
+/// One output resource per node at its postorder position. Resource ids are
+/// therefore in producer order, which the contract resolver relies on to
+/// resolve an input resource before the resources it feeds.
 fn assign_resource_ids(node_order: &[NodeId]) -> BTreeMap<NodeId, ResidentResourceId> {
     node_order.iter().enumerate().map(|(index, node_id)| (*node_id, ResidentResourceId::new(index))).collect()
 }
@@ -521,6 +559,10 @@ fn append_join_internal_edges(
     Ok(())
 }
 
+/// Adds a control edge from each dynamic-filter producer task to its consumer
+/// task so the consumer starts after the filter exists. A self edge, and an
+/// edge the data flow already provides, are skipped. The schedule validator
+/// proves the graph stays acyclic with these edges added.
 fn append_dynamic_filter_control_edges(
     plan: &QueryPlan,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
@@ -576,6 +618,10 @@ fn dynamic_filter_consumer_task(
     }
 }
 
+/// Appends the host materialization task for a `HostArrow` sink and returns
+/// its id. A GPU-resident or deferred host sink gets no task: the root output
+/// resource stays resident with a `SinkOutput` lifetime, and for the deferred
+/// form the embedding frontend materializes it.
 fn append_sink_task(
     plan: &QueryPlan,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
@@ -640,6 +686,10 @@ fn build_resources(
     Ok(resources)
 }
 
+/// One barrier per blocking operator, with the operator's task upstream and
+/// the consumer tasks of its output downstream. The sink boundary comes last
+/// and has no downstream tasks; its upstream is the sink task or, without one,
+/// the root output task.
 fn build_barriers(
     plan: &QueryPlan,
     node_order: &[NodeId],
@@ -733,6 +783,8 @@ fn downstream_tasks(
         .filter(|dependency| dependency.producer == producer)
         .map(|dependency| tasks_for(task_ids, dependency.consumer).map(|tasks| tasks.input_task(dependency.input_role)))
         .collect::<Result<Vec<_>>>()?;
+    // A consumer that reads the output through two inputs appears once; a
+    // barrier gates whole tasks.
     tasks.sort_unstable();
     tasks.dedup();
     Ok(tasks)
@@ -765,6 +817,9 @@ fn edge_contract_for_dependency<'a>(
     })
 }
 
+/// Join roles take precedence over the shared-producer mark: a shared producer
+/// feeding a join input is an ordinary join input edge, and the validator
+/// counts join input edges toward the shared resource's consumer coverage.
 fn edge_kind_for_dependency(contract: &EdgeContract, input_role: InputRole) -> PipelineEdgeKind {
     match input_role {
         InputRole::JoinBuildInput { .. } => PipelineEdgeKind::JoinBuildInput,

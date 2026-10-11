@@ -3,6 +3,11 @@ use super::{
     observe_device_memory_bytes,
 };
 
+/// Concatenates chunk frames, in order, into one resident frame.
+///
+/// A single chunk passes through. Otherwise one cuDF concat allocates the full output
+/// while every input stays alive until the call returns; the peak is the inputs plus the
+/// output. On error the inputs drop.
 pub(super) fn concatenate_join_source_chunks(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

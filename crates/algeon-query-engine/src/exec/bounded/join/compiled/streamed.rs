@@ -1,3 +1,10 @@
+//! Finalization and metric rows of streamed one-shot and partitioned hash joins.
+//!
+//! A streamed probe yields one output frame per probe chunk or partition and accumulates counters
+//! in `StreamedOneShotJoinSummary` or `StreamedPartitionedJoinSummary`. The materialize stage then
+//! concatenates the frames, or passes them on as a stream, and writes one join metric row for the
+//! node from the summary. A lazy stream writes that row when it is exhausted instead.
+
 use std::collections::BTreeMap;
 
 use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
@@ -8,6 +15,10 @@ use super::{
     concatenate_streamed_hash_join_outputs, probe_side, release_bounded_join_side_frame,
 };
 
+/// Concatenates the per-chunk outputs of a streamed one-shot join and records its metrics.
+///
+/// The build frame is released before the concatenation allocates the combined output. The metric
+/// row is written only after the concatenation succeeded.
 pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -35,6 +46,9 @@ pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
     );
     Ok(output)
 }
+
+/// Concatenates the per-partition outputs of a streamed partitioned hash join and records its
+/// metrics. The probe stage has already released the build partitions.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -63,6 +77,8 @@ pub(super) fn execute_compiled_streamed_partitioned_hash_join_materialize(
     Ok(output)
 }
 
+/// Writes the node's join metric row and the one-shot counters (index, materialization and output
+/// bytes) from the streamed summary.
 #[expect(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
@@ -109,6 +125,8 @@ pub(super) fn record_streamed_one_shot_join_metrics(
     ));
 }
 
+/// Writes the metric row and one-shot counters for a single non-streamed one-shot join with a
+/// residual predicate.
 pub(super) fn record_one_shot_join_chunk_metrics(
     node_id: NodeId,
     node: &JoinNode,
@@ -149,6 +167,9 @@ pub(super) fn record_one_shot_join_chunk_metrics(
     ));
 }
 
+/// Writes the node's join metric row from the streamed summary, plus a `join_strategy` decision
+/// that records the partition count, the partition byte target, and the build and probe bytes after
+/// partitioning.
 #[expect(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"

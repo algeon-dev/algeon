@@ -1,3 +1,14 @@
+//! Resident frame streams: the `FrameStream` payload form of a compiled
+//! resource.
+//!
+//! A stream lets a consumer pull frames one at a time, so the producer's
+//! whole output need not be resident at once. Frames already yielded belong to the
+//! consumer; storage the producer still retains (unread inputs, merge state,
+//! finalized frames not yet pulled) belongs to the producer until its
+//! `release` runs. Release needs the execution attempt, so a stream payload
+//! is never released by plain `Drop`: `CompiledGpuTaskExecutor::release_resource`
+//! calls `release_all` for every stream the scheduler returns.
+
 use std::collections::VecDeque;
 
 use query_planning::{
@@ -13,6 +24,12 @@ use crate::exec::{
     operators::execute_filter_with_budget,
 };
 
+/// Frames a compiled consumer pulls in order.
+///
+/// Eager payloads hold every frame in `frames`. Lazy payloads hold a
+/// `producer` and may also hold a prefix of frames; `next_frame` drains the
+/// prefix before asking the producer. Row and byte figures are hints taken at
+/// construction and are not updated as frames are pulled.
 pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     /// Advisory device bytes for one yielded frame. Eager payloads carry
     /// their largest observed frame; producers derive the hint from their
@@ -70,6 +87,8 @@ pub(in crate::exec::bounded) trait ResidentFrameStreamSource: Send {
     }
 }
 
+/// Wrapper that lets the payload release its source once by value
+/// while `next_frame` keeps borrowing it.
 struct ResidentFrameStreamProducer {
     inner: Option<Box<dyn ResidentFrameStreamSource>>,
 }
@@ -151,6 +170,12 @@ impl ResidentFrameStreamPayload {
         }
     }
 
+    /// An independent cursor over the same content for another consumer.
+    ///
+    /// An eager alias clones each frame handle, which shares the device
+    /// buffers; the copied `device_bytes` therefore counts the same storage
+    /// twice as a hint. A lazy alias asks the source for its own cursor and is
+    /// `None` when the source cannot replay.
     pub(super) fn try_alias(&self) -> Option<Self> {
         if let Some(producer) = &self.producer {
             return Some(Self::from_producer(
@@ -174,10 +199,14 @@ impl ResidentFrameStreamPayload {
         self.producer.is_some()
     }
 
+    /// `true` only when nothing can be pulled; a lazy stream with no frames
+    /// yet is not empty.
     pub(in crate::exec::bounded) fn is_empty(&self) -> bool {
         self.frames.is_empty() && self.producer.is_none()
     }
 
+    /// Frames already resident in the payload. Frames a producer has not
+    /// yielded yet are not counted.
     pub(in crate::exec::bounded) fn len(&self) -> usize {
         self.frames.len()
     }
@@ -206,6 +235,9 @@ impl ResidentFrameStreamPayload {
         }
     }
 
+    /// Drains the stream into owned frames and releases the producer on both
+    /// the success and the error path, so a failed drain leaves no retained
+    /// producer storage behind.
     pub(in crate::exec::bounded) fn into_remaining_frames_owned(
         mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -215,15 +247,21 @@ impl ResidentFrameStreamPayload {
         result
     }
 
+    /// Drops the resident frames. Their device memory is released by the
+    /// frame handles' own `Drop`, so no execution attempt is needed.
     pub(in crate::exec::bounded) fn release_remaining_frames(&mut self) {
         self.frames.clear();
     }
 
+    /// Releases producer-retained storage. Idempotent; later calls find no
+    /// producer.
     pub(in crate::exec::bounded) fn release_producer(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         let Some(producer) = self.producer.take() else { return };
         producer.release(execution);
     }
 
+    /// Releases everything the payload still holds. This is the release hook
+    /// the executor runs for a stream the scheduler returns.
     pub(in crate::exec::bounded) fn release_all(mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         self.release_remaining_frames();
         self.release_producer(execution);
@@ -233,12 +271,24 @@ impl ResidentFrameStreamPayload {
 #[derive(Clone)]
 enum UnaryMappedResidentFrameStreamOperator {
     Filter(FilterNode),
-    DynamicFilter { filter: FilterNode, route: DynamicFilterRoute, dynamic_filter: DynamicFilter },
+    /// A filter whose predicate came from a dynamic filter route; executes
+    /// like `Filter` and additionally reports post-decode row counts for the
+    /// route.
+    DynamicFilter {
+        filter: FilterNode,
+        route: DynamicFilterRoute,
+        dynamic_filter: DynamicFilter,
+    },
     Projection(ProjectionNode),
 }
 
+/// Lazy source that applies one filter or projection to each frame of an
+/// input stream as it is pulled, so the operator output is never fully
+/// resident unless a consumer collects it.
 struct UnaryMappedResidentFrameStreamSource {
     node_id: NodeId,
+    /// `None` after release. Taken by value so the input's own producer is
+    /// released through the attempt; a plain drop would skip that release.
     input: Option<ResidentFrameStreamPayload>,
     operator: UnaryMappedResidentFrameStreamOperator,
 }
@@ -318,6 +368,8 @@ impl ResidentFrameStreamSource for UnaryMappedResidentFrameStreamSource {
             },
             Some(Err(error)) => Some(Err(error)),
             None => {
+                // Exhaustion releases the input at once so its retained
+                // storage does not wait for the owning payload's release.
                 self.release(execution);
                 None
             },
@@ -331,6 +383,9 @@ impl ResidentFrameStreamSource for UnaryMappedResidentFrameStreamSource {
     }
 }
 
+/// Wraps `stream` in a lazy filter. The input's row and byte hints are kept:
+/// a filter can only shrink its input, so they remain upper bounds for the
+/// consumers that size work from them.
 pub(super) fn map_filter_resident_frame_stream(
     node_id: NodeId,
     stream: ResidentFrameStreamPayload,
@@ -375,6 +430,9 @@ pub(super) fn map_dynamic_filter_resident_frame_stream(
     )
 }
 
+/// Wraps `stream` in a lazy projection. Row hints carry over unchanged; the
+/// column count comes from the projection schema, while the byte hints stay
+/// the input's because the projected width is not modelled here.
 pub(super) fn map_projection_resident_frame_stream(
     node_id: NodeId,
     stream: ResidentFrameStreamPayload,

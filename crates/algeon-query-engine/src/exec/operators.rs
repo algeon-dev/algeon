@@ -1,3 +1,18 @@
+//! cuDF-level operators over one `DataFrame`: filter, limit and window execution, plus the
+//! re-exports through which the bounded and unbounded executors reach aggregate and
+//! projection execution.
+//!
+//! The unbounded `Exec` path calls the plain functions, which allocate on the context
+//! runtime's stream and memory resource. Bounded execution calls the `*_with_budget` variants
+//! with an `ExecutionBudgetToken`. The token shares one stream member of the attempt's query
+//! memory domain, so every cuDF call made on `token.exec()` is charged to the same allocator
+//! that enforces the grant. The token's stage request (`budget_bytes`) is recorded in budget
+//! reports and failure facts, and the filtered aggregate paths read it to size row chunks. It
+//! adds no limit of its own (admission design page, "The allocation path").
+//!
+//! Window execution takes no token. Its cuDF calls use the context runtime's handles and
+//! produce no budgeted-execution reports.
+
 use std::{sync::Arc, time::Instant};
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
@@ -49,6 +64,14 @@ pub(super) use projection::{
     execute_projection_with_budget, execute_projection_with_budget_and_prepared, projection_regexp_replace_prepare,
 };
 
+/// Creates the `ExecutionBudgetToken` for one execution boundary such as a chunk operator
+/// or an aggregate stage.
+///
+/// `budget_bytes` becomes the token's stage request and `budget_boundary` its diagnostic
+/// label. The token shares the context stream's member of the query memory domain and cannot
+/// raise or lower the grant's cap. Fails with `InvalidPlan` when `budget_bytes` does not fit
+/// `usize`. Errors from the context keep their own code and gain `budget_boundary` and
+/// `stage_request_bytes` facts when they lack them.
 pub(super) fn execution_budget_token_for_boundary(
     context: &ExecutionContext,
     budget_bytes: u64,
@@ -77,6 +100,11 @@ pub(super) fn attach_budget_token_failure_facts(error: QueryError, token: &Execu
     error.with_memory_failure(memory_failure(&detail))
 }
 
+/// Records the budget report of `outcome` under `operation` in `metrics` and returns the value.
+///
+/// The report carries the token member's allocator high-water mark and the output's retained
+/// bytes and rows. `metrics` folds the peaks into the query's per-task maxima and appends a
+/// budgeted-execution event.
 pub(super) fn budgeted_value<T>(
     outcome: BudgetedExecutionOutcome<T>,
     metrics: &ExecutionMetrics,
@@ -87,6 +115,14 @@ pub(super) fn budgeted_value<T>(
     value
 }
 
+/// Filters `input` by `node.predicate` with every cuDF call made under `token`.
+///
+/// A non-negated `col IN (literals)` over a bare column runs as `filter_isin` against a device
+/// series of the literals when the list is longer than the row-predicate expansion limit
+/// (`ExpressionLoweringPolicy::DEFAULT_ROW_PREDICATE_IN_LIST_EXPANSION_LIMIT`) and its
+/// literals are all one of Int32, Int64, UInt32 or UInt64. Shorter lists and every other
+/// predicate are lowered to a cuDF expression and evaluated by `filter_expr`. The output can
+/// share column buffers with `input`, so it is wrapped with the source residency of `input`.
 pub(super) fn execute_filter_with_budget(
     context: &ExecutionContext,
     node: &FilterNode,
@@ -121,6 +157,12 @@ pub(super) fn execute_filter_with_budget(
     GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
+/// Uploads the literals of a long `IN` list as a device series for `filter_isin`.
+///
+/// Returns `None`, and uploads nothing, when the predicate does not qualify; the caller then
+/// lowers it as a general expression. Qualifying needs a non-negated list over a bare column,
+/// a length above the row-predicate expansion limit, and literals that all convert to the
+/// type of the first literal.
 fn literal_in_list_filter_series(
     context: &ExecutionContext,
     predicate: &Expr,
@@ -202,6 +244,8 @@ fn collect_in_list_literals<T: Copy>(
         .collect()
 }
 
+/// Applies `node.spec` (offset and fetch) to `input`. Returns `input` itself, with no cuDF
+/// call, when the slice keeps every row.
 pub(super) fn execute_limit(
     context: &ExecutionContext,
     node: &LimitNode,
@@ -217,6 +261,15 @@ pub(super) fn execute_limit(
     GpuDataFrame::try_new_with_source_residency(output.into_frame(), &input)
 }
 
+/// Appends the window function columns of `node` to `input` and selects `output_schema`.
+///
+/// Functions run grouped by kind, in this order: whole-partition aggregates, cumulative aggregates,
+/// RANK, ROW_NUMBER, LAG/LEAD. Each step appends columns to the same frame and keeps the input row
+/// order, so the result has the input's rows in the input's order. RANK and ROW_NUMBER count rows in
+/// frame order and are correct only when `input` is already ordered by the window's partition keys
+/// and then its ORDER BY keys. Lowering is responsible for that order
+/// (`website/docs/design/native-lowering.mdx#partitions-and-result-semantics`); the other kinds sort
+/// their own work frames.
 pub(super) fn execute_window(
     context: &ExecutionContext,
     node: &WindowNode,
@@ -282,6 +335,13 @@ pub(super) fn execute_window(
     GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
+/// Whole-partition window aggregates: `agg(x) OVER (PARTITION BY ...)` with no ORDER BY.
+///
+/// Runs a grouped aggregate over the partition keys, left-merges each partition's result back
+/// onto every input row, and restores the input row order. The merge matches NULL partition
+/// keys with each other (`MergeOptions` defaults to `NullEquality::Equal`), as PARTITION BY
+/// requires. With no partition keys the aggregate is global and a constant key column
+/// broadcasts its single row. The aggregate goes through the unbounded `execute_aggregate`.
 fn execute_partition_window_aggregate(
     context: &ExecutionContext,
     node: &WindowNode,
@@ -421,6 +481,8 @@ fn execute_partition_window_aggregate(
     )
 }
 
+/// Schema of the intermediate grouped aggregate: the partition key fields from the input
+/// schema, then the whole-partition aggregate fields from the output schema.
 fn window_aggregate_schema(
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
@@ -455,6 +517,12 @@ fn window_aggregate_schema(
     Ok(Arc::new(Schema::new(fields.into_iter().cloned().collect::<Vec<_>>())))
 }
 
+/// SUM, MIN or MAX over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`.
+///
+/// Builds a narrow work frame (partition keys, ORDER BY keys, value columns and a row index),
+/// sorts it by partition and then ORDER BY keys, runs libcudf grouped scans over it, and
+/// restores input order with a stable sort on the row index before attaching the results to
+/// `frame`. The payload columns of `frame` take part in neither sort.
 fn execute_cumulative_window_aggregate(
     context: &ExecutionContext,
     node: &WindowNode,
@@ -591,6 +659,12 @@ fn execute_cumulative_window_aggregate(
             .with_fact("scan_column", scan_name.as_str())
         })?;
 
+        // Rows whose value is NULL come out of the grouped scan as NULL, while a SQL running
+        // aggregate carries the earlier value across them. A second scan counts the valid values
+        // seen so far in the partition (`seen`). Where `seen > 0`, the output is the forward-filled
+        // scan. That is safe across partition boundaries: `seen > 0` means a valid row of the same
+        // partition precedes this one, so the fill source lies inside the partition. Elsewhere the
+        // scan's NULL stands; SQL also yields NULL for a prefix with no valid values.
         let valid_name =
             unique_temp_column_name(&working, &format!("__algeon_native_window_cumulative_valid_{function_index}"));
         let valid_expr = when(col(value_name.as_str()).is_null()).then(0i32).otherwise(1i32).alias(valid_name.as_str());
@@ -683,6 +757,8 @@ fn execute_cumulative_window_aggregate(
     Ok(output)
 }
 
+/// Maps a window aggregate to its libcudf scan kind. Only SUM, MIN and MAX have one; any other
+/// function fails with `UnsupportedOperator`.
 fn cumulative_scan_agg(function: AggregateFunction) -> Result<ScanAgg> {
     match function {
         AggregateFunction::Sum => Ok(ScanAgg::Sum),
@@ -697,6 +773,12 @@ fn cumulative_scan_agg(function: AggregateFunction) -> Result<ScanAgg> {
     }
 }
 
+/// `RANK()`, computed as (earlier rows in the partition) + 1 - (earlier rows among the peers).
+///
+/// Both counts come from `group_cumcount`, one grouped by the partition keys and one by the
+/// partition and ORDER BY keys. The result equals the SQL rank only when `frame` is ordered by
+/// partition keys and then ORDER BY keys; execution does not sort here. A constant key column
+/// stands in for an absent PARTITION BY, and all work columns are dropped before returning.
 fn execute_rank_window(
     context: &ExecutionContext,
     node: &WindowNode,
@@ -775,6 +857,12 @@ fn ensure_row_number_capacity(output_type: &ArrowDataType, rows: usize) -> Resul
     Ok(())
 }
 
+/// `ROW_NUMBER()` as `output_type` (Int32, Int64 or UInt64): a sequence column when there is
+/// no PARTITION BY, otherwise the running row count within the partition plus one.
+///
+/// Numbers follow frame order, so `frame` must already be ordered by the window's partition
+/// keys and then ORDER BY keys. Fails with `SizeOverflow` before any cuDF call when the row
+/// count exceeds what `output_type` can number.
 fn execute_row_number_window(
     context: &ExecutionContext,
     node: &WindowNode,
@@ -845,6 +933,14 @@ fn execute_row_number_window(
     Ok(output)
 }
 
+/// `LAG` or `LEAD` of `value_expr` by `offset` rows within each partition.
+///
+/// Evaluates the value into a work column, sorts a narrow work frame by partition keys and
+/// then ORDER BY keys (so the result does not depend on the order of `frame`), shifts per
+/// group, and restores input order by sorting on the shifted row index before attaching the
+/// column to `frame`. Rows shifted past a partition edge take `default`, or NULL of the output
+/// type. libcudf receives a LEAD offset as a negative shift; offsets that do not fit `i32`
+/// fail with `InvalidPlan`.
 #[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
 fn execute_lag_lead_window(
     context: &ExecutionContext,
@@ -1048,6 +1144,8 @@ fn execute_lag_lead_window(
     Ok(result)
 }
 
+/// Builds the fill scalar for rows a shift leaves uncovered: the literal `default`, or NULL of
+/// the output type. Decimal, temporal and interval defaults fail with `UnsupportedExpression`.
 fn build_lag_lead_value_fill_scalar(
     context: &ExecutionContext,
     default: Option<&LiteralValue>,
@@ -1115,6 +1213,9 @@ fn build_lag_lead_value_fill_scalar(
     }
 }
 
+/// Returns the partition key column names of a window node. With no PARTITION BY it appends a
+/// constant Int32 key column, so grouped operations see one partition, and records the new
+/// column name in `temp_columns` for the caller to drop.
 fn rank_partition_keys(
     _context: &ExecutionContext,
     frame: DataFrame,

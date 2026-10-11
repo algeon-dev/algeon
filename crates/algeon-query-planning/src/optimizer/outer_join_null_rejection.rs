@@ -1,3 +1,26 @@
+//! Outer-join null rejection: removes a left join's null-extended rows when a
+//! consumer cannot keep them.
+//!
+//! The first rewrite matches `Projection(Filter(LeftJoin))` where the filter
+//! has one `IS NULL` term on a right-side join key and neither the projection
+//! nor the remaining terms read a right column. The join becomes a left-anti
+//! join over the left columns and the term is dropped: with `NullsDoNotMatch`
+//! a right key is null in the output iff the left row had no match, which is
+//! the anti join's row set. The second matches an inner join with
+//! `NullsDoNotMatch` whose key on one side traces, through projections,
+//! filters, sorts, aggregate group keys, inner joins and unions, to a
+//! right-side output of one left join. That join's null-extended rows carry a
+//! null key and cannot survive the inner join, so the left join becomes an
+//! inner join. A limit on the path ends the trace because null-extended rows
+//! can fill limit slots before the inner join removes them.
+//!
+//! Both rewrites edit nodes in place, so ids, routes and advisories keep their
+//! positions; the anti rewrite replaces the join's and filter's facts with the
+//! left-only schema. A rewrite is refused when any node on the traced path has
+//! a second consumer, and when the right input is large and no aggregate on
+//! the path reduces the null-extended rows first
+//! (`OuterJoinNullRejectionPolicy`). Rejection reasons are report contracts.
+
 use std::sync::Arc;
 
 use arrow::datatypes::{Schema, SchemaRef};
@@ -242,11 +265,16 @@ pub(crate) fn optimize_outer_join_null_rejection(
     Ok(OuterJoinNullRejectionResult { plan: plan.rewrite(RewrittenNodes::in_place(nodes, root))?, change, diagnostics })
 }
 
+/// Planned anti-join rewrite for one `Projection(Filter(LeftJoin))` shape.
 #[derive(Debug, Clone)]
 struct LeftAntiMarkerRewrite {
     join: JoinNode,
+    /// Left-only schema shared by the rewritten join and the filter above it.
     output_schema: SchemaRef,
+    /// Right key whose `IS NULL` test the anti join replaces.
     marker_name: String,
+    /// Filter terms other than the marker test. `None` removes the filter
+    /// node and the projection reads the join.
     remaining_predicate: Option<Expr>,
 }
 
@@ -423,10 +451,14 @@ fn parent_key_columns(join: &JoinNode, side: JoinSide) -> Vec<&ColumnRef> {
         .collect()
 }
 
+/// One path from an inner join's key to a left join whose right output it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NullRejectingTrace {
     outer_join_id: NodeId,
+    /// The inner join's key column that started the trace.
     rejecting_column: String,
+    /// Nodes from the inner join's input down to the left join, inclusive;
+    /// every one must have a single consumer for the rewrite to apply.
     path: Vec<NodeId>,
 }
 
@@ -615,6 +647,9 @@ fn null_introducing_input_is_large(plan: &QueryPlan, outer_join_id: NodeId) -> b
     OuterJoinNullRejectionPolicy::default().null_introducing_input_is_large(estimated_output_bytes(plan, right_input))
 }
 
+/// Parent counts with the sink counted as a consumer: a node that is both the
+/// plan root and an input elsewhere is shared, and rewriting it would change
+/// the result.
 fn consumer_counts(plan: &QueryPlan) -> Vec<usize> {
     let mut counts = rewrite::parent_counts(plan);
     counts[plan.sink().input().index()] += 1;

@@ -50,6 +50,11 @@ pub(super) fn project_pool_usage(usage: cudf::DeviceMemoryPoolUsage) -> AttemptA
 
 /// The report commit: disposition decision, health commit, and observation
 /// seal, always before capacity release.
+///
+/// Prepared on the releasing thread while the envelope still exists, then run
+/// inside the stream cleanup completion after the fence. It therefore carries
+/// clones of everything it needs (grant, domain, service) rather than
+/// borrowing the release, which has moved into the fence guard by then.
 pub(super) struct QueryHandleReportCommit {
     pub(super) service: Option<Arc<QueryServiceInner>>,
     pub(super) admission_request_id: AdmissionRequestId,
@@ -68,11 +73,14 @@ pub(super) struct QueryHandleReportCommit {
     pub(super) terminal_domain_usage: Option<cudf::QueryMemoryDomainUsage>,
 }
 
+/// Outcome of freezing a domain whose outputs stay resident. A failure keeps
+/// the usage read so far so the report can still show what was frozen.
 enum FrozenResidentCommit {
     Frozen(cudf::QueryMemoryDomainUsage),
     Failed { error: QueryError, usage: Option<cudf::QueryMemoryDomainUsage> },
 }
 
+/// Everything decided before the terminal report is written.
 struct SettledCapacityCommit {
     disposition: CapacityCommitDisposition,
     usage: Option<cudf::QueryMemoryDomainUsage>,
@@ -83,6 +91,15 @@ struct SettledCapacityCommit {
 }
 
 impl QueryHandleReportCommit {
+    /// Commits the attempt's terminal report.
+    ///
+    /// The steps run in this order: settle the capacity disposition from the
+    /// cleanup evidence, record any cleanup failure, commit health to the
+    /// ledger and finalize the attempt, record the `Released` lifecycle event,
+    /// then seal the observation. The returned tail (observer delivery and the
+    /// activity lease) is run by the caller after the envelope has released
+    /// capacity, because the activity destructor may reenter backend close.
+    /// `None` when the release carried no completion.
     pub(super) fn run(
         self,
         mut external_completion: Option<QueryCompletion>,
@@ -145,6 +162,12 @@ impl QueryHandleReportCommit {
         external_completion.map(|completion| completion.seal_after_gpu_cleanup(terminal_outcome))
     }
 
+    /// Decides whether the device's capacity is reusable, frozen for resident
+    /// outputs, or retained under quarantine. A resident freeze is attempted
+    /// only for a succeeded attempt whose cleanup completed and whose grant
+    /// has published output owners; a freeze that fails attestation turns a
+    /// healthy reuse into a device quarantine, since the domain then holds
+    /// bytes no owner accounts for.
     fn settle_capacity_commit(
         &self,
         evidence: CleanupEvidence,

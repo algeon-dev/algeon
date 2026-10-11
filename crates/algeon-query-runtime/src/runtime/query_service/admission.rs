@@ -1,3 +1,30 @@
+//! Queued admission: the request, its placement step, and the terminal
+//! completion payload every outcome funnels through.
+//!
+//! A request enters the controller's queue as an `AdmissionRequest` and is
+//! driven by its owner's `AdmissionWaiter`. Each `try_place` is one step under
+//! the admission mutex that either places the request on a device (a ledger
+//! grant plus a provisional lifecycle ticket, returned as `PlacedAdmission`
+//! for the service to build an envelope around; `service/transaction.rs`
+//! defines the envelope), removes it with a terminal
+//! error, or leaves it queued. Placement ends only queue membership; the
+//! attempt's grant is held until its terminal commit, as
+//! `website/docs/design/admission.mdx` specifies.
+//!
+//! Three lock rules hold throughout. The admission mutex
+//! (`AdmissionController::state`) protects the queue, the pending-preflight
+//! set, the closed flag, and the queue high-water mark. The lifecycle tracker
+//! has its own mutex and is taken inside the admission mutex when both are
+//! needed, never the other way round. No `MemoryGrant` is dropped and no
+//! `QueryCompletion` is finished while the admission mutex is held, because
+//! the grant's release observer and the completion's observers both take it.
+//!
+//! `AdmissionLifecycleTracker` is the drain fence: a ticket exists from the
+//! moment a grant is provisional until terminal cleanup has released every
+//! admission resource, and shutdown is quiescent only when no ticket remains.
+//! `QueryCompletion` is the one owner of the backend permits and the attempt
+//! finalizer for a request, from backend admission through the sealed report.
+
 #[cfg(any(test, feature = "test-hooks"))]
 use std::pin::pin;
 use std::{
@@ -45,9 +72,17 @@ pub(crate) struct AdmissionWaiter {
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
     pub(super) requested_at: Instant,
+    /// Queue deadline: the earlier of `QueueBounds::max_wait` after submission
+    /// and the caller's own deadline. It bounds only the wait for placement;
+    /// the envelope build that follows is bounded by `execution_cancellation`.
     pub(super) deadline: Option<Instant>,
     pub(super) execution_cancellation: ExecutionCancellation,
+    /// Shared with the queued request so a sweep that removes it on another
+    /// thread can leave this waiter its exact terminal error.
     pub(super) terminal: QueuedAdmissionTerminal,
+    /// True while this waiter is responsible for a request in the queue.
+    /// Cleared once, on the step that places or removes the request, after
+    /// which `Drop` has nothing to remove.
     pub(super) queued: bool,
 }
 
@@ -65,9 +100,18 @@ pub(crate) struct QueryAdmissionWaiter {
     pub(super) probe: Option<Arc<AdmissionTransactionProbe>>,
 }
 
+/// Lifecycle phase of one admitted grant, from placement to the end of its
+/// terminal cleanup.
+///
+/// Transitions are `Provisional -> Active -> ActiveCleanup` for a published
+/// handle and `Provisional -> ProvisionalCleanup` for a rollback; each cleanup
+/// phase ends when the ticket drops. Any other transition is an invariant
+/// error, which is how a double release or a drop before cleanup surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AdmissionTicketPhase {
+    /// A ledger grant exists but no handle has been published for it.
     Provisional,
+    /// The envelope validated and the handle is published.
     Active,
     /// Cleanup for an unpublished envelope. Its grant has never represented
     /// an admitted handle, so public admission snapshots must not count it.
@@ -78,6 +122,9 @@ pub(super) enum AdmissionTicketPhase {
     ActiveCleanup,
 }
 
+/// Ticket counts by phase. `cleanup` counts both cleanup phases;
+/// `published_cleanup` counts only tickets whose handle was published, which
+/// public admission snapshots still report as active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) struct AdmissionLifecycleSnapshot {
     pub(super) provisional: usize,
@@ -106,10 +153,20 @@ pub(super) struct AdmissionLifecycleTracker {
     state: Arc<Mutex<AdmissionLifecycleTrackerState>>,
 }
 
+/// A submission's place in the queue before its request exists.
+///
+/// Submission resolves device entries outside the admission mutex. Without
+/// this reservation a younger submission could be queued, selected, and
+/// placed during that window. The reservation records the submission sequence
+/// in `AdmissionState::pending_preflight`, counts against `max_waiters`, and
+/// acts as a selection barrier: no queued request with a later sequence is
+/// selected while an earlier reservation is pending. It is converted into the
+/// queued request under the mutex, or released if submission fails.
 #[derive(Debug)]
 pub(super) struct PendingPreflightReservation {
     controller: Weak<AdmissionController>,
     submission_seq: u64,
+    /// False once converted or released; `Drop` then does nothing.
     armed: bool,
 }
 
@@ -126,6 +183,9 @@ impl PendingPreflightReservation {
         self.release_if_armed();
     }
 
+    /// Replaces the reservation with the queued request. The caller holds the
+    /// admission mutex and inserts the request in the same critical section,
+    /// so the barrier lifts and the request appears atomically to selectors.
     pub(super) fn convert_locked(mut self, state: &mut AdmissionState) {
         let removed = state.pending_preflight.remove(&self.submission_seq);
         self.armed = false;
@@ -145,6 +205,8 @@ impl PendingPreflightReservation {
             Err(error) => error.into_inner().pending_preflight.remove(&self.submission_seq),
         };
         self.armed = false;
+        // Lifting the barrier can make a younger queued request selectable,
+        // and shutdown waits for the pending set to empty.
         if removed {
             controller.notify_admission_available();
         }
@@ -158,6 +220,9 @@ impl Drop for PendingPreflightReservation {
 }
 
 impl AdmissionLifecycleTracker {
+    /// Mints a provisional ticket for a grant the caller placed. The
+    /// caller holds the admission mutex, which fixes the lock order admission
+    /// mutex, then tracker mutex, for the one place both are nested.
     pub(super) fn begin_provisional(&self, controller: Weak<AdmissionController>) -> AdmissionTicket {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let id = state.next_ticket_id;
@@ -223,6 +288,9 @@ impl AdmissionLifecycleTracker {
         }
     }
 
+    /// Phase counts at one instant. Taken under the tracker mutex only, so a
+    /// caller that also holds the admission mutex sees tickets whose grant
+    /// placement it has already observed.
     pub(super) fn snapshot(&self) -> AdmissionLifecycleSnapshot {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut snapshot = AdmissionLifecycleSnapshot::default();
@@ -240,6 +308,8 @@ impl AdmissionLifecycleTracker {
         snapshot
     }
 
+    /// Whether no admitted grant, published or not, still exists anywhere
+    /// between placement and the end of its terminal cleanup.
     pub(super) fn is_quiescent(&self) -> bool {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).tickets.is_empty()
     }
@@ -247,11 +317,17 @@ impl AdmissionLifecycleTracker {
 
 /// One linear lifecycle token.  It is intentionally non-cloneable: ownership
 /// moves from admission transaction to handle and finally to cleanup.
+///
+/// The ticket is the last stage of the envelope's terminal teardown, so its
+/// drop is the point at which an attempt's admission resources are all gone.
+/// `Drop` records that fact in the tracker and wakes shutdown waiters.
 #[derive(Debug)]
 pub(super) struct AdmissionTicket {
     tracker: AdmissionLifecycleTracker,
     controller: Weak<AdmissionController>,
     id: u64,
+    /// Local mirror of the tracker's phase, kept so a transition can be
+    /// chosen without taking the tracker mutex first.
     phase: AdmissionTicketPhase,
 }
 
@@ -260,12 +336,17 @@ impl AdmissionTicket {
         self.phase.is_cleanup()
     }
 
+    /// Publishes the admission once the envelope validated and the handle
+    /// exists. Fails if the ticket is not provisional, which no caller should
+    /// be able to arrange.
     pub(super) fn transition_to_active(&mut self) -> Result<()> {
         self.tracker.transition(self.id, AdmissionTicketPhase::Provisional, AdmissionTicketPhase::Active)?;
         self.phase = AdmissionTicketPhase::Active;
         Ok(())
     }
 
+    /// Enters the cleanup phase matching the current one. Idempotent, because
+    /// rollback and terminal release can both reach it on the same ticket.
     pub(super) fn transition_to_cleanup(&mut self) -> Result<()> {
         let cleanup_phase = match self.phase {
             AdmissionTicketPhase::Provisional => AdmissionTicketPhase::ProvisionalCleanup,
@@ -305,10 +386,19 @@ impl Drop for AdmissionTicket {
     }
 }
 
+/// Everything the admission mutex protects.
+///
+/// `lifecycle` carries its own mutex and is only stored here so a holder of
+/// the admission mutex can mint tickets and read the drain fence in one
+/// critical section.
 #[derive(Debug, Default)]
 pub(super) struct AdmissionState {
     pub(super) lifecycle: AdmissionLifecycleTracker,
+    /// Ordered by `submission_seq`; `enqueue_request` keeps the order when a
+    /// pending submission is queued after a younger one.
     pub(super) queued: VecDeque<AdmissionRequest>,
+    /// Submission sequences reserved but not yet queued. The smallest one is
+    /// the selection barrier; the set's size counts against `max_waiters`.
     pub(super) pending_preflight: BTreeSet<u64>,
     /// Largest queue depth observed by this service since construction.
     ///
@@ -316,6 +406,9 @@ pub(super) struct AdmissionState {
     /// cannot miss an enqueue that raced with a later drain.  It deliberately
     /// never decreases while requests leave the queue.
     queue_high_watermark: usize,
+    /// The queue-level close flag, set under the mutex. The controller's
+    /// atomic `admission_open` gate is the one close can set without waiting;
+    /// commit paths check both.
     pub(super) closed: bool,
 }
 
@@ -485,13 +578,21 @@ pub(super) fn missing_device_admission_entry_error(device_ordinal: usize) -> Que
 /// are held.
 #[derive(Debug)]
 pub(crate) struct QueryCompletion {
+    /// The attempt's admission claim. Consumed by the terminal commit on the
+    /// admitted path, or by `finish_not_admitted` on every other path.
     attempt_admission: Option<AttemptAdmission>,
     // Outlives `attempt_admission`, which is consumed before the seal: it
     // seals the attempt's observation with the attempt report.
     attempt_report: Option<AttemptReportPublisher>,
+    /// Holds the backend observation scope open until the report is sealed
+    /// and delivered. Released before the activity lease runs.
     observation_permit: Option<ObservationPermit>,
+    /// Opaque caller lease whose destructor may reenter backend close. It is
+    /// always the last thing a completion releases.
     observation_activity: Option<QueryActivityLease>,
     completion_dispatcher: Option<ObservationCompletionDispatcher>,
+    /// Retains the backend resource generation. Moved into the envelope at
+    /// publication; on every other path it is the first thing released.
     gpu_resource_permit: Option<GpuResourcePermit>,
 }
 
@@ -552,12 +653,18 @@ impl QueryCompletion {
         self.attempt_admission.as_ref().map(AttemptAdmission::monotonic_ns)
     }
 
+    /// Marks the attempt's observation as entering cleanup. Called once when
+    /// release begins so the report's cleanup timing starts before any GPU
+    /// cleanup job is submitted.
     pub(super) fn begin_query_cleanup(&self) {
         if let Some(attempt_report) = &self.attempt_report {
             attempt_report.begin_cleanup();
         }
     }
 
+    /// Finishes a request that never published a handle with `error` as its
+    /// terminal cause. Runs the observation seal and activity drop, so it must
+    /// not be called while the admission mutex is held.
     pub(super) fn finish_error(self, error: &QueryError) {
         // Retain the bounded engine-owned summary while the original error is
         // still borrowed. `finish` deliberately consumes only its closed
@@ -661,6 +768,11 @@ impl QueryCompletion {
         self.dispatch_after_gpu_cleanup(fallback);
     }
 
+    /// Seals and delivers on the observation executor when the completion
+    /// has one, otherwise inline. The split keeps an observer that blocks or
+    /// an activity destructor that reenters close off the thread that
+    /// finished the request, which may be a pool worker or the admission
+    /// caller.
     fn dispatch_after_gpu_cleanup(mut self, fallback: RuntimeTerminalOutcome) {
         debug_assert!(self.gpu_resource_permit.is_none(), "GPU permit must leave before observer completion");
         if let Some(dispatcher) = self.completion_dispatcher.take() {
@@ -781,6 +893,9 @@ impl QueryCompletionActivityTail {
 }
 
 impl Drop for QueryCompletion {
+    /// Recovery for a completion that was neither finished nor sealed. Every
+    /// explicit path empties the fields first, so reaching the body below
+    /// means an unwind or a dropped future abandoned the request.
     fn drop(&mut self) {
         if self.attempt_report.is_none()
             && self.attempt_admission.is_none()
@@ -832,6 +947,9 @@ pub(in crate::runtime::query_service) struct PlacedAdmission {
     pub(in crate::runtime::query_service) lifecycle_ticket: AdmissionTicket,
 }
 
+/// The ledger side of a placement: the device and its committed grant.
+/// Dropping it before an envelope exists returns the grant through the
+/// ledger's release observer, which takes the admission mutex.
 #[derive(Debug)]
 pub(super) struct PlacedQuery {
     pub(super) device_ordinal: usize,
@@ -841,6 +959,22 @@ pub(super) struct PlacedQuery {
 impl AdmissionWaiter {
     /// Places this queued admission if it is runnable, returning the commit
     /// that builds and publishes its envelope.
+    ///
+    /// One call is one step under the admission mutex. `Ok(None)` means the
+    /// request is still queued: another waiter is older and runnable, or every
+    /// compatible device is at capacity. Every `Err` has removed the request
+    /// and finished its completion; a waiter that sees an error has nothing
+    /// left to clean up. The removal and the completion are separated by a
+    /// `drop(state)` on each path because the completion seals the attempt's
+    /// observation, and its observers may take the admission mutex or reenter
+    /// backend close.
+    ///
+    /// The ledger transaction in `try_place_on_device` can decline a device
+    /// the queue selected, because selection ranks a snapshot and the ledger
+    /// decides on current state. A declined placement at the queue deadline
+    /// is reported as `memory_grant_wait_timeout` for that device instead of
+    /// the plain `queue_wait_elapsed`, so a memory-bound wait keeps its own
+    /// taxonomy.
     pub(crate) fn try_place(&mut self) -> Result<Option<PlacedAdmission>> {
         if let Some(error) = self.terminal.take() {
             self.queued = false;
@@ -935,6 +1069,7 @@ impl AdmissionWaiter {
                     None,
                 );
             }
+            // Completion observers may take the admission mutex; release it first.
             drop(state);
             finish_removed_request_error(removed, &error);
             return Err(error);
@@ -954,6 +1089,7 @@ impl AdmissionWaiter {
                     None,
                 );
             }
+            // Completion observers may take the admission mutex; release it first.
             drop(state);
             finish_removed_request_error(removed, &error);
             return Err(error);
@@ -982,6 +1118,7 @@ impl AdmissionWaiter {
                         None,
                     );
                 }
+                // Completion observers may take the admission mutex; release it first.
                 drop(state);
                 finish_removed_request_error(removed, &error);
                 return Err(error);
@@ -1009,6 +1146,7 @@ impl AdmissionWaiter {
                             None,
                         );
                     }
+                    // Completion observers may take the admission mutex; release it first.
                     drop(state);
                     finish_removed_request_error(removed, &error);
                     return Err(error);
@@ -1037,6 +1175,7 @@ impl AdmissionWaiter {
                         requested_query_cap_bytes,
                         self.controller.queue_member_count_locked(&state),
                     );
+                    // Completion observers may take the admission mutex; release it first.
                     drop(state);
                     finish_removed_request_error(removed, &error);
                     return Err(error);
@@ -1056,6 +1195,8 @@ impl AdmissionWaiter {
                 );
                 self.queued = false;
                 self.controller.notify_admission_available();
+                // The grant's release observer and the completion's observers both
+                // take the admission mutex; neither may run under the guard.
                 drop(state);
                 drop(placed_query);
                 finish_removed_request_error(Some(admitted), &error);
@@ -1103,6 +1244,7 @@ impl AdmissionWaiter {
                 self.controller.queue_member_count_locked(&state),
                 self.controller.queue_bounds.max_waiters,
             );
+            // Completion observers may take the admission mutex; release it first.
             drop(state);
             finish_removed_request_error(removed, &error);
             return Err(error);
@@ -1119,9 +1261,16 @@ impl AdmissionWaiter {
 
     /// Waits until this request is placed or rejected. A ledger transition,
     /// cancellation, and the queue deadline each end one wait.
+    ///
+    /// Dropping the returned future removes the request from the queue
+    /// through the waiter's `Drop`; the caller's runtime is never blocked.
     pub(crate) async fn place_async(&mut self) -> Result<PlacedAdmission> {
         let controller = Arc::clone(&self.controller);
         loop {
+            // `Notify::notify_waiters` wakes only futures already registered,
+            // so the `Notified` is created and enabled before the step. A
+            // wakeup that lands between the step and the await is then kept
+            // instead of lost.
             let notified = controller.admission_notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
@@ -1135,6 +1284,8 @@ impl AdmissionWaiter {
                 }
             };
             match self.remaining_wait() {
+                // The deadline has passed; the next step reports the timeout
+                // and removes the request rather than this loop deciding it.
                 Some(remaining_wait) if remaining_wait.is_zero() => continue,
                 Some(remaining_wait) => {
                     let _ = time::timeout(remaining_wait, wake).await;
@@ -1205,6 +1356,9 @@ impl QueryAdmissionWaiter {
 }
 
 impl Drop for AdmissionWaiter {
+    /// A waiter dropped while its request is still queued is the caller's
+    /// cancellation: the request is removed and finished as `Cancelled`. A
+    /// waiter whose step already placed or removed the request does nothing.
     fn drop(&mut self) {
         if !self.queued {
             return;
@@ -1260,6 +1414,8 @@ pub(super) fn remove_queued_request(
     }
 }
 
+/// Finishes a request removed from the queue with `error`. Must run without
+/// the admission mutex held; see `QueryCompletion::finish_error`.
 pub(super) fn finish_removed_request_error(request: Option<AdmissionRequest>, error: &QueryError) {
     if let Some(request) = request {
         request.completion.finish_error(error);
@@ -1299,6 +1455,8 @@ pub(super) fn finish_expired_queued_requests(expired: Vec<(AdmissionRequest, Run
     }
 }
 
+/// Finishes every request a service close took from the queue. The recorded
+/// queue depth is zero because close empties the queue in one take.
 pub(super) fn finish_closed_queued_requests(closed: Vec<AdmissionRequest>) {
     for request in closed {
         let error = service_closed_error();

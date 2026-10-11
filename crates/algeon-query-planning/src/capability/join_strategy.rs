@@ -1,3 +1,9 @@
+//! Join strategy vocabulary and the evidence behind a size-driven choice.
+//!
+//! [`JoinStrategy`] labels are the `join_strategy` fact value in metric rows
+//! and diagnostics. `classify_join` and `choose_join_strategy` in the parent
+//! module produce them; this module only names and records.
+
 use std::collections::BTreeMap;
 
 use crate::{
@@ -21,12 +27,17 @@ pub enum JoinStrategy {
     /// Partition a keyed join whose residual predicate is evaluated within the
     /// mixed keyed/residual path instead of as a reusable equi hash join.
     PartitionedMixedKeyedResidual,
+    /// Keyed semi, anti, or mark join that builds a key set from its right
+    /// side and filters the left; the only executor of null-aware anti joins.
     FilteredSemiAnti,
-    KeylessConditional {
-        join_type: KeylessConditionalJoinKind,
-    },
+    /// Conditional join without equality keys, evaluated by the residual alone.
+    KeylessConditional { join_type: KeylessConditionalJoinKind },
+    /// Left or full join without keys or residual.
     KeylessOuterCross,
+    /// Cross join without keys or residual, projecting the output columns.
     ProjectedCross,
+    /// Keyed join whose residual the cuDF mixed join evaluates while matching,
+    /// run over the whole build side at once.
     MixedKeyedResidual,
 }
 
@@ -52,6 +63,8 @@ impl JoinStrategy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinStrategyChoice {
     strategy: JoinStrategy,
+    /// Present for keyed forms whose strategy depends on size facts; a form
+    /// with one executor has no evidence to record.
     evidence: Option<JoinStrategyEvidence>,
 }
 
@@ -84,7 +97,11 @@ pub struct JoinStrategyEvidence {
     build_artifact_id_present: bool,
     input: KeyedHashJoinStrategyInputFacts,
     options: KeyedHashJoinStrategyOptions,
+    /// Why the reusable hash table lost; `None` when it was chosen or when the
+    /// choice did not weigh it.
     reusable_rejected_reason: Option<&'static str>,
+    /// Why the partitioned executor lost; `None` when it was chosen or when the
+    /// choice did not weigh it.
     partitioned_rejected_reason: Option<&'static str>,
 }
 
@@ -153,6 +170,8 @@ impl JoinStrategyEvidence {
                 options.max_small_probe_left_one_shot_build_bytes_threshold.to_string(),
             ),
         ]);
+        // An unknown fact is omitted rather than written as a placeholder, so
+        // consumers distinguish "not measured" from any measured value.
         let optional = [
             ("estimated_build_rows", input.estimated_build_rows.map(|rows| rows.to_string())),
             ("observed_build_rows", input.observed_build_rows.map(|rows| rows.to_string())),

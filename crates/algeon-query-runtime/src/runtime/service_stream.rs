@@ -1,4 +1,31 @@
 //! Service-level CUDA stream pooling for native worker tasks.
+//!
+//! One `ServiceStreamPool` exists per installed device. The backend builds it in
+//! `DeviceRegistry::install_resolved` with the capacities from the device
+//! resource profile: `A_d` root slots, `A_d * S_d` auxiliary slots, and a
+//! physical `pool_size` that bounds how many cuDF runtimes (each owning one CUDA
+//! stream) exist at once. The capacity table in
+//! `website/docs/design/admission.mdx#device-profiles-and-grants` owns that
+//! contract; the lease and lane vocabulary comes from
+//! `website/docs/design/gpu-execution.mdx#cuda-streams-and-dependencies`.
+//!
+//! A lease is produced in two steps. `SlotRequest::take_or_register` takes a
+//! class permit and either an idle runtime or the right to create one, all
+//! under the pool mutex and without CUDA calls. `StreamSlot::into_lease` then
+//! builds the runtime on a thread where CUDA work is allowed; that build is
+//! the only CUDA call on the acquire path. Dropping a `StreamLease` runs no
+//! CUDA either: the runtime goes to the cleanup supervisor in
+//! `stream_cleanup`, which synchronizes the stream and only then returns the
+//! runtime to `idle` and releases the class permit.
+//!
+//! Accounting fails closed. `closed` is set once and never cleared, by an
+//! explicit close, by a stream synchronization failure, or by an abandoned
+//! cleanup. A closed pool rejects acquisition and destroys every returning
+//! runtime; none is idled. Acquisition errors carry a `reason` fact:
+//! `stream_pool_closed`, `stream_pool_wait_timeout`, or
+//! `device_health_rejected_stream_acquire`; shutdown timeouts report
+//! `stream_pool_idle_timeout` or `stream_pool_quiescence_timeout` together
+//! with the cleanup-deadline marker.
 
 #[cfg(test)]
 use std::sync::{Barrier, mpsc};
@@ -115,20 +142,41 @@ pub(super) fn nonzero_sm_count(count: u32) -> Option<usize> {
     (count > 0).then(|| usize::try_from(count).ok()).flatten()
 }
 
+/// State shared by every clone of one device pool and by its leases.
+///
+/// A `StreamLease` holds a pool clone, so this struct outlives every lease.
+/// Its `Drop` (in `stream_cleanup`) requests cleanup-supervisor shutdown,
+/// sound because no lease, and therefore no pending enqueue, can exist at
+/// that point.
 #[derive(Debug)]
 pub(super) struct ServiceStreamPoolInner {
     pub(super) id: u64,
     pub(super) device: DeviceId,
+    /// Bound on runtimes that exist at once, independent of the class
+    /// capacities. A request must pass its class check and find either an
+    /// idle runtime or `created < pool_size`.
     pub(super) pool_size: usize,
     pub(super) root_capacity: usize,
     pub(super) aux_capacity: usize,
+    /// Protects every counter in the pool. `closed` is read again under this
+    /// lock before a slot is taken.
     pub(super) state: Mutex<ServiceStreamPoolState>,
+    /// Wakes acquire waiters. A waiter calls `Notified::enable` while holding
+    /// `state`, so a release that follows its check cannot be missed.
     pub(super) available: Notify,
+    /// Wakes shutdown and quiescence waiters; paired with `state`.
     pub(super) state_changed: Condvar,
     pub(super) next_lease_id: AtomicU64,
     pub(super) cleanup_probe: ServiceStreamTestProbeSlot,
     pub(super) cleanup_supervisor: Arc<StreamCleanupSupervisor>,
+    /// Set once, never cleared. Set by `close`, by a failed stream
+    /// synchronization, by an abandoned cleanup job, and by a cleanup enqueue
+    /// that finds the supervisor gone. Unsynchronized readers may race a
+    /// concurrent close; `take_or_register` rechecks it under `state`.
     pub(super) closed: AtomicBool,
+    /// Set once by the process-exit hook before it joins the cleanup thread.
+    /// After that, `enqueue_cleanup` leaks its payload; CUDA destruction may
+    /// neither run nor be queued behind the joined thread.
     pub(super) process_exit_started: AtomicBool,
 }
 
@@ -150,15 +198,35 @@ pub(crate) enum StreamPermitClass {
     Auxiliary,
 }
 
+/// Counters behind the pool mutex.
+///
+/// `created` counts runtimes that exist: idle, leased, or in cleanup. The
+/// quiescence waiters and the timeout error derive `active_leased_runtimes`
+/// as `created - idle.len() - pending_cleanups - active_cleanups`.
 #[derive(Debug, Default)]
 pub(super) struct ServiceStreamPoolState {
+    /// Runtimes whose stream was synchronized by the cleanup thread and that
+    /// may be leased again. Always empty once `closed` is set.
     pub(super) idle: Vec<Arc<Runtime>>,
+    /// Incremented when a slot reserves the right to build a runtime, before
+    /// the build; decremented when a runtime is destroyed or the build fails.
     pub(super) created: usize,
+    /// Root class permits held. A permit is taken with the slot and released by
+    /// the cleanup job after the stream is synchronized, so a new lease of the
+    /// class cannot start before the previous holder's work has drained.
     pub(super) root_outstanding: usize,
+    /// Auxiliary class permits held, with the same lifetime as `root_outstanding`.
     pub(super) aux_outstanding: usize,
+    /// Threads or tasks parked in an acquire. Shutdown waits for zero so a
+    /// late waiter cannot observe a destroyed pool.
     pub(super) waiting_acquires: usize,
+    /// Cleanup jobs enqueued but not yet started by the cleanup thread.
     pub(super) pending_cleanups: usize,
+    /// Cleanup jobs between `begin_accounting` and `finish_active_accounting`,
+    /// which includes the `before_quiescence` completion callback.
     pub(super) active_cleanups: usize,
+    /// Streams whose synchronization failed. Nonzero implies `closed`; the
+    /// value is reported on `stream_pool_closed` errors.
     pub(super) synchronization_failures: u64,
 }
 
@@ -191,6 +259,13 @@ impl ServiceStreamPool {
     }
 
     /// Creates a pool with explicit root/auxiliary stream-slot capacities.
+    ///
+    /// `root_capacity` is `A_d` and `aux_capacity` is `A_d * S_d` when the
+    /// backend constructs the pool; `pool_size` bounds physical runtimes
+    /// separately and the profile resolver guarantees it covers both classes.
+    /// Construction spawns the cleanup thread but creates no CUDA stream. A
+    /// cleanup-thread spawn failure fails construction, because a pool
+    /// without that thread could not return any lease.
     pub(crate) fn new_with_classes(
         device: DeviceId,
         pool_size: usize,
@@ -292,6 +367,12 @@ impl ServiceStreamPool {
 
     /// Prevent new acquisitions and destroy every currently idle runtime.
     /// Leased runtimes are discarded after their deferred synchronization.
+    ///
+    /// This is the non-blocking close used by `QueryService::close`, which
+    /// must not wait behind an admission transaction. The flag store is what
+    /// closes the pool; destroying the idle set is opportunistic. When the
+    /// mutex is contended the idle runtimes stay in place and are destroyed by
+    /// a later `close_and_wait_until` or by the final pool drop.
     pub(crate) fn close(&self, operation: &'static str) -> Result<()> {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.available.notify_waiters();
@@ -311,6 +392,7 @@ impl ServiceStreamPool {
                 ));
             },
         };
+        // Stream destruction runs here, after the match arm released the mutex.
         drop(idle);
         Ok(())
     }
@@ -318,12 +400,22 @@ impl ServiceStreamPool {
     /// Close this pool and wait until every lease and deferred cleanup has
     /// completed, then explicitly stop and join the cleanup supervisor, under
     /// the caller's absolute shutdown deadline.
+    ///
+    /// The wait ends when `created` is zero: a closed pool never idles a
+    /// runtime, so every lease returning through cleanup destroys one, and
+    /// zero means no runtime exists in any state. `waiting_acquires` must
+    /// also be zero so no parked acquirer wakes against a joined supervisor.
+    /// A supervisor that has already failed ends the wait early with its
+    /// terminal error. Repeated calls are allowed; a timed-out
+    /// call leaves the supervisor joinable for the next one.
     pub(crate) fn close_and_wait_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.available.notify_waiters();
         let mut state = self.lock_state_until(deadline, operation)?;
         let idle = mem::take(&mut state.idle);
         state.created = state.created.saturating_sub(idle.len());
+        // Runtime destruction is a CUDA call; the cleanup thread and any
+        // acquirer need the pool mutex meanwhile.
         drop(state);
         drop(idle);
         self.inner.state_changed.notify_all();
@@ -336,6 +428,9 @@ impl ServiceStreamPool {
                 && state.active_cleanups == 0
                 && state.waiting_acquires == 0
             {
+                // Same rule as `deadline::mutex_lock_until`: a result reached
+                // after the deadline is not accepted as success, so a
+                // coordinator cannot overrun its budget on a lucky late wake.
                 if Instant::now() >= deadline {
                     return Err(stream_pool_cleanup_timeout(operation, self, &state, 0));
                 }
@@ -364,6 +459,8 @@ impl ServiceStreamPool {
                 return Err(stream_pool_cleanup_timeout(operation, self, &state, 0));
             }
         }
+        // The elected joiner takes this mutex in `notify_pool_waiters` after
+        // committing the terminal state; holding it here would deadlock.
         drop(state);
 
         // A zero counter snapshot only proves that no work is currently
@@ -393,6 +490,8 @@ impl ServiceStreamPool {
             self.inner.state_changed.notify_all();
             idle
         };
+        // Destroyed outside the mutex and before the join: the cleanup thread
+        // may still need the mutex for a job it is finishing.
         drop(idle);
         self.inner.cleanup_supervisor.join_for_process_exit();
     }
@@ -607,6 +706,19 @@ impl ServiceStreamPool {
     /// Reserves one stream slot of `permit_class`, blocking the calling thread
     /// until a slot frees, cancellation is requested, or a deadline passes.
     /// Each of them wakes the thread directly.
+    ///
+    /// Callers are GPU pool workers and other threads that may sit inside a
+    /// Tokio task, so the wait goes through `deadline::block_until`, which
+    /// polls under `unconstrained`. A plain `block_on` of `Notified` would
+    /// spend the enclosing task's cooperative budget, and a `Notified` that
+    /// returns `Pending` on an exhausted budget defers its wake until the
+    /// worker yields to the scheduler, which a parked thread never does.
+    ///
+    /// `block_until` forbids Tokio timers in the future it polls, so the
+    /// cancellation's own deadline is folded into `wait_deadline` and
+    /// `cancelled_or_expired` is not awaited here. The loop re-runs the full check in
+    /// `take_or_register` after every wake, so which event woke the thread
+    /// does not decide the outcome.
     fn reserve_blocking(
         &self,
         cancellation: Option<&ExecutionCancellation>,
@@ -624,6 +736,8 @@ impl ServiceStreamPool {
         loop {
             let available = self.inner.available.notified();
             let mut available = pin!(available);
+            // `_waiting` keeps this thread counted in `waiting_acquires` for
+            // the whole park, so shutdown cannot complete underneath it.
             let _waiting = match request.take_or_register(available.as_mut())? {
                 SlotOrWait::Slot(slot) => return Ok(slot),
                 SlotOrWait::Wait(waiting) => waiting,
@@ -647,6 +761,13 @@ impl ServiceStreamPool {
     /// Reserves one stream slot of `permit_class` without blocking the
     /// caller's thread. The reservation creates no CUDA stream; the lease is
     /// materialized from it where CUDA work is allowed.
+    ///
+    /// This runs on the host runtime (the query handle reserves auxiliary
+    /// slots before submitting a pool job), so Tokio timers are available and
+    /// the cancellation deadline is awaited through `cancelled_or_expired`.
+    /// Dropping the future mid-wait releases the waiter count through
+    /// `WaitingAcquire` and records the lease as cancelled through
+    /// `SlotRequest::drop`.
     pub(crate) async fn reserve_async(
         &self,
         cancellation: &ExecutionCancellation,
@@ -695,6 +816,10 @@ impl ServiceStreamPool {
         })
     }
 
+    /// Takes the pool mutex without letting contention extend past
+    /// `deadline`; on the shutdown paths a stuck holder then produces a typed
+    /// timeout where a plain lock would block without bound. A poisoned mutex
+    /// is reported as the ordinary poison error whatever the deadline.
     fn lock_state_until(
         &self,
         deadline: Instant,
@@ -718,6 +843,9 @@ impl ServiceStreamPool {
         }
     }
 
+    /// Returns a `SlotAction::Create` reservation whose runtime was never
+    /// leased: the physical count and the class permit both go back, and
+    /// waiters are woken because either may have been the limiting resource.
     fn discard_created_slot(&self, permit_class: StreamPermitClass) {
         match self.inner.state.lock() {
             Ok(mut state) => {
@@ -817,13 +945,21 @@ impl<'a> SlotRequest<'a> {
             return Err(self.fail(stream_acquire_timeout_error(operation, pool.device(), pool.pool_size())));
         }
         let mut state = pool.lock_state(operation)?;
+        // Rechecked under the mutex. A request that passes here holds its
+        // slot before `close` can take the idle set, and its lease is then
+        // destroyed by cleanup, never idled; a request that arrives after
+        // the flag store fails even if idle runtimes are still present.
         if pool.inner.closed.load(Ordering::Acquire) {
             return Err(self.fail(stream_pool_closed(operation, pool)));
         }
+        // Reusing an idle runtime on a faulted device is as unsafe as
+        // creating one, so the health check precedes both actions.
         let health = device_health_snapshot(pool.device());
         if health.status() == DeviceHealthStatus::Unhealthy {
             return Err(self.fail(unhealthy_stream_device_error(operation, pool.device(), health)));
         }
+        // The class check comes first: a full class waits even while idle
+        // runtimes or physical capacity are available to the other class.
         let class_open = match self.permit_class {
             StreamPermitClass::Root => state.root_outstanding < pool.inner.root_capacity,
             StreamPermitClass::Auxiliary => state.aux_outstanding < pool.inner.aux_capacity,
@@ -833,6 +969,8 @@ impl<'a> SlotRequest<'a> {
         } else if let Some(runtime) = state.idle.pop() {
             Some(SlotAction::Reuse(runtime))
         } else if state.created < pool.pool_size() {
+            // The physical slot is reserved here; the CUDA stream is built
+            // outside the mutex in `StreamSlot::into_lease`.
             state.created += 1;
             Some(SlotAction::Create)
         } else {
@@ -898,6 +1036,10 @@ impl fmt::Debug for StreamSlot {
 impl StreamSlot {
     /// Leases the reserved runtime, creating its CUDA stream when the slot
     /// carries the right to create one.
+    ///
+    /// This is the one CUDA call on the acquire path, so it must run on a
+    /// thread where CUDA work is allowed. On any failure the reservation is
+    /// returned to the pool and the lease observation records `Failed`.
     pub(crate) fn into_lease(mut self, operation: &'static str) -> Result<StreamLease> {
         let pool = self.pool.clone();
         let (runtime, acquisition) = match self.action.take().expect("an unconsumed slot holds its action") {
@@ -906,8 +1048,13 @@ impl StreamSlot {
                 Ok(runtime) if !pool.inner.closed.load(Ordering::Acquire) => {
                     (Arc::new(runtime), StreamLeaseAcquisition::Created)
                 },
+                // The pool closed while the stream was being built. The
+                // runtime never carried work, so it is destroyed here rather
+                // than routed through cleanup.
                 Ok(runtime) => {
                     pool.discard_created_slot(self.permit_class);
+                    // Return the slot before the stream destroy so a waiter
+                    // is not delayed by this CUDA call.
                     drop(runtime);
                     let error = stream_pool_closed(operation, &pool);
                     self.observation
@@ -938,6 +1085,9 @@ impl StreamSlot {
 }
 
 impl Drop for StreamSlot {
+    /// Returns an unconsumed reservation. Even a reused runtime returns through
+    /// cleanup, so the class permit and the idle return follow the single
+    /// accounting path in `stream_cleanup`.
     fn drop(&mut self) {
         let Some(action) = self.action.take() else { return };
         self.observation.terminal(StreamLeaseLifecycleState::Cancelled);
@@ -977,6 +1127,8 @@ fn unhealthy_stream_device_error(
 }
 
 fn stream_pool_closed(operation: &'static str, pool: &ServiceStreamPool) -> QueryError {
+    // Built on error paths that may already hold the pool mutex, so the
+    // failure count is attached only when the lock is free.
     let synchronization_failures = pool.inner.state.try_lock().ok().map(|state| state.synchronization_failures);
     let error = QueryError::new(QueryErrorCode::Cancelled, operation, "service stream pool is closed")
         .with_fact("reason", "stream_pool_closed")
@@ -1016,12 +1168,16 @@ fn stream_pool_cleanup_timeout(
         .with_cleanup_deadline_elapsed()
 }
 
+/// Observation identity of one lease attempt, from `Enqueued` to its terminal
+/// state. Shared by the `SlotRequest`, the `StreamSlot`, and the `StreamLease`
+/// so that whichever of them ends the attempt records one terminal event.
 #[derive(Debug)]
 struct StreamLeaseObservation {
     observation: RuntimeObservationHandle,
     lease_id: RuntimeResourceId,
     device_ordinal: u32,
     scope: RuntimeStreamLeaseScope,
+    /// Set by the first `terminal` call; later calls are no-ops.
     terminal_recorded: AtomicBool,
 }
 
@@ -1084,9 +1240,17 @@ impl StreamLeaseObservation {
 /// dropping thread.
 pub struct StreamLease {
     pool: ServiceStreamPool,
+    /// `None` only after `Drop` has moved the runtime into cleanup.
     runtime: Option<Arc<Runtime>>,
     observation: Option<Arc<StreamLeaseObservation>>,
+    /// Query-service epoch this lease is bound to, when it was obtained
+    /// through an admitted context. `runtime()` refuses to derive runtimes
+    /// once the epoch closes, and the cleanup job retains the epoch until the
+    /// runtime is destroyed.
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
+    /// At most one completion, installed through `&self` because the lease
+    /// is already shared by its execution contexts when the release path
+    /// installs it.
     cleanup_completion: Mutex<Option<StreamCleanupCompletion>>,
     permit_class: StreamPermitClass,
 }
@@ -1115,16 +1279,27 @@ impl StreamLease {
         self
     }
 
+    /// Installs the callbacks that the cleanup thread runs after this lease's
+    /// stream has been synchronized. Returns `false`, and runs nothing, when a
+    /// completion is already installed.
+    ///
+    /// `before_quiescence` receives the synchronization outcome and runs while
+    /// the cleanup still counts as active, so a quiescence waiter cannot pass
+    /// until it returns; the attempt's report commit and capacity release
+    /// happen there. `after_quiescence` runs once the counters are released.
+    /// Both run on the cleanup thread, or on the dropping thread when the
+    /// enqueue falls back to synchronous cleanup. If the cleanup thread dies
+    /// first, `before_quiescence` still runs with `CallbackAbandoned`.
     pub(crate) fn install_cleanup_completion(
         &self,
         before_quiescence: impl FnOnce(StreamCleanupOutcome) + Send + 'static,
         after_quiescence: impl FnOnce() + Send + 'static,
     ) -> bool {
-        // Materialize the handoff before inspecting the slot.  A duplicate
-        // installation is an ownership invariant violation: dropping this
-        // completion deliberately reports `CallbackAbandoned` and runs its
-        // tail rather than silently losing report/health work and releasing
-        // the query's capacity without a terminal commit.
+        // Materialize the handoff before inspecting the slot. A duplicate
+        // installation is an ownership invariant violation; the rejected
+        // completion is dropped, which reports `CallbackAbandoned` and runs
+        // its tail, so the report and health work it carried is not lost and
+        // the query's capacity is not released without a terminal commit.
         let completion = StreamCleanupCompletion::new(before_quiescence, after_quiescence);
         let mut slot = match self.cleanup_completion.lock() {
             Ok(slot) => slot,
@@ -1142,6 +1317,11 @@ impl StreamLease {
     }
 
     /// Clone a counted cuDF runtime derived from this lease.
+    ///
+    /// Fails once the bound query-service epoch has closed. The returned
+    /// runtime retains that epoch, and so does every cuDF value produced from
+    /// it, which keeps the service generation alive while GPU state derived
+    /// from this stream exists.
     pub fn runtime(&self) -> Result<Runtime> {
         let runtime = self.runtime.as_ref().expect("stream lease runtime is present").as_ref().clone();
         let Some(resource_epoch) = &self.resource_epoch else {
@@ -1165,6 +1345,9 @@ impl StreamLease {
 }
 
 impl Drop for StreamLease {
+    /// Runs no CUDA call. The lease may be dropped on a host-runtime task, a
+    /// pool worker, or inside another `Drop`; the stream synchronization that
+    /// must precede reuse happens on the cleanup thread.
     fn drop(&mut self) {
         let Some(runtime) = self.runtime.take() else {
             return;

@@ -1,3 +1,13 @@
+//! Group-key partitioning of one resident aggregate input.
+//!
+//! When a grouped aggregate's input is larger than the aggregate partition byte target
+//! (`BoundedPartitionTargetPolicy::aggregate_partition_target_bytes`, scaled by the device budget),
+//! the input is hash-partitioned on the group keys, each partition gets its own partial aggregate,
+//! and `execute_compiled_bounded_final_aggregate_merge` combines the partials. A group lands in one
+//! partition only. Each partition is therefore a self-contained aggregate input, and the aggregate
+//! kernel's working set is one partition. Floating statistical aggregates, medians and global
+//! aggregates never take this path (`should_partition_compiled_grouped_aggregate`).
+
 use super::{stream::execute_compiled_bounded_partial_aggregate_from_frame, *};
 
 /// Group-key hash partitioning of one aggregate input.
@@ -10,6 +20,13 @@ struct PartitionedAggregateInput {
     partition_count: usize,
 }
 
+/// Hash-partitions the input on the group-key columns into one contiguous frame plus offsets.
+///
+/// Grouping-set aggregates partition on the group expressions alone; the grouping-id column is
+/// excluded.
+/// Consumes `input`; it and the partitioned copy are both live until the call returns. The work
+/// runs under a budget token for `compiled_aggregate_hash_partition` and records a hash-partition
+/// stage.
 fn hash_partition_aggregate_input(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -83,6 +100,11 @@ fn hash_partition_aggregate_input(
     Ok(PartitionedAggregateInput { frame: partitioned_frame, offsets, partition_count })
 }
 
+/// Aggregates a large grouped input partition by partition and merges the partials.
+///
+/// The partition count follows the input's device bytes (`partitioned_aggregate_partition_count`).
+/// Partials are computed one partition at a time and retained until the final merge. A failure
+/// drops the partials already computed.
 pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -160,6 +182,8 @@ fn slice_compiled_aggregate_partition(
     Ok(ResidentGpuFrame::with_device_bytes(gpu, bytes))
 }
 
+/// Whether the input is large enough, for a grouped aggregate that supports partial merging, to
+/// need more than one partition.
 pub(super) fn should_partition_compiled_grouped_aggregate(
     context: &ExecutionContext,
     aggregate: &AggregateNode,
@@ -171,6 +195,10 @@ pub(super) fn should_partition_compiled_grouped_aggregate(
         && partitioned_aggregate_partition_count(context, input_device_bytes) > 1
 }
 
+/// Partition count for an aggregate input of `input_bytes`.
+///
+/// The count rises with the input's size relative to the aggregate partition byte target and is
+/// clamped to the range 1 to 1024. One means no partitioning.
 pub(super) fn partitioned_aggregate_partition_count(context: &ExecutionContext, input_bytes: u64) -> usize {
     let MemoryControlPolicy { device_budget_bytes, .. } = context.memory_control_policy();
     let target = BoundedPartitionTargetPolicy::default().aggregate_partition_target_bytes(device_budget_bytes);

@@ -1,4 +1,13 @@
 //! GPU runtime inventory, registry, and placement helpers.
+//!
+//! `inventory` reads device facts and diagnostics telemetry; `profile`
+//! freezes one `DeviceResourceProfile` per device from them; `registry`
+//! installs the memory manager, stream pool, `ledger`, and `device_context`
+//! for each configured ordinal; `placement` ranks ledgers for a new attempt;
+//! `lanes` assigns each admitted attempt its identity slot; `memory_failure`
+//! counts allocator failures for reports; `owner` makes sure only one live
+//! backend exists per process. The capacity and admission contract these
+//! modules implement is `website/docs/design/admission.mdx`.
 
 pub(crate) mod device_context;
 pub(crate) mod inventory;

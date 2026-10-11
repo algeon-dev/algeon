@@ -8,6 +8,13 @@ use super::{
     QueryErrorCode, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error,
 };
 
+/// Adds the source's missing columns (declared in the logical schema, absent from the files) as
+/// all-null columns of the declared type. Columns already in the frame are skipped.
+///
+/// `row_count_override` supplies the row count when the frame has no columns to take it from.
+/// Only nullable columns can be missing; a non-nullable one fails with `InvalidPlan`. A list
+/// column is built from its Arrow type by `all_null_list_series`, because a cuDF list dtype does
+/// not carry the element type.
 pub(super) fn materialize_missing_columns(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -94,6 +101,14 @@ fn missing_column_series(
     })
 }
 
+/// Casts each decoded column whose cuDF dtype differs from the dtype of the matching schema field.
+///
+/// cuDF picks the storage type from the Parquet encoding, which can differ from the logical
+/// Arrow schema; a decimal that cuDF decodes as Decimal32 or Decimal64 under a `Decimal128`
+/// schema field is one case. Columns absent from the frame are skipped, so the call is valid
+/// before and after partition and missing columns are added. With `token` the casts run under
+/// that execution budget and are recorded against it; with `None` they run unbudgeted on the
+/// retained stream.
 pub(super) fn coerce_local_parquet_source_schema(
     mut frame: DataFrame,
     source: &LocalParquetSource,

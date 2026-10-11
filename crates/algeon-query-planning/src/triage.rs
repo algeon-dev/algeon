@@ -1,4 +1,9 @@
 //! Shared triage vocabulary and compact diagnostic summaries.
+//!
+//! Planning, the runtime, and the adapter report all emit the same codes,
+//! verdicts, and severities, so one JSON consumer can read a failure from any
+//! of them. Every `as_str` label is a wire contract; the mapping from
+//! [`QueryErrorCode`] to [`TriageCode`] is owned by the error module.
 
 use serde_json::{Value, json};
 
@@ -69,6 +74,10 @@ impl From<QueryErrorCode> for TriageCode {
 }
 
 /// Query-level triage verdict.
+///
+/// `Failed` is reserved for a query that returned an error; a query that
+/// completed with warning signals is `Degraded`, and a native candidate that
+/// ran on the CPU by cost is `NotSelected` rather than any failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TriageVerdict {
     Healthy,
@@ -213,6 +222,9 @@ pub struct TriageSummary {
 
 impl TriageSummary {
     /// Builds a summary from an explicit verdict and signal list.
+    ///
+    /// Signals are ordered by descending severity, and the sort is stable, so
+    /// signals of equal severity keep the order the caller supplied.
     pub fn new(verdict: TriageVerdict, mut signals: Vec<TriageSignal>) -> Self {
         signals.sort_by_key(|signal| std::cmp::Reverse(signal.severity));
         Self { verdict, signals }
@@ -234,6 +246,10 @@ impl TriageSummary {
 
 impl QueryError {
     /// Builds a compact triage summary for this error.
+    ///
+    /// Evidence prefers structured context over facts: the error's own query
+    /// id and boundary node id win, and the `query_id`, `node_id` and
+    /// `compiled_task_id` facts fill in only when the context lacks them.
     pub fn triage_summary(&self) -> TriageSummary {
         let mut evidence = TriageEvidenceRef::new("query_error");
         if let Some(query_id) = self.query_id().cloned().or_else(|| self.fact_value("query_id").map(QueryId::new)) {

@@ -1,12 +1,18 @@
 //! Native query execution.
 //!
-//! Entrypoint validate local source contracts, derive output mode from the
+//! Entrypoints validate local source contracts, derive output mode from the
 //! plan sink, and dispatch according to the bounded execution contract in the
 //! [`ExecutionContext`].
 //! GPU-resident input lookup is by plan-local names supplied in
 //! [`GpuResidentInputMap`]. Metrics are owned by the returned
 //! [`output::QueryExecutionOutcome`] so callers can record them after choosing host or
 //! GPU-resident output handling.
+//!
+//! [`execute_query_plan`] is synchronous and runs GPU work on the calling
+//! thread. The query service calls it from inside the attempt's root
+//! `QueryExecution` job on the device's GPU execution pool
+//! (`website/docs/design/index.mdx#runtimes-and-threads`); a standalone
+//! context calls it from wherever the caller chooses to block.
 
 use std::{
     sync::{
@@ -161,6 +167,9 @@ pub fn admit_query_plan(
     bounded::admit_or_execution_error(plan, statistical_aggregate_execution_mode, policy)
 }
 
+/// Process-wide counter behind plan execution ids. Ids are unique within a
+/// process and restart at 1 with it; observation consumers scope them by
+/// query id and do not compare them across processes.
 static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Inputs for one native plan execution.
@@ -216,6 +225,12 @@ pub fn execute_query_plan(context: &ExecutionContext, request: QueryExecutionReq
     execute_query_plan_with_observation(context, admitted, gpu_inputs)
 }
 
+/// Wraps execution in the plan's observation lifecycle.
+///
+/// The lifecycle begins before any context derivation can fail and finishes
+/// on every path, so a plan that never reached its first task still seals a
+/// snapshot with a terminal outcome. Errors from the derivation and from
+/// execution alike pick up the attempt's memory facts and query identity.
 fn execute_query_plan_with_observation(
     context: &ExecutionContext,
     admitted: &AdmittedPlan,
@@ -321,6 +336,13 @@ fn with_optional_trace_id(error: QueryError, trace_id: Option<&TraceId>) -> Quer
     }
 }
 
+/// Derives the executing context and runs the admitted plan.
+///
+/// Checks that cannot depend on GPU state run first, in this order: the
+/// mode the artifact was admitted under, feature availability for ML and
+/// vector operators, then the GPU-input bindings. Only then does the context
+/// gain its inputs and order-tracking scope and pass control to bounded
+/// execution.
 fn execute_query_plan_output(
     context: &ExecutionContext,
     admitted: &AdmittedPlan,

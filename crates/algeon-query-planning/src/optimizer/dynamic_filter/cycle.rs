@@ -1,5 +1,18 @@
+//! Dependency-cycle check for a candidate dynamic-filter route.
+//!
+//! Execution runs a route's producer before its consumer, which adds a control
+//! edge to the plan's data edges. The graph here has one endpoint per node
+//! output plus separate build and probe endpoints per join, because a join's
+//! build completes before its probe starts: a route from a join's build into
+//! its own probe is acyclic, while a route into the build input of the join
+//! that produces the payload would wait on itself. A candidate is rejected when
+//! its consumer already reaches its producer through data edges or routes
+//! admitted earlier in the same discovery.
+
 use super::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute, JoinSide, NodeId, PlanNode, QueryPlan};
 
+/// Same endpoints and columns, ignoring id, payload kinds and lowering. Used to
+/// drop a residual-equality candidate that duplicates a key route.
 pub(super) fn dynamic_filter_route_equivalent(left: &DynamicFilterRoute, right: &DynamicFilterRoute) -> bool {
     left.producer == right.producer
         && left.consumer == right.consumer
@@ -20,6 +33,8 @@ pub(super) fn dynamic_filter_route_would_create_node_cycle(
     )
 }
 
+/// A point in execution order. A join contributes two: its build finishes
+/// before its probe begins, and only the probe's completion is the node output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DynamicFilterDependencyEndpoint {
     NodeOutput(NodeId),

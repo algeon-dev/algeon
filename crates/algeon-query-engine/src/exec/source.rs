@@ -1,3 +1,23 @@
+//! Parquet and literal sources read into GPU frames.
+//!
+//! Two read shapes exist. `read_local_parquet_source` reads a whole source for
+//! the unbounded path. `read_local_parquet_chunk` and
+//! `read_local_parquet_chunk_batch` read one planned chunk, or one batch of
+//! chunks in a single cuDF call, under an execution budget token for the
+//! bounded path (`website/docs/design/data-path.mdx`). Both shapes go through
+//! the same post-read sequence: schema coercion, partition and missing
+//! columns, the scan limit, then the hidden DataFusion order columns.
+//!
+//! Reads consult the resident source cache first. `checkout_or_claim` returns a
+//! hit, or a claim that makes this attempt the leader for the key: a leader
+//! must either promote the frame it read or abandon the claim, otherwise other
+//! waiters on that key never resolve. A promoted frame is copied into the
+//! cache, so the attempt keeps sole ownership of the frame it returns.
+//!
+//! Files under the lakehouse cache are read while a read pin is held, which
+//! keeps eviction from removing them mid-read; the submodules own the cache
+//! and the cuDF reader contract, and `metrics` owns the source-read facts.
+
 use std::{fs, slice, sync::Arc, time::Instant};
 
 use arrow::datatypes::SchemaRef;
@@ -190,6 +210,14 @@ pub(in crate::exec) fn read_literal_batch_source(
     Ok(GpuDataFrame::new(frame))
 }
 
+/// Reads every file of the source in order and concatenates the results.
+///
+/// A file whose planned row-group selection is empty is skipped without
+/// opening it. A source with no read columns never opens cuDF either: the
+/// footer row count shapes an empty frame of the right height, and partition
+/// and missing-column materialization fill it. The scan limit is applied per
+/// file and the loop stops at the file that exhausts it. A `COUNT(*)` probe
+/// source produces one weight row per file instead of the file's rows.
 fn read_local_parquet_source_uncached(
     context: &ExecutionContext,
     source_node_id: NodeId,
@@ -294,6 +322,9 @@ fn read_local_parquet_source_uncached(
     Ok(GpuDataFrame::new(output))
 }
 
+/// Row count of the selected row groups from footer metadata, for reads that
+/// open no columns. A file without `row_group_rows` cannot be counted and is
+/// an invalid plan: planning must have carried the metadata forward.
 fn local_parquet_file_row_count(file: &LocalParquetFile) -> Result<usize> {
     let rows = match (&file.row_groups, &file.row_group_rows) {
         (_, None) => {
@@ -352,6 +383,10 @@ pub(super) fn read_local_parquet_chunk(
     )
 }
 
+/// Reads one planned chunk under a budget of `budget_bytes` charged to
+/// `budget_boundary`, through the resident source cache when the chunk is
+/// cacheable. `reader_dynamic_filter_count` only labels the source-read row
+/// with how many dynamic filters were merged into the reader predicate.
 pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -406,6 +441,14 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     }
 }
 
+/// The chunk read itself.
+///
+/// The lakehouse cache read pin is held until this function returns, past
+/// the cuDF call, so eviction cannot remove the file while the decode or a
+/// later retry of this call could still need it. The budget token's member
+/// limit also becomes the reader's pass read limit, so cuDF's chunked Parquet
+/// reader sizes its own passes to the same bound the token enforces. The I/O
+/// lease is taken after the token, and only for the read call.
 fn read_local_parquet_chunk_uncached(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -564,6 +607,10 @@ fn read_local_parquet_chunk_uncached(
     Ok(GpuDataFrame::new(frame))
 }
 
+/// One-row frame carrying `row_count` as the `COUNT(*)` probe weight, so the
+/// aggregate above sums weights instead of counting decoded rows.
+/// `record_input_rows` is false on the whole-source path, which has already
+/// recorded the decoded rows as its input batch.
 fn count_star_probe_weight_frame(
     context: &ExecutionContext,
     row_count: u64,
@@ -600,6 +647,9 @@ fn count_star_probe_weight_frame(
     Ok(GpuDataFrame::new(frame))
 }
 
+/// Reads a batch of chunks in one cuDF call, through the resident source cache
+/// under a key covering the whole batch. A singleton batch is the single chunk
+/// read, so its cache key stays the chunk key.
 pub(super) fn read_local_parquet_chunk_batch(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -663,6 +713,15 @@ pub(super) fn read_local_parquet_chunk_batch(
     }
 }
 
+/// The batch read itself.
+///
+/// When the lakehouse cache holds an optimized file for this exact batch, it
+/// is read instead of the member files; a failure to read it deletes the file
+/// and falls through to the member files, since the optimized copy is only a
+/// cache. After a successful member read the batch frame is offered back to
+/// the cache as a new optimized file; that publish is best effort and its
+/// error is dropped. Read pins for every member file are held through the
+/// cuDF call only.
 fn read_local_parquet_chunk_batch_uncached(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -756,7 +815,9 @@ fn read_local_parquet_chunk_batch_uncached(
     for chunk in &batch.chunks {
         record_background_cache_chunk_fill_enqueue(context, chunk);
     }
-    // Release lakehouse cache read pins so cache maintenance can proceed.
+    // The member files are no longer needed once cuDF has returned; releasing
+    // the pins here, before coercion and metrics, lets eviction proceed
+    // against them during the rest of this call.
     drop(cache_read_pins);
     metrics.record_budgeted_execution("query_engine.local_parquet_chunk_batch.read", outcome.report());
     let read_evidence = outcome.value().read_evidence().cloned();
@@ -801,6 +862,13 @@ fn read_local_parquet_chunk_batch_uncached(
     Ok(GpuDataFrame::new(frame))
 }
 
+/// Rejects batches the multi-source cuDF read cannot reproduce row for row.
+///
+/// The batched reader takes one explicit row-group list per member and one
+/// column set for all of them, so a chunk that reads whole files without a
+/// list, carries partition values or a scan limit, or has no read columns
+/// would need per-file handling the single-chunk path provides and this path
+/// does not.
 fn validate_local_parquet_chunk_batch(source: &LocalParquetSource, batch: &SourceChunkBatch) -> Result<()> {
     if source.reader_predicate.as_ref().is_some_and(|predicate| {
         !source.reader_predicate_is_supported(predicate, rapids_analysis_context(PlanningPolicy::default()))
@@ -856,6 +924,10 @@ fn optimized_cache_path_fact(entry: &LakehouseOptimizedBatchCacheEntry) -> Strin
     redacted_path_diagnostic(&entry.path)
 }
 
+/// Wraps a cuDF read error, keeping the cuDF source only for local paths. A
+/// remote read's cuDF message can contain the object URI with its query
+/// string, so for object-store chunks the source is summarized and the
+/// location appears only as its hashed path fact.
 fn cudf_error_for_chunk_with_budget_details(
     operation: &'static str,
     message: &'static str,

@@ -13,6 +13,13 @@
 //! `Mixed` to `PartialNative`, `Native` to `Native`); a planning failure
 //! seals as `Unplanned` by leaving the disposition unset, never by mapping
 //! from a plan classification.
+//!
+//! The runtime owns the attempt: numbering, admission, the grant, the terminal
+//! state machine and the sealed report (`website/docs/design/admission.mdx`).
+//! This module maps DataFusion planning and stream events onto `AttemptOwner`
+//! commits. The owner accepts one terminal commit and refuses every later one,
+//! so the paths below never need to agree on who was first; each commits the
+//! most specific outcome it can observe.
 
 use std::{
     any::Any,
@@ -127,14 +134,24 @@ pub struct SealedAttemptNativeExecutionSnapshot {
 /// Per-invocation state propagated through DataFusion configuration.
 ///
 /// This is deliberately private: the extension carries an invocation binding
-/// through DataFusion planning, but it must not hand terminalization or
-/// observation-sealing authority to custom optimizer rules.
+/// through DataFusion planning, but it must not give custom optimizer rules
+/// terminalization or observation-sealing authority.
+///
+/// Shared by [`AlgeonAttempt`], the [`InvocationAttempt`] inside the
+/// invocation's config extension, the [`AttemptStream`] that executes the
+/// plan, and the sealed-report sink registered at `begin`. The sink closure
+/// keeps it alive until the runtime publishes the report, which can happen
+/// after the caller dropped both the attempt and the stream.
 #[derive(Debug)]
 struct AttemptExecutionState {
+    /// Records lifecycle boundaries and reads terminal state. Terminal commits
+    /// go through the `AttemptOwner`, which one holder has at a time.
     handle: AttemptHandle,
     admission_rejection: AttemptAdmissionRejection,
     admission_binding: AttemptAdmissionBinding,
     query_id: Option<AttemptQueryId>,
+    /// Exact cap requested at `begin`, copied into the attempt's one admission
+    /// request. `None` leaves the service's configured cap in force.
     query_cap_bytes: Option<u64>,
     cancellation: AttemptCancellation,
     /// The one elected native root that may receive the fixed-cardinality
@@ -258,10 +275,21 @@ impl InvocationAttempt {
 /// [`execute_physical_plan`](Self::execute_physical_plan) call finds no
 /// authority left and fails instead of running again.
 pub struct AlgeonAttempt {
+    /// `Some` while this object still holds the terminalization authority.
+    /// `take_owner` moves it into the one result stream; afterwards every
+    /// `commit*` method here is a no-op.
     owner: Mutex<Option<AttemptOwner>>,
     state: Arc<AttemptExecutionState>,
+    /// The invocation every plan of this attempt is planned and executed
+    /// under. Its config extension is how planner rules and execution nodes
+    /// reach the attempt without a reference to this object.
     invocation: Invocation,
+    /// Mints counted completion receivers. The attempt holds the factory and
+    /// no receiver, so a caller that never asks for one leaves the report to
+    /// the abandoned-report queue.
     completion_factory: AttemptCompletionFactory,
+    /// Read by the backend close check. Holding it keeps no GPU resource
+    /// alive.
     session: GpuBackendSession,
 }
 
@@ -382,9 +410,14 @@ impl AlgeonAttempt {
     pub fn sealed_graph_claim_calibration_snapshot(&self) -> Option<SealedAttemptGraphClaimCalibrationSnapshot> {
         self.state.sealed_graph_claim_calibration_snapshot()
     }
+
+    /// The native-plan coverage and execution metrics the elected root sealed
+    /// with the report. `None` until the attempt seals, or when no native root
+    /// was elected.
     pub fn sealed_native_execution_snapshot(&self) -> Option<SealedAttemptNativeExecutionSnapshot> {
         self.state.sealed_native_execution_snapshot()
     }
+
     pub fn cancellation(&self) -> AttemptCancellation {
         self.state.cancellation.clone()
     }
@@ -440,8 +473,8 @@ impl AlgeonAttempt {
 
     /// Commits through the still-owned terminalization authority. Once the
     /// authority moved into a result stream this is a no-op; the stream is the
-    /// only remaining    /// committer and the engine state machine enforces
-    /// exactly-once regardless.
+    /// only remaining committer, and the runtime refuses a second terminal
+    /// commit regardless.
     fn commit(&self, outcome: RuntimeTerminalOutcome) {
         let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(owner) = owner.as_ref() {
@@ -458,6 +491,11 @@ impl AlgeonAttempt {
 
     /// Moves the terminalization authority into the result stream. An attempt
     /// executes exactly one invocation.
+    ///
+    /// `result_stream_started` is stored after the take and never cleared.
+    /// `start_stream` sets the metrics target after this call, so a planning
+    /// pass that observes the flag unset in between cannot leave its target
+    /// in place.
     fn take_owner(&self) -> DataFusionResult<AttemptOwner> {
         let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().ok_or_else(|| {
             DataFusionError::from(Error::new(
@@ -584,6 +622,9 @@ impl AlgeonAttempt {
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         self.check_startable(operation)?;
         let _ = self.state.handle.record_planning_started();
+        // A panic inside DataFusion planning must still seal the report with
+        // `Panicked`; the payload is re-raised afterwards so the caller sees
+        // the original unwind.
         let plan = match AssertUnwindSafe(planning).catch_unwind().await {
             Ok(Ok(plan)) => plan,
             Ok(Err(error)) => {
@@ -595,6 +636,8 @@ impl AlgeonAttempt {
                 resume_unwind(panic);
             },
         };
+        // A cancellation requested during planning fails the attempt here,
+        // before a stream could start under a cancelled token.
         if self.cancellation().check(operation).is_err() {
             return Err(self.cancelled_error(operation));
         }
@@ -610,6 +653,9 @@ impl AlgeonAttempt {
         plan: Arc<dyn ExecutionPlan>,
         task_context: Arc<TaskContext>,
     ) -> DataFusionResult<AttemptStream> {
+        // Taking the owner first marks the stream as started, so the metrics
+        // target set next is the one the executing plan elects and no later
+        // planning pass replaces it.
         let owner = self.take_owner()?;
         self.state.set_sealed_metrics_target(NativePlanIndex::build(plan.as_ref()));
         let task_context = self.task_context_with_attempt_ticket(plan.as_ref(), task_context);
@@ -757,6 +803,9 @@ fn commit_effective_cancellation(
     Some(error)
 }
 
+/// Reduces an adapter error to its terminal commit: a `Cancelled` code commits
+/// `Cancelled`, a native source commits that error so its bounded reason
+/// reaches the report, and anything else commits the text-free fallback.
 fn commit_adapter_error(owner: &AttemptOwner, error: &Error) {
     if error.code() == ErrorCode::Cancelled {
         let _ = owner.commit_terminal(RuntimeTerminalOutcome::Cancelled);
@@ -778,9 +827,13 @@ pub struct AttemptStream {
     /// releases no grant: the attempt's terminal commit does that.
     inner: Option<SendableRecordBatchStream>,
     schema: SchemaRef,
+    /// The moved terminalization authority; this stream is the attempt's only
+    /// committer from here on.
     owner: AttemptOwner,
     state: Arc<AttemptExecutionState>,
     physical_start_recorded: bool,
+    /// Set before the terminal commit on every path. A terminal stream yields
+    /// `Ready(None)` on later polls.
     terminal: bool,
 }
 
@@ -823,6 +876,8 @@ impl AttemptStream {
             &self.state.cancellation,
             "algeon_datafusion.attempt.result_drain",
         );
+        // Release the physical stream now so its resident result and host
+        // reservation do not wait for the caller to drop this wrapper.
         drop(self.inner.take());
     }
 
@@ -870,6 +925,8 @@ impl Stream for AttemptStream {
                 let _ = this.state.handle.record_physical_execution_started();
             }
         }
+        // A panic while polling the physical stream commits `Panicked` before
+        // the unwind continues to the caller.
         let poll = catch_unwind(AssertUnwindSafe(|| {
             Pin::new(this.inner.as_mut().expect("live attempt stream retains its inner stream")).poll_next(cx)
         }));
@@ -885,6 +942,9 @@ impl Stream for AttemptStream {
             Ok(Poll::Ready(Some(Err(error)))) => {
                 this.terminal = true;
                 this.commit_datafusion_error(&error);
+                // Release the physical stream now so its resident result and
+                // host reservation do not wait for the caller to drop this
+                // wrapper.
                 drop(this.inner.take());
                 Poll::Ready(Some(Err(error)))
             },
@@ -905,6 +965,9 @@ impl Drop for AttemptStream {
             } else if self.state.cancellation.is_cancelled() || self.state.cancellation.is_expired() {
                 self.finish_cancelled();
             } else {
+                // The caller discarded the stream without requesting
+                // cancellation. Cancel so native work still running stops at
+                // its next boundary, and record `Dropped` as the cause.
                 self.state.cancellation.cancel();
                 self.finish_terminal(RuntimeTerminalOutcome::Dropped);
             }

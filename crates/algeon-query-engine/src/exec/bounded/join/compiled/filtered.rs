@@ -1,3 +1,29 @@
+//! Semi, anti and mark joins that build their right side (`FilteredSemiAnti`).
+//!
+//! The strategy runs a keyed join without a residual predicate whose output is left columns only
+//! (plus a Boolean mark column for a mark join), with the right side as the build side. Each left
+//! row is tested for membership of its key in the right key set. The right side is therefore
+//! reduced to its distinct keys first.
+//!
+//! The cuDF primitive is the filtered join. `build_filtered_join` creates a reusable object over
+//! the deduplicated right keys; its device size is `hash_table_bytes`. Each probe chunk calls
+//! `begin_left_semi_probe` or `begin_left_anti_probe` on it, which returns a probe state
+//! (`filtered_probe_state_bytes`), and `materialize_indices` yields the matching left row indices
+//! for a semi join or the non-matching ones for an anti join. A mark join uses the semi probe and
+//! turns the matching indices into a Boolean column over all probe rows
+//! (`materialize_mark_join_output_projection`).
+//!
+//! A null-aware anti join (SQL `NOT IN`) takes a decision from the build side once, in
+//! `null_aware_anti_probe`. Every probe chunk is restricted by it before probing
+//! (`null_aware_anti_probe_side`): a null key on the build side leaves no qualifying left row, and
+//! a non-empty build side without null keys drops left rows whose key is null.
+//!
+//! The deduplicated build frame and the filtered join object stay resident across probes, held
+//! together in `BoundedCompiledFilteredJoinBuildState`. Membership is decided per probe row. Chunks
+//! are therefore independent, and the build state is read-only while they run, which lets
+//! `parallel_filtered_probe_frames` probe chunks on separate lanes. A chunk's probe frame, probe
+//! state and gather map live only until its output frame is returned.
+
 use std::time::Instant;
 
 use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
@@ -14,6 +40,8 @@ use super::{
 };
 use crate::exec::{bounded::compiled::lanes::AggregateLaneDispatch, join::NullAwareAntiProbe};
 
+/// Build task: projects the right input to its key columns, deduplicates the keys and builds the
+/// filtered join. Consumes `input`.
 pub(super) fn execute_compiled_filtered_join_build_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -42,6 +70,13 @@ fn filtered_join_build_setup(node: &JoinNode) -> FilteredJoinBuildSetup {
     FilteredJoinBuildSetup { left_keys, right_keys, left_columns, right_columns }
 }
 
+/// Reduces the build frame to distinct keys and builds the filtered join over them.
+///
+/// The null-aware decision is taken from the build frame before deduplication. The row counts and
+/// bytes in the state are those of the input before deduplication. `timer` starts once the filtered
+/// join exists, and the single-probe materialize stage charges the time elapsed since then as
+/// operator time, which includes the time the state waited between tasks. A failure drops the build
+/// frame with this call's scope.
 fn build_filtered_join_artifact(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -93,6 +128,9 @@ fn build_filtered_join_artifact(
     })
 }
 
+/// Applies the build-time null-aware decision to one probe chunk. A chunk the decision leaves
+/// unchanged is returned as it is. Otherwise the original is released and the restricted frame is
+/// returned with its device bytes observed again.
 fn null_aware_anti_probe_side(
     execution: &mut BoundedExecutionAttempt<'_>,
     build: &BoundedCompiledFilteredJoinBuildState,
@@ -109,6 +147,11 @@ fn null_aware_anti_probe_side(
     Ok(BoundedJoinSideFrame { frame, rows, bytes })
 }
 
+/// Keeps one row per distinct key (`KeepAny`). A semi, anti or mark join only asks whether a key
+/// exists. Which row is kept is immaterial, and the filtered join is sized by distinct keys. The
+/// input frame is released on every path once the deduplicated frame is observed. The work runs
+/// under a budget token for `join_filtered_build_key_deduplicate`, which shares the stream's
+/// allocator member and does not change the grant.
 fn deduplicate_filtered_join_build_keys(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -159,6 +202,11 @@ fn deduplicate_filtered_join_build_keys(
     Ok(BoundedJoinSideFrame { frame: output, rows: output_rows, bytes: output_bytes })
 }
 
+/// Probe task for one resident probe frame: prepares the probe, applies the null-aware restriction
+/// and begins the probe state. No match is materialized yet.
+///
+/// The returned state takes ownership of the build and holds the probe frame and probe state until
+/// the materialize task runs.
 pub(super) fn execute_compiled_filtered_join_probe_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node: &JoinNode,
@@ -181,6 +229,10 @@ pub(super) fn execute_compiled_filtered_join_probe_from_resident_frame(
     Ok(BoundedCompiledFilteredJoinProbeState { build, probe, probe_state, probe_state_bytes })
 }
 
+/// Starts a left semi probe (semi and mark joins) or a left anti probe against the build's filtered
+/// join and records the probe state's device size. `probe_state_bytes_message` tells the
+/// whole-input caller and the chunk caller apart in the error. Join types the filtered strategy
+/// does not run were rejected when the build was validated.
 fn begin_filtered_join_probe_state(
     execution: &mut BoundedExecutionAttempt<'_>,
     node: &JoinNode,
@@ -208,6 +260,12 @@ fn begin_filtered_join_probe_state(
     Ok((probe_state, probe_state_bytes))
 }
 
+/// Probes and materializes one chunk against a borrowed build and returns that chunk's output.
+///
+/// Membership is per probe row. The output is a complete result for the chunk, and chunk outputs
+/// concatenate. All chunk-local GPU state is released on return, on success and on error, and the
+/// build is untouched. Each call writes its own `bounded_reusable_filtered_join` metric row for the
+/// chunk.
 pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -304,6 +362,9 @@ pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_
     Ok(output)
 }
 
+/// Materialize task for a single-probe state: gathers the matching rows, or builds the mark column,
+/// and writes the metric row. Consumes the state; its build and probe frames drop when the call
+/// returns, on success and on error.
 pub(super) fn execute_compiled_filtered_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -384,6 +445,8 @@ pub(super) fn execute_compiled_filtered_join_materialize(
     Ok(output)
 }
 
+/// Writes the join metric row. `hash_table_bytes` is the shared filtered-join size, while the probe
+/// state and gather map sizes belong to the chunk being reported.
 #[expect(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
@@ -426,11 +489,13 @@ fn record_filtered_join_output_metrics(
     ));
 }
 
+/// Releases the deduplicated key frame and the filtered join object.
 pub(super) fn release_compiled_filtered_join_build_state(build: BoundedCompiledFilteredJoinBuildState) {
     let BoundedCompiledFilteredJoinBuildState { build, .. } = build;
     release_bounded_join_side_frame(build);
 }
 
+/// Releases the build state, then the probe frame.
 pub(super) fn release_compiled_filtered_join_probe_state(probe: BoundedCompiledFilteredJoinProbeState) {
     let BoundedCompiledFilteredJoinProbeState { build, probe, .. } = probe;
     release_compiled_filtered_join_build_state(build);
@@ -482,6 +547,9 @@ impl SharedFilteredBuild {
         }
     }
 
+    /// Builds a per-chunk build state that aliases the shared frames and handle. A lane can then
+    /// reuse the single-chunk probe. Dropping it frees nothing the other lanes read; the
+    /// coordinator's build state owns the data.
     fn as_build_ref(&self) -> BoundedCompiledFilteredJoinBuildState {
         BoundedCompiledFilteredJoinBuildState {
             left_keys: self.left_keys.clone(),
@@ -507,6 +575,9 @@ impl SharedFilteredBuild {
 /// probe batch count. The `outer` dispatcher contract matches the hash
 /// parallel probe: reuse the run's lanes when present, borrow available
 /// lanes otherwise.
+///
+/// At most one frame runs serially on the calling thread. On error, outputs already produced drop
+/// with this call and the caller releases the build.
 pub(in crate::exec::bounded) fn parallel_filtered_probe_frames(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

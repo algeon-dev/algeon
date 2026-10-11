@@ -1,3 +1,12 @@
+//! Scheduled source reads for the materializing join leaf path, plus the start, prefetch
+//! and abandon helpers the streaming scheduler loop in `stream` shares.
+//!
+//! Each scheduled read is a `ScheduledLocalParquetRead`: a worker job on an attempt work
+//! lease (one auxiliary permit and one leased stream) that decodes one chunk, or an inline
+//! read when the calling thread already runs under such a lease. The calling thread owns
+//! the queue of started reads and must settle every one, by `finish` or `abandon`, before it
+//! returns, because a started read holds a permit and a stream until it is joined.
+
 use std::collections::VecDeque;
 
 use super::{
@@ -6,6 +15,13 @@ use super::{
     join_leaf_prefetch_admitted, observe_device_memory_bytes, record_dynamic_filter_reader_predicate_rows,
 };
 
+/// Reads every chunk through scheduled reads and returns the frames in chunk order.
+///
+/// The calling thread blocks in `finish` for each chunk. There is no split retry here: any
+/// error abandons the pending reads, drops the frames read so far, and returns, with
+/// join-source-read resource facts attached to a read error. The caller reruns the whole
+/// chunk list serially on a retryable error and records commit metrics again for the chunks
+/// that finished before the failure.
 pub(super) fn read_join_leaf_source_chunks_with_scheduler(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -84,6 +100,8 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
     Ok(chunks)
 }
 
+/// Starts the read of the next unstarted chunk as a required read, and does nothing once
+/// every chunk has started. Callers use it when no read is pending.
 pub(super) fn start_next_required_join_leaf_read(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -104,6 +122,11 @@ pub(super) fn start_next_required_join_leaf_read(
     }
     Ok(())
 }
+/// Starts at most one prefetch read when `max_source_reads_in_flight` exceeds 1 and no read
+/// is pending.
+///
+/// A chunk whose minimum decode budget fails `join_leaf_prefetch_admitted` is counted as
+/// skipped and left unstarted; the loop's required-read start picks it up later.
 pub(super) fn fill_optional_join_leaf_reads(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -134,6 +157,11 @@ pub(super) fn fill_optional_join_leaf_reads(
     }
     Ok(())
 }
+/// Records one source chunk attempt and starts a scheduled read of `chunk`.
+///
+/// Waits, cancellably, for an attempt auxiliary permit when the calling thread is not
+/// already under a work lease; under one, the read runs to completion inside this call.
+/// `prefetch` labels the read in the metrics and `attempt` names it in observations.
 pub(super) fn start_join_leaf_scheduled_source_read(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -156,6 +184,9 @@ pub(super) fn start_join_leaf_scheduled_source_read(
     )
 }
 
+/// Joins and discards every pending read, newest first. Blocks until each worker has
+/// finished, drops the decoded frames, and records a late decode failure as a cleanup
+/// failure of the attempt instead of raising it.
 pub(super) fn abandon_join_leaf_reads(
     execution: &mut BoundedExecutionAttempt<'_>,
     mut pending: VecDeque<ScheduledLocalParquetRead>,

@@ -2,6 +2,11 @@ use std::time::Instant;
 
 use super::{CudfSortOptions, ExecutionMetrics, GpuDataFrame, Result, SortNode, cudf_query_error, lower_sort_spec};
 
+/// Fully sorts one candidate frame by the node's sort keys under `work_token`; the caller
+/// truncates it. Consumes `input`.
+///
+/// This is a complete sort of the frame (prepare, then materialize) with no partial
+/// selection step. `boundary` labels failures.
 pub(super) fn sort_topk_candidate_with_budget(
     sort: &SortNode,
     input: GpuDataFrame,

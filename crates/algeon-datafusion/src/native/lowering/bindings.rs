@@ -1,3 +1,10 @@
+//! Name bindings and parent demand shared by every lowering step.
+//!
+//! DataFusion addresses columns by index and allows duplicate names; the
+//! native IR addresses them by unique name. `FieldBinding` records the mapping
+//! per lowered node so expressions above resolve DataFusion indices to native
+//! names, and `frontend_schema` restores DataFusion names at the host sink.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,

@@ -1,3 +1,21 @@
+//! Filtered global aggregates (`agg(x) FILTER (WHERE p)` with no group keys) under a budget
+//! token.
+//!
+//! The default form masks every filtered argument into a new column in one pass
+//! (`prepare_aggregate_input_frame`). The masked copies, their validity masks and the predicate
+//! columns add to the retained input frame. `select_filtered_global_aggregate_strategy`
+//! estimates that sum and compares it with a fraction of the token's stage request (one half
+//! by default, from `filtered_segment_policy.rs`). Above the threshold, the input is cut into
+//! row chunks. Each chunk is reduced to the partial state of `partial_global_aggregate_spec`,
+//! a few filtered aggregates (a segment) at a time, and the chunk states are concatenated and
+//! merged with `final_global_aggregate_spec`.
+//!
+//! The estimate only selects the form. The allocator still enforces the grant, and a failing
+//! allocation returns the usual typed resource error. Aggregates without a mergeable
+//! state (distinct counts, MEDIAN, variance, standard deviation) cannot run segmented. When the
+//! single-pass estimate is too large and the spec holds one, selection fails with
+//! `UnsupportedOperator` before any input is materialized.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -21,7 +39,11 @@ use super::{
     *,
 };
 
-// Admission decision plus segmentation plan for filtered global aggregates.
+/// Outcome of `select_filtered_global_aggregate_strategy`.
+///
+/// `decision` is the capability decision whose facts are recorded with the aggregate.
+/// `rows_per_chunk` and `filtered_inputs_per_segment` size the segmented run; when
+/// `use_segmented` is false they describe one chunk of all rows and one segment.
 #[derive(Debug, Clone)]
 pub(super) struct FilteredGlobalAggregateStrategyDecision {
     pub(super) use_segmented: bool,
@@ -30,6 +52,9 @@ pub(super) struct FilteredGlobalAggregateStrategyDecision {
     filtered_inputs_per_segment: usize,
 }
 
+/// Counters gathered while a segmented run executes, reported as `filtered_global_*` strategy
+/// facts. The observed peaks come from the budget window around the whole run and, on failure,
+/// from the memory usage carried by the error.
 #[derive(Debug, Clone, Default)]
 pub(super) struct FilteredGlobalSegmentRuntimeStats {
     pub(super) chunk_count: u64,
@@ -40,12 +65,25 @@ pub(super) struct FilteredGlobalSegmentRuntimeStats {
     pub(super) observed_retained_peak_bytes: u64,
 }
 
+/// A chunk with its filter predicates evaluated into Boolean columns, shared by every segment
+/// of the chunk. `predicate_aliases` maps predicate text to its column, so aggregates with equal
+/// predicates share one column.
 struct FilteredGlobalPreparedChunk {
     frame: DataFrame,
     schema: ArrowSchemaRef,
     predicate_aliases: BTreeMap<String, String>,
 }
 
+/// Chooses between the single-pass and the row-chunked form for a filtered global aggregate.
+///
+/// The estimate (`estimate_filtered_global_materialization_footprint`) adds the retained input
+/// frame to one masked value column, one validity mask and one predicate byte per row for each
+/// filtered aggregate. The row-chunked form is chosen when it exceeds the single-pass
+/// threshold. `rows_per_chunk` then follows from the segment's temporary-byte target (the policy
+/// caps it at an eighth of `budget_bytes`) and the widest masked argument, and
+/// `filtered_inputs_per_segment` bounds how many masked arguments exist at once. Fails with
+/// `UnsupportedOperator` when the row-chunked form is needed but an aggregate state cannot be
+/// merged. The returned facts record the estimate, the threshold and the rejected alternative.
 pub(super) fn select_filtered_global_aggregate_strategy(
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
@@ -137,6 +175,9 @@ pub(super) fn select_filtered_global_aggregate_strategy(
     Ok(FilteredGlobalAggregateStrategyDecision { use_segmented, decision, rows_per_chunk, filtered_inputs_per_segment })
 }
 
+/// Single-stage row-chunked run: builds the chunk states, merges them with
+/// `final_global_aggregate_spec`, finalizes AVG and selects the output columns. The decision is
+/// recorded on success and, with the stats gathered so far, on failure.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -157,6 +198,8 @@ pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
     let budget_window = metrics.open_budget_window();
     let timer = Instant::now();
     let mut stats = FilteredGlobalSegmentRuntimeStats::default();
+    // The closure lets `take_budget_window` run on the error path too, so the window opened
+    // above is closed on every exit.
     let result = (|| -> Result<(GpuDataFrame, u64, u64)> {
         let state_schema = partial_global_aggregate_output_schema(spec, input_schema, output_schema)?;
         let partial_state = execute_segmented_filtered_global_partial_state(
@@ -234,6 +277,9 @@ pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
     }
 }
 
+/// Partial-stage row-chunked run. The chunk states are merged into one state row, the same shape
+/// as the unsegmented global partial, so AVG stays a (sum, count) pair and SUM, MIN and MAX
+/// keep their valid-count columns for the final merge.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -390,6 +436,9 @@ pub(super) fn record_filtered_global_aggregate_single_pass(
     );
 }
 
+/// Records the decision row of a failed row-chunked run, with zero output rows. The row carries
+/// the failing operation, the error's code and kind, its `budget_*` facts, and raises the
+/// observed peaks to the memory usage the error reports.
 #[expect(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
@@ -452,6 +501,10 @@ fn add_segmented_failure_error_facts(
     }
 }
 
+/// Reduces `input` chunk by chunk and concatenates the per-chunk state rows.
+///
+/// An input with no rows still runs one empty chunk, so the result holds the one identity state
+/// row a global aggregate returns for empty input.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -519,6 +572,11 @@ fn execute_segmented_filtered_global_partial_state(
     Ok(frame)
 }
 
+/// Partial state of one chunk. The predicates are evaluated once, then the aggregates are
+/// processed in segments. A segment closes before the next filtered aggregate once it holds
+/// `filtered_inputs_per_segment` of them; unfiltered aggregates join the open segment without
+/// counting. Masked arguments are released when their segment finishes, and the segment states
+/// are reassembled in `state_schema` order.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -602,6 +660,8 @@ fn execute_filtered_global_partial_state_for_chunk(
     Ok(frame)
 }
 
+/// Masks the segment's filtered arguments, reduces the segment to partial state and appends the
+/// state columns to `output_series`. The masked frame is dropped when the function returns.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -644,6 +704,8 @@ fn append_filtered_global_partial_segment(
     Ok(())
 }
 
+/// Evaluates each distinct filter predicate of `spec` once into a nullable Boolean column.
+/// A NULL predicate result masks its row, as SQL FILTER requires.
 fn prepare_filtered_global_predicates_for_chunk(
     chunk: &DataFrame,
     input_schema: &ArrowSchemaRef,
@@ -687,6 +749,9 @@ fn prepare_filtered_global_predicates_for_chunk(
     Ok(FilteredGlobalPreparedChunk { frame, schema: Arc::new(Schema::new(fields)), predicate_aliases })
 }
 
+/// Replaces each filtered aggregate's argument with `CASE WHEN predicate THEN argument ELSE
+/// NULL END`, typed as the argument. COUNT(*) masks the literal 1, so the count skips unmatched
+/// rows. Unfiltered aggregates pass through unchanged.
 #[expect(clippy::type_complexity, reason = "complex tuple return type for internal preparation step")]
 fn prepare_filtered_global_partial_segment(
     prepared_chunk: &FilteredGlobalPreparedChunk,
@@ -748,6 +813,10 @@ fn unique_filtered_global_segment_alias(base: &str, fields: &[Field]) -> String 
     unique_alias_with_suffix(base, |alias| fields.iter().any(|field| field.name() == alias))
 }
 
+/// Partial state spec for the aggregates of one segment. Each carries its index in the full
+/// spec, which keeps the AVG state aliases (`AvgStateAliases::for_aggregate_index`) unique
+/// across segments; SUM, MIN and MAX gain a valid-count column as in
+/// `partial_global_aggregate_spec`.
 fn indexed_partial_global_aggregate_spec(indexed_exprs: &[(usize, AggregateExpr)]) -> AggregateSpec {
     AggregateSpec::new(
         Vec::new(),
@@ -977,6 +1046,9 @@ struct FilteredGlobalMaterializationFootprint {
     max_segment_input_bytes_per_row: u64,
 }
 
+/// The `UnsupportedOperator` error for a spec that needs the row-chunked form but holds an
+/// aggregate whose state cannot be merged. Its facts mirror the strategy facts, with
+/// `selected_strategy` set to `none`.
 fn unsupported_large_filtered_global_stateful_merge_error(
     footprint: &FilteredGlobalMaterializationFootprint,
     input_rows: u64,
@@ -1007,6 +1079,14 @@ fn unsupported_large_filtered_global_stateful_merge_error(
     .with_fact("filtered_global_strategy_input_rows", input_rows)
 }
 
+/// Byte estimate for the single-pass form.
+///
+/// Counts the retained input frame (fixed-width columns at element width, plus validity and
+/// alignment padding; types without a fixed width at `STRING_OFFSET_BYTES_CONSERVATIVE` per row,
+/// which covers offsets and leaves character data out) and, for each filtered aggregate, a value
+/// column, a validity mask and one predicate byte per row. `max_segment_input_bytes_per_row` is
+/// the widest masked argument plus two bytes for the validity and predicate allowance, and it
+/// sizes the row chunks.
 fn estimate_filtered_global_materialization_footprint(
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,

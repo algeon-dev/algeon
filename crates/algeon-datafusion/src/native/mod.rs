@@ -2,6 +2,19 @@
 //!
 //! Lowering is planning-only: it returns native query plans plus structured
 //! planning/source diagnostics, but does not execute or allocate GPU memory.
+//! Its only I/O is reading Parquet footers, shared per planning pass through
+//! `FooterScope`.
+//!
+//! `lower_physical_plan_to_native` normalizes the DataFusion subtree, lowers it
+//! for the demand of its parent, and returns a `NativeLoweringResult`. The
+//! `plan` is `Some` only when the report holds a single selected candidate;
+//! it then has a host sink in the DataFusion output schema, schema metadata
+//! included. Ordering is not enforced here: the native optimizer may change
+//! what the plan reproduces, so `reestablish_declared_output_ordering_if_needed`
+//! runs after it. A candidate the IR cannot express is a reported decline; a
+//! lowered plan that breaks an IR invariant is an adapter defect and an error.
+//!
+//! The translation contract lives in `website/docs/design/native-lowering.mdx`.
 
 mod expression_contract;
 mod footers;
@@ -184,6 +197,10 @@ use crate::{
 
 pub(in crate::native) const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
 
+/// What one lowering produced: at most one selected plan, the candidate
+/// outcomes, and the source diagnostics of the scans it inspected. Diagnostics
+/// are present for declined candidates too, so a report can describe a scan
+/// that never ran.
 #[derive(Debug, Clone)]
 pub(crate) struct NativeLoweringResult {
     /// The lowered plan of the one candidate, when it was selected.
@@ -253,6 +270,9 @@ fn lower_physical_plan_to_native_with_mode(
         NativeLoweringMode::CountOnly => normalized,
     });
     match normalized {
+        // The probe lowers only a root aggregate that reads no column of a
+        // local Parquet or memory source. Every other candidate is left to the
+        // final rewrite, reported here with the root operator as blocker.
         Ok(normalized)
             if mode == NativeLoweringMode::CountOnly
                 && !root_aggregate(&normalized.input).is_some_and(|root| match root.input.as_ref() {

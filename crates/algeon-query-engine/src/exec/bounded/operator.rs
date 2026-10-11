@@ -91,6 +91,9 @@ pub(in crate::exec::bounded) fn execute_bounded_union(
         return Ok(inputs.into_iter().next().expect("single union input checked"));
     }
 
+    // `concat_many` copies every branch into one new frame, so for a moment
+    // the inputs and the output are resident together; the single-branch
+    // return above avoids that copy entirely.
     let input_count = inputs.len();
     let output = (|| {
         let mut frames = Vec::with_capacity(input_count);
@@ -132,6 +135,8 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     side_input_frames: BTreeMap<usize, ResidentGpuFrame>,
 ) -> Result<ResidentGpuFrame> {
     let ResidentGpuFrame { frame: mut input_frame, .. } = input;
+    // Held until this function returns so the EdgeNormalize source stays
+    // accounted while the edge frame derived from it is still in use.
     let _retained_normalization_source = input_frame.take_retained_normalization_source();
     let input_rows = input_frame.num_rows() as u64;
     let input_columns = input_frame.num_columns() as u64;
@@ -159,6 +164,9 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     let null_edge_rows_dropped =
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
     let mut filtered_input = GpuDataFrame::new(filtered_input_frame);
+    // A resident graph describes the unfiltered edge set. It carries over only
+    // when the null filter removed nothing; otherwise the algorithm rebuilds
+    // from the filtered frame.
     if null_edge_rows_dropped == 0
         && let Some(graph_residency) = input_graph_residency
     {
@@ -278,6 +286,9 @@ pub(in crate::exec::bounded) fn execute_bounded_local_parquet_source(
     for chunk in &chunk_plan.chunks {
         execution.record_source_read(SourceReadFact::ChunkPlanned { row_groups: chunk.row_group_count() as u64 });
     }
+    // The planner emits at least one chunk per file before scan-limit
+    // trimming, so an empty plan comes from a source with no files or a limit
+    // that trimmed every chunk; the whole-source reader covers both.
     if chunk_plan.chunks.is_empty() {
         let frame = read_local_parquet_source(execution.context(), node_id, source, execution.metrics())?;
         let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;

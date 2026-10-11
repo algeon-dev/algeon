@@ -1,3 +1,13 @@
+//! Partition-wise consumption of a join build input while it streams in.
+//!
+//! The strategy owner (the compiled executor) decides, as build chunks arrive, whether the build
+//! side is large enough to partition. Until it commits, chunks stay whole. A later decision can
+//! therefore still choose any keyed strategy, and the chunks are concatenated into one frame if it
+//! never commits. After a commitment every held chunk and every later chunk is hash-partitioned
+//! once and its non-empty partition ranges are copied out. `finish` concatenates each partition's
+//! slices into one frame, which gives a `Split` build side without ever concatenating the whole
+//! side.
+
 use super::{
     BoundedCompiledPartitionedJoinBuildState, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream,
     BoundedJoinSideFrame, BoundedPartitionRowPolicy, DataFrame, GpuDataFrame, JoinNode, JoinSide, JoinStrategy,
@@ -9,9 +19,10 @@ use super::{
     stream_bounded_join_leaf_local_parquet_source,
 };
 
-// Decision to consume the rest of a build input stream partition by partition.
-// The strategy owner (compiled executor admission) makes it; this module only
-// sizes and stores partitions.
+/// Decision to consume the rest of a build input stream partition by partition.
+///
+/// The strategy owner (the compiled executor) makes it from the observations in
+/// `BoundedJoinBuildStreamObservation`; this module only sizes and stores partitions.
 #[derive(Clone, Copy)]
 pub(in crate::exec::bounded) struct PartitionedJoinBuildCommitment {
     pub(in crate::exec::bounded) strategy_options: KeyedHashJoinStrategyOptions,
@@ -19,7 +30,7 @@ pub(in crate::exec::bounded) struct PartitionedJoinBuildCommitment {
     pub(in crate::exec::bounded) partition_target_bytes: u64,
 }
 
-// Build input consumed so far while the strategy is still undecided.
+/// Build input consumed so far, passed to the strategy owner while it is still undecided.
 #[derive(Clone, Copy)]
 pub(in crate::exec::bounded) struct BoundedJoinBuildStreamObservation {
     pub(in crate::exec::bounded) rows: u64,
@@ -32,6 +43,8 @@ pub(in crate::exec::bounded) enum BoundedJoinBuildInputStream {
     Frames(ResidentFrameStreamPayload),
 }
 
+/// Result of consuming a build input stream. `Materialized` is one frame for the existing strategy
+/// selection; `Partitioned` is a build side already split by key hash.
 pub(in crate::exec::bounded) enum BoundedJoinBuildStreamOutcome {
     Materialized(ResidentGpuFrame),
     Partitioned(BoundedCompiledPartitionedJoinBuildState),
@@ -42,6 +55,9 @@ type PartitionedJoinBuildSettle<'a> = &'a mut dyn FnMut(
     Option<BoundedJoinBuildStreamObservation>,
 ) -> Result<Option<PartitionedJoinBuildCommitment>>;
 
+/// Sizes a commitment from the build bytes consumed so far and the probe size estimate, where an
+/// unknown size counts as zero. The byte-based partition count is raised to the minimum the row
+/// policy sets for hash frame streams.
 pub(in crate::exec::bounded) fn partitioned_join_build_commitment(
     execution: &BoundedExecutionAttempt<'_>,
     strategy_options: KeyedHashJoinStrategyOptions,
@@ -67,6 +83,12 @@ pub(in crate::exec::bounded) fn partitioned_join_build_commitment(
 /// chunks are hash-partitioned into per-partition slices and the result is a
 /// split build side. Without a commitment the chunks are concatenated into one
 /// frame for the existing strategy selection.
+///
+/// A leaf stream with no chunks returns `Materialized` with the leaf's empty frame, even when
+/// `settle` committed before any chunk. On an error the pending chunks are released and any
+/// partition slices drop with the accumulator.
+/// A chunk that fails inside the consumer leaves the accumulator as it was before that chunk,
+/// so the leaf stream can re-read it in smaller pieces.
 pub(in crate::exec::bounded) fn consume_bounded_join_build_input_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -167,6 +189,8 @@ pub(in crate::exec::bounded) fn consume_bounded_join_build_input_stream(
     }
 }
 
+/// Build chunks held so far. `Pending` keeps whole prepared frames until a commitment or the end of
+/// the stream; `Partitioned` holds per-partition slices after a commitment.
 enum JoinBuildAccumulator {
     Pending { frames: Vec<BoundedJoinSideFrame>, rows: u64, bytes: u64 },
     Partitioned(Box<PartitionedJoinBuildAccumulator>),
@@ -281,9 +305,12 @@ fn concatenate_join_build_input_frames(
     Ok(ResidentGpuFrame::with_device_bytes(output, bytes))
 }
 
-// Per-partition slices of the build input consumed so far. Every chunk is
-// hash-partitioned once and its partition ranges copied out, so the chunk and
-// its partitioned copy are released before the next chunk arrives.
+/// Per-partition slices of the build input consumed so far. Every chunk is
+/// hash-partitioned once and its partition ranges copied out, so the chunk and
+/// its partitioned copy are released before the next chunk arrives.
+///
+/// `empty_template` is a zero-row frame with the build schema, used for partitions that no row
+/// reached.
 struct PartitionedJoinBuildAccumulator {
     commitment: PartitionedJoinBuildCommitment,
     side: JoinSide,
@@ -311,6 +338,10 @@ impl PartitionedJoinBuildAccumulator {
         }
     }
 
+    /// Hash-partitions one prepared chunk and appends its non-empty partition slices.
+    ///
+    /// Slices are staged in a local list and appended only after every copy succeeded. A failure
+    /// leaves `slices` and the counters unchanged. Consumes `input`.
     fn push(
         &mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -379,6 +410,9 @@ impl PartitionedJoinBuildAccumulator {
         Ok(())
     }
 
+    /// Concatenates each partition's slices into one frame and returns the split build state. A
+    /// build with no chunks is an invalid plan (`query_engine.bounded.join.build_input_stream`).
+    /// Slices are freed as soon as their partition frame exists.
     fn finish(
         self,
         execution: &mut BoundedExecutionAttempt<'_>,

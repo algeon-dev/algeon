@@ -21,6 +21,23 @@
 //! as `min(default_query_limit, query_share - resident_bytes)`. It is
 //! never inferred from a planner estimate and never clamped to transient free
 //! capacity left by other live grants.
+//!
+//! "Versioned" refers to two counters that only move forward. The observation
+//! `sequence` advances on every state mutation; a `LedgerSnapshot` carries the
+//! sequence it was taken at, and in-lock transition observers receive the
+//! snapshot of the mutation that produced it; metrics can therefore order
+//! ledger events without a second event store. The grant `generation` is
+//! minted per committed grant, doubles as the grant id and the key in the
+//! grant map, and is never reused within one ledger, so a stale
+//! `GrantIdentity` cannot alias a later grant.
+//!
+//! Admission failure is two-valued. `try_admit_for_attempt` returns `Ok(None)`
+//! when the device cannot admit right now (closed health, no active-attempt slot,
+//! or the equation above does not hold); that is a wait condition for the
+//! admission queue. `Err` means a caller or ledger invariant was violated and is
+//! never a capacity shortfall; its `reason` fact names the violation. The
+//! capacity contract is owned by
+//! `website/docs/design/admission.mdx#device-profiles-and-grants`.
 
 use std::{
     cell::Cell,
@@ -52,7 +69,9 @@ pub(crate) enum DeviceAdmissionHealth {
     Open,
     /// New admission is closed; in-flight attempts finish and release.
     /// `isolation` says whether the fault is confined to this device;
-    /// `reason` is diagnostic text only.
+    /// `reason` is diagnostic text only. `generation` counts closures of this
+    /// ledger, starting at 1, so a report can tell a repeated closure from the
+    /// one it already recorded. Health never reopens.
     Closed { reason: String, isolation: AttemptFaultIsolation, generation: u64 },
 }
 
@@ -69,6 +88,8 @@ impl DeviceAdmissionHealth {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LedgerSnapshot {
     pub(crate) device_ordinal: usize,
+    /// Observation sequence this snapshot was taken at. Two snapshots with
+    /// the same sequence describe the same state.
     pub(crate) sequence: u64,
     pub(crate) managed_capacity_bytes: u64,
     /// Cache share `K` carved out of the managed capacity.
@@ -243,6 +264,15 @@ pub struct DeviceLedger {
     inner: Arc<DeviceLedgerInner>,
 }
 
+/// Shared by every `DeviceLedger` clone and by every `MemoryGrant` minted
+/// from it; a grant therefore keeps its ledger alive until its final release.
+///
+/// Lock order: the query service takes its admission mutex before calling
+/// into the ledger, and admission observers take that mutex again, so the
+/// ledger releases `state` before it notifies them. Transition observers run
+/// while `state` is held and must not re-enter this ledger; the thread-local
+/// observer stack turns such re-entry into an error or panic, where the
+/// non-reentrant mutex would otherwise self-deadlock.
 struct DeviceLedgerInner {
     profile: DeviceResourceProfile,
     state: Mutex<DeviceLedgerState>,
@@ -257,6 +287,11 @@ struct DeviceLedgerInner {
 
 const MAX_LEDGER_TRANSITION_OBSERVER_DEPTH: usize = 64;
 
+/// Ledgers whose state mutex the current thread holds while delivering a
+/// transition. Observers of one ledger may legitimately act on another
+/// ledger, which a single flag could not distinguish; a lookup for a ledger
+/// that is on the stack means the caller is inside that ledger's own observer
+/// dispatch.
 #[derive(Clone, Copy)]
 struct LedgerTransitionObserverStack {
     ledgers: [*const DeviceLedgerInner; MAX_LEDGER_TRANSITION_OBSERVER_DEPTH],
@@ -323,11 +358,19 @@ impl fmt::Debug for DeviceLedgerInner {
 
 #[derive(Debug)]
 struct DeviceLedgerState {
+    /// Advanced by every mutation, including cache charges. Starts at 0; the
+    /// first transition observers see carries sequence 1.
     sequence: u64,
+    /// Next grant id. Starts at 1 and is never reused within this ledger.
     next_grant_generation: u64,
+    /// Grants keyed by generation. A grant stays here after it is frozen
+    /// resident, with `frozen_resident_bytes` set, until its final release;
+    /// only grants without that field count as active attempts.
     grants: BTreeMap<u64, ActiveGrant>,
+    /// `R` in the admission equation: the sum of published frozen charges.
     frozen_resident_bytes: u64,
     health: DeviceAdmissionHealth,
+    /// Cache share in use: `evictable_bytes + pinned_bytes <= cache_cap_bytes`.
     evictable_bytes: u64,
     pinned_bytes: u64,
 }
@@ -335,9 +378,18 @@ struct DeviceLedgerState {
 #[derive(Debug, Clone, Copy)]
 struct ActiveGrant {
     admission_request_id: AdmissionRequestId,
+    /// `G_i`: counts toward the query share while the grant is active.
     grant_bytes: u64,
+    /// Bytes retained by live `ResidentOwnerLease`s under this grant. Reported
+    /// and reconciled at freeze time; never part of the admission equation.
     resident_owner_bytes: u64,
+    /// Prepared but unpublished frozen charge. While only this is set the
+    /// grant still counts its full `grant_bytes` as active, so the report
+    /// commit can fail without having released any capacity.
     pending_frozen_resident_bytes: Option<u64>,
+    /// Published frozen charge. From this point the grant is no longer an
+    /// active attempt, its bytes are in `frozen_resident_bytes`, and they
+    /// return only at the grant's final release.
     frozen_resident_bytes: Option<u64>,
 }
 
@@ -450,6 +502,11 @@ impl DeviceLedger {
         std::panic::panic_any(self.transition_observer_reentrancy_error(action))
     }
 
+    /// Takes the state mutex for `action`. Fails with reason
+    /// `ledger_observer_reentrancy` when called from one of this ledger's own
+    /// transition observers, and `ledger_mutex_poisoned` after a panic inside
+    /// an earlier critical section; release paths that cannot fail use the
+    /// raw lock instead.
     fn lock_state(&self, action: &'static str) -> Result<MutexGuard<'_, DeviceLedgerState>> {
         if self.in_transition_observer() {
             return Err(self.transition_observer_reentrancy_error(action));
@@ -481,6 +538,11 @@ impl DeviceLedger {
         }
     }
 
+    /// Advances the sequence and delivers the transition to the in-lock
+    /// observers. Every mutation ends with this call, so the snapshot the
+    /// observers receive is the state at the new sequence. Observer
+    /// panics are caught; a panicking observer must not undo an admission or
+    /// a release that already took effect.
     fn bump_sequence_and_notify_locked(
         &self,
         state: &mut DeviceLedgerState,
@@ -686,6 +748,14 @@ impl DeviceLedger {
     /// The grant is exactly the explicit cap, or the default cap resolved
     /// against resident ownership in this transaction. It is never clamped to
     /// transient capacity and planner estimates do not participate.
+    ///
+    /// `Ok(None)` means the device cannot admit now and the caller should
+    /// wait for a `GrantReleased`, `GrantFrozenResident`, or `AdmissionClosed`
+    /// admission notification. For a well-formed request `Err` means a
+    /// poisoned or re-entered ledger or an exhausted grant generation; a zero
+    /// explicit cap is rejected before the lock is taken. Check and commit
+    /// happen under one lock hold, so two concurrent admissions cannot both
+    /// pass on the same free bytes.
     pub(crate) fn try_admit_for_attempt(
         &self,
         waiter_id: AdmissionRequestId,
@@ -761,6 +831,10 @@ impl DeviceLedger {
     }
 
     /// Releases one grant after its active or resident ownership ends.
+    ///
+    /// Called from `MemoryGrantInner::drop`, which cannot return an error, so
+    /// re-entry from a transition observer panics instead. A grant id that is
+    /// no longer present is ignored; the map entry is removed once.
     fn release_grant(&self, grant_id: u64) {
         if self.in_transition_observer() {
             self.panic_on_transition_observer_reentrancy("release_grant");
@@ -901,9 +975,16 @@ impl DeviceLedger {
 
 /// RAII immutable attempt grant. Dropping the final clone returns its budget
 /// to the device ledger; the budget never changes while the grant is live.
+///
+/// Clones include the ones held inside every `ResidentOwnerLease`, so a grant
+/// whose attempt has finished stays in the ledger for as long as any resident
+/// output it produced is still retained.
 #[derive(Clone)]
 pub struct MemoryGrant {
     inner: Arc<MemoryGrantInner>,
+    /// Query-service epoch of the admitted attempt. Resident owner leases
+    /// derived from this grant carry a service-generation-only epoch instead,
+    /// see `new_resident_owner_lease`.
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
 }
 
@@ -917,7 +998,10 @@ pub struct ResidentOwnerLease {
 }
 
 struct ResidentOwnerLeaseInner {
+    /// Keeps the grant, and through it the ledger row, alive until this
+    /// owner's final release.
     grant: MemoryGrant,
+    /// Charge added at creation and released once, in `Drop`.
     bytes: u64,
     owner_id: u64,
     completion_fences: Mutex<ResidentCompletionFences>,
@@ -961,14 +1045,28 @@ struct MemoryGrantInner {
     identity: GrantIdentity,
     admission_request_id: AdmissionRequestId,
     grant_bytes: u64,
+    /// Lock-free projection of the grant row's `resident_owner_bytes`, written
+    /// under the ledger lock together with the row.
     resident_owner_bytes: std::sync::atomic::AtomicU64,
     next_resident_owner_id: std::sync::atomic::AtomicU64,
+    /// Backing device pointers per resident owner. The report commit compares
+    /// them against the allocation registry before it freezes the grant.
     resident_owner_allocations: Mutex<BTreeMap<u64, Arc<[usize]>>>,
+    /// Set once by `prepare_frozen_resident_charge`, never cleared. Readers
+    /// use it to decide whether a resident owner's release must wait on its
+    /// completion fences.
     frozen: std::sync::atomic::AtomicBool,
+    /// The attempt's allocation domain, retained from freeze until final
+    /// release so the drop below can verify that nothing is still allocated in
+    /// it when the frozen charge returns to the ledger.
     frozen_domain: Mutex<Option<Arc<cudf::QueryMemoryDomain>>>,
 }
 
 impl Drop for MemoryGrantInner {
+    /// Final release of the grant, after the attempt and every resident owner
+    /// derived from it are gone. A frozen domain that still reports members
+    /// or bytes means capacity would be returned while allocations exist in
+    /// it, so admission on the device is closed before the release.
     fn drop(&mut self) {
         let ledger = DeviceLedger { inner: Arc::clone(&self.ledger) };
         // The slot holds at most one domain handle, valid even when a panic
@@ -1056,6 +1154,11 @@ impl MemoryGrant {
     /// `resident_bytes` is the allocation registry's own measurement. The
     /// resident-owner charge is reconciled to that same measurement so the
     /// owner and frozen charges remain one accounting fact.
+    ///
+    /// This is the first of three steps run by the attempt's release path:
+    /// prepare here, `validate_frozen_resident_publish` before the report is
+    /// sealed, `publish_frozen_resident` after it is visible. Until the
+    /// publish the ledger still accounts the full active grant.
     pub(crate) fn freeze_resident_with_domain(
         &self,
         resident_bytes: u64,
@@ -1095,6 +1198,10 @@ impl MemoryGrant {
         Ok(())
     }
 
+    /// Records the pending frozen charge and retains `domain`. Repeating the
+    /// call with the same bytes and the same domain is a no-op; a different
+    /// value is an invariant violation, because one grant has one measured
+    /// resident byte count.
     fn prepare_frozen_resident_charge(
         &self,
         resident_bytes: u64,
@@ -1162,10 +1269,8 @@ impl MemoryGrant {
         Ok(())
     }
 
-    /// Publishes a prepared B-to-R transition after the attempt report is
-    /// visible. Until this commit the ledger continues to account the full
-    /// active grant, so no released capacity can race report publication.
-    /// Proves the prepared B-to-R transition can still be published.
+    /// Proves the prepared active-to-frozen transition can still be
+    /// published. Succeeds without effect when it was already published.
     ///
     /// The publish itself runs after the report is sealed, where a failure can
     /// no longer be recorded as a cleanup disposition. Checking the same
@@ -1210,6 +1315,11 @@ impl MemoryGrant {
         DeviceLedger { inner: Arc::clone(&self.inner.ledger) }.close_admission_if_open(reason)
     }
 
+    /// Publishes the prepared active-to-frozen transition after the attempt
+    /// report is visible. Until this commit the ledger continues to account
+    /// the full active grant, so no released capacity can race report
+    /// publication. Idempotent once published. This transition frees an
+    /// active-attempt slot and therefore notifies the admission observers.
     pub(crate) fn publish_frozen_resident(&self) -> Result<()> {
         let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
         let mut state = ledger.lock_state("publish_frozen_resident")?;
@@ -1495,6 +1605,12 @@ impl ResidentOwnerLeaseInner {
     }
 
     /// Waits for every recorded completion; returns the first failure.
+    ///
+    /// An empty fence list is itself a failure: a frozen owner always has at
+    /// least the producer's fence, recorded when the result handle was bound,
+    /// so its absence means the release cannot prove the output's work has
+    /// finished. The wait uses the teardown entry so it still runs on a device
+    /// already marked unhealthy.
     fn wait_for_completions(&mut self) -> Option<String> {
         let completion_fences = match self.completion_fences.get_mut() {
             Ok(completion_fences) => completion_fences,
@@ -1516,6 +1632,12 @@ impl ResidentOwnerLeaseInner {
 }
 
 impl Drop for ResidentOwnerLeaseInner {
+    /// Final release of one resident owner. Only a frozen owner waits on its
+    /// fences: while the grant is still active, the attempt's own stream
+    /// cleanup synchronizes the streams before the grant can release, and the
+    /// bytes stay charged to the live grant either way. A fence failure
+    /// closes admission on the device because the buffers may still be read
+    /// when their bytes return to the ledger.
     fn drop(&mut self) {
         let cleanup_failure = if self.grant.is_frozen_resident() { self.wait_for_completions() } else { None };
         if let Some(reason) = cleanup_failure {

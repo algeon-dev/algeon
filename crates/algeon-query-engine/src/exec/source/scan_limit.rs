@@ -10,6 +10,9 @@ use super::{
     cudf_query_error, local_parquet_execution_frame_schema, parquet_chunk_path_fact,
 };
 
+/// Builds a zero-row device frame with the execution-frame schema, by uploading an empty Arrow
+/// batch. It stands in for a read that is known to return no rows, such as a scan limit of 0 or a
+/// source whose files were all pruned.
 pub(super) fn empty_local_parquet_execution_frame(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -38,6 +41,10 @@ pub(super) fn empty_local_parquet_execution_frame(
     })
 }
 
+/// Truncates `frame` to the rows left in a source-level scan limit and returns the rows still
+/// allowed afterwards. `None` means no limit. Rows are kept from the start of the frame, so with
+/// several files the limit fills from the first file read. No slice is made when the frame
+/// already fits.
 pub(in crate::exec) fn apply_source_scan_limit_to_frame(
     context: &ExecutionContext,
     frame: DataFrame,
@@ -70,6 +77,9 @@ pub(in crate::exec) fn apply_source_scan_limit_to_frame(
     Ok((frame, remaining_rows))
 }
 
+/// Truncates one chunk's frame to `chunk.scan_limit_rows`, the row allowance the chunk planner
+/// assigned to this chunk. A chunk with no allowance, or one already within it, is returned
+/// unchanged.
 pub(super) fn apply_source_chunk_scan_limit(
     context: &ExecutionContext,
     chunk: &SourceChunk,

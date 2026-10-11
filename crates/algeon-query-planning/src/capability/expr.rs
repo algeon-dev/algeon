@@ -12,7 +12,9 @@ use crate::{
     expr::{ColumnQualifier, DatePart, UnaryMathOp},
 };
 
-// Stable report facts for an expression capability miss.
+/// Stable report facts for an expression capability miss. Both strings are
+/// report contracts: `reason` names the rule and `expression_family` the
+/// `expr_family` label of the offending form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ExpressionCapabilityRejection {
     reason: &'static str,
@@ -54,6 +56,13 @@ pub(crate) fn require_expression_capability(
     })
 }
 
+/// Whether the native aggregate executors evaluate `aggregate_expr`.
+///
+/// `DISTINCT` is admitted only on `COUNT`. A literal count-star argument is
+/// admitted for a scalar aggregate or a filtered count, where the executor
+/// counts rows or filter hits; a grouped unfiltered count must name a column,
+/// because the grouped partial aggregate reads its argument column. `NUnique`
+/// always needs a value expression.
 pub(crate) fn validate_aggregate_expr_capability(
     aggregate_expr: &AggregateExpr,
     is_scalar_aggregate: bool,
@@ -86,6 +95,7 @@ pub(crate) fn validate_aggregate_expr_capability(
     validate_column_expr_capability(&aggregate_expr.expr)
 }
 
+/// A non-null literal, possibly aliased: the planner's count-star argument.
 fn is_count_star_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Literal(value) if !matches!(value, LiteralValue::Null(_)))
         || matches!(expr, Expr::Alias { expr, .. } if is_count_star_expr(expr))
@@ -115,6 +125,10 @@ pub(crate) fn validate_column_expr_capability(expr: &Expr) -> std::result::Resul
     }
 }
 
+/// Whether the general expression evaluator (filters, projections, aggregate
+/// filters) runs `expr`. An interval literal is admitted only as one operand of
+/// a datetime `+`/`-`; `IN` lists must be non-empty, literal, and null-free
+/// because the evaluator does not model SQL `IN` null semantics.
 pub(crate) fn validate_general_expr_capability(expr: &Expr) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match expr {
         Expr::Column(_) => Ok(()),
@@ -216,6 +230,14 @@ pub(crate) fn validate_general_expr_capability(expr: &Expr) -> std::result::Resu
     }
 }
 
+/// Whether the cuDF mixed join evaluates `expr` while matching.
+///
+/// The residual is an AST over the two input tables, so every column must be
+/// input-qualified to address its table, and only comparisons, boolean logic,
+/// arithmetic, strict casts, `IN` lists and fixed-day interval arithmetic are
+/// admitted. String functions, `CASE`, null-aware comparison, and calendar
+/// intervals have no AST form; see `validate_post_join_residual_expr_capability`
+/// for the filter-after-match path that takes some of them.
 pub(super) fn validate_join_residual_expr_capability(
     expr: &Expr,
 ) -> std::result::Result<(), ExpressionCapabilityRejection> {
@@ -277,6 +299,10 @@ pub(super) fn validate_join_residual_expr_capability(
     }
 }
 
+/// Whether the filter applied over an inner join's matched rows evaluates
+/// `expr`. Columns stay input-qualified so the filter can address both sides of
+/// the materialized match; the admitted forms are wider than the AST's because
+/// the filter runs as ordinary column expressions.
 pub(super) fn validate_post_join_residual_expr_capability(
     expr: &Expr,
 ) -> std::result::Result<(), ExpressionCapabilityRejection> {
@@ -480,6 +506,9 @@ fn validate_join_interval_binary_expr_capability(
     validate_join_residual_expr_capability(if left_interval { right } else { left })
 }
 
+/// The AST adds a fixed duration to a timestamp but has no calendar
+/// arithmetic, so a residual interval may carry days only: no months and no
+/// sub-day remainder.
 fn validate_fixed_day_interval_literal(expr: &Expr) -> std::result::Result<(), ExpressionCapabilityRejection> {
     let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, nanoseconds, .. }) = expr else {
         return Err(ExpressionCapabilityRejection {

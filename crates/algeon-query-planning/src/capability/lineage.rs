@@ -1,4 +1,11 @@
 //! Output-field lineage used by invariant proofs.
+//!
+//! A lineage names the field a value came from, never the value itself. Two
+//! lineages compare equal when they name the same source field, the same
+//! aggregate group or measure, or the same derived field of the same node;
+//! that equality is what the shared-producer invariants test. Every failure
+//! is a [`CapabilityDecision`] rejection so the caller can report it as the
+//! invariant's own reason.
 
 use super::{
     AggregateFunction, Expr, NodeId, PlanNode, QueryPlan, expr::expr_family, graph::join_side_index,
@@ -6,31 +13,26 @@ use super::{
 };
 use crate::expr::ColumnRef;
 
+/// Identity of one output field; see [`output_lineage`] for how each operator resolves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OutputLineage {
-    SourceField {
-        source_id: NodeId,
-        field_index: usize,
-    },
-    AggregateGroup {
-        aggregate_id: NodeId,
-        group_index: usize,
-    },
-    AggregateMeasure {
-        aggregate_id: NodeId,
-        aggr_index: usize,
-        function: AggregateFunction,
-    },
+    /// A field read from a source node.
+    SourceField { source_id: NodeId, field_index: usize },
+    /// A grouping key of a grouped aggregate.
+    AggregateGroup { aggregate_id: NodeId, group_index: usize },
+    /// A measure of a grouped aggregate, identified by the node alone because
+    /// each output row is a group and no single input field identifies it.
+    AggregateMeasure { aggregate_id: NodeId, aggr_index: usize, function: AggregateFunction },
+    /// A measure of a scalar aggregate, which keeps the lineage of the field it
+    /// aggregates so a consumer can check which grouped measure it reads.
     ScalarAggregateMeasure {
         aggregate_id: NodeId,
         aggr_index: usize,
         function: AggregateFunction,
         input: Box<OutputLineage>,
     },
-    Derived {
-        node_id: NodeId,
-        field_index: usize,
-    },
+    /// A field computed by `node_id` that resolves to no single input field.
+    Derived { node_id: NodeId, field_index: usize },
 }
 
 fn column_expr_lineage(
@@ -221,6 +223,9 @@ pub(super) fn output_lineage(
     }
 }
 
+/// Position of `column` in the output schema of `input_id`, matched by name
+/// only. A name that matches no field or more than one field is rejected under
+/// the caller's `reason`, with a `resolution` fact that says which.
 fn resolve_column_field_index(
     plan: &QueryPlan,
     input_id: NodeId,

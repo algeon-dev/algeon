@@ -1,3 +1,19 @@
+//! Residual join predicates lowered to cuDF AST expressions.
+//!
+//! A residual predicate is the part of a join condition beyond key equality. cuDF evaluates
+//! it inside mixed and conditional joins against two small tables, one per join input, that
+//! hold only the columns the predicate reads. Lowering therefore has three parts:
+//! `residual_input_columns` collects the columns per input into a `JoinResidualColumns`
+//! layout, the layout's `names` feed the cuDF join options, and
+//! `lower_join_residual_predicate` rewrites each column reference as a position in those
+//! tables. The options and the AST must come from the same layout value, or the positions
+//! point at the wrong columns.
+//!
+//! Only expressions with a cuDF AST form lower. AND and OR use cuDF's null-aware logical
+//! operators. Casts target Int64, UInt64 or Float64, IN lists hold literals, and interval
+//! arithmetic is accepted only inside a comparison against a datetime difference. Anything
+//! else fails with `UnsupportedExpression`.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use cudf::{
@@ -12,6 +28,8 @@ use super::{
 };
 use crate::datatypes::{UnrepresentableLiteral, cudf_scalar_value};
 
+/// Ordered predicate columns of one join input. A column's position in `names` is its AST
+/// column index.
 #[derive(Debug, Clone)]
 struct ResidualColumnLayout {
     names: Vec<String>,
@@ -37,6 +55,8 @@ impl ResidualColumnLayout {
     }
 }
 
+/// Predicate column layouts for both plan inputs, plus which plan input the cuDF call
+/// receives as its left table. The default layout is empty and means no residual.
 #[derive(Debug, Clone)]
 pub(in crate::exec) struct JoinResidualColumns {
     left: ResidualColumnLayout,
@@ -71,6 +91,7 @@ impl JoinResidualColumns {
         self.cudf_left
     }
 
+    /// Column names of `side` in AST index order, as passed to the cuDF join options.
     pub(in crate::exec) fn names(&self, side: JoinSide) -> &[String] {
         match side {
             JoinSide::Left => self.left.names(),
@@ -86,6 +107,14 @@ impl JoinResidualColumns {
     }
 }
 
+/// Collects the columns each join input must supply to the residual predicate: every column
+/// the predicate references, plus the equality key columns of that input, sorted by name.
+///
+/// A node without a residual returns the empty layout. The walk accepts more expression
+/// families than `lower_join_residual_predicate` can lower; an unsupported expression may
+/// pass here and fail at lowering. Errors are `UnsupportedExpression`: a column without an
+/// input qualifier of 0 or 1, an expression family the walker rejects, or a layout in which
+/// one input has no columns (a keyless residual that reads only one input).
 pub(in crate::exec) fn residual_input_columns(node: &JoinNode) -> Result<JoinResidualColumns> {
     let Some(predicate) = &node.spec.residual_predicate else {
         return Ok(JoinResidualColumns::default());
@@ -126,6 +155,10 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
     )
 }
 
+/// Calls `on_input(index, name)` for every column reference in `expr`, in expression order
+/// and with repeats. Input indexes are 0 and 1 only. `operation` and `bad_qualifier_message`
+/// label the error for an unqualified or out-of-range column; other callers report under
+/// their own operation.
 pub(in crate::exec) fn walk_join_residual_columns(
     expr: &Expr,
     operation: &'static str,
@@ -204,6 +237,11 @@ pub(in crate::exec) fn walk_join_residual_columns(
     }
 }
 
+/// Lowers the node's residual predicate to a cuDF AST expression against `residual_columns`.
+///
+/// Fails with `InvalidPlan` when the node has no residual or a referenced column is missing from
+/// the layout (the layout came from another node), and `UnsupportedExpression` for an
+/// expression with no AST form. Scalars for literals are created on `context`'s runtime.
 pub(in crate::exec) fn lower_join_residual_predicate(
     context: &ExecutionContext,
     node: &JoinNode,
@@ -409,6 +447,11 @@ fn lower_join_ast_expr(
     }
 }
 
+/// Rewrites `a <cmp> b +/- interval` (or the mirror image) as `(a - b) <cmp> duration`. The
+/// comparison then needs only a timestamp difference and one day-resolution duration literal.
+///
+/// Exactly one operand must be a datetime plus or minus a fixed-day interval literal. The
+/// mirror form negates the day count because the difference is taken from the other operand.
 fn lower_join_ast_datetime_interval_comparison(
     context: &ExecutionContext,
     left: &Expr,
@@ -467,6 +510,9 @@ fn lower_join_ast_datetime_interval_comparison(
     })
 }
 
+/// Splits `datetime + interval`, `interval + datetime` or `datetime - interval` into the
+/// datetime operand and a signed day count. Returns `None` when neither operand is an
+/// interval literal. `interval - datetime` and any other operator are `UnsupportedExpression`.
 fn interval_date_offset_expr(expr: &Expr) -> Result<Option<(&Expr, i32)>> {
     let Expr::Binary { left, op, right, .. } = expr else {
         return Ok(None);
@@ -535,6 +581,8 @@ fn lower_duration_days_ast_literal(context: &ExecutionContext, value: i32) -> Re
     })
 }
 
+/// Collapses an interval to whole days. A month component or a sub-day remainder has no
+/// day-resolution duration and is rejected, as is a total that overflows i32.
 fn fixed_day_interval_raw(months: i32, days: i32, nanoseconds: i64) -> Result<i32> {
     const NANOS_PER_DAY: i64 = 86_400_000_000_000;
     if months != 0 || nanoseconds % NANOS_PER_DAY != 0 {
@@ -614,6 +662,8 @@ fn join_ast_operator_is_comparison(op: BinaryOp) -> bool {
     matches!(op, BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq)
 }
 
+/// Maps a binary operator to its AST operator. AND and OR use the null-aware logical forms;
+/// shifts have no AST operator.
 fn lower_join_ast_operator(op: BinaryOp) -> Result<AstOperator> {
     match op {
         BinaryOp::Add => Ok(AstOperator::Add),
@@ -641,6 +691,8 @@ fn lower_join_ast_operator(op: BinaryOp) -> Result<AstOperator> {
     }
 }
 
+/// Lowers a non-interval, non-null literal to an AST literal backed by a cuDF scalar on
+/// `context`'s runtime. Typed nulls and intervals are `UnsupportedExpression`.
 fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> Result<AstExpression> {
     let scalar_value = match cudf_scalar_value(value) {
         Ok(scalar_value) => scalar_value,

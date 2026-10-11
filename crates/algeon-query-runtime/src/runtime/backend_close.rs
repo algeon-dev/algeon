@@ -4,6 +4,24 @@
 //! quiescence state. Backend construction and admission stay in
 //! [`super::backend_core`]; this module only consumes the resource generation
 //! once that core has closed its linearization gate.
+//!
+//! Cleanup runs on a dedicated thread, `algeon-gpu-close`, in bounded slices
+//! of `CLEANUP_SLICE`. Each slice re-enters the idempotent drain of whichever
+//! phase is still pending, which gives three properties at once: a caller's
+//! `close_and_wait_until` deadline never has to be known by the worker, a
+//! phase that finishes after some caller timed out is still recorded (as a
+//! late success), and process exit can stop the worker at a slice boundary.
+//! The phase order is fixed by dependency: the service closes admission and
+//! drains its pools while the construction journal still holds every GPU
+//! resource; the journal drains next; the GPU permit count must reach zero
+//! before the generation, and with it the owner lease, is released; only then
+//! does the worker wait for observation permits, which may outlive the GPU
+//! resources by design.
+//!
+//! A cleanup that cannot prove completion fails closed. The generation is
+//! forgotten rather than dropped, so the live-backend lease stays claimed and
+//! no replacement backend can take the devices while GPU work of unknown state
+//! may still exist.
 
 use std::{
     any::Any,
@@ -77,17 +95,38 @@ impl Drop for ConstructionRollback {
     }
 }
 
+/// Owner of the close worker thread and the close signal.
+///
+/// Spawned before the first GPU resource is installed, so it exists as the
+/// rollback owner for every construction failure as well as for ordinary
+/// close. Held by the backend core, by the public-handle tracker's last-drop
+/// callback, and by the process-exit registration.
 #[derive(Debug)]
 pub(crate) struct CloseCoordinator {
+    /// One-shot start signal for the worker. Taken by the first `signal`, so
+    /// the worker can be started at most once; `None` afterwards.
     sender: Mutex<Option<mpsc::Sender<()>>>,
     pub(crate) state: Arc<CloseCompletion>,
+    /// Clone of the observation core's lifecycle. `signal` wins or loses the
+    /// close gate here, which is the same gate admissions race against.
     lifecycle: BackendLifecycle,
+    /// Taken by the first join after quiescence. Left in place when the
+    /// joining thread is the worker itself.
     join: Mutex<Option<thread::JoinHandle<()>>>,
+    /// Set by the process-exit hook. The worker checks it at every slice
+    /// boundary and returns without releasing the generation.
     process_exit_requested: Arc<AtomicBool>,
     process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
 }
 
 impl CloseCoordinator {
+    /// Spawns the worker thread, which parks until the first `signal`.
+    ///
+    /// The worker owns a strong `ResourceCore` reference so the generation
+    /// slot stays reachable even after every public handle and session is
+    /// gone. If the worker panics, that reference is forgotten on purpose: a
+    /// still-installed generation must not be dropped by an unwinding thread,
+    /// because its owner lease would be released with GPU resources live.
     pub(crate) fn spawn(resource: Arc<ResourceCore>, observation: Arc<ObservationCore>) -> Result<Arc<Self>> {
         let (sender, receiver) = mpsc::channel();
         let state = Arc::new(CloseCompletion::new());
@@ -128,6 +167,10 @@ impl CloseCoordinator {
         Ok(coordinator)
     }
 
+    /// Registers the coordinator with the CUDA process-exit hook. Called by
+    /// construction only after the service install has initialized CUDA, so
+    /// the engine's `atexit` handler is registered after libcudart's and runs
+    /// before it. Registration is `None` when no CUDA runtime is available.
     pub(crate) fn activate_process_exit(self: &Arc<Self>) {
         let shutdown: Arc<dyn ProcessExitShutdown> = Arc::clone(self) as _;
         let registration = register_cuda_process_exit_shutdown(shutdown);
@@ -142,6 +185,14 @@ impl CloseCoordinator {
         }
     }
 
+    /// Closes the lifecycle gate and starts the worker. Returns whether this
+    /// call won the gate; only the winner sends the start signal, so the
+    /// worker runs once however many callers (explicit close, last handle
+    /// drop, construction rollback, process exit) signal.
+    ///
+    /// Never blocks: the gate is one atomic and the channel send does not
+    /// wait. A worker that is already gone (spawn failure path) is recorded as
+    /// a cleanup failure so waiters do not hang.
     pub(crate) fn signal(&self) -> bool {
         let gate_winner = self.lifecycle.close();
         if !gate_winner {
@@ -155,6 +206,9 @@ impl CloseCoordinator {
         true
     }
 
+    /// Signals close and blocks until observation quiescence or `deadline`.
+    /// The worker thread is joined only after quiescence, so a timeout leaves
+    /// it running and a later call can still observe its completion.
     pub(crate) fn close_and_wait_until(&self, deadline: Instant) -> Result<GpuBackendCloseSnapshot> {
         self.signal();
         let snapshot = self.state.wait_until(deadline, &self.lifecycle)?;
@@ -183,6 +237,8 @@ impl CloseCoordinator {
             return Ok(());
         }
         let joined = handle.join();
+        // Keep the join lock to the join itself; unregistering takes the
+        // registration and registry locks.
         drop(join);
         self.unregister_process_exit();
         joined.map_err(|panic| {
@@ -211,6 +267,7 @@ impl CloseCoordinator {
             return;
         }
         let _ = handle.join();
+        // Same lock window as `join_after_quiescence`.
         drop(join);
         self.unregister_process_exit();
     }
@@ -226,6 +283,14 @@ impl ProcessExitShutdown for CloseCoordinator {
     }
 }
 
+/// The worker body: drains the generation phase by phase and records each
+/// phase's progress in `state`.
+///
+/// Every `return` before `generation.release()` leaves the generation
+/// forgotten by `FailClosedGeneration`, which is the fail-closed outcome for
+/// a permanent failure and the intended outcome for process exit, where the
+/// separately registered pool and stream supervisors stop their workers and
+/// nothing may run CUDA destructors afterwards.
 fn run_cleanup(
     resource: Arc<ResourceCore>,
     lifecycle: BackendLifecycle,
@@ -243,6 +308,8 @@ fn run_cleanup(
     };
     let generation = FailClosedGeneration::new(generation);
     if let Some(service) = generation.service() {
+        // `close` rejects queued waiters and new admissions at once; admitted
+        // attempts keep their grants and finish through their own release.
         service.close().unwrap_or_else(|error| {
             eprintln!("[query-engine] backend close signal returned an error: {error}");
         });
@@ -325,12 +392,19 @@ fn run_cleanup(
             return;
         }
     }
+    // Releasing the generation drops the service, then the journal, then the
+    // owner lease; a replacement backend can claim the devices from here on.
     generation.release();
+    // The core's `Arc` is released before GPU quiescence is published so a
+    // waiter that observes the fact cannot find the slot still retained.
     drop(resource);
     state.mark_gpu_quiescent();
     wait_for_observation_forever(&lifecycle, &state, process_exit_requested);
 }
 
+/// Waits, in slices, for every observation permit to drop. Unbounded because
+/// an observation permit is held by attempt reports that a caller may seal at
+/// any later time; only process exit ends the wait early.
 fn wait_for_observation_forever(
     lifecycle: &BackendLifecycle,
     state: &CloseCompletion,
@@ -358,6 +432,9 @@ fn wait_for_observation_forever(
     }
 }
 
+/// Holds the generation during cleanup and forgets it unless `release` is
+/// called. Forgetting keeps the owner lease claimed for the rest of the
+/// process, which is the fail-closed answer to GPU work of unknown state.
 struct FailClosedGeneration {
     generation: Option<Arc<ResourceGeneration>>,
 }
@@ -388,17 +465,26 @@ impl Drop for FailClosedGeneration {
     }
 }
 
+// Phases advance monotonically in this numeric order. `PHASE_FAILED` is
+// absorbing only before GPU quiescence; see `CloseCompletion::fail`.
 const PHASE_OPEN: u8 = 0;
 const PHASE_CLOSING: u8 = 1;
 const PHASE_GPU_QUIESCENT: u8 = 2;
 const PHASE_OBSERVATION_QUIESCENT: u8 = 3;
 const PHASE_FAILED: u8 = 4;
 
+/// Close progress shared between the worker and every waiter.
+///
+/// The phase and failure live under one mutex with the condition variable;
+/// the counters and the per-phase progress map are separate so a snapshot
+/// taken while a waiter holds the wait lock still reads them.
 #[derive(Debug)]
 pub(crate) struct CloseCompletion {
     wait: Mutex<CloseWaitState>,
     changed: Condvar,
+    /// Number of distinct phases that missed at least one cleanup slice.
     deadline_elapsed: AtomicU64,
+    /// Number of those phases that later reached quiescence anyway.
     late_successes: AtomicU64,
     cleanup_phases: Mutex<BTreeMap<&'static str, CleanupPhaseProgress>>,
 }
@@ -506,6 +592,9 @@ impl CloseCompletion {
         }
     }
 
+    /// Blocks until observation quiescence, a recorded cleanup failure, or
+    /// `deadline`. A failure is reported in preference to a timeout whenever
+    /// both are true at the moment the waiter wakes.
     pub(crate) fn wait_until(
         &self,
         deadline: Instant,
@@ -597,6 +686,9 @@ fn panic_message(panic: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
+/// Refuses a blocking close from inside runtime observation delivery. The
+/// observer runs under an observation permit, so a wait for observation
+/// quiescence from there could only end at the deadline.
 pub(crate) fn reject_reentrant_observation_close() -> Result<()> {
     if in_runtime_observation_delivery() {
         return Err(QueryError::new(

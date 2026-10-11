@@ -1,3 +1,13 @@
+//! Classification of resource failures and shared limits for the bounded retry boundaries.
+//!
+//! Chunk reads, join output slices, top-k merges and final merges each shrink their own
+//! working set when they see a retryable failure. This module owns what counts as retryable
+//! and how long a boundary waits, and every boundary uses these definitions. The class comes
+//! from the error code alone: only `QueryMemoryLimitExceeded`, raised when the query-domain
+//! allocator rejects an allocation against the attempt's cap, permits a smaller retry under
+//! the same grant. Physical device exhaustion is terminal for the working set and is left to
+//! the caller's whole-attempt retry.
+
 use std::time::Duration;
 
 use query_planning::execution_contracts::MemoryControlPolicy;
@@ -27,6 +37,8 @@ pub(in crate::exec) enum ResourceFailureRecovery {
     NotResource,
 }
 
+/// Classifies `error` by its code. Wrapped causes and facts are not inspected; an error
+/// that wraps a query-cap rejection under another code is `NotResource`.
 pub(in crate::exec) fn resource_failure_recovery(error: &QueryError) -> ResourceFailureRecovery {
     match error.code() {
         QueryErrorCode::QueryMemoryLimitExceeded => ResourceFailureRecovery::ShrinkWorkingSet,
@@ -35,10 +47,14 @@ pub(in crate::exec) fn resource_failure_recovery(error: &QueryError) -> Resource
     }
 }
 
+/// True only for a query-cap rejection (`ShrinkWorkingSet`).
 pub(in crate::exec) fn is_retryable_resource_error(error: &QueryError) -> bool {
     resource_failure_recovery(error) == ResourceFailureRecovery::ShrinkWorkingSet
 }
 
+/// Counts one retry-eligible failure. Boundaries call it when they see the failure, before
+/// checking their attempt limits; the counter counts failures eligible to shrink the working
+/// set, whether or not a retry followed. Other error classes are not counted.
 pub(in crate::exec) fn record_retryable_resource_error(error: &QueryError, metrics: &ExecutionMetrics) {
     if is_retryable_resource_error(error) {
         metrics.record_retry_resource_exhausted();
@@ -46,6 +62,9 @@ pub(in crate::exec) fn record_retryable_resource_error(error: &QueryError, metri
 }
 
 /// Waits before a retry. Cancellation or the deadline ends the wait at once.
+///
+/// Blocks the calling thread for a fixed 50 ms between two cancellation checks. Returns the
+/// cancellation or deadline error with `stage` as its operation.
 pub(in crate::exec) fn backoff_before_retry(context: &ExecutionContext, stage: &'static str) -> Result<()> {
     context.check_cancellation(stage)?;
     context.cancellation().sleep(BOUNDED_RETRY_BACKOFF, stage)?;

@@ -26,6 +26,8 @@ pub struct ProjectionNode {
     pub input: NodeId,
     /// Output expressions and fields in result schema order.
     pub outputs: Vec<ProjectionOutput>,
+    /// Derived from `outputs` in [`Self::new`]; private so the two cannot
+    /// disagree once a plan carries this node.
     output_schema: SchemaRef,
 }
 
@@ -83,6 +85,11 @@ pub struct AggregateNode {
 }
 
 /// Window operation over one pre-ordered input.
+///
+/// The node does not sort. Its input must already carry the partition keys
+/// followed by the order keys; the frontend inserts a [`SortNode`] when it
+/// does not, and admission checks the carried ordering against the spec
+/// (`ResourceOrdering::covers_window`) before the plan is admitted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowNode {
     /// Input whose rows receive appended window outputs.

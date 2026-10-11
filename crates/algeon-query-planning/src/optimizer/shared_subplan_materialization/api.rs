@@ -9,6 +9,8 @@ use crate::{
     plan::{QueryPlan, RewrittenNodes},
 };
 
+/// Stable rule name in diagnostics rows; both passes of this module report
+/// under it.
 pub const SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME: &str = "shared_subplan_materialization";
 
 /// Configuration for shared-subplan materialization.
@@ -31,13 +33,16 @@ impl Default for SharedSubplanMaterializationOptions {
     }
 }
 
-/// Diagnostics for shared-subplan materialization.
+/// Outcome of one pass of this module: the plan to continue with, whether it
+/// differs from the input, and the candidate rows the pass produced.
 pub(crate) struct SharedSubplanMaterializationResult {
     pub(crate) plan: QueryPlan,
     pub(crate) change: NativeOptimizerChange,
     pub(crate) diagnostics: SharedSubplanMaterializationDiagnostics,
 }
 
+/// The early pass: derives a scalar `SUM` aggregate from a grouped aggregate
+/// over the same row set. See `scalar_derivation`.
 pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
     plan: QueryPlan,
     options: &SharedSubplanMaterializationOptions,
@@ -53,6 +58,9 @@ pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
     }
 }
 
+/// The late pass: discovers repeated aggregate families and rewrites the
+/// applicable ones through one shared materialization. An `Err` means the
+/// rewriter produced a node list that fails the plan invariants.
 pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     plan: QueryPlan,
     options: &SharedSubplanMaterializationOptions,
@@ -65,6 +73,9 @@ pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
         });
     }
 
+    // Scalar derivation runs as its own earlier pass, so this result stands in
+    // for it with no change and no rows; the composition below still merges
+    // its fields as if it had run here.
     let scalar_derivation = SharedSubplanMaterializationResult {
         plan,
         change: NativeOptimizerChange::Unchanged,

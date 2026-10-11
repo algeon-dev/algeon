@@ -3,7 +3,14 @@
 //! These labels describe aggregate evaluation contracts and preserved report
 //! vocabulary, not admission or product modes; the bounded resource
 //! controller owns the single bounded execution path. Result placement is
-//! carried by the plan's `ResultSink`.
+//! carried by the plan's `ResultSink`. The plan-coverage modes
+//! (`native_required`, `native_preferred`, `functions_only`) described in
+//! `website/docs/design/native-lowering.mdx` classify DataFusion plan nodes
+//! and live in the adapter crate; nothing here selects between CPU and GPU.
+//!
+//! Every `as_str` value is a report and environment-variable contract. A
+//! label is renamed in place together with its consumers; `FromStr` accepts
+//! the short aliases only on input.
 
 use std::{fmt, str::FromStr};
 
@@ -59,6 +66,10 @@ impl StatisticalAggregateExecutionMode {
     }
 
     /// Returns true when execution must preserve DataFusion's exact Welford bits.
+    ///
+    /// Admission reads this to decide whether a plan with floating statistical
+    /// aggregates is rejected for group-key or aggregate types the host kernel
+    /// does not cover; under the tolerant mode those plans run on libcudf.
     pub const fn is_datafusion_exact(self) -> bool {
         matches!(self, Self::DataFusionExactHostWelford)
     }
@@ -120,7 +131,9 @@ impl StatisticalAggregateToleranceContract {
 /// Admission status used by capability reports.
 ///
 /// The single bounded controller owns admission. The `Display` implementation
-/// emits the stable serialized wire labels.
+/// emits the stable serialized wire labels, which predate the capability-first
+/// vocabulary: `Admitted` serializes as `bounded` and `Rejected` as
+/// `unsupported_bounded`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityEnvelopeStatus {
     /// The plan is ready for bounded execution.

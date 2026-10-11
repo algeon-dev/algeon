@@ -139,9 +139,14 @@ impl GpuOptionKind {
     }
 }
 
+/// One declared option of a GPU table function: its JSON key, whether a call
+/// may omit it, and the value contract that validation and schema generation
+/// share.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GpuOptionDefinition {
     pub name: &'static str,
+    /// A missing required option is an error; a missing optional one takes
+    /// the kind's default when it has one and is otherwise left absent.
     pub required: bool,
     pub kind: GpuOptionKind,
     /// User-facing semantics projected through the unified GPU descriptor.
@@ -159,6 +164,9 @@ pub struct GpuOutputFieldDefinition {
     pub description: &'static str,
 }
 
+/// Rejection of a GPU function's option object. `code` is a stable error
+/// identifier read by the adapter's error mapping; `message` names the
+/// function family and is for people.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuOptionValidationError {
     code: &'static str,
@@ -343,6 +351,12 @@ pub(crate) fn option_schema(kind: GpuOptionKind, relation_schema: &Value) -> Val
     }
 }
 
+/// Parses a function's raw JSON options into the canonical object the plan
+/// carries: unknown keys rejected, every optional key with a default filled
+/// in, every present value validated. Filling defaults here makes two calls
+/// that differ only in spelled-out defaults build equal nodes, which the
+/// builder then interns. Each error names the offending option when one is
+/// attributable.
 pub(crate) fn canonicalize_options(
     options: &[GpuOptionDefinition],
     raw: &str,

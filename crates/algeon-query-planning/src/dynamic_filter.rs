@@ -4,6 +4,16 @@
 //! plans. They let a selective producer such as a hash-join build side or
 //! aggregate keyset narrow a downstream consumer such as a Parquet source or a
 //! join probe before expensive work starts.
+//!
+//! A route is planning state. `optimizer::dynamic_filter` discovers routes as
+//! the last optimizer pass, and `QueryPlan::rewrite` drops a route whenever
+//! either endpoint is rewritten, so execution never holds a route whose
+//! endpoints disagree with the plan it runs. Pipeline compilation turns each
+//! route into a control edge from producer task to consumer task; the payload
+//! is complete before the consumer starts, and a consumer whose route produced
+//! no payload runs unfiltered. Correctness never depends on a payload: each one
+//! covers every non-null producer key, so applying it removes only rows that
+//! could not have matched.
 
 use std::{collections::BTreeMap, fmt};
 
@@ -307,6 +317,12 @@ pub enum DynamicFilter {
 
 impl DynamicFilter {
     /// Builds an initial integer-like payload from host Arrow key values.
+    ///
+    /// Nulls are dropped before classification because an equality key never
+    /// matches null. A keyset that fills its `[min, max]` span collapses to a
+    /// range, which prunes row groups and reader rows but carries no exact
+    /// count; above `small_in_list_limit` the keyset stays exact and is
+    /// applied only after decode or at the probe.
     pub fn from_i64_values(values: impl IntoIterator<Item = Option<i64>>, small_in_list_limit: usize) -> Self {
         let mut values = values.into_iter().flatten().collect::<Vec<_>>();
         if values.is_empty() {
@@ -650,6 +666,14 @@ impl Default for DynamicFilterExecutionOptions {
 /// pruning work are not expected to pay for themselves.
 pub const LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON: &str = "large_keyset_dimension_sized_local_parquet_consumer";
 
+/// Whether `source_node_id` feeds a shared subtree that already contains an
+/// aggregate, window, join, union or algorithm before it fans out.
+///
+/// Route discovery reads this to keep a large exact keyset on a dimension-sized
+/// source when that source's work is reused: the keyset then narrows every
+/// consumer of the shared subtree, so the producer-before-consumer dependency
+/// it adds pays off more than once. A source whose single-parent chain reaches
+/// the root, or fans out before any such operator, reports `false`.
 #[doc(hidden)]
 pub fn dynamic_filter_consumer_source_feeds_downstream_work_fanout(plan: &QueryPlan, source_node_id: NodeId) -> bool {
     let parent_counts = parent_counts(plan);
@@ -783,6 +807,9 @@ fn apply_dynamic_filter_to_source(
     ctx: AnalysisContext<'_>,
     footers: SourceFooterFacts<'_>,
 ) -> Result<()> {
+    // No producer key survived, so no consumer row can match. The source keeps
+    // its node and schema and reads nothing; downstream operators see an empty
+    // input of the right schema instead of a changed plan shape.
     if matches!(filter, DynamicFilter::Empty) {
         mark_source_row_groups_empty(source);
         source.scan_limit = Some(0);
@@ -870,6 +897,9 @@ fn prune_source_row_groups_by_key_filter(
         selections.push(Some(retained));
     }
 
+    // Without statistics there is nothing to prune on, and without a reduction
+    // the selections stay untouched, so a file that selected all row groups
+    // keeps `None` rather than acquiring an explicit full list.
     if !saw_statistics || retained_total >= selected_total {
         return Ok(());
     }
@@ -908,6 +938,14 @@ fn dynamic_filter_reader_predicate(
     source.reader_predicate_is_supported(&predicate, ctx).then_some(predicate)
 }
 
+/// Whether a produced payload should be merged into the reader predicate of
+/// `source`.
+///
+/// Exact keysets merge whenever they lower. A range merges only when its
+/// overlap with the selected row groups' statistics range is at most
+/// `max_range_reader_predicate_selectivity_ppm` of that range; a range that
+/// covers nearly every row would cost one predicate evaluation per row and
+/// remove few. Missing footer statistics default to merging.
 #[doc(hidden)]
 pub fn dynamic_filter_reader_predicate_should_merge(
     source: &LocalParquetSource,
@@ -1001,6 +1039,8 @@ pub fn dynamic_filter_predicate_for_schema(schema: &Schema, column: &str, filter
     let data_type = schema.field_with_name(column).ok()?.data_type();
     let column_expr = Expr::column(column);
     match filter {
+        // False for every row, built from literals so it binds without
+        // reading a column.
         DynamicFilter::Empty => {
             Some(Expr::binary(Expr::literal(LiteralValue::Int8(1)), BinaryOp::Eq, Expr::literal(LiteralValue::Int8(0))))
         },

@@ -132,6 +132,9 @@ fn avg_input_cast_type(aggregate_expr: &AggregateExpr, input_schema: &ArrowSchem
     Ok(avg_argument_cast_type(&input_type))
 }
 
+/// The value a filtered aggregate masks. COUNT(*) without DISTINCT has no argument, so it masks
+/// the literal 1 to leave something that is NULL where the filter excludes a row; every other
+/// aggregate masks its own argument.
 pub(super) fn filtered_aggregate_value_expr(aggregate_expr: &AggregateExpr) -> Expr {
     if aggregate_expr.function == AggregateFunction::Count
         && !aggregate_expr.distinct
@@ -156,6 +159,9 @@ pub(super) fn filtered_aggregate_input_type(
     aggregate_expr_input_type(&aggregate_expr.expr, input_schema, "query_engine.aggregate.filter_input_type")
 }
 
+/// Arrow type of a prepared aggregate argument, which must be a column, an alias of one, or a
+/// literal because arguments are materialized into columns before aggregation. Any other
+/// expression fails with `UnsupportedExpression`.
 pub(super) fn aggregate_expr_input_type(
     expr: &Expr,
     input_schema: &ArrowSchemaRef,

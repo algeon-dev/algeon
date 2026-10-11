@@ -1,3 +1,11 @@
+//! Operator-level admission checks shared by normalization and lowering.
+//!
+//! The checks decide whether a DataFusion aggregate, sort ordering, or
+//! expression tree has a native counterpart, and return a `LoweringRejection`
+//! that names the function and defect when it does not. They read plan
+//! structure and Arrow types; expression semantics are proven by
+//! `expression_contract`.
+
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};

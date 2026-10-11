@@ -1,4 +1,16 @@
 //! Attempt admission tickets and the native admission root node.
+//!
+//! An invocation mints one `QueryAdmissionTicket`; every native fragment the
+//! attempt executes admits through it and shares the one grant it obtains. The
+//! ticket reaches fragments through the DataFusion task context: the admission
+//! root installs an `ActiveQueryAdmissionTicket` extension when it executes,
+//! and a fragment with no active execution falls back to the ticket its
+//! invocation minted (CTAS runs its input before any root executes). Admission
+//! itself happens when the first fragment polls its stream, on the host
+//! runtime, and waits in the service queue until a grant is placed, the
+//! attempt is cancelled or the queue deadline passes. The runtime releases the
+//! grant once the attempt is terminal and no fragment is running; nothing in
+//! this module releases it.
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,6 +61,8 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(crate) struct QueryAdmissionSource {
     session: GpuBackendSession,
+    /// Largest device total of the backend; part of the identity
+    /// `same_backend` compares.
     max_device_total_memory_bytes: u64,
 }
 
@@ -95,6 +109,8 @@ impl QueryAdmissionFacts {
     }
 }
 
+/// The runtime handle of the attempt's one admission, narrowed to what
+/// fragments use.
 #[derive(Debug)]
 struct TicketQueryHandle(Arc<QueryHandle>);
 
@@ -163,7 +179,11 @@ struct TicketAdmission {
     /// What the attempt's one admission resolved to: the handle every
     /// fragment shares, or the error every fragment reports.
     outcome: Option<QueryEngineResult<Arc<TicketQueryHandle>>>,
+    /// True while one fragment is claiming the admission. Other fragments wait on
+    /// `QueryAdmissionTicket::notify`; none claims a second time.
     admitting: bool,
+    /// Set by the first context; admission facts are recorded once per
+    /// attempt.
     admission_facts_recorded: bool,
     /// Fragments bound while the claim was in flight; they join its grant
     /// when it resolves.
@@ -464,6 +484,10 @@ impl QueryAdmissionTicket {
     ) -> QueryEngineResult<TicketAdmissionContext> {
         loop {
             let notify = Arc::clone(&self.notify);
+            // The waiter is registered (`enable`) while the admission lock is
+            // held. `Notify::notify_waiters` wakes only already registered
+            // waiters, so a resolution between releasing the lock and the
+            // await would otherwise be missed.
             let notified = notify.notified_owned();
             tokio::pin!(notified);
             let action = {
@@ -496,6 +520,8 @@ impl QueryAdmissionTicket {
     /// Requests the attempt's one admission and records its outcome for
     /// every fragment. Callers set `admitting` first.
     async fn admit(self: &Arc<Self>) -> QueryEngineResult<Arc<TicketQueryHandle>> {
+        // Dropping this future (the claiming fragment's stream was dropped)
+        // resolves the admission as abandoned for the waiters.
         let mut guard = TicketAdmissionGuard { ticket: Arc::clone(self), resolved: false };
         let request = QueryAdmissionRequest::new(self.attempt.admission_binding.clone())
             .with_execution_cancellation(self.attempt_cancellation());
@@ -527,6 +553,8 @@ impl QueryAdmissionTicket {
             }
             Ok(handle)
         });
+        // The rejection is recorded on the attempt here, so the sealed report
+        // carries it even when no fragment stream survives to return it.
         if let Err(error) = &outcome {
             self.terminalize_attempt_admission_error(error);
         }
@@ -545,6 +573,9 @@ impl QueryAdmissionTicket {
         match handle.acquire_context_with_cancellation_async(self.attempt_cancellation()).await {
             Ok(admission_context) => {
                 let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
+                // Native plans record the physical-execution boundary at
+                // admission; `AttemptStream` records it at first poll only for
+                // CPU-only plans.
                 let _ = self.attempt.handle.record_physical_execution_started();
                 Ok(TicketAdmissionContext {
                     admission_context,
@@ -743,6 +774,9 @@ impl ExecutionPlan for NativeAdmissionExec {
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
+        // No GPU work and no admission happen here. The ticket is threaded
+        // into the task context, and the input's stream admits on its first
+        // poll.
         if let Some(ticket) = self.invocation_ticket(&context) {
             return self.execute_with_ticket(partition, context, ticket);
         }

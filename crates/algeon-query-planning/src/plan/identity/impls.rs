@@ -461,7 +461,8 @@ stable_hash_fields! {
 
 impl StableHash for JoinSpec {
     fn stable_hash(&self, hasher: &mut PlanHasher) {
-        // Advisory statistics never change what executes; the build side they informed is already `build_side`.
+        // Advisory statistics never change what executes; the build side they
+        // informed is already `build_side`.
         let Self {
             join_type,
             keys,

@@ -15,6 +15,9 @@ pub(super) enum CapabilityFirstCandidateStatus {
     Rejected,
 }
 
+/// Outcome of the single decision path. A rejection raised after compilation
+/// keeps the pipeline so the execution error can report its task, edge,
+/// barrier and resource counts next to the rejected contract.
 #[derive(Debug, Clone)]
 pub(super) struct CapabilityFirstPipelineAdmission {
     pipeline: Option<CompiledPipeline>,

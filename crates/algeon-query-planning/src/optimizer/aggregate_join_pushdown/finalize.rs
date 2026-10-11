@@ -1,3 +1,11 @@
+//! The final aggregate that merges pre-aggregated states back into the
+//! original outputs.
+//!
+//! A merged `COUNT` over a global aggregate is nullable: a join that matched
+//! no rows feeds the merge no state, and `SUM` of nothing is null where SQL
+//! `COUNT` returns zero. The projection above the merge reads that null as
+//! zero and finishes `AVG` as sum over count.
+
 use std::sync::Arc;
 
 use super::{
@@ -6,6 +14,8 @@ use super::{
     avg_merge_aggregates, merged_count_field, simple_projection_column, zero_filled_count_expr,
 };
 
+/// The merge aggregate and, when a measure needs finishing, the projection
+/// that restores the original output expressions and names.
 pub(in crate::optimizer::aggregate_join_pushdown) struct FinalAggregateRewrite {
     pub(in crate::optimizer::aggregate_join_pushdown) spec: AggregateSpec,
     pub(in crate::optimizer::aggregate_join_pushdown) output_schema: SchemaRef,

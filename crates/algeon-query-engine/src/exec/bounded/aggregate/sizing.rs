@@ -1,22 +1,28 @@
-// Closed-form upper bound for the device bytes a bounded
-// partial-aggregate materialize can produce. Sibling to
-// `exec/bounded/join/sizing.rs:join_output_upper_bound_bytes`, but
-// with the row-count rule baked in for global vs grouped aggregates.
-//
-// The bound is the same per-column formula as the join helper applied
-// to the partial-state output schema with the right row count:
-//   - Global aggregate output: 1 row.
-//   - Grouped aggregate output: at most `input_rows` rows (every input
-//     row could be a unique group key). Without a libcudf-level
-//     grouped-aggregate output-row-count preflight, this is the only
-//     deterministic ceiling.
-//
-// Caller responsibility: build the per-column descriptors from the
-// partial-state schema. Grouped partial output begins with the group
-// key columns (`exec/lowering/aggregate.rs:lower_partial_aggregate_spec`
-// places `output_key_names` first), followed by aggregate state
-// columns. For string-typed group keys the caller must supply
-// `input_max_string_length_bytes` from the input frame.
+//! Upper bound on the device bytes of one partial aggregate's output state.
+//!
+//! `partial_aggregate_work_reservation_upper_bound_bytes` bounds the partial-state frame that an
+//! aggregate over one input frame can produce, from column types and row counts alone, without
+//! running the aggregate. It has two callers, `stream.rs` and `source_adjacent.rs`. Each compares
+//! the bound with the attempt's device budget (the immutable cap, a batching input) and, when the
+//! bound is larger and retry budget remains, splits the input frame in halves before the partial
+//! runs. The bound is neither a reservation nor an admission check. The query allocator alone
+//! enforces the grant, and a frame that is not split but still does not fit fails at its
+//! allocation like any other. `None` means the byte model cannot bound the state (a median, or a
+//! dtype the model does not cover), and the frame runs whole.
+//!
+//! The bound applies the per-column formula of `crate::materialization_sizing` (shared with join
+//! output sizing) to the partial-state schema with the right row count:
+//!
+//! - A global aggregate has 1 output row.
+//! - A grouped aggregate has at most `input_rows` rows, because every input row could be a unique
+//!   group key. Grouping sets multiply that by the number of sets. No libcudf grouped-aggregate
+//!   preflight gives a tighter row count; this is the only deterministic ceiling.
+//!
+//! The caller builds the per-column descriptors from the partial-state schema. Grouped partial
+//! output starts with the group key columns (`lower_partial_aggregate_spec` places
+//! `output_key_names` first), followed by the aggregate state columns. A string-typed column needs
+//! `input_max_string_length_bytes` and the total string bytes of the input column, measured on the
+//! device under a budget token (`string_byte_length_stats_for_partial_sizing`).
 
 use std::collections::BTreeMap;
 

@@ -1,3 +1,9 @@
+//! Execution of the grouped partial and single-stage strategies that
+//! `partial_strategy.rs` can select over the default libcudf groupby: prepared sort groupby
+//! and encoded-key partial. Selection happens before these functions run. Each one executes the
+//! chosen strategy under the `ExecutionBudgetToken`, finishes the output as the default path
+//! does, and records the strategy decision row with its timings.
+
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -12,6 +18,11 @@ use query_runtime::observability::{
 
 use super::{cudf_query_error, groupby::rename_groupby_key_columns, *};
 
+/// Sorts and segments `frame` by the group keys once under `token`, producing a
+/// `PreparedDataFrameGroupBy` whose group count, key bytes and largest group are known before any
+/// aggregation. Serves both the selected strategy and the runtime preflight in
+/// `execute_partial_aggregate_with_budget_single_pass`. Returns the prepared state with the
+/// time spent preparing it.
 pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_budget(
     context: &ExecutionContext,
     frame: &DataFrame,
@@ -49,6 +60,8 @@ pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_
     Ok((prepared, prepare_timer.elapsed()))
 }
 
+/// Single-stage grouped aggregate on a prepared sort groupby. The lowered `aggregate` carries AVG
+/// as state; it is finalized here together with the reduction and count casts.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -142,6 +155,9 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     Ok(GpuDataFrame::new(output))
 }
 
+/// Partial-stage grouped aggregate on a prepared sort groupby. `prepared_input` is the state
+/// from the runtime preflight when it already ran; its preparation time then predates this
+/// call's timer and is added to the reported elapsed time.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -241,6 +257,12 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     Ok(GpuDataFrame::new(output))
 }
 
+/// Partial aggregate that groups on integer codes in place of string keys.
+///
+/// For each Utf8, LargeUtf8 or Utf8View key it builds a codebook over this chunk, adds a code
+/// column, runs the groupby on the codes and decodes the output key columns with the same
+/// codebook. The codebook belongs to this call, so codes are never compared across chunks, and
+/// the returned keys are the original strings, which leaves the final merge unchanged.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"

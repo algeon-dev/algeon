@@ -1,4 +1,18 @@
 //! Attempt ownership, boundary recording, and independent completion delivery.
+//!
+//! One attempt is split into capabilities of different authority. The
+//! `AttemptOwner` alone fixes the terminal outcome. `AttemptHandle` clones
+//! record boundaries and failures. `AttemptAdmissionBinding::claim` moves the
+//! attempt's single finalizer into an `AttemptAdmission`, after which only the
+//! query service's release path can finish the attempt. Completion receivers
+//! observe one immutable report once that finalizer is consumed.
+//!
+//! Lock order: the finalizer slot is taken before the attempt lock, in
+//! `AttemptFinalizerSlot::claim`, and no path takes them the other way round.
+//! The attempt lock covers the lifecycle and the completion state together.
+//! `AttemptShared::changed` is the one condition variable for both the
+//! publication wait in `finish_with_footer` and the blocking wait of
+//! completion receivers.
 use std::{
     fmt,
     future::Future,
@@ -335,11 +349,17 @@ impl DerefMut for LifecycleGuard<'_> {
     }
 }
 
+/// Everything behind an attempt that outlives the owner: shared by the owner,
+/// every handle, the admission binding, and the finalizer. Completion
+/// receivers hold only `shared`.
 struct AttemptCore {
     attempt_id: AttemptId,
     query_id: Option<AttemptQueryId>,
     trace_context: Option<AttemptTraceContext>,
     shared: Arc<AttemptShared>,
+    /// Source of every lifecycle timestamp. Tests inject a deterministic
+    /// clock; the query service samples it through the finalizer so a
+    /// release-commit fact uses the attempt's clock and no other.
     clock: Arc<dyn RuntimeObservationClock>,
     cancellation: AttemptCancellation,
     observation: AttemptObservation,
@@ -522,6 +542,9 @@ impl AttemptCore {
         let fallback =
             lifecycle.primary_failure_summary().map(RuntimeTerminalOutcome::from_primary_failure).unwrap_or(fallback);
         let at = self.monotonic_ns();
+        // The seal path has no error channel, so a refused transition is not
+        // reported here. A lifecycle that still cannot terminalize surfaces in
+        // `finish_with_footer`, whose `ready` transition then fails.
         lifecycle.terminalize(fallback.clone(), at).unwrap_or(());
         lifecycle.terminal_outcome().cloned().unwrap_or(fallback)
     }
@@ -629,6 +652,12 @@ impl AttemptOwner {
         Self::begin_with_clock(request, permit, counters, queue, Arc::new(SystemRuntimeObservationClock::new()))
     }
 
+    /// Creates the attempt core, its one finalizer, and the completion factory.
+    ///
+    /// `permit` is the backend observation permit `begin_attempt` took; the
+    /// core releases it when the report is published, which is the point at
+    /// which backend close stops waiting on this attempt. `queue` receives the
+    /// report when no completion receiver is alive at publication.
     pub(crate) fn begin_with_clock(
         request: BeginAttemptRequest,
         permit: ObservationPermit,
@@ -826,6 +855,11 @@ impl AttemptOwner {
 }
 
 impl Drop for AttemptOwner {
+    /// Backstop for an owner dropped before its report is ready. A panicking
+    /// thread records `Panicked`, a cancelled attempt records its typed
+    /// cancellation, and anything else records `Dropped`. Commit errors are
+    /// ignored because another path may have terminalized first, in which
+    /// case that outcome stands.
     fn drop(&mut self) {
         let report_ready = self.0.core.lock_lifecycle().is_ready();
         if report_ready {
@@ -926,6 +960,9 @@ impl AttemptAdmissionRejection {
     /// request. The lifecycle accepts it only after admission was requested
     /// and before a grant or physical execution boundary exists.
     pub fn reject(&self, error: &QueryError) -> Result<(), AttemptLifecycleError> {
+        // An effective cancellation, by the caller or by the deadline,
+        // supersedes the queue's own error so the report classifies the
+        // attempt as `Cancelled` with the cancellation's reason.
         let cancellation_error = self.core.cancellation.is_cancelled().then(|| {
             self.core
                 .cancellation
@@ -968,6 +1005,9 @@ impl AttemptFinalizerSlot {
         Self(Arc::new(Mutex::new(Some(finalizer))))
     }
 
+    /// Consumes the finalizer for a not-admitted finalization. The slot lock
+    /// is released before the lifecycle is touched, which keeps the module's
+    /// lock order; only `claim` holds both.
     fn take(&self) -> Result<AttemptFinalizer, AttemptLifecycleError> {
         self.0
             .lock()
@@ -1222,6 +1262,8 @@ impl AttemptCompletion {
     /// Blocks the current thread until the report is published or the timeout
     /// elapses. Intended for synchronous tests and diagnostics.
     pub fn wait_timeout(&self, timeout: Duration) -> Option<Arc<QueryAttemptReport>> {
+        // Spurious wakeups and the publication-side wait share `changed`, so
+        // the predicate re-checks visibility on every wake.
         let state = self.shared.lock();
         let (state, _) = self
             .shared
@@ -1241,6 +1283,8 @@ impl Future for AttemptCompletion {
         if let Some(report) = completion.visible_report() {
             return Poll::Ready(report);
         }
+        // Deduplicated with `will_wake` because one task polling repeatedly
+        // would otherwise grow the list until publication.
         if !completion.wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
             completion.wakers.push(cx.waker().clone());
         }

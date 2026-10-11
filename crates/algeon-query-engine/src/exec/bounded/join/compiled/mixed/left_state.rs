@@ -1,3 +1,17 @@
+//! Semi and anti joins with a residual that build their left side (the `left_match` form of
+//! `JoinForm::KeyedResidual`).
+//!
+//! The left rows are the build input and the right rows stream through as the probe. Whether a left
+//! row qualifies depends on every right row. The probe therefore keeps per-left-row match state
+//! (`cudf::DataFrameMixedLeftJoinState`). Each right chunk updates it through `consume`; nothing is
+//! emitted until `seal` runs after the last chunk, because an anti join keeps the rows that no
+//! chunk matched. The sealed state yields one left-row gather map, and the output holds left
+//! columns only.
+//!
+//! The left frame and the match state stay resident across the probe, and the right chunks are
+//! released one at a time. The peak device size of the state is reported as
+//! `mixed_size_data_bytes`.
+
 use std::time::Instant;
 
 use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
@@ -11,6 +25,13 @@ use crate::exec::bounded::join::compiled::{
     projected_output_columns_for_retained_sizing, residual_input_columns,
 };
 
+/// Builds the match state over the left input and folds every right chunk into it.
+///
+/// This is the whole probe stage of the form: the returned `MixedLeftMatched` state holds the left
+/// frame and the sealed match state, and only the final gather remains. Cancellation is checked
+/// before the state is built, before each chunk and before sealing. `inputs` is released with
+/// `release_all` whether the fold succeeds or fails, and a failure drops the left frame together
+/// with `build`. Errors gain `build_side` and `probe_side` facts when they carry none.
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join_probe_from_frame_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node: &JoinNode,
@@ -73,6 +94,10 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
     })
 }
 
+/// Gathers the left rows the sealed match state selected and records the join metrics under
+/// `bounded_mixed_left_match_join`.
+///
+/// The match state is released before the gather allocates the output.
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

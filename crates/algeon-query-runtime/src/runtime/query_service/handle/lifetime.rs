@@ -1,4 +1,19 @@
 //! Admitted attempt lifetime and root-context setup coordination.
+//!
+//! `QueryHandleLifetime` holds an admitted attempt's resources (its envelope,
+//! completion payload, root context, and service epoch user) from publication
+//! until the one release takes them. Release is requested by the attempt's
+//! terminal commit through `AdmittedGrantRelease`, never by dropping the
+//! `QueryHandle`; the handle is a view onto this lifetime. The request moves
+//! the state to `Releasing`, and the resources leave only once the query
+//! resource epoch reports no live context anchors, so a context still running
+//! on a pool worker keeps everything it references.
+//!
+//! Root-context setup is single-flight: the first context acquisition claims
+//! the root binding and builds the root context on the device pool while
+//! later acquisitions wait on a `watch` channel, then attach as auxiliary
+//! contexts. A release during that window fails both the claimant and the
+//! waiters.
 
 #[cfg(any(test, feature = "cugraph"))]
 use std::sync;
@@ -35,10 +50,14 @@ use crate::{
     },
 };
 
+/// What a context acquisition found when it asked to set up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ContextSetupClaim {
+    /// This caller owns root setup and must complete or roll it back.
     Root,
+    /// The root context is ready; the caller sets up an auxiliary context.
     Auxiliary,
+    /// Another caller is performing root setup; wait, then ask again.
     WaitForRoot,
 }
 
@@ -91,8 +110,13 @@ impl Drop for RootContextSetupClaimGuard {
 pub(super) struct LifetimeResources {
     service: Arc<QueryServiceInner>,
     completion: QueryCompletion,
+    /// Counts this attempt as a user of the service epoch, so the service's
+    /// close drain cannot report quiescence while the attempt is releasing.
     service_epoch_user: QueryServiceEpochUser,
     pub(super) envelope: AdmissionEnvelope,
+    /// The template context built by root setup. Retained here, uncounted by
+    /// the query epoch, so that it does not keep the lifetime from releasing;
+    /// outward contexts hold counted anchors instead.
     pub(super) root_context: Option<ExecutionContext>,
     pub(super) attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
     terminal_domain_usage: Option<cudf::QueryMemoryDomainUsage>,
@@ -124,6 +148,12 @@ impl LifetimeState {
     }
 }
 
+/// Owner of one admitted attempt's resources between publication and release.
+///
+/// Shared by the `QueryHandle`, by every outward execution context's anchor,
+/// and (weakly) by the query epoch's idle callback. The `state` mutex is held
+/// only for the state transition itself; the release that follows runs
+/// outside it because it submits a GPU cleanup job and may seal observations.
 #[derive(Debug)]
 pub(in crate::runtime::query_service) struct QueryHandleLifetime {
     state: Mutex<LifetimeState>,
@@ -391,6 +421,10 @@ impl QueryHandleLifetime {
         self.with_resources(|resources| Ok(resources.envelope.memory_grant().clone()))
     }
 
+    /// Takes one counted anchor on the query epoch for an outward context.
+    /// The anchor owns an `Arc` to this lifetime, so a context can outlive the
+    /// `QueryHandle`; the epoch's `invalidate` in `request_release` refuses
+    /// new anchors, and its idle callback performs the deferred release.
     pub(super) fn acquire_resource_anchor(
         self: &Arc<Self>,
         operation: &'static str,
@@ -537,6 +571,11 @@ impl QueryHandleLifetime {
         self.root_context_setup.state.send_replace(RootContextSetupState::Released);
     }
 
+    /// Begins release. Idempotent: a second request finds the state already
+    /// `Releasing` or `Released`. The epoch is invalidated before the root
+    /// setup state is released so a context that passes the setup check can
+    /// no longer obtain an anchor, and the release runs now only if no anchor
+    /// is live; otherwise the epoch's idle callback runs it later.
     pub(super) fn request_release(&self) {
         {
             let mut state = self.lock_state();
@@ -552,6 +591,12 @@ impl QueryHandleLifetime {
         self.release_if_ready();
     }
 
+    /// The one release. A single caller moves the state from `Releasing` to
+    /// `Released` and takes the resources; `request_release` and the epoch
+    /// idle callback may both reach here, and the loser returns at the state
+    /// check. GPU cleanup is submitted as a release-cleanup job so the CUDA
+    /// destruction runs on the device pool, under the `A_d` release permits
+    /// reserved for it.
     fn release_if_ready(&self) {
         if !self.query_epoch.is_idle() {
             return;

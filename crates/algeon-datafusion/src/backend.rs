@@ -69,8 +69,14 @@ use crate::{
 /// [`Self::close_and_wait_async`].
 #[derive(Debug, Clone)]
 pub struct AlgeonGpuBackend {
+    /// The owning handle, through which close and shutdown coordination run.
     core: GpuBackendCore,
+    /// Capability copied into installed sessions and admission sources. It
+    /// admits and observes attempts; it cannot extend the backend's lifetime
+    /// or its GPU ownership.
     session: GpuBackendSession,
+    /// Planning template bound to `session`, copied into every installed
+    /// session's native rule. It never names a device.
     optimizer_config: AlgeonNativeOptimizerConfig,
     devices: Vec<AlgeonGpuDeviceConfig>,
     queue_policy: AlgeonGpuQueuePolicy,
@@ -219,7 +225,9 @@ impl AlgeonGpuBackend {
     /// Canonical shutdown path for embedded and process owners.
     ///
     /// Initiates backend shutdown and blocks until both GPU resources and observation
-    /// records achieve quiescence, or until `timeout` elapses.
+    /// records achieve quiescence, or until `timeout` elapses. It blocks the
+    /// calling thread; from inside an async runtime use
+    /// [`Self::close_and_wait_async`].
     pub fn close_and_wait(&self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
         self.core.close_and_wait(timeout).map_err(|error| {
             Error::from_native("algeon_datafusion.backend.close", "failed to close GPU backend before timeout", error)

@@ -1,3 +1,16 @@
+//! Route candidates from column equalities in an inner join's residual.
+//!
+//! A mixed join evaluates `left.a = right.b` inside its residual instead of as
+//! a hash key. The equality constrains the consumer side as a key would, so a
+//! supported hash build below the producer side that carries the same source
+//! column can supply a payload to the consumer's local Parquet source. The
+//! residual join is never its own producer. Candidates are reported only when
+//! the producer side is already filtered or is smaller than the consumer by
+//! rows or bytes; otherwise the producer-before-consumer dependency would cost
+//! more than the rows it removes. Only equalities that are conjuncts of the
+//! residual's top-level `AND` qualify; one under `OR` or `NOT` constrains
+//! nothing on its own.
+
 use super::{
     AggregateGroupKeyLineage, BinaryOp, ColumnQualifier, DynamicFilterExecutionOptions, DynamicFilterProducer, Expr,
     JoinNode, JoinSide, JoinType, LocalParquetSource, NodeId, PlanNode, QueryPlan, SourceColumnLineage, SourceNode,
@@ -5,6 +18,8 @@ use super::{
     lineages_for_column, local_parquet_source, subtree_contains_node, unique_lineage,
 };
 
+/// One producer and consumer pairing derived from a residual equality, before
+/// the route-discovery checks that apply to every candidate.
 #[derive(Debug, Clone)]
 pub(super) struct ResidualEqualityRouteCandidate {
     pub(super) producer: DynamicFilterProducer,
@@ -235,6 +250,9 @@ fn simple_source_path_contains_node(plan: &QueryPlan, root: NodeId, target: Node
     }
 }
 
+/// Whether the producer side is expected to remove enough consumer rows: it
+/// carries a reader predicate, or its selected rows or bytes are below the
+/// consumer's. Without stats on both sides the answer is no.
 fn residual_equality_source_filter_is_promising(
     producer_source: Option<&LocalParquetSource>,
     consumer_source: &LocalParquetSource,
@@ -261,6 +279,12 @@ fn residual_equality_source_filter_is_promising(
     false
 }
 
+/// Whether a route into a dimension-sized local Parquet consumer would be
+/// skipped or unprofitable at runtime. Above
+/// `large_local_parquet_range_producer_rows` the runtime sends a range-only
+/// payload, which removes little from a consumer below
+/// `dimension_sized_consumer_bytes` that has few row groups or is already
+/// smaller than the producer. Unknown sizes answer no.
 pub(super) fn large_keyset_dimension_sized_local_parquet_consumer_is_not_promising(
     plan: &QueryPlan,
     producer_input: NodeId,
@@ -288,6 +312,9 @@ pub(super) fn large_keyset_dimension_sized_local_parquet_consumer_is_not_promisi
         || estimated_output_bytes(plan, producer_input).is_some_and(|producer_bytes| producer_bytes > consumer_bytes)
 }
 
+/// Whether the producer is proven to exceed `max_build_rows`, in which case the
+/// runtime would skip every route it feeds. Only an exact row count counts as
+/// proof; see `exact_unfiltered_output_rows`.
 pub(super) fn producer_keyset_exceeds_runtime_limit(
     plan: &QueryPlan,
     producer_input: NodeId,
@@ -296,6 +323,9 @@ pub(super) fn producer_keyset_exceeds_runtime_limit(
     exact_unfiltered_output_rows(plan, producer_input).is_some_and(|rows| rows > options.max_build_rows as u64)
 }
 
+/// Exact output row count from footer row counts and literal batch sizes alone,
+/// through projections, sorts, limits and unions. A reader predicate, filter or
+/// join makes the count an estimate, which is not enough to reject a route.
 fn exact_unfiltered_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
     match &plan.node(node_id)?.kind {
         PlanNode::Source(source) => match source.as_ref() {

@@ -1,3 +1,22 @@
+//! Footer-proven `COUNT(column)` argument pruning.
+//!
+//! The rule matches a non-distinct `COUNT(column)` whose argument traces through
+//! filters and renaming projections to a file column of a local Parquet source
+//! whose footer reports zero nulls in every selected row group. In the rewrite,
+//! the argument becomes a non-null carrier, the literal `1` for a global
+//! aggregate or a grouping-key column that is itself footer-proven non-null for a
+//! grouped one, after which the original column is dropped from every projection
+//! and from the source's read set when nothing else reads it. `COUNT` over a
+//! column without nulls equals the row count, so the result is unchanged; the
+//! carrier must be non-null because `COUNT` skips a null carrier row. A grouped
+//! aggregate takes a key column rather than the literal because its partial stage
+//! cannot read a literal argument.
+//!
+//! The pass rebuilds the node list (`RewrittenNodes::rebuilt`), memoizing one
+//! image per (node, required columns) pair; a node reached under two column
+//! sets has two images and no origin entry, so side state bound to it is
+//! dropped. Rejection reasons are report contracts.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -111,10 +130,10 @@ pub(crate) fn optimize_count_non_null_column_pruning(
         });
     }
     if !plan.dynamic_filter_routes().is_empty() {
-        // This pass compacts node ids. Dynamic-filter route discovery currently
-        // runs later, so routed plans should only appear if a caller runs this
-        // pass directly or reorders the optimizer. Keep those routes valid by
-        // declining the compacting rewrite.
+        // Route discovery runs after this pass in `STEPS`, so a routed plan
+        // arrives only from a caller that runs the pass directly or reorders
+        // the optimizer. `QueryPlan::rewrite` would drop every route whose
+        // endpoint this pass rebuilt; declining keeps the routes instead.
         return Ok(CountNonNullColumnPruningResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
@@ -141,6 +160,9 @@ pub(crate) fn optimize_count_non_null_column_pruning(
     })
 }
 
+/// Columns a consumer still reads from a node. `All` is used from the root and
+/// below any operator whose column use the pass does not model, so pruning
+/// happens only under aggregates, projections and filters.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum RequiredColumns {
     All,
@@ -166,6 +188,9 @@ impl RequiredColumns {
     }
 }
 
+/// Builds the new node list top down. The memo key includes the required
+/// columns because a node consumed by two parents with different needs must
+/// keep two images: one pruned for each consumer.
 struct CountNonNullColumnPruningRewriter<'a> {
     original: &'a QueryPlan,
     nodes: Vec<QueryNode>,
@@ -376,6 +401,10 @@ fn row_presence_carrier_columns(group_exprs: &[Expr]) -> Vec<String> {
     columns
 }
 
+/// The non-null carrier that replaces a proven-non-null count argument: the
+/// literal `1` for a global aggregate, otherwise the first grouping-key column
+/// other than the counted one that the footer also proves non-null. `None`
+/// means no carrier exists and the argument is kept.
 fn count_star_replacement_expr(
     plan: &QueryPlan,
     aggregate_input: NodeId,
@@ -401,6 +430,10 @@ struct NonNullSourceProof {
     proven_non_null: bool,
 }
 
+/// Traces `column_name` through filters and renaming projections to a local
+/// Parquet file column. `None` means the lineage is unsupported; a proof with
+/// `proven_non_null == false` means the footers did not show zero nulls in every
+/// selected row group of every file.
 fn resolve_non_null_source_file_column(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -431,6 +464,13 @@ fn resolve_non_null_source_file_column(
     }
 }
 
+/// Narrows a source to the columns its consumers still read.
+///
+/// Reader predicate columns stay in the read set because the reader evaluates
+/// the predicate. Partition and missing columns are re-indexed after removal
+/// since their source refs are positions. The source is returned unchanged
+/// when nothing would be removed, when every column would be removed (the
+/// count-star forms own that shape), or when any ref cannot be re-mapped.
 fn prune_local_parquet_source(source: &LocalParquetSource, required: &RequiredColumns) -> LocalParquetSource {
     let RequiredColumns::Only(required) = required else {
         return source.clone();
@@ -541,6 +581,8 @@ fn prune_local_parquet_source(source: &LocalParquetSource, required: &RequiredCo
     pruned.pure_filter_column_source_refs = pure_filter_column_source_refs;
     pruned.partition_columns = partition_columns;
     pruned.missing_columns = missing_columns;
+    // A unique key whose column was pruned, or is nullable in the new output,
+    // no longer describes this source's output.
     let output_schema = Arc::clone(pruned.output_schema());
     pruned.unique_key_columns.retain(|key| {
         key.iter().all(|column| output_schema.field_with_name(column).is_ok_and(|field| !field.is_nullable()))

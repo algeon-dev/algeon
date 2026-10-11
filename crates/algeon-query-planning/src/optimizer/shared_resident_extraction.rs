@@ -1,3 +1,24 @@
+//! Shared-resident extraction: the stage after the optimizer pass table that
+//! moves a repeated closed subplan into one GPU-resident producer.
+//!
+//! The rule matches a subplan whose execution fingerprint has two or more
+//! consumers, within one plan or across the native units of one composed island,
+//! whose root reduces rows (an aggregate, or a limit with a fetch), and which is
+//! closed: no node below the root is read from outside it. In the rewrite, every
+//! occurrence becomes a `SourceNode::GpuResident` named
+//! `__algeon_shared_resident_{n}` with the root's facts, and the subplan becomes
+//! a producer plan under a `ResultSink::GpuResident` sink. The consumer keeps its
+//! own sink. The producer is a separate native plan, so the adapter admits it on
+//! its own, executes it once in the island root's context and releases the result
+//! after its last reading unit; a producer admission refuses is a refused
+//! candidate. Semantics are preserved by construction, since the occurrence read
+//! the same rows the producer now emits. Side state: occurrences are replaced in
+//! place, so routes and advisory bindings elsewhere survive and `rewrite` drops
+//! those bound to a replaced node.
+//!
+//! Retention is a memory decision made without cardinality estimates; see
+//! `retains_resident_result`. Every inspected node gets one diagnostics row.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -136,6 +157,10 @@ pub struct SharedResidentFragments {
 }
 
 /// Runs the shared-resident extraction stage for a composed native plan.
+///
+/// Only a plan that already reads a GPU-resident source, the shape a root
+/// lowered over GPU function inputs has, is inspected; any other plan is
+/// returned unchanged with empty diagnostics.
 pub(crate) fn optimize_shared_resident_extraction(plan: QueryPlan) -> Result<SharedResidentPlan> {
     if gpu_resident_source_names(&plan).is_empty() {
         return Ok(SharedResidentPlan {
@@ -214,6 +239,9 @@ struct Occurrence {
 /// Facts of one input plan that every candidate decision reads.
 struct FragmentAnalysis {
     parents: Vec<Vec<NodeId>>,
+    /// Execution fingerprint of the subplan rooted at each node, under a
+    /// GPU-resident sink so sink kind and host schema do not separate
+    /// otherwise equal subplans.
     fingerprints: Vec<PlanFingerprint>,
     subplan_sizes: Vec<usize>,
 }
@@ -221,8 +249,11 @@ struct FragmentAnalysis {
 /// Every occurrence of one subplan fingerprint and its decision.
 struct CandidateGroup {
     occurrences: Vec<Occurrence>,
+    /// Parents over all occurrences; a root with no parent counts once for
+    /// its sink, so a subplan that is a whole fragment is a consumer.
     consumer_count: usize,
     subplan_size: usize,
+    /// Set once by the decision loop; read when rows are emitted.
     reason: Option<SharedResidentExtractionReason>,
     resident_input_name: Option<String>,
 }
@@ -265,6 +296,8 @@ fn extract_shared_resident_subplans(
         group.reason = Some(reason);
     }
 
+    // Producer names share the namespace of the fragments' existing
+    // GPU-resident inputs, which the adapter also binds by name.
     let mut reserved_names = fragments.iter().flat_map(gpu_resident_source_names).collect::<BTreeSet<_>>();
     let mut next_input_index = 0;
     let mut nodes = fragments.iter().map(|plan| plan.nodes().to_vec()).collect::<Vec<_>>();
@@ -277,6 +310,8 @@ fn extract_shared_resident_subplans(
         .collect::<Vec<_>>();
     extracted.sort();
     for (first, fingerprint) in extracted {
+        // Every occurrence has the same fingerprint, so the first one's
+        // subplan stands for all of them and supplies the shared facts.
         let producer = fragments[first.fragment].resident_subplan(first.node)?;
         let input_name = loop {
             let candidate = format!("__algeon_shared_resident_{next_input_index}");
@@ -363,6 +398,9 @@ fn analyze_fragment(plan: &QueryPlan) -> Result<FragmentAnalysis> {
     Ok(FragmentAnalysis { parents: parents_by_node(plan), fingerprints, subplan_sizes })
 }
 
+/// Decides one group. The checks run from structural to cost-based, and the
+/// first failing one is the reported reason, so a repeated subplan under an
+/// already selected ancestor reports nesting even when it would not retain.
 fn decide_group(
     fragments: &[QueryPlan],
     analyses: &[FragmentAnalysis],
@@ -464,6 +502,9 @@ fn parents_by_node(plan: &QueryPlan) -> Vec<Vec<NodeId>> {
     parents
 }
 
+/// Whether every node below `root` is read only from inside the subtree. An
+/// open subtree cannot be replaced by one source, because the outside reader
+/// would lose the node it reads.
 fn subtree_is_closed(plan: &QueryPlan, root: NodeId, parents: &[Vec<NodeId>]) -> bool {
     let subtree = subtree_nodes(plan, root);
     subtree.iter().all(|node| *node == root || parents[node.index()].iter().all(|parent| subtree.contains(parent)))

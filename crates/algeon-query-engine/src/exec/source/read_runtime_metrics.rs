@@ -1,3 +1,13 @@
+//! Builders for the `SourceReadRuntimeMetrics` rows that source reads offer to the plan
+//! execution's recorder.
+//!
+//! The row type, its field names and `to_stable_kv_row` are a public metrics contract owned by
+//! `query_runtime::metrics`; this module only fills them. `read_kind` identifies the shape:
+//! `chunk`, `chunk_batch`, `optimized_chunk_batch`, `file`, and the two enqueue-only kinds
+//! `background_cache_fill_file` and `background_cache_fill_chunk`. Byte fields are plan-time
+//! metadata and are 0 when the plan did not know them. `output_rows` and `elapsed` are measured.
+//! `query_id` is left `None`; the recorder side owns correlation.
+
 use std::{collections::BTreeSet, time::Duration};
 
 use cudf::io::parquet::{ParquetPruningEvidence, ParquetReadEvidence, RemoteReadMode};
@@ -9,6 +19,10 @@ use super::{
 };
 use crate::chunk::SourceChunkBatch;
 
+/// Records that a background cache fill was considered for a file. The row describes the enqueue
+/// decision and not a read: `output_rows` and `elapsed` are zero, `source_batching_reason` holds
+/// the enqueue outcome (`enqueued`, a skip reason, or an `enqueue_failed_*` string), and
+/// `source_chunk_planning_reason` holds the fill mode.
 pub(super) fn record_background_cache_file_fill_enqueue_runtime(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -68,6 +82,8 @@ pub(super) fn record_background_cache_file_fill_enqueue_runtime(
     );
 }
 
+/// Chunk counterpart of `record_background_cache_file_fill_enqueue_runtime`, with the same
+/// repurposed outcome and mode fields.
 pub(super) fn record_background_cache_chunk_fill_enqueue_runtime(
     chunk: &SourceChunk,
     outcome: String,
@@ -113,6 +129,8 @@ pub(super) fn record_background_cache_chunk_fill_enqueue_runtime(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
+/// Records one chunk read. `row_group_count` prefers the count observed for this read, then the
+/// count derivable from the chunk (`observed_chunk_row_group_count`), then the planned count.
 pub(super) fn record_source_chunk_read_runtime(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
@@ -161,6 +179,11 @@ pub(super) fn record_source_chunk_read_runtime(
     );
 }
 
+/// Row groups a chunk read covers, or `None` when that cannot be determined cheaply.
+///
+/// Uses the planned count when the plan knows it. A chunk that reads all row groups of a file with
+/// no recorded count opens the file footer on the calling thread, which only works for a path
+/// that exists locally; an object-store chunk without a count returns `None`.
 pub(in crate::exec) fn observed_chunk_row_group_count(chunk: &SourceChunk) -> Option<usize> {
     chunk.known_read_row_group_count().or_else(|| {
         (chunk.reads_all_row_groups && chunk.path.is_file())
@@ -177,6 +200,9 @@ pub(in crate::exec) fn observed_chunk_row_group_count(chunk: &SourceChunk) -> Op
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
+/// Records one read of a batch of chunks as a single row. `file_count` counts distinct file
+/// indexes, and the byte fields are sums over the chunks. `estimated_source_read_bytes` is the
+/// batch's own estimate when it has one, otherwise the sum of the per-chunk best estimates.
 pub(super) fn record_source_chunk_batch_read_runtime(
     source: &LocalParquetSource,
     batch: &SourceChunkBatch,
@@ -249,6 +275,8 @@ pub(super) fn record_source_chunk_batch_read_runtime(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
+/// Records a whole-file read. It does not go through chunk planning, so the planning mode is
+/// `whole_file`, the batching reason is `not_evaluated`, and no dynamic filters apply.
 pub(super) fn record_source_file_read_runtime(
     source: &LocalParquetSource,
     source_node_id: NodeId,
@@ -312,6 +340,10 @@ pub(super) fn record_source_file_read_runtime(
     );
 }
 
+/// Converts cuDF's read evidence into the metric fields. `None` evidence yields the default
+/// (empty) evidence. `bloom_pruning_status` is `not_reported` when cuDF reported no pruning
+/// evidence at all. The pruning counts are `None` for a stage cuDF did not report; `None` does not
+/// mean zero row groups survived.
 pub(super) fn source_read_parquet_evidence_metrics(
     evidence: Option<&ParquetReadEvidence>,
 ) -> SourceReadParquetEvidenceMetrics {
@@ -334,6 +366,14 @@ pub(super) fn source_read_parquet_evidence_metrics(
     }
 }
 
+/// Classifies Bloom-filter pruning from the stage counts cuDF reported.
+///
+/// `bloom_pruned` when the Bloom stage left fewer row groups than the stage before it (the
+/// statistics stage, or the input when statistics did not report). `bloom_not_pruned` when the
+/// Bloom stage reported and removed nothing. `bloom_not_reported` when only the statistics stage
+/// reported. `no_reader_predicate` when pruning evidence exists but neither stage reported; the
+/// stage counts are documented as present only for a read with a predicate. `None` when no
+/// pruning evidence exists.
 pub(super) fn bloom_pruning_status(pruning: Option<ParquetPruningEvidence>) -> Option<&'static str> {
     let pruning = pruning?;
     match (pruning.row_groups_after_stats_filter, pruning.row_groups_after_bloom_filter) {
@@ -345,6 +385,9 @@ pub(super) fn bloom_pruning_status(pruning: Option<ParquetPruningEvidence>) -> O
     }
 }
 
+/// Byte estimate for a whole-file read: the largest of the selected row-group bytes, the selected
+/// projected compressed bytes and the file size. When the file size is known the estimate is
+/// therefore at least the file size, even if only some row groups are selected.
 pub(super) fn best_file_source_read_bytes(file: &LocalParquetFile) -> u64 {
     selected_file_metadata_sum(file.row_group_bytes.as_deref(), file.row_groups.as_deref())
         .max(selected_file_metadata_sum(
@@ -354,6 +397,9 @@ pub(super) fn best_file_source_read_bytes(file: &LocalParquetFile) -> u64 {
         .max(file.file_size_bytes.unwrap_or(0))
 }
 
+/// Sums per-row-group `values` over the selected row groups, or over all of them when `row_groups`
+/// is `None`. Both are file-local row-group ordinals. Missing metadata and out-of-range ordinals
+/// contribute 0.
 pub(super) fn selected_file_metadata_sum(values: Option<&[u64]>, row_groups: Option<&[usize]>) -> u64 {
     let Some(values) = values else {
         return 0;
@@ -364,6 +410,8 @@ pub(super) fn selected_file_metadata_sum(values: Option<&[u64]>, row_groups: Opt
     }
 }
 
+/// Byte estimate for a chunk, taking the first fact the plan has, from the most specific
+/// (`estimated_source_read_bytes`) to the least (`known_file_bytes`). 0 when none is known.
 pub(super) fn best_chunk_source_read_bytes(chunk: &SourceChunk) -> u64 {
     chunk
         .estimated_source_read_bytes

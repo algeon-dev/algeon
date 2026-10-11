@@ -1,8 +1,17 @@
-//! Subgraph-invariant analysis (currently focused on join shape invariants).
+//! Subgraph-invariant analysis.
 //!
 //! Inspects edge contracts plus producer/consumer node facts to verify
 //! invariants that span more than a single node; for example, "build side of
 //! this join must dominate its resident build resource."
+//!
+//! An edge contract describes one producer and one consumer. The properties
+//! here involve several edges at once: a producer read by two consumers, a
+//! scalar aggregate whose measures must all derive from one shared frame, a
+//! filter and projection chain that must stay connected to keep its input
+//! resident, and a residual that must read both join inputs. Each invariant
+//! names the nodes it covers and the resident resources whose lifetime it
+//! governs, so the compiled pipeline contracts can check the schedule against
+//! it. Invariant ids are positions in the returned vector.
 
 use super::{
     ColumnQualifier, Expr, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan,
@@ -16,6 +25,12 @@ use super::{
     rejection::Reason,
 };
 
+/// Every subgraph invariant of `plan`, in a fixed order: per join, build before
+/// probe and (with a residual) residual uses both inputs; then shared resident
+/// producers, scalar aggregates over shared producers, projection chains, and
+/// filter/projection chains; then, only when the plan has more than one join,
+/// the whole-plan topological schedule and resident lifetime invariants.
+/// `edges` must already carry the shared-producer marks.
 pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Vec<SubgraphInvariant> {
     let mut invariants = Vec::new();
     for node in plan.nodes() {
@@ -85,6 +100,10 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
     invariants
 }
 
+/// One invariant per producer with more than one consumer. The producer's
+/// frame stays resident until its last consumer runs, so every consumer edge
+/// must exist and be admitted; a rejected edge would otherwise be hidden behind
+/// the consumers that were admitted.
 pub(super) fn append_shared_resident_subplan_invariants(
     plan: &QueryPlan,
     edges: &[EdgeContract],
@@ -109,6 +128,11 @@ pub(super) fn append_shared_resident_subplan_invariants(
     }
 }
 
+/// One invariant per scalar aggregate whose input, after peeling projections,
+/// is a shared producer. The compiled pipeline may evaluate such an aggregate
+/// over the shared resident frame instead of re-reading its subtree, which is
+/// correct only when every measure reads fields of that frame; the solver
+/// checks that lineage.
 pub(super) fn append_aggregate_derivation_invariants(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
     let consumers = consumer_nodes(plan);
     for node in plan.nodes() {
@@ -137,6 +161,9 @@ pub(super) fn append_aggregate_derivation_invariants(plan: &QueryPlan, invariant
     }
 }
 
+/// One invariant per projection that sits on a chain of projections above a
+/// non-projection producer. Residency analysis treats the chain as transparent
+/// and attributes the resident frame to the peeled producer.
 pub(super) fn append_projection_transparent_residency_invariants(
     plan: &QueryPlan,
     invariants: &mut Vec<SubgraphInvariant>,
@@ -163,6 +190,9 @@ pub(super) fn append_projection_transparent_residency_invariants(
     }
 }
 
+/// One invariant per filter or projection at the top of a filter/projection
+/// chain above a non-unary producer. `chain_ids` lists the chain from the
+/// consumer down; the invariant records it producer-first.
 pub(super) fn append_resident_unary_chain_preserves_residency_invariants(
     plan: &QueryPlan,
     invariants: &mut Vec<SubgraphInvariant>,
@@ -192,6 +222,10 @@ pub(super) fn append_resident_unary_chain_preserves_residency_invariants(
     }
 }
 
+/// Rejected when any edge the plan reads is rejected. Compiled admission that
+/// reads invariants alone would otherwise admit a plan whose edge analysis
+/// refused one producer-consumer pair. Edges whose node consumer the plan does
+/// not list are skipped; sink edges are always checked.
 pub(super) fn solve_resident_lifetime_invariant(plan: &QueryPlan, edges: &[EdgeContract]) -> CapabilityDecision {
     let mut consumers = consumer_nodes(plan);
     consumers.entry(plan.sink().input()).or_default();
@@ -214,6 +248,9 @@ pub(super) fn solve_resident_lifetime_invariant(plan: &QueryPlan, edges: &[EdgeC
     CapabilityDecision::Satisfied
 }
 
+/// Satisfied when each consumer has its own admitted edge from `producer`.
+/// The first consumer without an edge, then the first with a rejected edge,
+/// names the rejection.
 pub(super) fn solve_shared_resident_subplan_invariant(
     edges: &[EdgeContract],
     producer: NodeId,
@@ -238,6 +275,13 @@ pub(super) fn solve_shared_resident_subplan_invariant(
     CapabilityDecision::Satisfied
 }
 
+/// Proves that `aggregate_id` reads only fields of `shared_producer`.
+///
+/// Structure is checked before lineage: the aggregate's input must peel to the
+/// producer itself (dataflow identity), and then every measure's read lineages
+/// must be among the producer's output lineages. A measure that reads a
+/// derived field of an intermediate projection fails the second check, because
+/// that field is not one the shared frame holds.
 pub(super) fn solve_aggregate_derives_from_shared_producer_invariant(
     plan: &QueryPlan,
     shared_producer: NodeId,
@@ -338,6 +382,9 @@ pub(super) fn solve_projection_transparent_residency_invariant(
     CapabilityDecision::Satisfied
 }
 
+/// Re-walks the chain from the producer upward and requires each node to be a
+/// filter or projection whose input is the previous node. `chain_ids_from_consumer`
+/// is consumer-first, as `peel_resident_unary_chain_for_capability` returns it.
 pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
     plan: &QueryPlan,
     peeled_producer: NodeId,
@@ -392,6 +439,10 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
     CapabilityDecision::Satisfied
 }
 
+/// A residual that reads one input is a filter on that input. Lowering pushes
+/// such filters below the join, so one that reached the join is a lowering
+/// defect; evaluated as a join condition on an outer join it would turn a row
+/// filter into a null-extension rule and change the result.
 pub(super) fn solve_residual_uses_both_inputs_invariant(join_id: NodeId, join: &JoinNode) -> CapabilityDecision {
     let Some(predicate) = &join.spec.residual_predicate else {
         return CapabilityDecision::Satisfied;

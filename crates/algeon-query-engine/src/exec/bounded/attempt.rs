@@ -6,8 +6,15 @@ use super::{ExecutionContext, ExecutionMetrics};
 ///
 /// The immutable cap is a batching input. Allocation enforcement and resident
 /// ownership belong to the query memory domain and grant.
+///
+/// This is a borrowed view, cheap to build: the coordinator holds one over the
+/// root context, and every lane job builds its own over the lane's derived
+/// context so operators run on the lane's stream while reporting into the
+/// same metrics owner.
 pub(in crate::exec) struct BoundedExecutionAttempt<'a> {
     context: &'a ExecutionContext,
+    /// Cap applied to every budget token created under this attempt. Tokens
+    /// label stages for diagnostics; the allocator member enforces the grant.
     device_budget_bytes: u64,
     metrics: &'a ExecutionMetrics,
 }

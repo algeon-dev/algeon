@@ -172,6 +172,9 @@ impl AttemptCapabilityEvidence {
         }
     }
 
+    /// Binds a producer occurrence to the most recently added scope, which is
+    /// the consumer scope under assembly: a consumer's producers are pushed
+    /// after its scope and before any further scope.
     #[doc(hidden)]
     pub fn push_producer_occurrence(&mut self, occurrence: AttemptProducerOccurrence) -> Result<()> {
         let Some(scope) = self.execution_scopes.last_mut() else {
@@ -234,6 +237,8 @@ impl AttemptCapabilityEvidence {
         Ok(())
     }
 
+    /// Set union of every list; the first manifest is kept. `join` and
+    /// `aggregate` reject a conflicting second manifest before calling this.
     fn union(&mut self, other: &Self) {
         for capability in &other.required_capabilities {
             if !self.required_capabilities.contains(capability) {
@@ -262,6 +267,10 @@ impl AttemptCapabilityEvidence {
     }
 
     /// Validates the ordered producer occurrences of one composed native plan.
+    ///
+    /// Checks go from coarse to fine so the error fact names the first
+    /// mismatch: a scope for the plan and schema, then the occurrence count,
+    /// then the occurrence order.
     #[doc(hidden)]
     pub fn validate_composed_occurrences(&self, plan: &QueryPlan, occurrence_ids: &[String]) -> Result<()> {
         let expected_schema = SchemaFingerprint::of(plan.caller_visible_output_schema());
@@ -315,7 +324,10 @@ impl AttemptCapabilityEvidence {
 
     /// Rejects execution of a plan the admitted evidence does not cover.
     ///
-    /// Device capability and plan scope must both cover graph execution.
+    /// Device capability and plan scope must both cover graph execution. A
+    /// plan's scope is covered by any one of an admitted fragment scope, a
+    /// producer occurrence bound to a consumer scope, or a manifest
+    /// occurrence, since each records an admission of that plan.
     #[doc(hidden)]
     pub fn validate_covers_plan(&self, plan: &QueryPlan) -> Result<()> {
         if plan.contains_graph_algorithm()

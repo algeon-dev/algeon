@@ -1,3 +1,11 @@
+//! Absolute-deadline primitives for synchronous waits.
+//!
+//! Close and drain paths are bounded by one caller-owned `Instant`. The
+//! helpers here let a mutex acquisition, a condition-variable wait, and a
+//! thread-parking bridge into async code all consume that same deadline, so
+//! lock contention never adds a second grace period and an already-expired
+//! deadline still allows one uncontended attempt.
+
 use std::{
     pin::pin,
     sync::{Arc, Mutex, MutexGuard, TryLockError},
@@ -44,6 +52,9 @@ pub(crate) fn mutex_lock_until<T>(
             Err(TryLockError::WouldBlock) if deadline_expired(deadline) => {
                 return Err(DeadlineMutexLockError::TimedOut);
             },
+            // `std::sync::Mutex` has no timed lock. The holders here are
+            // short critical sections (a state read or a counter update), so a
+            // yield loop costs less than a condition variable would.
             Err(TryLockError::WouldBlock) => std::thread::yield_now(),
         }
     }

@@ -7,6 +7,13 @@ use super::{
     execute_compiled_projected_cross_join_materialize,
 };
 
+/// Runs the cuDF join of a `Prepared` probe state with the materializer of the strategy that built
+/// it.
+///
+/// A prepared state holds both oriented side frames and has done no cuDF work yet; every strategy
+/// listed here does all of it from `state.left` and `state.right`. `ReusableHashEqui` and
+/// `FilteredSemiAnti` keep their own build and probe state variants; a prepared state that carries
+/// either is an invariant violation (`compiled_join_strategy_state_mismatch`).
 pub(super) fn execute_compiled_prepared_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

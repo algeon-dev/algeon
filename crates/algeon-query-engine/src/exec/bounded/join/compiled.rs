@@ -1,3 +1,20 @@
+//! Build, probe and materialize states of a compiled bounded join.
+//!
+//! The pipeline compiler expands one native join into a build task, a probe
+//! task and a materialize task with a build-before-probe barrier
+//! (`website/docs/design/native-lowering.mdx`, "What the GPU compiler
+//! produces"). This module owns the state passed between those tasks and the
+//! dispatch over `JoinStrategy`; the strategy submodules own one join shape
+//! each, and `hash` owns the reusable hash join they all fall back to.
+//!
+//! Every state is consumed by value. A function that returns `Err` has already
+//! dropped or released the build frames, probe frames, stream producers and
+//! gather maps it was given, so a caller never releases twice; the `release_*`
+//! functions exist for the interpreter paths where a task's consumer never
+//! runs (cancellation, an earlier task's failure). A build frame is released
+//! before the probe outputs are concatenated, so the hash table is not part of
+//! the concatenation's peak.
+
 use std::{
     collections::{BTreeMap, VecDeque},
     time::Instant,
@@ -46,6 +63,13 @@ use residual::*;
 use streamed::*;
 pub(in crate::exec) use transaction::JoinMaterializationTxn;
 
+/// Output of the build task, retained across every probe of the same join.
+///
+/// Which variant the build produces follows the planner's `JoinStrategy`.
+/// `Hash` and `Filtered` already hold a cuDF hash table or membership
+/// structure; `Prepared` holds only the projected build frame because its
+/// strategy needs both inputs in one cuDF call; `Partitioned` holds the build
+/// side already split by key hash while its input streamed in.
 pub(in crate::exec::bounded) enum BoundedCompiledJoinBuildState {
     Hash(BoundedRootHashJoinBuildState),
     Filtered(BoundedCompiledFilteredJoinBuildState),
@@ -77,6 +101,15 @@ impl BoundedCompiledPartitionedJoinBuildState {
     }
 }
 
+/// Output of the probe task, consumed by the materialize task.
+///
+/// Three shapes recur across the strategies. A plain variant (`Hash`,
+/// `Filtered`, `Prepared`, `MixedLeftMatched`) holds gather maps or match
+/// state over whole inputs and materializes in one call. A `*Streamed` variant
+/// holds output frames already materialized one probe chunk at a time, plus
+/// the build state only so that materialize can release it. A `*LazyStream`
+/// variant holds the undrained input stream together with the build; output
+/// is produced on pull, and the build is released when the stream ends.
 pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
     Hash(BoundedRootHashJoinProbeState),
     HashStreamed {
@@ -101,6 +134,8 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
         summary: StreamedOneShotJoinSummary,
     },
     OneShotLazyStream(OneShotEquiJoinFrameStreamProbeState),
+    /// The split build was already released by the probe; only the output
+    /// frames and the metrics summary remain.
     PartitionedStreamed {
         build_side: JoinSide,
         build_rows: u64,
@@ -111,6 +146,10 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
     PartitionedLazyStream(PartitionedHashEquiJoinFrameStreamProbeState),
 }
 
+/// Build side of a strategy that joins both inputs in one cuDF call (one-shot,
+/// partitioned, mixed, keyless and cross). The frame holds only the columns
+/// `compiled_join_input_columns` selects, so build retention is bounded by the
+/// projection rather than by the input width.
 pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinBuildState {
     strategy: JoinStrategy,
     strategy_options: KeyedHashJoinStrategyOptions,
@@ -134,6 +173,9 @@ pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinProbeState {
     right: BoundedJoinSideFrame,
 }
 
+/// Semi or anti mixed join after every probe chunk has been folded into
+/// cuDF's left-row match state. `finalized` is the complement over the whole
+/// left input, which is why this shape cannot stream its output per chunk.
 pub(in crate::exec::bounded) struct BoundedCompiledMixedLeftJoinProbeState {
     left: BoundedJoinSideFrame,
     finalized: cudf::DataFrameMixedLeftJoinFinalized,
@@ -148,11 +190,27 @@ pub(in crate::exec::bounded) struct RootHashJoinFrameStreamProbeState {
     inputs: ResidentFrameStreamPayload,
 }
 
+/// Join shapes whose probe chunks are independent of one another.
+///
+/// For an inner join, or a left join whose build is the right input, each
+/// probe row's output depends only on the build table, so chunk outputs
+/// concatenate into the join result. A left join built on its left input and
+/// every full join must emit the build rows no probe chunk matched, which needs
+/// a matched complement over all chunks and keeps those shapes on the one-call
+/// path.
 pub(in crate::exec::bounded) fn stateless_streaming_probe_supported(node: &JoinNode) -> bool {
     matches!(node.spec.join_type, JoinType::Inner)
         || (node.spec.join_type == JoinType::Left && node.spec.build_side == JoinSide::Right)
 }
 
+/// Build side of a semi, anti or mark join: a membership structure over the
+/// right input that each probe chunk tests its rows against.
+///
+/// Fields are visible across the join owner so the parallel probe path can
+/// share one immutable build among lanes. `null_aware_probe` is decided once
+/// from the complete right input, so every probe chunk applies the same
+/// `NOT IN` rewrite. `timer` starts at the build and is read by materialize so
+/// operator time covers build, every probe and the final concatenation.
 pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinBuildState {
     pub(in crate::exec::bounded) left_keys: Vec<String>,
     pub(in crate::exec::bounded) left_columns: Vec<String>,
@@ -249,6 +307,11 @@ struct PartitionedJoinPartitionOutput {
     output_rows: u64,
 }
 
+/// Result of a materialize task whose consumer accepts chunked output.
+///
+/// `Stream` carries chunks that already exist on the device; `LazyStream`
+/// carries a producer that still owns the build and probes on pull, so a
+/// consumer that stops early must release it through the payload.
 pub(in crate::exec::bounded) enum BoundedCompiledJoinMaterializeOutput {
     Frame(Box<ResidentGpuFrame>),
     Stream(Vec<ResidentGpuFrame>),
@@ -363,6 +426,11 @@ fn root_hash_join_frame_stream_probe_to_payload(
     )
 }
 
+/// Lazy producer that probes a reusable hash build with each pulled input
+/// frame. One input chunk can yield several output slices, queued in
+/// `pending_outputs` and yielded before the next input is pulled. The
+/// build and the input stream are released when the input is exhausted and
+/// again, idempotently, by the payload's `release`.
 struct RootHashJoinProbeStreamSource {
     node_id: NodeId,
     node: JoinNode,
@@ -412,6 +480,11 @@ impl ResidentFrameStreamSource for RootHashJoinProbeStreamSource {
     }
 }
 
+/// Runs the build task over a resident input frame.
+///
+/// Reusable and filtered strategies build their cuDF structure here; the
+/// remaining strategies only project the build side and defer the join to the
+/// probe or materialize task. `input` is consumed on every path.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -451,6 +524,11 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
     }
 }
 
+/// Runs the probe task over one resident probe frame.
+///
+/// Partitioned builds and mixed semi/anti builds are forwarded to the frame
+/// stream path wrapped as a one-frame stream, so each of those strategies has
+/// one probe implementation. On `Err` the build state has been released.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -505,6 +583,10 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
 /// collecting every output chunk before the materialize task runs. Partitioned
 /// build sides always probe lazily: their partition outputs are already
 /// bounded per probe chunk.
+///
+/// A leaf with zero planned chunks (every row group pruned) is materialized
+/// into its empty frame first, so the schema still reaches the join. On `Err`
+/// the build state has been released.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -609,6 +691,15 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     }
 }
 
+/// Runs the probe task over a resident frame stream.
+///
+/// An eager stream with more than one frame probes its chunks in parallel on
+/// execution lanes when the strategy's outputs concatenate chunk by chunk
+/// (`probe_parallel`); `outer` lends the enclosing compiled run's lane
+/// dispatcher for that. Lazy streams and single frames keep a serial or
+/// pull-driven probe. Strategies that need both whole inputs drain the stream
+/// into one frame first and record why in the join strategy decision. On
+/// `Err` the build state and the stream have been released.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -732,6 +823,11 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
     }
 }
 
+/// Runs the materialize task to a single resident output frame.
+///
+/// Lazy streams are drained here and streamed outputs are concatenated. In
+/// both cases the build state is released before the concatenation runs, so
+/// the table does not count toward the concatenation's peak allocation.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -812,6 +908,12 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
     }
 }
 
+/// Materialize for a consumer that accepts chunked output, such as a
+/// downstream aggregate or a streaming resident sink.
+///
+/// Streamed and lazy probe states are returned without concatenation, and the
+/// whole-input partitioned strategies produce their partition outputs as a
+/// stream. Any other state falls back to the single-frame materialize.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preserving_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -911,6 +1013,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
     }
 }
 
+/// Releases a build whose probe task will not run.
 pub(in crate::exec::bounded) fn release_bounded_compiled_join_build_state(build: BoundedCompiledJoinBuildState) {
     match build {
         BoundedCompiledJoinBuildState::Hash(build) => {
@@ -929,6 +1032,9 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_build_state(build:
     }
 }
 
+/// Releases a probe state whose materialize task will not run. Lazy streams
+/// need the execution attempt because their producers release through it;
+/// output frames held by the streamed variants are released by `Drop`.
 pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
     execution: &mut BoundedExecutionAttempt<'_>,
     probe: BoundedCompiledJoinProbeState,
@@ -976,6 +1082,10 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
     }
 }
 
+/// Concatenates per-chunk outputs into one frame. A probe over at least one
+/// chunk always yields a chunk output, possibly empty, so an empty list means
+/// the driver skipped the probe and is reported as a plan error rather than
+/// as an empty result.
 fn concatenate_streamed_hash_join_outputs(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -1027,6 +1137,10 @@ fn concatenate_streamed_hash_join_outputs(
     Ok(ResidentGpuFrame::with_device_bytes(output_frame, output_bytes))
 }
 
+/// Columns one side must retain for `strategy`: its keys, the residual
+/// predicate's inputs and its share of the output projection, in input order.
+/// The reusable and filtered strategies select inside their own build step and
+/// are rejected here as an invariant violation.
 fn compiled_join_input_columns(node: &JoinNode, strategy: JoinStrategy, side: JoinSide) -> Result<Vec<String>> {
     match strategy {
         JoinStrategy::KeylessConditional { .. } => {
@@ -1099,6 +1213,10 @@ fn orient_prepared_inputs(
     }
 }
 
+/// Sizing state of a keyless (conditional) join between its size pass and its
+/// index pass. A full conditional join keeps cuDF's size-data object because
+/// the index kernel reuses it; the other join types only need the output row
+/// count to allocate their gather maps.
 enum CompiledKeylessWork<'a> {
     Full { size_data: Box<cudf::DataFrameConditionalFullJoinSizeData<'a>> },
     Sized { output_size: usize, options: cudf::DataFramePredicateJoinOptions },
@@ -1225,6 +1343,13 @@ struct CompiledEqualityJoinPreflightIndices {
     output_rows: u64,
 }
 
+/// Computes the gather maps of a one-shot equality join.
+///
+/// The hash table is built for this call only; cuDF's size pass runs first and
+/// the probe then allocates the gather maps at their exact length instead of
+/// growing them. The returned indices do not depend on the table, which is
+/// dropped on return. Indices come back in plan orientation whichever side
+/// was built.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -1325,6 +1450,8 @@ fn compiled_hash_join_probe_with_output_size(
     .map_err(|error| join_index_error(error, node))
 }
 
+/// Gather maps in plan orientation. `LeftOnly` is the semi and anti shape,
+/// whose output gathers from the left input alone.
 enum CompiledJoinIndices {
     Pair { left: cudf::DataFrameJoinIndices, right: cudf::DataFrameJoinIndices },
     LeftOnly(cudf::DataFrameJoinIndices),
@@ -1365,6 +1492,9 @@ impl CompiledJoinIndices {
         }
     }
 
+    /// Closed-form bound on the gathered output, or `None` when some projected
+    /// column's dtype has no bound. The bound is reported as the output
+    /// reservation in the join metrics; it reserves nothing.
     fn output_upper_bound_size_bytes(
         &self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -1436,6 +1566,8 @@ impl CompiledJoinIndices {
         }
     }
 }
+/// Inputs of the shared gather step: both prepared sides, the gather maps,
+/// and the allocation facts the strategy observed on the way here.
 struct CompiledJoinMaterializationRequest {
     node_id: NodeId,
     execution_strategy: &'static str,
@@ -1450,10 +1582,22 @@ struct CompiledJoinMaterializationRequest {
     filtered_probe_state_bytes: u64,
     expected_output_rows: u64,
     gather_map_bytes: u64,
+    /// Started by the strategy before its size pass, so the operator time
+    /// recorded here spans sizing, indices and the gather.
     timer: Instant,
+    /// `Some` marks a one-shot strategy, which also records the one-shot
+    /// metrics family.
     one_shot_index_bytes: Option<u64>,
 }
 
+/// Gathers the output projection through the indices and records the join
+/// operator metrics.
+///
+/// Both sides and the indices live in a `JoinMaterializationTxn` from here on:
+/// any failure rolls them back, and success releases them when the output
+/// frame is committed. The gather's row count must equal the size pass's
+/// `expected_output_rows`; the debug assertions check that the two cuDF passes
+/// agreed.
 fn materialize_compiled_indices_output(
     execution: &mut BoundedExecutionAttempt<'_>,
     node: &JoinNode,

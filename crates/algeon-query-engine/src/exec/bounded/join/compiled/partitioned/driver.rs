@@ -1,3 +1,22 @@
+//! Partition loop and retry tree shared by the partitioned join strategies.
+//!
+//! A partitioned join hash-partitions both inputs by their keys and joins each
+//! partition pair with one cuDF call supplied by the strategy as the
+//! `materialize_partition` callback. This module owns the loop over partitions,
+//! the retry tree under a retryable resource failure, and the metrics rows
+//! those produce; `hash_equi` and `mixed_keyed` own the per-partition join.
+//!
+//! Retry refines the failed unit of work in place and never re-admits the
+//! attempt. A failure attributed to the probe side bisects the probe rows of
+//! that partition when the join shape permits; a failure attributed to the
+//! build side repartitions the partition pair into two by key hash. Both are
+//! bounded by the policy's attempt count, a row floor derived from
+//! `min_retry_chunk_row_groups`, and a fixed logical partition ceiling. Outputs
+//! are appended in partition order and, within a split, left range before
+//! right range, so the concatenated result order does not depend on which
+//! partitions needed retries. Terminal retry errors carry `retry_action` and
+//! `resume_boundary` facts naming why refinement stopped.
+
 use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
 
 use super::{
@@ -99,12 +118,21 @@ impl Default for PartitionedJoinOutputSummary {
     }
 }
 
+/// Retry bounds read once per run from the attempt's `RetryLimits`.
+/// `min_probe_rows` is the smallest probe range a split may produce.
 #[derive(Clone, Copy)]
 struct PartitionedJoinRetryPolicy {
     max_attempts: usize,
     min_probe_rows: usize,
 }
 
+/// One probe chunk of a streamed partitioned join, partitioned lazily.
+///
+/// The chunk starts as a single row range. When hash-partitioning a range
+/// fails with a retryable resource error, the range is bisected and both
+/// halves are queued in order; the consumer sees the halves as separate
+/// partitioned inputs. The queue holds ranges rather than sliced frames so the
+/// chunk never owns more than one partitioned copy at a time.
 pub(super) struct PartitionedJoinProbeChunk {
     input: BoundedJoinSideFrame,
     // Queue ranges, not allocated children, so a recovered chunk can be
@@ -122,6 +150,14 @@ impl PartitionedJoinProbeChunk {
         self.pending.is_empty()
     }
 
+    /// Hash-partitions the next queued range and returns it with its row and
+    /// byte counts, or `None` once the chunk is drained.
+    ///
+    /// A retryable failure splits the range and retries after the backoff; a
+    /// range at the row floor or past the attempt bound turns the failure into
+    /// a terminal error with `resume_boundary=partitioned_join_probe`. A
+    /// non-retryable error is returned as is. Cancellation is checked before
+    /// each range.
     pub(super) fn next_partitioned(
         &mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -199,6 +235,14 @@ impl PartitionedJoinProbeChunk {
     }
 }
 
+/// One unit of partition work in the retry tree.
+///
+/// `partition` indexes the partitioned sides currently in scope, which after a
+/// repartition are the two-way children rather than the original sides;
+/// `root_partition` stays the original index for error facts and metrics.
+/// `logical_partition_count` is the width the tree would have if every
+/// partition had been split as deep as this one, and it bounds further
+/// repartitioning.
 #[derive(Clone, Copy)]
 struct PartitionedJoinWorkSlice {
     root_partition: usize,
@@ -222,6 +266,14 @@ impl PartitionedJoinOutputSummary {
     }
 }
 
+/// Joins two whole resident inputs partition by partition.
+///
+/// Both inputs are consumed: they are hash-partitioned up front and the
+/// unpartitioned frames are dropped by `hash_partition_join_side`, so from
+/// then on the partitioned copies are the only resident inputs. They are
+/// released on every exit path, after the last partition or at the first
+/// terminal error. Outputs are returned in partition order for the caller to
+/// concatenate.
 pub(super) fn run_partitioned_join_driver<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
@@ -280,6 +332,8 @@ where
     Ok(PartitionedJoinBufferedOutput { outputs, original, summary })
 }
 
+/// Joins partition `partition` of both sides, with the retry tree rooted at
+/// the whole partition. Returns one output per leaf of that tree.
 pub(super) fn materialize_partitioned_join_partition_with_retry<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
@@ -364,6 +418,16 @@ where
     }
 }
 
+/// Chooses the refinement after `work` failed with a retryable resource error.
+///
+/// In order: the attempt bound ends the retry; a probe-side failure on a
+/// shape whose probe rows are independent bisects the probe range; any other
+/// failure repartitions the pair two ways while the logical ceiling and the
+/// row floor allow; otherwise the original error is returned with a
+/// `retry_action` naming the exhausted option. A repartition whose children
+/// fail again on a resource error is reported as `partition_repartition_retry_failed`
+/// so the report distinguishes it from a first failure. Every refinement
+/// waits `backoff_before_retry` first, which also observes cancellation.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -501,6 +565,9 @@ where
     Ok(outputs)
 }
 
+/// Re-partitions the failed slice two ways and joins the children in order.
+/// The repartitioned sides are a second resident copy of this slice only; they
+/// are released after both children, or at the first child failure.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -662,6 +729,10 @@ fn partitioned_join_retry_policy(context: &ExecutionContext) -> PartitionedJoinR
     }
 }
 
+/// Shapes whose probe rows can be joined in two halves with the same result:
+/// each probe row's output depends only on the build partition. A left-built
+/// outer join or a full join would emit its unmatched build rows once per
+/// half.
 fn partitioned_join_probe_split_supported(node: &JoinNode) -> bool {
     matches!(node.spec.join_type, JoinType::Inner)
         || (node.spec.build_side == JoinSide::Right
@@ -719,6 +790,8 @@ fn split_partitioned_join_row_range(
     ))
 }
 
+/// A slice with at most one row on each side cannot be split by hash, and the
+/// logical ceiling stops the tree where initial planning would have stopped.
 fn can_repartition_partitioned_join_work(work: PartitionedJoinWorkSlice) -> bool {
     work.logical_partition_count < PARTITIONED_JOIN_MAX_LOGICAL_PARTITIONS && (work.left.len > 1 || work.right.len > 1)
 }
@@ -741,6 +814,9 @@ fn repartitioned_join_child_work(
     })
 }
 
+/// Only the action and the resume boundary are typed retry facts; the plan,
+/// slice and policy values are attached as plain facts by
+/// `attach_partitioned_join_retry_error`.
 fn partitioned_join_retry_facts(
     _plan: PartitionedJoinDriverPlan<'_>,
     _work: PartitionedJoinWorkSlice,
@@ -772,6 +848,8 @@ fn attach_partitioned_join_retry_error(
         .with_fact_if_absent("min_retry_probe_rows", policy.min_probe_rows)
 }
 
+/// Hash-partitions both inputs by their keys with the plan's partition count.
+/// Either both partitioned sides are returned or neither is retained.
 pub(super) fn partition_join_sides(
     execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
@@ -802,6 +880,11 @@ pub(super) struct PartitionedJoinSides {
     pub(super) right: PartitionedJoinSide,
 }
 
+/// Records the strategy decision row before any partition work. The keys
+/// mirror the reusable hash join's row so reports compare the two;
+/// `probe_reuse_count` is always 1 because a partitioned join never reuses a
+/// build across probes, and `reusable_hash_join_rejected_reason` says why the
+/// planner did not pick the reusable strategy.
 pub(super) fn record_partitioned_join_selection(
     plan: PartitionedJoinDriverPlan<'_>,
     original: PartitionedJoinInputStats,

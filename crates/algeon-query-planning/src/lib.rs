@@ -13,10 +13,10 @@
 //! from whoever read them, through [`source::SourceFooterFacts`] and the
 //! pruning resolvers in [`optimizer`].
 //!
-//! Note that a native-free dependency closure is a structural property, not a
-//! demonstration: this workspace has no build or test lane that runs without a
-//! CUDA toolchain installed, so "builds on a host without RAPIDS" remains
-//! unproven here.
+//! The native-free dependency closure is a structural property checked by that
+//! script. It is the only check: this workspace has no build or test lane that
+//! runs without a CUDA toolchain installed, and whether the crate builds on a
+//! host without RAPIDS remains unverified here.
 
 pub mod admission;
 pub mod backend;

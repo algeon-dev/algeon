@@ -1,3 +1,12 @@
+//! The admission authority a config carries.
+//!
+//! At planning the config holds a `QueryAdmissionSource`, the backend that
+//! will admit the plan. Once an invocation minted its ticket, or a composed
+//! root bound one, the config can hold that `QueryAdmissionTicket` too. Lookup
+//! prefers the ticket of the executing task context over the config's own, so
+//! every fragment of one execution admits under the same ticket whatever its
+//! config carried at planning.
+
 use std::sync::Arc;
 
 use query_runtime::runtime::{ExecutionCancellation, GpuBackendSession};

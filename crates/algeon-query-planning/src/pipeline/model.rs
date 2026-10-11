@@ -17,6 +17,14 @@ use crate::{
 /// boundaries. The capability-first bounded executor consumes it. Task, edge,
 /// barrier, and resource ids are local index spaces owned by one compiled graph
 /// and are validated for topological consistency before use.
+///
+/// [`Self::validate`] owns the structural contract: every id equals its
+/// position; edges and barriers name existing tasks; each resource's producer
+/// lists it as an output and each consumer lists it as an input, with the flow
+/// carried by an edge between them; the task graph is acyclic; every task
+/// other than a source has an incoming edge; a join probe depends on its build;
+/// each barrier dominates its downstream tasks; and only sink-output resources
+/// outlive the sink task.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledPipeline {
     tasks: Vec<PipelineTask>,
@@ -154,6 +162,8 @@ impl ResidentResourceId {
 pub struct PipelineTask {
     id: PipelineTaskId,
     physical: TaskPhysical,
+    /// `None` for tasks compilation adds without a plan node, such as sink
+    /// materialization.
     plan_node: Option<NodeId>,
     input_resources: Vec<ResidentResourceId>,
     output_resources: Vec<ResidentResourceId>,
@@ -354,6 +364,11 @@ impl PipelineTaskKind {
 }
 
 /// A dependency edge between symbolic tasks.
+///
+/// Edges carry scheduling order; resources carry data. A resource that flows
+/// from producer to consumer is listed on the edge between them as well, so a
+/// consumer's inputs can be found from its incoming edges without scanning
+/// every resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineEdge {
     id: PipelineEdgeId,
@@ -436,6 +451,11 @@ impl PipelineEdgeKind {
 }
 
 /// A blocking or materialization boundary that downstream tasks must respect.
+///
+/// A downstream task may start only after every upstream task has completed,
+/// whatever edges connect them. Barriers exist for operators whose output is
+/// complete only at the end (aggregate, sort, join build), where an edge alone
+/// would let a consumer read partial state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineBarrier {
     id: PipelineBarrierId,

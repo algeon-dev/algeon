@@ -64,6 +64,9 @@ use pipeline::execute_bounded_pipeline;
 pub(in crate::exec) use resident::{CommittedPartial, ResidentGpuFrame};
 pub(in crate::exec::bounded) use source_batching_policy::BoundedSourceBatchingPolicy;
 
+/// Entry from `exec` into bounded execution. The cancellation check here is
+/// the last one before the compiled pipeline takes over; later checks sit at
+/// task and chunk boundaries inside it.
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
     admitted: &AdmittedPlan,

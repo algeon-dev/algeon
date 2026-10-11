@@ -9,6 +9,10 @@ use query_runtime::{
 use super::compiled::execute_compiled_pipeline;
 use crate::exec::{ExecutionMetrics, output::QueryOutput};
 
+/// Executes an admitted plan's compiled pipeline. Blocking; the caller is the
+/// attempt's root pool job, and the admitted artifact supplies plan, policy
+/// and pipeline together so execution cannot pair a plan with a pipeline
+/// compiled under another policy.
 pub(in crate::exec) fn execute_bounded_pipeline(
     context: &ExecutionContext,
     admitted: &AdmittedPlan,

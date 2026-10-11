@@ -1,4 +1,18 @@
 //! Native execution context state and query-local runtime controls.
+//!
+//! An `ExecutionContext` is the handle every native operator receives. It is
+//! assembled from the four scopes in `scope`: the device runtime shared by
+//! one device, the query scope (an admitted attempt or a standalone query),
+//! the stream binding the work runs on, and the per-plan overlay. Clones are
+//! cheap and share those scopes; derivation replaces one scope at a time.
+//!
+//! For an admitted context, every acquisition of a runtime, pool, grant, or
+//! stream first checks a `QueryServiceResourceEpoch`. Pool clones, grant
+//! clones, and stream leases retain that epoch, so the service cannot reach
+//! idle while they live and their work fails once the service or the query
+//! handle closes; the cudf runtime only validates it (see `runtime`).
+//! Standalone contexts skip that layer. The admission, cancellation, and
+//! release contracts are in `website/docs/design/admission.mdx`.
 
 use std::sync::Arc;
 
@@ -75,6 +89,10 @@ pub struct ExecutionContext {
     device: Arc<DeviceRuntime>,
 }
 
+/// The deferred-resident phase one plan scope activated from its materialized
+/// inputs. It pins the evidence proven at activation and the grant that owned
+/// the input storage; later executions of the same scope validate against it
+/// in `admitted`.
 #[derive(Debug)]
 pub(super) struct ActivatedDeferredResidentPhase {
     consumer_execution_scope_fingerprint: PlanFingerprint,
@@ -259,6 +277,8 @@ impl RuntimeExecutionObservationLifecycle {
     }
 
     /// Completes this plan or standalone query according to context ownership.
+    /// A snapshot is returned only when a standalone owner sealed the query;
+    /// an admitted attempt's seal belongs to its release path.
     pub fn finish(self, outcome: RuntimeTerminalOutcome) -> Option<SealedRuntimeObservationSnapshot> {
         match self.inner {
             RuntimeExecutionObservationLifecycleInner::Query(lifecycle) => lifecycle.finish(outcome),
@@ -309,6 +329,10 @@ impl ExecutionContext {
         self.with_plan(|plan| plan.query_anchor = Some(anchor))
     }
 
+    /// Takes a counted user of the service epoch, bound to the plan's query
+    /// anchor when the context carries one. `None` for a standalone context.
+    /// Fails with `Cancelled` and the reason `query_service_epoch_closed` or
+    /// `query_handle_released` once either lifetime is closed.
     fn acquire_resource_epoch(&self, operation: &'static str) -> Result<Option<Arc<QueryServiceResourceEpoch>>> {
         let Some(attempt) = self.admitted() else {
             return Ok(None);
@@ -368,6 +392,10 @@ impl ExecutionContext {
         })
     }
 
+    /// The device pool, bound to this context's resource epoch when admitted.
+    /// Jobs submitted through the bound clone fail once the service or the
+    /// query handle closes, and each spawned task retains the epoch; the
+    /// device pool itself outlives any one service.
     pub(crate) fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
         let resource_epoch = self.acquire_resource_epoch("query_engine.runtime.context.gpu_execution_pool")?;
         Ok(match resource_epoch {
@@ -509,6 +537,12 @@ impl ExecutionContext {
         self.device.resident_graph_cache.clone()
     }
 
+    /// Installs the attempt's terminal cleanup on the root stream lease. The
+    /// release path installs it before dropping the root context, so the
+    /// callbacks run once the cleanup thread has synchronized the root stream.
+    /// Returns `false` for a binding other than the root, or when a completion
+    /// was already installed; the release path reports the latter as an
+    /// ownership fault.
     pub(super) fn install_root_stream_cleanup_completion(
         &self,
         before_quiescence: impl FnOnce(StreamCleanupOutcome) + Send + 'static,
@@ -533,6 +567,11 @@ impl ExecutionContext {
     }
 
     /// Fails with a structured cancellation error if the execution was cancelled.
+    ///
+    /// The service epoch, the query epoch, and the cancellation token are
+    /// checked in that order. All three fail with `QueryErrorCode::Cancelled`;
+    /// the `reason` fact names the closed epoch or the elapsed deadline, and a
+    /// caller cancellation carries none.
     pub fn check_cancellation(&self, operation: &'static str) -> Result<()> {
         self.check_service_epoch(operation)?;
         self.cancellation().check(operation)
@@ -560,6 +599,11 @@ impl ExecutionContext {
     }
 
     /// Returns the soft governor grant carried by this context, when present.
+    ///
+    /// The clone is bound to this context's resource epoch. Resident owner
+    /// leases derived from it keep only the service generation (see
+    /// `QueryServiceResourceEpoch::service_generation_only`), because frozen
+    /// residents outlive the attempt.
     pub fn memory_grant(&self) -> Result<Option<MemoryGrant>> {
         let Some(attempt) = self.admitted() else {
             return Ok(None);
@@ -686,6 +730,7 @@ fn validate_runtime_observation_query_id(observation: &RuntimeObservationHandle,
 }
 
 fn validate_runtime_observation_trace_id(observation: &RuntimeObservationHandle, trace_id: &TraceId) -> Result<()> {
+    // A disabled handle records nothing and carries no trace to conflict with.
     if !observation.is_enabled() {
         return Ok(());
     }

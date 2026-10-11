@@ -51,6 +51,11 @@ impl CompiledGpuTaskExecutor<'_> {
         Ok(vec![(output, resource)])
     }
 
+    /// Counts down one scheduled read of a GPU-resident input and drops the
+    /// handle after the last one. The frame returned by that read keeps its
+    /// own alias of the device buffers, so releasing the handle here frees
+    /// nothing a later task still needs; it only lets the caller's input stop
+    /// being pinned by this run.
     fn retire_gpu_input_read(&mut self, input_name: &str) -> Result<()> {
         let remaining = self.remaining_gpu_input_reads.get_mut(input_name).ok_or_else(|| {
             invalid("compiled resident source has no remaining input read").with_fact("input_name", input_name)
@@ -133,12 +138,19 @@ impl CompiledGpuTaskExecutor<'_> {
                 return Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream));
             },
         };
+        // A prefetch starts the read now on a pool worker under an attempt
+        // auxiliary permit and parks it as a pending payload; the consumer
+        // finishes it later. `None` means no permit or budget was free, and
+        // the read stays deferred without error.
         if read.prefetch_eligible
             && let Some(prefetch) =
                 try_start_bounded_join_leaf_local_parquet_source_prefetch(&mut self.execution, &stream)?
         {
             return Ok(CompiledGpuResource::pending_join_leaf_local_parquet_source(prefetch));
         }
+        // A one-chunk leaf with no stages, no sharing and no filter routes
+        // gains nothing from staying deferred; reading it here spares the
+        // consumer a stream it would materialize at once anyway.
         if join_leaf_adjacent_stages == Some(false)
             && !shared
             && stream.chunk_count() <= 1

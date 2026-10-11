@@ -336,6 +336,8 @@ fn install_gpu_coverage_table_function(builder: &mut SessionStateBuilder) {
     builder.table_functions().get_or_insert_with(Default::default).insert(function.name().to_string(), function);
 }
 
+/// Every rule the builder holds, from the optimizer it was given and from the
+/// rules added one by one, so the list installed back is complete.
 fn take_physical_optimizer_rules(builder: &mut SessionStateBuilder) -> PhysicalOptimizerRules {
     let mut rules = builder
         .physical_optimizers()

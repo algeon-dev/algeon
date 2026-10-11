@@ -1,3 +1,21 @@
+//! Lowers a source's `reader_predicate` into the AST the cuDF Parquet reader evaluates.
+//!
+//! The reader uses the predicate for statistics and Bloom-filter row-group pruning and for
+//! filtering decoded rows, so a lowering that differs from the SQL predicate changes which rows
+//! leave the reader. Lowering therefore refuses what it cannot express without changing the result.
+//! Two routes exist:
+//!
+//! - The AST route (`lower_source_reader_ast_expr`) builds an `AstExpression` directly. A literal
+//!   compared with a source column is built at that column's cuDF dtype when it fits.
+//! - The source-aware route (`lower_cudf_source_reader_predicate`) handles predicates that
+//!   reference a `Decimal128` column. A Parquet decimal can be decoded as Decimal32, Decimal64
+//!   or Decimal128 depending on the file, so the literal scalar must be typed from the chunk's
+//!   footer. cuDF builds the AST from a `SourceReaderPredicate`, which is limited to
+//!   column-versus-literal comparisons, IN lists, NOT, AND and OR.
+//!
+//! Column references are positions in the reader's read-column list (`read_column_file_indices`),
+//! not file column indexes. Design owner: `website/docs/design/data-path.mdx`.
+
 use std::sync::Arc;
 
 use cudf::{
@@ -31,6 +49,12 @@ use crate::{
 
 const OP_READER_PREDICATE: &str = "query_engine.local_parquet_source.reader_predicate";
 
+/// Lowers the source's reader predicate for one chunk, or returns `None` when it has none.
+///
+/// Fails with `InvalidPlan` when `reader_predicate_is_supported` rejects the predicate. Planning
+/// validation checks the same condition earlier, so this error means a predicate reached
+/// execution that validation should have refused. A predicate that references a decimal column is
+/// built against `cudf_source` and `cudf_chunk` so its scalars match the chunk's decoded type.
 pub(super) fn lower_source_reader_predicate(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -56,6 +80,12 @@ pub(super) fn lower_source_reader_predicate(
     lower_source_reader_ast_expr(context, source, predicate, None).map(Arc::new).map(Some)
 }
 
+/// Lowers the reader predicate for a batch of chunks read through one cuDF source.
+///
+/// The returned expression is attached once and evaluated for every chunk of the batch. A
+/// decimal predicate is built only if all chunks resolve each predicate column to the same
+/// reader dtype; cuDF fails with a type mismatch otherwise. A predicate with no decimal column
+/// does not depend on the chunks and lowers the same way as for a single chunk.
 pub(super) fn lower_source_reader_batch_predicate(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -108,6 +138,8 @@ fn lower_source_reader_predicate_with_cudf_contract(
     })
 }
 
+/// Maps a cuDF predicate-build failure to a query error. For object-store sources the cuDF error
+/// is not kept as the error source, because its text can contain the object URI.
 fn cudf_reader_predicate_error(
     source: &LocalParquetSource,
     operation: &'static str,
@@ -121,6 +153,12 @@ fn cudf_reader_predicate_error(
     }
 }
 
+/// Lowers one expression node of the AST route.
+///
+/// `literal_target_type` is the dtype a literal at this node should take; it is set only for the
+/// operand of a comparison whose other operand is a source column, and for IN-list values.
+/// Families the reader AST cannot express (string functions, CASE, EXTRACT and so on) fail with
+/// `UnsupportedExpression`.
 fn lower_source_reader_ast_expr(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -154,6 +192,7 @@ fn lower_source_reader_ast_expr(
             AstExpression::unary(AstOperator::Not, is_null)
                 .map_err(|error| cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST IS NOT NULL", error))
         },
+        // Only these three cast targets are lowered.
         Expr::Cast { expr, target_type } => {
             let input = lower_source_reader_ast_expr(context, source, expr, None)?;
             let expression = match target_type {
@@ -258,6 +297,9 @@ fn lower_source_reader_ast_expr(
     }
 }
 
+/// Position of `column` in the reader's read-column list, the index an AST column
+/// reference addresses. Partition and missing columns have no physical column in the file, so a
+/// predicate on them is refused here and nothing is pushed into the reader.
 fn source_reader_column_index(source: &LocalParquetSource, column: &str) -> Result<i32> {
     let Some(SourceColumnRef::File(file_index)) = source.source_column_ref(column) else {
         return Err(QueryError::new(
@@ -287,6 +329,9 @@ fn source_reader_column_index(source: &LocalParquetSource, column: &str) -> Resu
     })
 }
 
+/// Returns the (left, right) literal target dtypes for a binary node: each side's literal takes
+/// the dtype of the other side's source column. AND and OR operands are predicates rather than
+/// values, so they get no target.
 fn source_reader_binary_literal_target_types(
     source: &LocalParquetSource,
     left: &Expr,
@@ -312,6 +357,8 @@ fn source_reader_column_dtype(source: &LocalParquetSource, expr: &Expr) -> Optio
         .and_then(|field| cudf_dtype_from_arrow_type(field.data_type()).ok())
 }
 
+/// Converts the expression into cuDF's source-aware predicate form. Only the shapes in the module
+/// docs convert; anything else, including arithmetic or casts around a column, is refused.
 fn lower_cudf_source_reader_predicate(source: &LocalParquetSource, expr: &Expr) -> Result<CudfSourceReaderPredicate> {
     match expr {
         Expr::Binary { left, op, right, .. } => match op {
@@ -345,6 +392,8 @@ fn lower_cudf_source_reader_predicate(source: &LocalParquetSource, expr: &Expr) 
     }
 }
 
+/// Accepts `column op literal` and `literal op column`; the second form is rewritten by
+/// inverting the operator.
 fn lower_cudf_source_reader_comparison(
     source: &LocalParquetSource,
     left: &Expr,
@@ -423,6 +472,9 @@ fn cudf_source_reader_predicate_column(
     })
 }
 
+/// Signed integers widen to `Int64` and unsigned to `UInt64`; cuDF narrows the value back to the
+/// column's width and fails with `ValueOutOfRange` if it does not fit. Only `Date32` is accepted
+/// among temporal literals.
 fn cudf_source_reader_predicate_literal(expr: &Expr) -> Result<CudfSourceReaderPredicateLiteral> {
     let Expr::Literal(value) = expr else {
         return Err(QueryError::new(
@@ -511,6 +563,8 @@ fn invert_binary_op(op: BinaryOp) -> Result<BinaryOp> {
     }
 }
 
+/// True when the predicate refers to a `Decimal128` column of the source schema; that selects the
+/// source-aware route.
 fn source_reader_predicate_references_decimal_column(source: &LocalParquetSource, expr: &Expr) -> bool {
     reader_predicate_expr_references_decimal_column(expr, |column_name| {
         source
@@ -537,6 +591,7 @@ fn lower_source_reader_ast_operator(op: BinaryOp) -> Result<AstOperator> {
         BinaryOp::LtEq => Ok(AstOperator::LessEqual),
         BinaryOp::Gt => Ok(AstOperator::Greater),
         BinaryOp::GtEq => Ok(AstOperator::GreaterEqual),
+        // The null-aware variants follow SQL three-valued logic (`NULL AND FALSE` is false).
         BinaryOp::And => Ok(AstOperator::NullLogicalAnd),
         BinaryOp::Or => Ok(AstOperator::NullLogicalOr),
         BinaryOp::ShiftLeft | BinaryOp::ShiftRight => Err(QueryError::new(
@@ -548,6 +603,9 @@ fn lower_source_reader_ast_operator(op: BinaryOp) -> Result<AstOperator> {
     }
 }
 
+/// Builds a literal node. Tries the column's dtype first, which keeps both operands of the cuDF
+/// AST comparison in one type, and falls back to the literal's own scalar type when the literal
+/// has no exact representation at the target.
 fn lower_source_reader_ast_literal(
     context: &ExecutionContext,
     value: &LiteralValue,
@@ -586,6 +644,10 @@ fn lower_source_reader_ast_literal(
         .map_err(|error| cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST literal", error))
 }
 
+/// Returns the scalar for `value` at `target_type`, or `None` when the conversion would change the
+/// value. For integer targets that includes a value outside the column's range, so an out-of-range
+/// literal is not wrapped. Decimal targets rescale without loss or fail through
+/// `decimal_scale_error_to_query_error`.
 fn lower_source_reader_ast_literal_with_target(
     context: &ExecutionContext,
     value: &LiteralValue,
@@ -605,6 +667,8 @@ fn lower_source_reader_ast_literal_with_target(
         TypeId::UInt16 => unsigned_literal_as::<u16>(value).map(|value| runtime.scalar(value)).transpose(),
         TypeId::UInt32 => unsigned_literal_as::<u32>(value).map(|value| runtime.scalar(value)).transpose(),
         TypeId::UInt64 => unsigned_literal_as::<u64>(value).map(|value| runtime.scalar(value)).transpose(),
+        // Integer literals reach Float32 only from widths of 32 bits or less; `Int32` goes through
+        // an `as f32` cast, which rounds values above 2^24.
         TypeId::Float32 => match value {
             LiteralValue::Float32(value) => runtime.scalar(*value).map(Some),
             LiteralValue::Int8(value) => runtime.scalar(f32::from(*value)).map(Some),
@@ -681,6 +745,8 @@ fn rescale_decimal_raw_or_query_error(raw: i128, source_scale: i32, target_scale
     reader_predicate_rescale_decimal_raw(raw, source_scale, target_scale).map_err(decimal_scale_error_to_query_error)
 }
 
+/// A literal that cannot be rescaled to the column's decimal scale without loss is refused with
+/// `UnsupportedExpression`. Rounding it would change which rows the reader keeps.
 fn decimal_scale_error_to_query_error(error: ReaderPredicateDecimalScaleError) -> QueryError {
     match error {
         ReaderPredicateDecimalScaleError::ScaleFactorOverflow { exponent } => QueryError::new(

@@ -1,3 +1,17 @@
+//! Join build-side selection.
+//!
+//! The rule matches a keyed inner, left-semi or left-anti join with no reusable
+//! build artifact that a native executor can run with either input as the build.
+//! In the rewrite, `build_side` is set to the input the evidence says is smaller;
+//! the node, its keys and its output projection are otherwise unchanged, so the
+//! edit is in place and every route and advisory survives. As a precondition,
+//! both orientations must classify to an operator form (`classify_join`), because
+//! a left join or a right-building semi join has one executable orientation.
+//! Evidence is consulted in the order [`JoinBuildSideSelectionBasis`] lists:
+//! conservative estimates, the small thresholds, frontend advisories, then a
+//! grouped-aggregate keyset. A conservative estimate is never replaced by an
+//! advisory one. Rejection reasons and the selection basis are report contracts.
+
 use crate::{
     capability::classify_join,
     error::{QueryError, QueryErrorCode, Result},
@@ -344,12 +358,18 @@ fn opposite_side(side: JoinSide) -> JoinSide {
     }
 }
 
+/// Size evidence for one join input.
 #[derive(Debug, Clone, Copy)]
 struct SideEstimate {
+    /// Conservative row estimate, or the left-semi bound when the plan has
+    /// no estimate for the node.
     rows: Option<u64>,
     bytes: Option<u64>,
+    /// Frontend estimate; consulted only when `rows` is unknown on a side.
     advisory_rows: Option<u64>,
     advisory_bytes: Option<u64>,
+    /// Whether every key on this side is a grouped-aggregate key, so the side
+    /// has one row per distinct key value.
     has_grouped_aggregate_keyset: bool,
 }
 
@@ -371,6 +391,11 @@ impl SideEstimate {
     }
 }
 
+/// Row bound for a side the plan has no estimate for: a left-semi or left-anti
+/// join that outputs left columns only emits at most its left input's rows, and
+/// filters, projections, windows and sorts keep that count while a limit cuts
+/// it. The byte variant below stops at windows, which append columns, and at
+/// limits.
 fn bounded_left_semijoin_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
     let node = plan.node(node_id)?;
     match &node.kind {
@@ -425,6 +450,10 @@ fn bounded_left_semijoin_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64>
     }
 }
 
+/// Whether every key on `side` is a group key of an aggregate without grouping
+/// sets, reached through operators that keep the key column intact. Such a side
+/// has one row per distinct key, which is the smallest build a keyed join can
+/// have when no estimate exists.
 fn join_side_keys_are_grouped_aggregate_keyset(plan: &QueryPlan, join: &JoinNode, side: JoinSide) -> bool {
     !join.spec.keys.is_empty()
         && join.spec.keys.iter().all(|key| {
@@ -487,6 +516,8 @@ fn expr_is_grouped_aggregate_key(plan: &QueryPlan, input_id: NodeId, expr: &Expr
     }
 }
 
+/// Position of `column` in the input's schema, or `None` when the name is
+/// absent or duplicated, since a duplicate cannot be followed by name.
 fn resolve_column_field_index(plan: &QueryPlan, input_id: NodeId, column: &ColumnRef) -> Option<usize> {
     let node = plan.node(input_id)?;
     let mut matches = node

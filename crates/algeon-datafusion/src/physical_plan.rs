@@ -1,3 +1,5 @@
+//! The CPU boundary marker for subtrees that must stay on DataFusion.
+
 use std::sync::Arc;
 
 use datafusion::{
@@ -11,6 +13,11 @@ pub(crate) fn cpu_physical_boundary(input: Arc<dyn ExecutionPlan>) -> Arc<dyn Ex
     Arc::new(DataFusionCpuBoundaryExec::new(input))
 }
 
+/// Transparent node marking a subtree native planning leaves on DataFusion.
+///
+/// Metadata table functions place it above their results. Fragment search
+/// stops at it, and coverage reports it as a CPU boundary. Execution delegates
+/// to the input unchanged.
 #[derive(Debug)]
 pub(crate) struct DataFusionCpuBoundaryExec {
     input: Arc<dyn ExecutionPlan>,
@@ -66,6 +73,7 @@ impl ExecutionPlan for DataFusionCpuBoundaryExec {
     }
 }
 
+/// Stable `Name(Child,Child)` rendering of a plan tree for reports.
 pub(crate) fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {
     let children = plan.children();
     if children.is_empty() {

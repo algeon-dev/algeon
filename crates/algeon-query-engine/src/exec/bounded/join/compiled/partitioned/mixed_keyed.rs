@@ -1,3 +1,18 @@
+//! Hash-partitioned mixed join (`PartitionedMixedKeyedResidual`): a keyed join whose residual runs
+//! inside the mixed kernel and whose build or probe side is large.
+//!
+//! The input is two resident prepared sides. This form has no streaming probe, because
+//! `join_probe_streams_chunks` is false for a keyed residual join that does not build its left
+//! side. Both sides are hash-partitioned on the join keys with `partition_join_sides`, and each
+//! partition pair is joined by the mixed sequence of `mixed.rs` (size data, then gather maps, then
+//! the output gather) inside a `JoinMaterializationTxn`. The partition count is the larger of the
+//! byte-based and the row-based count (`partitioned_mixed_join_partition_count`).
+//!
+//! Output has two modes. The eager mode joins every pair through `run_partitioned_join_driver` and
+//! concatenates the outputs. The preserving mode keeps both partitioned sides in a
+//! `PartitionedMixedJoinStreamSource` and joins one partition per pull; the sides stay resident
+//! until the stream drains or is released.
+
 use super::{
     BoundedCompiledJoinMaterializeOutput, BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledMixedJoinCall,
     GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide, KeyedHashJoinStrategyOptions, NodeId,
@@ -55,6 +70,12 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_mix
     )
 }
 
+/// Partitions both sides and joins them, either eagerly or as a lazy per-partition stream.
+///
+/// In the preserving mode the selection and partitioning metrics are recorded here, the join metric
+/// row is written when the stream is exhausted without error, and a failed stream releases the
+/// partitioned sides. In the eager mode the driver records the selection and partition metrics,
+/// and this function writes the join metric row after concatenation.
 fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -125,6 +146,12 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
     Ok(BoundedCompiledJoinMaterializeOutput::Frame(Box::new(output)))
 }
 
+/// Joins one partition pair with the mixed kernel and returns its output with sizing facts.
+///
+/// The pair is owned by a `JoinMaterializationTxn`, and every failure path rolls it back before the
+/// error returns. The size data is consumed by the gather-map step, and its device size is reported
+/// as `mixed_size_data_bytes` for this partition. The driver may call this again for a smaller
+/// range of the same partition after a retryable resource error.
 fn materialize_partitioned_mixed_keyed_residual_join_partition(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -213,6 +240,9 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     })
 }
 
+/// Upper bound on a partition's gathered output: each side's projected columns sized for
+/// `expected_output_rows` rows, summed. The result is `None` when either side has no bound. It is
+/// recorded as `output_reservation_bytes` for observation and reserves nothing.
 fn partitioned_mixed_join_output_upper_bound_bytes(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -242,6 +272,12 @@ fn partitioned_mixed_join_output_upper_bound_bytes(
     Ok(sum_bounds(left_bytes, right_bytes))
 }
 
+/// Producer behind the preserving mode. Each pull joins the next partition under the driver's retry
+/// and yields its output.
+///
+/// The source owns both partitioned sides until `release`. The owning payload calls it after the
+/// stream drains, on early stop and on error; the source also releases at exhaustion and on a
+/// failed partition. The join metric row is written once, at successful exhaustion.
 struct PartitionedMixedJoinStreamSource {
     node_id: NodeId,
     node: JoinNode,

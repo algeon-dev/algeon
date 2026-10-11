@@ -5,6 +5,13 @@ use query_planning::error::Result;
 
 use crate::runtime::ExecutionCancellation;
 
+/// The attempt's cooperative cancellation signal and optional deadline.
+///
+/// All clones, and the `ExecutionCancellation` that native execution receives
+/// through `execution_cancellation`, share one token. `cancel` is
+/// irreversible: it stops the next native boundary from starting work and
+/// leaves already submitted GPU work to settle, so cleanup and the terminal
+/// report still complete.
 #[derive(Debug, Clone)]
 pub struct AttemptCancellation {
     execution: ExecutionCancellation,
@@ -32,6 +39,8 @@ impl AttemptCancellation {
         self.execution.is_expired()
     }
 
+    /// The same token for the native engine's boundary checks; cancelling
+    /// either side cancels both.
     pub fn execution_cancellation(&self) -> ExecutionCancellation {
         self.execution.clone()
     }

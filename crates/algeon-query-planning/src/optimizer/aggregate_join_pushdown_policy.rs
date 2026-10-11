@@ -18,6 +18,10 @@ impl AggregateJoinPushdownPolicy {
     pub(in crate::optimizer) const DEFAULT_UNION_PREAGG_MIN_UNION_TO_DUPLICATED_OTHER_RATIO: u64 = 4;
     pub(in crate::optimizer) const DEFAULT_SIMPLE_INNER_DETAIL_PREAGG_MIN_INPUT_ROWS: u64 = 64_000_000;
 
+    /// Whether distributing a pre-aggregate into a union's branches pays:
+    /// the union itself is large, the other side that each branch re-joins is
+    /// small, and the union outweighs the duplicated other side by the ratio.
+    /// A byte count that overflows refuses the rewrite.
     pub(in crate::optimizer) fn join_union_preaggregate_admitted(
         self,
         known_union_bytes: u64,
@@ -33,6 +37,8 @@ impl AggregateJoinPushdownPolicy {
                 >= duplicated_other_bytes.saturating_mul(self.union_preagg_min_union_to_duplicated_other_ratio)
     }
 
+    /// Whether an inner-join pre-aggregate input is large enough that the
+    /// rule demands evidence of reduction before grouping it.
     pub(in crate::optimizer) fn simple_inner_detail_preaggregate_needs_reduction_evidence(
         self,
         input_rows: u64,

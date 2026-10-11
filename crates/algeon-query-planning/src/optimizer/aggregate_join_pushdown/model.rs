@@ -1,3 +1,6 @@
+//! Options, diagnostics and result types of aggregate-join pushdown. The
+//! rejection reasons are report contracts.
+
 use super::{NativeOptimizerChange, NodeId, QueryPlan};
 
 /// Stable rule name used in optimizer diagnostics.
@@ -93,6 +96,8 @@ pub enum AggregateJoinPushdownRejectedReason {
     LeftSemiAlreadyFiltersFinalGroups,
 }
 
+/// Outcome of one run: the plan to continue with, whether it changed, and one
+/// row per aggregate considered.
 pub(crate) struct AggregateJoinPushdownResult {
     pub(crate) plan: QueryPlan,
     pub(crate) change: NativeOptimizerChange,

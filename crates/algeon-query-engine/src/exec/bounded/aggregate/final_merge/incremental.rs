@@ -1,3 +1,22 @@
+//! Incremental partitioned final merge for a stream of partial aggregates.
+//!
+//! `should_execute_incremental_partitioned_final_aggregate_merge` selects it when the aggregate
+//! capability decision picks the partitioned merge for the final stage and the aggregate has no
+//! grouping sets. The retained merge in `compiled.rs` keeps every partial until the stream ends.
+//! This merge folds partials as they arrive and holds bytes in proportion to the merged state
+//! instead of the input.
+//!
+//! `push` collects raw partials in `pending_raw`. When the next partial would pass the batch byte
+//! threshold, or `MAX_PENDING_PARTIALS` partials are waiting, the batch is concatenated and
+//! hash-partitioned on the final group keys (`partition_pending_raw`), and each partition receives
+//! one slice. Slices wait in `pending[partition]` until `flush_ready_partitions` sees enough bytes,
+//! meaning at least the partition's merged state and the minimum flush size, or the pending count
+//! limit. `flush_partition` then merges the slices into the partition's merged state in
+//! `merged[partition]`. The partition count is fixed from the first batch.
+//!
+//! Because raw slices and merged states differ in column shape for COUNT and AVG, a merge input set
+//! never mixes them. The consumed inputs are released only after the merged output exists.
+
 use std::{
     collections::VecDeque,
     sync::Arc,
@@ -26,6 +45,7 @@ use crate::exec::{
     retry::{RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
 };
 
+/// Raw partials per batch, and pending slices per partition, before a merge is forced.
 const MAX_PENDING_PARTIALS: usize = 16;
 
 /// Whether a compiled aggregate over a partial stream should merge its partials
@@ -85,6 +105,8 @@ pub(in crate::exec::bounded::aggregate) struct CompiledIncrementalPartitionedMer
     merge_time: Duration,
 }
 
+/// Merged state of each non-empty partition, plus the counters that feed the strategy facts. The
+/// partitions are not finalized: AVG state is still a sum and a count.
 pub(in crate::exec::bounded::aggregate) struct IncrementalPartitionStates {
     pub(in crate::exec::bounded::aggregate) partitions: Vec<(usize, CommittedPartial)>,
     pub(in crate::exec::bounded::aggregate) partition_count: usize,
@@ -141,6 +163,9 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         })
     }
 
+    /// Creates a merge for partials that arrive already partitioned by the final group keys, as the
+    /// group-key partitioned source-adjacent aggregate produces them. The key columns are fixed
+    /// here and the partition count by the first `push_aligned` call. No rehash happens.
     pub(in crate::exec::bounded::aggregate) fn new_aligned(
         context: &ExecutionContext,
         node_id: NodeId,
@@ -154,6 +179,9 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         Ok(merge)
     }
 
+    /// Adds a partial that belongs to `partition_index`. A partition count that differs from the
+    /// first call, an index out of range, or a key list that differs from the constructor's is an
+    /// `Internal` error. Empty partials are ignored.
     pub(in crate::exec::bounded::aggregate) fn push_aligned(
         &mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -200,6 +228,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         self.flush_ready_partitions(execution)
     }
 
+    /// Merges everything still pending and returns each non-empty partition's single merged state
+    /// without finalizing it, for `execute_incremental_source_adjacent_final_aggregate_merge`.
     pub(in crate::exec::bounded::aggregate) fn finish_partition_states(
         mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -254,7 +284,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         Ok(())
     }
 
-    /// Merges everything still pending and returns the finalized output.
+    /// Merges everything still pending and returns the finalized output, with the partitions
+    /// concatenated in partition order.
     pub(in crate::exec::bounded::aggregate) fn finish(
         self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -264,6 +295,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         concatenate_partitioned_final_merge_outputs(execution, node_id, frames)
     }
 
+    /// Like `finish`, but returns the partitions as a lazy stream that finalizes one partition per
+    /// pull. The output is never concatenated.
     pub(in crate::exec::bounded::aggregate) fn finish_stream(
         self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -271,6 +304,11 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         self.finish_partitions(execution, true)
     }
 
+    /// Merges everything pending and records the strategy decision and merge counters.
+    ///
+    /// A stream with no partials aggregates an empty input. A single partial that never reached a
+    /// partition needs no merge and goes straight to the projection. Otherwise every partition is
+    /// flushed to one merged state, and the states become the payload's producer.
     fn finish_partitions(
         mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -472,6 +510,10 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         Ok(())
     }
 
+    /// Merges a prefix of one input kind, retrying with a smaller fan-in after a retryable resource
+    /// error until the attempt limit or the minimum fan-in. The inputs stay in place until a merge
+    /// succeeds. On exhaustion the error gains `retry_action`, `resume_boundary`, partition, fan-in
+    /// and attempt facts.
     fn merge_with_fan_in_retry(
         &mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -559,6 +601,9 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
     }
 }
 
+/// Producer that finalizes one merged partition state per pull; the output frames are
+/// partition-sized. `alias` clones the frame handles, and `complete_group_key_state` exposes the
+/// merged states before finalization.
 struct PartitionedFinalAggregateStream {
     node_id: NodeId,
     aggregate: AggregateNode,

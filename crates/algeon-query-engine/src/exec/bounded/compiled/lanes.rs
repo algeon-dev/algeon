@@ -3,6 +3,17 @@
 //! The serial scheduler executes the compiled DAG. Aggregate source chunks
 //! and fused top-k candidates may use auxiliary lanes whose leases stay live
 //! through the resident output handoff.
+//!
+//! The pool contract this module relies on is the one described in
+//! `website/docs/design/gpu-execution.mdx#cuda-streams-and-dependencies`.
+//! The coordinator runs inside the attempt's root `QueryExecution` job and
+//! never leaves it; each execution lane is one attempt auxiliary permit, one
+//! leased service stream and a context derived from both, held for the whole
+//! run. Chunk jobs are submitted as `AttemptWork` blocking work backed by that
+//! permit and may land on any blocking-lane thread, while the lane's stream
+//! stays fixed. Width is the smallest of the route's `lane_capacity()`, the
+//! auxiliary permits free at run start and the work available; fewer than two
+//! lanes means the run executes inline on the coordinator.
 
 use std::sync::Arc;
 
@@ -68,8 +79,15 @@ pub(in crate::exec::bounded) fn is_resident_sort_lane_pipeline(pipeline: &Compil
 /// clones into its `'static` pool closure, so no borrow outlives the
 /// dispatching frame.
 pub struct LaneDispatchSupport {
+    /// The attempt's fork pool. Stays alive here for the run so lane contexts
+    /// can hold aliases into it.
     pub(crate) route: Arc<AttemptStreamProviderRoute>,
+    /// Upper bound on the run's width; the leases taken at run start
+    /// decide the real width.
     pub requested_lanes: usize,
+    /// The attempt root context. Lane jobs are submitted through it and
+    /// cancellation is checked against it; lane work itself runs on contexts
+    /// derived from each lease.
     pub(crate) context: Arc<ExecutionContext>,
     pub(crate) plan: Arc<QueryPlan>,
     pub(crate) policy: PlanningPolicy,
@@ -135,6 +153,9 @@ pub(crate) type AggregateChunkCompletionGate = Arc<dyn Fn(usize, usize, Option<u
 /// this permit for every chunk assigned to that lane.
 #[derive(Clone)]
 struct LaneWorkLease {
+    /// Shared between the run's lease table and every dispatch clone that
+    /// executors hold. The permit and stream return to the attempt when the
+    /// last clone drops, which happens after the sink adopted lane output.
     lease: Arc<AttemptWorkLease>,
 }
 
@@ -187,9 +208,15 @@ pub fn run_resident_lane_borrow(
     } else {
         Vec::new()
     };
+    // A single lane would add a stream, a permit and the sink adoption copy
+    // without any overlap, so the run executes inline instead and returns the
+    // lease to the envelope.
     if lanes.len() < 2 {
         lanes.clear();
     }
+    // `lanes` is declared before `executor`, so the executor (and the dispatch
+    // clones inside it) drops first and the leases last, after
+    // `take_gpu_output` has copied lane-backed columns onto the root runtime.
     let dispatch = AggregateLaneDispatch::new(support, &lanes, observation_scope);
     let mut executor = CompiledGpuTaskExecutor::new(
         &support.context,

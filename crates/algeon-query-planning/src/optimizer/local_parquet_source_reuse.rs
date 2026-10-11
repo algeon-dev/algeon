@@ -1,3 +1,24 @@
+//! Local Parquet source reuse: one superset scan for repeated reads of the
+//! same files.
+//!
+//! The rule matches two or more `LocalParquetSource` nodes over the same files,
+//! row groups and reader contracts that differ in read columns or reader
+//! predicate. In the rewrite, one shared source reads the union of the columns
+//! with no reader predicate; each variant becomes a filter that replays its
+//! predicate, when it had one, and a projection back to the variant's own schema,
+//! so every consumer sees the columns it saw before. Exact duplicates share the
+//! representative source as it is. As a precondition, the variants list files in
+//! the same order and agree on each column's file index and field; partition
+//! columns, missing columns, scan limits and count-star probe sources are outside
+//! the rule. A merged scan that widens a variant is taken only when a known upper
+//! bound on its selected bytes fits `max_variant_selected_bytes`, since widening
+//! reads bytes the variant did not. Facts: the shared source's facts are its
+//! widened schema, a replay filter keeps its input schema, and the projection
+//! derives the variant schema; selected row-group byte diagnostics are cleared
+//! because they described the narrower reads. Dynamic-filter routes are predicted
+//! by running route discovery over a copy, because variants that would receive
+//! different consumer routes cannot share one source.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -122,7 +143,9 @@ pub struct LocalParquetSourceReuseCandidateDiagnostics {
 /// Reasons a repeated local Parquet source group was not reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalParquetSourceReuseRejectedReason {
-    /// All source variants have the exact same scan contract.
+    /// Not produced by the current rule: exact duplicates are reused as one
+    /// source without replay filters and report `applied`. Retained as a
+    /// report value.
     ExactDuplicateSkipped,
     /// The source group uses unsupported source metadata for this conservative pass.
     UnsupportedSourceContract,
@@ -140,6 +163,9 @@ pub(crate) struct LocalParquetSourceReuseResult {
     pub(crate) diagnostics: LocalParquetSourceReuseDiagnostics,
 }
 
+/// Runs the rule once over the plan. Each group of two or more variants gets
+/// one diagnostics row; an `Err` means the rewriter built a node list that
+/// fails the plan invariants.
 pub(crate) fn optimize_local_parquet_source_reuse(
     plan: QueryPlan,
     options: &LocalParquetSourceReuseOptions,
@@ -230,6 +256,8 @@ fn discover_source_reuse_candidates(
         let dynamic_filter_consumer_conflict =
             source_group_has_dynamic_filter_consumer_conflict(&variants, &dynamic_filter_routes_by_source);
 
+        // Check order fixes which reason a group with several defects
+        // reports; the reason strings are report contracts.
         let rejected_reason = if variants.iter().any(|variant| !variant.supported_contract)
             || source_group_has_conflicting_file_order(&variants)
         {
@@ -288,6 +316,9 @@ fn superset_selected_bytes_upper_bound(
         .or_else(|| variants.iter().try_fold(0_u64, |total, variant| total.checked_add(variant.selected_source_bytes?)))
 }
 
+/// Route signatures each source would receive, by source node. Route
+/// discovery runs last in the pass sequence, so the routes are predicted by
+/// running it over a clone of the current plan; the clone is discarded.
 fn dynamic_filter_source_route_signatures(
     plan: &QueryPlan,
     options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
@@ -331,6 +362,9 @@ fn source_group_has_dynamic_filter_consumer_conflict(
     route_sets.any(|route_set| route_set != first)
 }
 
+/// What variants must share to be one group: the same files, each with the
+/// same stable id, resolved contract, decimal reader contract, size and
+/// row-group selection, compared as a sorted set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SourceGroupKey {
     file_keys: Vec<FileGroupKey>,
@@ -346,13 +380,19 @@ struct FileGroupKey {
     row_groups: Option<Vec<usize>>,
 }
 
+/// One source node of a group.
 #[derive(Debug, Clone)]
 struct SourceVariant {
     source_node_id: NodeId,
     source: LocalParquetSource,
     group_key: SourceGroupKey,
+    /// Full scan contract including columns and predicate; variants with one
+    /// exact key are duplicates.
     exact_key: String,
     stable_file_ids: Vec<String>,
+    /// File keys in the source's own order. Variants must agree on it because
+    /// the shared source keeps the representative's file list and the file
+    /// indexes of every variant's columns refer to that order.
     ordered_file_keys: Vec<FileGroupKey>,
     selected_source_bytes: Option<u64>,
     reader_predicate: Option<Expr>,
@@ -394,6 +434,9 @@ fn source_variant(source_node_id: NodeId, source: &LocalParquetSource) -> Option
     })
 }
 
+/// Selected bytes from footer statistics, otherwise the whole file sizes when
+/// no file narrows its row groups; `None` when a row-group selection has no
+/// statistics, since the file size would then overstate the read.
 fn conservative_selected_source_bytes(source: &LocalParquetSource) -> Option<u64> {
     if let Some(bytes) =
         source.diagnostics.selected_row_group_stats.as_ref().and_then(|stats| stats.selected_source_bytes())
@@ -408,6 +451,10 @@ fn conservative_selected_source_bytes(source: &LocalParquetSource) -> Option<u64
     })
 }
 
+/// Whether the rule understands every part of the source's read contract.
+/// Partition and missing columns, scan limits, zero-column and count-star
+/// probe sources, and non-file column references each change what a widened
+/// read would mean and are left to their own sources.
 fn source_contract_supported(source: &LocalParquetSource) -> bool {
     source.scan_limit.is_none()
         && source_output_schema_override_supported(source)
@@ -590,10 +637,13 @@ fn variant_read_columns_match_superset(variant: &SourceVariant, superset_read_co
     variant_columns == superset_columns
 }
 
+/// One applied group: the shared source and how each variant reads it.
 #[derive(Debug, Clone)]
 struct SourceReuseRewrite {
     variants: BTreeMap<NodeId, SourceVariant>,
     shared_source: LocalParquetSource,
+    /// False for exact duplicates, whose predicate the shared source still
+    /// applies itself.
     replay_branch_predicates: bool,
 }
 
@@ -634,6 +684,9 @@ impl SourceReuseRewrite {
         let pure_filter_column_file_indices =
             source_file_indices_for_columns(&file_indices_by_column, &pure_filter_columns);
         let mut files = representative.source.files.clone();
+        // These byte counts described the representative's column roles; the
+        // shared source has different roles, so they are cleared rather than
+        // carried as wrong evidence.
         for file in &mut files {
             file.projected_row_group_compressed_bytes = None;
             file.projected_row_group_uncompressed_bytes = None;
@@ -776,6 +829,9 @@ impl<'a> LocalParquetSourceReuseRewriter<'a> {
     }
 }
 
+/// Rebuilds a reader predicate as a filter predicate. Plan validation admits a
+/// declared `output_type` on a binary expression only for a decimal division,
+/// so every other declared type is dropped and the backend infers it.
 fn branch_replay_predicate(predicate: Expr) -> Expr {
     match predicate {
         Expr::Binary { left, op, right, output_type } => {

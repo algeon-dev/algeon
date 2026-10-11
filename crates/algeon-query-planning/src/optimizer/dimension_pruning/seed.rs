@@ -1,3 +1,18 @@
+//! Mirrors post-aggregate group-key filters onto dimension reader predicates.
+//!
+//! The rule matches a `Filter` conjunct whose columns trace, through renaming
+//! projections, a grouping-only aggregate, the preserved side of an inner or left
+//! join, and sorts, to file columns of one local Parquet source, crossing at
+//! least one aggregate and no node with more than one parent. In the rewrite, the
+//! conjunct, rewritten to source column names, is conjoined onto that source's
+//! reader predicate; the original filter stays in place. The copy changes no
+//! result because a group-key value that fails the filter above the aggregate
+//! fails it below as well, a preserved join side carries its input's own values,
+//! and the filter above still runs. Only conjuncts that crossed an aggregate are
+//! seeded; a filter that reaches a source without one is left to the frontend's
+//! own predicate placement. Sources are refined in place
+//! (`RewrittenNodes::refined_sources`), so routes bound to them survive.
+
 use super::{
     AggregateNode, AnalysisContext, BinaryOp, ColumnRef, Expr, JoinNode, JoinSide, JoinType, LocalParquetSource,
     NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan, RewrittenNodes, SourceColumnRef, SourceNode,
@@ -5,6 +20,9 @@ use super::{
 };
 use crate::error::Result;
 
+/// Seeds every eligible conjunct and reports whether any source changed. A
+/// conjunct already present on the source is not added twice, so a second run
+/// over the same plan reports no change.
 pub(super) fn seed_reader_predicates_from_group_key_filters(
     plan: QueryPlan,
     ctx: AnalysisContext<'_>,
@@ -79,6 +97,8 @@ fn push_filter_conjunct_to_reader_source(
     let Some(node) = plan.node(node_id) else {
         return false;
     };
+    // Past a node with a second parent the conjunct describes only one of the
+    // source's consumers; the flag is sticky so the source is never seeded.
     let crossed_shared_path = crossed_shared_path || parent_counts[node_id.index()] > 1;
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
@@ -187,6 +207,9 @@ fn seed_predicate_is_supported(source: &LocalParquetSource, predicate: &Expr, ct
     source.reader_predicate_is_supported(&combined, ctx)
 }
 
+/// Whether every column the predicate reads is a physical file column. Partition
+/// and missing columns are synthesized after the read and are not visible to the
+/// Parquet reader predicate.
 fn predicate_is_reader_visible(source: &LocalParquetSource, predicate: &Expr) -> bool {
     let columns = predicate_columns(predicate);
     !columns.is_empty()
@@ -221,6 +244,8 @@ fn remap_join_output_predicate(predicate: &Expr, join: &JoinNode) -> Option<(Joi
     let mut side = None;
     let remapped = remap_unqualified_columns(predicate, &mut |column| {
         let output = join.spec.output_projection.iter().find(|output| output.output_name == column.name())?;
+        // A left join's right-side columns are null for unmatched rows, so a
+        // predicate over them cannot be evaluated on the right input alone.
         if join.spec.join_type == JoinType::Left && output.side != JoinSide::Left {
             return None;
         }

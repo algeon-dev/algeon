@@ -1,3 +1,20 @@
+//! Deferred local-Parquet leaves under compiled join and aggregate tasks.
+//!
+//! A join leaf is a Parquet source whose chunks are read while the join runs,
+//! instead of being materialized before the join task starts. This module owns
+//! the stream description (`BoundedJoinLeafLocalParquetSourceStream`), the
+//! stages that stay after decoding because the reader cannot evaluate them,
+//! the dynamic-filter rewrite that narrows row groups from a completed build
+//! side, and the choice between the three read drivers in `stream`,
+//! `read_serial` and `scheduler`.
+//!
+//! Serial reads decode on the coordinator; scheduled reads run as source-read
+//! jobs under the attempt's auxiliary permits and the coordinator blocks in
+//! `finish` for each one. A chunk's source commit is published only after its
+//! consumer accepted the frame on the serial path; the scheduler path commits
+//! at decode time and the retry contract in `stream` says what each consumer
+//! must discard on error.
+
 use std::collections::BTreeSet;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
@@ -46,6 +63,9 @@ mod scheduler;
 mod stages;
 mod stream;
 
+/// Names the join source read as the failing boundary so a resource error
+/// from a leaf read is attributed to the leaf, with the chunk and attempt that
+/// failed, rather than to the join operator above it.
 fn attach_join_source_read_resource_facts(
     error: QueryError,
     node_id: NodeId,
@@ -79,7 +99,16 @@ use stages::*;
 pub(in crate::exec::bounded) use stream::bounded_join_leaf_local_parquet_source_frame_stream;
 use stream::*;
 
-// Deferred Parquet leaf work that compiled join tasks can materialize in chunks.
+/// Deferred Parquet leaf work that compiled join tasks can materialize in chunks.
+///
+/// The value describes work and holds no device memory, so it is cloned
+/// into each compiled task that reads it. `chunks` is the planned chunk
+/// list after any dynamic-filter replan, `stages` run in order on each decoded
+/// chunk, and `reader_dynamic_filters` are the routes already merged into the
+/// source's reader predicate, kept for the metrics that compare reader and
+/// post-decode filtering. `max_attempts` and `min_retry_chunk_row_groups` are
+/// taken from the memory control policy at planning time so retry shape does
+/// not depend on which task reads the leaf.
 #[derive(Clone)]
 pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
     source: LocalParquetSource,
@@ -92,12 +121,18 @@ pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
     min_retry_chunk_row_groups: usize,
 }
 
-// In-flight source read parked until its leaf resource is consumed or cached.
+/// A source read started before its consumer task runs, so a remote fetch
+/// overlaps the build task. The owner must call `finish` or `abandon`; both
+/// join the read, and `abandon` also discards the decoded frame under the
+/// execution attempt so its device bytes are observed as released.
 pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourcePrefetch {
     scheduled: ScheduledLocalParquetRead,
 }
 
-// Post-decode work that stays with the leaf stream because it cannot all be pushed into Parquet.
+/// Post-decode work that stays with the leaf stream because it cannot all be
+/// pushed into the Parquet reader. A `Filter` carries its dynamic filter when
+/// the route was not merged into the reader predicate, so the stage can
+/// report post-decode selectivity for that route.
 #[derive(Clone)]
 enum BoundedJoinLeafSourceStreamStage {
     Filter {
@@ -111,7 +146,8 @@ enum BoundedJoinLeafSourceStreamStage {
     },
 }
 
-// Route/filter pair retained for reader-predicate and post-decode dynamic-filter metrics.
+/// Route and filter pair retained for reader-predicate and post-decode
+/// dynamic-filter metrics.
 #[derive(Clone)]
 struct BoundedJoinLeafSourceStreamDynamicFilterStage {
     route: DynamicFilterRoute,
@@ -251,6 +287,9 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         self
     }
 
+    /// Routes whose `IN` list is too large to become a reader predicate and
+    /// is therefore applied after decoding. Decided before the replan so the
+    /// same set drives both the source rewrite and the stage list.
     pub(in crate::exec::bounded) fn deferred_reader_predicate_routes(
         &self,
         routes: &[DynamicFilterRoute],
@@ -261,6 +300,14 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         deferred_large_small_in_list_reader_predicate_routes(&self.source, &routes, filter_set, options)
     }
 
+    /// Applies dynamic filters produced by a completed build side to this leaf.
+    ///
+    /// Routes that can be reader predicates are merged into the source and
+    /// prune row groups during the replan; the remaining routes become filter
+    /// stages prepended to the existing ones, so they run on the decoded chunk
+    /// before the leaf's own filter. The before and after chunk snapshots feed
+    /// the dynamic-filter source metrics. The leaf's file list never changes,
+    /// only each file's row-group selection.
     pub(in crate::exec::bounded) fn with_dynamic_filters_and_deferred_reader_predicates(
         mut self,
         context: &ExecutionContext,
@@ -357,6 +404,8 @@ impl BoundedJoinLeafLocalParquetSourceStream {
 }
 
 impl BoundedJoinLeafLocalParquetSourcePrefetch {
+    /// Joins the read and commits its chunk. Blocks until the worker returns
+    /// and the frame's readiness event has fired on the device.
     pub(in crate::exec::bounded) fn finish(
         self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -381,6 +430,13 @@ impl BoundedJoinLeafLocalParquetSourcePrefetch {
     }
 }
 
+/// Starts the leaf's read ahead of its consumer task when that is worthwhile.
+///
+/// Only a single-chunk leaf read entirely with remote-direct reads and with
+/// no post-decode stages or reader dynamic filters qualifies: the remote fetch
+/// is the latency worth overlapping, one chunk needs no ordering with later
+/// reads, and dynamic filters would be lost on a read that already started.
+/// `Ok(None)` means no read was started.
 pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source_prefetch(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
@@ -408,6 +464,10 @@ fn join_leaf_source_prefetch_remote_reader_admitted(source: &LocalParquetSource)
             .all(|file| matches!(file.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect))
 }
 
+/// Reads the whole leaf into one resident frame, for consumers that need both
+/// join inputs at once. Chunks are read through the serial or scheduled driver
+/// and concatenated once at the end, so the peak holds every decoded chunk
+/// plus the concatenation.
 pub(in crate::exec::bounded) fn materialize_bounded_join_leaf_local_parquet_source_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
@@ -437,6 +497,12 @@ pub(in crate::exec::bounded) fn materialize_bounded_join_leaf_local_parquet_sour
     concatenate_join_source_chunks(execution, node_id, chunks)
 }
 
+/// Pushes the leaf's chunks to `consume` in chunk order, choosing the driver.
+///
+/// Multi-chunk batches read serially because the scheduler issues one chunk
+/// per job; otherwise a multi-chunk leaf with prefetch enabled uses the
+/// scheduler, which keeps one read ahead of the consumer. Frames `consume`
+/// already accepted stay with the consumer on error.
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
@@ -454,6 +520,8 @@ where
     }
 }
 
+/// Pushes chunks one at a time with the single-chunk split retry and no
+/// batching, for consumers whose retry contract is per chunk.
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_chunks<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
@@ -479,6 +547,12 @@ where
     stream_join_leaf_source_chunks_serial(execution, &stream, &mut consume)
 }
 
+/// Reads every chunk and returns the decoded frames with their device bytes.
+///
+/// The scheduler never splits a chunk, so a retryable chunk error on that
+/// path restarts the whole read serially, where the split retry applies. The
+/// stages run after all chunks are resident; the input frame of each stage is
+/// dropped as its output replaces it.
 fn read_join_leaf_source_stream_chunks(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
@@ -561,6 +635,10 @@ fn read_join_leaf_source_stream_chunks(
     Ok(chunks)
 }
 
+/// The leaf's zero-row frame with the source's execution schema. Reading the
+/// source whose files all have an empty row-group selection yields that frame
+/// through the ordinary source path, so column coercion and missing-column
+/// materialization are not duplicated here.
 fn empty_join_leaf_source_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,

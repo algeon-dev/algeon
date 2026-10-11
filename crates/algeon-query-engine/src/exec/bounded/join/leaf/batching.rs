@@ -1,3 +1,16 @@
+//! Batch planning for join leaf reads.
+//!
+//! Adjacent chunks of one source are grouped into a batch that is read with one call when
+//! their planned read bytes fit a target. Batching is off, giving one chunk per batch, when
+//! the source has partition columns or a reader predicate the reader cannot evaluate; the
+//! reason is recorded on the batch. A multi-chunk batch is never read through the read
+//! scheduler.
+//!
+//! The target depends on the caller. Push loops use the memory-control batching target. The
+//! pull stream and the serial-or-scheduler decision use the stream's planned chunk cap. The
+//! materializing path raises the target for remote-direct sources with no stages, scan limit
+//! or partition columns, to give the concatenation fewer inputs.
+
 use query_planning::{policy::PlanningPolicy, source::ParquetReadStrategy};
 
 use super::{
@@ -7,6 +20,8 @@ use super::{
 };
 use crate::rapids_backend::rapids_analysis_context;
 
+/// Whether the planned-cap batching groups any chunks. A stream that does is read serially,
+/// because the scheduler reads one chunk per job.
 pub(super) fn stream_has_multi_source_batches(
     context: &ExecutionContext,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
@@ -28,6 +43,7 @@ pub(super) fn source_chunk_batches(
     )
 }
 
+/// Batches for the materializing read, whose output is concatenated into one frame.
 pub(super) fn materialized_source_chunk_batches(
     stream: &BoundedJoinLeafLocalParquetSourceStream,
 ) -> Vec<SourceChunkBatch> {
@@ -86,6 +102,7 @@ pub(super) fn source_chunk_batching_reader_predicate_supported(source: &LocalPar
     })
 }
 
+/// The reason batching is off for `source`, or `None` when batching may apply.
 pub(super) fn join_leaf_source_batching_disabled_reason(source: &LocalParquetSource) -> Option<&'static str> {
     if !source_chunk_batching_reader_predicate_supported(source) {
         return Some("source_gate:unsupported_reader_predicate");
@@ -105,6 +122,7 @@ pub(super) fn annotate_join_leaf_source_chunk_batching_reasons(
     annotate_source_chunk_batching_reasons(chunks, join_leaf_source_batching_disabled_reason(source), target_bytes);
 }
 
+/// One batch per chunk, each labeled with the reason batching was off.
 pub(super) fn singleton_source_chunk_batches(chunks: &[SourceChunk], reason: &'static str) -> Vec<SourceChunkBatch> {
     chunks
         .iter()

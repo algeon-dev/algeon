@@ -1,3 +1,17 @@
+//! Compiled final merge over a retained set of partials, and the final-aggregate kernels shared
+//! with the other merge paths.
+//!
+//! `execute_compiled_bounded_final_aggregate_merge` is the entry point. The merge concatenates
+//! partial frames and runs the final aggregate over the concatenation: a groupby on the group keys
+//! (or a global reduction) that sums COUNT partials, merges AVG sum and count, and sums the valid
+//! counts of global SUM, MIN and MAX.
+//!
+//! Partition-wise, each partial is hash-partitioned on the group keys; a group's rows from all
+//! partials then meet in one partition, and the partitions merge independently. Level-wise, groups
+//! of consecutive partials are merged into one partial each, and levels repeat until one partial
+//! remains. A level borrows its inputs, which lets a retryable resource error restart the level
+//! with a smaller fan-in. The partitioned merge consumes each partial as it partitions it.
+
 use std::{collections::VecDeque, time::Duration};
 
 use query_planning::chunk::SourceChunkPlanningPolicy;
@@ -20,6 +34,18 @@ use crate::exec::retry::{
     RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error,
 };
 
+/// Merges all partials of one aggregate into its final output frame.
+///
+/// An empty input runs the single-stage aggregate so the grand-total row is still emitted; a
+/// single partial is only projected; a partitioned merge is used when the capability decision
+/// and the partial sizes call for it; otherwise consecutive partials are merged in groups of
+/// `merge_fan_in`, level by level, and a level's merged partials replace it only after the whole
+/// level succeeds.
+///
+/// A level that fails with a retryable resource error restarts from the level's original partials
+/// with a smaller fan-in, until the attempt limit or the minimum fan-in. The partials of a level
+/// are replaced only after the whole level succeeded; a failed attempt loses nothing. Any other
+/// error returns at once, and the partials still held drop with the call.
 pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -154,6 +180,13 @@ fn should_execute_compiled_partitioned_final_aggregate_merge(
         && partitioned_final_merge_partition_count(context, partials) > 1
 }
 
+/// Hash-partitions each partial on the final group keys, one partial at a time, merges every
+/// non-empty partition's slices and concatenates the merged partitions in partition order.
+///
+/// Because a group's rows share a partition, partitions merge independently. Each partial is
+/// consumed by `partition_final_merge_partial` as it is partitioned. The call records one
+/// final-merge attempt whose fan-in is the largest partition's input count, and one strategy
+/// decision with the partition counts.
 fn execute_compiled_partitioned_final_aggregate_merge(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -250,6 +283,9 @@ fn execute_compiled_partitioned_final_aggregate_merge(
     Ok(merged)
 }
 
+/// Merges one partition's slices under a budget token for
+/// `compiled_partitioned_final_aggregate_merge`, consuming them. The elapsed time is added to the
+/// final-merge time whether the merge succeeds or fails.
 fn execute_compiled_partitioned_final_merge_group(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -353,6 +389,8 @@ pub(super) fn merge_compiled_partitioned_final_aggregate_partial_refs(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
 )]
+/// Consuming counterpart of the borrowed merge: the first partial's frame moves into the
+/// concatenation. The remaining slices are dropped before the final aggregate allocates.
 fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -416,6 +454,9 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
+/// Writes the final-merge strategy decision for a partitioned merge, with the partition count, the
+/// non-empty partition count and the largest partition fan-in. The top-k facts are zeroed, because
+/// this merge does no per-partition pruning; `extra_facts` adds caller-specific entries.
 pub(super) fn record_compiled_partitioned_final_merge_strategy(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -463,6 +504,8 @@ pub(super) fn record_compiled_partitioned_final_merge_strategy(
     );
 }
 
+/// Fan-in of the first merge level: every partial when their sizes sum to no more than the source
+/// chunk byte target, otherwise the longest prefix that fits it, and never fewer than two.
 fn initial_compiled_final_merge_fan_in(context: &ExecutionContext, partials: &[CommittedPartial]) -> usize {
     let threshold_bytes = SourceChunkPlanningPolicy::from(context.memory_control_policy())
         .max_source_chunk_bytes
@@ -492,10 +535,16 @@ fn initial_compiled_final_merge_fan_in(context: &ExecutionContext, partials: &[C
     policy.compiled_final_merge_fan_in(fan_in, partials.len())
 }
 
+/// Size used to group partials: the observed device bytes, with a minimum of one byte per row.
 fn compiled_partial_merge_basis_bytes(partial: &CommittedPartial) -> u64 {
     partial.device_bytes().max(partial.frame.num_rows() as u64)
 }
 
+/// Runs one attempt at a whole merge level with the given fan-in.
+///
+/// `partials` is borrowed. A group of one partial is carried by index instead of copied; the
+/// returned items are enough to build the next level (`commit_compiled_final_merge_level`). A
+/// failed group ends the attempt and drops the groups merged so far.
 fn execute_compiled_final_merge_level_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -532,6 +581,12 @@ fn execute_compiled_final_merge_level_attempt(
     Ok(output)
 }
 
+/// Merges two or more partials into one: concatenates them and runs the final aggregate over the
+/// concatenation, under a budget token for `final_aggregate_merge`.
+///
+/// A failure leaves the borrowed inputs intact for a retry. The folded accumulator in `stream.rs`
+/// also calls it, always with two states. The elapsed time is added to the final-merge time whether
+/// the merge succeeds or fails.
 pub(in crate::exec::bounded::aggregate) fn execute_compiled_final_merge_group_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -612,11 +667,15 @@ fn merge_compiled_final_aggregate_partials(
     )
 }
 
+/// One entry of a merge level's output: a newly merged partial, or the index of a partial from the
+/// previous level that was alone in its group and stays as it is.
 enum CompiledMergeLevelItem {
     Merged(Box<CommittedPartial>),
     Carry { partial_index: usize },
 }
 
+/// Builds the next level from a successful attempt. Carried partials move out of the old level, and
+/// the partials that were merged drop when this call returns.
 fn commit_compiled_final_merge_level(
     partials: Vec<CommittedPartial>,
     level_output: Vec<CompiledMergeLevelItem>,
@@ -677,6 +736,12 @@ pub(in crate::exec::bounded::aggregate) fn normalize_compiled_aggregate_partial(
     Ok(ResidentGpuFrame::with_device_bytes(frame, bytes))
 }
 
+/// Produces the final output from one partial or one merged state.
+///
+/// A lone partial still goes through the final aggregate, which turns raw partial state into the
+/// shape the projection expects, and then through `finalize_compiled_final_aggregate_output`. Empty
+/// grouping sets take the single-stage aggregate instead. The two steps run under separate budget
+/// tokens, `final_aggregate_merge` and `final_aggregate_projection`.
 pub(super) fn execute_compiled_final_aggregate_projection(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -747,6 +812,9 @@ pub(super) fn execute_compiled_final_aggregate_projection(
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }
 
+/// Divides AVG state into the output column when the spec has an AVG, then selects the output
+/// schema's columns, which drops the remaining state columns. `post_stages.rs` performs the same
+/// step for the source-adjacent merge.
 fn finalize_compiled_final_aggregate_output(
     context: &ExecutionContext,
     aggregate: &AggregateNode,
@@ -785,6 +853,8 @@ fn finalize_compiled_final_aggregate_output(
     clippy::too_many_arguments,
     reason = "aggregate state merge preserves its operator occurrence and schema contract"
 )]
+/// Final aggregate over a concatenation of partials. For grouped aggregates it records the
+/// final-merge strategy decision on every call.
 fn execute_compiled_final_aggregate(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -803,6 +873,8 @@ fn execute_compiled_final_aggregate(
     clippy::too_many_arguments,
     reason = "aggregate state merge preserves its operator occurrence and schema contract"
 )]
+/// Same final aggregate without the strategy record. The incremental merge calls it for each of
+/// its many small merges and writes one decision when it finishes.
 fn execute_compiled_final_aggregate_state(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -824,6 +896,13 @@ struct CompiledAggregatePlan<'a> {
     output_schema: &'a ArrowSchemaRef,
 }
 
+/// Runs the aggregate that turns concatenated partial state into merged state.
+///
+/// A global aggregate uses the final global spec and, when it has global final state, keeps the
+/// state schema. A grouped aggregate runs a groupby on the final spec's keys, restores COUNT output
+/// types, and selects the output names. Empty grouping sets fall back to the single-stage aggregate
+/// so the grand-total identity row exists. `record_strategy` writes the default grouped-aggregate
+/// decision for the final-merge stage.
 fn execute_final_aggregate_for_plan(
     context: &ExecutionContext,
     bounded: &CompiledAggregatePlan<'_>,
@@ -848,7 +927,7 @@ fn execute_final_aggregate_for_plan(
 
     // Empty ROLLUP/CUBE/GROUPING SETS still need the grand-total identity row.
     // Regular final-merge groupby over an empty partial drops it. Route through
-    // the full single-stage aggregatemapath, which synthesizes identity rows.
+    // the full single-stage aggregate path, which synthesizes identity rows.
     if bounded.aggregate.spec.grouping_sets.is_some() && input.num_rows() == 0 {
         return execute_aggregate_with_budget(
             context,

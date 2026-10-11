@@ -37,6 +37,8 @@ impl ColumnRef {
     ///
     /// This is the preferred qualifier for binary-input nodes such as joins.
     /// `input` is zero-based and identifies the node input, not a field index.
+    /// Equality and hashing include the qualifier and both names, so a join
+    /// key spelled with a different `display_name` is a different key.
     pub fn input(input: usize, name: impl Into<String>, display_name: impl Into<String>) -> Self {
         Self {
             qualifier: Some(ColumnQualifier::Input { index: input }),
@@ -77,6 +79,11 @@ impl fmt::Display for ColumnRef {
 /// The formatted qualifier is part of expression diagnostics and plan display.
 /// It is not necessarily the field name exposed by downstream schemas; use
 /// [`ColumnRef::display_name`] for that.
+///
+/// Only [`Self::Input`] takes part in resolution: join validation, capability
+/// analysis and the optimizer match `Input { index: 0 | 1 }` to a join side and
+/// treat an unqualified reference as single-input. `Node` and `Relation` are
+/// carried for display and are matched nowhere in this crate.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ColumnQualifier {
     /// Positional input namespace, formatted as `input{index}`.

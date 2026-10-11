@@ -58,6 +58,8 @@ impl AggregateStateContract {
     }
 }
 
+/// The state shape bounded admission may rely on for `spec`, or `None` when the
+/// spec has no mergeable state contract (see [`AggregateStateContract`]).
 pub(crate) fn aggregate_state_contract(spec: &AggregateSpec) -> Option<AggregateStateContract> {
     if spec.grouping_sets.is_some() {
         return None;
@@ -127,6 +129,11 @@ impl AggregateExecutionStrategy {
 /// cardinality probes. This is an expert Rust surface only; keep it out of
 /// server/session/user-facing configuration until the tuning model has a
 /// reviewed production contract.
+///
+/// Thresholds suffixed `_ppm` are ratios of distinct groups to input rows in
+/// parts per million; `_rows`, `_bytes`, `_row_groups`, `_fan_in` and
+/// `_key_columns` are absolute bounds. Zero disables the branch a threshold
+/// guards, which is why [`Self::validate`] accepts it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct AggregateStrategyExecutionOptions {
@@ -401,6 +408,14 @@ impl AggregateStrategyCapabilityDecision {
 }
 
 /// Returns the aggregate-strategy capability decision for an aggregate stage.
+///
+/// Selection order is fixed: partitioned merge when the stage and spec allow
+/// it, otherwise encoded-key partial, otherwise the libcudf groupby default.
+/// Prepared sort groupby is never selected here because it needs grouped key
+/// cardinality the executor measures at runtime; it is always listed among the
+/// rejected candidates, with the shape reason when the shape rules it out and
+/// the runtime-evidence reason otherwise. The `facts` keys and every reason
+/// string are report contracts read by TSV consumers.
 pub fn aggregate_strategy_capability_decision(
     spec: &AggregateSpec,
     input_schema: &Schema,
@@ -504,6 +519,9 @@ pub fn aggregate_strategy_capability_decision(
     AggregateStrategyCapabilityDecision { selected_strategy, rejected_candidates, facts }
 }
 
+/// First shape or stage reason the encoded-key partial path cannot run `spec`,
+/// or `None`. The check order fixes which reason a spec with several defects
+/// reports.
 fn encoded_key_partial_rejected_reason(
     spec: &AggregateSpec,
     input_schema: &Schema,
@@ -547,6 +565,9 @@ fn encoded_key_partial_rejected_reason(
     None
 }
 
+/// First shape or stage reason prepared sort groupby cannot run `spec`, or
+/// `None`. `None` does not select it; the executor still needs runtime
+/// cardinality evidence.
 fn prepared_sort_groupby_rejected_reason(
     spec: &AggregateSpec,
     input_schema: &Schema,
@@ -585,6 +606,7 @@ fn prepared_sort_groupby_rejected_reason(
     None
 }
 
+/// First reason the partitioned merge cannot run `spec` at `stage`, or `None`.
 fn partitioned_merge_rejected_reason(spec: &AggregateSpec, stage: AggregateExecutionStage) -> Option<&'static str> {
     if spec.grouping_sets.is_some() {
         return Some("partitioned_merge_grouping_sets_unsupported");
