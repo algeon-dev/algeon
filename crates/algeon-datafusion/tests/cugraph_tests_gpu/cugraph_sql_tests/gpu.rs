@@ -481,14 +481,18 @@ async fn cugraph_sql_native_required_composes_bipartite_aggregate_edges_and_resu
                     < 1e-12
             );
         }
-        assert!(
-            backend
-                .diagnostics()
-                .unwrap()
-                .ledgers
-                .iter()
-                .all(|ledger| ledger.active_attempts == 0 && ledger.grants.is_empty())
-        );
+        // The report seal precedes the envelope drop that releases ledger capacity.
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let ledgers = backend.diagnostics().unwrap().ledgers;
+                if ledgers.iter().all(|ledger| ledger.active_attempts == 0 && ledger.grants.is_empty()) {
+                    break;
+                }
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("completed PageRank query must release its attempt and immutable grant");
     }
     drop_session_context_on_blocking_thread(ctx).await;
     fs::remove_dir_all(dir).unwrap();

@@ -12,20 +12,22 @@ planning and GPU execution without taking over those application concerns.
 
 ## Dependencies
 
-Use the DataFusion version pinned by Algeon:
+Use the release adapter and its compatible DataFusion dependency range:
 
 ```toml
 [dependencies]
-datafusion = "55.0"
-algeon-datafusion = { path = "../algeon/crates/algeon-datafusion", features = ["cugraph"] }
+algeon-datafusion = { version = "=0.1.0", features = ["cugraph"] }
+datafusion = "55.1"
 futures = "0.3"
 ```
 
-Algeon is currently consumed from the `algeon-datafusion` crate in the repository.
-Clone the repository
-recursively as described in [Building from Source](../build/from-source.md#1-clone-and-initialize-the-repository),
-then point the application at `crates/algeon-datafusion`. Its component crates
-are resolved through the root workspace.
+`datafusion = "55.1"` permits compatible 55.x updates. The Rust adapter version
+is pinned to `0.1.0`; build its native libraries from the matching `v0.1.0`
+source tag. Follow [Use as a Rust dependency](../build/rust-dependency.md) for
+native build order, the external application, and its runtime loader
+configuration. That guide includes a complete async `main` with query result
+checks and backend shutdown. These commands require the release tag and registry
+packages to be available; the installation recipe does not confirm publication.
 
 The `algeon-datafusion` crate has no default features. Add `cugraph` for graph SQL, `cuvs`
 for vector SQL, `cuml` for machine-learning SQL, and `nvml` for optional device

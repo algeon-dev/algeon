@@ -227,6 +227,70 @@ cargo clippy --manifest-path crates/algeon-server/Cargo.toml --bin algeon_server
 
 ## Doctests and build support
 
+The full gate's `docsrs-native-free` phase checks the packaged publication
+closure separately from workspace rustdoc and the `DOCS_RS=1` workspace
+check. `scripts/ci/release_archives.py` reads the existing publication
+allowlist, packages it with explicit adapter features
+`cugraph,cuvs,cuml,server,nvml`, and checks normalized manifests, exact
+first-party dependency versions, docs.rs metadata and required native build
+inputs. `test-hooks` and `qualification` are excluded from release and
+docs.rs feature selections.
+
+Archives, extracted sources, `release.json`, `[patch.crates-io]` declarations,
+the source `Cargo.lock` and preparation logs stay outside the checkout.
+`scripts/ci/check_docsrs_native_free.sh` documents each extracted crate with
+its own docs.rs metadata features. It uses an isolated cwd and Cargo home,
+shares only registry/Git download caches and replaces native/CUDA selectors
+with nonexistent paths. It fetches every dependency before rustdoc, then
+runs with `DOCS_RS=1`, `--locked --offline`, four build jobs and strict
+warnings. Cargo JSON messages identify the sys-crate build-script outputs
+used by this invocation, including cached executions. Every sys crate must
+report empty native link libraries, search paths and linker directives;
+`logs/docsrs/native-free-evidence.json` retains the selectors and output paths.
+The existing `DOCS_RS` branches return before native discovery or builds.
+This local check restricts Cargo dependency access with offline mode; it
+does not hide host filesystem paths or enforce a network sandbox for build
+scripts. The hosted docs.rs sandbox remains a separate publication check.
+
+```bash
+python3 scripts/ci/release_archives.py --output /tmp/algeon-release
+bash scripts/ci/check_docsrs_native_free.sh --archives /tmp/algeon-release
+python3 scripts/ci/tests/check_release_archives_tests.py
+```
+
+Use `--require-clean` on archive preparation for a frozen release source.
+The default permits dirty development sources. An external `--target-dir`
+on the docs.rs script reuses dependency compilation across preparations.
+
+The separate release gate is `scripts/ci/check_registry_consumer.sh`, which
+invokes `scripts/ci/registry_consumer.py`. It copies the documented application
+fixture outside the checkout and patches only the extracted archives. Its
+default matrix covers the adapter's default, each algorithm family, the
+combined algorithm stack, `server`, `nvml` and all release features in both
+fresh-resolution and source-lockfile lanes. Builds run offline after fetch;
+runtime checks use the executable's ELF interpreter to verify selected
+library identities and execute queries with
+result assertions from another cwd. Native discovery cases use temporary
+prefixes without rebuilding installed libraries. This gate requires the
+existing production native installs and a GPU; it is invoked separately
+from the full pre-merge gate.
+
+```bash
+bash scripts/ci/check_registry_consumer.sh --archives /tmp/algeon-release \
+  --native-root "$PWD/target/native" --cuda-home /usr/local/cuda \
+  --cc /usr/bin/gcc-14 --cxx /usr/bin/g++-14 \
+  --output /tmp/algeon-registry-validation
+python3 scripts/ci/tests/check_registry_consumer_tests.py
+```
+
+The registry command retains toolchain, feature, resolution, build, loader
+and execution evidence under its output directory. An external `--target-dir`
+reuses compilation across preparations. `--features` and `--lane`
+select focused reruns; only the default complete matrix establishes the
+full archive consumer contract. Successful local patches establish archive
+behavior before publication. A registry download without patches and the
+hosted docs.rs result remain post-publication checks.
+
 Doctest commands and loader requirements are in [Tests](../website/docs/build/tests.md#doctests).
 
 Rustdoc is always strict. The harness appends `-D warnings` after any

@@ -11,13 +11,15 @@ use std::{
 use query_planning::policy::PlanningPolicy;
 use query_planning::{correlation::TraceId, error::QueryErrorCode};
 
+#[cfg(any(test, feature = "test-hooks"))]
+use super::RuntimeTerminalOutcome;
 use super::{
     AdmissionRequestId, AdmittedAttempt, AggregateStrategyExecutionOptions, AttemptCapabilityEvidence,
     ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool, MemoryControlPolicy, PlanScope,
     QueryError, QueryExecutionConfig, QueryId, QueryService, QueryServiceInner, QueueBounds, Result,
-    RuntimeTerminalOutcome, SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceSchedulerPolicy,
-    StatisticalAggregateExecutionMode, StreamBinding, memory_control_policy_for_grant,
-    resources::QueryServiceResources, validate_service_stream_pool_device,
+    SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
+    StreamBinding, memory_control_policy_for_grant, resources::QueryServiceResources,
+    validate_service_stream_pool_device,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::attempt::AttemptOwner;

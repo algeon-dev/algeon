@@ -382,17 +382,21 @@ def main() -> int:
         assert_manifest_contract()
         with tempfile.TemporaryDirectory(prefix="algeon-datafusion-build-support-") as temporary:
             temporary_path = Path(temporary)
+            support_environment = os.environ.copy()
+            support_environment["CARGO_PKG_VERSION"] = load_manifest("Cargo.toml")["workspace"]["package"]["version"]
             support_rlib = temporary_path / "librapids_build_support.rlib"
             compile_support = run(
                 [
                     "rustc", "--edition=2024", "-D", "warnings", "--crate-type=lib",
                     "--crate-name", "rapids_build_support", str(SUPPORT), "-o", str(support_rlib),
-                ]
+                ],
+                env=support_environment,
             )
             require_success(compile_support, "build-support library compilation")
             policy_binary = temporary_path / "rapids-policy-tests"
             compile_policy = run(
-                ["rustc", "--edition=2024", "-D", "warnings", "--test", str(SUPPORT), "-o", str(policy_binary)]
+                ["rustc", "--edition=2024", "-D", "warnings", "--test", str(SUPPORT), "-o", str(policy_binary)],
+                env=support_environment,
             )
             require_success(compile_policy, "build-support policy test compilation")
             listed = run([str(policy_binary), "--list", "--format=terse"])

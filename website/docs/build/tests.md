@@ -36,10 +36,14 @@ gate exports this same value for every phase, replacing any caller value:
 export LD_LIBRARY_PATH="$PWD/target/native/cudf-install/lib:$PWD/target/native/cuvs-install/lib:$PWD/target/native/cugraph-install/lib:$PWD/target/native/cuml-install/lib:$PWD/target/native/cugraph-build"
 ```
 
-The installed cuGraph and cuML libraries name their cuVS and RMM prefixes in
-their RUNPATH, so Cargo-built binaries resolve them without this export. The
-gate still sets it for every phase so that doctest binaries, which carry no
-rpath, load the same libraries.
+Repository executables receive native rpath arguments from their own package
+build scripts. Installed cuGraph and cuML libraries also name their cuVS and
+RMM dependency prefixes in RUNPATH. The gate exports the loader directories for
+all phases, including doctests whose binaries carry no native rpath.
+A downstream application does not inherit dependency build-script rpath
+arguments. Its build and direct execution are covered separately by the
+[Rust dependency quickstart](./rust-dependency.md#4-build-and-run-the-application)
+and the [registry consumer check](https://github.com/algeon-dev/algeon/blob/main/scripts/ci/check_registry_consumer.sh).
 
 ## Development checks
 
@@ -125,16 +129,38 @@ completes:
 | policy | rustfmt, native-source verification, checked bindings, and the policy self-test scripts | Independent, in parallel |
 | tests | `cargo nextest run -P gate` reusing that run's Cargo and binaries metadata, then doctests through the GPU lock wrapper | Doctests start after nextest finishes; a failed test build skips nextest execution and still runs doctests |
 | static | clippy with `-D warnings`, current-run orphan-source verification, strict rustdoc, then the public API snapshots and application documentation check | In sequence; Cargo and API checks use `nice -n 10` |
-| hygiene | seven feature-isolation shards and their union check, the shipped-server clippy lane, `msrv-check`, a docs.rs native-free compile check, the hidden-API consumer probe, and the component-package check | Independent after the test build; compilation uses `nice -n 10` and separate target directories |
+| hygiene | seven feature-isolation shards and their union check, shipped-server clippy, `msrv`, the `DOCS_RS=1` workspace compile check, `docsrs-native-free` rustdoc over the packaged publication closure, the API consumer probe and publication policy | Independent after the test build; compilation uses `nice -n 10` and separate target directories |
 
 - A failed phase in any group fails the gate.
 - Nextest reuses the test build's Cargo and binaries metadata, which fix the
   same full-workspace, all-features graph as `cargo nt`.
-- Every other Cargo phase uses `--workspace --all-features`. Feature-isolation
-  and the shipped-server clippy lane are the exceptions
-  ([Feature coverage](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#feature-coverage)); the feature-off
-  clippy supplement is described under
+- Workspace Cargo phases normally use `--workspace --all-features`.
+  Feature-isolation and shipped-server clippy use their defined feature
+  selections ([Feature coverage](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#feature-coverage)).
+  `docsrs-native-free` extracts the release archives and documents each crate
+  separately with its own docs.rs metadata features, an isolated native-free
+  environment and strict warnings. The
+  [packaged release checks](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#doctests-and-build-support)
+  define that archive lane; the feature-off clippy supplement is described under
   [Layout checks](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#layout-checks).
+
+The full pre-merge gate includes packaged native-free rustdoc. The native
+archive consumer gate runs separately:
+
+```bash
+bash scripts/ci/check_registry_consumer.sh
+```
+
+It requires the production native installs and a GPU. Its complete matrix
+builds external applications against extracted release archives, checks loader
+resolution and directly executes result assertions from another working
+directory. See the
+[packaged release checks](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#doctests-and-build-support)
+for native/toolchain selectors, evidence output and the fresh-resolution and
+source-lockfile lanes. A focused `--features` or `--lane` rerun covers that
+selection; the default complete matrix establishes the archive consumer
+contract. Registry downloads without patches and hosted docs.rs results remain
+post-publication checks.
 
 ### Passing run
 

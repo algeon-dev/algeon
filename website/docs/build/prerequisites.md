@@ -111,10 +111,32 @@ Native binaries target the build GPU by default. When they must run on a
 different GPU, choose the architecture list before the first native build as
 described in [Building from Source](./from-source.md#choosing-cuda-architectures).
 
+## Registry application build environment
+
+An application using `algeon-datafusion` from crates.io still needs the
+[feature-selected native installations](./rust-dependency.md#2-build-the-required-native-libraries),
+a CUDA toolkit and a compatible host toolchain. The `cuvs` dependency, also
+required by `cugraph` and `cuml`, uses CMake package discovery and compiles a C
+ABI probe. cuGraph discovery uses `readelf` and `ldd`; install binutils and the
+Linux loader tools. The safe cuGraph crate compiles a C++20 shim through `cc`,
+using `CXX` and the installed cuGraph, cuDF/RMM and CUDA headers. Preserve the
+`include/` trees when staging native install prefixes.
+
+Registry consumers use the installed cuDF, cuGraph and cuML shims and checked-in
+FFI bindings. They do not rebuild those RAPIDS libraries or run bindgen. Stable
+Rust at or above the MSRV (1.95) is sufficient; nightly Rust and repository test
+runners are required only for contributor checks.
+
+The repository's `.cargo/config.toml` applies to Cargo commands run within the
+checkout. An external application's CPU target and linker come from its own
+Cargo configuration. Configure them for the hosts that will execute that
+application; the repository's x86-64-v4 setting is not carried by registry
+packages.
+
 ## Rust toolchain and test runner
 
-Readers who only run the server need stable Rust; the rest of this section
-is for running the validation gate.
+Readers who only run the server or embed the library need stable Rust; the rest
+of this section is for running the validation gate.
 
 Install Rust with the [official Rustup instructions](https://rustup.rs/). The
 workspace declares its MSRV in `Cargo.toml` (currently Rust 1.95); nightly is

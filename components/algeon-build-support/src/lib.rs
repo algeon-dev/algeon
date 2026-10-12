@@ -103,16 +103,77 @@ impl fmt::Display for MissingNative {
         writeln!(formatter)?;
         writeln!(formatter, "Algeon links against RAPIDS native libraries you build from the repository:")?;
         writeln!(formatter)?;
-        writeln!(formatter, "  1. git clone --recursive https://github.com/algeon-dev/algeon")?;
-        writeln!(formatter, "  2. bash {}", self.build_script)?;
-        writeln!(formatter, "  3. export ALGEON_NATIVE_DIR=<repo>/target/native")?;
+        writeln!(
+            formatter,
+            "  git clone --branch v{} --recurse-submodules https://github.com/algeon-dev/algeon algeon",
+            env!("CARGO_PKG_VERSION")
+        )?;
+        writeln!(formatter, "  cd algeon")?;
+        writeln!(formatter, "  git submodule update --init --recursive")?;
+        write!(formatter, "{}", native_rebuild_commands(self.build_script))?;
+        writeln!(formatter, "  export ALGEON_NATIVE_DIR=\"$PWD/target/native\"")?;
         writeln!(formatter)?;
         writeln!(formatter, "Searched:")?;
         for search in &self.searches {
             writeln!(formatter, "  {:<68} ({})", search.candidate, search.state)?;
         }
-        write!(formatter, "\nDocs: https://algeon.dev/docs/build/from-source")
+        write!(formatter, "\nDocs: https://algeon.dev/build/from-source")
     }
+}
+
+fn native_rebuild_commands(build_script: &str) -> String {
+    let mut commands = String::new();
+    if matches!(
+        build_script,
+        "scripts/build/build_libcuvs.sh" | "scripts/build/build_libcugraph.sh" | "scripts/build/build_libcuml.sh"
+    ) {
+        commands.push_str("  bash scripts/build/build_libcudf.sh\n");
+    }
+    if matches!(build_script, "scripts/build/build_libcugraph.sh" | "scripts/build/build_libcuml.sh") {
+        commands.push_str("  bash scripts/build/build_libcuvs.sh\n");
+    }
+    commands.push_str(&format!("  bash {build_script}\n"));
+    commands
+}
+
+fn native_prefix(component: &NativeComponent, manifest_dir: &Path, env: &dyn Fn(&str) -> Option<OsString>) -> PathBuf {
+    component
+        .override_env
+        .and_then(env)
+        .map(PathBuf::from)
+        .or_else(|| env(ALGEON_NATIVE_DIR_ENV).map(|root| PathBuf::from(root).join(component.install_dir_name)))
+        .unwrap_or_else(|| manifest_dir.join("../../../target/native").join(component.install_dir_name))
+}
+
+/// Resolve and check a companion native install. An explicit component
+/// selector takes precedence over `ALGEON_NATIVE_DIR`, followed by the
+/// checkout's `target/native` prefix. An incomplete selected prefix fails
+/// instead of falling back to another install.
+pub fn resolve_companion_prefix(
+    component: &NativeComponent,
+    manifest_dir: &Path,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<PathBuf, MissingNative> {
+    let prefix = native_prefix(component, manifest_dir, env);
+    if prefix.join(component.required_library).is_file() {
+        return Ok(prefix);
+    }
+    let selector = component
+        .override_env
+        .filter(|name| env(name).is_some())
+        .or_else(|| env(ALGEON_NATIVE_DIR_ENV).is_some().then_some(ALGEON_NATIVE_DIR_ENV));
+    Err(MissingNative {
+        crate_name: component.crate_name,
+        required_library: component.required_library,
+        build_script: component.build_script,
+        searches: vec![NativeSearch {
+            candidate: prefix.join(component.required_library).display().to_string(),
+            state: selector.map_or_else(
+                || "checkout prefix; library not found".to_owned(),
+                |name| format!("{name} selected prefix {}; library not found", prefix.display()),
+            ),
+        }],
+    })
 }
 
 fn missing_search(component: &NativeComponent, searches: Vec<NativeSearch>) -> NativeLinking {
@@ -144,8 +205,8 @@ pub fn resolve_native_linking(
     let mut searches = Vec::new();
     if let Some(name) = component.override_env {
         match env(name) {
-            Some(value) => {
-                let prefix = PathBuf::from(value);
+            Some(_) => {
+                let prefix = native_prefix(component, manifest_dir, env);
                 let required = prefix.join(component.required_library);
                 if required.is_file() {
                     return NativeLinking::Prebuilt(prefix);
@@ -166,7 +227,7 @@ pub fn resolve_native_linking(
     match env(ALGEON_NATIVE_DIR_ENV) {
         Some(value) => {
             let native_root = PathBuf::from(value);
-            let prefix = native_root.join(component.install_dir_name);
+            let prefix = native_prefix(component, manifest_dir, env);
             let required = prefix.join(component.required_library);
             if required.is_file() {
                 return NativeLinking::Prebuilt(prefix);
@@ -194,7 +255,7 @@ pub fn resolve_native_linking(
         });
     }
 
-    let workspace_prefix = manifest_dir.join("../../..").join("target/native").join(component.install_dir_name);
+    let workspace_prefix = native_prefix(component, manifest_dir, env);
     let required = workspace_prefix.join(component.required_library);
     if required.is_file() {
         return NativeLinking::Prebuilt(workspace_prefix);
@@ -218,21 +279,23 @@ pub fn verify_prebuilt_crate_version(
     expected: &str,
 ) -> Result<(), String> {
     let marker = prefix.join(marker_relative);
+    let rebuild = format!(
+        "Rebuild them from the matching tag:\n  cd <repo>\n  git checkout v{expected}\n  git submodule update --init --recursive\n{}\nDocs: https://algeon.dev/build/from-source",
+        native_rebuild_commands(component.build_script)
+    );
     let installed = std::fs::read_to_string(&marker).map_err(|error| {
         format!(
-            "{} {expected}: the prebuilt native artifacts under {} have no readable {marker_relative}: {error}.\n\nRebuild them from the matching tag:\n  git -C <repo> checkout v{expected} && bash {}",
+            "{} {expected}: the prebuilt native artifacts under {} have no readable {marker_relative}: {error}.\n\n{rebuild}",
             component.crate_name,
-            prefix.display(),
-            component.build_script
+            prefix.display()
         )
     })?;
     let installed = installed.trim();
     if installed != expected {
         return Err(format!(
-            "{} {expected}: the prebuilt native artifacts under {} were built for crate version {installed} ({marker_relative}).\n\nRebuild them from the matching tag:\n  git -C <repo> checkout v{expected} && bash {}",
+            "{} {expected}: the prebuilt native artifacts under {} were built for crate version {installed} ({marker_relative}).\n\n{rebuild}",
             component.crate_name,
-            prefix.display(),
-            component.build_script
+            prefix.display()
         ));
     }
     Ok(())
@@ -1403,23 +1466,72 @@ mod tests {
         assert!(diagnostic.contains("cudf-sys: no usable libcudf_rust.so"));
         assert!(diagnostic.contains("CUDF_INSTALL_DIR set to"));
         assert!(diagnostic.contains("bash scripts/build/build_libcudf.sh"));
-        assert!(diagnostic.contains("https://algeon.dev/docs/build/from-source"));
+        assert!(
+            diagnostic.contains(&format!("git clone --branch v{} --recurse-submodules", env!("CARGO_PKG_VERSION")))
+        );
+        assert!(diagnostic.contains("cd algeon\n  git submodule update --init --recursive\n"));
+        assert!(diagnostic.contains("https://algeon.dev/build/from-source"));
     }
 
     #[test]
-    fn prebuilt_crate_version_mismatch_names_both_versions_and_rebuild_command() {
+    fn companion_prefix_selection_rejects_incomplete_overrides_and_native_roots() {
+        let test_dir = TestDir::new("companion-prefix");
+        let manifest = test_dir.path().join("components/cudf/algeon-cudf-sys");
+        let native_root = test_dir.path().join("external-native");
+        let override_prefix = test_dir.path().join("override");
+        let checkout_prefix = manifest.join("../../../target/native/cudf-install");
+        for prefix in [&override_prefix, &native_root.join("cudf-install"), &checkout_prefix] {
+            std::fs::create_dir_all(prefix.join("lib")).unwrap();
+            std::fs::write(prefix.join(TEST_COMPONENT.required_library), b"companion").unwrap();
+        }
+        let selected = |name: &str| match name {
+            "CUDF_INSTALL_DIR" => Some(override_prefix.clone().into_os_string()),
+            ALGEON_NATIVE_DIR_ENV => Some(native_root.clone().into_os_string()),
+            _ => None,
+        };
+        assert_eq!(resolve_companion_prefix(&TEST_COMPONENT, &manifest, &selected).unwrap(), override_prefix);
+        std::fs::remove_file(override_prefix.join(TEST_COMPONENT.required_library)).unwrap();
+        let diagnostic = resolve_companion_prefix(&TEST_COMPONENT, &manifest, &selected).unwrap_err().to_string();
+        assert!(diagnostic.contains(&override_prefix.display().to_string()));
+        assert!(diagnostic.contains("CUDF_INSTALL_DIR selected prefix"));
+        assert!(diagnostic.contains("bash scripts/build/build_libcudf.sh"));
+
+        let root_only = |name: &str| (name == ALGEON_NATIVE_DIR_ENV).then(|| native_root.clone().into_os_string());
+        let native_prefix = native_root.join("cudf-install");
+        assert_eq!(resolve_companion_prefix(&TEST_COMPONENT, &manifest, &root_only).unwrap(), native_prefix);
+        std::fs::remove_file(native_prefix.join(TEST_COMPONENT.required_library)).unwrap();
+        let diagnostic = resolve_companion_prefix(&TEST_COMPONENT, &manifest, &root_only).unwrap_err().to_string();
+        assert!(diagnostic.contains(&native_prefix.display().to_string()));
+        assert!(diagnostic.contains("ALGEON_NATIVE_DIR selected prefix"));
+        assert_eq!(resolve_companion_prefix(&TEST_COMPONENT, &manifest, &|_| None).unwrap(), checkout_prefix);
+    }
+
+    #[test]
+    fn prebuilt_crate_version_checks_missing_mismatching_and_matching_markers() {
         let test_dir = TestDir::new("native-version-mismatch");
-        let marker = test_dir.path().join("share/cudf_rust/crate-version");
+        let component = NativeComponent {
+            crate_name: "algeon-cuml-sys",
+            build_script: "scripts/build/build_libcuml.sh",
+            ..TEST_COMPONENT
+        };
+        let marker_relative = "share/algeon-cuml/crate-version";
+        let missing = verify_prebuilt_crate_version(&component, test_dir.path(), marker_relative, "0.1.0").unwrap_err();
+        assert!(missing.contains("algeon-cuml-sys 0.1.0"));
+        assert!(missing.contains("no readable share/algeon-cuml/crate-version"));
+        let marker = test_dir.path().join(marker_relative);
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(&marker, "0.0.9\n").unwrap();
 
-        let diagnostic =
-            verify_prebuilt_crate_version(&TEST_COMPONENT, test_dir.path(), "share/cudf_rust/crate-version", "0.1.0")
-                .expect_err("mismatched native artifacts must be rejected");
+        let diagnostic = verify_prebuilt_crate_version(&component, test_dir.path(), marker_relative, "0.1.0")
+            .expect_err("mismatched native artifacts must be rejected");
 
-        assert!(diagnostic.contains("cudf-sys 0.1.0"));
+        assert!(diagnostic.contains("algeon-cuml-sys 0.1.0"));
         assert!(diagnostic.contains("built for crate version 0.0.9"));
-        assert!(diagnostic.contains("checkout v0.1.0 && bash scripts/build/build_libcudf.sh"));
+        let repair = "cd <repo>\n  git checkout v0.1.0\n  git submodule update --init --recursive\n  bash scripts/build/build_libcudf.sh\n  bash scripts/build/build_libcuvs.sh\n  bash scripts/build/build_libcuml.sh";
+        assert!(missing.contains(repair));
+        assert!(diagnostic.contains(repair));
+        std::fs::write(marker, "0.1.0\n").unwrap();
+        verify_prebuilt_crate_version(&component, test_dir.path(), marker_relative, "0.1.0").unwrap();
     }
 
     #[test]
