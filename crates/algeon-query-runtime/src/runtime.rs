@@ -66,6 +66,7 @@ pub use context::{ExecutionCancellation, ExecutionContext};
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use context::{RuntimeObservationBuildError, RuntimeObservedExecutionContext, StandaloneConfig};
+pub use cudf::io::{KvikioCompatMode, KvikioProcessConfig};
 pub use execution_policy::{MemoryResourcePolicy, SourceSchedulerPolicy};
 pub(crate) use gpu::{AlgeonGpuInventory, DeviceContext, DeviceLedger, DeviceRegistry, MemoryGrant};
 pub use gpu::{

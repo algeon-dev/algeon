@@ -255,6 +255,7 @@ impl FlightSqlServerBuilder {
         effective_config.native_optimizer_config = backend.optimizer_config().clone();
         log_server_config_snapshot(&effective_config, self.sources.as_ref(), active_logical_capture_budget_bytes);
         log_device_startup_records(&backend, self.sources.as_ref());
+        log_kvikio_process_config(&backend);
         warn_if_cugraph_built_but_disabled(&effective_config);
 
         let admission_init_start = Instant::now();
@@ -990,6 +991,22 @@ fn log_device_startup_records(backend: &AlgeonGpuBackend, sources: Option<&Confi
             profile_defaulted = sources.is_some_and(ConfigSources::device_profiles_defaulted),
             "GPU device ready for admission"
         );
+    }
+}
+
+/// One startup line naming the KvikIO settings every source read in this
+/// process uses, so a capture can be attributed to them.
+fn log_kvikio_process_config(backend: &AlgeonGpuBackend) {
+    match backend.kvikio_process_config() {
+        Some(config) => tracing::info!(
+            kvikio_compat_mode = config.compat_mode.as_str(),
+            kvikio_threads = config.thread_count,
+            kvikio_task_size_bytes = config.task_size_bytes,
+            "source I/O ready"
+        ),
+        None => {
+            tracing::info!("source I/O ready; this cuDF build has no KvikIO support, so libcudf's own settings apply")
+        },
     }
 }
 

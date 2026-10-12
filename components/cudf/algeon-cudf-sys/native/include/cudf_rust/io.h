@@ -61,6 +61,14 @@ typedef enum {
   CUDF_IO_KVIKIO_COMPAT_MODE_OFF  = 2,
 } cudf_io_kvikio_compat_mode_t;
 
+/// KvikIO's process-global settings: one thread pool and one task size shared
+/// by local compatibility-mode reads and remote range reads.
+typedef struct {
+  int32_t compat_mode; /* cudf_io_kvikio_compat_mode_t */
+  uint32_t thread_count;
+  uint64_t task_size_bytes;
+} cudf_io_kvikio_process_config_t;
+
 /// Read a Parquet file into a table. `columns` is an optional array of
 /// null-terminated column name strings (pass NULL to read all columns).
 /// `num_columns` is the length of the `columns` array.
@@ -265,13 +273,25 @@ void cudf_io_free_column_names(char** names, int32_t num_names);
 /// - -1: reserved for unknown/unreported future states
 int32_t cudf_io_remote_parquet_kvikio_remote_io_enabled(void);
 
-/// Configure KvikIO's process default compatibility mode without mutating the
-/// process environment. Call before starting any I/O workers.
-cudf_status_t cudf_io_kvikio_set_compat_mode(int32_t compat_mode);
+/// Apply `defaults` to every KvikIO process setting the environment leaves
+/// unset, before any I/O worker starts.
+///
+/// Runs libcudf's own once-only KvikIO setup first, with `device_ordinal`
+/// current on the calling thread, so a later local file open cannot reset the
+/// pool. A field named by `KVIKIO_COMPAT_MODE`, `KVIKIO_NTHREADS` (or
+/// `KVIKIO_NUM_THREADS`) or `KVIKIO_TASK_SIZE` keeps the value KvikIO parsed
+/// from that variable. When I/O is active, nothing changes and
+/// `out_active_io` is nonzero. Fails with `CUDF_ERROR_UNSUPPORTED` when this
+/// build has no KvikIO support. Repeated calls are idempotent. Writes the
+/// effective values to `out_effective`.
+cudf_status_t cudf_io_kvikio_configure_process(int32_t device_ordinal,
+                                               cudf_io_kvikio_process_config_t const* defaults,
+                                               cudf_io_kvikio_process_config_t* out_effective,
+                                               uint64_t* out_active_io);
 
-/// Return KvikIO's configured process default compatibility mode, or -1 when
-/// this build has no KvikIO remote-I/O support.
-int32_t cudf_io_kvikio_compat_mode(void);
+/// Read KvikIO's effective process settings. Fails with
+/// `CUDF_ERROR_UNSUPPORTED` when this build has no KvikIO support.
+cudf_status_t cudf_io_kvikio_process_config(cudf_io_kvikio_process_config_t* out);
 
 /// Clear every retained KvikIO bounce-buffer pool allocation.
 ///

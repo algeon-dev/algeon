@@ -347,7 +347,20 @@ target_link_options(
 
 target_link_libraries(cudf_rust PUBLIC cudf::cudf PRIVATE cudf_rust_rmm_interop)
 if(TARGET kvikio::kvikio)
-  target_link_libraries(cudf_rust PUBLIC kvikio::kvikio)
+  # libcudf carries KvikIO as a static archive and exports every KvikIO symbol
+  # the shim uses. Linking the archive again would give the shim a second
+  # `kvikio::defaults` and a second set of bounce-buffer pools that libcudf's
+  # own file reads never see, so only the headers come from the target and the
+  # symbols bind to libcudf's copy.
+  target_include_directories(
+    cudf_rust PRIVATE $<TARGET_PROPERTY:kvikio::kvikio,INTERFACE_INCLUDE_DIRECTORIES>
+  )
+  target_compile_definitions(
+    cudf_rust PRIVATE $<TARGET_PROPERTY:kvikio::kvikio,INTERFACE_COMPILE_DEFINITIONS>
+  )
+  if(TARGET BS::thread_pool)
+    target_link_libraries(cudf_rust PRIVATE BS::thread_pool)
+  endif()
 endif()
 target_link_libraries(cudf_rust PRIVATE ${CMAKE_DL_LIBS})
 

@@ -44,7 +44,7 @@ use crate::{
     native_exec::{AlgeonNativeExecutionConfig, QueryAdmissionSource, SourceChunking},
     observability::{
         BackendDiagnostics, BackendMetricsSnapshot, DeviceTelemetrySnapshot, GpuBackendCloseSnapshot,
-        GpuBackendDeviceStartupRecord,
+        GpuBackendDeviceStartupRecord, KvikioProcessConfig,
     },
     planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     s3_storage::install_s3_storage,
@@ -190,6 +190,13 @@ impl AlgeonGpuBackend {
     /// session installed from this backend.
     pub fn device_startup_records(&self) -> &[GpuBackendDeviceStartupRecord] {
         self.core.device_startup_records()
+    }
+
+    /// KvikIO's process settings as applied when this backend was built:
+    /// compatibility mode, thread count and task size shared by every source
+    /// read in the process. `None` for a cuDF build without KvikIO support.
+    pub fn kvikio_process_config(&self) -> Option<KvikioProcessConfig> {
+        self.core.kvikio_process_config()
     }
 
     /// Probes declarable capacity for one CUDA device without building a backend.

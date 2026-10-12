@@ -2694,13 +2694,21 @@ pub enum cudf::io::KvikioCompatMode
 pub cudf::io::KvikioCompatMode::Auto
 pub cudf::io::KvikioCompatMode::Off
 pub cudf::io::KvikioCompatMode::On
+impl cudf::io::KvikioCompatMode
+pub const fn cudf::io::KvikioCompatMode::as_str(self) -> &'static str
+pub struct cudf::io::KvikioProcessConfig
+pub cudf::io::KvikioProcessConfig::compat_mode: cudf::io::KvikioCompatMode
+pub cudf::io::KvikioProcessConfig::task_size_bytes: u64
+pub cudf::io::KvikioProcessConfig::thread_count: u32
+impl cudf::io::KvikioProcessConfig
+pub const cudf::io::KvikioProcessConfig::DEFAULT: Self
 pub struct cudf::io::TableReadOutput
 pub cudf::io::TableReadOutput::column_names: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub cudf::io::TableReadOutput::table: cudf::core::Table
+pub fn cudf::io::configure_kvikio_process(usize, &cudf::io::KvikioProcessConfig) -> cudf::core::error::Result<cudf::io::KvikioProcessConfig>
 pub fn cudf::io::drain_kvikio_bounce_buffer_pools() -> cudf::core::error::Result<u64>
 pub fn cudf::io::gds_driver_available() -> cudf::core::error::Result<()>
-pub fn cudf::io::kvikio_compat_mode() -> core::option::Option<cudf::io::KvikioCompatMode>
-pub fn cudf::io::set_kvikio_compat_mode(cudf::io::KvikioCompatMode) -> cudf::core::error::Result<()>
+pub fn cudf::io::kvikio_process_config() -> core::option::Option<cudf::io::KvikioProcessConfig>
 pub mod cudf::ops
 pub mod cudf::ops::ast
 pub enum cudf::ops::ast::AstOperator

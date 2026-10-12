@@ -29,6 +29,7 @@ pub use query_runtime::{
         CacheGraphActivity, CacheSourceActivity, CacheSourceEventSnapshot, DeviceCacheReport, DeviceFacts,
         DeviceLedgerGrantRow, DeviceLedgerReport, DeviceMemoryFailureReport, DeviceResourceProfile,
         DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuBackendCloseSnapshot, GpuBackendDeviceStartupRecord,
-        GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryServiceAdmissionSnapshot,
+        GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, KvikioCompatMode, KvikioProcessConfig,
+        QueryServiceAdmissionSnapshot,
     },
 };
