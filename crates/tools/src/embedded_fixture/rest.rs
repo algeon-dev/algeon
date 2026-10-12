@@ -1,4 +1,4 @@
-//! Axum HTTP API frontend for the embedded backend example.
+//! Axum HTTP API frontend for the embedded backend fixture.
 //!
 //! This module exposes health, pipeline execution, planning-report, and GPU
 //! admission/memory status endpoints for the shared backend.
@@ -21,7 +21,7 @@ use datafusion::common::DataFusionError;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{
+use crate::embedded_fixture::{
     AppState,
     pipelines::{Pipeline, PipelineValidationError, RenderedPipeline, default_param_body, summaries},
 };

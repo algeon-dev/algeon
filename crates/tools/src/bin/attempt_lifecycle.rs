@@ -79,8 +79,7 @@ async fn run() -> anyhow::Result<()> {
         .collect()
         .await?;
 
-    // The aggregate is outside the native capability catalogue, so this
-    // invocation falls back to DataFusion CPU execution.
+    // approx_distinct runs on DataFusion CPU; its Parquet input can execute natively.
     run_and_print(
         &backend.begin_attempt(AttemptOptions::default())?,
         &ctx_a,

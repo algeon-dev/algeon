@@ -70,7 +70,7 @@ drop_non_drop = "deny"
 # names are taken on crates.io: `cudf`/`cudf-sys` by a third party, and
 # `cuvs`/`cuvs-sys` by NVIDIA's own rapidsai/cuvs. The alias key stays bare so
 # Rust imports remain `use cudf::…` and `dep:` feature strings keep resolving.
-algeon-datafusion = { path = "crates/algeon-datafusion", version = "=0.1.0", default-features = false }
+algeon-datafusion = { path = "crates/algeon-datafusion", version = "0.1.0", default-features = false }
 workloads = { path = "crates/workloads" }
 query-engine = { package = "algeon-query-engine", path = "crates/algeon-query-engine", version = "=0.1.0", default-features = false }
 query-planning = { package = "algeon-query-planning", path = "crates/algeon-query-planning", version = "=0.1.0", default-features = false }

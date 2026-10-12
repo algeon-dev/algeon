@@ -65,7 +65,7 @@ SITES = (
         True,
         False,
         False,
-        False,
+        True,
         True,
         False,
     ),
@@ -428,6 +428,7 @@ def main() -> int:
                 executables[site.name] = executable
 
             scenarios = [
+                ("examples-neither-direct", SITES[3], False, False, "direct", True, None),
                 ("datafusion-neither-direct", SITES[0], False, False, "direct", True, None),
                 ("datafusion-cuvs-aggregate", SITES[0], False, True, "aggregate", True, None),
                 ("datafusion-cugraph-aggregate", SITES[0], True, False, "aggregate", True, None),

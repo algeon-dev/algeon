@@ -1,4 +1,4 @@
-//! Binary entrypoint for the embedded backend example.
+//! REST/Flight server fixture for `embedded-backend-e2e`.
 //!
 //! This process creates one shared `AlgeonGpuBackend`, serves the example HTTP
 //! API on `EXAMPLE_REST_BIND`, and serves Flight SQL on `ALGEON_SERVER_BIND`.
@@ -14,9 +14,9 @@ use algeon_datafusion::{
 };
 use anyhow::Context;
 use axum::Router;
-use examples::{AppState, BindAddrs, flight, rest};
 use tokio::{net::TcpListener, signal, task::JoinError};
 use tokio_util::sync::CancellationToken;
+use tools::embedded_fixture::{AppState, BindAddrs, flight, rest};
 use tracing_subscriber::EnvFilter;
 
 const EXAMPLE_REST_BIND_ENV: &str = "EXAMPLE_REST_BIND";

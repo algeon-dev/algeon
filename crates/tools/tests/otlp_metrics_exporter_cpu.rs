@@ -2,12 +2,12 @@ use algeon_datafusion::observability::{
     BackendHistogramProjection, BackendMetricAttribute, BackendMetricAttributeValue, BackendMetricKind,
     backend_metric_descriptors,
 };
-use examples::otlp_metrics::{histogram_data_point, histogram_export_request, histogram_metric};
 use opentelemetry_proto::tonic::{
     common::v1::{AnyValue, KeyValue, any_value},
     metrics::v1::{AggregationTemporality, metric},
     resource::v1::Resource,
 };
+use tools::otlp_metrics::{histogram_data_point, histogram_export_request, histogram_metric};
 
 fn duration_projection() -> BackendHistogramProjection {
     BackendHistogramProjection {

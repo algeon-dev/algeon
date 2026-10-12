@@ -60,6 +60,14 @@ cugraph-oracle = [
 # constant, to validate retained artifacts.
 server-runtime-observability-e2e = ["dep:query-runtime"]
 embedded-backend-e2e = ["dep:reqwest"]
+embedded-backend-fixture = [
+  "dep:algeon-datafusion", "algeon-datafusion/server", "algeon-datafusion/cugraph",
+  "dep:cudf-sys", "dep:cugraph-sys", "dep:datafusion", "dep:anyhow",
+  "dep:arrow-json", "dep:axum", "dep:tokio-util", "dep:tracing", "dep:tracing-subscriber",
+  "tokio/signal",
+]
+attempt-lifecycle-probe = ["dep:algeon-datafusion", "dep:cudf-sys", "dep:datafusion", "dep:anyhow", "dep:tempfile"]
+otlp-metrics = ["dep:algeon-datafusion", "dep:cudf-sys", "dep:anyhow", "dep:opentelemetry", "dep:opentelemetry-proto"]
 # The production-validation runner is intentionally opt-in. The base feature
 # stays CPU-only so profile parsing, arrival planning, aggregation, and artifact
 # writing are unit-testable without CUDA.
@@ -88,17 +96,16 @@ single-node-multi-gpu-validate-run-cugraph = [
   "dep:cugraph-sys",
   "algeon-datafusion/cugraph",
 ]
-# The OTLP cell exercises the public reference exporter from
-# `examples`. That package's reference embedding is cugraph-enabled, so
-# keep it separate from the feature-off service cell.
+# Retain the graph-enabled OTLP validation cell independently of the examples.
 single-node-multi-gpu-validate-run-otlp = [
   "single-node-multi-gpu-validate-run-cugraph",
-  "dep:examples",
-  "dep:opentelemetry",
-  "dep:opentelemetry-proto",
+  "otlp-metrics",
 ]
 
 [dependencies]
+anyhow = { workspace = true, optional = true }
+arrow-json = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
 cudf = { workspace = true, optional = true }
@@ -112,7 +119,6 @@ cuml-sys = { workspace = true, optional = true }
 datafusion = { workspace = true, optional = true }
 algeon-datafusion = { workspace = true, optional = true }
 bench = { path = "../bench", optional = true }
-examples = { path = "../examples", optional = true, features = ["otlp-metrics"] }
 workloads = { workspace = true, optional = true }
 query-engine = { workspace = true, optional = true }
 query-planning = { workspace = true, optional = true }
@@ -127,8 +133,32 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
+tempfile = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 tonic = { workspace = true }
 url = "2.5"
+
+[lib]
+test = false
+doctest = false
+
+[[bin]]
+name = "embedded_backend"
+path = "src/bin/embedded_backend.rs"
+required-features = ["embedded-backend-fixture"]
+test = false
+
+[[bin]]
+name = "attempt_lifecycle"
+path = "src/bin/attempt_lifecycle.rs"
+required-features = ["attempt-lifecycle-probe"]
+test = false
+
+[[test]]
+name = "otlp_metrics_exporter_cpu"
+required-features = ["otlp-metrics"]
 
 [[bin]]
 name = "algeon_tools"

@@ -1,7 +1,7 @@
-//! Flight SQL frontend wiring for the embedded backend example.
+//! Flight SQL frontend wiring for the embedded backend fixture.
 //!
 //! This module builds the `algeon-datafusion` Flight SQL server around the same
-//! shared GPU backend used by the example HTTP API.
+//! shared GPU backend used by the fixture HTTP API.
 
 use algeon_datafusion::{
     backend::AlgeonGpuBackend,

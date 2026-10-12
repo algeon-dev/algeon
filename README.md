@@ -136,11 +136,13 @@ immutable grant on one GPU.
 
 Algeon runs on Linux with an NVIDIA GPU and a CUDA toolkit. To embed it in a
 Rust application, use the `algeon-datafusion` registry dependency and build the
-native libraries from the matching Algeon tag. The
-[Rust dependency quickstart](https://algeon.dev/build/rust-dependency) covers
-feature selection, a complete application and its runtime loader environment.
-It describes the `0.1.0` release workflow; package and tag availability require
-release confirmation.
+native libraries from the matching Algeon tag.
+[DataFusion session](https://algeon.dev/integration/datafusion-session) covers
+the application code, and
+[Building for an Application](https://algeon.dev/build/rust-dependency) covers
+feature selection, the native libraries and the runtime loader environment.
+That page describes the `0.1.0` release workflow; package and tag availability
+require release confirmation.
 
 To build the Flight SQL server or contribute, clone the pinned native sources:
 

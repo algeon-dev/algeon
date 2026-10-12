@@ -12,14 +12,18 @@ supported SQL, configuration, and operational contracts.
 
 ## Use as a Rust dependency
 
-The `0.1.0` registry installation uses native libraries built from the matching
-`v0.1.0` Algeon source tag:
+Add the adapter and DataFusion to the application's dependencies:
 
 ```toml
 [dependencies]
-algeon-datafusion = "=0.1.0"
+algeon-datafusion = "0.1.0"
 datafusion = "55.1"
 ```
+
+The Algeon dependency permits `0.1.x` patch updates. Build native libraries
+from the source tag matching the resolved Algeon version recorded in the
+application's `Cargo.lock`, such as `v0.1.0` for `0.1.0`. An Algeon version
+update requires native libraries from the corresponding release.
 
 The adapter has no default features. Relational execution needs cuDF/RMM;
 `cuvs` adds cuVS, `cugraph` adds cuVS and cuGraph, and `cuml` adds cuVS and
@@ -27,8 +31,10 @@ cuML. Rust package installation does not build these native libraries.
 Follow the [Rust dependency quickstart](https://algeon.dev/build/rust-dependency)
 for native build order, compiler and header requirements, `ALGEON_NATIVE_DIR`,
 `LD_LIBRARY_PATH`, and a complete async application with result assertions and
-backend shutdown. The guide uses the release consumer fixture as its example;
-its validation does not establish that the tag or packages have been published.
+backend shutdown. The guide pins `0.1.0` and uses the release consumer fixture
+as its example; update its source tag and adapter version together when using
+another Algeon release. Fixture validation does not establish that the tag or
+packages have been published.
 
 ## Native source batching
 

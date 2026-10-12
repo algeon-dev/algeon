@@ -1,83 +1,51 @@
 [package]
 name = "examples"
-description = "Runnable embedding examples for algeon-datafusion."
+description = "Small, self-contained Algeon SQL examples."
 version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
 build = "build.rs"
 publish = false
-default-run = "embedded_backend"
+default-run = "query_parquet"
 
 [lints]
 workspace = true
 
 [features]
 default = []
+cugraph = ["dep:cugraph-sys", "algeon-datafusion/cugraph"]
 cuvs = ["dep:cuvs-sys", "algeon-datafusion/cuvs"]
-cuml = ["dep:cuml-sys", "algeon-datafusion/cuml"]
-# The reference OTLP exporter is deliberately opt-in: it adds a tonic transport
-# stack that ordinary embedding examples do not need.
-otlp-metrics = [
-  "dep:opentelemetry",
-  "dep:opentelemetry-proto",
-]
 
 [dependencies]
+algeon-datafusion = { workspace = true }
 anyhow = { workspace = true }
 arrow = { workspace = true }
-arrow-json = { workspace = true }
-axum = { workspace = true }
 cudf-sys = { workspace = true }
-cugraph-sys = { workspace = true }
+cugraph-sys = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
-cuml-sys = { workspace = true, optional = true }
 datafusion = { workspace = true }
 futures = { workspace = true }
-algeon-datafusion = { workspace = true, features = ["server", "cugraph"] }
-opentelemetry = { workspace = true, optional = true }
-opentelemetry-proto = { workspace = true, optional = true }
 parquet = { workspace = true }
 tempfile = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
-tokio-util = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
-[lib]
-name = "examples"
-path = "src/lib.rs"
-test = false
-doctest = false
-
-# Runnable examples carry no unit tests. Declaring each bin explicitly with
-# `test = false` keeps auto-discovery from adding an empty test harness to the
-# workspace test surface, which the lane catalog would then have to classify.
+# These programs are verified by running them; they carry no unit-test harness.
 [[bin]]
-name = "attempt_lifecycle"
-path = "src/bin/attempt_lifecycle.rs"
+name = "query_parquet"
+path = "src/bin/query_parquet.rs"
 test = false
 
 [[bin]]
-name = "embedded_backend"
-path = "src/bin/embedded_backend.rs"
+name = "graph_pagerank"
+path = "src/bin/graph_pagerank.rs"
+required-features = ["cugraph"]
 test = false
 
 [[bin]]
-name = "functions_only_modes"
-path = "src/bin/functions_only_modes.rs"
+name = "vector_search"
+path = "src/bin/vector_search.rs"
+required-features = ["cuvs"]
 test = false
-
-[[bin]]
-name = "otlp_metrics_exporter"
-path = "src/bin/otlp_metrics_exporter.rs"
-test = false
-required-features = ["otlp-metrics"]
 
 [build-dependencies]
 rapids-build-support = { workspace = true }
-
-[[test]]
-name = "otlp_metrics_exporter_cpu"
-required-features = ["otlp-metrics"]
