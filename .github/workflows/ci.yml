@@ -1,0 +1,87 @@
+name: CI
+
+# Hosted runners have no NVIDIA GPU, so this workflow runs the checks that
+# need no native RAPIDS build. GPU validation stays local; see README.md here.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native-free:
+    name: Native-free checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CHECK_ALL_PHASE_LOG_DIR: ${{ github.workspace }}/target/check-all/ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            clang mold ripgrep shellcheck jq python3-yaml gcc-14 g++-14 cmake ninja-build
+
+      - name: Install Rust toolchains
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup toolchain install nightly --profile minimal --component rustfmt
+          rustup toolchain install "$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '[.packages[].rust_version | select(. != null)] | unique | .[0]')" --profile minimal
+          rustup default stable
+
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-nextest,cargo-hack@0.6.45
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/native-free"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run native-free checks
+        run: bash scripts/check_all.sh --native-free
+
+      - name: Upload phase logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: check-all-logs
+          path: ${{ env.CHECK_ALL_PHASE_LOG_DIR }}
+          include-hidden-files: true
+          retention-days: 14
+
+  website:
+    name: Website build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build

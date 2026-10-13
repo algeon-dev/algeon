@@ -20,34 +20,29 @@ Linux is the only supported platform.
 
 ## CPU requirement
 
-Every workspace build pins `target-cpu=x86-64-v4` in the root
+Every workspace build pins `target-cpu=x86-64-v3` in the root
 [`.cargo/config.toml`](https://github.com/algeon-dev/algeon/blob/main/.cargo/config.toml),
-so the compiled code uses AVX-512 instructions. On a CPU without x86-64-v4,
-`algeon_server` and the test binaries can exit with `SIGILL` before `main`,
-with no diagnostic. Check the build host and every host that will run the
-binary before starting the native builds:
+and the compiled code uses AVX2, FMA, BMI1, and BMI2 instructions. Check the
+build host and every host that will run the binary before starting the native
+builds:
 
 ```bash
-grep -o -m1 avx512f /proc/cpuinfo
-/lib64/ld-linux-x86-64.so.2 --help | grep x86-64-v4
+grep -o -m1 avx2 /proc/cpuinfo
+/lib64/ld-linux-x86-64.so.2 --help | grep x86-64-v3
 ```
 
-The first command prints `avx512f` on a CPU with AVX-512. The second, from
-glibc 2.33 or newer, prints `x86-64-v4 (supported, searched)` when the CPU
-implements the whole level.
-
-Several AWS GPU instance families have AMD Zen 2 or Zen 3 cores, which
-implement AVX2 but not AVX-512. According to the
-[accelerated computing instance specifications](https://docs.aws.amazon.com/ec2/latest/instancetypes/ac.html),
-G4ad and G5 use the AMD EPYC 7R32, and G6, G6e, Gr6, P5, and P5e use the
-AMD EPYC 7R13.
+The first command prints `avx2` on a CPU with AVX2. The second, from glibc
+2.33 or newer, prints `x86-64-v3 (supported, searched)` when the CPU
+implements the whole level. Intel CPUs older than Haswell and AMD CPUs older
+than Zen may lack AVX2, and on those `algeon_server` and the test binaries can
+exit with `SIGILL` before `main`, with no diagnostic.
 
 To build for another CPU, change the `target-cpu` value in the
-`[target.x86_64-unknown-linux-gnu]` table of `.cargo/config.toml`, for example
-to `x86-64-v3`, before the first Rust build. Changing it later recompiles the
-whole workspace. Docker packaging does not read that file: it takes the target
-from `.config/policies/cpu-packaging.toml`, and the
-[Docker image](./docker.md) it builds targets x86-64-v4 only.
+`[target.x86_64-unknown-linux-gnu]` table of `.cargo/config.toml` before the
+first Rust build, for example to `x86-64-v4` on a host with AVX-512. Changing
+it later recompiles the whole workspace. Docker packaging does not read that
+file. It takes the target from `.config/policies/cpu-packaging.toml`, and the
+[Docker image](./docker.md) it builds targets x86-64-v3 only.
 
 ## Native build environment
 
@@ -135,7 +130,7 @@ runners are required only for contributor checks.
 The repository's `.cargo/config.toml` applies to Cargo commands run within the
 checkout. An external application's CPU target and linker come from its own
 Cargo configuration. Configure them for the hosts that will execute that
-application. The repository's x86-64-v4 setting is not carried by registry
+application. The repository's x86-64-v3 setting is not carried by registry
 packages.
 
 ## Rust toolchain and test runner

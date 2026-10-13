@@ -36,7 +36,7 @@ def run_logged(command: list[str], log: Path, *, cwd: Path = ROOT, env: dict | N
 
 
 def clean_environment(output: Path) -> dict[str, str]:
-    """Share downloaded crates without inheriting Cargo or native configuration."""
+    """Share downloaded crates and toolchain proxies without inheriting Cargo or native configuration."""
     output = outside_checkout(output)
     for directory in (output, *output.parents):
         for name in ("config", "config.toml"):
@@ -48,7 +48,9 @@ def clean_environment(output: Path) -> dict[str, str]:
         if (cargo_home / name).exists():
             raise ValueError(f"isolated Cargo home contains configuration: {cargo_home / name}")
     cache = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))).resolve()
-    for name in ("registry", "git"):
+    # Toolchain managers such as mise resolve `cargo` through `$CARGO_HOME/bin`,
+    # so an isolated home without it loses Cargo unless rustup's bin is on PATH.
+    for name in ("bin", "registry", "git"):
         if (cache / name).exists() and not (cargo_home / name).exists():
             (cargo_home / name).symlink_to(cache / name, target_is_directory=True)
     prefixes = ("CARGO_", "ALGEON_", "CUDF_", "CUGRAPH_", "CUVS_", "CUML_", "CUDA_", "CMAKE_", "DEP_", "LD_",

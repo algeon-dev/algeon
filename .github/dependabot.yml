@@ -1,0 +1,19 @@
+# Cargo updates are left out: hosted CI cannot run the GPU tests that would
+# validate a dependency bump. Dependabot security alerts still cover Cargo.lock.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: monthly
+    groups:
+      website:
+        patterns: ["*"]

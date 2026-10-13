@@ -109,6 +109,7 @@ if sys.argv[1] == "doc":
         original_home = self.output / "original-home"
         original_home.mkdir()
         (original_home / "registry").mkdir()
+        (original_home / "bin").mkdir()
         (original_home / "config.toml").write_text('[env]\nCUDA_HOME = { value = "/forced/cuda", force = true }\n')
         events_path = self.output / "events.jsonl"
         env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CARGO_HOME=str(original_home),
@@ -120,6 +121,7 @@ if sys.argv[1] == "doc":
         env.update({selector: "/ambient/override" for selector in ambient_native})
         with patch.dict(os.environ, env, clear=True):
             isolated = release.clean_environment(self.output)
+        self.assertEqual((Path(isolated["CARGO_HOME"]) / "bin").resolve(), (original_home / "bin").resolve())
         for selector in ambient_native:
             self.assertNotIn(selector, isolated)
         result = subprocess.run(["bash", str(ROOT / "scripts/ci/check_docsrs_native_free.sh"), "--archives", str(self.output)],
