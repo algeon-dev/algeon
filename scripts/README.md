@@ -85,7 +85,10 @@ front matter in the policy phase. Its self-test is
 `ci/tests/check_prose_slop_tests.sh`.
 
 `check_all.sh` runs the full pre-merge gate without arguments, or accepts
-`--fast` for a partial edit loop (policy checks, rustfmt, and CPU tests).
+`--fast` for a partial edit loop (policy checks, rustfmt, and CPU tests) or
+`--native-free` for the partial subset that needs no GPU or native build, which
+`.github/workflows/ci.yml` runs. `ci/native_free_packages.py` selects that
+mode's test packages from Cargo metadata.
 `ci/cargo_toolchain_environment.py` prints the effective Cargo toolchain
 environment at gate startup. `ci/tests/check_check_all_tests.py` exercises
 gate ordering, loader propagation and failure continuation with mocked Cargo.

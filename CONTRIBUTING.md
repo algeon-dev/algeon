@@ -59,8 +59,9 @@ against real datasets or external services stay outside the gate.
 
 ## Pull requests
 
-There is no CI yet, so the pull request description carries the validation
-evidence. Give it a conventional-commit title that names the area, such as
+GitHub Actions runs only the
+[native-free checks](website/docs/build/tests.md#native-free-checks), so the
+pull request description carries the GPU validation evidence. Give it a conventional-commit title that names the area, such as
 `fix(query-engine): release memory grant on cancelled pipeline tasks`, and
 include:
 

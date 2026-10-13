@@ -1,17 +1,19 @@
 # CPU portability floor for normal GNU x86-64 workspace builds.
 #
-# Normal GNU x86-64 workspace builds require an x86-64-v4 host. Pinning the
-# floor here makes it intentional and uniform across the dependency graph,
-# including `ahash` (a cudf dependency).
+# Normal GNU x86-64 workspace builds require an x86-64-v3 host (AVX2, FMA,
+# BMI1/2). Pinning the floor here makes it intentional and uniform across the
+# dependency graph, including `ahash` (a cudf dependency). The floor stays
+# below x86-64-v4 because AMD Zen 2/3 GPU instances (AWS G5, G6, P5), Intel
+# client CPUs since 12th gen and some GitHub-hosted runners lack AVX-512.
 #
 # `ahash` and all Rust/LLVM codegen choose their instruction set at compile
-# time from `target_feature`, and no runtime dispatch is involved. x86-64-v4 does NOT
+# time from `target_feature`, and no runtime dispatch is involved. x86-64-v3 does NOT
 # include the `aes` feature, so ahash compiles its portable fallback hasher and
-# the binary stays runnable on any v4+ CPU.
+# the binary stays runnable on any v3+ CPU.
 #
 # This is a host precondition with no runtime check. Code can execute before
-# `main`, and the compiler may use v4 instructions in any function. A
-# pre-v4 host can therefore fail with SIGILL before the server can print a
+# `main`, and the compiler may use v3 instructions in any function. A
+# pre-v3 host can therefore fail with SIGILL before the server can print a
 # diagnostic.
 #
 # Redistributable builds do not rely on ambient Cargo flags or this developer
@@ -25,7 +27,7 @@
 # with only the policy's target and rustflags.
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "target-cpu=x86-64-v4", "-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "target-cpu=x86-64-v3", "-C", "link-arg=-fuse-ld=mold"]
 
 [alias]
 # One build configuration for every test command; select tests with -E filtersets.

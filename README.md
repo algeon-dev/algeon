@@ -143,9 +143,10 @@ Currently, one query runs on one GPU inside a fixed memory grant, with no
 spilling. The [scope and non-goals](https://algeon.dev/#scope) section lists
 the other limits.
 
-Validation runs locally; the project does not currently have automated GitHub
-Actions CI/CD due to physical GPU hardware requirements. Hardware sponsorships
-or access to dedicated GPU runners are welcome.
+GitHub Actions runs only the checks that need no GPU. GPU validation runs
+locally because hosted runners have no NVIDIA GPU, and
+[hardware sponsorships or dedicated GPU runners](.github/workflows/README.md)
+are welcome.
 
 ## License
 

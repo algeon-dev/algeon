@@ -5,19 +5,17 @@ readonly source_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/check_n
 readonly test_root="$(mktemp -d)"
 trap 'rm -rf "${test_root}"' EXIT
 
-# Fixture commits must not depend on the developer's signing setup; a signing
-# key that needs a passphrase fails without a terminal.
-export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false
-
-git_configure() {
-  git -C "$1" config user.email test@example.invalid
-  git -C "$1" config user.name 'Native Source Policy Test'
-}
+# Fixture commits must not depend on the host's git setup: a signing key that
+# needs a passphrase fails without a terminal, and a CI runner has no identity.
+# Environment config also reaches the submodule clones the test commits in.
+export GIT_CONFIG_COUNT=3 \
+  GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
+  GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=test@example.invalid \
+  GIT_CONFIG_KEY_2=user.name GIT_CONFIG_VALUE_2='Native Source Policy Test'
 
 for component in cudf cugraph cuml cuvs; do
   origin="${test_root}/${component}-origin"
   git init -q "${origin}"
-  git_configure "${origin}"
   printf '%s\n' "${component}" >"${origin}/source.txt"
   git -C "${origin}" add source.txt
   git -C "${origin}" commit -qm initial
@@ -25,7 +23,6 @@ done
 
 repo="${test_root}/repo"
 git init -q "${repo}"
-git_configure "${repo}"
 mkdir -p "${repo}/scripts/ci"
 cp "${source_script}" "${repo}/scripts/ci/check_native_sources.sh"
 git -C "${repo}" add scripts/ci/check_native_sources.sh

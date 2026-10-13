@@ -8,8 +8,10 @@ description: Focused development checks, the local pre-merge gate, failure rerun
 
 Use the [targeted edit loops](#targeted-edit-loops) during development and
 the [full gate](#the-full-gate) for pre-merge validation or an explicit
-request; documentation-only changes need no Cargo or GPU checks. Algeon
-currently runs these checks locally, without GitHub CI/CD. Test placement is
+request; documentation-only changes need no Cargo or GPU checks. GPU checks
+run locally. GitHub Actions runs only the
+[native-free checks](#native-free-checks), because hosted runners have no
+NVIDIA GPU. Test placement is
 defined in
 [Test layout](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#test-layout).
 Script maintainers use the
@@ -99,6 +101,25 @@ snapshot, the hidden-API consumer probe, and clippy.
 
 ```bash
 bash scripts/check_all.sh --fast
+```
+
+### Native-free checks
+
+`--native-free` runs the checks that need neither a GPU nor the native RAPIDS
+builds. GitHub Actions runs this mode on every pull request. Every Cargo phase
+runs with `DOCS_RS=1`, which makes the `-sys` build scripts skip native
+discovery and linking, and uses `target/native-free` as its target directory.
+The mode runs rustfmt, the native-source check, the policy self-test scripts,
+clippy with orphan-source verification, strict rustdoc, shipped-server
+clippy, `msrv`, `docsrs-native-free`, the API consumer probe and the
+publication policy. Its tests are those of the packages whose test builds
+reach no workspace member with a `links` key, such as
+`algeon-query-planning`. It skips the GPU tests, doctests, every other CPU
+test, checked bindings, feature-isolation and the public API snapshots. The
+native-source check needs all four submodules checked out.
+
+```bash
+bash scripts/check_all.sh --native-free
 ```
 
 The harness defines its workspace

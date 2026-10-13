@@ -160,6 +160,18 @@ building Rust or loading native libraries:
 python3 scripts/ci/tests/check_check_all_tests.py
 ```
 
+`--native-free` is the subset GitHub Actions runs in
+`.github/workflows/ci.yml`. It exports `DOCS_RS=1` and
+`CARGO_TARGET_DIR=target/native-free` for every phase, and its compile phases
+run one at a time, which fits a hosted runner's four cores and 16 GB.
+Clippy over all targets replaces the full gate's separate `DOCS_RS=1`
+compile check. `scripts/ci/native_free_packages.py` reads that run's Cargo
+metadata and selects the test packages. A workspace member with a `links` key
+owns a native library. A package qualifies when its own normal, build and dev
+dependencies, and the normal and build dependencies below them, reach no such
+member. The orchestration suite covers that selection with a mock dependency
+graph.
+
 `scripts/ci/nextest_gpu_lock.sh` is the run-wrapper nextest invokes for every
 test (`[scripts.wrapper.gpu-lock]`, applied through
 `[[profile.default.scripts]]`); it reads `NEXTEST_TEST_GROUP` and takes
@@ -246,10 +258,11 @@ Archives, extracted sources, `release.json`, `[patch.crates-io]` declarations,
 the source `Cargo.lock` and preparation logs stay outside the checkout.
 `scripts/ci/check_docsrs_native_free.sh` documents each extracted crate with
 its own docs.rs metadata features. It uses an isolated cwd and Cargo home,
-shares only registry/Git download caches and replaces native/CUDA selectors
-with nonexistent paths. It fetches every dependency before rustdoc, then
-runs with `DOCS_RS=1`, `--locked --offline`, four build jobs and strict
-warnings. Cargo JSON messages identify the sys-crate build-script outputs
+shares only the registry/Git download caches and the toolchain `bin`
+directory, and replaces native/CUDA selectors with nonexistent paths. It
+fetches every dependency before rustdoc, then runs with `DOCS_RS=1`,
+`--locked --offline`, four build jobs and strict warnings. Cargo JSON
+messages identify the sys-crate build-script outputs
 used by this invocation, including cached executions. Every sys crate must
 report empty native link libraries, search paths and linker directives;
 `logs/docsrs/native-free-evidence.json` retains the selectors and output paths.
