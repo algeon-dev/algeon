@@ -22,7 +22,7 @@ compatible device and one immutable **grant**. A process-scoped backend shares
 admission across sessions, including embedded and server use. The bounded
 queue preserves request order. A waiting attempt holds a task on the caller's
 runtime until a grant is placed, the attempt is cancelled or the
-[queue deadline](../integration/configuration.mdx#admission) passes; missing
+[queue deadline](../integration/configuration.mdx#admission) passes. Missing
 device capabilities produce a structured error.
 
 Below, `A_d` is the device's `max_active_attempts` and `S_d` its
@@ -31,25 +31,24 @@ Below, `A_d` is the device's `max_active_attempts` and `S_d` its
 | Step | Runs on | Waits on | Bounded by |
 | --- | --- | --- | --- |
 | Plan and admission | The task polling the result stream on the [host runtime](./index.mdx#runtimes-and-threads). | The admission queue. | `max_queued_attempts` waiters and `max_queue_wait_ms`. |
-| Envelope | A `ContextSetup` job on the [GPU execution pool](./index.mdx#runtimes-and-threads). | A lifecycle job permit; cancellation ends the wait. | `A_d` lifecycle job permits. |
+| Envelope | A `ContextSetup` job on the [GPU execution pool](./index.mdx#runtimes-and-threads). | A lifecycle job permit. Cancellation ends the wait. | `A_d` lifecycle job permits. |
 | Execute the schedule | A `QueryExecution` job on one pool worker, plus [blocking-lane jobs](./gpu-execution.mdx#cuda-streams-and-dependencies) for chunk work. | Joins on lane jobs and source reads. | `A_d` lifecycle permits, and `S_d` auxiliary permits for lanes and reads. |
 | Each result chunk | One pool job per poll ([result egress](./gpu-execution.mdx#result-egress)). | `cudaStreamSynchronize` for the device-to-host copy. | 4 MiB per chunk and one `MemoryPool` reservation per stream. |
 | Terminal and release | A `Cleanup` job on the pool, then the stream cleanup thread. | `cudaStreamSynchronize` on each leased stream. | `A_d` release cleanup permits. |
 
 The first poll of a fragment's DataFusion stream obtains the attempt's grant
-and runs the fragment's whole GPU schedule. The result stays on the device;
-each later poll submits one job that moves at most 4 MiB to host memory. The
+and runs the fragment's whole GPU schedule. The result stays on the device.
+Each later poll submits one job that moves at most 4 MiB to host memory. The
 device result and the grant are held until the stream reaches EOF, errors or is
 dropped.
 
 Every production query-engine execution belongs to an attempt. Plain
-DataFusion execution creates an internal attempt at its execution boundary;
-component runtimes may also be used independently of query-engine.
+DataFusion execution creates an internal attempt at its execution boundary.
 
 An attempt owns one admission claim. All its native fragments share the
 resulting grant, including sequential execution of a CTAS input and its result.
 Deferred refinement stays within that grant. A fragment planned after the claim
-joins when the granted device provides all its required capabilities; otherwise
+joins when the granted device provides all its required capabilities. Otherwise
 it returns a typed error. Each fragment runs one compiled schedule.
 
 A second claim returns `AttemptLifecycleError::AdmissionAlreadyClaimed` before
@@ -60,14 +59,13 @@ and the
 [release tests](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-runtime/src/runtime/query_service/tests/release_commit.rs)
 cover this boundary.
 
-Admission uses operator capability requirements. Customer identity, SQL text,
-names, algorithm allowlists and plan-shape matching cannot substitute for those
-requirements. `query-planning` proves executability; `query-runtime` admits
-the attempt against the selected device's ledger.
+Admission uses operator capability requirements. `query-planning` proves
+executability; `query-runtime` admits the attempt against the selected
+device's ledger.
 
 Some systems connect GPUs through
 [NVLink](https://www.nvidia.com/en-us/data-center/nvlink/) for peer-device
-traffic. Algeon keeps an attempt on its selected GPU; VRAM on other GPUs
+traffic. Algeon keeps an attempt on its selected GPU. VRAM on other GPUs
 does not enlarge that device's grant or ledger capacity.
 
 ## Capacity and allocation {/* #device-profiles-and-grants */}
@@ -86,13 +84,14 @@ each device derives these counts from `A_d` and `S_d`.
 | Resource | Count | Scope | Purpose |
 | --- | --- | --- | --- |
 | Worker threads | `A_d + 1` | Device | Pool workers, one kept free for lifecycle jobs. |
-| Lifecycle job permits | `A_d` | Device | Context setup and query execution jobs; release cleanup has its own `A_d`. |
+| Lifecycle job permits | `A_d` | Device | Context setup and query execution jobs. Release cleanup has its own `A_d`. |
 | Execution job permits | `A_d * S_d` | Device | Lane and source-read jobs. |
 | Stream pool | `A_d * (1 + S_d)` | Device | `A_d` root and `A_d * S_d` auxiliary streams, each created on first use. |
 | Attempt lanes | `A_d` | Device | One index per admitted attempt (`lane_count`). |
 | Auxiliary slots | `S_d` | Attempt | Permits behind each [execution lane](./gpu-execution.mdx#cuda-streams-and-dependencies) and source read. |
 | Native fork streams | `S_d + 1` | Attempt | Streams for libcudf's `fork_streams`, one reserved for the root stream. |
 | Source reads | `max_source_reads_in_flight`, default 2 | Attempt | A value above 1 enables source-read prefetch. |
+| Source I/O threads | 64 | Process | KvikIO pool shared by local and S3 reads; `KVIKIO_NTHREADS` overrides. |
 
 ### The allocation path {/* #allocation-enforcement */}
 
@@ -108,21 +107,20 @@ staging occupy system RAM, outside this GPU cap. Pinning a host buffer for DMA
 does not charge it as a device allocation.
 
 The query domain's allocator alone enforces the query cap shared by all
-execution lanes. There is no second Rust-side reservation, operator subgrant,
-stream quota or estimate-derived veto. An allocation exceeding the cap returns
-a typed failure at its source. Chunking can reduce live intermediates, but
-an input, hash table or result that cannot fit can still fail. Native execution
-does not provide general disk spilling or CPU replay.
+execution lanes. An allocation exceeding the cap returns a typed failure at
+its source. Chunking can reduce live intermediates, but an input, hash table
+or result that cannot fit can still fail. Native execution does not provide
+general disk spilling.
 
 ## Completion and resident data {/* #resident-handoff-and-release */}
 
 An output may remain on the GPU for another native consumer. Its resident
 lease retains the backing buffers and completion dependencies through the
 last borrow. Source and graph caches can retain reusable data under their own
-device-ledger charges; cache use does not make those bytes unaccounted for.
-Output and resident facts carry scope, occurrence, schema and provenance.
+device-ledger charges. Cached memory allocations remain fully accounted for
+within the device ledger. Output and resident facts carry scope, occurrence, schema and provenance.
 
-Cancellation stops further submission while already submitted work is settled.
+Cancellation halts new task submissions while active GPU operations run to completion.
 `ExecutionCancellation` is a token with an optional deadline. The engine checks
 it at native boundaries (the next source chunk, task, operator or
 materialization step) and does not interrupt a CUDA call already running.
@@ -135,20 +133,18 @@ after the cleanup thread synchronizes it. Flight
 the same path through a per-statement token.
 
 The attempt releases its grant once its outcome is terminal and no fragment is
-running; ending one fragment's stream does not release the grant. Retained
+running. Ending one fragment's stream does not release the grant. Retained
 outputs and pending GPU work must settle before their resources can be reused.
 A failed completion fence or cleanup closes admission on the affected device
 and records the failure.
 
 ## Runtime observations
 
-Attempt allocation peaks and device pool reservations measure different
-scopes. Reports, TSV, DataFusion metrics and `QueryMetrics` are projections of
-the runtime observation snapshot; they do not maintain a second event store.
-Allocation failures retain their typed source and cleanup disposition in that
-snapshot. Metric names in
+Reports, TSV, DataFusion metrics and `QueryMetrics` are projections of one
+runtime observation snapshot, in which allocation failures retain their typed
+source and cleanup disposition. Metric names in
 [`NATIVE_ALGEON_DATAFUSION_METRIC_NAMES`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native_exec/metrics/contract.rs)
-describe meaning and unit, and change when either changes.
+describe the metric meaning and unit, and are updated whenever the underlying definitions change.
 
 See [error handling](../integration/handling-errors.mdx) and
 [admission configuration](../integration/configuration.mdx#admission) for the

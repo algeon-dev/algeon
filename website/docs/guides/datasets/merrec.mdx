@@ -2,7 +2,7 @@
 sidebar_position: 2
 title: "MerRec: A Large-scale Multipurpose Mercari Dataset for Consumer-to-Consumer Recommendation Systems"
 sidebar_label: MerRec
-description: Eight questions over 1.27 billion Mercari US marketplace events, from the brands that moved toward Barbie's audience to a campaign list built from a graph algorithm, a vector search and a trained model in one statement.
+description: Eight questions over 1.27 billion Mercari US marketplace events, from the brands that moved toward Barbie's audience to a campaign list built from a graph algorithm, a vector search and a trained model in one query.
 ---
 
 import Barbie from '../../cugraph/_examples/merrec_scale_barbie.mdx';
@@ -23,19 +23,20 @@ import brandMap from '@site/static/data/merrec-brand-map.json';
 events from 5.57 million Mercari US shoppers between May and October 2023:
 views, likes, cart taps, offers and completed purchases over 82.6 million
 listings. Likes define interest, completed purchases supply the later
-outcome, and every statement ran over the full dataset on one GPU.
+outcome, and every query ran over the full dataset on one GPU.
 
-- [Barbie's July](#barbie): which brands moved toward Barbie's audience after
-  the film, checked against listing names and two control seeds.
-  Personalized PageRank against PageRank, four graph calls in one statement.
+- [Barbie's July](#barbie): which brands moved toward Barbie's audience between
+  May-June and July-August, around the film release, checked against listing names
+  and two control seeds.
+  Personalized PageRank against PageRank, four graph calls in one query.
 - [Shopping worlds](#shopping-worlds): 38 brand groups that cut across the
   catalog's categories, and the retailers that [connect them](#bridges).
   Jaccard over 12.5 million brand pairs, then Leiden and betweenness.
 - [A campaign list](#audience-funnel): graph affinity, taste lookalikes and
   a trained model, each stage scored against later purchases. cuGraph, cuVS
   and cuML in one plan.
-- [Lookalikes on their own](#pokemon): the vector stage by itself, with the
-  finding a single purchase rate would hide.
+- [Lookalikes on their own](#pokemon): the vector stage by itself, split by
+  prior Pokemon views.
 - [An existing model with a budget](#model): an offline XGBoost model scored
   in SQL against the rule a marketer would try first.
 - [Catalog duplicates](#brand-twins): two million brand pairs scored by
@@ -43,8 +44,7 @@ outcome, and every statement ran over the full dataset on one GPU.
 - [Session IDs](#sessions): a graph check of a column that looks like a key.
 
 The [discovery guide](../gpu-udtf-discovery.mdx#6-the-sequence-on-a-recorded-session)
-shows the first question as a recorded Flight SQL session, including the
-two failed attempts that preceded the result.
+shows the first question as a recorded Flight SQL session.
 
 ## Which brands grew closer to Barbie's audience? {/* #barbie */}
 
@@ -91,28 +91,25 @@ group. Select groups to see where they sit and which brands have the most fans.
 
 The source contains 1,268,092,738 events, 82,614,392 items and 5,566,055 users.
 `merrec_events` retains events; `merrec_items` keeps the latest attributes for
-each item. `mr_taste64`, read by the campaign and lookalike statements, is a
+each item. `mr_taste64`, read by the campaign and lookalike queries, is a
 prepared table of 64 category-share features per shopper, built by one SQL
-statement over the same events; its SQL is on the
+statement over the same events. Its SQL is on the
 [approximate search page](../../cuvs/udtfs/cuvs_cagra.mdx?dataset=merrec#examples).
 
 A fan is a distinct user with an `item_like` event for a brand. A purchase is a
 `buy_comp` event. Repeated views count toward behavioral features. Each query
-states its time window and eligible audience. Item names, categories and prices
-are the latest retained values, not attributes reconstructed at event time.
+states its time window and eligible audience. Quoted timings include planning,
+execution and result receipt. Item names, categories and prices are the latest
+retained values, not attributes reconstructed at event time.
 
 <div className="fineprint">
 
-The source revision is <code style={{whiteSpace: 'normal', overflowWrap: 'anywhere'}}>dd2b3c6f6f19d4814bb839ee6e8ab41926a14343</code>.
 Each section links to its saved SQL and results, with query IDs, the server
-configuration and the binary that produced them; the
+configuration and the SHA-256 of the release binary that produced them. The
+captures span several builds; the
 [scale README](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/README.md)
-lists every statement with its capture conditions. Each query uses one GPU
-and its working set must fit the configured memory limit; the largest
-allocator peak among these statements was 74.7 GiB of a 90 GiB grant.
-Applications submit SQL through
-[Arrow Flight SQL](../../integration/flight-sql-server.mdx) or an
-[embedded DataFusion session](../../integration/datafusion-session.mdx);
-the [function catalog](../gpu-udtf-discovery.mdx) describes input schemas.
+lists every query with its capture date, build and page-cache state. Each query uses one GPU
+and its working set must fit the configured memory limit. The largest
+allocator peak among these queries was 74.7 GiB of a 90 GiB grant.
 
 </div>

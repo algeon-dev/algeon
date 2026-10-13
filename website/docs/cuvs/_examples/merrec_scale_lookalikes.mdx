@@ -12,10 +12,10 @@ September 1, 2023. Each value is the square root of a shopper's share of views
 in one of the 64 busiest categories. Eligibility requires 20 views. The seed
 contains 1,302 eligible July to August Pokemon buyers; `candidates` excludes them.
 
-The open part of the statement searches for 20 neighbors per seed buyer,
+The unfolded part of the SQL searches for 20 neighbors per seed buyer,
 deduplicates the list, splits it by prior Pokemon views and joins September
 to October purchases. The folded relations build the features in the same
-statement.
+query.
 
 <CodeBlock language="sql" className="no-collapse" folds={[
   {to: '), lookalikes AS (', label: 'the 64 category-share features, eligibility and the seed buyers'},
@@ -44,10 +44,7 @@ baseline. This result supplies little evidence for finding a new audience.
 
 The direct-viewer rule reaches 572 buyers from a much larger list. The
 [campaign list](../../guides/datasets/merrec.mdx#audience-funnel) compares the
-methods at equal list size. Observed purchases do not measure campaign impact.
-
-Features use the latest retained category attributes. Ties at the neighbor
-cutoff can change a few list members.
+methods at equal list size. Features use the latest retained category attributes.
 
 <div className="fineprint">
 

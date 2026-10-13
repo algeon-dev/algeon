@@ -8,7 +8,7 @@ description: Relational ID, dense-vector element and metric support, and runtime
 
 All eight cuVS UDTFs take relation arguments as parenthesized `SELECT`
 subqueries. Each subquery remains a planner child. For `gpu_validate_call`,
-register a table or view with the same schema; metadata validation does not
+register a table or view with the same schema. Metadata validation does not
 evaluate rows.
 
 ## Relation identity
@@ -21,12 +21,12 @@ column:
 - IDs may repeat. Result ordinals disambiguate physical rows with equal IDs.
 - A subquery's top-level `ORDER BY` fixes the order its rows are numbered in.
   Sort keys must be output columns of the subquery, by name or 1-based
-  position; other keys are rejected with `input_ordering_key_not_projected`
+  position. Other keys are rejected with `input_ordering_key_not_projected`
   unless `LIMIT`, `OFFSET`, or `FETCH` bounds the rows. Without a top-level
   `ORDER BY`, row order is unspecified, and rows that tie on every key have no
   stable order.
 - The ID comes from a relation field. Name the field in each JSON binding with
-  `"id"`; cuVS does not assign a logical ID from row position.
+  `"id"`. cuVS does not assign a logical ID from row position.
 
 ## Dense-vector binding shapes
 
@@ -82,7 +82,7 @@ relation and accepted when it contains no null rows or elements.
 
 ## Element types
 
-Floating vector values must be finite; `NaN` and infinity are rejected.
+Floating vector values must be finite. `NaN` and infinity are rejected.
 Integer elements have no finiteness requirement. All vector bindings in one
 call share an element type and dimension. cuVS does not cast vector elements
 implicitly. Use `CAST` in a relation subquery to select a supported type.
@@ -103,19 +103,19 @@ field names, static types, binding shapes, duplicate wide-column names,
 matching element types, valid element/metric pairs, and scalar option ranges.
 It does not evaluate subqueries, scan values, or launch cuVS. Known relation
 cardinalities and fixed-size dimensions may also be checked during SQL
-planning; the following constraints are checked against evaluated rows when
+planning. The following constraints are checked against evaluated rows when
 those facts are not known statically:
 
 | Operation | Evaluated-relation requirements |
 | --- | --- |
-| Brute-force kNN | Dataset must be non-empty; `k` cannot exceed dataset rows. Dataset and query dimensions must match. Empty queries may produce an empty result with the declared schema. |
-| IVF-Flat | Dataset must be non-empty; `k` and `n_lists` cannot exceed dataset rows. Cosine requires at least two dimensions. With incomplete probes, fewer than `k` neighbors may be returned. |
-| IVF-PQ | Dataset must be non-empty; `k` and `n_lists` cannot exceed dataset rows. Cosine requires at least two dimensions. Compression can omit neighbors even when all lists are probed. |
-| CAGRA | Dataset must be non-empty; `k` and graph degrees are constrained by dataset rows. Search may omit missing neighbors. |
+| Brute-force kNN | Dataset must be non-empty. `k` cannot exceed dataset rows. Dataset and query dimensions must match. Empty queries may produce an empty result with the declared schema. |
+| IVF-Flat | Dataset must be non-empty. `k` and `n_lists` cannot exceed dataset rows. Cosine requires at least two dimensions. With incomplete probes, fewer than `k` neighbors may be returned. |
+| IVF-PQ | Dataset must be non-empty. `k` and `n_lists` cannot exceed dataset rows. Cosine requires at least two dimensions. Compression can omit neighbors even when all lists are probed. |
+| CAGRA | Dataset must be non-empty. `k` and graph degrees are constrained by dataset rows. Search may omit missing neighbors. |
 | Pairwise distance | Empty `x` or `y` returns an empty result with the declared schema. Output rows equal `x` rows multiplied by `y` rows and are bounded by the query allocation cap. |
 | Vector Top-K | `k` cannot exceed vector dimension. For variable-width lists, that dimension is checked after evaluation. Empty input returns an empty result. |
-| KMeans | Input must be non-empty; `n_clusters` cannot exceed evaluated input rows. |
-| PCA | Input needs at least two rows and two dimensions; `n_components` cannot exceed evaluated dimension. |
+| KMeans | Input must be non-empty. `n_clusters` cannot exceed evaluated input rows. |
+| PCA | Input needs at least two rows and two dimensions. `n_components` cannot exceed evaluated dimension. |
 
 Scalar checks do not require evaluated rows: IVF search requires
 `n_probes <= n_lists`; CAGRA requires `k <= itopk_size` and

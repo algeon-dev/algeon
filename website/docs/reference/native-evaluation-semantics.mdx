@@ -19,10 +19,10 @@ succeeds. A row with a null operand never fails.
 | --- | --- | --- |
 | Integer `+`, `-`, `*`, unary minus | Never. | Wraps on overflow, as DataFusion does for column values. |
 | Integer `/`, `%` | The divisor is zero, or the dividend is the minimum signed value and the divisor is `-1` for `/`. | `x % -1` is `0`. |
-| Floating-point `%` | Never. | IEEE `fmod`: the sign of the dividend; `NaN` for a zero divisor or an infinite dividend. |
+| Floating-point `%` | Never. | IEEE `fmod`: the sign of the dividend, and `NaN` for a zero divisor or an infinite dividend. |
 | Decimal `/` | The divisor is zero, or scaling the dividend leaves the `i128` range. | DataFusion computes `dividend * 10^k / divisor` in checked `i128` arithmetic, where the result scale is the dividend scale plus 4, capped at 38. A quotient with more digits than the result precision is not an error. Decimal `%` is not native. |
 | `CAST` to an integer type | A valid value is outside the target range, or a float is `NaN` or infinite. | Floats and decimals truncate toward zero first. |
-| `CAST` to `Decimal128(p, s)` | A valid value does not fit precision `p` after rescaling, or a float is `NaN` or infinite. | Rounds half away from zero where it drops digits; a float is rounded as `round(10^s * value)` in `Float64`. |
+| `CAST` to `Decimal128(p, s)` | A valid value does not fit precision `p` after rescaling, or a float is `NaN` or infinite. | Rounds half away from zero where it drops digits. A float is rounded as `round(10^s * value)` in `Float64`. |
 | `CAST` of a timestamp or duration to a finer unit | The stored count times the unit ratio leaves `Int64`. | `TIMESTAMP(0)` to `TIMESTAMP(9)` fails beyond 9,223,372,036 seconds from the epoch, about 292 years. A `DATE` fails at microsecond and nanosecond resolution the same way, from 106,752 days at nanosecond resolution. |
 | `CAST` of a timestamp or duration to a coarser unit | Never. | Divides and truncates toward zero: `-1500` milliseconds is `-1` second, `-1` nanosecond is `0` seconds. A timestamp cast to `DATE` floors to the calendar date, so `-1` nanosecond is the day before the epoch. |
 | `CAST` of a timestamp or duration to `BIGINT`, or of an integer to a timestamp | Never. | The stored count in the type's own unit, with no rescaling. |
@@ -55,9 +55,9 @@ WHERE n >= 0 AND total / n > 1          -- fails on a row with n = 0, as on Data
   `-1`, and a cast whose target holds every value of the source type, cannot
   fail and are evaluated as they are.
 - A nested `CASE` applies the restrictions of every enclosing branch.
-- Each `WHEN` condition, or `AND`/`OR` term, that divides, casts or does
-  timestamp arithmetic doubles the restrictions of the branches or terms after
-  it. A chain of about eight such conditions stays on DataFusion.
+- Each `WHEN` condition, or `AND`/`OR` branch, that performs division, type
+  casting, or timestamp arithmetic doubles the constraints applied to subsequent
+  expressions. A chain of about eight such conditions stays on DataFusion.
 - Native evaluation is more permissive in one case: DataFusion skips the right
   operand only on some batches, and when it evaluates a decided row that fails,
   DataFusion fails the query while native evaluation returns the result.

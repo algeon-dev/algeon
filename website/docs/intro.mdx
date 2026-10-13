@@ -15,31 +15,30 @@ import styles from '@site/src/css/homepage.module.css';
 
 # Compose GPU algorithms with SQL.
 
-<p className={styles.lead}>Run graph, vector, and machine-learning algorithms on SQL subqueries, then join and filter their results in the same statement.</p>
+<p className={styles.lead}><span>Run graph, vector, and machine-learning algorithms on SQL subqueries,</span> <span>then join and filter their results in the same query.</span></p>
 
 <div className={styles.actions}>
   <Link className="button button--primary" to="/guides/datasets/merrec#barbie">See a SQL example</Link>
   <Link className="button button--outline button--secondary" to="/build">Build &amp; run</Link>
 </div>
 
-<p className={styles.heroNote}>A Rust library for Apache DataFusion sessions, also served as an Arrow Flight SQL server. <br />How it works: <Link to="/design">read the design</Link>, which follows a query from SQL to GPU columns and back.</p>
-
 </div>
+
+Algeon is a GPU query engine built on Apache DataFusion. It exposes NVIDIA's
+cuGraph, cuVS and cuML libraries as SQL table functions and runs supported
+relational operations on cuDF. Use it as a Rust library in a DataFusion
+session or connect through Arrow Flight SQL. The
+[design guide](./design/index.mdx) follows a query from SQL to GPU columns
+and back.
 
 ## Compose algorithms {/* #from-a-question-to-a-working-set */}
 
-A statement passes a subquery to a GPU UDTF (user-defined table function)
-and gets rows back. SQL groups those rows, joins them to names or labels, or
-passes them to another UDTF. The
-[MerRec campaign statement](./guides/datasets/merrec.mdx#audience-funnel)
-scores shoppers with personalized PageRank, finds taste lookalikes of earlier
-Pokemon buyers with a vector search, ranks the union with a trained model and
-counts who later bought Pokemon, inside one physical plan. The
-other [demo datasets](./guides/datasets/index.mdx) apply the same pattern to
-a citation graph, a product catalog and a malware benchmark.
+A SQL query passes a subquery to a GPU UDTF (user-defined table
+function) and gets rows back. SQL groups those rows, joins them to names or labels, or
+passes them to another UDTF.
 
 <FlowDiagram
-  ariaLabel="SQL subquery to GPU UDTF to result rows in the same statement."
+  ariaLabel="SQL subquery to GPU UDTF to result rows in the same query."
   nodes={[
     {
       id: 'working-set', kind: 'SQL', name: 'Working set', tone: 'plan',
@@ -56,15 +55,27 @@ a citation graph, a product catalog and a malware benchmark.
       note: ['join back · filter · aggregate', "or the next UDTF's input"],
     },
   ]}
-  groups={[{label: 'one SQL statement · one physical plan', nodes: ['working-set', 'algorithm', 'rows']}]}
+  groups={[{label: 'one SQL query · one physical plan', nodes: ['working-set', 'algorithm', 'rows']}]}
   caption="Each UDTF accepts a relation with its required columns and types. Its output can feed another UDTF or a SQL join."
 />
 
+The [MerRec](./guides/datasets/merrec.mdx) demo queries 1.27 billion
+Mercari marketplace events. Its
+[campaign list](./guides/datasets/merrec.mdx#audience-funnel) comes from one
+SQL query that composes graph, vector and machine-learning UDTFs:
+
+- `cugraph_personalized_pagerank` scores shoppers by affinity to the Pokemon
+  brand on the like graph.
+- `cuvs_brute_force_knn` finds taste lookalikes of earlier Pokemon buyers.
+- `cuml_forest_predict` scores both lists with a pretrained XGBoost model.
+- `GROUP BY` counts who in each list later bought Pokemon.
+
+The other [demo datasets](./guides/datasets/index.mdx) apply the same pattern
+to a citation graph, a product catalog and a malware benchmark.
+
 ## Algorithm families {/* #available-building-blocks */}
 
-DataFusion provides SQL planning and the session APIs. Algeon adds cuDF
-execution for supported relational plans and GPU UDTFs backed by
-NVIDIA's GPU libraries:
+Three UDTF families wrap NVIDIA's GPU libraries:
 
 | Capability | SQL interface | Current use |
 | --- | --- | --- |
@@ -72,22 +83,19 @@ NVIDIA's GPU libraries:
 | Vector analysis | [`cuvs_*`](./cuvs/overview.mdx) | Exact and approximate kNN, pairwise distances, per-row top-k, KMeans, and PCA over vector columns. |
 | Machine learning | [`cuml_*`](./cuml/overview.mdx) | Fit models within a query, or score features with a pretrained XGBoost, LightGBM, or Treelite forest. |
 
-Each family returns ordinary rows, lists its installed UDTFs in its index,
-and requires its build feature and session setup.
-
 ## Build and run {/* #start-exploring */}
 
 Algeon supports Linux with an NVIDIA GPU. Follow [Build & Test](./build/overview.md)
-for prerequisites and build instructions; to run only the Flight SQL server,
-follow [Run the server only](./build/overview.md#run-the-server-only). Then
-choose an integration:
+for prerequisites and build instructions, or
+[Run as a Flight SQL server](./build/overview.md#run-as-a-flight-sql-server)
+to skip the contributor setup. Then choose an integration:
 
 - **Rust application:** install Algeon in an [embedded DataFusion session](./integration/datafusion-session.mdx).
 - **SQL client:** run the [Arrow Flight SQL server](./integration/flight-sql-server.mdx) and connect with ADBC.
 
 Before adding a UDTF to a query,
 [discover and validate it](./guides/gpu-udtf-discovery.mdx) against
-registered tables; when an attempt fails,
+registered tables. When an attempt fails,
 [structured errors](./integration/handling-errors.mdx) carry diagnostic
 fields and retry guidance. [Introducing Algeon](/blog/introducing-algeon)
 describes the motivation and application scenarios.
@@ -104,44 +112,48 @@ describes the motivation and application scenarios.
 
 The [execution mode](./integration/datafusion-session.mdx#choose-an-execution-mode)
 sets how much relational SQL joins the GPU. By default, supported candidates
-run on cuDF and the rest keeps its DataFusion CPU plan with the same results;
-`functions_only` keeps ordinary SQL on the CPU around explicit GPU UDTFs, and
-`native_required` rejects a plan that still contains CPU operators. Explicit
-GPU UDTFs have no CPU fallback, and once GPU execution starts a failure
-returns as a structured error and is never replayed on CPU. The
-[Design](./design/index.mdx) pages follow a query from SQL to GPU columns and
-back.
+execute on cuDF, while unsupported operators remain on DataFusion's CPU
+execution path; `functions_only` keeps ordinary SQL on
+the CPU around explicit GPU UDTFs, and `native_required` rejects a plan that
+still contains CPU operators. Explicit GPU UDTFs have no CPU fallback, and once
+GPU execution starts, failures return as structured errors and are never
+replayed on the CPU.
 
 :::warning[Experimental]
 
 APIs and query behavior may change incompatibly. Stability and result
-verification remain incomplete; compare outputs against trusted reference results.
+verification remain incomplete. Compare outputs against trusted reference results.
 The [roadmap](./reference/roadmap.md) lists what changes next.
 
 :::
 
 ## Scope and non-goals {/* #scope */}
 
-Algeon is a single-process engine for exploratory analysis over a working
-set that fits one GPU.
+Algeon is a single-process engine for exploratory analysis. Today each
+query runs on one GPU, and the limits below follow from that.
 
-- A query runs on one GPU inside a fixed memory
-  [grant](./design/admission.mdx#device-profiles-and-grants), with no
-  spilling; graph construction and algorithm scratch space count toward the
-  grant. Spilling and multi-GPU execution are
-  [longer-term roadmap items](./reference/roadmap.md#longer-term).
+- Each query runs inside a fixed memory
+  [grant](./design/admission.mdx#device-profiles-and-grants) on its GPU,
+  with no spilling. Graph construction and algorithm scratch space count
+  toward the grant.
 - GPU scans read Parquet from local disk or S3-compatible storage, read-only,
   and cover a [subset of SQL](./reference/native-sql-support.mdx) and
-  [data types](./reference/data-type-support.md). Lakehouse catalogs, Iceberg
-  first, are the [next source on the roadmap](./reference/roadmap.md#mid-term).
-- Indexes, fitted models and graphs live within one statement; a bounded
-  server can [cache graphs](./cugraph/overview.mdx#reuse-in-bounded-servers).
+  [data types](./reference/data-type-support.md). Lakehouse catalog
+  integrations, beginning with Apache Iceberg, represent the
+  [next milestone on the roadmap](./reference/roadmap.md#mid-term).
+- Indexes, fitted models and graphs exist only while the query that
+  builds them runs. A bounded server can
+  [cache graphs](./cugraph/overview.mdx#reuse-in-bounded-servers).
+- DataFusion parses SQL, builds and optimizes the logical plan, and produces
+  the physical plan. Algeon's physical optimizer rule
+  [lowers supported fragments](./design/native-lowering.mdx) of that
+  completed plan to a GPU plan and optimizes the GPU plan. It has no logical
+  planning or optimization of its own.
+- Relational operators come from cuDF and the algorithms from cuGraph, cuVS
+  and cuML. Algeon writes no GPU kernels beyond a few element-wise routines
+  in its cuDF bindings.
 - The design target is an agent or analyst running many ad-hoc OLAP queries
   against a shared GPU and revising most of them. The engine owns the
   physical plan, failures return structured errors with retry guidance, and
-  admission protects the device. Taking a 100 ms query to 1 ms is outside
-  that effort; see the [design priorities](./design/index.mdx#priorities).
-- DataFusion is the only integration, with no Substrait input and no plan
-  for a wide set of engines. Algeon is a Rust library meant to be embedded
-  in a backend service and modified by the team that runs it, and the Flight
-  SQL server is that library behind a network interface.
+  admission protects the device. Sub-millisecond latency optimization falls
+  outside this design scope. See the [design priorities](./design/index.mdx#priorities).

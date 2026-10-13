@@ -91,7 +91,7 @@ impl MlRelationRole {
     /// Static catalog description of this relation role.
     pub const fn description(self) -> &'static str {
         match self {
-            Self::Input => "Dense feature rows fitted and transformed in this statement.",
+            Self::Input => "Dense feature rows evaluated by the call.",
             Self::Training => "Dense features and an Int32 label used to fit the query-local model.",
             Self::Predict => "Independent dense feature rows scored with the query-local model; must omit label.",
         }
@@ -657,7 +657,7 @@ const FOREST_LIMITATIONS: &[&str] = &[
     "Scores pretrained XGBoost (JSON, UBJSON, legacy binary), LightGBM text, and Treelite checkpoint forests with nvForest. Multi-target models are rejected at planning.",
     "Features must be Float32 without null values and match the model feature count. Forests with double-precision thresholds widen the features to Float64 on the device.",
     "output => 'class_index' requires a model with at least two outputs and resolves ties to the lowest class index.",
-    "model resolves under the server-configured models root, and files above max_model_bytes are rejected. Each statement reads and imports the model once; there is no cross-statement model cache.",
+    "model resolves under the server-configured models root, and files above max_model_bytes are rejected. The model is read and imported each time a query is planned; there is no model cache.",
 ];
 const TSVD_LIMITATIONS: &[&str] = &[
     "Empty input returns an empty result without a native call. Nonempty input requires at least two evaluated rows and two feature dimensions. n_components cannot exceed dimension; known dimensions are checked during planning, otherwise execution reports a structured error.",

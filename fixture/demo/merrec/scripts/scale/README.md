@@ -27,9 +27,12 @@ Build a release server for performance measurements:
 ```bash
 cargo build --workspace --all-features --release --bin algeon_server
 
+# Hold the device lock on fd 9 so backgrounding targets the server process itself:
+exec 9>/tmp/cudf-gpu.lock && flock -x 9
 ALGEON_SERVER_CONFIG_FILE="$PWD/fixture/demo/merrec/scripts/scale/server.toml" \
 ALGEON_SERVER_BIND=127.0.0.1:50064 \
-flock -x /tmp/cudf-gpu.lock target/release/algeon_server
+target/release/algeon_server &
+SERVER_PID=$!
 ```
 
 The relational performance lane requires complete native execution. Run the
@@ -48,8 +51,8 @@ python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 --register \
   fixture/demo/merrec/scripts/scale/02_user_activity.sql
 ```
 
-For the CPU SQL baseline, stop that server and restart it with
-`ALGEON_SERVER_NATIVE_EXECUTION_MODE=functions_only`. Run the identical SQL and input
+For the CPU SQL baseline, stop that server (`kill $SERVER_PID && wait $SERVER_PID 2>/dev/null`)
+and restart it with `ALGEON_SERVER_NATIVE_EXECUTION_MODE=functions_only`. Run the identical SQL and input
 files with separate `full/cpu` report and result directories. This mode keeps
 ordinary relational SQL in DataFusion. Explicit cuGraph and cuVS functions
 remain GPU functions, and are excluded from this CPU SQL comparison.
@@ -61,8 +64,9 @@ exact integer result rows between the two modes.
 Report the first run separately from the median of subsequent runs, including
 the CPU worker configuration and release binary checksum. These timings include
 planning and complete result receipt; conversion and CSV export are excluded.
-The first run may already read files cached by conversion. A filesystem cold
-read requires a separately controlled measurement.
+The first run may already read files cached by conversion. Each run record's
+`source_cache_resident` gives the page-cache resident fraction of every source
+file measured before that run; a cold read needs the files evicted first.
 
 The validated six-month run used a release binary and cached source files.
 The CPU baseline used 32 DataFusion target partitions. Native execution used
@@ -244,18 +248,27 @@ plus uncommitted engine fixes (whole-input `OVER ()` windows, temporal casts
 and checked timestamp arithmetic, union inputs that read one producer twice,
 and rejection and memory-failure diagnostics), the configuration above, and
 cached source files. Single-run statements report that run's latency.
-Statements `10`, `32` and `33` were recaptured on 2026-10-08 with a release
-server built from commit `275aac60c` plus the uncommitted shared edge-input
-fix. Each period's DISTINCT edge relation is computed once and read by both
-graph calls, and the fragment count includes those two producers. The result
-rows are identical to the 2026-10-07 captures.
+Statements `32` and `33` were recaptured on 2026-10-11 with a release server
+built from commit `bc4bbf62c` plus the uncommitted change that applies
+Algeon's KvikIO defaults (64 I/O threads) when the backend is built, with the
+source files cached. Statements `10` and `30` were recaptured on 2026-10-12
+with a release server built from commit `b919a772e`, each on a fresh server
+with the pages they read already in the page cache. The first run of each
+statement is the warmup and is reported separately: 4.25 s for `10` and
+20.32 s for `30`, whose server had first run the `--prepare-scale`
+statements. Each run record carries `source_cache_resident`, the resident
+fraction of each source file measured with `mincore` before the run. Each
+period's DISTINCT edge relation in `10`, `32` and `33` is computed once and
+read by both graph calls, and the fragment count includes those two
+producers. The result rows of `10`, `32` and `33` are identical to the
+2026-10-07 captures.
 
 | File | Runs | Median after first (s) | Native fragments | Host boundaries | Allocator peak (GiB) |
 |---|---:|---:|---:|---:|---:|
 | `07_brand_overlap.sql` | 3 | 6.12 | 3 | 0 | 17.20 |
 | `08_brand_twins.sql` | 3 | 6.68 | 3 | 0 | 74.74 |
 | `09_shopping_worlds.sql` | 3 | 9.11 | 4 | 0 | 54.46 |
-| `10_barbie_tie_ins.sql` | 3 | 3.82 | 11 | 0 | 13.18 |
+| `10_barbie_tie_ins.sql` | 3 | 3.34 | 11 | 0 | 13.18 |
 | `11_brand_map.sql` | 3 | 17.74 | 7 | 0 | 54.46 |
 | `12_session_audit.sql` | 3 | 2.30 | 2 | 0 | 20.04 |
 | `13_pokemon_lookalikes.sql` | 3 | 21.88 | 7 | 0 | 25.06 |
@@ -273,12 +286,12 @@ rows are identical to the 2026-10-07 captures.
 | `27_propensity_xgboost.sql` | 3 | 14.89 | 3 | 0 | 21.58 |
 | `28_ann_exact_10k.sql` | 3 | 0.34 | 4 | 0 | 2.12 |
 | `29_ann_cagra_10k.sql` | 3 | 8.03 | 4 | 0 | 2.12 |
-| `30_audience_funnel.sql` | 3 | 20.80 | 9 | 0 | 18.19 |
+| `30_audience_funnel.sql` | 3 | 20.13 | 9 | 0 | 18.19 |
 | `31_world_bridges.sql` | 3 | 23.80 | 9 | 0 | 54.74 |
-| `32_barbie_control_hot_wheels.sql` | 3 | 3.85 | 11 | 0 | 13.18 |
-| `33_barbie_control_nike.sql` | 3 | 3.79 | 11 | 0 | 13.15 |
+| `32_barbie_control_hot_wheels.sql` | 3 | 3.31 | 11 | 0 | 13.18 |
+| `33_barbie_control_nike.sql` | 3 | 3.31 | 11 | 0 | 13.15 |
 
-Files `30` to `33` were captured later the same day on a release build of
+File `31` was captured later the same day on a release build of
 `016e6972f` (the same configuration and cached source files); each website
 capture records the `binary_sha256` of the server that produced it.
 

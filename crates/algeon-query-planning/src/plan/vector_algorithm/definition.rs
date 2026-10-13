@@ -360,7 +360,7 @@ const KMEANS_OPTIONS: &[GpuOptionDefinition] = &[
         name: "n_clusters",
         required: true,
         kind: GpuOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: None },
-        description: "Number of clusters fitted for this one statement.",
+        description: "Number of clusters to fit.",
     },
     GpuOptionDefinition {
         name: "metric",
@@ -692,7 +692,7 @@ FROM cuvs_ivf_flat(
 )
 ORDER BY query_ordinal, rank;"#,
         limitations: &[
-            "Builds and destroys its query-local index in the statement; no index persists across statements.",
+            "Builds and frees its index during each query execution; executions never share an index.",
             "Results are approximate unless all lists are probed. Fewer than k neighbors may be returned for a query; missing (query, rank) rows are omitted and valid ranks remain contiguous.",
             "The evaluated dataset must be non-empty, k and n_lists must not exceed its row count, and n_probes must not exceed n_lists.",
             "Dataset and query dimensions and element types must match. Cosine requires at least two dimensions.",
@@ -722,7 +722,7 @@ FROM cuvs_ivf_pq(
 )
 ORDER BY query_ordinal, rank;"#,
         limitations: &[
-            "Builds and destroys its query-local index within the statement; no index persists across statements.",
+            "Builds and frees its index during each query execution; executions never share an index.",
             "Product quantization is lossy even when all lists are probed. Missing neighbors are omitted and valid ranks remain contiguous.",
             "The dataset must be non-empty; k and n_lists must not exceed its row count, and n_probes must not exceed n_lists.",
             "Dataset and query dimensions and element types must match. Cosine requires at least two dimensions. Nonzero pq_dim * pq_bits must be divisible by 8; dimensions are padded when needed.",
@@ -751,7 +751,7 @@ FROM cuvs_cagra(
 )
 ORDER BY query_ordinal, rank;"#,
         limitations: &[
-            "Builds and destroys a query-local graph and padded dataset within the statement; no index persists across statements.",
+            "Builds and frees its graph and padded dataset during each query execution; executions never share an index.",
             "Approximate search may return fewer than k neighbors; missing (query, rank) rows are omitted and valid ranks remain contiguous.",
             "The dataset must be non-empty, k and intermediate_graph_degree must be less than or equal to its row count, and graph_degree must be less than intermediate_graph_degree.",
             "k must not exceed itopk_size. single_cta requires itopk_size no greater than 1024. cosine cannot use nn_descent.",
@@ -811,7 +811,7 @@ ORDER BY row_ordinal, rank;"#,
         sql_function_name: CUVS_KMEANS_FUNCTION,
         display_name: "KMeans",
         summary: "K-means clustering assignments for dense vector rows.",
-        use_this_when: "Use this when one statement should fit clusters over its evaluated relation and immediately join or aggregate the assignments.",
+        use_this_when: "Use this when one query should fit clusters over its evaluated relation and immediately join or aggregate the assignments.",
         relation_roles: INPUT_RELATION,
         vector_element_support: KMEANS_SUPPORT,
         output_contract: CuvsOutputContract::KMeansAssignments,
@@ -824,7 +824,7 @@ FROM cuvs_kmeans(
 )
 ORDER BY row_ordinal;"#,
         limitations: &[
-            "Fits a model and returns assignments within one statement; it does not return a reusable model, centroids, or inertia.",
+            "Fits a model and returns assignments within one call; it does not return a reusable model, centroids, or inertia.",
             "The evaluated input must be non-empty and n_clusters must not exceed its row count.",
             "cluster_id values are query-local labels. Do not attach permanent business meaning to their numeric values.",
             "Cluster sizes can differ slightly between runs, because centroid sums accumulate with floating-point atomics; the native seed is fixed at 0 and cannot be set.",
@@ -835,7 +835,7 @@ ORDER BY row_ordinal;"#,
         sql_function_name: CUVS_PCA_FUNCTION,
         display_name: "PCA",
         summary: "Principal-component analysis transform for dense vector rows.",
-        use_this_when: "Use this when one statement should fit and transform its evaluated input relation for relational export or downstream visualization.",
+        use_this_when: "Use this when one query should fit and transform its evaluated input relation for relational export or downstream visualization.",
         relation_roles: INPUT_RELATION,
         vector_element_support: FLOAT32_VECTOR_SUPPORT,
         output_contract: CuvsOutputContract::PcaComponents,
@@ -848,7 +848,7 @@ FROM cuvs_pca(
 )
 ORDER BY row_ordinal;"#,
         limitations: &[
-            "Fits and transforms the evaluated input in one statement; it does not return a reusable transform, components, or explained-variance metadata.",
+            "Fits and transforms the evaluated input in one call; it does not return a reusable transform, components, or explained-variance metadata.",
             "The evaluated input needs at least two rows and two dimensions, and n_components must not exceed the evaluated dimension.",
             "Component sign orientation is not a semantic label. The output schema changes with the literal n_components option.",
         ],

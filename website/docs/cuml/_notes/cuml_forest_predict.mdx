@@ -4,7 +4,7 @@ The `model` argument names a file beneath the `root` of the server's
 [`[models]` table](../../integration/configuration.mdx#models-and-forest-inference).
 The server opens that directory once at startup and resolves every `model`
 beneath the opened directory. Renaming or replacing `root` later, or a symlink
-among its ancestors, does not redirect lookups; pointing the server at a new
+among its ancestors, does not redirect lookups. Pointing the server at a new
 directory takes a restart. Lookup uses `openat2(2)`, which requires Linux 5.6
 or newer.
 
@@ -24,11 +24,11 @@ beneath `root` are followed, and only regular files are accepted.
 - An `outside_root` symlink is rejected without looking up its target.
 - A statement that fails with `model_changed` must be planned again.
 
-The statement reads and binds the model once at planning, and `EXPLAIN` shows
+Planning reads and binds the model, and `EXPLAIN` shows
 its SHA-256 digest as `model=sha256:<first 12 hex>`. The server reads and
 parses the file synchronously on each planning pass (`GetFlightInfo`, `DoGet`,
 and prepared statement creation). A large model therefore adds its read and
-parse time to the planning latency of every statement that names it.
+parse time to the planning latency of every query that names it.
 
 Every file reachable beneath `root`, including hard links and bind mounts
 placed there, is trusted as a model source. `root` and its subdirectories must

@@ -18,7 +18,7 @@ Query-local inverted-file approximate nearest-neighbor search.
 
 ## Quickstart
 
-The call below expects the registered relations `dataset_vectors` (the `dataset` role) and `query_vectors` (the `queries` role), each passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
+The call below expects the registered relations `dataset_vectors` (the `dataset` role) and `query_vectors` (the `queries` role), each passed as a parenthesized `SELECT` subquery.
 
 ```sql
 SELECT *
@@ -54,31 +54,20 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 ### Scalar SQL arguments
 
-| Argument | Type | Required | Description |
-| --- | --- | --- | --- |
-| `k` | `integer` | yes | Number of neighbors returned for each evaluated query row. |
-| `metric` | `enum ("l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product")` | no | Distance or score metric; native default l2_expanded. Distance metrics rank lower values first; inner product ranks higher values first. |
-| `n_lists` | `integer` | yes | Number of inverted lists; must not exceed the evaluated dataset row count. |
-| `n_probes` | `integer` | no | Lists probed per query; native default 20, and must not exceed n_lists. |
-| `kmeans_n_iters` | `integer` | no | Iterations for training list centers; native default 20. |
-| `kmeans_trainset_fraction` | `number` | no | Fraction of the dataset used for training centers; native default 0.5. |
-
-### SQL value argument schemas
-
-| Argument | Required | Literal shape | Default | Constraints | Description |
+| Argument | Type | Required | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `k` | yes | `integer` | No default | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
-| `kmeans_n_iters` | no | `integer` | `20` | minimum 1; maximum 4294967295 | Iterations for training list centers; native default 20. |
-| `kmeans_trainset_fraction` | no | `number` | `0.5` | greater than 0; maximum 1 | Fraction of the dataset used for training centers; native default 0.5. |
-| `metric` | no | `string` | `"l2_expanded"` | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric; native default l2_expanded. Distance metrics rank lower values first; inner product ranks higher values first. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded, cosine, inner_product; Int8: l2_expanded, l2_sqrt_expanded, cosine, inner_product; UInt8: l2_expanded, l2_sqrt_expanded, cosine, inner_product. |
-| `n_lists` | yes | `integer` | No default | minimum 1; maximum 4294967295 | Number of inverted lists; must not exceed the evaluated dataset row count. |
-| `n_probes` | no | `integer` | `20` | minimum 1; maximum 4294967295 | Lists probed per query; native default 20, and must not exceed n_lists. |
+| `k` | `integer` | yes | No default | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
+| `kmeans_n_iters` | `integer` | no | `20` | minimum 1; maximum 4294967295 | Iterations for training list centers; native default 20. |
+| `kmeans_trainset_fraction` | `number` | no | `0.5` | greater than 0; maximum 1 | Fraction of the dataset used for training centers; native default 0.5. |
+| `metric` | `string` | no | `"l2_expanded"` | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric; native default l2_expanded. Distance metrics rank lower values first; inner product ranks higher values first. |
+| `n_lists` | `integer` | yes | No default | minimum 1; maximum 4294967295 | Number of inverted lists; must not exceed the evaluated dataset row count. |
+| `n_probes` | `integer` | no | `20` | minimum 1; maximum 4294967295 | Lists probed per query; native default 20, and must not exceed n_lists. |
 
 ### Vector binding shapes
 
 Each relation subquery must project an `id` field followed by either one or more feature fields of a supported element type (`Float32`, `Int8`, `UInt8`) or exactly one list field of a supported element type, under any name.
 
-For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and its list field. Nullable field types are accepted; a null ID, feature value, list row, or list element fails the query.
+For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and its list field. Nullable field types are accepted. A null ID, feature value, list row, or list element fails the query.
 
 ## Output
 
@@ -101,12 +90,8 @@ import Examples from '../_examples/cuvs_ivf_flat.mdx';
 
 ## Limits
 
-- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
-- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
-- Builds and destroys its query-local index in the statement; no index persists across statements.
+- Builds and frees its index during each query execution; executions never share an index.
 - Results are approximate unless all lists are probed. Fewer than k neighbors may be returned for a query; missing (query, rank) rows are omitted and valid ranks remain contiguous.
 - The evaluated dataset must be non-empty, k and n_lists must not exceed its row count, and n_probes must not exceed n_lists.
 - Dataset and query dimensions and element types must match. Cosine requires at least two dimensions.
 - Neighbors and distances can differ slightly between runs, because index construction accumulates k-means centroid sums with floating-point atomics; there is no seed option.
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

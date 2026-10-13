@@ -19,14 +19,14 @@ for each of six groups. One group has the following profile:
 
 Another group leads with sound at 45.10%, followed by charging at 24.20%
 and connection at 24.09%. These rates suggest which original reviews an
-analyst should read. They are averages of product-level rates; a product
+analyst should read. They are averages of product-level rates. A product
 with ten reviews has the same weight as a product with a thousand.
 
 SQL filters headphones and accessories with at least ten low-rating reviews,
 calculates eight substring rates for each product, and fits KMeans to those
 rates. It then averages each group's product profiles. Top-K returns the
 three largest dimensions within each profile, rather than across all groups.
-No predefined complaint labels enter this statement.
+No predefined complaint labels enter this query.
 
 <details>
 <summary>Read the query: review mentions → KMeans → Top-K</summary>

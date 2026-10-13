@@ -522,27 +522,11 @@ function descriptorValueOptions(spec) {
 }
 
 function renderInputs(spec) {
-  const contract = vertexIdContract(spec);
-  const logicalEndpointTypes = contract.logical_string_endpoint_types;
-  const supportsLogicalStrings = logicalEndpointTypes.length > 0;
-  const vertexIdLink = '[Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf)';
-  const parts = [];
-  parts.push(
-    `Every relation is a named parenthesized ${code('SELECT')} subquery. The required ${code('edges')} role uses canonical ${code('src')} and ${code('dst')} columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.`,
-  );
-  const mappedNumericTypes = contract.mapped_numeric_endpoint_types;
-  const mappingNote = mappedNumericTypes.length > 0
-    ? ` The native graph indexes ${code(contract.native_logical_mapping_type)} vertices only, so ${renderTypeList(mappedNumericTypes)} vertex IDs are mapped to dense ${code(contract.native_logical_mapping_type)} ids by a per-call codebook and decoded back to the input type in the result; the distinct vertex count must fit in ${code(contract.native_logical_mapping_type)}.`
-    : '';
-  const dtypes = supportsLogicalStrings
-    ? `Endpoint columns accept numeric ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs or logical string ${renderTypeList(logicalEndpointTypes)} vertex IDs; string vertex-identity outputs are canonicalized to ${code(contract.logical_string_output_type)} (native mapping ${code(contract.native_logical_mapping_type)}) while scores, distances, counts, coordinates, and opaque labels stay numeric.${mappingNote}`
-    : `Endpoint columns accept ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs only; logical string endpoints are not supported.`;
-  parts.push('', `${dtypes} The shared vertex-ID contract is summarized in ${vertexIdLink}; the concrete call-specific schema comes from ${code(contract.call_specific_authority)}.`);
-  if (supportsLogicalStrings) {
-    const limitations = logicalStringSideInputLimitations(spec, contract);
-    parts.push('', 'Logical string side-input limitations:', '', limitations.length > 0 ? limitations.map(limitation => `- ${prose(docsText(limitation))}`).join('\n') : '- No additional logical string side-input limitation is declared.');
-  }
-  return parts.join('\n');
+  return [
+    `Every relation is a named parenthesized ${code('SELECT')} subquery. The required ${code('edges')} role uses canonical ${code('src')} and ${code('dst')} columns. Every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.`,
+    '',
+    `The vertex-ID types this UDTF accepts, the numeric types a per-call codebook maps to native ids, and its string-key limits are listed in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from ${code(vertexIdContract(spec).call_specific_authority)}.`,
+  ].join('\n');
 }
 
 function renderTypeList(types) {
@@ -567,7 +551,6 @@ function logicalStringSideInputLimitations(spec, contract) {
 
 function renderLimitations(spec) {
   const limitations = spec.limitations.filter(limitation => !limitation.startsWith('dry-run'));
-  if (limitations.length === 0) return '_No algorithm-specific limitations._';
   return limitations.map(limitation => `- ${prose(docsText(limitation))}`).join('\n');
 }
 
@@ -575,10 +558,10 @@ function renderGraphOptionsNote(spec) {
   const directed = spec.options_schema.properties?.directed;
   const link = '[Graph Construction Options](../../graph-options.mdx)';
   if (directed?.enum?.length === 1 && directed.enum[0] === false) {
-    return `This UDTF requires ${code('directed=false')} (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in ${link}.`;
+    return `This UDTF requires ${code('directed=false')} (undirected/symmetric graph). All other graph construction options follow the shared defaults documented in ${link}.`;
   }
   if (directed?.default === false) {
-    return `This UDTF builds an undirected graph by default (${code('directed=false')}); all other graph construction options follow the shared defaults documented in ${link}.`;
+    return `This UDTF builds an undirected graph by default (${code('directed=false')}). All other graph construction options follow the shared defaults documented in ${link}.`;
   }
   return `Graph construction follows the shared defaults (${code('directed=true')}, renumbering, ${code('python_cugraph')} policy) documented in ${link}.`;
 }
@@ -634,11 +617,10 @@ function renderArguments(spec) {
     '',
     table(['Argument', 'Required', 'Columns', 'Description'], relationFields),
     ...(domainRules ? ['', domainRules] : []),
-    '',
-    '### Named value arguments',
-    '',
-    Object.keys(valueOptions).length === 0 ? '_This UDTF has no algorithm-specific value arguments. Its inputs are the relation arguments above and the graph construction options below._' : optionTable(valueOptions),
   ];
+  if (Object.keys(valueOptions).length > 0) {
+    optionSections.push('', '### Named value arguments', '', optionTable(valueOptions));
+  }
   optionSections.push('', '### Graph construction options', '', renderGraphOptionsNote(spec));
   return optionSections.join('\n');
 }
@@ -657,7 +639,7 @@ function renderSchemas(spec) {
       code(field.name), code(field.data_type), field.nullable ? 'yes' : 'no', cell(descriptions[field.name]),
     ]));
   });
-  blocks.push('These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.');
+  blocks.push('These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.');
   return blocks.join('\n\n');
 }
 
@@ -689,7 +671,7 @@ function quickstartPrerequisite(spec, example) {
   if (options.source_vertex !== undefined && options.source_vertex !== null) {
     sentence += `, and starts from source vertex ${code(JSON.stringify(options.source_vertex))}`;
   }
-  return `${sentence}. Substitute your own registered relations.`;
+  return `${sentence}.`;
 }
 
 function renderPage(spec) {
@@ -720,7 +702,6 @@ function renderPage(spec) {
     output: renderSchemas(spec),
     examples: narrativeExampleImport(`../../_examples/${spec.function_name}.mdx`),
     limits: renderLimitations(spec),
-    discoveryLink: '../../../reference/gpu-udtf-catalog.mdx',
   });
 }
 
@@ -763,7 +744,7 @@ function renderVertexIdSupport(specs) {
     '',
     'This matrix is generated from each UDTF descriptor’s structured `edges.vertex_id_contract`. It is the authoritative overview of numeric endpoint inputs, the numeric types a per-call codebook maps to native ids, logical string endpoint inputs, canonical string output, the native vertex id type, and side-input limitations.',
     '',
-    'Logical string input means any `Utf8`, `LargeUtf8`, or `Utf8View` edge endpoint. The physical string types may be mixed within one graph call; vertex-identity outputs use the declared canonical string type. A per-call codebook maps string vertices, and numeric vertices the native graph cannot index, to dense native ids and decodes results back to the input vertex type.',
+    'Logical string input means any `Utf8`, `LargeUtf8`, or `Utf8View` edge endpoint. The physical string types may be mixed within one graph call. Vertex-identity outputs use the declared canonical string type. A per-call codebook maps string vertices, and numeric vertices the native graph cannot index, to dense native ids and decodes results back to the input vertex type.',
     '',
     table(['UDTF', 'Numeric endpoint types', 'Numeric types mapped by codebook', 'Logical string endpoint types', 'Canonical string output', 'Native vertex id type', 'Logical side-input limitation'], rows),
     '',

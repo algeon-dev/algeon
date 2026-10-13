@@ -19,6 +19,7 @@ import {
   renderDenseArguments,
   renderDenseOutputSchema,
   renderFunctionPage,
+  renderVectorElementTypes,
   table,
   write,
 } from './gpu-docs-common.mjs';
@@ -118,9 +119,23 @@ function renderInputs(spec) {
     '',
     '### Vector element types',
     '',
-    table(['Element type', 'Valid metrics'], spec.relation_roles[0].fields.features.element_types.map(element => [
-      code(element), 'Not applicable',
-    ])),
+    renderVectorElementTypes(spec.relation_roles[0].fields.features.element_types.map(element => ({ element, metrics: [] }))),
+  ].join('\n');
+}
+
+// Only the supervised UDTFs take a `training` relation with a label column;
+// its type follows the family.
+function renderBindingShapes(spec) {
+  const label = spec.family === 'classification'
+    ? ' The `training` relation also projects an Int32 `label`; the `predict` relation omits it.'
+    : spec.family === 'regression'
+      ? ' The `training` relation also projects a finite Float32 `label`; the `predict` relation omits it.'
+      : '';
+  const nulls = label ? 'A null ID, feature value, list row, list element, or label fails the query.' : 'A null ID, feature value, list row, or list element fails the query.';
+  return [
+    `Each relation subquery projects an \`id\` and either feature columns in dimension order or one list column, with the element types listed under Vector element types.${label} Nullable field types are accepted. ${nulls}`,
+    '',
+    'The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.',
   ].join('\n');
 }
 
@@ -139,18 +154,13 @@ function renderPage(spec, sidebarPosition) {
       sql: formatFunctionQuickstartSql(entry.quickstart.sql),
     },
     inputs: renderInputs(spec),
-    argumentsAndOptions: renderDenseArguments(spec, [
-      'Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.',
-      '',
-      'The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.',
-    ].join('\n')),
+    argumentsAndOptions: renderDenseArguments(spec, renderBindingShapes(spec)),
     output: renderDenseOutputSchema(spec),
     notes: existsSync(join(DOCS_DIR, '_notes', `${spec.function_name}.mdx`))
       ? narrativePartialImport(`../_notes/${spec.function_name}.mdx`, 'Notes') : null,
     examples: existsSync(join(DOCS_DIR, '_examples', `${spec.function_name}.mdx`))
       ? narrativeExampleImport(`../_examples/${spec.function_name}.mdx`) : null,
     limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
-    discoveryLink: '../../reference/gpu-udtf-catalog.mdx',
   });
 }
 

@@ -9,7 +9,7 @@ distinct shopper who liked a brand.
 SQL reduces 182,889,825 like events to user-brand pairs and selects the
 5,000 brands with the most fans. Jaccard measures shared audience divided
 by combined audience for each brand pair. Similarities of at least 0.02
-become edges for Leiden; the resulting groups join back to brand names.
+become edges for Leiden. The resulting groups join back to brand names.
 Leiden uses the retained connections and currently ignores edge weights.
 
 <CodeBlock language="sql" className="no-collapse">{capture.sql}</CodeBlock>
@@ -25,10 +25,8 @@ The query returns five leading brands for each of 38 groups with at least
 })}</tbody>
 </Table>
 
-The 101-brand group puts power tools beside kitchen appliances, a candidate
-home-project collection to inspect. Shared likes supply a relationship beyond
-the catalog's categories. Whether such a collection sells, and whether
-membership is stable across months, has not been tested.
+The 101-brand group places power tools beside kitchen appliances, providing
+a candidate home-project collection to inspect.
 
 <div className="fineprint">
 

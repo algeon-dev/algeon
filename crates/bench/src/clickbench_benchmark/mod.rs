@@ -18,6 +18,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
+use query_runtime::runtime::KvikioProcessConfig;
 use workloads::clickbench::{
     CLICKBENCH_QUERIES, ClickbenchDatasetMetadata, ClickbenchLayout, ClickbenchQuery, WorkloadError, WorkloadResult,
     discover_clickbench_layout, prepare_clickbench_report_dataset, register_clickbench_table,
@@ -135,7 +136,6 @@ const SKIP_NATIVE_ENV: &str = "ALGEON_CLICKBENCH_BENCH_SKIP_NATIVE";
 const CPU_PROFILE_ENV: &str = "ALGEON_CLICKBENCH_BENCH_CPU_PROFILE";
 const PROGRESS_ENV: &str = "ALGEON_CLICKBENCH_BENCH_PROGRESS";
 const DUMP_ROWS_DIR_ENV: &str = "ALGEON_CLICKBENCH_BENCH_DUMP_ROWS_DIR";
-pub(crate) const KVIKIO_COMPAT_MODE_ENV: &str = "KVIKIO_COMPAT_MODE";
 
 pub async fn run_main() -> ExitCode {
     match run().await {
@@ -274,7 +274,9 @@ async fn run_benchmark(
         };
         rows.push(BenchmarkRow::build(query.id, cpu, native));
     }
-    Ok(BenchmarkReport { config: config.clone(), metadata: metadata.clone(), rows })
+    // The native session runs without an installed GPU backend, the only
+    // source of the effective KvikIO settings this report records.
+    Ok(BenchmarkReport { config: config.clone(), metadata: metadata.clone(), kvikio: None, rows })
 }
 
 async fn build_cpu_ctx(config: &BenchmarkConfig, layout: &ClickbenchLayout) -> WorkloadResult<SessionContext> {
@@ -769,6 +771,7 @@ impl BenchmarkRow {
 struct BenchmarkReport {
     config: BenchmarkConfig,
     metadata: ClickbenchDatasetMetadata,
+    kvikio: Option<KvikioProcessConfig>,
     rows: Vec<BenchmarkRow>,
 }
 
@@ -841,7 +844,19 @@ impl BenchmarkReport {
         writeln!(
             output,
             "# clickbench_benchmark_kvikio_compat_mode={}",
-            std::env::var(KVIKIO_COMPAT_MODE_ENV).unwrap_or_else(|_| "unset".to_string())
+            self.kvikio.map_or("unknown", |kvikio| kvikio.compat_mode.as_str())
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_kvikio_threads={}",
+            self.kvikio.map_or_else(|| "unknown".to_string(), |kvikio| kvikio.thread_count.to_string())
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_kvikio_task_size_bytes={}",
+            self.kvikio.map_or_else(|| "unknown".to_string(), |kvikio| kvikio.task_size_bytes.to_string())
         )
         .unwrap();
         writeln!(output, "# clickbench_benchmark_parity_fingerprint=order_insensitive").unwrap();
@@ -964,6 +979,7 @@ fn invalid_env(message: String) -> WorkloadError {
 #[cfg(test)]
 mod tests {
     use query_planning::execution_contracts::SourceChunkPlanningMode;
+    use query_runtime::runtime::KvikioCompatMode;
 
     use super::*;
 
@@ -989,7 +1005,16 @@ mod tests {
 
     #[test]
     fn tsv_header_exposes_backward_compatible_list_and_reason_metadata() {
-        let report = BenchmarkReport { config: test_config(), metadata: test_metadata(), rows: Vec::new() };
+        let report = BenchmarkReport {
+            config: test_config(),
+            metadata: test_metadata(),
+            kvikio: Some(KvikioProcessConfig {
+                compat_mode: KvikioCompatMode::On,
+                thread_count: 64,
+                task_size_bytes: 4_194_304,
+            }),
+            rows: Vec::new(),
+        };
         let tsv = report.to_tsv();
         assert_eq!(TSV_COLUMNS.join("\t"), tsv.lines().find(|line| !line.starts_with('#')).unwrap());
         assert!(tsv.contains("# clickbench_benchmark_relational_execution=native_no_datafusion_cpu\n"));
@@ -998,7 +1023,9 @@ mod tests {
         assert!(tsv.contains("# clickbench_benchmark_native_max_source_chunk_bytes=34359738368\n"));
         assert!(tsv.contains("# clickbench_benchmark_native_max_row_groups_per_chunk=1024\n"));
         assert!(tsv.contains("# clickbench_benchmark_native_source_chunk_planning_mode=local_parquet_throughput\n"));
-        assert!(tsv.contains("# clickbench_benchmark_kvikio_compat_mode="));
+        assert!(tsv.contains(
+            "# clickbench_benchmark_kvikio_compat_mode=on\n# clickbench_benchmark_kvikio_threads=64\n# clickbench_benchmark_kvikio_task_size_bytes=4194304\n"
+        ));
     }
 
     #[test]

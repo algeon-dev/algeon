@@ -4,7 +4,7 @@ title: Inside GPU execution
 description: "Column buffers, task dependencies and CUDA streams explain how native operators share one GPU."
 ---
 
-import {ColumnLayout, StreamSchedule} from '@site/src/components/design/GuideDiagrams';
+import {ColumnLayout, ResultEgress, StreamSchedule} from '@site/src/components/design/GuideDiagrams';
 
 # Inside GPU execution
 
@@ -30,9 +30,9 @@ Different operators create different access patterns and intermediate data:
 | Operation | Memory access and temporary state |
 | --- | --- |
 | Filter | Evaluate a column predicate and gather selected rows. Reading input can greatly exceed the size of the result. |
-| Hash join | Build a hash table from one input's keys, probe with the other input, then gather matching row pairs. Probes can touch scattered buckets; duplicate keys can expand the result. |
+| Hash join | Build a hash table from one input's keys, probe with the other input, then gather matching row pairs. Probes can touch scattered buckets. Duplicate keys can expand the result. |
 | Grouped aggregate | Combine rows by key into group state, then merge partial state when input is chunked. More distinct keys require more state. |
-| Sort / top-k | Compare and reorder values; chunk candidates require a merge before they form a global result. |
+| Sort / top-k | Compare and reorder values. Chunk candidates require a merge before they form a global result. |
 
 These access patterns explain why a compressed file's size cannot stand in
 for the query's VRAM demand. Decoded columns, operator state and output
@@ -41,20 +41,18 @@ bandwidth, even after input transfers over PCIe have completed.
 
 ## CUDA streams and dependencies
 
-`CudaStream` identifies an ordered queue of GPU work. A CPU worker submits
-operations and can return before the GPU completes them. Operations submitted
-to one stream follow its ordering; work on separate streams needs explicit
-completion dependencies before sharing results.
+`CudaStream` identifies an ordered queue of GPU work, and work on separate
+streams needs explicit completion dependencies before sharing results.
 
 <StreamSchedule />
 
 The coordinator is one `QueryExecution` job on one worker, and its tasks run on
 the attempt's root stream. Expanded chunk work (aggregate chunks, join probes
 and fused top-k candidates) goes to blocking-lane jobs. An execution **lane** is
-one auxiliary permit, one leased stream and a derived context. Its width is the
-smallest of `source_work_per_attempt`, the permits free when the run starts and
-the work available, and a run that gets fewer than two lanes executes inline on
-the coordinator. At the default `source_work_per_attempt` of 1, no run reaches
+one auxiliary permit, one leased stream and a derived context. Its width is
+bounded by the minimum of `source_work_per_attempt`, the permits available at
+launch, and the pending work items; any run allocated fewer than two lanes
+executes inline on the coordinator. At the default `source_work_per_attempt` of 1, no run reaches
 two lanes. The coordinator merges lane outputs in dispatch order under the
 required SQL semantics. **A DataFusion CPU partition does not determine lane
 ownership or width.** A lane's stream lease lasts for the whole run, while each
@@ -63,18 +61,15 @@ chunk job can land on any blocking-lane thread.
 Related terms use the word lane in other senses.
 
 - An attempt lane (`lane_count`, which equals `max_active_attempts`) is the
-  identity slot an admitted attempt holds for its lifetime; see
+  identity slot an admitted attempt holds for its lifetime. See
   [Capacity and allocation](./admission.mdx#device-profiles-and-grants).
 - An execution lane is the permit, stream and context described above.
 - Chunk lane work is one blocking-lane job that runs on an execution lane.
 
 Cross-stream dependencies use completion fences, such as CUDA events. The
 consumer waits for the producer's work before reading its buffers, and
-buffer ownership lasts through the final use. More streams permit overlap;
-device resources and dependencies determine whether work overlaps in practice.
-The streams share the same VRAM and memory interface, so concurrent kernels
-can compete for memory bandwidth.
-All lanes allocate inside [one query memory cap](./admission.mdx).
+buffer ownership lasts through the final use. All lanes allocate inside
+[one query memory cap](./admission.mdx).
 
 ## Relational data into GPU algorithms {/* #gpu-algorithms */}
 
@@ -93,29 +88,21 @@ execution reaches its terminal sink (`ResultSink::HostArrow` or a deferred host
 batch cursor). The engine transfers the output column buffers from VRAM to host
 memory, packaging them into Arrow `RecordBatch` instances for DataFusion.
 
-```text
-       GPU VRAM                                Host RAM
- ┌──────────────────┐                    ┌──────────────────┐
- │  Terminal Table  │ ── PCIe DMA ───►   │ Arrow Buffers    │
- └──────────────────┘ (cudaMemcpyAsync)  └──────────────────┘
-          │                                        ▲
-   Stream FIFO tail                                │
-          ▼                                        │
- ┌──────────────────┐                     cudaStreamSynchronize
- │ Completion Event │ ── PCIe MSI-X ───►  (wakes the pool worker,
- └──────────────────┘   or Doorbell        verifies coherence)
-```
+<ResultEgress />
 
 The device-to-host copy is queued on the execution stream after the upstream
 kernels and starts once they complete.
 
 The host runtime polls the DataFusion stream and awaits each pool job without
-blocking a worker. The first poll runs the fragment's schedule. Each later poll
-submits one pool job that sizes the next chunk to at most 4 MiB of Arrow
-buffers, reserves that estimate from DataFusion's `MemoryPool` (one live
-reservation per stream), copies the chunk from device to host and waits in
-`cudaStreamSynchronize`. A pool worker does the waiting, and the driver parks it
-in the OS scheduler until the copy completes.
+blocking a host worker. The first poll runs admission and the fragment's
+schedule. Each chunk then takes one pool job, which sizes the chunk to at most
+4 MiB of Arrow buffers, reserves that estimate from DataFusion's `MemoryPool`
+(one live reservation per stream), enqueues the device-to-host copy and waits
+in `cudaStreamSynchronize`. The wait holds the pool worker until the copy
+completes. Algeon sets no CUDA device scheduling flag. Under the runtime
+default, `cudaDeviceScheduleAuto`, the waiting thread spins on its CPU core
+while the process has no more active CUDA contexts than logical processors,
+and yields to other threads otherwise.
 
 Once `cudaStreamSynchronize` returns, the worker wraps the host buffers into
 Arrow arrays without another copy. The last chunk ends the result stream,

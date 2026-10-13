@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""Regenerate website/src/data/tpcdsSf100Benchmark.ts from TPC-DS three-way bench TSVs."""
+"""Regenerate website/src/data/tpcdsSf100Benchmark.ts from TPC-DS benchmark artifacts.
+
+Timings come from the three-way bench TSVs. Result-value agreement comes from
+the native_tpcds_parity_report TSV, which must cover the same dataset root and
+query set as the timing runs.
+"""
 from __future__ import annotations
 
 import argparse
 import json
 import re
 import statistics
+from collections import Counter
 from pathlib import Path
 
 
-def load(path: Path, engine: str):
+def read_tsv(path: Path):
+    """Returns `# key=value` metadata comments and data rows as dicts."""
     meta = {}
     header = None
-    rows = {}
+    rows = []
     for line in path.read_text().splitlines():
         if line.startswith("#"):
             if "=" in line:
@@ -23,11 +30,61 @@ def load(path: Path, engine: str):
         if header is None:
             header = cells
             continue
-        row = dict(zip(header, cells))
-        if row.get("engine") != engine or row.get("warmup") == "true":
-            continue
-        rows[row["query_id"]] = row
+        rows.append(dict(zip(header, cells)))
     return meta, rows
+
+
+def load(path: Path, engine: str):
+    meta, rows = read_tsv(path)
+    measured = {
+        row["query_id"]: row for row in rows if row.get("engine") == engine and row.get("warmup") != "true"
+    }
+    return meta, measured
+
+
+def load_parity(path: Path):
+    meta, rows = read_tsv(path)
+    return meta, {row["query_id"]: row for row in rows}
+
+
+def required_meta(meta, key: str, path: Path) -> str:
+    value = meta.get(key)
+    if not value:
+        raise SystemExit(f"{key} missing from {path}")
+    return value
+
+
+def check_parity_inputs(args, cpu_meta, gpu_meta, cpu, gpu, parity_meta, parity) -> None:
+    parity_root = required_meta(parity_meta, "dataset_root", args.parity_tsv)
+    for path, meta in ((args.cpu_tsv, cpu_meta), (args.gpu_tsv, gpu_meta)):
+        timing_root = required_meta(meta, "tpcds_benchmark_root", path)
+        if Path(timing_root).resolve() != Path(parity_root).resolve():
+            raise SystemExit(
+                f"dataset root mismatch: {path} tpcds_benchmark_root={timing_root}, "
+                f"{args.parity_tsv} dataset_root={parity_root}"
+            )
+    timing_queries = set(cpu) | set(gpu)
+    parity_queries = set(parity)
+    if timing_queries != parity_queries:
+        raise SystemExit(
+            f"query set mismatch between timing TSVs and {args.parity_tsv}: "
+            f"timing only={sorted(timing_queries - parity_queries)}, "
+            f"parity only={sorted(parity_queries - timing_queries)}"
+        )
+    unchecked = []
+    for query, row in sorted(parity.items()):
+        cpu_ok = row.get("cpu_planning_status") == "succeeded" and row.get("cpu_runtime_status") == "succeeded"
+        timed = cpu.get(query, {}).get("outcome") == "succeeded" or gpu.get(query, {}).get("outcome") == "succeeded"
+        if not cpu_ok and timed:
+            unchecked.append(
+                f"{query} (cpu_planning_status={row.get('cpu_planning_status')}, "
+                f"cpu_runtime_status={row.get('cpu_runtime_status')})"
+            )
+    if unchecked:
+        raise SystemExit(
+            "the parity CPU oracle did not produce output for queries with a succeeded timing row: "
+            + ", ".join(unchecked)
+        )
 
 
 def fnum(value):
@@ -48,6 +105,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cpu-tsv", type=Path, required=True)
     ap.add_argument("--gpu-tsv", type=Path, required=True)
+    ap.add_argument("--parity-tsv", type=Path, required=True)
     ap.add_argument("--environment", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--kvikio-compat-mode", default="ON")
@@ -55,13 +113,31 @@ def main() -> None:
     args = ap.parse_args()
 
     environment = json.loads(args.environment.read_text())
+    if "decimalJoinParity" in environment:
+        raise SystemExit(
+            f"{args.environment} contains decimalJoinParity; remove it, result-value parity "
+            "now comes from --parity-tsv"
+        )
     cpu_meta, cpu = load(args.cpu_tsv, "cpu_datafusion")
     gpu_meta, gpu = load(args.gpu_tsv, "native_gpu")
+    parity_meta, parity = load_parity(args.parity_tsv)
+    check_parity_inputs(args, cpu_meta, gpu_meta, cpu, gpu, parity_meta, parity)
+    # The environment JSON records the CPU settings of the timing run; the page
+    # states that the parity CPU oracle used the same settings.
+    for env_key, meta_key in (("cpuTargetPartitions", "cpu_target_partitions"), ("cpuBatchSize", "cpu_batch_size")):
+        parity_value = int(required_meta(parity_meta, meta_key, args.parity_tsv))
+        if env_key in environment and environment[env_key] != parity_value:
+            raise SystemExit(
+                f"CPU setting mismatch: {args.environment} {env_key}={environment[env_key]}, "
+                f"{args.parity_tsv} {meta_key}={parity_value}"
+            )
     query_ids = sorted(set(cpu) | set(gpu), key=lambda q: (int("".join(ch for ch in q if ch.isdigit()) or "999"), q))
     rows = []
     for query in query_ids:
         cpu_row = cpu.get(query, {})
         gpu_row = gpu.get(query, {})
+        parity_row = parity[query]
+        parity_detail = parity_row.get("parity_detail", "none")
         cpu_ms = fnum(cpu_row.get("wall_ms")) or 0.0
         gpu_ms = fnum(gpu_row.get("wall_ms")) if gpu_row.get("outcome") == "succeeded" else None
         gpu_wall = fnum(gpu_row.get("wall_ms"))
@@ -76,11 +152,9 @@ def main() -> None:
                 "cpuOutcome": cpu_row.get("outcome", ""),
                 "gpuOutcome": gpu_row.get("outcome", ""),
                 "planningOutcome": gpu_row.get("planning_outcome", ""),
-                "rowsMatch": (
-                    cpu_row.get("outcome") == "succeeded"
-                    and gpu_row.get("outcome") == "succeeded"
-                    and cpu_row.get("output_rows") == gpu_row.get("output_rows")
-                ),
+                "parityStatus": parity_row["parity_status"],
+                "comparisonMode": parity_row["comparison_mode"],
+                "parityDetail": None if parity_detail == "none" else parity_detail,
                 "runtimeOperatorClass": gpu_row.get("runtime_operator_class", "")
                 if gpu_row.get("runtime_operator_class") not in (None, "not_run")
                 else "",
@@ -154,13 +228,31 @@ def main() -> None:
             "tpcds_benchmark_native_statistical_aggregate_execution_mode", "gpu_native_tolerant"
         ),
         "kvikioCompatMode": args.kvikio_compat_mode,
+        "parity": {
+            "floatToleranceAbsolute": float(
+                required_meta(parity_meta, "parity_float_tolerance_absolute", args.parity_tsv)
+            ),
+            "floatToleranceRelative": float(
+                required_meta(parity_meta, "parity_float_tolerance_relative", args.parity_tsv)
+            ),
+            "statisticalAggregateExecutionMode": required_meta(
+                parity_meta, "statistical_aggregate_execution_mode", args.parity_tsv
+            ),
+            "statisticalAggregateToleranceContract": required_meta(
+                parity_meta, "statistical_aggregate_tolerance_contract", args.parity_tsv
+            ),
+            "cpuTargetPartitions": int(required_meta(parity_meta, "cpu_target_partitions", args.parity_tsv)),
+            "cpuBatchSize": int(required_meta(parity_meta, "cpu_batch_size", args.parity_tsv)),
+        },
     }
     summary = {
         "queryCount": len(rows),
         "cpuSuccessCount": sum(1 for row in rows if row["cpuOutcome"] == "succeeded"),
         "gpuSuccessCount": len(gpu_succ),
         "gpuFailedQueries": [row["queryId"] for row in rows if row["gpuOutcome"] != "succeeded"],
-        "rowsMatchCount": sum(1 for row in rows if row["rowsMatch"]),
+        "parityMatchedCount": sum(1 for row in rows if row["parityStatus"] == "matched"),
+        "parityComparisonModeCounts": dict(Counter(row["comparisonMode"] for row in rows)),
+        "parityMismatchedQueries": [row["queryId"] for row in rows if row["parityStatus"] != "matched"],
         "cpuTotalMs": round(cpu_total, 3),
         "gpuSuccessTotalMs": round(gpu_total, 3),
         "speedup": round(cpu_for_gpu / gpu_total, 3) if gpu_total else None,
@@ -197,7 +289,9 @@ def main() -> None:
   cpuOutcome: string;
   gpuOutcome: string;
   planningOutcome: string;
-  rowsMatch: boolean;
+  parityStatus: string;
+  comparisonMode: string;
+  parityDetail: string | null;
   runtimeOperatorClass: string;
   peakMemoryOperatorClass: string;
   peakMemoryOperatorClassBytes: number;
@@ -210,7 +304,8 @@ def main() -> None:
 """
     body = json.dumps(payload, indent=2)
     text = (
-        f"// Generated from {args.cpu_tsv.as_posix()} and {args.gpu_tsv.as_posix()}.\n"
+        f"// Timings generated from {args.cpu_tsv.as_posix()} and {args.gpu_tsv.as_posix()}.\n"
+        f"// Result-value parity: {args.parity_tsv.as_posix()}.\n"
         f"// Environment and CPU tuning: {args.environment.as_posix()}.\n"
         f"// Do not hand-edit benchmark values; regenerate from the TSV artifacts.\n\n"
         f"{type_block}\n"

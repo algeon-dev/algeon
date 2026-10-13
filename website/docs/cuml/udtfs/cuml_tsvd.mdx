@@ -35,38 +35,26 @@ Each relation argument is a parenthesized `SELECT` subquery. Metadata validation
 
 | Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
-| `input` | yes | `table` | Dense feature rows fitted and transformed in this statement. |
+| `input` | yes | `table` | Dense feature rows evaluated by the call. |
 
 ### Vector element types
 
-| Element type | Valid metrics |
-| --- | --- |
-| `Float32` | Not applicable |
-| `Float64` | Not applicable |
+Feature values must be `Float32` or `Float64`.
 
 ## Arguments and options
 
 ### Scalar SQL arguments
 
-| Argument | Type | Required | Description |
-| --- | --- | --- | --- |
-| `n_components` | `integer` | yes | Number of transformed pc_&lt;index&gt; columns. |
-| `solver` | `enum ("cov_eig_dq", "cov_eig_jacobi")` | no | Covariance eigensolver used by the query-local fit. |
-| `tol` | `number` | no | Finite nonnegative eigensolver tolerance. |
-| `n_iterations` | `integer` | no | Maximum number of eigensolver iterations. |
-
-### SQL value argument schemas
-
-| Argument | Required | Literal shape | Default | Constraints | Description |
+| Argument | Type | Required | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `n_components` | yes | `integer` | No default | minimum 1; maximum 2147483647 | Number of transformed pc_&lt;index&gt; columns. |
-| `n_iterations` | no | `integer` | `15` | minimum 1; maximum 4294967295 | Maximum number of eigensolver iterations. |
-| `solver` | no | `string` | `"cov_eig_dq"` | one of `"cov_eig_dq"`, `"cov_eig_jacobi"` | Covariance eigensolver used by the query-local fit. |
-| `tol` | no | `number` | `0` | minimum 0 | Finite nonnegative eigensolver tolerance. |
+| `n_components` | `integer` | yes | No default | minimum 1; maximum 2147483647 | Number of transformed pc_&lt;index&gt; columns. |
+| `n_iterations` | `integer` | no | `15` | minimum 1; maximum 4294967295 | Maximum number of eigensolver iterations. |
+| `solver` | `string` | no | `"cov_eig_dq"` | one of `"cov_eig_dq"`, `"cov_eig_jacobi"` | Covariance eigensolver used by the query-local fit. |
+| `tol` | `number` | no | `0` | minimum 0 | Finite nonnegative eigensolver tolerance. |
 
 ### Vector binding shapes
 
-Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
+Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. Nullable field types are accepted. A null ID, feature value, list row, or list element fails the query.
 
 The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
 
@@ -88,11 +76,7 @@ import Examples from '../_examples/cuml_tsvd.mdx';
 
 ## Limits
 
-- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
-- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
 - Empty input returns an empty result without a native call. Nonempty input requires at least two evaluated rows and two feature dimensions. n_components cannot exceed dimension; known dimensions are checked during planning, otherwise execution reports a structured error.
 - Float64 features, as wide columns or list elements, are narrowed to Float32 on the device before training or inference. Each value rounds to the nearest Float32, which keeps about seven significant digits; a value beyond the Float32 range becomes infinite and fails the query.
 - Component sign is not semantic; this operation returns transformed rows only, not components, explained variance, or mean.
 - TSVD allocates a temporary rows * n_components score matrix inside the query device cap.
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

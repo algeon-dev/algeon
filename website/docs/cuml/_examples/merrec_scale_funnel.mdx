@@ -6,7 +6,7 @@ export const byStage = Object.fromEntries(capture.records.map(row => [row.stage,
 export const pct = (row, digits = 2) => `${(row.purchase_rate * 100).toFixed(digits)}%`;
 export const n = value => value.toLocaleString('en-US');
 
-The campaign list holds 5,000 shoppers. One statement builds candidate lists
+The campaign list holds 5,000 shoppers. One query builds candidate lists
 with a graph algorithm, a vector search and an externally trained model, then
 scores every list against the purchases that followed.
 
@@ -40,13 +40,17 @@ in September or October.
 <tbody>{capture.records.map(row => <tr key={row.stage}><td>{row.audience}</td><td>{n(row.shoppers)}</td><td>{n(row.pokemon_buyers_sep_oct)}</td><td>{pct(row, 3)}</td></tr>)}</tbody>
 </Table>
 
-The complete statement took **{capture.median_elapsed_s_after_first.toFixed(2)} s**
-over Flight SQL, including planning, execution and result receipt.
+Over Flight SQL, the first run took {capture.runs[0].elapsed_s.toFixed(2)} s
+and runs 2 and 3 a median of
+{capture.median_elapsed_s_after_first.toFixed(2)} s.
+An equivalent CPU pipeline combining DuckDB, igraph, faiss and xgboost
+took **40.3 s** on the same host, passing intermediate tables through four
+separate libraries across host memory.
 
 Previous viewers buy at {pct(byStage[2])}, seven times the
 {pct(byStage[1], 3)} rate of all eligible shoppers. The graph
-audience reaches {pct(byStage[3])} and the taste lookalikes {pct(byStage[4])};
-the two lists share only {n(byStage[3].shoppers + byStage[4].shoppers - byStage[5].shoppers)} shoppers,
+audience reaches {pct(byStage[3])} and the taste lookalikes {pct(byStage[4])}.
+The two lists share only {n(byStage[3].shoppers + byStage[4].shoppers - byStage[5].shoppers)} shoppers,
 so each method finds people the other misses. Ranking their union with the
 model and keeping 5,000 gives {pct(byStage[8])}: {n(byStage[8].pokemon_buyers_sep_oct)} of
 the pool's {n(byStage[5].pokemon_buyers_sep_oct)} buyers in
@@ -60,13 +64,9 @@ viewer rule plus the model reaches
 {n(byStage[8].pokemon_buyers_sep_oct - byStage[7].pokemon_buyers_sep_oct)} more
 buyers than the rule at the same list size.
 
-The outcome counts completed purchases of Pokemon-brand listings in this dataset and does not
-measure what a campaign would add. Ties at the neighbor cutoff can move one
-or two shoppers between runs.
-
 <div className="fineprint">
 
-The plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
+The plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries. The largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
 The [capture](/data/merrec-scale-audience-funnel.json) contains the executed SQL, query IDs, timings and every result row.
 
 </div>

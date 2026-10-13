@@ -45,21 +45,16 @@ not establish recall over all queries.
 <CodeBlock language="sql">{fullReference.ivf_flat.sql}</CodeBlock>
 
   </TabItem>
-  <TabItem value="cagra" label="CAGRA status">
-
-The full-corpus CAGRA attempt ended during index construction and returned
-no result rows. The successful CAGRA result in an older 1% sample run
-uses 15,588 training references and 3,618 test queries. Those sample rates
-and recall values do not describe the current full relations.
-
-  </TabItem>
 </Tabs>
 
 <div className="fineprint">
 
 The [full-reference capture](/data/ember2024-full-reference-capture.json)
 records the exact, IVF-Flat and failed CAGRA attempts with their query IDs,
-source result paths and first-query records. The
+source result paths and first-query records. The full-corpus CAGRA attempt
+ended during index construction and returned no result rows, so the CAGRA
+recall from the older 1% sample run (15,588 training references and 3,618 test
+queries) does not describe the current relations. The
 [1% sample capture](/data/ember2024-reference-search-capture.json) records a
 separate CPU-oracle study.
 

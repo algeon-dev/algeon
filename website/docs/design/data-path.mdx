@@ -43,8 +43,8 @@ can still require reading many bytes when metadata cannot exclude row groups.
 Source-read observations report `pruning_input_row_groups`,
 `row_groups_after_stats_filter` and `row_groups_after_bloom_filter` when the
 reader supplies that evidence. Their starting count is already after the
-caller's row-group selection. A missing stage count means it was not reported;
-it does not mean zero groups survived. Compare these counts with output rows
+caller's row-group selection. A missing stage count means it was not reported.
+It does not mean zero groups survived. Compare these counts with output rows
 to distinguish metadata pruning from row filtering.
 
 ## The transport depends on the source
@@ -53,41 +53,52 @@ to distinguish metadata pruning from row filtering.
 
 ### Local NVMe and compatibility mode
 
-In the cuDF integration used by Algeon,
-[local reads default to compatibility mode](https://github.com/algeon-dev/cudf/blob/algeon-26.08/cpp/src/io/utilities/config_utils.cpp#L19-L33)
-(`KVIKIO_COMPAT_MODE=ON`) unless configured otherwise. KvikIO uses POSIX reads
-such as `pread` into a pinned host **bounce buffer**, then copies the bytes
-to device memory. Pinned memory remains at a stable physical location for
-the transfer. A bounce buffer is temporary staging storage, reused across
-chunks.
-
-On a discrete GPU attached through **PCI Express (PCIe)**, the copy moves
-bytes from host RAM across that link into VRAM. Selecting fewer column pages
-reduces both storage reads and PCIe traffic. The host/device link has its own
-bandwidth limit, separate from accesses within GPU memory; see NVIDIA's
-[host/device transfer guidance](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#data-transfer-between-host-and-device).
-The link depends on the platform: some CPU/GPU systems use
-[NVLink-C2C](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/understanding-memory.html).
-The diagram illustrates the PCIe case.
+Local reads use KvikIO compatibility mode. KvikIO issues POSIX reads such as
+`pread` into a pinned host **bounce buffer**, reused across chunks, then
+copies the bytes to device memory. That copy crosses the host/device link
+(PCIe in the diagram, [NVLink-C2C](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/understanding-memory.html)
+on some CPU/GPU systems) into VRAM, and selecting fewer column pages reduces
+both storage reads and that traffic.
 
 Buffered POSIX reads can pass through the operating system's page cache.
-Where enabled and supported, `O_DIRECT` bypasses that cache; the host staging
+Where enabled and supported, `O_DIRECT` bypasses that cache. The host staging
 and GPU copy still belong to this compatibility path. Larger range reads
-amortize syscall and submission overhead, while concurrent reads require
-more staging space. Source reads run as `SupervisedWorker` jobs on the blocking
+amortize syscall and submission overhead.
+Source reads run as `SupervisedWorker` jobs on the blocking
 lane of the GPU execution runtime, each backed by an attempt auxiliary
-permit; a read issued from an execution lane runs inline on that
-lane. None runs on the host runtime. A `max_source_reads_in_flight` above 1
+permit. A read issued from an execution lane runs inline on that
+lane. None of these source read tasks execute on the host runtime. A `max_source_reads_in_flight` above 1
 enables prefetch.
+
+KvikIO's settings are global to the process. Algeon's cuDF component applies
+them once, while `AlgeonGpuBackend::build()` builds the backend and before any
+source read runs. The server, library embedders and the benchmark binaries all
+build their backend through that call. The defaults are compatibility mode
+`ON` (also
+[libcudf's default](https://github.com/algeon-dev/cudf/blob/algeon-26.08/cpp/src/io/utilities/config_utils.cpp#L19-L33)),
+64 I/O threads and a 4 MiB task size. KvikIO's own variables
+`KVIKIO_COMPAT_MODE`, `KVIKIO_NTHREADS` and `KVIKIO_TASK_SIZE` override their
+fields; a field whose variable is unset keeps the Algeon default. Algeon has
+no other name or TOML field for these settings. At startup the server logs one
+`source I/O ready` line, and its `kvikio_compat_mode`, `kvikio_threads` and
+`kvikio_task_size_bytes` fields give the effective values.
+
+KvikIO splits a local read into tasks no larger than the task size and runs
+them on its thread pool. A process has one such pool. Local `pread` tasks and
+`s3://` range reads share it, as do all devices of a multi-GPU backend. Each
+compatibility-mode task borrows a 16 MiB pinned bounce buffer from a separate
+KvikIO buffer pool. With all threads busy, that buffer pool holds up to 16 MiB
+per thread, or 1 GiB at the default 64 threads. KvikIO keeps the buffers for
+later reads. The server releases them at shutdown, after the last source read
+ends; a library process keeps them until it calls
+`cudf::io::drain_kvikio_bounce_buffer_pools` or exits.
 
 ### GPUDirect Storage
 
 With a suitable filesystem, driver and device configuration, KvikIO can use
 cuFile and **GPUDirect Storage (GDS)**. Storage hardware transfers the payload
 to GPU memory through **DMA**, direct memory access, avoiding the host payload
-bounce buffer. CPU code still opens files and submits requests. The payload
-still traverses the machine's I/O interconnect; PCIe switches and root-port
-placement affect the route between an NVMe device and GPU VRAM.
+bounce buffer. CPU code still opens files and submits requests.
 
 `AUTO` permits a POSIX fallback, and cuFile also has its own compatibility
 mode. Small or unaligned requests may use alternate paths. An enabled setting
@@ -97,8 +108,9 @@ and the [GDS overview](https://docs.nvidia.com/gpudirect-storage/overview-guide/
 
 ### Object storage and libcurl
 
-Algeon's native S3 datasource uses KvikIO HTTP range reads. libcurl receives
-chunks into host buffers; KvikIO accumulates them in pinned staging memory
+Algeon's native S3 datasource uses KvikIO HTTP range reads. They run as tasks
+on the KvikIO thread pool shared with local reads. libcurl receives
+chunks into host buffers. KvikIO accumulates them in pinned staging memory
 and copies them to the GPU. The network receive buffer and pinned bounce
 buffer have different roles, even though both occupy host memory. Footer reads
 and cache fills for `s3://` sources run on a process-wide
@@ -112,27 +124,16 @@ GDS.
 
 ### cuObject and RDMA
 
-[cuObject](https://docs.nvidia.com/gpudirect-storage/cuobject/), which NVIDIA
-documents as GPUDirect Storage for objects, changes the payload route for
-S3-compatible storage. The client still sends an S3 range `GET` over HTTP. An
-`x-amz-rdma-token` header in that request describes a registered destination
-buffer, and the object server writes the payload into it by **RDMA**, remote
-direct memory access, over an InfiniBand or RoCE network. RDMA is a network
-transfer and differs from the local NVMe DMA that GDS performs. With VRAM as
-the destination, the libcurl buffers and pinned staging of the S3 row leave
-the payload route, as the dashed row of the diagram above shows. The HTTP
-response carries the status and an `x-amz-rdma-reply` header.
-
-Both ends take part. The client library ships in CUDA Toolkit 13.1.1 and
-later and needs a ConnectX-5 or newer InfiniBand or RoCE adapter. The object
-store must integrate NVIDIA's cuObject server library, and an endpoint
-without it serves payload only over HTTP.
-
-Algeon does not support cuObject yet. Its S3 datasource reads through KvikIO's
-remote handle, and the KvikIO version in Algeon's cuDF 26.08 build moves every
-remote payload over HTTP. Every `s3://` read therefore takes the staged HTTP
-route above. cuDF reaches object storage through KvikIO, and RDMA for Algeon's
-S3 reads depends on KvikIO's remote I/O adding it.
+[cuObject](https://docs.nvidia.com/gpudirect-storage/cuobject/) answers an S3
+range `GET` by writing the payload into a registered destination buffer with
+**RDMA**, remote direct memory access; when VRAM serves as the target
+destination, libcurl buffers and pinned staging memory are bypassed entirely
+along the payload path (represented by the dashed line in the diagram above).
+It needs a ConnectX-5 or newer InfiniBand or
+RoCE adapter on the client and NVIDIA's cuObject server library in the object
+store. Algeon does not support it yet: its S3 datasource reads through KvikIO's
+remote handle, which in the cuDF 26.08 build moves every remote payload over
+HTTP ([roadmap](../reference/roadmap.md#longer-term)).
 
 ## Source and workspace {/* #lakehouse-and-workspace-boundary */}
 

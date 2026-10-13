@@ -14,7 +14,7 @@ separate preparation steps; SQL loads `propensity_xgb.json` for inference.
 
 The earlier `test` CTE computes ten activity and price features from June to August,
 retains shoppers with at least 20 views, and attaches the September outcome.
-The open part scores those features, ranks shoppers and evaluates both budgets.
+The visible query segment below scores those features, ranks shoppers, and evaluates both budget allocations.
 
 <CodeBlock language="sql" className="no-collapse" folds={[
   {to: 'scores AS (', label: 'the test relation: ten activity and price features and the September outcome'},
@@ -35,9 +35,7 @@ At equal list size, the model includes 1,980 more observed buyers than the
 recent-purchase rule. The smaller model list has higher precision but reaches
 fewer buyers.
 
-Prices use the latest retained item attributes; that limitation
-also applies to training. Performance at another monthly cutoff and
-incremental campaign impact have not been measured.
+Prices use the latest retained item attributes, which also applies to training.
 
 <div className="fineprint">
 

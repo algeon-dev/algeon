@@ -72,7 +72,7 @@ function GuideFigure({height, width = 720, minWidth = 600, label, caption, child
 
 export function QueryArchitecture() {
   return <GuideFigure height={720}
-    label="Query flow and module boundaries. DataFusion plans SQL on the CPU; algeon-datafusion lowers the physical plan and invokes query-engine. Query-planning owns IR, capability proof and the compiled schedule. Query-runtime owns the attempt, device grant and cache. Query-engine submits GPU operations through RAPIDS, reading Parquet from local NVMe or S3 and returning host Arrow batches through the adapter and DataFusion. Dashed arrows show direct imports: the adapter imports DataFusion and all three query crates; the engine imports planning and runtime; runtime imports planning."
+    label="Query flow and module boundaries. DataFusion plans SQL on the CPU. algeon-datafusion lowers the physical plan and invokes query-engine. Query-planning owns IR, capability proof and the compiled schedule. Query-runtime owns the attempt, device grant and cache. Query-engine submits GPU operations through RAPIDS, reading Parquet from local NVMe or S3 and returning host Arrow batches through the adapter and DataFusion. Dashed arrows show direct imports: the adapter imports DataFusion and all three query crates; the engine imports planning and runtime; runtime imports planning."
     caption="Follow the solid arrows from SQL to the result. Dashed arrows point to imported crates. The native query crates orchestrate GPU work from the CPU; RAPIDS operations run on the device.">
     <Arrow id="architecture:flow-legend" points={[[8, 14], [58, 14]]} />
     <Label x={70} y={18}>Execution / data flow</Label>
@@ -125,7 +125,7 @@ export function PlanTranslation() {
       body: <><code>DataSourceExec</code> supplies file groups, the scan schema and projected columns.
         Lowering constructs a <code>LocalParquetSource</code> with the source-read contract.
         The <code>source_read</code> task produces GPU columns. Its source-chunk barrier
-        separates planned input chunks; the CPU partition count does not set the number of chunks.</>,
+        separates planned input chunks. The CPU partition count does not set the number of chunks.</>,
       observe: <><code>read_columns</code>, <code>row_groups_selected</code> and{' '}
         <code>source_chunks_committed</code> describe different units: columns, row groups and native chunks.</>,
     },
@@ -167,7 +167,7 @@ export function PlanTranslation() {
         incrementally as host Arrow batches. This wrapper step is outside the compiled GPU tasks.
         The admission wrapper associates execution with the query attempt.</>,
       observe: <>Compare <code>output_rows</code> with <code>device_to_host_materialized_rows</code>.
-        Output bytes describe result batches; they do not measure peak device allocation.</>,
+        Output bytes describe result batches. They do not measure peak device allocation.</>,
     },
   };
   const detail = details[selected];
@@ -179,7 +179,7 @@ export function PlanTranslation() {
   }
   return <Figure svgW={720} svgH={594} minW={650} center interactive
     ariaLabel="Interactive grouped-sum lowering example. Data flows upward from Parquet. Select a DataFusion operator or native task to inspect its mapping and related observation fields."
-    caption="Select a node to inspect its mapping. Data flows upward; the dashed branches merge into one arrow to the native aggregate. The top-right result is materialized by the wrapper after the GPU schedule. Batching and scan-repartition wrappers are omitted."
+    caption="Select a node to inspect its mapping. Data flows upward. The dashed branches merge into one arrow to the native aggregate. The top-right result is materialized by the wrapper after the GPU schedule. Batching and scan-repartition wrappers are omitted."
     panel={<div className={styles.panel} aria-live="polite">
       <div className={styles.panelHead}><span className={styles.panelName}>{detail.title}</span></div>
       <div className={styles.panelBody}>
@@ -321,7 +321,7 @@ export function ColumnLayout() {
     <GuideFigure
       height={472}
       label="Decoded GPU column buffers and coalesced memory access for four rows. A GPU Warp (32 threads) uses lanes 0 to 3 to scan adjacent amount values in one coalesced memory transaction, skipping customer_id. Variable-width status strings use offsets 0, 4, 8, 12, 20 to slice into the character buffer, and a validity bitmap tracks null values."
-      caption="A GPU warp coalesces adjacent lane reads into fewer memory transactions, while unprojected columns consume no memory bandwidth. Strings use offset pairs to slice contiguous character bytes; validity bitmaps track nulls.">
+      caption="A GPU warp coalesces adjacent lane reads into fewer memory transactions, while unprojected columns consume no memory bandwidth. Strings use offset pairs to slice contiguous character bytes. Validity bitmaps track nulls.">
       {/* Logical row header pills */}
       {rowLabels.map((label, i) => {
         const cx = startX + i * fixedColWidth + fixedColWidth / 2;
@@ -652,7 +652,7 @@ export function StreamSchedule() {
         h={496}
         label="GPU VRAM · single admitted query attempt (shared memory cap & bandwidth)"
         labelOffset={16}
-        tone="engine"
+        tone="plain"
       />
 
       {/* Lane 1: Stream A */}
@@ -814,6 +814,57 @@ export function StreamSchedule() {
       />
     </GuideFigure>
   );
+}
+
+export function ResultEgress() {
+  const cardW = 210;
+  const sizeX = 45;
+  const copyX = 315;
+  const wrapX = 585;
+  const hostY = 46;
+  const hostH = 66;
+  const jobY = 210;
+  const jobH = 76;
+  const jobMidY = jobY + jobH / 2;
+  const gpuY = 378;
+  const gpuH = 66;
+  const gapLabelY = 324;
+
+  return <GuideFigure width={840} minWidth={700} height={474}
+    label="Result egress for one native fragment. On the host runtime, the first poll of the DataFusion result stream runs admission and the native schedule. Each chunk then takes one GPU pool job on algeon-gpu-{d}. The job sizes the chunk to at most 4 MiB of Arrow buffers and reserves that estimate in DataFusion's MemoryPool, enqueues cudaMemcpyAsync on the execution stream after the upstream kernels, waits in cudaStreamSynchronize, wraps the host buffers as Arrow arrays and shrinks the reservation to the batch size. The stream yields the RecordBatch, the next poll moves the next chunk, and the last chunk ends the stream."
+    caption="Each chunk is one GPU pool job. The job reserves its size estimate before the copy, enqueues the copy on the execution stream and holds its worker in cudaStreamSynchronize until the copy completes. The result stream keeps one chunk reservation at a time.">
+    <Region x={16} y={6} w={808} h={124} label="Host runtime · DataFusion result stream" />
+    <Region x={16} y={166} w={808} h={136} label="GPU pool · one algeon-gpu-{d} job for each chunk"
+      labelOffset={184} />
+    <Region x={16} y={338} w={808} h={124} label="GPU VRAM · execution stream" tone="gpu" />
+
+    <Arrow id="egress:next-poll" points={[[465, hostY + hostH / 2], [375, hostY + hostH / 2]]} />
+    <Label x={420} y={hostY + hostH / 2 - 9} textAnchor="middle">next poll</Label>
+    <Arrow id="egress:submit" points={[[sizeX + cardW / 2, hostY + hostH], [sizeX + cardW / 2, jobY]]} />
+    <Arrow id="egress:reserved" points={[[sizeX + cardW, jobMidY], [copyX, jobMidY]]} />
+    <Arrow id="egress:copied" points={[[copyX + cardW, jobMidY], [wrapX, jobMidY]]} />
+    <Arrow id="egress:yield" points={[[wrapX + cardW / 2, jobY], [wrapX + cardW / 2, hostY + hostH]]} />
+    <Arrow id="egress:enqueue" points={[[400, jobY + jobH], [400, gpuY]]} />
+    <Label x={392} y={gapLabelY} textAnchor="end">enqueue</Label>
+    <Arrow id="egress:complete" points={[[440, gpuY], [440, jobY + jobH]]} />
+    <Label x={448} y={gapLabelY}>copy complete</Label>
+    <Arrow id="egress:stream-order" points={[[sizeX + cardW, gpuY + gpuH / 2], [copyX, gpuY + gpuH / 2]]} />
+
+    <Card x={45} y={hostY} w={330} h={hostH} name="DataFusion poll"
+      note={['First poll: admission, native schedule', 'Each chunk: one pool job']} />
+    <Card x={465} y={hostY} w={330} h={hostH} name="RecordBatch to the caller" tone="bridge"
+      note={['Holds one chunk reservation', 'Last chunk ends the stream']} />
+    <Card x={sizeX} y={jobY} w={cardW} h={jobH} name="1. Size and reserve"
+      note={['Estimate ≤ 4 MiB of Arrow', 'try_grow in MemoryPool']} />
+    <Card x={copyX} y={jobY} w={cardW} h={jobH} name="2. Copy and wait"
+      note={['Enqueue cudaMemcpyAsync', 'cudaStreamSynchronize']} />
+    <Card x={wrapX} y={jobY} w={cardW} h={jobH} name="3. Build the batch"
+      note={['Wrap host buffers as Arrow', 'Shrink reservation to size']} />
+    <Card x={sizeX} y={gpuY} w={cardW} h={gpuH} name="Result columns" tone="gpu"
+      note="Written by upstream kernels" />
+    <Card x={copyX} y={gpuY} w={cardW} h={gpuH} name="Device-to-host copy" tone="gpu"
+      note={['Starts after upstream kernels', 'Crosses PCIe into host buffers']} />
+  </GuideFigure>;
 }
 
 export function GpuUdtfFlow() {
@@ -1049,7 +1100,7 @@ export function AttemptLifetime() {
 export function AllocationPath() {
   return <GuideFigure height={228}
     label="GPU operations allocate through the query's DeviceMemoryResource. The query resource checks the immutable cap. Accepted allocations use the device RMM resource and GPU storage; an allocation beyond the cap returns a typed failure."
-    caption="The grant authorizes a byte limit. Physical buffers are obtained as operations allocate; unused grant capacity is still committed in the device ledger.">
+    caption="The grant authorizes a byte limit. Physical buffers are obtained as operations allocate. Unused grant capacity is still committed in the device ledger.">
     <Arrow id="allocation:request" points={[[206, 48], [258, 48]]} />
     <Arrow id="allocation:accept" points={[[462, 48], [514, 48]]} />
     <Arrow id="allocation:storage" points={[[612, 84], [612, 150]]} />

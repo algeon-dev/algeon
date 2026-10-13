@@ -3,7 +3,7 @@ import CitationReach from './citation_reach.mdx';
 {/* Hand-owned examples for cugraph_bfs. NOT generated; safe to edit. */}
 
 These examples run on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
-Edges point `src` → `dst` as "cites"; BFS distance is a hop count.
+Edges point `src` → `dst` as "cites". BFS distance is a hop count.
 
 <CitationReach />
 
@@ -41,7 +41,7 @@ ORDER BY b.distance;
 
 This query compares record IDs with titles in the reference ancestry of
 *Attention Is All You Need*, then runs BFS with string titles as vertex IDs.
-The count shows whether this subgraph contains repeated titles; identical
+The count shows whether this subgraph contains repeated titles. Identical
 titles alone do not establish that records describe the same work.
 
 ```sql
@@ -91,5 +91,5 @@ title matches the question. Here BFS returns the title as a `Utf8` vertex:
 | 1 | Deep Recurrent Models with Fast-Forward Connections for Neural Machine Translation |
 | 1 | Deep Residual Learning for Image Recognition |
 
-String graphs reject `edge_id` columns and edge-ID predicate relations; see the
+String graphs reject `edge_id` columns and edge-ID predicate relations. See the
 [Vertex ID support](../graph-options.mdx#vertex-id-support-by-udtf) matrix.

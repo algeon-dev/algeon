@@ -15,10 +15,6 @@ import ImportReview from '../../cugraph/_examples/ember2024_import_review.mdx';
 file features, metadata and labels. The reports use a later test period for
 model evaluation and a separate challenge cohort for file inspection.
 
-- [How many mistakes does each classifier make in a later quarter?](#temporal)
-- [Which high-scoring files should an analyst inspect first?](#forest)
-- [What connects these files to the seed?](#imports)
-
 ## How many mistakes does each classifier make in a later quarter? {/* #temporal */}
 
 <TemporalModels />
@@ -34,8 +30,8 @@ model evaluation and a separate challenge cohort for file inspection.
 ## Data scope
 
 The deduplicated train, test and challenge splits contain **2,626,000**,
-**605,929** and **6,315** files. Every challenge file is malicious; 3,225 of
-them are Win32. Research preparation retains the first occurrence of each
+**605,929** and **6,315** files. Every challenge file is malicious, and 3,225
+of them are Win32. Research preparation retains the first occurrence of each
 SHA-256 within a split and assigns separate ID ranges to train, test and
 challenge records.
 
@@ -46,13 +42,10 @@ retrieves earlier Win32 files for a later query file. The
 [HDBSCAN review](../../cuml/udtfs/cuml_hdbscan.mdx#examples) groups the 3,225
 Win32 challenge histograms, while the
 [UMAP view](../../cuml/udtfs/cuml_umap.mdx?dataset=ember2024#examples)
-shows a saved two-dimensional projection. Group IDs and visual distances
-describe these selected features, not malware-family identity.
+shows a saved two-dimensional projection of these selected features.
 
 <div className="fineprint">
 
-The [function catalog](../gpu-udtf-discovery.mdx) describes input schemas;
-[Flight SQL](../../integration/flight-sql-server.mdx) provides the query interface.
 Each report links to the SQL, returned rows and preparation records used for
 its conclusions.
 

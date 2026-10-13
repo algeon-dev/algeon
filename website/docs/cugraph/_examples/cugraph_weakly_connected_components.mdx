@@ -15,14 +15,14 @@ import MerRecScaleSessions from './merrec_scale_sessions.mdx';
 
 {/* Hand-owned examples for cugraph_weakly_connected_components. NOT generated; safe to edit. */}
 
-This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
-
 ### Which research pockets are disconnected from the main citation network?
 
 An exploration that starts in the largest connected component cannot reach
 the other components, even when citations can be followed in either direction.
-This query finds the largest disconnected groups and names the most-cited
-paper in each. Papers without any citation edge are outside this graph.
+This query finds the largest disconnected groups of the
+[citation network](../../guides/datasets/citation-network.mdx) and
+names the most-cited paper in each. Papers without any citation edge are outside
+this graph.
 
 Component labels belong to one execution. Save one
 [result table](../graph-options.mdx#reuse-algorithm-results) so the size

@@ -1,4 +1,4 @@
-The [MerRec](../../guides/datasets/merrec.mdx) evaluation covers 2,017,739 shoppers. A forest ranks them using ten behavior features from the preceding 92 days. The captured top 1% holds 38.1% of the next month's listed-price GMV; ranking by past spend finds 35.2%. A loyalty team could compare the extra three percentage points with its model training and maintenance cost.
+The [MerRec](../../guides/datasets/merrec.mdx) evaluation covers 2,017,739 shoppers. A forest ranks them using ten behavior features from the preceding 92 days. The captured top 1% holds 38.1% of the next month's listed-price GMV; ranking by past spend finds 35.2%.
 
 The forest trains on shoppers active before August 1 and scores those active before September 1. SQL compares its ranking with past spend and recent intent actions, using the next 30 days of purchases for evaluation.
 
@@ -8,7 +8,7 @@ The forest trains on shoppers active before August 1 and scores those active bef
 | Past 92-day GMV | 35.2% | 60.0% |
 | Intent actions in the last 30 days | 15.6% | not computed |
 
-The evaluation covers one later month. Its $2,538,509 GMV is the sum of listed prices, and the table does not measure revenue caused by targeting shoppers.
+The evaluation covers one later month, with $2,538,509 total GMV summing the listed prices of completed purchases.
 
 <details>
 <summary>Executed SQL</summary>

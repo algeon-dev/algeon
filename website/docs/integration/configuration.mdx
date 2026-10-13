@@ -21,7 +21,7 @@ default it sets. Environment variables then override single values. Every
 setting has one TOML location, and its environment variable is
 `ALGEON_SERVER_` followed by the TOML path in upper case with `.` written as
 `_`: `native.execution_mode` becomes `ALGEON_SERVER_NATIVE_EXECUTION_MODE`.
-Only strings, integers and booleans have an environment form; the
+Only strings, integers and booleans have an environment form. The
 `[[admission.device_profiles]]` and `[[auth.mode.users]]` arrays live in the
 file only. An unknown TOML field stops startup with `invalid_configuration` and the
 error lists the table's valid keys; an unknown `ALGEON_SERVER_*` variable
@@ -117,21 +117,21 @@ kind = "disabled"                               # ALGEON_SERVER_AUTH_MODE_KIND
 ```
 
 The commented byte values in `[[admission.device_profiles]]` and
-`[observability]` illustrate the units; their defaults depend on the GPU.
+`[observability]` illustrate the units. Their defaults depend on the GPU.
 
 ## Server {/* #server */}
 
 | Field | Default | Purpose |
 |---|---|---|
-| `bind` | `127.0.0.1:50051` | Flight SQL listen address; the default accepts local clients only |
+| `bind` | `127.0.0.1:50051` | Flight SQL listen address. The default accepts local clients only |
 | `statement_ticket_ttl_secs` | `300` | How long an unconsumed statement ticket waits for `DoGet` |
 | `http2_keepalive_interval_secs` | `30` | Seconds without inbound HTTP/2 traffic before a keepalive ping |
 | `http2_keepalive_timeout_secs` | `10` | Seconds to acknowledge a ping before the connection closes |
 | `init_sql` | unset | SQL file of DDL statements run at startup ([Startup SQL](#startup-sql)) |
 
 `bind` takes an IP socket address such as `127.0.0.1:50051` or
-`0.0.0.0:50051`; host names are not resolved. The durations must be positive.
-A client that acknowledges keepalive pings can retain an unread result; these
+`0.0.0.0:50051`. Host names are not resolved. The durations must be positive.
+A client that acknowledges keepalive pings can retain an unread result. These
 durations do not impose a query idle deadline. Embedders set
 `ServerConfig::http2_keepalive` through `Http2Keepalive`.
 
@@ -159,14 +159,14 @@ the port is taken, startup fails with `server_transport_failure` and
 The selected GPUs are the `device_ordinal` values of the
 `[[admission.device_profiles]]` entries, in file order. Without any entry the
 server selects GPU 0 with a profile that sets nothing, and the startup log
-says the profile was defaulted. Each entry takes the fields below; a rejected
+says the profile was defaulted. Each entry takes the fields below. A rejected
 value stops startup with `invalid_configuration`.
 
 | Field | Default | Constraint |
 |---|---|---|
-| `device_ordinal` | Required | One entry per GPU; a second entry for the same ordinal is an error. |
+| `device_ordinal` | Required | One entry per GPU. A second entry for the same ordinal is an error. |
 | `memory_limit_bytes` | Automatic capacity | At most the device memory Algeon owns. |
-| `backend_reserve_bytes` | `0` | Required with an explicit `memory_limit_bytes`; must leave managed capacity. |
+| `backend_reserve_bytes` | `0` | Required with an explicit `memory_limit_bytes` and must leave managed capacity. |
 | `default_query_limit_bytes` | Derived from managed capacity | Positive and within managed capacity minus `cache_cap_bytes`. |
 | `max_active_attempts` | `2` | Positive. |
 | `source_work_per_attempt` | `1` | Positive. |
@@ -183,12 +183,12 @@ value stops startup with `invalid_configuration`.
 - The shipped server owns the whole device. Its `memory_limit_bytes` ceiling
   is the CUDA-visible total, below the nominal card size.
 - `default_query_limit_bytes` is the immutable cap for a query whose embedding
-  caller supplies none; planner estimates do not resize it.
+  caller supplies none. Planner estimates do not resize it.
 - After the backend starts, the log prints one line per GPU with its managed
   capacity, effective `default_query_limit_bytes`, `max_active_attempts` and
   `worker_count`.
 - A rejected capacity prints the setting, configured value, ceiling and
-  largest accepted value in bytes and GiB; each of the four byte fields
+  largest accepted value in bytes and GiB. Each of the four byte fields
   reports the largest value its capacity accepts. Lower the setting in that
   device's entry to at most that value.
 
@@ -205,17 +205,17 @@ invalid server configuration: failed to initialize ownership-enforcing GPU backe
 
 ### Execution mode {/* #execution-mode */}
 
-The default is `native_preferred`. `functions_only` keeps ordinary SQL on
-DataFusion CPU and uses the GPU only for explicit cuGraph, cuVS and cuML
-UDTFs:
+The default is `native_preferred`. It selects supported relational SQL for
+native GPU execution and retains DataFusion for unsupported or unselected
+candidates. Set it in the configuration file or environment:
 
 ```toml
 [native]
-execution_mode = "functions_only"
+execution_mode = "native_preferred"
 ```
 
 ```bash
-export ALGEON_SERVER_NATIVE_EXECUTION_MODE=functions_only
+export ALGEON_SERVER_NATIVE_EXECUTION_MODE=native_preferred
 ```
 
 [Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode)
@@ -238,8 +238,8 @@ commit and enabled features.
 | `source_chunk_planning_mode` | `conservative` (or `local_parquet_throughput`) |
 | `statistical_aggregate_execution_mode` | `gpu_native_tolerant` (or `datafusion_exact_host_welford`) |
 
-- Device capacity comes only from [`[[admission.device_profiles]]`](#admission);
-  native settings carry no device-budget planning placeholder.
+- Device capacity comes only from [`[[admission.device_profiles]]`](#admission).
+  Native settings carry no device-budget planning placeholder.
 - Without `max_source_chunk_bytes`, the immutable grant sizes source reads. An
   explicit value limits the source-byte grouping target. The startup log
   prints `auto` for an unset value.
@@ -257,6 +257,14 @@ input to host memory. A query is not rewritten to native execution when that
 mode has no exact evaluation for its group keys or the other aggregates in the
 same `GROUP BY`.
 
+Source reads use KvikIO with compatibility mode `ON`, 64 I/O threads and 4 MiB
+tasks, set once when the backend is built. KvikIO's own variables
+`KVIKIO_COMPAT_MODE`, `KVIKIO_NTHREADS` and `KVIKIO_TASK_SIZE` override them,
+and no `[native]` field sets them. The startup log line `source I/O ready`
+prints the effective values. The
+[data path](../design/data-path.mdx#local-nvme-and-compatibility-mode)
+describes the shared thread pool and its pinned host memory.
+
 ## Authentication {/* #authentication */}
 
 Authentication defaults to `disabled`. Use that default only on a trusted
@@ -273,17 +281,17 @@ username = "alice"
 password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
 ```
 
-`token_ttl_secs` is required and positive; non-expiring bearer tokens are
+`token_ttl_secs` is required and positive. Non-expiring bearer tokens are
 unsupported. `password_hash` must be a valid Argon2 PHC string, plaintext is
 rejected, and usernames must be unique. Generate a hash with the server
-binary; it reads one line from stdin and prints the PHC string:
+binary. It reads one line from stdin and prints the PHC string:
 
 ```bash
 printf '%s\n' 'correct horse battery staple' | target/release/algeon_server hash-password
 ```
 
 Run interactively, `hash-password` prompts on stderr. The standard library
-cannot hide terminal input, so the typed password stays visible; piping it
+cannot hide terminal input, so the typed password stays visible. Piping it
 avoids that.
 
 ## TLS {/* #tls */}
@@ -304,7 +312,7 @@ client_ca_path = "/etc/algeon/clients-ca.pem"   # optional
   asked for one.
 - Startup fails with `invalid_configuration` before GPU initialization when a
   file cannot be read, a PEM is invalid, or the key does not match the
-  certificate. An unreadable file is named by its field and path; key
+  certificate. An unreadable file is named by its field and path. Key
   material never appears in the error.
 - Files are read once at startup, so replacing a certificate needs a restart.
 - Clients connect with `grpc+tls://host:50051` and trust the CA that signed
@@ -321,10 +329,10 @@ reaches. The server does not refuse a plaintext bind on a non-loopback address.
 
 ## Runtime observation retention {/* #runtime-observation-retention */}
 
-The defaults retain bounded query records and sealed reports; change them only
+The defaults retain bounded query records and sealed reports. Change them only
 when traffic or exporter behavior needs another budget. A data statement's
 runtime observation belongs to its execution attempt. A metadata statement,
-such as a catalog query, runs no native work; its runtime artifact is the
+such as a catalog query, runs no native work. Its runtime artifact is the
 control frame, and its query stats come from the server's own capture.
 
 | `[observability]` field | Default |
@@ -337,7 +345,7 @@ control frame, and its query stats come from the server's own capture.
 | `sealed_ttl_secs` | `3600` |
 | `shutdown_grace_secs` | `30` |
 
-All values must be positive. The capture budget never refuses a query; one
+All values must be positive. The capture budget never refuses a query. One
 that does not fit runs without capture, its SQL text is not kept, and its query
 stats report `unavailable_reason=active_capture_budget` during and after the
 run. Admission alone decides overload.
@@ -391,7 +399,7 @@ refuse one while admission has room.
 - Staging limits apply to host RAM apart from the device grant, and the
   DataFusion memory pool may impose a lower limit.
 - Embedded sessions pass `GpuIslandHostBoundaryConfig` through
-  `CugraphSqlConfig.host_boundary_config`; conflicting reinstallations fail.
+  `CugraphSqlConfig.host_boundary_config`. Conflicting reinstallations fail.
 
 cuVS SQL has no enable setting and is installed on every session. The `cuvs`
 feature decides whether its UDTFs execute or return
@@ -407,7 +415,7 @@ max_model_bytes = 268435456
 
 | `[models]` field | Default | Constraint |
 |---|---|---|
-| `root` | unset | Enables `cuml_forest_predict`; must be an existing directory at startup. |
+| `root` | unset | Enables `cuml_forest_predict` and must be an existing directory at startup. |
 | `max_model_bytes` | 256 MiB | Positive, and only valid with `root`. |
 
 Without `root`, `gpu_list_functions()` lists `cuml_forest_predict` as
@@ -454,8 +462,8 @@ algeon_server hash-password
 
 | Argument | Effect |
 |---|---|
-| `--config <path>` | TOML file; overrides `ALGEON_SERVER_CONFIG_FILE` |
-| `--log <filter>` | Tracing filter such as `info` or `algeon_datafusion=debug`; overrides `ALGEON_SERVER_LOG` |
+| `--config <path>` | TOML file. Overrides `ALGEON_SERVER_CONFIG_FILE` |
+| `--log <filter>` | Tracing filter such as `info` or `algeon_datafusion=debug`. Overrides `ALGEON_SERVER_LOG` |
 | `--check-config` | Loads and validates the configuration, including the TLS files, without touching a GPU, prints it, exits 0, or prints the error and exits 1 |
 | `--version` | Prints the version, commit, enabled features and DataFusion version |
 | `hash-password` | Reads one line from stdin and prints its Argon2 PHC string ([Authentication](#authentication)) |
@@ -504,5 +512,5 @@ In `native_preferred` and `native_required`, the native optimizer overrides
 one DataFusion optimizer default, described in
 [Uncorrelated scalar subqueries](../design/native-lowering.mdx#uncorrelated-scalar-subqueries).
 
-`SET` and `RESET` are rejected over Flight SQL; session options come from
+`SET` and `RESET` are rejected over Flight SQL. Session options come from
 `DATAFUSION_*` variables before startup.

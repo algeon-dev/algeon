@@ -7,14 +7,14 @@ import Table from '@site/src/theme/MDXComponents/Table';
 export const tieIns = ['NYX', 'Amc', 'Primark', 'ALDO'];
 export const liftOf = (records, name) => { const row = records.find(record => record.brand_name === name); return row ? `${row.lift_change.toFixed(2)}×` : 'absent from the top 25'; };
 
-The statement compares each brand's affinity to Barbie's audience between
-May to June and July to August 2023 and ranks the change. A later check of
-product names tests whether the change coincides with Barbie-related listings.
+The query compares each brand's affinity to Barbie's audience from
+May through June against July through August 2023 and ranks the relative change.
+A later check of product names tests whether the change coincides with Barbie-related listings.
 
 Each period has a graph of distinct user-brand likes. The `after_release`
-flag is true for July to August likes; the split at 1 July falls 20 days
+flag is true for July to August likes. The split at 1 July falls 20 days
 before the Barbie film opened on 21 July. User vertices are `-(user_id + 1)`
-and brand vertices are `brand_id` values; both columns are non-negative in
+and brand vertices are `brand_id` values. Both columns are non-negative in
 this data, so users occupy negative IDs and `la.vertex > 0` keeps only brands
 (brand 0 is excluded).
 
@@ -37,9 +37,14 @@ comparison for the product-name check below.
 </Table>
 
 The time filters, four graph calls and brand joins ran natively in one
-plan. The complete statement took
-**{capture.median_elapsed_s_after_first.toFixed(2)} s** over Flight SQL,
-including planning, execution and result receipt.
+plan. Over Flight SQL, the first run on a fresh server took
+**{capture.runs[0].elapsed_s.toFixed(2)} s** and runs 2 and 3 a median of
+**{capture.median_elapsed_s_after_first.toFixed(2)} s**.
+On the same host and warm cache, an equivalent CPU pipeline combining 32-thread DuckDB
+with igraph took a median of **23.3 s** (2.3 s SQL extraction, 13.0 s renumbering and
+graph construction, 7.7 s for four PageRank calls, 0.3 s final join) with identical
+top-25 rankings. Device execution avoids transferring and renumbering the 23 million
+edge pairs across host memory.
 
 **Follow-up: check product names.** The graph query did not search names.
 This separate SQL counts like events on listings whose names contain
@@ -59,16 +64,15 @@ maps to one `brand_id`, matching the brands in the graph result.
 NYX's records include "{listingCheck.listing_records.find(row => row.brand_name === 'NYX').name}".
 Taylor Swift's graph score also increased, but only 135 of 164,499 later
 likes were on matching listings. Its change remains unexplained by this check.
-Name matches can include seller descriptions and color names; they do not
-verify a partnership.
+Name matches can include seller descriptions and color names.
 
 **Follow-up: change the seed.** A rise in graph affinity could reflect a
-broad summer trend rather than Barbie. Running the same statement with
+broad summer trend rather than Barbie. Rerunning the query with
 another seed brand tests that. Hot Wheels is a Mattel brand whose collector
 audience overlaps Barbie's; Nike is a large brand with no July event. Each
 control replaces Barbie's `brand_id` (2595) with the seed's (9877 for Hot
 Wheels, 15987 for Nike) in the personalization vertex and the `la.vertex <>`
-exclusion; the rest of the statement is unchanged.
+exclusion. The rest of the SQL is unchanged.
 
 <Table>
 <thead><tr><th>Brand</th><th>Barbie seed</th><th>Hot Wheels seed</th><th>Nike seed</th></tr></thead>
@@ -78,9 +82,8 @@ exclusion; the rest of the statement is unchanged.
 With Nike as the seed, none of the four brands appears among the 25 largest
 changes. With Hot Wheels, NYX, ALDO and Primark appear with smaller changes
 and Amc is absent, consistent with the Mattel collector audience sharing
-part of the Barbie movement. A seasonal baseline over several years would
-need data this snapshot lacks. Item attributes are the latest retained
-values, and the calendar comparison is not an event-date experiment.
+part of the Barbie movement. Item attributes are the latest retained
+values.
 
 <div className="fineprint">
 

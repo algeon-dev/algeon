@@ -12,7 +12,7 @@ temporary or persistent, beside a human-readable message. An application finds
 that identity inside a `DataFusionError` or in Flight SQL gRPC metadata, and
 should decide from those typed fields, never from formatted error text.
 Ordinary DataFusion errors and transport errors below the server keep their
-own policies; [Error ownership](../design/errors.mdx) covers how errors are
+own policies. [Error ownership](../design/errors.mdx) covers how errors are
 created and what each surface discloses.
 
 ~~~text
@@ -68,8 +68,8 @@ fn record_failure(error: &DataFusionError) {
 The search walks source chains and each `DataFusionError::Collection` branch
 in deterministic depth-first pre-order, bounded by depth and total node count,
 and returns the first Algeon error it reaches, whatever its severity. A `None` result means only that
-none was found within that budget; keep the application's existing DataFusion
-policy then.
+none was found within that budget. In that case, maintain the application's
+existing DataFusion error policy.
 
 ## Retry and recovery are evidence-based {/* #retry-and-recovery-are-evidence-based */}
 
@@ -78,8 +78,8 @@ policy then.
 | Status | Meaning |
 | --- | --- |
 | `Temporary` | The condition may clear, but the error alone does not prove when or how to retry. |
-| `Persistent` | A dependency failure is known or observed to continue; stop automatic retry and escalate. |
-| `Permanent` | Do not retry the same request automatically, since it normally needs different input, configuration, capability or code; cancellation is also terminal. |
+| `Persistent` | A dependency failure is known or observed to continue. Stop automatic retry and escalate. |
+| `Permanent` | Do not retry the same request automatically, since it normally needs different input, configuration, capability or code. Cancellation is also terminal. |
 
 There is no adapter `Error::is_retryable()`. To recover from an attempted query:
 
@@ -150,7 +150,8 @@ the sealed attempt report.
 
 An `algorithm_did_not_converge` message names the algorithm, the iterations
 reached and the configured limits, with matching `algorithm`, `iterations`, `max_iterations` and
-`epsilon` metadata. Retrying unchanged repeats it. The message ends with the
+`epsilon` metadata. Resubmitting the identical query reproduces the convergence
+failure. The message ends with the
 native layer's `remedy`. Katz centrality asks for a lower `alpha` (below
 1/lambda_max, the reciprocal of the largest adjacency eigenvalue) or a higher
 `max_iterations`; HITS and eigenvector centrality ask for a higher
@@ -248,8 +249,8 @@ print(b"".join(result.body.to_pybytes() for result in results).decode())
 # incomplete=false
 ~~~
 
-The summary answers whether the query finished, on which device, and whether
-retry advice applies. Call `GetQueryStats` when the answer needs the per-operator
+The summary indicates whether the query completed, which device executed it,
+and whether retry advice applies. Call `GetQueryStats` when the answer needs the per-operator
 `[planning]` and `[execution]` rows, the `[structured_error]` facts or the
-explained plans; a simple aggregate already returns a payload of more than
+explained plans. A simple aggregate already returns a payload of more than
 100 KB.

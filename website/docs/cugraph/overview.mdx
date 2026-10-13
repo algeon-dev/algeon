@@ -10,24 +10,15 @@ Algeon exposes NVIDIA RAPIDS **cuGraph** algorithms as GPU UDTFs
 (user-defined table functions) over DataFusion SQL sessions. The session can
 run in a Rust process or be served through Flight SQL. Each `cugraph_*` UDTF
 reads an edge relation, builds a GPU graph, runs an algorithm, and returns rows
-you can compose with ordinary SQL.
-
-## UDTFs
-
-Start with [cuGraph UDTFs](./udtfs/index.mdx) to choose an algorithm by
-family or compare the generated catalog descriptors.
-
-## Discovery and validation
-
-Use [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
-for the shared list, describe, validate, and execute workflow. The exact
-metadata response and validation-request schemas are in the
-[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx).
+you can compose with ordinary SQL. The [cuGraph UDTFs](./udtfs/index.mdx) index
+lists every function; [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
+and the [GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx) cover
+discovery and validation.
 
 ## Questions to explore
 
 Each question opens a captured example on its UDTF page. The examples read
-the [demo datasets](../guides/datasets/index.mdx); the MerRec statements ran
+the [demo datasets](../guides/datasets/index.mdx). The MerRec queries ran
 over the full 1.27 billion events in `native_required` mode.
 
 ### MerRec
@@ -126,15 +117,6 @@ columns such as `hub_score` and `authority_score` for HITS.
 
 A bounded Flight SQL server can retain constructed graphs for repeat calls with
 a strongly identified, eligible input. The current reusable path covers BFS
-without `include_edges`, PageRank, Jaccard, Sorensen, Overlap, and Cosine;
-other calls bypass the cache. Configure and observe it through
+without `include_edges`, PageRank, Jaccard, Sorensen, Overlap, and Cosine.
+Other calls bypass the cache. Configure and observe it through
 [Configuration](../integration/configuration.mdx).
-
-## Next steps
-
-- [Integrate cuGraph](../integration/overview.mdx): configure an embedded
-  session or a Flight SQL server.
-- [Prepare graph inputs](./graph-options.mdx): choose a supported vertex-ID
-  domain and refine graph construction semantics.
-- [Explore a demo investigation](../guides/datasets/index.mdx): inspect
-  captured results and the SQL that produced them.

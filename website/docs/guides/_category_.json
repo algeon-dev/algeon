@@ -2,7 +2,8 @@
   "label": "Guides",
   "position": 4,
   "link": {
-    "type": "doc",
-    "id": "guides/index"
+    "type": "generated-index",
+    "slug": "/guides",
+    "description": "The demo datasets and the discovery and validation workflow for GPU UDTFs."
   }
 }

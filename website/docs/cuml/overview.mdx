@@ -8,23 +8,14 @@ description: SQL-visible cuML decomposition, clustering, embedding, classificati
 
 Algeon exposes NVIDIA RAPIDS [cuML](https://github.com/rapidsai/cuml) as
 GPU UDTFs (user-defined table functions) in DataFusion SQL sessions. A UDTF
-either fits a model inside the statement (TSVD, HDBSCAN, UMAP, logistic
+either fits a model inside the query (TSVD, HDBSCAN, UMAP, logistic
 regression, random forests) or scores rows with a pretrained XGBoost,
 LightGBM or Treelite forest (`cuml_forest_predict`). Each result carries a
-`row_ordinal` and the `id` of the row it describes.
-
-## UDTFs
-
-Start with [cuML UDTFs](./udtfs/index.mdx) to choose a decomposition,
-clustering, embedding, classification, regression or pretrained-forest
-UDTF and read its generated option and output schema.
-
-## Discovery and validation
-
-Use [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
-for the shared list, describe, validate, and execute workflow. The detailed
-column and request schemas are in the
-[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx).
+`row_ordinal` and the `id` of the row it describes. The
+[cuML UDTFs](./udtfs/index.mdx) index lists every function;
+[Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx) and the
+[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx) cover discovery and
+validation.
 
 ## Questions to explore
 
@@ -36,7 +27,7 @@ results to source records.
 
 The [MerRec investigation](../guides/datasets/merrec.mdx) prepares shopper
 behavior features with SQL over 1.27 billion events, then scores or fits
-models on them in the same statement.
+models on them in the same query.
 
 - [Which 5,000 shoppers should a Pokemon campaign reach?](../guides/datasets/merrec.mdx#audience-funnel) (`cuml_forest_predict` ranking the union of a `cugraph_personalized_pagerank` audience and a `cuvs_brute_force_knn` audience)
 - [Can an existing model improve a fixed-size buyer shortlist?](./udtfs/cuml_forest_predict.mdx?dataset=merrec#examples) (`cuml_forest_predict`)
@@ -67,26 +58,23 @@ tables and views can supply the projected rows. A bare table identifier is not
 an execution argument. [ML Inputs](./ml-inputs.mdx) specifies the canonical
 `id`, feature layouts, element types, and checks at planning and execution.
 
-For metadata validation, `gpu_validate_call` resolves a registered table or
-view and inspects its schema without evaluating rows.
-
 ## Execution and lifetime
 
 Embedded sessions install this SQL family with `try_with_cuml_sql()`, or
 with `try_with_cuml_sql_config(CumlSqlConfig)` to configure the models root
 that `cuml_forest_predict` reads. The Flight SQL server installs
 it for each session by default. GPU execution requires a binary built with
-the `cuml` Cargo feature and an installed `AlgeonGpuBackend`; otherwise
+the `cuml` Cargo feature and an installed `AlgeonGpuBackend`. Otherwise
 catalog entries remain discoverable with `available=false` and
 `required_feature_disabled`. The [DataFusion session
 guide](../integration/datafusion-session.mdx) describes backend,
 execution-mode, and `CumlSqlConfig` setup.
 
-The six fitting UDTFs evaluate their input within one statement.
-Models and transforms are released after that call; there is no model cache,
-cross-statement reuse, or serialization, and no inference for neural
+The six fitting UDTFs evaluate their input within one call.
+Models and transforms are released after that call. There is no model cache,
+reuse across queries, or serialization, and no inference for neural
 networks trained in PyTorch. `cuml_forest_predict` instead reads
-and binds a model file from a server-configured models root; without one
+and binds a model file from a server-configured models root. Without one
 configured, it is listed but unavailable with `model_root_unconfigured`. See
 [Configuration](../integration/configuration.mdx#models-and-forest-inference)
 for the `[models]` TOML table. Allocations run within the admitted query

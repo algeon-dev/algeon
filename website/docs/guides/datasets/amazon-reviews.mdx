@@ -16,11 +16,6 @@ The Electronics snapshot from
 contains 43,886,944 reviews and 1,610,012 products.
 Products and reviews join by `product_id`.
 
-- [Review the travel-headphone shortlist](#travel-headphones) and inspect the
-  office headset counterexample.
-- [Investigate a review-group shift](#review-shift) and check the original
-  NanoPods reviews.
-
 ## Travel-headphone shortlist {/* #travel-headphones */}
 
 <AmazonTravelShortlist />
@@ -32,14 +27,14 @@ Products and reviews join by `product_id`.
 ## Related analyses {/* #review-map */}
 
 The [UMAP example](../../cuml/udtfs/cuml_umap.mdx?dataset=amazon-reviews#examples)
-projects review vectors and joins the output to original text. It describes
-the returned coordinates and the limits of interpreting distance in a projection.
+projects review vectors and joins the output to original text, allowing
+inspection of review text alongside returned coordinates.
 
 The [KMeans and Top-K example](../../cuvs/udtfs/cuvs_top_k.mdx?dataset=amazon-reviews#examples)
 calculates eight keyword-mention rates from the converted reviews and groups
 2,384 products by those rates. It returns the three largest average rates
-within each of six product groups. Mentions are prompts for reading reviews,
-not verified complaint categories; this query does not need prepared vectors.
+within each of six product groups. Mentions highlight reviews for closer
+reading, without requiring prepared vectors.
 
 ## Data scope
 
@@ -50,7 +45,7 @@ one million form the search corpus, and 10,000 disjoint products are queries.
 It also encoded {capture.input_verification.reviews.rows.toLocaleString('en-US')}
 reviews rated at most two stars, with at least 40 body characters, from 2021
 and 2022. BGE-M3 revision <code style={{whiteSpace: 'normal', overflowWrap: 'anywhere'}}>{capture.embedding.revision}</code> produced
-the vectors outside SQL; the stored 1,024-dimensional Float32 values were
+the vectors outside SQL. The stored 1,024-dimensional Float32 values were
 L2 normalized. The queries do not encode text during execution, and the
 raw-text keyword query does not require this preparation. Prices and product
 attributes are from the captured catalog.

@@ -143,11 +143,11 @@ export function renderFunctionPage({
   notes,
   examples,
   limits,
-  discoveryLink,
 }) {
   // Page order is fixed: purpose, minimal call, inputs, arguments and
   // options, output, optional hand-written notes (a partial that carries its
-  // own headings), optional long-form examples, limits.
+  // own headings), optional long-form examples, limits. A UDTF without
+  // algorithm-specific limitations has no Limits section.
   const parts = [
     '---',
     `title: ${title}`,
@@ -195,12 +195,10 @@ export function renderFunctionPage({
     parts.push('', '## Examples', '', examples);
     headings.push('Examples');
   }
-  const limitsParts = [limits];
-  if (discoveryLink) {
-    limitsParts.push('', `To dry-run validate relation metadata, column types, and options without execution, see [\`gpu_validate_call\`](${discoveryLink}).`);
+  if (limits) {
+    parts.push('', '## Limits', '', limits);
+    headings.push('Limits');
   }
-  parts.push('', '## Limits', '', limitsParts.join('\n'));
-  headings.push('Limits');
   const page = parts.join('\n');
   assertPageContract(spec.function_name, page, headings);
   return page;
@@ -281,46 +279,36 @@ function optionType(option) {
   return option.type || 'unknown';
 }
 
+// Every scalar argument appears once in the descriptor's argument list and
+// once in its JSON option schema; the SQL-facing description wins and the
+// schema supplies literal shape, default and constraints.
 export function renderDenseArguments(spec, bindingShapes) {
-  const argumentsTable = spec.argument_descriptions.length === 0
-    ? '_This UDTF has no scalar SQL arguments beyond its relation arguments._'
-    : table(['Argument', 'Type', 'Required', 'Description'], spec.argument_descriptions.map(argument => [
-      code(argument.name),
-      code(argument.type || sqlArgumentType(argument)),
-      argument.required ? 'yes' : 'no',
-      cell(argument.description),
-    ]));
+  const descriptions = new Map(spec.argument_descriptions.map(argument => [argument.name, argument]));
   const required = new Set(spec.options_schema.required || []);
   const rows = Object.entries(spec.options_schema.properties || {})
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([name, option]) => [
-      code(name),
-      required.has(name) ? 'yes' : 'no',
-      code(optionType(option)),
-      defaultCell(option),
-      cell(optionConstraints(option)),
-      cell(option.description),
-    ]);
+    .map(([name, option]) => {
+      const argument = descriptions.get(name);
+      return [
+        code(name),
+        code(optionType(option)),
+        required.has(name) || argument?.required ? 'yes' : 'no',
+        defaultCell(option),
+        cell(optionConstraints(option)),
+        cell(argument?.description || option.description),
+      ];
+    });
   return [
     '### Scalar SQL arguments',
     '',
-    argumentsTable,
-    '',
-    '### SQL value argument schemas',
-    '',
-    rows.length === 0 ? '_This UDTF has no options._' : table(['Argument', 'Required', 'Literal shape', 'Default', 'Constraints', 'Description'], rows),
+    rows.length === 0
+      ? '_This UDTF has no scalar SQL arguments beyond its relation arguments._'
+      : table(['Argument', 'Type', 'Required', 'Default', 'Constraints', 'Description'], rows),
     '',
     '### Vector binding shapes',
     '',
     bindingShapes,
   ].join('\n');
-}
-
-function sqlArgumentType(argument) {
-  const schema = argument.schema || {};
-  if (schema.enum) return `enum (${schema.enum.map(value => JSON.stringify(value)).join(', ')})`;
-  if (schema.type) return schema.type;
-  return schema.oneOf ? 'object' : 'literal';
 }
 
 // A repeated field's descriptor name carries an `<index>` placeholder;
@@ -329,6 +317,19 @@ function repeatedFieldSentence(field) {
   const prefix = field.name.replace(/<index>$/, '');
   if (prefix === field.name) throw new Error(`repeated result field ${field.name} must end with <index>`);
   return `The output contains ${code(field.repeats)} such columns, ${code(`${prefix}0`)} through ${code(`${prefix}<${field.repeats} - 1>`)}.`;
+}
+
+// The metric column only carries information when some element has valid
+// metrics; element types alone read as one sentence.
+export function renderVectorElementTypes(support) {
+  if (support.some(entry => entry.metrics.length > 0)) {
+    return table(['Element type', 'Valid metrics'], support.map(entry => [
+      code(entry.element), entry.metrics.length ? entry.metrics.map(code).join(', ') : 'None',
+    ]));
+  }
+  const elements = support.map(entry => code(entry.element));
+  const list = elements.length > 1 ? `${elements.slice(0, -1).join(', ')} or ${elements.at(-1)}` : elements[0];
+  return `Feature values must be ${list}.`;
 }
 
 export function renderDenseOutputSchema(spec) {
@@ -349,5 +350,5 @@ export function denseQuickstartPrerequisite(spec, entry) {
   if (relations.length === 0) throw new Error(`${spec.function_name}: validation call names no relations`);
   const named = relations.map(([role, relation]) => `${code(relation.table)} (the ${code(role)} role)`);
   const passed = named.length > 1 ? 'each passed' : 'passed';
-  return `The call below expects the registered relation${named.length > 1 ? 's' : ''} ${named.join(' and ')}, ${passed} as a parenthesized ${code('SELECT')} subquery. Substitute your own relations and column names.`;
+  return `The call below expects the registered relation${named.length > 1 ? 's' : ''} ${named.join(' and ')}, ${passed} as a parenthesized ${code('SELECT')} subquery.`;
 }

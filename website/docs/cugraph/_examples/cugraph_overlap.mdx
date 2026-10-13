@@ -10,11 +10,10 @@ field labels, and have at least as many references as BERT. The smaller set is
 therefore BERT's 55-reference bibliography, and the overlap score is the share
 of that list also found in each candidate's bibliography.
 
-The UDTF requires an undirected graph. Positive IDs represent citing
-papers and negative IDs represent cited papers in the reference role. This
-keeps papers that cite BERT on the positive-ID side and references on the
-negative-ID side. The edge projection omits weights, so each reference
-contributes one unit. Candidate pairs exclude title-identical BERT records.
+The edge view gives cited papers negative IDs and citing papers positive IDs,
+so the undirected call compares outgoing reference lists, as the
+[Jaccard example](../udtfs/similarity/cugraph_jaccard.mdx?dataset=citation-network#examples)
+explains. Candidate pairs exclude title-identical BERT records.
 
 ```sql
 CREATE OR REPLACE VIEW similarity_seed AS

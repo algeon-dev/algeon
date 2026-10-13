@@ -64,7 +64,7 @@ edge normalization.
 | `raw_libcugraph` | Pre-normalized edge tables, lower-level libcugraph parity checks, and performance-sensitive paths where duplicate/reverse-edge semantics are intentionally handled upstream. | Skips Python-style `EdgeNormalize` and sends the edge list to the libcugraph-compatible graph builder. Null edge rows are still sanitized because libcugraph has no null-edge semantics. |
 
 For SQL calls, both policies still use simple graph properties selected by
-`directed`; there is no SQL multigraph option.
+`directed`. There is no SQL multigraph option.
 
 ## What `python_cugraph` normalizes
 
@@ -142,9 +142,9 @@ Look for both fields in the physical plan:
 
 ## Reuse algorithm results
 
-A view stores a query definition; later reads can execute the algorithm again.
-Community partitions and layout coordinates can change between executions;
-the [reproducibility section](../design/gpu-table-functions.mdx#reproducibility)
+A view stores a query definition. Later reads can execute the algorithm again.
+Community partitions and layout coordinates can change between executions.
+The [reproducibility section](../design/gpu-table-functions.mdx#reproducibility)
 lists which functions repeat. Use `CREATE OR REPLACE TABLE ... AS` when later
 queries need results from one execution, as in the
 [SCC example](./udtfs/connectivity/cugraph_strongly_connected_components.mdx#examples).

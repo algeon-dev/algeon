@@ -538,7 +538,7 @@ function EgoCanvas(): React.ReactElement {
             Ego network of <em>Attention Is All You Need</em> (133 papers, 393
             citation edges). Positions from <code>cugraph_force_atlas2</code>,
             colors from <code>cugraph_louvain</code>. Click, hover, or drag
-            nodes to explore connections; click background to reset. Scroll to
+            nodes to explore connections. Click the background to reset. Scroll to
             zoom.
           </>
         )}

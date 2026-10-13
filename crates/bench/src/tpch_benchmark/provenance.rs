@@ -5,8 +5,9 @@ use std::{
     time::UNIX_EPOCH,
 };
 
+use query_runtime::runtime::KvikioProcessConfig;
+
 use super::{NativeTpchBenchmarkConfig, NativeTpchDeviceBudget, NativeTpchRuntimeResources};
-use crate::clickbench_benchmark::KVIKIO_COMPAT_MODE_ENV;
 
 /// Facts recorded once per benchmark run so an artifact can be attributed to
 /// the source revision, native build, GPU, driver, and process limits that
@@ -24,7 +25,7 @@ pub(super) struct RunProvenance {
     pub(super) cpu_model: Option<String>,
     pub(super) cpu_logical: Option<usize>,
     pub(super) fd_soft_limit: Option<u64>,
-    pub(super) kvikio_compat_mode: Option<String>,
+    pub(super) kvikio: Option<KvikioProcessConfig>,
     pub(super) devices: Vec<DeviceProvenance>,
 }
 
@@ -71,7 +72,7 @@ impl RunProvenance {
             cpu_model: fs::read_to_string("/proc/cpuinfo").ok().and_then(parse_cpu_model),
             cpu_logical: std::thread::available_parallelism().ok().map(usize::from),
             fd_soft_limit: fs::read_to_string("/proc/self/limits").ok().and_then(parse_fd_soft_limit),
-            kvikio_compat_mode: std::env::var(KVIKIO_COMPAT_MODE_ENV).ok(),
+            kvikio: resources.backend().and_then(|backend| backend.kvikio_process_config()),
             devices: resources.device_provenance(),
         }
     }
@@ -80,7 +81,7 @@ impl RunProvenance {
 pub(super) fn run_start_line(config: &NativeTpchBenchmarkConfig, provenance: &RunProvenance) -> String {
     let policy = config.native_memory_policy;
     let mut line = format!(
-        "[native_tpch_benchmark] stage=run_start revision={} worktree_dirty={} cudf_source_revision={} cudf_source_dirty={} cudf_install_lib_mtime_unix={} rust_profile={} driver_version={} cpu_model={} cpu_logical={} cpu_profile={} fd_soft_limit={} kvikio_compat_mode={} dataset_mode={} query_count={} warmups={} iterations={} native_profile={} profile_source={} device_budget={} query_cap_bytes={} max_source_chunk_bytes={} max_row_groups_per_chunk={} source_chunk_planning_mode={} max_source_reads_in_flight={}",
+        "[native_tpch_benchmark] stage=run_start revision={} worktree_dirty={} cudf_source_revision={} cudf_source_dirty={} cudf_install_lib_mtime_unix={} rust_profile={} driver_version={} cpu_model={} cpu_logical={} cpu_profile={} fd_soft_limit={} kvikio_compat_mode={} kvikio_threads={} kvikio_task_size_bytes={} dataset_mode={} query_count={} warmups={} iterations={} native_profile={} profile_source={} device_budget={} query_cap_bytes={} max_source_chunk_bytes={} max_row_groups_per_chunk={} source_chunk_planning_mode={} max_source_reads_in_flight={}",
         unknown_or(provenance.revision.as_deref()),
         unknown_or(provenance.worktree_dirty.map(|dirty| dirty.to_string()).as_deref()),
         unknown_or(provenance.cudf_source_revision.as_deref()),
@@ -92,7 +93,9 @@ pub(super) fn run_start_line(config: &NativeTpchBenchmarkConfig, provenance: &Ru
         unknown_or(provenance.cpu_logical.map(|count| count.to_string()).as_deref()),
         cpu_profile_label(),
         unknown_or(provenance.fd_soft_limit.map(|limit| limit.to_string()).as_deref()),
-        provenance.kvikio_compat_mode.as_deref().unwrap_or("unset"),
+        unknown_or(provenance.kvikio.map(|kvikio| kvikio.compat_mode.as_str())),
+        unknown_or(provenance.kvikio.map(|kvikio| kvikio.thread_count.to_string()).as_deref()),
+        unknown_or(provenance.kvikio.map(|kvikio| kvikio.task_size_bytes.to_string()).as_deref()),
         config.dataset_mode.as_str(),
         config.query_ids.len(),
         config.warmup_iterations,

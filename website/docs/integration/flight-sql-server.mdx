@@ -16,7 +16,7 @@ embeddable implementation and public API live in
 ## Build and start
 
 After the native libraries are built (see
-[Run the server only](../build/overview.md#run-the-server-only)), build the
+[Run as a Flight SQL server](../build/overview.md#run-as-a-flight-sql-server)), build the
 `algeon-server` package and its `algeon_server` binary:
 
 ```bash
@@ -40,9 +40,9 @@ Before binding another interface, enable
 [TLS](./configuration.mdx#tls) or a TLS-terminating proxy.
 
 To keep ordinary SQL on DataFusion CPU while explicit cuGraph, cuVS, and cuML
-calls run on GPU, set `ALGEON_SERVER_NATIVE_EXECUTION_MODE=functions_only`
+calls run on the GPU, set `ALGEON_SERVER_NATIVE_EXECUTION_MODE=functions_only`
 (or `execution_mode = "functions_only"` under `[native]`) before startup.
-The default is `native_preferred`; see
+The default is `native_preferred`. See
 [Execution mode](./configuration.mdx#execution-mode) for all three modes.
 
 From another terminal, verify the endpoint with the repository client:
@@ -53,9 +53,9 @@ cargo run -p tools -- \
 ```
 
 The expected result is a column named `one` containing `1`. The tool is a
-plaintext smoke-test client with no authentication or TLS; applications
+plaintext smoke-test client with no authentication or TLS. Applications
 connect through [ADBC](#connect-with-adbc). It waits up to 5 seconds for the
-server and prints a progress line each second;
+server and prints a progress line each second.
 `--connect-timeout-secs <n>` before the URL changes that limit.
 
 ## Five-minute quickstart {/* #quickstart */}
@@ -89,8 +89,7 @@ SELECT * FROM cuvs_kmeans(input => (SELECT * FROM (VALUES (1, 0.0, 0.0), (2, 0.1
 ```
 
 `gpu_validate_call` checks a call against the schema of a registered table
-or view without reading rows. Register the edges as a view, then validate a
-PageRank call over it:
+or view. Register the edges as a view, then validate a PageRank call over it:
 
 ```sql
 CREATE OR REPLACE VIEW quickstart_edges AS
@@ -109,7 +108,7 @@ FROM gpu_validate_call(
 ```
 
 The row has `valid = true` and `would_execute_gpu = true`. Finally, ask the
-planner which parts of the PageRank statement run on the GPU:
+planner which parts of the PageRank query run on the GPU:
 
 ```sql
 EXPLAIN GPU SELECT * FROM cugraph_pagerank(edges => (SELECT * FROM (VALUES (1,2),(2,3),(3,1),(3,4)) AS t(src, dst)));
@@ -127,7 +126,7 @@ The [citation investigation](../guides/datasets/citation-network.mdx) uses
 Parquet files produced by the
 [citation fixture](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/citation_network/README.md).
 cuGraph is enabled by default, so the server needs no extra setting. Paths in
-`LOCATION` resolve against the server's working directory; start it from the
+`LOCATION` resolve against the server's working directory. Start it from the
 repository root.
 
 To register the tables at every start, save these statements in a file such
@@ -154,11 +153,11 @@ ALGEON_SERVER_INIT_SQL="$PWD/citation-init.sql" target/release/algeon_server
 
 Alternatively, submit each statement separately from a connected SQL client
 after startup. The first three tables supply the citation-path, bibliography
-and community queries on the investigation page; examples that use author or
+and community queries on the investigation page. Examples that use author or
 field links also need `paper_authors` and `paper_fos`. The saved SQL includes
 any additional views that its algorithm inputs require. The default
 `native_preferred` mode supports the bibliography example's mixed execution
-path; inspect a changed query with
+path. Inspect a changed query with
 [GPU coverage validation](./gpu-coverage-validation.mdx).
 
 ## Shared catalog {/* #shared-catalog */}
@@ -189,8 +188,8 @@ def sql_string(value: str) -> str:
 ```
 
 `EXPLAIN GPU` runs from statement queries and from prepared statements without
-parameters, so the Python DB-API `cursor.execute("EXPLAIN GPU ...")` works;
-see [GPU coverage validation](./gpu-coverage-validation.mdx).
+parameters, so the Python DB-API `cursor.execute("EXPLAIN GPU ...")` works.
+See [GPU coverage validation](./gpu-coverage-validation.mdx).
 
 DML and `COPY` are rejected. A statement query returns
 `Flight SQL statement query does not support DML or COPY statements`, and a
@@ -228,10 +227,14 @@ with dbapi.connect(uri="grpc://127.0.0.1:50051") as conn:
         result = cur.fetch_arrow_table()
 ```
 
-The DB-API wrapper emits
-`Warning: Cannot disable autocommit; conn will not be DB-API 2.0 compliant`
-when a connection opens. Flight SQL has no transactions, so the warning is
-expected and needs no action.
+The DB-API wrapper emits this warning when a connection opens:
+
+```text
+Warning: Cannot disable autocommit; conn will not be DB-API 2.0 compliant
+```
+
+Flight SQL has no transactions, so the warning is expected and needs no
+action.
 
 The same endpoint works with other ADBC language bindings. Keep pooling,
 timeouts, authentication, and result conversion in the client service.
@@ -241,25 +244,23 @@ per-query statistics by query id or correlation id.
 ## Connection loss and result backpressure {/* #connection-loss */}
 
 The server sends an HTTP/2 keepalive ping after 30 seconds without inbound
-traffic. An acknowledgement must arrive within 10 seconds; otherwise the
+traffic. An acknowledgement must arrive within 10 seconds. Otherwise the
 connection closes. The same settings apply when the server binds its address
 and when an embedded caller supplies a prebound listener. Connection loss
 drops the Flight result stream, cancels its attempt, and releases the GPU grant
 after native cleanup completes. Each statement registers a cancellation token
-derived from the server's shutdown token; when it fires, the next poll of the
+derived from the server's shutdown token. When it fires, the next poll of the
 result body cancels the attempt and drops the inner stream (see [Completion and
 resident data](../design/admission.mdx#resident-handoff-and-release)).
 
 A client that acknowledges pings but stops reading results keeps its query
 under output backpressure and retains its grant until the stream ends or is
-canceled. Result chunks are at most 4 MiB, and an unread result probably
-holds back further polls through HTTP/2 flow control. Keepalive sets no query
+canceled. Result chunks are at most 4 MiB, and unread result chunks trigger
+HTTP/2 flow control that halts subsequent poll requests. Keepalive sets no query
 idle deadline. Clients should consume or cancel result streams before
 returning a connection to their pool.
 
 ## Use an interactive client
-
-Choose either client for an interactive session.
 
 ### DataBow
 
@@ -287,8 +288,8 @@ arrow_cli --host 127.0.0.1 --port 50051 --timeout 120
 | --- | --- | --- | --- |
 | ADBC (Python) | `grpc://host:port`, or `grpc+tls://host:port` for TLS | `db_kwargs={"username": "...", "password": "..."}` | `db_kwargs={"adbc.flight.sql.client_option.tls_root_certs": pem_text}`, where the value is the PEM file's contents |
 | databow | `--uri grpc://host:port` or `--uri grpc+tls://host:port` | `--username` and `--password` | `--option "adbc.flight.sql.client_option.tls_root_certs=$(cat ca.pem)"` |
-| arrow_cli | `--host` and `--port`; add `--tls` for TLS | `-u` and `-p` | Its README documents no custom CA option |
-| `tools flight-sql-query` | `grpc://host:port` or `http://host:port` | Not supported | Not supported; plaintext only |
+| arrow_cli | `--host` and `--port`. Add `--tls` for TLS | `-u` and `-p` | Its README documents no custom CA option |
+| `tools flight-sql-query` | `grpc://host:port` or `http://host:port` | Not supported | Not supported (plaintext only) |
 
 The ADBC option names are those of `adbc_driver_flightsql` 1.12.0. A client
 and server that disagree on TLS fail at connection time:

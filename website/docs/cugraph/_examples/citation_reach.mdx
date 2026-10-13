@@ -15,8 +15,6 @@ path to titles.
 
 <p className="fineprint">The query took {timings.queries.citation.path.elapsed_s.toFixed(2)} s.</p>
 
-BFS returns one shortest path, with two citation steps.
-
 **Follow-up: compare the other shortest routes.** A relational query checks
 which papers BERT cites that also cite LSTM.
 
@@ -52,6 +50,4 @@ then papers that cite those papers.
 The three layers contain 151,243 papers, excluding AlexNet itself. Each paper
 appears at its shortest distance.
 
-The count describes reach within the April 2020 snapshot. Restricting citing
-papers by year would answer a different question; that comparison has not
-been run here.
+The count describes reach within the April 2020 snapshot.

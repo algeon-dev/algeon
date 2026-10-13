@@ -42,7 +42,7 @@ GROUP BY p.field;
 ```
 
 The edge predicate changes the graph on which PageRank runs. The score
-predicate applies to its output; moving it before the algorithm would change
+predicate applies to its output. Moving it before the algorithm would change
 the query's meaning. See the [PageRank reference](../cugraph/udtfs/centrality/cugraph_pagerank.mdx)
 for a captured dataset example and the full argument contract.
 
@@ -51,13 +51,13 @@ arguments become logical plan children, including separate roles such as
 cuVS `dataset` and `queries`, or cuML `training` and `predict`. Extension
 planning creates the GPU execution nodes. Native lowering represents the
 operation as `GraphAlgorithm`, `VectorAlgorithm` or `MlAlgorithm`, with
-explicit inputs and a result schema; the compiled schedule contains the
+explicit inputs and a result schema. The compiled schedule contains the
 corresponding algorithm task.
 
 The illustration below follows an uncached call with supported surrounding
 SQL selected for native execution. Separate native fragments can exchange
-GPU-resident results within the attempt. Each fragment has its own compiled schedule;
-the composition does not require one fused kernel.
+GPU-resident results within the attempt. Each fragment has its own compiled
+schedule.
 
 <GpuUdtfFlow />
 
@@ -84,7 +84,7 @@ column types, active ranges and null contract. Graph construction then
 creates its own representation, including renumbering when requested.
 The `python_cugraph` construction path can first copy edge columns into owned
 cuDF storage for normalization. These steps can allocate and copy within
-VRAM; their precise semantics are covered by
+VRAM. Their precise semantics are covered by
 [Graph Inputs and Construction](../cugraph/graph-options.mdx).
 
 For PageRank, the native result object owns its vertex and score arrays.
@@ -103,7 +103,7 @@ measurable costs.
 
 Rust lifetimes protect the borrowed view during submission. CUDA operations
 can finish after a Rust call returns, so the interop contract also carries
-completion evidence. `algeon-interop` owns this contract; the cuDF adapters
+completion evidence. `algeon-interop` owns this contract. The cuDF adapters
 provide its CUDA implementation and expose the types through
 `cudf::interop::contract`.
 
@@ -122,13 +122,13 @@ retained owner requires synchronization before lease completion returns.
 
 The cleanup paths cover early returns as well. Dropping an incomplete read
 lease invokes the backend completion fallback. Dropping a pending
-`LeaseCompletion` waits on its witness; if that wait fails, the retained owner
+`LeaseCompletion` waits on its witness. If that wait fails, the retained owner
 is deliberately leaked because queued reads may still reference it. Attempt
 cleanup and device capacity reuse follow the
 [completion and release contract](./admission.mdx#resident-handoff-and-release).
 
-Active cuGraph, cuVS and cuML resources are bound to their runtime context;
-their Rust wrappers restrict transfer between threads. The engine creates them
+Active cuGraph, cuVS and cuML resources are bound to their runtime context.
+Their Rust wrappers restrict transfer between threads. The engine creates them
 inside the attempt's execution job on an `algeon-gpu-{d}` worker, and a `!Send`
 handle cannot leave that job. `ParkedGraph` (`Send + !Sync`) is the form that
 moves between attempts. A graph prepared for cache transfer uses `ParkedGraph`
@@ -146,21 +146,20 @@ dimension before exposing a tensor view.
 
 | Boundary | cuGraph | cuVS | cuML |
 | --- | --- | --- | --- |
-| Algorithm input | Edge columns become a constructed graph. Normalization and renumbering can create additional storage. | Separate feature columns are packed into a dense matrix. Supported, validated list children can be borrowed as tensors when the runtime binding matches; other paths copy or pack. | SQL execution packs feature relations into the matrix layout required by the operation, such as column-major TSVD or row-major prediction input. |
+| Algorithm input | Edge columns become a constructed graph. Normalization and renumbering can create additional storage. | Separate feature columns are packed into a dense matrix. Supported, validated list children can be borrowed as tensors when the runtime binding matches. Other paths copy or pack. | SQL execution packs feature relations into the matrix layout required by the operation, such as column-major TSVD or row-major prediction input. |
 | Result to cuDF | PageRank copies cuGraph-owned result arrays into cuDF columns on the device. | Runtime-owned output buffers can be consumed as cuDF columns without copying that allocation. Relational assembly can still gather IDs, sort or create other columns. | Validated runtime-owned output buffers can become cuDF columns. Matrix unpacking and output ID assembly can require further device work. |
-| Algorithm state | An eligible constructed graph can use the server's accounted graph cache. | SQL indexes and fitted transforms are local to the evaluated statement. There is no persistent SQL vector-index cache. | Fitting UDTFs release their model after the call. Forest inference binds an imported model; SQL does not expose a reusable fitted-model cache. |
+| Algorithm state | An eligible constructed graph can use the server's accounted graph cache. | SQL indexes and fitted transforms are local to one query execution. There is no persistent SQL vector-index cache. | Fitting UDTFs release their model after the call. Forest inference binds an imported model. SQL does not expose a reusable fitted-model cache. |
 
 </div>
 
-An output buffer's ownership transfer is narrower than a zero-copy claim for
-the whole UDTF. For example, kNN output assembly maps neighbor ordinals back
-to relation IDs and orders the returned neighbors on the GPU. A cuML
+kNN output assembly maps neighbor ordinals back to relation IDs and orders
+the returned neighbors on the GPU. A cuML
 prediction retains its model and feature matrix through the native read
 lifetime, even though the output becomes a separate relation.
 
 The input contracts are documented in [Vector Inputs](../cuvs/vector-inputs.mdx)
 and [ML Inputs](../cuml/ml-inputs.mdx). The API references describe
-[cuVS statement lifetimes](../cuvs/overview.mdx#execution) and
+[cuVS index lifetimes](../cuvs/overview.mdx#execution) and
 [cuML model lifetimes](../cuml/overview.mdx#execution-and-lifetime).
 
 ## Resident results and the query memory cap
@@ -185,7 +184,7 @@ uncached UDTF, graph workspace, packed matrices and algorithm outputs allocate
 through the query domain, alongside relational intermediates. cuML
 random-forest fitting also routes its native pool streams through that domain.
 Those streams share the
-allocation limit; they do not obtain independent query grants.
+allocation limit. They do not obtain independent query grants.
 
 Reusable cached graphs have separate device-ledger charges. On a cache hit,
 the attempt stream waits for the parked graph, while algorithm workspace and
@@ -200,10 +199,10 @@ DataFusion inlines a CTE at each reference, and projection pruning keeps in
 each copy only the columns its reader uses. A query root that lowers over GPU
 function results runs in one context with the native units lowered from
 those functions' inputs, including the edge and side inputs of each cuGraph
-call. When two or more of these units, the query root included, contain an
-identical subplan whose root reduces rows, an aggregate or a limit with a
-fetch, one producer computes it and the reading units list that producer as
-a GPU-resident input. The first reading unit to run computes the result. It
+call. When two or more of these units (including the query root) contain an
+identical subplan whose root reduces rows (such as an aggregate or a limit with
+a fetch), a single producer computes the result and the reading units list
+that producer as a GPU-resident input. The first reading unit to run computes the result. It
 stays resident under the attempt's grant until the last reading unit has
 read it. A chain of scans, filters, projections and joins streams chunk by
 chunk and is computed again by each reader. Copies that read different
@@ -216,7 +215,7 @@ each node of each unit.
 
 ## Reproducibility
 
-Two runs of the same statement on the same data, options and GPU return the same relation for some GPU functions and different relations for others. Several cuGraph, cuVS and cuML kernels add floating-point values with atomic operations, or let the first thread to arrive decide a tie. The order of those operations changes between runs, and Algeon adds no ordering to them. A `seed` option fixes the random draws of an algorithm and leaves the accumulation order of atomic operations unconstrained.
+Two runs of the same query on the same data, options and GPU return the same relation for some GPU functions and different relations for others. Several cuGraph, cuVS and cuML kernels add floating-point values with atomic operations, or let the first thread to arrive decide a tie. The order of those operations changes between runs, and Algeon adds no ordering to them. A `seed` option fixes the random draws of an algorithm and leaves the accumulation order of atomic operations unconstrained.
 
 | Function | Seed option | Between runs |
 | --- | --- | --- |
@@ -228,27 +227,26 @@ Two runs of the same statement on the same data, options and GPU return the same
 | `cugraph_sssp` | none | Distances and predecessors repeat. Which of several equal-cost parents becomes the predecessor is unspecified. |
 | `cugraph_hits` | none | Scores differ in the last digits, because the hub update uses atomics. |
 | `cugraph_pagerank`, `cugraph_personalized_pagerank` | none | Identical without an edge `weight` column, as in the captured Barbie example. With one, scores differ in the last digits. |
-| `cuvs_kmeans` | none; the native seed is fixed at 0 | Cluster sizes differ slightly, because centroid sums use atomics. The shopper-persona capture differs between runs. |
+| `cuvs_kmeans` | none (the native seed is fixed at 0) | Cluster sizes differ slightly, because centroid sums use atomics. The shopper-persona capture differs between runs. |
 | `cuvs_cagra`, `cuvs_ivf_flat`, `cuvs_ivf_pq` | none | Neighbors and distances differ slightly, because index construction uses atomics. |
 | `cuvs_brute_force_knn` | none | Distances repeat. Neighbors tied at the k-th distance can differ. |
 | `cuvs_top_k` | none | The positions chosen among values tied across rank k are unspecified. |
 | `cuml_logistic_regression` | none | Coefficients and scores differ slightly, because the loss reduction uses atomics. |
 | `cuml_random_forest_classifier` | `seed`: bootstrap rows and feature subsets | The same seed, input row order and GPU grow the same forest. |
 | `cuml_random_forest_regressor` | `seed`: bootstrap rows and feature subsets | Not guaranteed to be bit-identical, because regression histograms use floating-point atomics. |
-| `cuml_umap` | `random_state`: spectral initialization, edge shuffle and negative sampling | Runs in cuML's deterministic mode and is expected to repeat. No repeated-run capture exists. |
-| `cuml_forest_predict` | none | Identical for the same model file, input row order and GPU; inference draws no random numbers. |
+| `cuml_umap` | `random_state`: spectral initialization, edge shuffle and negative sampling | Runs in cuML's deterministic mode and is expected to repeat. |
+| `cuml_forest_predict` | none | Identical for the same model file, input row order and GPU. Inference draws no random numbers. |
 
-Connected-component labels (the minimum vertex ID of each component), degrees, triangle counts and core numbers involve no floating-point accumulation and repeat. The similarity functions `cugraph_jaccard`, `cugraph_sorensen`, `cugraph_overlap` and `cugraph_cosine` contain no atomic accumulation, and Jaccard and overlap returned identical rows in the captured MerRec runs. No repeated-run measurement exists for the remaining functions, and none of them has a `seed` option (the `seeds` argument of the betweenness functions lists source vertices and draws no random numbers).
+Connected-component labels (the minimum vertex ID of each component), degrees, triangle counts and core numbers involve no floating-point accumulation and repeat. The similarity functions `cugraph_jaccard`, `cugraph_sorensen`, `cugraph_overlap` and `cugraph_cosine` contain no atomic accumulation, and Jaccard and overlap returned identical rows in the captured MerRec runs. None of the remaining functions has a `seed` option (the `seeds` argument of the betweenness functions lists source vertices and draws no random numbers).
 
-Compare results across runs with a tolerance for scores, set overlap for community membership and neighbor lists, and rank correlation for orderings. Bitwise equality is a valid check only for the functions that repeat. Community and cluster labels are arbitrary integers; compare which rows share a label. Layout coordinates change in every run; compare neighborhoods or pairwise distances after aligning the layouts. When later statements must read the values of one execution, store the result with `CREATE OR REPLACE TABLE ... AS`, as described in [Reuse algorithm results](../cugraph/graph-options.mdx#reuse-algorithm-results).
+Compare results across runs with a tolerance for scores, set overlap for community membership and neighbor lists, and rank correlation for orderings. Bitwise equality is a valid check only for the functions that repeat. Community and cluster labels are arbitrary integers. Compare which rows share a label. Layout coordinates change in every run. Compare neighborhoods or pairwise distances after aligning the layouts. When later queries must read the values of one execution, store the result with `CREATE OR REPLACE TABLE ... AS`, as described in [Reuse algorithm results](../cugraph/graph-options.mdx#reuse-algorithm-results).
 
-A seed fixes random draws over one row order. Without a top-level `ORDER BY`, the row order of an input subquery can change between runs and moves seeded results as well; see [Input order](../cuml/ml-inputs.mdx#input-order) and [Relation identity](../cuvs/vector-inputs.mdx#relation-identity).
+A seed fixes random draws over one row order. Without a top-level `ORDER BY`, the row order of an input subquery can change between runs, thereby shifting seeded results as well. See [Input order](../cuml/ml-inputs.mdx#input-order) and [Relation identity](../cuvs/vector-inputs.mdx#relation-identity).
 
 ## Observe the boundaries
 
 Use the [plan and runtime artifacts](./native-lowering.mdx#connect-the-plan-to-an-execution)
-to distinguish native composition from host boundaries. Planning output alone
-does not measure uploads, copies or algorithm time.
+to distinguish native composition from host boundaries.
 
 Graph runtime rows include `gpu_resident_input_handoffs`,
 `host_to_device_uploads` and `device_to_host_materializations`. These counters

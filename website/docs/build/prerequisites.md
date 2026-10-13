@@ -12,12 +12,11 @@ manifests are [cuDF](https://github.com/NVIDIA/cudf/blob/main/dependencies.yaml)
 [cuVS](https://github.com/NVIDIA/cuvs/blob/main/dependencies.yaml),
 [cuML](https://github.com/rapidsai/cuml/blob/main/dependencies.yaml), and
 [cuGraph](https://github.com/rapidsai/cugraph/blob/main/dependencies.yaml).
-The exact native sources in this checkout are the authority for this build;
-their `dependencies.yaml` and `CMakeLists.txt` files take precedence if they
+The exact native sources in this checkout are the authority for this build.
+Their `dependencies.yaml` and `CMakeLists.txt` files take precedence if they
 differ from those upstream references.
 
-This page covers only what connects that upstream environment to DataFusion
-Algeon. Linux is the only supported platform.
+Linux is the only supported platform.
 
 ## CPU requirement
 
@@ -67,7 +66,7 @@ The root [`.cargo/config.toml`](https://github.com/algeon-dev/algeon/blob/main/.
 selects `clang` and `mold` for normal source builds.
 
 The [build shell](./from-source.md#2-configure-the-build-shell) on the next
-page sets `CC`, `CXX`, and `CUDAHOSTCXX`; the native build scripts and CMake
+page sets `CC`, `CXX`, and `CUDAHOSTCXX`. The native build scripts and CMake
 read those variables. The example uses `/usr/bin/gcc-14` and
 `/usr/bin/g++-14`, so confirm both paths exist before starting, or decide now
 which RAPIDS-compatible host compiler you will substitute in that block:
@@ -80,8 +79,9 @@ ls /usr/bin/gcc-14 /usr/bin/g++-14
 
 The build shell exports these machine-specific toolchain variables into the
 current shell only. Write them once into a Cargo `[env]` table outside the
-checkout so every shell, and `scripts/check_all.sh`, build with the same
-toolchain whether or not the build shell block was run: use
+checkout so that all shell sessions and `scripts/check_all.sh` compile with the
+identical toolchain regardless of whether the build shell environment was
+sourced: use
 `<parent-of-checkout>/.cargo/config.toml` to cover every checkout and worktree
 that [`scripts/dev/new_worktree.sh`](https://github.com/algeon-dev/algeon/blob/main/scripts/dev/new_worktree.sh)
 creates as siblings, or `~/.cargo/config.toml` to apply it to all of this
@@ -103,9 +103,14 @@ Match these values to the build shell block. `force = true` gives Cargo the
 configured value even when the shell exports a different spelling of the
 toolchain path, preserving build-script fingerprints across shells. The gate
 prints the effective values before starting checks. Change the table when
-selecting another toolchain. A command-specific architecture override uses
-`cargo --config 'env.CMAKE_CUDA_ARCHITECTURES.value="<architecture-list>"'`;
-changing architectures also requires rebuilding the native libraries.
+selecting another toolchain. A command-specific architecture override passes
+the value on the Cargo command line:
+
+```bash
+cargo --config 'env.CMAKE_CUDA_ARCHITECTURES.value="<architecture-list>"'
+```
+
+Changing architectures also requires rebuilding the native libraries.
 
 Native binaries target the build GPU by default. When they must run on a
 different GPU, choose the architecture list before the first native build as
@@ -117,7 +122,7 @@ An application using `algeon-datafusion` from crates.io still needs the
 [feature-selected native installations](./rust-dependency.md#2-build-the-required-native-libraries),
 a CUDA toolkit and a compatible host toolchain. The `cuvs` dependency, also
 required by `cugraph` and `cuml`, uses CMake package discovery and compiles a C
-ABI probe. cuGraph discovery uses `readelf` and `ldd`; install binutils and the
+ABI probe. cuGraph discovery uses `readelf` and `ldd`. Install binutils and the
 Linux loader tools. The safe cuGraph crate compiles a C++20 shim through `cc`,
 using `CXX` and the installed cuGraph, cuDF/RMM and CUDA headers. Preserve the
 `include/` trees when staging native install prefixes.
@@ -130,17 +135,17 @@ runners are required only for contributor checks.
 The repository's `.cargo/config.toml` applies to Cargo commands run within the
 checkout. An external application's CPU target and linker come from its own
 Cargo configuration. Configure them for the hosts that will execute that
-application; the repository's x86-64-v4 setting is not carried by registry
+application. The repository's x86-64-v4 setting is not carried by registry
 packages.
 
 ## Rust toolchain and test runner
 
-Readers who only run the server or embed the library need stable Rust; the rest
+Readers who only run the server or embed the library need stable Rust. The rest
 of this section is for running the validation gate.
 
 Install Rust with the [official Rustup instructions](https://rustup.rs/). The
-workspace declares its MSRV in `Cargo.toml` (currently Rust 1.95); nightly is
-needed only for formatting. Install the latest stable nextest; the repository
+workspace declares its MSRV in `Cargo.toml` (currently Rust 1.95). Nightly is
+needed only for formatting. Install the latest stable nextest. The repository
 does not pin its version. `scripts/check_all.sh` checks that nextest runs and
 requires the exact `cargo-hack` version below before starting validation:
 

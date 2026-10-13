@@ -10,7 +10,7 @@ both the score and the inputs behind it.
 
 The model is loaded by `cuml_forest_predict`. CPU LightGBM `pred_contrib` was
 run before SQL, with its 2,568 contributions summed into 12 named blocks.
-`cuvs_top_k` ranks those prepared values; the query does not compute SHAP.
+`cuvs_top_k` ranks those prepared values. The query does not compute SHAP.
 
 <CodeBlock language="sql">{forestCapture.forest_review.sql}</CodeBlock>
 

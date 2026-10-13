@@ -7,21 +7,19 @@ description: Check which parts of one SQL query will run on the GPU and which st
 import Table from '@site/src/theme/MDXComponents/Table';
 import session from '@site/static/data/merrec-agent-session.json';
 
-export const coverageStep = session.steps.find(item => item.step === 5);
+export const coverageStep = session.steps.find(item => item.step === 4);
 
 # GPU Coverage Validation
 
-Use this page before running a query whose GPU path matters.
 `algeon_explain_coverage` and `EXPLAIN GPU` report which parts of the query
 will execute on the GPU and which will stay on the DataFusion CPU path, with a
-stable reason and remedy for each part that was not selected. They plan the
-query as execution would, but they do not execute it or wait for GPU
-execution capacity.
-
-The answer carries no runtime guarantee. Waiting for GPU capacity, the memory
-cap for the run, GPU runtime errors and cuGraph input checks still happen at
-execution time, and the returned `runtime_caveats` list them whenever the
-final plan contains GPU work; their codes are in the
+stable reason and remedy for each part that was not selected. Coverage
+validation generates the physical plan without executing it. Consequently,
+resource admission waits, memory grant enforcement, runtime exceptions, and
+cuGraph input checks occur strictly at runtime, providing no execution
+guarantees. The
+returned `runtime_caveats` list them whenever the final plan contains GPU work,
+with codes in the
 [runtime caveats table](../reference/gpu-coverage-report.mdx#runtime-caveats).
 Every column, JSON field and code is defined in the
 [GPU Coverage Report](../reference/gpu-coverage-report.mdx) reference.
@@ -66,7 +64,7 @@ each time the handle executes, so the Python ADBC DB-API `cursor.execute()`
 works. The update endpoint rejects `EXPLAIN GPU`.
 
 A recorded Flight SQL session over the [MerRec dataset](../guides/datasets/merrec.mdx)
-ran `EXPLAIN GPU` on a statement with four cuGraph calls. Its summary and
+ran `EXPLAIN GPU` on a query with four cuGraph calls. Its summary and
 candidate rows, reduced to the columns the capture kept, were:
 
 <Table>
@@ -79,7 +77,7 @@ candidate rows, reduced to the columns the capture kept, were:
 
 <div className="fineprint">
 
-Step 5 of the [session capture](/data/merrec-agent-session.json) holds the full statement, recorded on {session.recorded_at_utc} in `native_required` mode.
+Step 4 of the [session capture](/data/merrec-agent-session.json) holds the full SQL, recorded on {session.recorded_at_utc} in `native_required` mode.
 
 </div>
 
@@ -113,7 +111,7 @@ one of four `remedy_kind` values:
 | --- | --- |
 | `user_action` | Change the query or its input, for example `rewrite_expression`. |
 | `config_action` | Change a session setting, for example `set_target_partitions_one`. |
-| `engine_gap` | Native lowering lacks the capability; the remedy names the blocking shape. |
+| `engine_gap` | Native lowering lacks the capability. The remedy names the blocking shape. |
 | `cpu_preferred` | A preference rule or the cost model kept the DataFusion plan. |
 
 The [remedies for plan shapes](../reference/gpu-coverage-report.mdx#remedies-for-plan-shapes)
@@ -131,11 +129,12 @@ planning recorded candidates before it failed:
 ~~~
 
 `reason_code` and `detail` match the code and status message that executing
-the statement returns; [Handling Errors](./handling-errors.mdx#rejections-in-explain-gpu)
+the statement returns. [Handling Errors](./handling-errors.mdx#rejections-in-explain-gpu)
 gives the exact relationship. A few rejections exist only in the validator:
 empty input, multiple statements, a non-query statement, and a direct or
-view-indirect recursive call to `algeon_explain_coverage`. Each has no
-execution counterpart and carries its own stable `reason_code` and message.
+view-indirect recursive call to `algeon_explain_coverage`. None of these
+validator rejections has an execution counterpart, and each carries its own
+stable `reason_code` and message.
 
 ## cuGraph input relations {/* #cugraph-input-relations */}
 
@@ -151,8 +150,8 @@ blocking subject, and a `NativeRequired` error names the same subject.
 Each entry of `coverage_json.cugraph_calls` has `algorithm`, `statically_valid`,
 `notes` and `inputs_native`. `inputs_native` is `true` when every input
 relation reaches the graph as a native GPU-resident producer. It is `false`
-when at least one input runs on DataFusion and is staged through host Arrow;
-the labelled candidate rows give the reason.
+when at least one input runs on DataFusion and is staged through host Arrow.
+The labelled candidate rows give the reason.
 
 ## Relationship to `gpu_validate_call` {/* #relationship-to-gpu_validate_call */}
 

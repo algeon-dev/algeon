@@ -8,7 +8,7 @@ Each citation receives a weight equal to the absolute publication-year gap.
 The query finds a minimum spanning forest that minimizes the total gap within
 each connected component, then shows its five largest selected gaps. The graph
 covers 1900 to 2020 and the ten field-of-study labels below.
-The query passes the Int64 paper IDs directly; the
+The query passes the Int64 paper IDs directly. The
 [vertex codebook](../graph-options.mdx#vertex-codebook) maps them to Int32 ids
 internally and decodes the result:
 
@@ -48,5 +48,5 @@ LIMIT 5;
 | 1982 | On the Difficulties Involved in the Se | 2018 | An Accurate Modeling Technology Based | 36 |
 
 The input has 204,472 edges and the symmetrized forest returns 49,263 links
-over 50,300 papers. These rows show one minimum forest; they do not establish
+over 50,300 papers. These rows show one minimum forest. They do not establish
 that an individual link is unique or unavoidable.

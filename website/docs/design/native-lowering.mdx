@@ -2,21 +2,16 @@
 sidebar_position: 2
 slug: /design/native-lowering
 title: From SQL to a GPU plan
-description: "Translate a DataFusion physical plan into GPU work while preserving SQL results, ordering and partition contracts."
+description: "Translate a DataFusion physical plan into GPU work while preserving its ordering and partition contracts."
 ---
 
 import {PlanTranslation, PlanSelection} from '@site/src/components/design/GuideDiagrams';
 
 # From SQL to a GPU plan
 
-A physical plan describes executable operations and the data exchanged between
-them. DataFusion's standard operators run on the CPU and often split input
+DataFusion's standard physical operators run on the CPU and often split input
 across partitions. Algeon's adapter translates supported parts of the completed
 plan into native IR, then replaces them with a GPU execution wrapper.
-
-The public optimizer rule name also serves as its deduplication key. Use
-[`ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/session.rs)
-when registering or deduplicating the rule; its declaration defines the value.
 
 ## Walk through a grouped aggregate {/* #translate-the-work */}
 
@@ -36,8 +31,7 @@ The example shows a distributed aggregate shape with a separate row filter.
 Select an operator to see its native representation and the observation fields
 that explain its execution. The view omits batching and scan-repartition
 wrappers. File layout, statistics and session options can also change the
-physical tree, including the placement of predicates. The diagram illustrates
-the contracts in the linked source below and contains no runtime measurements.
+physical tree, including the placement of predicates.
 
 <details>
 <summary>Compare the physical tree, native IR and final DataFusion wrapper</summary>
@@ -69,9 +63,9 @@ Sink: deferred_host_arrow (materialization by the wrapper)
 ```
 
 A final aggregate reaches its partial stage through a repartition, a coalesce,
-or a merge of sorted partitions without a fetch. Each only moves or interleaves
-rows, so lowering peels it and keeps the partial aggregate as the executable
-aggregate under the final schema. DataFusion places the merge below a final
+or a merge of sorted partitions without a fetch. Each operator merely
+redistributes or interleaves rows, allowing lowering to bypass it and preserve
+the partial aggregate as the executable operator under the final schema. DataFusion places the merge below a final
 aggregate that streams over sorted groups, which happens when a Parquet source
 declares its sort order. A merge with a fetch drops rows and stays unsupported,
 as does any other operator below the final stage. The rejection names that
@@ -89,7 +83,7 @@ NativeAdmissionExec
 The native operators are not DataFusion child nodes. A shorter `EXPLAIN` tree
 can therefore represent the same scan, filter and aggregation work.
 
-These are simplified shapes, not verbatim `EXPLAIN` output. The
+The
 [distributed aggregate lowering tests](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native/lowering_tests/sql_aggregate_shapes/default_distributed.rs)
 cover partial/final reconstruction, and the
 [native IR goldens](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native/lowering_tests/goldens/representative_query_plans.txt)
@@ -103,47 +97,45 @@ The native optimizer rewrites the IR before capability validation and pipeline
 compilation. **Compiled** means a schedule over existing GPU operations. For
 the illustrated shape, the task kinds are `source_read`, `unary` for the
 filter, `aggregate`, and `unary` for the output projection. Identity
-projections can disappear during optimization; the alias to `total` is shown
+projections can disappear during optimization. The alias to `total` is shown
 explicitly here. The schedule also records data dependencies, completion
 barriers and resident resource lifetimes.
 
 An aggregate barrier prevents consumers from reading incomplete group state.
-A resource between tasks names its producer and consumers; its lifetime ends
+A resource between tasks names its producer and consumers. Its lifetime ends
 after those consumers finish. During chunk execution, one compiled aggregate
-task can accumulate many partial results. A task count, a chunk count and a
-CUDA stream count describe different aspects of execution.
+task can accumulate many partial results.
 
 At the deferred host sink, the root resource remains a GPU-resident output
 until `AlgeonNativeExec` materializes host Arrow batches. The wrapper owns
-that incremental transfer; this adapter schedule has no `sink_materialize`
+that incremental transfer. This adapter schedule has no `sink_materialize`
 task. The boundary remains visible in transfer metrics.
 
-The same representation supports more complex plans. A native join expands
-into build, probe and materialization tasks, with a build-before-probe barrier.
-Consequently, a visualizer needs both the native plan and compiled topology to
-explain how one SQL operator maps to scheduled work. The
+A native join expands into build, probe and materialization tasks, with a
+build-before-probe barrier. The
 [pipeline compiler](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-planning/src/pipeline/compile.rs)
 owns these task and resource relationships.
 
 ## Partitions and result semantics
 
-A DataFusion partition is a stream of batches processed as part of a CPU
-execution plan. Native execution has its own chunk and concurrency controls.
-Supported repartition and coalescing wrappers can disappear during lowering;
-their partition counts do not become CUDA stream counts.
+Native execution replaces DataFusion partitions (the batch streams of the CPU
+plan) with its own chunk and concurrency controls. Supported repartition and
+coalescing wrappers can disappear during lowering.
+Their partition counts do not become CUDA stream counts.
 
 The required result still constrains the replacement. For example, partial
-`AVG` values require counts as well as sums; averaging the partial averages
+`AVG` values require counts as well as sums. Averaging the partial averages
 would change the answer. A global `ORDER BY ... LIMIT` requires a final merge
 of chunk candidates. Independently sorted chunks cannot satisfy global order.
 
 A window with `ORDER BY` keys, or one that numbers rows by position inside
 partitions, reads its input ordered by its partition keys, then its `ORDER BY`
-keys. DataFusion supplies that order with a sort, and it can push the sort
-below a hash join and rely on the join to keep probe order. Native joins do
-not keep it, so lowering sorts the window's input when the input is a join,
-aggregate, union or GPU-resident relation, and it drops a sort without a
-`fetch` below an operator that does not read row order, such as a join input.
+keys. DataFusion supplies that ordering with a sort and may push the sort
+below a hash join under the assumption that probe ordering is preserved. Because
+native joins do not preserve probe order, lowering inserts an explicit sort
+before the window operator when the input is a join, aggregate, union or
+GPU-resident relation, and it drops a sort without a `fetch` below an operator
+that does not read row order, such as a join input.
 
 The native host-output wrapper exposes one bounded output partition. When
 native fragments sit under CPU operators, the adapter verifies the parent's
@@ -186,7 +178,7 @@ control frame followed by JSONL when the sealed artifact is available. The
 artifact includes native plan nodes, task definitions, resource relationships
 and runtime events. Correlate `(plan_execution_id, plan_node_id)` with the task
 definitions, then use `(plan_execution_id, task_id)` for task observations.
-IDs are local to their plan execution; the DataFusion tree and native task
+IDs are local to their plan execution. The DataFusion tree and native task
 graph do not have a one-to-one node mapping.
 
 <details>
@@ -223,7 +215,7 @@ The control frame describes artifact availability. Capture is bounded: check
 `incomplete`, `artifact_truncated` and `metric_projection_truncated` in the
 statistics, and completeness information in the runtime artifact. An absent
 observation does not establish that its work took zero time or used zero bytes.
-Component timers and attempt elapsed time also have different scopes; their
+Component timers and attempt elapsed time also have different scopes. Their
 sum is not a kernel-only GPU duration.
 
 The [Flight action handlers](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/server/flight/rpc.rs)
@@ -244,16 +236,14 @@ form GPU fragments. Transfers at CPU/GPU boundaries are part of the cost of
 such a mixed plan.
 
 Decimal division in a keyed inner join predicate uses the native GPU
-post-join filter. Equality keys first select candidate row pairs; the GPU
+post-join filter. Equality keys first select candidate row pairs. The GPU
 column evaluator then checks decimal division and preserves `CASE` branch
 activation through the shared expression lowering contract. Unmatched rows
 do not evaluate the residual, and inactive branches cannot trigger division
 by zero or scaling overflow. Outer, semi, anti and keyless joins retain their
 existing residual capability restrictions.
 
-Native support requires a correct kernel, supported types and correct semantics.
-An operator missing any of these is unsupported. `PlanningReport`
-records each candidate once as selected, unsupported with the first unmet
+`PlanningReport` records each candidate once as selected, unsupported with the first unmet
 contract, or supported but not selected by cost, with structured reasons.
 An unsupported candidate also names the [element that blocked it](../reference/gpu-coverage-report.mdx#what-blocked-a-candidate),
 such as one cast between two types, a scalar or aggregate function, or an
@@ -263,7 +253,7 @@ enforced during [execution](./admission.mdx#allocation-enforcement).
 
 ### Uncorrelated scalar subqueries {/* #uncorrelated-scalar-subqueries */}
 
-DataFusion 55 plans an uncorrelated scalar subquery as a `ScalarSubqueryExec`
+DataFusion plans an uncorrelated scalar subquery as a `ScalarSubqueryExec`
 by default (`datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery`
 is `true`). Native lowering has no counterpart for that operator. When the
 execution mode lowers relational SQL (`native_preferred` or
@@ -301,7 +291,6 @@ the GPU.
 
 Use [GPU coverage validation](../integration/gpu-coverage-validation.mdx) to
 inspect the completed plan without running it. `EXPLAIN` does not claim a GPU
-grant. Once native execution starts, an error returns to the caller without
-replaying the query on CPU.
+grant.
 
 Next, follow the selected scan [from Parquet to GPU memory](./data-path.mdx).

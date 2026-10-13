@@ -30,7 +30,7 @@ Native defaults are repo-relative: `target/native/cudf-install` and
 `target/native/cugraph-build` is the cuGraph CMake build tree. Use the root
 `scripts/build/build_libcugraph.sh` helper and root `scripts/check_all.sh` gate.
 
-## validation
+## Validation
 
 ```bash
 cargo clippy -p cugraph -p cugraph-sys --all-targets --all-features -- -D warnings

@@ -22,14 +22,14 @@ without reading server source:
 
 [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx) walks
 through the list, describe, validate and execute sequence. This page is the
-schema reference. Names are exact canonical UDTF names; provider-local
+schema reference. Names are exact canonical UDTF names. Provider-local
 aliases are not accepted. Wrong metadata UDTF arity and nonliteral metadata
 arguments are planning errors.
 
 ## gpu_list_functions
 
 One row per installed UDTF, ordered by `function_name`, without the three
-metadata UDTFs themselves. The catalog spans providers; filter by `provider`
+metadata UDTFs themselves. The catalog spans providers. Filter by `provider`
 for the `cugraph`, `cuvs` or `cuml` subset.
 
 ```sql
@@ -49,13 +49,12 @@ ORDER BY function_name;
 | `summary` | `Utf8` | One-line description. |
 | `relation_roles_json` | `Utf8` | Ordered relation-role definitions. |
 
-`available=true` means the UDTF can be planned. It reserves no GPU memory,
-acquires no admission, inspects no rows, and says nothing about whether the
-surrounding query runs on the GPU.
+`available=true` means the UDTF can be planned. It says nothing about whether
+the surrounding query runs on the GPU.
 
 ## gpu_describe_function(function_name)
 
-One full descriptor row for one UDTF. There is no compact mode; project the
+One full descriptor row for one UDTF. There is no compact mode. Project the
 columns you need.
 
 ```sql
@@ -116,7 +115,7 @@ An unknown UDTF or an invalid call returns one row with `valid=false`. An
 unavailable UDTF reports its `unavailable_reason` before anything else.
 Otherwise the row lists, from one pass, every unresolved relation, every
 option error and the relation schema errors that do not depend on a rejected
-option; `error_code` and `details_json` describe the first. A check that depends on a rejected option,
+option. `error_code` and `details_json` describe the first. A check that depends on a rejected option,
 such as a required option that failed its own check, runs once that option is
 valid. `details_json` locates the first problem with `path` and, when present,
 `argument`, `relation_role` and `field`.
@@ -124,15 +123,17 @@ valid. `details_json` locates the first problem with `path` and, when present,
 A table function whose name starts with `cugraph_`, `cuvs_`, `cuml_` or
 `gpu_` but names no installed function fails planning with `object_not_found`.
 The message names the closest registered name when one is near enough and
-points to `gpu_list_functions()`, for example
-`unknown GPU function cugraph_page_rank; closest registered name: cugraph_pagerank; gpu_list_functions() lists every installed function`.
+points to `gpu_list_functions()`. A call to `cugraph_page_rank` fails with:
+
+```text
+unknown GPU function cugraph_page_rank; closest registered name: cugraph_pagerank; gpu_list_functions() lists every installed function
+```
 
 Validation checks that the UDTF exists, resolves every required relation,
 validates the relation bindings, columns, types, dimensions, conditional
 arguments and option values, applies defaults, and derives the output schema
-when it can. It reads no data and proves no runtime fact: source-vertex
-existence, vector uniformity and cardinality are checked at execution, and an
-admitted call that exceeds its memory grant fails there with an allocation
-error. `would_execute_gpu` covers this one call;
+when it can. Source-vertex existence, vector uniformity and cardinality are
+checked at execution, and an admitted call that exceeds its memory grant fails
+there with an allocation error. `would_execute_gpu` covers this one call;
 [GPU coverage validation](../integration/gpu-coverage-validation.mdx) covers
 the whole query.

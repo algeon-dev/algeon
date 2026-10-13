@@ -459,8 +459,9 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
             assert!(page.contains(&format!("`{}`", role.as_str())), "{}", page_path.display());
             assert!(page.contains(role.description()), "{}", page_path.display());
         }
+        let element_types = page_section(&page, "### Vector element types");
         for element in descriptor.vector_element_support {
-            assert!(page.contains(&format!("| `{}` |", element.as_str())), "{}", page_path.display());
+            assert!(element_types.contains(&format!("`{}`", element.as_str())), "{}", page_path.display());
         }
         // Float64 features are narrowed to Float32; a forest model keeps
         // Float32 input, because its own precision decides the device width.
@@ -502,6 +503,12 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
 
 fn mdx_table_text(value: &str) -> String {
     value.replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// The body of one generated section, from its heading to the next heading.
+fn page_section<'a>(page: &'a str, heading: &str) -> &'a str {
+    let (_, rest) = page.split_once(heading).unwrap_or_else(|| panic!("generated page is missing {heading}"));
+    rest.split_once("\n#").map_or(rest, |(section, _)| section)
 }
 
 fn json_literal_for_docs(value: &serde_json::Value) -> String {

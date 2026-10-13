@@ -2,8 +2,8 @@ This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.m
 
 ### Which missed Win32 files should an analyst group for batch review?
 
-A security analyst needs to organize 3,225 Win32 samples that initially
-escaped antivirus detection. This query projects each sample's
+The 3,225 Win32 samples in this cohort initially escaped antivirus detection.
+This query projects each sample's
 512 byte and byte-entropy histogram features (`f7` through `f518`) to 16 PCA
 components, then fits HDBSCAN with `min_cluster_size = 30` and `min_samples =
 10`. The family labels do not enter either fit; SQL joins them after clustering
@@ -15,11 +15,6 @@ this fit. The 930-file cluster contains 736 `snackarcin` files, 193
 `opensupdater` files, and one file without a family label.
 All challenge files are positive examples, so this cohort cannot measure a
 false-positive rate.
-
-`example_sha256` is the minimum SHA-256 within that cluster's most common
-labeled family. It provides an audit link;
-the query does not compute a representative sample. The complete capture
-preserves the full SHA values.
 
 | Cluster ID (capture-local) | Files | Family-labeled files | Most common family | Files in family |
 | ---: | ---: | ---: | --- | ---: |
@@ -88,7 +83,6 @@ numbers across hardware and software environments.
 The [saved capture](/data/ember2024-capture.json) retains the SQL, all eight
 result rows, query ID and execution conditions. The observed execution
 used a dedicated EMBER server and had `partial_native` disposition: PCA and
-HDBSCAN ran on the GPU; the statement also included CPU window processing.
-The saved runtime observation identifies this execution path.
+HDBSCAN ran on the GPU. The plan also included CPU window processing.
 
 </div>

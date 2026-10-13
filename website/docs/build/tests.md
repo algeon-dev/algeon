@@ -1,21 +1,18 @@
 ---
-sidebar_position: 5
+sidebar_position: 4
 sidebar_label: Tests
 description: Focused development checks, the local pre-merge gate, failure reruns, and acceptance runs.
 ---
 
 # Tests
 
-Use the [targeted edit loops](#targeted-edit-loops) during development. Run
-checks for the affected behavior and finish once they pass. Broaden validation
-when failures or changes to shared contracts warrant it. Documentation-only
-changes need no Cargo or GPU checks.
-
-The [full gate](#the-full-gate) is for pre-merge validation or an explicit
-request. Algeon currently runs these checks locally, without GitHub CI/CD.
-Test placement is defined in
-[Test layout](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#test-layout);
-script maintainers use the
+Use the [targeted edit loops](#targeted-edit-loops) during development and
+the [full gate](#the-full-gate) for pre-merge validation or an explicit
+request; documentation-only changes need no Cargo or GPU checks. Algeon
+currently runs these checks locally, without GitHub CI/CD. Test placement is
+defined in
+[Test layout](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#test-layout).
+Script maintainers use the
 [harness reference](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md).
 
 Before running Cargo checks:
@@ -24,7 +21,7 @@ Before running Cargo checks:
   configured and all four native layers plus the Rust workspace are built.
 - The latest stable `cargo-nextest` and `cargo-hack` 0.6.45 are installed
   ([Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner)). The
-  gate checks that nextest runs and prints its version; nextest is not pinned.
+  gate checks that nextest runs and prints its version. Nextest is not pinned.
   The full gate also checks the exact `cargo-hack` version.
 - No benchmark, running Flight SQL server, or other checkout's gate holds
   `/tmp/cudf-gpu.lock`, since GPU tests wait on that lock until it is free.
@@ -42,7 +39,7 @@ RMM dependency prefixes in RUNPATH. The gate exports the loader directories for
 all phases, including doctests whose binaries carry no native rpath.
 A downstream application does not inherit dependency build-script rpath
 arguments. Its build and direct execution are covered separately by the
-[Rust dependency quickstart](./rust-dependency.md#4-build-and-run-the-application)
+[Building for an Application](./rust-dependency.md#4-build-and-run-the-application)
 and the [registry consumer check](https://github.com/algeon-dev/algeon/blob/main/scripts/ci/check_registry_consumer.sh).
 
 ## Development checks
@@ -66,10 +63,10 @@ cargo nt -E '<same filterset>' -R latest                      # rerun only failu
 
 A rerun must repeat the original filterset, because nextest treats binaries
 that a different or missing `-E` skipped earlier as new and reruns the whole
-suite. Plain `cargo test` is not used for the workspace's non-doc tests,
-because libtest runs a binary's cases as threads that cannot restore the
-engine's process-global allocator or backend policy fixtures, and the
-admitted test surface requires nextest's per-test-process isolation. The
+suite. Plain `cargo test` is reserved for doctests. Because libtest executes
+test cases as concurrent threads within a single process, it cannot reliably
+restore the process-global allocator or backend policy fixtures; full validation
+therefore relies on `cargo-nextest` for per-process isolation. The
 [test lanes](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#harness-internals) live in
 `.config/nextest.toml`.
 
@@ -83,7 +80,7 @@ bash scripts/ci/check_public_api_surface.sh check --all-features
 ```
 
 The public API check enforces the
-[application documentation boundary](../design/index.mdx#api-documentation)
+[API documentation boundary](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#api-documentation-boundary)
 alongside the signature snapshots. Updating a snapshot does not waive missing
 documentation on a reachable owner type. The isolated documentation regression
 tests run as part of the snapshot policy self-test:
@@ -104,14 +101,13 @@ snapshot, the hidden-API consumer probe, and clippy.
 bash scripts/check_all.sh --fast
 ```
 
-Any other option, or a duplicate option, exits with status 2. Feature
-selection is not a command-line option; the harness defines its workspace
+The harness defines its workspace
 checks and [coverage exceptions](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#feature-coverage).
 
 ## The full gate
 
-Run it from the checkout root. Do not wrap nextest or the full gate in `flock`;
-the run-wrapper owns test locking. Non-test GPU commands, including benchmarks,
+Run it from the checkout root. Do not wrap nextest or the full gate in `flock`.
+The run-wrapper owns test locking. Non-test GPU commands, including benchmarks,
 servers and tools, take the lock separately.
 
 ```bash
@@ -127,9 +123,9 @@ completes:
 | Group | What runs | Order |
 | --- | --- | --- |
 | policy | rustfmt, native-source verification, checked bindings, and the policy self-test scripts | Independent, in parallel |
-| tests | `cargo nextest run -P gate` reusing that run's Cargo and binaries metadata, then doctests through the GPU lock wrapper | Doctests start after nextest finishes; a failed test build skips nextest execution and still runs doctests |
-| static | clippy with `-D warnings`, current-run orphan-source verification, strict rustdoc, then the public API snapshots and application documentation check | In sequence; Cargo and API checks use `nice -n 10` |
-| hygiene | seven feature-isolation shards and their union check, shipped-server clippy, `msrv`, the `DOCS_RS=1` workspace compile check, `docsrs-native-free` rustdoc over the packaged publication closure, the API consumer probe and publication policy | Independent after the test build; compilation uses `nice -n 10` and separate target directories |
+| tests | `cargo nextest run -P gate` reusing that run's Cargo and binaries metadata, then doctests through the GPU lock wrapper | Doctests start after nextest finishes. A failed test build skips nextest execution and still runs doctests |
+| static | clippy with `-D warnings`, current-run orphan-source verification, strict rustdoc, then the public API snapshots and application documentation check | In sequence. Cargo and API checks use `nice -n 10` |
+| hygiene | seven feature-isolation shards and their union check, shipped-server clippy, `msrv`, the `DOCS_RS=1` workspace compile check, `docsrs-native-free` rustdoc over the packaged publication closure, the API consumer probe and publication policy | Independent after the test build. Compilation uses `nice -n 10` and separate target directories |
 
 - A failed phase in any group fails the gate.
 - Nextest reuses the test build's Cargo and binaries metadata, which fix the
@@ -141,7 +137,7 @@ completes:
   separately with its own docs.rs metadata features, an isolated native-free
   environment and strict warnings. The
   [packaged release checks](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#doctests-and-build-support)
-  define that archive lane; the feature-off clippy supplement is described under
+  define that archive lane. The feature-off clippy supplement is described under
   [Layout checks](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#layout-checks).
 
 The full pre-merge gate includes packaged native-free rustdoc. The native
@@ -174,10 +170,9 @@ A passing full run ends with:
 OK: full pre-merge gate passed.
 ```
 
-Full validation requires one complete gate run on the final source state.
-Focused checks, failure-only reruns, and `--fast` (which ends with
-`OK: fast checks passed. PARTIAL: this is not full pre-merge validation.`)
-are partial validation.
+Only a complete gate run on the final source state is full validation;
+`--fast` ends with
+`OK: fast checks passed. PARTIAL: this is not full pre-merge validation.`
 
 ### On failure
 
@@ -245,11 +240,11 @@ invocation fails that precondition instead of reporting a pass.
 | --- | --- |
 | `cugraph` | cuGraph graph algorithms callable from SQL |
 | `cuvs` | cuVS UDTFs (exact kNN, KMeans, PCA) and their GPU execution |
-| `cuml` | cuML UDTFs (truncated SVD, HDBSCAN, UMAP, logistic regression, random forests) and their GPU execution; requires the native cuML install from `scripts/build/build_libcuml.sh` |
+| `cuml` | cuML UDTFs (truncated SVD, HDBSCAN, UMAP, logistic regression, random forests) and their GPU execution, which requires the native cuML install from `scripts/build/build_libcuml.sh` |
 | `nvml` | Optional NVML device diagnostics |
 
 The Arrow Flight SQL server is launched by the separate `algeon-server`
-package; its `cugraph`, `cuvs`, `cuml`, and `nvml` features forward the
+package. Its `cugraph`, `cuvs`, `cuml`, and `nvml` features forward the
 corresponding adapter and engine capabilities.
 
 ```bash
@@ -264,7 +259,7 @@ itself.
 
 | Purpose | Command | Requires |
 | --- | --- | --- |
-| TPC-DS parity report | `ALGEON_PARQUET_DIR=/path/to/complete/tpcds-sf1 flock /tmp/cudf-gpu.lock cargo run -p bench --all-features --bin native_tpcds_parity_report` | A complete TPC-DS dataset |
+| TPC-DS parity report | `ALGEON_PARQUET_DIR=/path/to/complete/tpcds-sf1 flock /tmp/cudf-gpu.lock cargo run -p bench --all-features --bin native_tpcds_parity_report` | A complete TPC-DS dataset. `ALGEON_TPCDS_CPU_TARGET_PARTITIONS` (default 16) and `ALGEON_TPCDS_CPU_BATCH_SIZE` (default 8192) configure the CPU oracle, with the same meaning as in `tpcds_three_way_bench` |
 | TPC-H execution report | `ALGEON_PARQUET_DIR=/path/to/complete/tpch-sf1 flock /tmp/cudf-gpu.lock cargo run -p bench --all-features --bin native_tpch_execution_report` | A complete TPC-H dataset |
 | Sustained-load goodput (`query_service_goodput`) | `crates/bench/scripts/run_goodput_matrix.sh calibrate g1` | The GPU and dataset recorded by `calibrate` |
 | Python-cuGraph comparison | `flock /tmp/cudf-gpu.lock cargo run -p tools --all-features -- cugraph-fixture-e2e bfs-include-edges` | A host with Python cuGraph installed |
@@ -274,16 +269,11 @@ itself.
 - The goodput driver script pins every factor except the one under comparison
   and records source, GPU, and native-library identity next to the results.
   `calibrate` freezes each item's single-flight median latency and output
-  fingerprint; the measurement groups refuse to run if the live GPU or
+  fingerprint. The measurement groups refuse to run if the live GPU or
   dataset differs from that calibration.
-- An unavailable Python cuGraph oracle fails the run; the run does not skip
+- An unavailable Python cuGraph oracle fails the run. The run does not skip
   it. Replace `bfs-include-edges` with `pagerank`, `bfs-utf8-include-edges`,
   `bfs-utf8-path`, or `bfs-utf8-predicates` for the other provisioned cases.
-- Tools owns the BFS predicate fixtures under `fixture/data/cugraph/`. The
-  PageRank runner and required-oracle failure policy are shared through
-  `algeon_datafusion::cugraph_sql::bench_support`. Upstream parity datasets
-  prepared by `fixture/graph/prepare_cugraph.py` remain in
-  `fixture/graph/cugraph/`.
 - External-service E2E tests are invoked explicitly through
   `cargo run -p tools --all-features`.
 

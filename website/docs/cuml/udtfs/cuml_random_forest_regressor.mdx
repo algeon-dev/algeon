@@ -40,50 +40,30 @@ Each relation argument is a parenthesized `SELECT` subquery. Metadata validation
 
 ### Vector element types
 
-| Element type | Valid metrics |
-| --- | --- |
-| `Float32` | Not applicable |
-| `Float64` | Not applicable |
+Feature values must be `Float32` or `Float64`.
 
 ## Arguments and options
 
 ### Scalar SQL arguments
 
-| Argument | Type | Required | Description |
-| --- | --- | --- | --- |
-| `n_trees` | `integer` | no | Number of trees. |
-| `max_depth` | `integer` | no | Maximum tree depth; zero uses the native unlimited depth. |
-| `max_leaves` | `integer` | no | Maximum leaf count; omission uses the native unlimited setting. |
-| `max_features` | `number` | no | Fraction of features sampled per split. |
-| `max_samples` | `number` | no | Fraction of training rows sampled per tree. |
-| `bootstrap` | `boolean` | no | Sample training rows with replacement. |
-| `max_n_bins` | `integer` | no | Maximum histogram bins. |
-| `min_samples_leaf` | `integer` | no | Minimum samples per leaf. |
-| `min_samples_split` | `integer` | no | Minimum samples to split a node. |
-| `min_impurity_decrease` | `number` | no | Minimum split impurity reduction. |
-| `max_batch_size` | `integer` | no | Maximum tree nodes processed together during fitting. |
-| `seed` | `integer` | no | Training random seed. |
-
-### SQL value argument schemas
-
-| Argument | Required | Literal shape | Default | Constraints | Description |
+| Argument | Type | Required | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `bootstrap` | no | `boolean` | `true` |  | Sample training rows with replacement. |
-| `max_batch_size` | no | `integer` | `4096` | minimum 1; maximum 2147483647 | Maximum tree nodes processed together during fitting. |
-| `max_depth` | no | `integer` | `16` | minimum 0; maximum 2147483647 | Maximum tree depth; zero uses the native unlimited depth. |
-| `max_features` | no | `number` | `1` | greater than 0; maximum 1 | Fraction of features sampled per split. |
-| `max_leaves` | no | `integer` | No default | minimum 1; maximum 2147483647 | Maximum leaf count; omission uses the native unlimited setting. |
-| `max_n_bins` | no | `integer` | `128` | minimum 2; maximum 2147483647 | Maximum histogram bins. |
-| `max_samples` | no | `number` | `1` | greater than 0; maximum 1 | Fraction of training rows sampled per tree. |
-| `min_impurity_decrease` | no | `number` | `0` | minimum 0 | Minimum split impurity reduction. |
-| `min_samples_leaf` | no | `integer` | `1` | minimum 1; maximum 2147483647 | Minimum samples per leaf. |
-| `min_samples_split` | no | `integer` | `2` | minimum 2; maximum 2147483647 | Minimum samples to split a node. |
-| `n_trees` | no | `integer` | `100` | minimum 1; maximum 2147483647 | Number of trees. |
-| `seed` | no | `integer` | `0` | minimum 0; maximum 18446744073709551615 | Training random seed. |
+| `bootstrap` | `boolean` | no | `true` |  | Sample training rows with replacement. |
+| `max_batch_size` | `integer` | no | `4096` | minimum 1; maximum 2147483647 | Maximum tree nodes processed together during fitting. |
+| `max_depth` | `integer` | no | `16` | minimum 0; maximum 2147483647 | Maximum tree depth; zero uses the native unlimited depth. |
+| `max_features` | `number` | no | `1` | greater than 0; maximum 1 | Fraction of features sampled per split. |
+| `max_leaves` | `integer` | no | No default | minimum 1; maximum 2147483647 | Maximum leaf count; omission uses the native unlimited setting. |
+| `max_n_bins` | `integer` | no | `128` | minimum 2; maximum 2147483647 | Maximum histogram bins. |
+| `max_samples` | `number` | no | `1` | greater than 0; maximum 1 | Fraction of training rows sampled per tree. |
+| `min_impurity_decrease` | `number` | no | `0` | minimum 0 | Minimum split impurity reduction. |
+| `min_samples_leaf` | `integer` | no | `1` | minimum 1; maximum 2147483647 | Minimum samples per leaf. |
+| `min_samples_split` | `integer` | no | `2` | minimum 2; maximum 2147483647 | Minimum samples to split a node. |
+| `n_trees` | `integer` | no | `100` | minimum 1; maximum 2147483647 | Number of trees. |
+| `seed` | `integer` | no | `0` | minimum 0; maximum 18446744073709551615 | Training random seed. |
 
 ### Vector binding shapes
 
-Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
+Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. The `training` relation also projects a finite Float32 `label`; the `predict` relation omits it. Nullable field types are accepted. A null ID, feature value, list row, list element, or label fails the query.
 
 The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
 
@@ -105,12 +85,8 @@ import Examples from '../_examples/cuml_random_forest_regressor.mdx';
 
 ## Limits
 
-- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
-- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
 - Classifier labels must be Int32 contiguous classes 0..C-1; regressor labels must be finite Float32. Null labels fail the query. Predict must omit label and match the training feature dimension.
 - Prediction imports the fitted forest into nvForest and scores the predict relation on the GPU; a classifier tie resolves to the lowest class index. Training and prediction inputs are limited to i32::MAX rows and the packed feature matrix to i32::MAX elements; the random forest path does not batch rows.
 - Training uses one RAFT pool stream whose allocations share the query grant. The forest is query-local; an empty predict relation returns an empty result.
 - seed sets the bootstrap rows and feature subsets; refits are not guaranteed to be bit-identical, because regression histograms accumulate with floating-point atomics.
 - Float64 features, as wide columns or list elements, are narrowed to Float32 on the device before training or inference. Each value rounds to the nearest Float32, which keeps about seven significant digits; a value beyond the Float32 range becomes infinite and fails the query.
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

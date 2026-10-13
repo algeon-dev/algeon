@@ -6,20 +6,16 @@ description: Clone one recursive repository, configure one checkout-local enviro
 # Building from Source
 
 For an external Rust application using registry crates, follow
-[Use as a Rust dependency](./rust-dependency.md). It builds only the required
+[Building for an Application](./rust-dependency.md). It builds only the required
 native layers from the matching tag and then leaves the checkout to build the
 application.
-
-This is the complete repository source-build path. It starts with one recursive
-`algeon` checkout and keeps every source, native build tree, install
-prefix, Rust crate, and validation command inside that checkout.
 
 Before you start:
 
 - [Prerequisites](./prerequisites.md) are installed: CUDA toolkit with `nvcc`,
   a RAPIDS-compatible host compiler, CMake, Ninja, `clang`, `mold`, `patchelf`
-  (the native install scripts bind each library's RUNPATH with it), and Rust;
-  step 5 also needs `cargo-nextest` and the required `cargo-hack` version.
+  (the native install scripts bind each library's RUNPATH with it), and Rust.
+  Step 5 also needs `cargo-nextest` and the required `cargo-hack` version.
 - The build host has the GPU the artifacts will run on, or you have chosen an
   explicit architecture list ([Choosing CUDA architectures](#choosing-cuda-architectures)).
 
@@ -54,7 +50,7 @@ components/cuvs/cuvs/       # Algeon cuVS fork
 components/cuml/cuml/       # pinned cuML source
 ```
 
-Verify that all four are initialized and match the root commit; every line
+Verify that all four are initialized and match the root commit. Every line
 must start with a space, not `-` (uninitialized) or `+` (wrong revision):
 
 ```bash
@@ -91,7 +87,7 @@ unset CUDF_CMAKE_CUDA_ARCHITECTURES
 # them keeps another checkout's libraries out and gives every shell the same
 # build fingerprint. Repository binaries receive native rpath arguments from
 # their package build scripts. External applications need their own loader
-# environment as described in the Rust dependency quickstart.
+# environment as described in Building for an Application.
 unset ALGEON_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \
   CUVS_INSTALL_DIR CUVS_ROOT CUML_CPP_BUILD_DIR CUML_INSTALL_DIR \
   CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR CUGRAPH_NATIVE_INCLUDE_DIRS \
@@ -114,7 +110,7 @@ env | sort | grep -E '^(INSTALL_PREFIX|ALGEON_NATIVE_DIR|CUDF_[^=]*|CUVS_[^=]*|C
 
 The first command must show `ALGEON_ROOT` at the checkout root and
 `CMAKE_CUDA_ARCHITECTURES` at the chosen target list. The second must print
-`clean`; if it prints `selector leaked`, rerun the block above from the
+`clean`. If it prints `selector leaked`, rerun the block above from the
 current repository root. What each selector means is listed under
 [Build-shell selectors](#build-shell-selectors).
 
@@ -126,7 +122,7 @@ of a prefix that carries a different one.
 
 ### Build cuDF and the shared RMM prefix
 
-This is the longest step. `PARALLEL_LEVEL` defaults to `nproc`; cap it on a
+This is the longest step. `PARALLEL_LEVEL` defaults to `nproc`. Cap it on a
 memory-constrained host.
 
 ```bash
@@ -208,7 +204,7 @@ ls "$ALGEON_ROOT"/target/native/cuml-install/lib/{libcuml.so,libcuml_rust.so}
 ### Use the native stack from registry crates
 
 The build scripts install the artifacts consumed by registry crates. Continue
-with [Use as a Rust dependency](./rust-dependency.md#3-create-an-external-application)
+with [Building for an Application](./rust-dependency.md#3-create-an-external-application)
 to copy the complete example into an application outside the checkout, select
 `ALGEON_NATIVE_DIR`, build, and directly execute its binary with the required
 loader directories. The guide defines each feature's native install closure and
@@ -247,14 +243,14 @@ cargo build -p cudf --all-features
 
 ## 5. Validate the checkout
 
-This step is for contributors; running the server does not need it. Run the
+This step is for contributors. Running the server does not need it. Run the
 single full pre-merge gate bare, from the checkout root:
 
 ```bash
 bash scripts/check_all.sh
 ```
 
-Do not wrap it in `flock`; the script acquires `/tmp/cudf-gpu.lock` internally
+Do not wrap it in `flock`. The script acquires `/tmp/cudf-gpu.lock` internally
 for every GPU phase, and an outer hold deadlocks it. It covers policy checks,
 nightly formatting, MSRV and feature-isolation compile checks, the CPU and GPU
 nextest lanes, doctests, rustdoc, public API snapshots, and clippy. A passing
@@ -275,8 +271,8 @@ with [Building with Docker](./docker.md).
 ### Build-shell selectors
 
 Every selector below is an optional override. Left unset, as the build shell
-block leaves them, each defaults to this checkout's `target/native/` prefix;
-set one only to point a step at a prefix outside the checkout.
+block leaves them, each defaults to this checkout's `target/native/` prefix.
+Set one only to point a step at a prefix outside the checkout.
 
 | Variable | Owner and purpose |
 | --- | --- |
@@ -289,13 +285,7 @@ set one only to point a step at a prefix outside the checkout.
 | `CUML_CPP_BUILD_DIR` / `CUML_INSTALL_DIR` | cuML build tree and native install. Defaults to `target/native/cuml-build` and `target/native/cuml-install`. |
 | `CUGRAPH_CMAKE_BUILD_DIR` | cuGraph CMake build and runtime-library directory. Defaults to `target/native/cugraph-build`. |
 | `CUGRAPH_INSTALL_DIR` | Installed cuGraph libraries, headers, and crate-version marker. Defaults to `target/native/cugraph-install`. |
-| `LD_LIBRARY_PATH` | Runtime library directories for the selected feature closure and CUDA. Repository binaries receive rpath arguments from their own package build scripts; downstream application binaries do not inherit those arguments from dependency crates. External applications and rustdoc doctests need an explicit loader environment or application-owned RUNPATH. See [the Rust dependency quickstart](./rust-dependency.md#4-build-and-run-the-application). |
-
-The native dependency relationship is:
-
-```text
-cuDF/RMM → cuVS → cuGraph and cuML → Algeon
-```
+| `LD_LIBRARY_PATH` | Runtime library directories for the selected feature closure and CUDA. Repository binaries receive rpath arguments from their own package build scripts; downstream application binaries do not inherit those arguments from dependency crates. External applications and rustdoc doctests need an explicit loader environment or application-owned RUNPATH. See [Building for an Application](./rust-dependency.md#4-build-and-run-the-application). |
 
 ### Choosing CUDA architectures
 
@@ -310,7 +300,7 @@ export CMAKE_CUDA_ARCHITECTURES="89-real;120a-real"
 The `a` in `120a` selects the architecture-specific compute capability 12.0
 target, the `f` in a value such as `100f` selects the family-specific one, and
 `-real` asks CMake for real device code. The old cuDF-only
-`CUDF_CMAKE_CUDA_ARCHITECTURES` selector is rejected; the cuDF script maps the
+`CUDF_CMAKE_CUDA_ARCHITECTURES` selector is rejected. The cuDF script maps the
 shared value to cuDF's upstream build interface internally.
 
 ### The architecture contract record
@@ -319,7 +309,7 @@ Each native script records the requested `CMAKE_CUDA_ARCHITECTURES` value
 verbatim, plus the full-kernel real cubin set it finds in the built library, at
 `share/algeon-native/cuda-architectures.env` under that layer's prefix. The
 cuVS, cuGraph, and cuML scripts read the upstream record before configuring and
-compare real cubin sets after building; small embedded dependency stub sets are
+compare real cubin sets after building. Small embedded dependency stub sets are
 not treated as targets. An explicitly selected external prefix is exempt,
 since algeon scripts did not build it and it carries no record. To inspect the
 records:
@@ -331,5 +321,5 @@ for root in "$ALGEON_ROOT"/target/native/{cudf,cuvs,cugraph,cuml}-install; do
 done
 ```
 
-The check compares the native layers against each other only; it does not
+The check compares the native layers against each other only. It does not
 compare them against the GPU installed in this host.

@@ -353,16 +353,8 @@ fn example_table(role: CuvsRelationRole) -> &'static str {
 }
 
 fn limitations(operation: CuvsOperation) -> Value {
-    let common = [
-        "Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.",
-        "Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.",
-    ];
     Value::Array(
-        common
-            .into_iter()
-            .chain(operation.descriptor().limitations.iter().copied())
-            .map(|limitation| Value::String(limitation.to_string()))
-            .collect(),
+        operation.descriptor().limitations.iter().map(|limitation| Value::String(limitation.to_string())).collect(),
     )
 }
 
