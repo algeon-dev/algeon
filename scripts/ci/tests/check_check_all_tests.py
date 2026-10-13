@@ -132,8 +132,10 @@ elif args[:1] == ["nt"]:
             started_fd = os.open(started, os.O_RDWR | os.O_NONBLOCK)
             release_fd = os.open(release, os.O_RDWR | os.O_NONBLOCK)
             environ = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CUDA_HOME="/shell/cuda", LD_LIBRARY_PATH="polluted:polluted", GATE_EVENTS=str(events_path), GATE_STARTED=str(started), GATE_RELEASE=str(release), GATE_PACKAGES=json.dumps(packages), GATE_BUILD_STATUS=str(build_status), GATE_TEST_STATUS=str(test_status), GATE_METADATA_STATUS=str(metadata_status), GATE_CARGO_ENV=str(int(cargo_env)))
-            environ.pop("DOCS_RS", None)
-            environ.pop("CARGO_TARGET_DIR", None)
+            # An enclosing gate's settings would redirect these mock runs into
+            # its own log directory and Cargo target.
+            for name in ("CHECK_ALL_PHASE_LOG_DIR", "DOCS_RS", "CARGO_TARGET_DIR"):
+                environ.pop(name, None)
             if mode == "--native-free":
                 environ["GATE_NATIVE_FREE_METADATA"] = json.dumps(NATIVE_FREE_METADATA)
             try:
