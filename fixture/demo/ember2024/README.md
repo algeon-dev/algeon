@@ -181,21 +181,19 @@ split; the existing fixture exports remain unchanged.
 ```
 
 The preparation script requires the complete raw JSONL and memmap inputs. It
-writes metadata for every unique hash under `target/ember2024-research/`.
-Vector and import tables retain all challenge files and a one-percent train
-and test sample selected by SHA-256, independently of labels. Each vector row
+writes metadata and vectors for every unique hash, and imports for the
+challenge split, under `target/ember2024-research/`. Each vector row
 includes the full 2,568 features and a separate 512-value byte/entropy
 histogram. `research_attributions.py` computes CPU LightGBM SHAP values for
 the forest review example; that preparation cost is recorded separately from
 SQL execution.
 
 The [website preparation guide](../../../website/docs/guides/datasets/ember2024.mdx)
-contains table registration and model configuration. The research entry
-point is [`docs/research/ember2024/README.md`](../../../docs/research/ember2024/README.md),
-with SQL, captured results, CPU comparisons, and findings. This research
-snapshot is explicitly included despite the parent `docs/` ignore rule.
-The raw inputs and generated Parquet files remain local. Package versions and the thrember source
-revision are recorded in `results/preparation.json` under that research entry.
+contains table registration and model configuration. The local research notes
+under `docs/research/ember2024/` are gitignored with the rest of `docs/`, as
+are the raw inputs and generated Parquet files.
+`research_prepare.py` records package versions and the thrember source
+revision in `docs/research/ember2024/results/preparation.json`.
 
 ## Directory Layout
 

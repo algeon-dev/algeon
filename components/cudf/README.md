@@ -64,6 +64,58 @@ and `cudf::interop::contract` re-exports it for code that already depends on
 - `components/algeon-interop/` - shared RAPIDS interop contract types and traits (import `rapids_interop`).
 - `components/cudf/cudf/` - the pinned **[forked cuDF](https://github.com/algeon-dev/cudf)** source submodule used to build `libcudf`.
 
+## Fork changes
+
+The pinned fork is upstream `v26.08.00` plus the changes below on branch
+`algeon-26.08`. Upstream `v26.10.00` supersedes the memory-resource parameters
+on the device-view factories, row preprocessing, `sizes_to_offsets` and gather
+temporaries, and the pinned-pool stream change; every other change is still
+absent upstream and is re-applied on the 26.10 HashCSR hash join, per-thread
+stream pool and reworked Parquet pruning code. Five preflight commits that the
+fork later reverted are not carried.
+
+Features:
+
+- Retained join state with exact output sizing and delayed materialization:
+  `hash_join::pre_build_reservation_size`, `filtered_join` pre-build sizing
+  with `begin_left_semi_probe` and `begin_left_anti_probe`,
+  `conditional_full_join_size`, `mixed_left_semi_join_size`,
+  `mixed_left_anti_join_size`, `mixed_full_join_size`, and
+  `mixed_left_join_state` for a chunked right side. Admission reserves the
+  exact bytes before a build and materializes at most the admitted size.
+- Explicit memory resource through join temporaries, gather, lexicographic
+  sort scratch and row-operator preprocessing, so scratch allocations are
+  charged to the query reservation instead of the ambient resource.
+- Prepared regex backreference replacement,
+  `replace_with_backrefs_output_size` and `replace_with_backrefs_prepared`:
+  size first, then execute from retained state.
+- Stream routing: `cudf::detail::install_stream_provider` lets libcudf's
+  internal `fork_streams` use attempt-owned streams, and the device-buffer
+  datasource stops using a global pool stream.
+- Worker future drain guard (`drain_futures`, `future_drain_guard`) in the
+  Parquet, CSV and compression paths, so a failing worker never leaves
+  futures unjoined.
+- Coalesced remote Parquet byte ranges across gaps up to
+  `LIBCUDF_PARQUET_REMOTE_COALESCE_GAP_BYTES` (64 KiB by default), which cuts
+  the number of remote reads.
+
+Bug fixes:
+
+- Parquet predicate pushdown: a bare boolean column or literal used as the
+  reader filter no longer crashes, the stats survivor count is reported only
+  when the stats stage ran, the decimal literal type check honors scale, and
+  decimal fixed-length dictionary values are decoded big-endian.
+- cuco exception safety, applied as a build-time patch: temporary storage is
+  neither leaked nor double-freed when an allocation throws.
+- A GCC 14.2 internal compiler error in `make_datasources` is avoided by
+  naming the lambda parameter type.
+
+Build:
+
+- `CUDF_RMM_BUILD_SHARED` builds and installs RMM as a shared library and
+  installs nvtx3 and rapids_logger, so cuDF, cuGraph, cuVS and cuML bind one
+  `librmm.so` in a process.
+
 ## One call across the boundary
 
 A `DataFrame`, `Series` or `GroupBy` method that submits GPU work, allocates,
