@@ -171,11 +171,11 @@ LIMIT 2
 ";
 
 pub(super) const SQL_MIXED_DISTINCT_COUNT_UNION_QUERY: &str = "
-SELECT source, COUNT(DISTINCT vertex_id) AS assets, COUNT(*) AS rows
+SELECT source, COUNT(DISTINCT vertex_id) AS vertices, COUNT(*) AS rows
 FROM (
-    SELECT 'hosts' AS source, payload AS vertex_id FROM bench
+    SELECT 'alpha' AS source, payload AS vertex_id FROM bench
     UNION ALL
-    SELECT 'ips' AS source, payload AS vertex_id FROM bench
+    SELECT 'beta' AS source, payload AS vertex_id FROM bench
 ) scores
 GROUP BY source
 ORDER BY source

@@ -71,7 +71,7 @@ use support::{
     connect_with_retry, create_prepared_raw, execute_batches, execute_flight_info_with_stream_schema, free_local_addr,
     get_query_stats_raw, int_value, query_id_from_statement_flight_info, query_id_from_status,
     query_stats_tsv_single_row, sql_info_string, tsv_value, unwrap_flight_status, wait_for_empty_gpu_ledger,
-    wait_for_shared_ledger_queue, write_int64_pairs_parquet, write_basic_list_parquet,
+    wait_for_shared_ledger_queue, write_basic_list_parquet, write_int64_pairs_parquet,
     write_unsupported_decimal_list_parquet, write_update_edges_parquet,
 };
 use tempfile::{Builder as FlightSqlTempfileBuilder, Builder as AdmissionTempfileBuilder};

@@ -51,7 +51,7 @@ async fn strict_flight_sql_executes_mixed_distinct_and_count_over_union() {
     let dir = tempfile::Builder::new().prefix("algeon-datafusion-flight-sql-distinct-union-").tempdir().unwrap();
     let parquet_path = dir.path().join("vertices.parquet");
     write_update_edges_parquet(&parquet_path);
-    for table in ["hosts", "ips"] {
+    for table in ["alpha", "beta"] {
         execute_batches(
             &mut client,
             &format!("CREATE EXTERNAL TABLE {table} STORED AS PARQUET LOCATION '{}'", parquet_path.to_string_lossy()),
@@ -61,11 +61,11 @@ async fn strict_flight_sql_executes_mixed_distinct_and_count_over_union() {
 
     let flight_info = client
         .execute(
-            "SELECT source, COUNT(DISTINCT vertex_id) AS assets, COUNT(*) AS rows \
+            "SELECT source, COUNT(DISTINCT vertex_id) AS vertices, COUNT(*) AS rows \
              FROM ( \
-                 SELECT 'hosts' AS source, src AS vertex_id FROM hosts \
+                 SELECT 'alpha' AS source, src AS vertex_id FROM alpha \
                  UNION ALL \
-                 SELECT 'ips' AS source, src AS vertex_id FROM ips \
+                 SELECT 'beta' AS source, src AS vertex_id FROM beta \
              ) scores \
              GROUP BY source \
              ORDER BY source"
@@ -78,11 +78,11 @@ async fn strict_flight_sql_executes_mixed_distinct_and_count_over_union() {
     let (_schema, batches) = execute_flight_info_with_stream_schema(&mut client, flight_info).await;
     let batch = batches.iter().find(|batch| batch.num_rows() > 0).unwrap();
     let sources = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
-    let assets = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    let vertices = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
     let rows = batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
 
-    assert_eq!([sources.value(0), sources.value(1)], ["hosts", "ips"]);
-    assert_eq!([assets.value(0), assets.value(1)], [2, 2]);
+    assert_eq!([sources.value(0), sources.value(1)], ["alpha", "beta"]);
+    assert_eq!([vertices.value(0), vertices.value(1)], [2, 2]);
     assert_eq!([rows.value(0), rows.value(1)], [2, 2]);
     assert_single_sealed_attempt_report(&get_query_stats_raw(&mut client, &query_id).await);
 

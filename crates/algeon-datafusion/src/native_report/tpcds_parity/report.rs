@@ -1,5 +1,7 @@
 use std::{fmt::Write, sync::Arc};
 
+use datafusion::prelude::SessionConfig;
+
 use super::{
     CandidateOutcomeKind, ExecutionPlan, FinalPlanDisposition, MetricsSet, NATIVE_TPCDS_PARITY_TSV_COLUMNS,
     NATIVE_TPCDS_PARITY_TSV_HEADER, NativeDataFusionExecutionMetrics, NativeDataFusionRuntimeOutcome,
@@ -304,8 +306,9 @@ impl NativeTpcdsParityExternalOutputSummary {
 
 /// In-memory TPC-DS parity report.
 ///
-/// `to_tsv` writes float tolerance, optional dataset metadata, and then rows
-/// using [`NATIVE_TPCDS_PARITY_TSV_HEADER`].
+/// `to_tsv` writes float tolerance, optional statistical-aggregate mode,
+/// optional CPU oracle session settings, optional dataset metadata, and then
+/// rows using [`NATIVE_TPCDS_PARITY_TSV_HEADER`].
 #[derive(Debug, Clone)]
 pub struct NativeTpcdsParityReport {
     /// Per-query rows in caller-provided workload order.
@@ -316,14 +319,25 @@ pub struct NativeTpcdsParityReport {
     pub float_tolerance: ParityFloatTolerance,
     /// Floating statistical aggregate contract selected for native execution.
     pub statistical_aggregate_execution_mode: Option<StatisticalAggregateExecutionMode>,
+    /// Target partitions of the CPU DataFusion oracle session.
+    pub cpu_target_partitions: Option<usize>,
+    /// Batch size, in rows, of the CPU DataFusion oracle session.
+    pub cpu_batch_size: Option<usize>,
 }
 
 impl NativeTpcdsParityReport {
     /// Keeps precomputed parity rows and their float tolerance in the supplied order.
     ///
-    /// This constructor does not compare outputs; dataset and statistical-mode metadata are unset.
+    /// This constructor does not compare outputs; dataset, statistical-mode and CPU session metadata are unset.
     pub fn from_rows(rows: Vec<NativeTpcdsParityRow>, float_tolerance: ParityFloatTolerance) -> Self {
-        Self { rows, workload_dataset: None, float_tolerance, statistical_aggregate_execution_mode: None }
+        Self {
+            rows,
+            workload_dataset: None,
+            float_tolerance,
+            statistical_aggregate_execution_mode: None,
+            cpu_target_partitions: None,
+            cpu_batch_size: None,
+        }
     }
 
     /// Compares supplied workload outputs using the configured float tolerance and collects rows in iterator order.
@@ -335,7 +349,14 @@ impl NativeTpcdsParityReport {
     ) -> Self {
         let rows =
             items.into_iter().map(|item| NativeTpcdsParityRow::from_workload_item(item, float_tolerance)).collect();
-        Self { rows, workload_dataset: None, float_tolerance, statistical_aggregate_execution_mode: None }
+        Self {
+            rows,
+            workload_dataset: None,
+            float_tolerance,
+            statistical_aggregate_execution_mode: None,
+            cpu_target_partitions: None,
+            cpu_batch_size: None,
+        }
     }
 
     /// Attaches fixture metadata to the TSV header.
@@ -347,6 +368,13 @@ impl NativeTpcdsParityReport {
     /// Attaches the native floating statistical aggregate contract to TSV metadata.
     pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
         self.statistical_aggregate_execution_mode = Some(mode);
+        self
+    }
+
+    /// Records the CPU oracle session's target partitions and batch size in TSV metadata.
+    pub fn with_cpu_session_config(mut self, config: &SessionConfig) -> Self {
+        self.cpu_target_partitions = Some(config.target_partitions());
+        self.cpu_batch_size = Some(config.batch_size());
         self
     }
 
@@ -369,6 +397,12 @@ impl NativeTpcdsParityReport {
             let _ = writeln!(output, "# statistical_aggregate_execution_mode={}", mode.as_str());
             let _ =
                 writeln!(output, "# statistical_aggregate_tolerance_contract={}", mode.tolerance_contract().as_str());
+        }
+        if let Some(target_partitions) = self.cpu_target_partitions {
+            let _ = writeln!(output, "# cpu_target_partitions={target_partitions}");
+        }
+        if let Some(batch_size) = self.cpu_batch_size {
+            let _ = writeln!(output, "# cpu_batch_size={batch_size}");
         }
         write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         debug_assert_eq!(NativeTpcdsParityRow::COLUMNS.join("\t"), NATIVE_TPCDS_PARITY_TSV_HEADER);

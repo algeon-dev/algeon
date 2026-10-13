@@ -104,10 +104,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     assert_eq!(details["edges"]["weight_dtype"], "Float64");
     assert!(bool_value(batch, 4, 0));
 
-    for table in [
-        format!(r#""{uuid_schema}".edgesummary"#),
-        format!(r#"datafusion."{uuid_schema}".edgesummary"#),
-    ] {
+    for table in [format!(r#""{uuid_schema}".edgesummary"#), format!(r#"datafusion."{uuid_schema}".edgesummary"#)] {
         let call = serde_json::json!({
             "relations": { "edges": { "table": table } },
             "options": {

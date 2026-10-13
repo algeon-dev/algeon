@@ -13,8 +13,8 @@ use bench::{
         tpcds::{
             TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsParityProgressEvent,
             tpcds_native_optimizer_config_with_profile_settings,
-            tpcds_native_profile_settings_and_device_memory_limit_from_env,
-            tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit, tpcds_report_session_config,
+            tpcds_native_profile_settings_and_device_memory_limit_from_env, tpcds_native_report_session_config,
+            tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit, tpcds_tuned_cpu_session_config,
         },
     },
 };
@@ -46,9 +46,11 @@ async fn write_parity_report(dir: &std::path::Path, output: &mut impl Write) -> 
     let external_oracles = external_oracle_config_from_env(dir.join("external_oracles"));
     let tolerance = parity_float_tolerance_from_env();
     validate_statistical_aggregate_parity_contract(statistical_aggregate_execution_mode, tolerance);
+    let cpu_session_config = tpcds_tuned_cpu_session_config();
 
     let header = NativeTpcdsParityReport::from_rows(Vec::new(), tolerance)
         .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
+        .with_cpu_session_config(&cpu_session_config)
         .with_workload_dataset_metadata(metadata.to_workload_dataset_metadata())
         .to_tsv();
     output.write_all(header.as_bytes())?;
@@ -62,7 +64,8 @@ async fn write_parity_report(dir: &std::path::Path, output: &mut impl Write) -> 
     };
     tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit(
         &root,
-        tpcds_report_session_config(),
+        cpu_session_config,
+        tpcds_native_report_session_config(),
         optimizer_config,
         device_memory_limit,
         query_filter.as_deref(),

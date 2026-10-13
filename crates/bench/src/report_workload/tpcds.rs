@@ -33,7 +33,6 @@ use crate::gpu_backend::{DEFAULT_NATIVE_DEVICE_BUDGET_BYTES, build_report_gpu_ba
 mod parity;
 pub use parity::{
     TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsParityProgressEvent,
-    tpcds_parity_report_rows_with_external_oracles,
     tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit, tpcds_parity_workload_items,
     tpcds_parity_workload_items_with_external_oracles, tpcds_parity_workload_items_with_session_configs,
 };
@@ -166,6 +165,36 @@ pub fn tpcds_report_session_config() -> SessionConfig {
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
     config.options_mut().execution.parquet.pushdown_filters = true;
+    config
+}
+
+/// Tuned CPU DataFusion engine config for TPC-DS SF100 comparisons.
+///
+/// `tpcds_three_way_bench` times its `cpu_datafusion` engine with this config,
+/// and `native_tpcds_parity_report` uses it for the CPU oracle, so value
+/// parity is checked against the CPU engine the timing run measures.
+/// `ALGEON_TPCDS_CPU_TARGET_PARTITIONS` sets target partitions (default 16)
+/// and `ALGEON_TPCDS_CPU_BATCH_SIZE` sets batch size (default 8192); unset or
+/// unparsable values use the defaults. Repartitioning for scans, joins,
+/// aggregates and sorts is on, all dynamic filter pushdown is on, and
+/// row-level Parquet filter pushdown is off.
+pub fn tpcds_tuned_cpu_session_config() -> SessionConfig {
+    let target_partitions =
+        std::env::var("ALGEON_TPCDS_CPU_TARGET_PARTITIONS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(16);
+    let batch_size =
+        std::env::var("ALGEON_TPCDS_CPU_BATCH_SIZE").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(8192);
+    let mut config = SessionConfig::new()
+        .with_target_partitions(target_partitions)
+        .with_batch_size(batch_size)
+        .with_repartition_file_scans(true)
+        .with_repartition_aggregations(true)
+        .with_repartition_joins(true)
+        .with_repartition_sorts(true);
+    config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = true;
+    config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = true;
+    config.options_mut().optimizer.enable_join_dynamic_filter_pushdown = true;
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = true;
+    config.options_mut().execution.parquet.pushdown_filters = false;
     config
 }
 

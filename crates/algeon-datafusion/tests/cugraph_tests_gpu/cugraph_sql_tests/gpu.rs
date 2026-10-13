@@ -3360,7 +3360,7 @@ async fn native_metadata_join_limit_and_distinct_keep_the_same_empty_and_nonempt
         vec![
             Arc::new(StringArray::from(vec!["depends_on"])) as ArrayRef,
             Arc::new(StringArray::from(vec!["vertex-1"])) as ArrayRef,
-            Arc::new(StringArray::from(vec!["subject-1"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["source-1"])) as ArrayRef,
         ],
     )
     .unwrap();
@@ -3370,12 +3370,18 @@ async fn native_metadata_join_limit_and_distinct_keep_the_same_empty_and_nonempt
     ]));
     let empty_metadata_batch = RecordBatch::try_new(
         Arc::clone(&metadata_schema),
-        vec![Arc::new(StringArray::from(vec!["vertex-2"])) as ArrayRef, Arc::new(Int64Array::from(vec![7])) as ArrayRef],
+        vec![
+            Arc::new(StringArray::from(vec!["vertex-2"])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![7])) as ArrayRef,
+        ],
     )
     .unwrap();
     let nonempty_metadata_batch = RecordBatch::try_new(
         Arc::clone(&metadata_schema),
-        vec![Arc::new(StringArray::from(vec!["vertex-1"])) as ArrayRef, Arc::new(Int64Array::from(vec![7])) as ArrayRef],
+        vec![
+            Arc::new(StringArray::from(vec!["vertex-1"])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![7])) as ArrayRef,
+        ],
     )
     .unwrap();
     for (path, schema, batch) in [
@@ -3401,7 +3407,7 @@ async fn native_metadata_join_limit_and_distinct_keep_the_same_empty_and_nonempt
     for (metadata, expected_rows) in [("metadata_empty", 0), ("metadata_nonempty", 1)] {
         let from = format!(
             "FROM relationships e JOIN {metadata} n ON e.\"targetId\" = n.\"vertexId\" \
-             WHERE e.\"sourceId\" = 'subject-1' AND n.\"vertexPriority\" >= 7"
+             WHERE e.\"sourceId\" = 'source-1' AND n.\"vertexPriority\" >= 7"
         );
         let queries = [
             format!("SELECT {select} {from} LIMIT 100"),

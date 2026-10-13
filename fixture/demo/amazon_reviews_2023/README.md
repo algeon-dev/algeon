@@ -31,7 +31,10 @@ are ignored by Git. The default `minilm` profile retains the original
 
 [McAuley-Lab/Amazon-Reviews-2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023),
 `Electronics` category. `raw/all_categories.txt` lists the other 33 categories;
-`scripts/prepare.py --category NAME` converts any of them.
+`scripts/prepare.py --category NAME` converts any of them. The dataset is
+released for research use (Hou et al., 2024, arXiv:2403.03952) and is not
+redistributed here: the repository stores only download checksums, scripts
+and query results without review text.
 
 | File | Bytes | Records | SHA-256 |
 | :--- | ---: | ---: | :--- |

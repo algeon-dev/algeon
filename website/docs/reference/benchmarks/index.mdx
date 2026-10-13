@@ -61,7 +61,11 @@ captures.
 ## Relational path
 
 The TPC-H and TPC-DS suites at scale factor 100, CPU path against GPU path,
-one warm-up and one measured iteration per query, on an AWS EC2 **g7e.8xlarge**:
+one warm-up and one measured iteration per query, on an AWS EC2 **g7e.8xlarge**.
+These runs are derived from the TPC-H and TPC-DS benchmarks. They are not
+audited TPC results and are not comparable to published TPC results. TPC-H
+and TPC-DS are trademarks of the Transaction Processing Performance Council.
+The query text is the DuckDB rendering of the TPC specifications (MIT).
 
 - CPU: Intel Xeon Platinum 8559C, 32 vCPU.
 - Memory: 256 GiB.
