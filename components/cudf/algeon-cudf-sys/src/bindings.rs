@@ -389,6 +389,14 @@ pub struct cudf_io_parquet_pruning_evidence_t {
     pub has_row_groups_after_bloom_filter: i32,
     pub row_groups_after_bloom_filter: i64,
 }
+#[doc = " KvikIO's process-global settings: one thread pool and one task size shared\n by local compatibility-mode reads and remote range reads."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_io_kvikio_process_config_t {
+    pub compat_mode: i32,
+    pub thread_count: u32,
+    pub task_size_bytes: u64,
+}
 #[repr(C)]
 #[derive(Debug)]
 pub struct cudf_distinct_hash_join_handle_state {
@@ -1957,10 +1965,15 @@ unsafe extern "C" {
     pub fn cudf_io_free_column_names(names: *mut *mut core::ffi::c_char, num_names: i32);
     #[doc = " Returns the remote Parquet KvikIO build capability:\n - 1: libcudf was compiled with CUDF_KVIKIO_REMOTE_IO\n - 0: libcudf was compiled without CUDF_KVIKIO_REMOTE_IO\n - -1: reserved for unknown/unreported future states"]
     pub fn cudf_io_remote_parquet_kvikio_remote_io_enabled() -> i32;
-    #[doc = " Configure KvikIO's process default compatibility mode without mutating the\n process environment. Call before starting any I/O workers."]
-    pub fn cudf_io_kvikio_set_compat_mode(compat_mode: i32) -> cudf_status_t;
-    #[doc = " Return KvikIO's configured process default compatibility mode, or -1 when\n this build has no KvikIO remote-I/O support."]
-    pub fn cudf_io_kvikio_compat_mode() -> i32;
+    #[doc = " Apply `defaults` to every KvikIO process setting the environment leaves\n unset, before any I/O worker starts.\n\n Runs libcudf's own once-only KvikIO setup first, with `device_ordinal`\n current on the calling thread, so a later local file open cannot reset the\n pool. A field named by `KVIKIO_COMPAT_MODE`, `KVIKIO_NTHREADS` (or\n `KVIKIO_NUM_THREADS`) or `KVIKIO_TASK_SIZE` keeps the value KvikIO parsed\n from that variable. When I/O is active, nothing changes and\n `out_active_io` is nonzero. Fails with `CUDF_ERROR_UNSUPPORTED` when this\n build has no KvikIO support. Repeated calls are idempotent. Writes the\n effective values to `out_effective`."]
+    pub fn cudf_io_kvikio_configure_process(
+        device_ordinal: i32,
+        defaults: *const cudf_io_kvikio_process_config_t,
+        out_effective: *mut cudf_io_kvikio_process_config_t,
+        out_active_io: *mut u64,
+    ) -> cudf_status_t;
+    #[doc = " Read KvikIO's effective process settings. Fails with\n `CUDF_ERROR_UNSUPPORTED` when this build has no KvikIO support."]
+    pub fn cudf_io_kvikio_process_config(out: *mut cudf_io_kvikio_process_config_t) -> cudf_status_t;
     #[doc = " Clear every retained KvikIO bounce-buffer pool allocation.\n\n When I/O is active, no buffers are cleared and `out_active_io` is nonzero.\n Repeated idle calls are safe and report zero cleared bytes after the first."]
     pub fn cudf_io_kvikio_drain_bounce_buffer_pools(
         out_cleared_bytes: *mut u64,

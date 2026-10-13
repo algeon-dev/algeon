@@ -31,7 +31,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cudf::{DeviceMemoryManager, DeviceMemoryManagerInstallationState, DeviceMemoryManagerOptions};
+use cudf::{
+    DeviceMemoryManager, DeviceMemoryManagerInstallationState, DeviceMemoryManagerOptions,
+    io::{KvikioProcessConfig, configure_kvikio_process},
+};
 use query_planning::error::{QueryError, QueryErrorCode, Result, bytes_with_gib};
 use tokio::task::spawn_blocking;
 
@@ -1046,6 +1049,9 @@ impl GpuBackendCore {
             // `atexit` handler runs before libcudart's finalizer.
             observation_core.completion_executor.activate_process_exit();
             coordinator.activate_process_exit();
+            // KvikIO's process-global pool is configured now, with CUDA
+            // initialized and no source read in existence yet.
+            let kvikio_process_config = configure_kvikio_process_defaults(&ordinals)?;
 
             let service =
                 generation.service().expect("resource service is available immediately after successful installation");
@@ -1170,6 +1176,7 @@ impl GpuBackendCore {
                 coordinator,
                 public_handle,
                 startup_records,
+                kvikio_process_config,
                 generation_id,
             })
         })();
@@ -1180,6 +1187,19 @@ impl GpuBackendCore {
             },
             Err(error) => Err(rollback.attach_cleanup_facts(error)),
         }
+    }
+}
+
+/// Applies [`KvikioProcessConfig::DEFAULT`] on the first owned device and
+/// returns the effective settings. A cuDF build without KvikIO support leaves
+/// the pool to libcudf and reports `None`.
+fn configure_kvikio_process_defaults(ordinals: &[usize]) -> Result<Option<KvikioProcessConfig>> {
+    let device_ordinal = *ordinals.first().expect("a validated backend config names at least one device");
+    match configure_kvikio_process(device_ordinal, &KvikioProcessConfig::DEFAULT) {
+        Ok(config) => Ok(Some(config)),
+        Err(error) if error.code() == cudf::ErrorCode::UnsupportedOperation => Ok(None),
+        Err(error) => Err(cudf_query_error(BUILD_OPERATION, "failed to configure KvikIO process defaults", error)
+            .with_fact("device_ordinal", device_ordinal)),
     }
 }
 
@@ -1259,6 +1279,7 @@ pub struct GpuBackendCore {
     /// the coordinator hold them too.
     public_handle: PublicHandleLease,
     startup_records: Arc<[GpuBackendDeviceStartupRecord]>,
+    kvikio_process_config: Option<KvikioProcessConfig>,
     generation_id: u64,
 }
 
@@ -1294,6 +1315,7 @@ impl Clone for GpuBackendCore {
             coordinator: Arc::clone(&self.coordinator),
             public_handle: self.public_handle.clone(),
             startup_records: Arc::clone(&self.startup_records),
+            kvikio_process_config: self.kvikio_process_config,
             generation_id: self.generation_id,
         }
     }
@@ -1324,6 +1346,12 @@ impl GpuBackendCore {
 
     pub fn device_startup_records(&self) -> &[GpuBackendDeviceStartupRecord] {
         &self.startup_records
+    }
+
+    /// KvikIO's process settings as applied when this backend was built, or
+    /// `None` for a cuDF build without KvikIO support.
+    pub fn kvikio_process_config(&self) -> Option<KvikioProcessConfig> {
+        self.kvikio_process_config
     }
 
     pub fn identity(&self) -> GpuBackendCoreIdentity {
@@ -1920,6 +1948,7 @@ mod tests {
             coordinator,
             public_handle,
             startup_records: Arc::from([]),
+            kvikio_process_config: None,
             generation_id,
         }
     }
@@ -2606,6 +2635,7 @@ mod tests {
             coordinator: Arc::clone(&coordinator),
             public_handle: public_handles.acquire().expect("first public backend handle"),
             startup_records: Arc::from([]),
+            kvikio_process_config: None,
             generation_id: next_backend_identity(),
         };
 

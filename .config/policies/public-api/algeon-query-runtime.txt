@@ -1492,6 +1492,8 @@ pub fn query_runtime::observability::stage_context_from_execution(&impl query_ru
 pub fn query_runtime::observability::task_attempt_id(impl core::convert::Into<query_runtime::observability::RuntimeTaskId>, u32) -> query_runtime::observability::task_identity::TaskAttemptId
 pub fn query_runtime::observability::write_runtime_observation_jsonl<W: core::io::write::Write>(&query_runtime::observability::SealedRuntimeObservationSnapshot, &mut W) -> core::result::Result<(), query_runtime::observability::RuntimeObservationExportError>
 pub mod query_runtime::runtime
+pub use query_runtime::runtime::KvikioCompatMode
+pub use query_runtime::runtime::KvikioProcessConfig
 pub mod query_runtime::runtime::cache
 pub struct query_runtime::runtime::cache::CacheGraphActivity
 pub query_runtime::runtime::cache::CacheGraphActivity::available_entries: usize
@@ -1888,6 +1890,7 @@ pub fn query_runtime::runtime::GpuBackendCore::close_snapshot(&self) -> query_ru
 pub fn query_runtime::runtime::GpuBackendCore::device_startup_records(&self) -> &[query_runtime::runtime::GpuBackendDeviceStartupRecord]
 pub fn query_runtime::runtime::GpuBackendCore::fault_injector(&self) -> query_runtime::runtime::GpuBackendFaultInjector
 pub fn query_runtime::runtime::GpuBackendCore::identity(&self) -> query_runtime::runtime::backend_core::GpuBackendCoreIdentity
+pub fn query_runtime::runtime::GpuBackendCore::kvikio_process_config(&self) -> core::option::Option<cudf::io::KvikioProcessConfig>
 pub fn query_runtime::runtime::GpuBackendCore::session_capability(&self) -> query_runtime::runtime::GpuBackendSession
 impl query_runtime::runtime::GpuBackendCore
 pub fn query_runtime::runtime::GpuBackendCore::new(query_runtime::runtime::ValidatedGpuBackendConfig) -> query_planning::error::Result<Self>

@@ -33,6 +33,8 @@
 #include <vector>
 
 #ifdef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
+#include <cudf/io/config_utils.hpp>
+
 #include <kvikio/bounce_buffer.hpp>
 #include <kvikio/defaults.hpp>
 #include <kvikio/remote_handle.hpp>
@@ -45,9 +47,6 @@ constexpr int32_t CUDF_IO_REMOTE_PARQUET_FALLBACK_NONE                    = 0;
 constexpr int32_t CUDF_IO_REMOTE_PARQUET_FALLBACK_BACKEND_UNAVAILABLE     = 1;
 
 #ifdef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
-constexpr unsigned int CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_THREADS = 64;
-constexpr size_t CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_TASK_SIZE     = 64 * 1024 * 1024;
-
 std::mutex kvikio_io_lifecycle_mutex;
 uint64_t kvikio_active_io = 0;
 
@@ -401,6 +400,35 @@ bool kvikio_thread_pool_env_configured()
 
 bool kvikio_task_size_env_configured() { return std::getenv("KVIKIO_TASK_SIZE") != nullptr; }
 
+bool kvikio_compat_mode_env_configured() { return std::getenv("KVIKIO_COMPAT_MODE") != nullptr; }
+
+int32_t kvikio_compat_mode_to_ffi(kvikio::CompatMode mode)
+{
+  switch (mode) {
+    case kvikio::CompatMode::AUTO: return CUDF_IO_KVIKIO_COMPAT_MODE_AUTO;
+    case kvikio::CompatMode::ON: return CUDF_IO_KVIKIO_COMPAT_MODE_ON;
+    case kvikio::CompatMode::OFF: return CUDF_IO_KVIKIO_COMPAT_MODE_OFF;
+  }
+  return -1;
+}
+
+std::optional<kvikio::CompatMode> kvikio_compat_mode_from_ffi(int32_t mode)
+{
+  switch (mode) {
+    case CUDF_IO_KVIKIO_COMPAT_MODE_AUTO: return kvikio::CompatMode::AUTO;
+    case CUDF_IO_KVIKIO_COMPAT_MODE_ON: return kvikio::CompatMode::ON;
+    case CUDF_IO_KVIKIO_COMPAT_MODE_OFF: return kvikio::CompatMode::OFF;
+    default: return std::nullopt;
+  }
+}
+
+void write_kvikio_process_config(cudf_io_kvikio_process_config_t* out)
+{
+  out->compat_mode     = kvikio_compat_mode_to_ffi(kvikio::defaults::compat_mode());
+  out->thread_count    = kvikio::defaults::num_threads();
+  out->task_size_bytes = static_cast<uint64_t>(kvikio::defaults::task_size());
+}
+
 size_t remote_parquet_tail_cache_bytes()
 {
   static auto const value = [] {
@@ -413,21 +441,6 @@ size_t remote_parquet_tail_cache_bytes()
     return static_cast<size_t>(bytes);
   }();
   return value;
-}
-
-void configure_remote_parquet_kvikio_defaults_once()
-{
-  static std::once_flag once;
-  std::call_once(once, [] {
-    if (!kvikio_thread_pool_env_configured() &&
-        kvikio::defaults::num_threads() < CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_THREADS) {
-      kvikio::defaults::set_num_threads(CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_THREADS);
-    }
-    if (!kvikio_task_size_env_configured() &&
-        kvikio::defaults::task_size() < CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_TASK_SIZE) {
-      kvikio::defaults::set_task_size(CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_TASK_SIZE);
-    }
-  });
 }
 
 struct remote_read_counters {
@@ -694,7 +707,6 @@ std::unique_ptr<counted_remote_parquet_source> make_counted_remote_source(
   std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr,
   std::shared_ptr<void> mr_lifetime)
 {
-  configure_remote_parquet_kvikio_defaults_once();
   auto endpoint = make_remote_endpoint(uri, profile);
   CUDF_EXPECTS(endpoint != nullptr,
                "only s3:// remote Parquet URIs are supported by the scoped datasource");
@@ -1457,48 +1469,80 @@ int32_t cudf_io_remote_parquet_kvikio_remote_io_enabled(void)
 #endif
 }
 
-cudf_status_t cudf_io_kvikio_set_compat_mode(int32_t compat_mode)
+cudf_status_t cudf_io_kvikio_configure_process(int32_t device_ordinal,
+                                               cudf_io_kvikio_process_config_t const* defaults,
+                                               cudf_io_kvikio_process_config_t* out_effective,
+                                               uint64_t* out_active_io)
 {
+  CUDF_RUST_NULL_CHECK(defaults, "defaults is null");
+  CUDF_RUST_NULL_CHECK(out_effective, "out_effective is null");
+  CUDF_RUST_NULL_CHECK(out_active_io, "out_active_io is null");
+  *out_active_io = 0;
 #ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
   set_error("libcudf was not built with KvikIO remote IO");
   return CUDF_ERROR_UNSUPPORTED;
 #else
   CUDF_RUST_TRY
   {
+    auto const compat_mode = kvikio_compat_mode_from_ffi(defaults->compat_mode);
+    if (!compat_mode) {
+      set_error("unknown KvikIO compatibility mode");
+      return CUDF_ERROR_INVALID_ARGUMENT;
+    }
+    if (defaults->thread_count == 0) {
+      set_error("KvikIO thread count must be positive");
+      return CUDF_ERROR_INVALID_ARGUMENT;
+    }
+    if (defaults->task_size_bytes == 0) {
+      set_error("KvikIO task size must be positive");
+      return CUDF_ERROR_INVALID_ARGUMENT;
+    }
     std::lock_guard const lock(kvikio_io_lifecycle_mutex);
+    *out_active_io = kvikio_active_io;
     if (kvikio_active_io != 0) {
-      set_error("cannot configure KvikIO compatibility mode while I/O is active");
-      return CUDF_ERROR_IO;
+      write_kvikio_process_config(out_effective);
+      return CUDF_SUCCESS;
     }
-    switch (compat_mode) {
-      case CUDF_IO_KVIKIO_COMPAT_MODE_AUTO:
-        kvikio::defaults::set_compat_mode(kvikio::CompatMode::AUTO);
-        break;
-      case CUDF_IO_KVIKIO_COMPAT_MODE_ON:
-        kvikio::defaults::set_compat_mode(kvikio::CompatMode::ON);
-        break;
-      case CUDF_IO_KVIKIO_COMPAT_MODE_OFF:
-        kvikio::defaults::set_compat_mode(kvikio::CompatMode::OFF);
-        break;
-      default: set_error("unknown KvikIO compatibility mode"); return CUDF_ERROR_INVALID_ARGUMENT;
+    {
+      // libcudf runs its own KvikIO setup once, on the first local file open, and
+      // that setup resets the thread count unconditionally. Consuming its once_flag
+      // here makes this call the last writer. Its cudaFree(nullptr) initializes the
+      // CUDA runtime on the calling thread's current device, hence the guard.
+      cudf_device_guard guard;
+      cudf_status_t const status = guard.activate(device_ordinal);
+      if (status != CUDF_SUCCESS) { return status; }
+      cudf::io::kvikio_integration::set_up_kvikio();
     }
+    if (!kvikio_compat_mode_env_configured()) { kvikio::defaults::set_compat_mode(*compat_mode); }
+    // ThreadPool::reset recreates every worker, and KvikIO caches CUDA streams per
+    // (context, thread), so an unchanged count is left alone.
+    if (!kvikio_thread_pool_env_configured() &&
+        kvikio::defaults::num_threads() != defaults->thread_count) {
+      kvikio::defaults::set_num_threads(defaults->thread_count);
+    }
+    if (!kvikio_task_size_env_configured()) {
+      kvikio::defaults::set_task_size(static_cast<std::size_t>(defaults->task_size_bytes));
+    }
+    write_kvikio_process_config(out_effective);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
 #endif
 }
 
-int32_t cudf_io_kvikio_compat_mode(void)
+cudf_status_t cudf_io_kvikio_process_config(cudf_io_kvikio_process_config_t* out)
 {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
 #ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
-  return -1;
+  set_error("libcudf was not built with KvikIO remote IO");
+  return CUDF_ERROR_UNSUPPORTED;
 #else
-  switch (kvikio::defaults::compat_mode()) {
-    case kvikio::CompatMode::AUTO: return CUDF_IO_KVIKIO_COMPAT_MODE_AUTO;
-    case kvikio::CompatMode::ON: return CUDF_IO_KVIKIO_COMPAT_MODE_ON;
-    case kvikio::CompatMode::OFF: return CUDF_IO_KVIKIO_COMPAT_MODE_OFF;
+  CUDF_RUST_TRY
+  {
+    write_kvikio_process_config(out);
+    return CUDF_SUCCESS;
   }
-  return -1;
+  CUDF_RUST_IO_CATCH
 #endif
 }
 

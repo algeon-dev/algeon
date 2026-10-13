@@ -52,11 +52,14 @@ use crate::{
 pub mod parquet;
 pub mod source;
 
-/// Process-default KvikIO compatibility mode.
+/// KvikIO compatibility mode, the `KVIKIO_COMPAT_MODE` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KvikioCompatMode {
+    /// cuFile where the file system and driver support it, POSIX otherwise.
     Auto,
+    /// POSIX reads through a pinned host bounce buffer.
     On,
+    /// cuFile only; a read fails where cuFile is unavailable.
     Off,
 }
 
@@ -68,31 +71,157 @@ impl KvikioCompatMode {
             Self::Off => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_OFF as i32,
         }
     }
+
+    fn from_ffi(value: i32) -> Option<Self> {
+        match value {
+            value if value == cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_AUTO as i32 => Some(Self::Auto),
+            value if value == cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_ON as i32 => Some(Self::On),
+            value if value == cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_OFF as i32 => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    /// KvikIO's lowercase spelling of the mode.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
 }
 
-/// Configure KvikIO compatibility without mutating process environment.
+/// KvikIO's process-global settings: one thread pool and one task size shared
+/// by local compatibility-mode reads and remote range reads, across every
+/// device in the process.
 ///
-/// Call this before starting I/O workers. Existing KvikIO file handles retain
-/// the mode selected when they were created.
-pub fn set_kvikio_compat_mode(mode: KvikioCompatMode) -> Result<()> {
-    const OPERATION: &str = "io::set_kvikio_compat_mode";
+/// Design: `website/docs/design/data-path.mdx#local-nvme-and-compatibility-mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KvikioProcessConfig {
+    /// `KVIKIO_COMPAT_MODE`.
+    pub compat_mode: KvikioCompatMode,
+    /// `KVIKIO_NTHREADS`: workers in the process-wide pool.
+    pub thread_count: u32,
+    /// `KVIKIO_TASK_SIZE`: bytes per pool task; one read splits into tasks of
+    /// at most this size.
+    pub task_size_bytes: u64,
+}
+
+impl KvikioProcessConfig {
+    /// Algeon's values for the fields the KvikIO environment leaves unset.
+    ///
+    /// 64 threads keep a cold local NVMe read near the device's throughput,
+    /// where libcudf's own four-thread setup reached about a quarter of it,
+    /// and match the concurrency remote range reads need. 4 MiB tasks are
+    /// KvikIO's default; a larger task splits one read into fewer parallel
+    /// pieces.
+    pub const DEFAULT: Self =
+        Self { compat_mode: KvikioCompatMode::On, thread_count: 64, task_size_bytes: 4 * 1024 * 1024 };
+
+    fn from_ffi(raw: &cudf_sys::cudf_io_kvikio_process_config_t) -> Option<Self> {
+        Some(Self {
+            compat_mode: KvikioCompatMode::from_ffi(raw.compat_mode)?,
+            thread_count: raw.thread_count,
+            task_size_bytes: raw.task_size_bytes,
+        })
+    }
+
+    const fn as_ffi(&self) -> cudf_sys::cudf_io_kvikio_process_config_t {
+        cudf_sys::cudf_io_kvikio_process_config_t {
+            compat_mode: self.compat_mode.as_ffi(),
+            thread_count: self.thread_count,
+            task_size_bytes: self.task_size_bytes,
+        }
+    }
+}
+
+const fn zeroed_kvikio_process_config() -> cudf_sys::cudf_io_kvikio_process_config_t {
+    cudf_sys::cudf_io_kvikio_process_config_t { compat_mode: 0, thread_count: 0, task_size_bytes: 0 }
+}
+
+/// Apply `defaults` to every KvikIO process setting the environment leaves
+/// unset, and return the effective configuration.
+///
+/// Call this once per process before any I/O worker starts. libcudf's own
+/// once-only KvikIO setup runs first, with `device_ordinal` current, so a
+/// later local file open cannot reset the pool; the ordinal must be a device
+/// the caller owns because that setup initializes the CUDA runtime on it. A
+/// field named by `KVIKIO_COMPAT_MODE`, `KVIKIO_NTHREADS` or
+/// `KVIKIO_TASK_SIZE` keeps the environment's value. Active I/O returns
+/// [`ErrorCode::IoBusy`] without changing anything, and a cuDF build without
+/// KvikIO support returns [`ErrorCode::UnsupportedOperation`]. Repeated calls
+/// are idempotent.
+pub fn configure_kvikio_process(device_ordinal: usize, defaults: &KvikioProcessConfig) -> Result<KvikioProcessConfig> {
+    const OPERATION: &str = "io::configure_kvikio_process";
+    let device_ordinal = i32::try_from(device_ordinal).map_err(|_| {
+        Error::new_with(ErrorCode::ForeignInvalidArgument, OPERATION, "device ordinal exceeds the CUDA device range")
+            .with_detail("device_ordinal", device_ordinal.to_string())
+    })?;
+    let raw_defaults = defaults.as_ffi();
+    let mut raw_effective = zeroed_kvikio_process_config();
+    let mut active_io = 0u64;
     error::check_status_in_with_details(
-        // SAFETY: the mode is one of the native enum's declared values.
-        unsafe { cudf_sys::cudf_io_kvikio_set_compat_mode(mode.as_ffi()) },
+        // SAFETY: every pointer refers to a live, aligned stack value for the
+        // duration of the call.
+        unsafe {
+            cudf_sys::cudf_io_kvikio_configure_process(
+                device_ordinal,
+                &raw_defaults,
+                &mut raw_effective,
+                &mut active_io,
+            )
+        },
         OPERATION,
         [("resource", "kvikio_defaults".to_string())],
-    )
+    )?;
+    kvikio_configure_result(&raw_effective, active_io)
 }
 
-/// Return KvikIO's configured process default, when this build supports it.
-pub fn kvikio_compat_mode() -> Option<KvikioCompatMode> {
-    // SAFETY: this getter takes no pointers and returns a small integer tag.
-    match unsafe { cudf_sys::cudf_io_kvikio_compat_mode() } {
-        value if value == cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_AUTO as i32 => Some(KvikioCompatMode::Auto),
-        value if value == cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_ON as i32 => Some(KvikioCompatMode::On),
-        value if value == cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_OFF as i32 => Some(KvikioCompatMode::Off),
-        _ => None,
+fn kvikio_configure_result(
+    raw_effective: &cudf_sys::cudf_io_kvikio_process_config_t,
+    active_io: u64,
+) -> Result<KvikioProcessConfig> {
+    const OPERATION: &str = "io::configure_kvikio_process";
+    if active_io != 0 {
+        return Err(kvikio_busy_error(
+            OPERATION,
+            "cannot configure KvikIO while I/O is active",
+            "kvikio_defaults",
+            active_io,
+            "stop and join all I/O workers before configuring KvikIO",
+        ));
     }
+    KvikioProcessConfig::from_ffi(raw_effective).ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::ForeignInvariantViolation,
+            OPERATION,
+            "KvikIO reported an unknown compatibility mode",
+        )
+        .with_detail("compat_mode", raw_effective.compat_mode.to_string())
+    })
+}
+
+/// Return KvikIO's effective process settings, or `None` for a cuDF build
+/// without KvikIO support.
+pub fn kvikio_process_config() -> Option<KvikioProcessConfig> {
+    let mut raw = zeroed_kvikio_process_config();
+    // SAFETY: the out-pointer refers to a live aligned stack value.
+    let status = unsafe { cudf_sys::cudf_io_kvikio_process_config(&mut raw) };
+    (status == cudf_sys::CUDF_SUCCESS).then(|| KvikioProcessConfig::from_ffi(&raw)).flatten()
+}
+
+fn kvikio_busy_error(
+    operation: &'static str,
+    message: &'static str,
+    resource: &'static str,
+    active_io: u64,
+    remedy: &'static str,
+) -> Error {
+    Error::new_with(ErrorCode::IoBusy, operation, message)
+        .with_detail("resource", resource)
+        .with_detail("reason", "active_io")
+        .with_detail("active_io", active_io.to_string())
+        .with_detail("remedy", remedy)
 }
 
 /// Drain KvikIO's retained host bounce-buffer pools.
@@ -117,15 +246,13 @@ fn kvikio_drain_result(cleared_bytes: u64, active_io: u64) -> Result<u64> {
     if active_io == 0 {
         return Ok(cleared_bytes);
     }
-    Err(Error::new_with(
-        ErrorCode::IoBusy,
+    Err(kvikio_busy_error(
         "io::drain_kvikio_bounce_buffer_pools",
         "cannot drain KvikIO bounce buffers while I/O is active",
-    )
-    .with_detail("resource", "kvikio_bounce_buffer_pools")
-    .with_detail("reason", "active_io")
-    .with_detail("active_io", active_io.to_string())
-    .with_detail("remedy", "stop and join all I/O workers before retrying bounce-buffer drain"))
+        "kvikio_bounce_buffer_pools",
+        active_io,
+        "stop and join all I/O workers before retrying bounce-buffer drain",
+    ))
 }
 
 /// Probe whether the cuFile driver can be opened by this process.
