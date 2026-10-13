@@ -302,11 +302,11 @@ WHERE SUBSTRING(c_phone FROM c_custkey FOR 2) = '13'
 ",
     },
     TpchScalarFallbackPressureQuery {
-        id: "q07_scalar_extract_hour",
+        id: "q07_scalar_extract_quarter",
         sql: "
 SELECT COUNT(*) AS count_rows
 FROM orders
-WHERE EXTRACT(HOUR FROM o_orderdate) = 1
+WHERE EXTRACT(QUARTER FROM o_orderdate) = 1
 ",
     },
 ];

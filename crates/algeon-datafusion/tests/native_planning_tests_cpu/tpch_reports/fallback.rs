@@ -92,7 +92,7 @@ async fn tpch_scalar_fallback_pressure_report_pins_expression_categories() {
     let expected = [
         ("q12_scalar_in_list_null", "expression_in_list"),
         ("q22_scalar_substring_dynamic_start", "expression_substring_argument"),
-        ("q07_scalar_extract_hour", "expression_extract_field"),
+        ("q07_scalar_extract_quarter", "expression_extract_field"),
         ("q01_scalar_interval_minus_date", "expression_interval_arithmetic"),
     ];
     assert_eq!(report.rows.len(), expected.len());
