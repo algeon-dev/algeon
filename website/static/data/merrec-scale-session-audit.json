@@ -1,4 +1,5 @@
 {
+ "license": "CC-BY-NC-4.0; derived from the MerRec dataset, Copyright Mercari, Inc.; see LICENSE-MERREC.md in this directory",
  "name": "12_session_audit",
  "sql_file": "fixture/demo/merrec/scripts/scale/12_session_audit.sql",
  "sql": "WITH october AS (\n  SELECT DISTINCT user_id, session_id\n  FROM merrec_events\n  WHERE event_time >= TIMESTAMP '2023-10-01 00:00:00'\n), components AS (\n  SELECT vertex, component FROM cugraph_weakly_connected_components(\n    edges => (SELECT CONCAT('user:', CAST(user_id AS VARCHAR)) AS src, session_id AS dst FROM october),\n    directed => false)\n), user_components AS (\n  SELECT component, COUNT(*) AS users FROM components WHERE STARTS_WITH(vertex, 'user:') GROUP BY component\n)\nSELECT CASE WHEN users = 1 THEN '1 user'\n            WHEN users <= 10 THEN '2-10 users'\n            WHEN users <= 1000 THEN '11-1,000 users'\n            ELSE 'over 1,000 users' END AS component_size,\n       COUNT(*) AS components, SUM(users) AS users, MAX(users) AS largest\nFROM user_components\nGROUP BY 1\nORDER BY largest;\n",

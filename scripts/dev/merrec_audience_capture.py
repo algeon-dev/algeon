@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from merrec_verify_common import MERREC_LICENSE
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "target/merrec-exploration/results"
@@ -155,6 +157,7 @@ def main() -> None:
         *(RESEARCH / "sql" / "probes" / f"{name}.sql" for name in ("cuml_umap", "cuml_hdbscan")),
     ]
     capture = {
+        "license": MERREC_LICENSE,
         "source": "MerRec captured audience and category-share results",
         "rows": EXPECTED_ROWS,
         "joinKey": "id",

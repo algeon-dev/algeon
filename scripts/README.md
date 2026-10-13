@@ -56,6 +56,14 @@ shared for the `gpu` test group and exclusive for `gpu-exclusive`, and takes
 nothing for a CPU test. Its self-test is
 `ci/tests/check_nextest_gpu_lock_tests.sh`.
 
+`ci/check_third_party_data.py` runs in the policy phase. It confines the CC
+BY-NC derived MerRec captures to `website/static/data`, requires their
+`license` field, keeps `LICENSE-MERREC.md` and `NOTICE` in step with the
+tracked files, and rejects Docker packaging scripts that reference the website
+or fixture trees. The contract lives in
+[Third-party data](test-harness.md#third-party-data); its fault-injection
+suite is `python3 scripts/ci/tests/check_third_party_data_tests.py`.
+
 `ci/check_test_layout.py` checks the test layout contract in the policy phase.
 The full gate repeats it in `orphan-sources` after clippy, using only the
 compiler artifacts named by that run's all-feature and feature-off JSON

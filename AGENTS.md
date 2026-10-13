@@ -69,6 +69,7 @@ Keep other guidance as links to those definitions, without duplicate contracts.
 | Admission, allocation, attempt lifecycle, worker pools, cancellation, resident facts or metrics | [Memory and query lifetime](website/docs/design/admission.mdx) |
 | Error types, mappings or DataFusion error boundaries | [Error ownership](website/docs/design/errors.mdx) and [Handling errors](website/docs/integration/handling-errors.mdx) |
 | Workspace manifests, publication or native builds | [Workspace and publication contracts](scripts/test-harness.md#workspace-and-publication-contracts), [Build overview](website/docs/build/overview.md) and [Prerequisites](website/docs/build/prerequisites.md) |
+| Third-party data, NOTICE or license terms | [Third-party data](scripts/test-harness.md#third-party-data) |
 | Running checks | [Tests](website/docs/build/tests.md) |
 | Adding or moving tests | [Test layout](scripts/test-harness.md#test-layout) |
 | Maintaining validation scripts | [Test harness](scripts/test-harness.md) |

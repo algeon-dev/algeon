@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from merrec_verify_common import MERREC_LICENSE
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RESEARCH = ROOT / "docs/research/merrec"
@@ -98,6 +100,7 @@ def main() -> None:
         KMEANS_PATH,
     )
     capture = {
+        "license": MERREC_LICENSE,
         "query": "21_segment_themes",
         "queryId": EXPECTED_QUERY_ID,
         "sql": sql,

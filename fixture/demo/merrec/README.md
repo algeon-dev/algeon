@@ -12,6 +12,10 @@ for Consumer-to-Consumer Recommendation Systems* (Lichi Li, Zainul Abi Din,
 Zhen Tan, Sam London, Tianlong Chen, Ajay Daptardar).
 
 The pinned source revision is `dd2b3c6f6f19d4814bb839ee6e8ab41926a14343`.
+The dataset is published by Mercari, Inc. under CC BY-NC 4.0. The converted
+tables stay outside the repository; the saved query results under
+`website/static/data/merrec-*.json` carry the dataset's terms, as recorded in
+[`LICENSE-MERREC.md`](../../../website/static/data/LICENSE-MERREC.md).
 [`scripts/source_files.json`](scripts/source_files.json) records the byte size and
 SHA-256 of all 2,170 shards across six monthly partitions. Their total compressed
 size is 166,075,974,430 bytes. October has 409 shards and 247,882,433 events;

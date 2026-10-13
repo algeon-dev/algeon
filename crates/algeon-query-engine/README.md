@@ -29,9 +29,9 @@ in the DataFusion adapter crate.
   belongs to the runtime's native boundary.
 - `tests/runtime_execution_integration_tests_gpu/` covers planning/runtime/execution composition.
 
-See [`query-planning`](../algeon-query-planning/README.md) for IR,
+See [`query-planning`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-planning/README.md) for IR,
 capability, proof, admission contracts, and pipelines. See
-[`query-runtime`](../algeon-query-runtime/README.md) for lifecycle, query
+[`query-runtime`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-runtime/README.md) for lifecycle, query
 service, device resources, caches, observation, and metrics.
 
 ## Validation
