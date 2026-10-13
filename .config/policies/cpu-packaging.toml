@@ -39,13 +39,13 @@ cmake = ["/usr/bin/cmake", "--version"]
 ninja = ["/usr/bin/ninja", "--version"]
 
 [cpu]
-baseline = "x86-64-v4"
+baseline = "x86-64-v3"
 target_triple = "x86_64-unknown-linux-gnu"
-rustflags = ["-C", "target-cpu=x86-64-v4"]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
 cargo_profile = "release"
-artifact_dir = "x86-64-v4"
+artifact_dir = "x86-64-v3"
 image_arch = "amd64"
-deployment_requirement = "The host CPU must implement the full x86-64-v4 ISA; a pre-v4 host may SIGILL before main."
+deployment_requirement = "The host CPU must implement the full x86-64-v3 ISA; a pre-v3 host may SIGILL before main."
 
 # Cargo features of the shipped `algeon_server` binary. Packaging
 # (docker/stage-docker-payload.sh) and the shipped-clippy phase of

@@ -108,7 +108,7 @@ hide it.
 
 Staging always runs its own clean build of `algeon_server`, from an isolated
 working directory and a clean `CARGO_HOME`, with the fixed target triple and
-`target-cpu=x86-64-v4` from `.config/policies/cpu-packaging.toml`. It writes a
+`target-cpu=x86-64-v3` from `.config/policies/cpu-packaging.toml`. It writes a
 build record (binary hash, policy fingerprint, features, target triple and
 codegen flags) beside the binary. An ordinary `target/release` build has no
 such record and is not reused. Expect about five minutes on a warm native
@@ -141,7 +141,7 @@ With the default features, `docker images` reported 3.68 GB disk usage and
 1.31 GB content size for the image on 2026-10-09.
 
 :::warning[Build machine versus target host CPU]
-This image targets x86-64-v4. Both the build machine and every target host must
+This image targets x86-64-v3. Both the build machine and every target host must
 support that instruction set. Otherwise the binary may terminate with `SIGILL`
 before `main`. See [CPU requirement](./prerequisites.md#cpu-requirement).
 :::
@@ -155,7 +155,7 @@ loopback only, and mount the directory that holds your Parquet files:
 ```bash
 docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
   -v "$PWD/data:/data:ro" \
-  algeon-server:x86-64-v4
+  algeon-server:x86-64-v3
 ```
 
 The image sets `ALGEON_SERVER_BIND=0.0.0.0:50051` because a loopback listener
@@ -173,7 +173,7 @@ docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
   -v "$PWD/data:/data:ro" \
   -v "$PWD/server.toml:/etc/algeon/server.toml:ro" \
   -e ALGEON_SERVER_CONFIG_FILE=/etc/algeon/server.toml \
-  algeon-server:x86-64-v4
+  algeon-server:x86-64-v3
 ```
 
 The [configuration reference](../integration/configuration.mdx#complete-example)
@@ -207,7 +207,7 @@ starting Algeon Flight SQL server
 The image has a TCP healthcheck for `ALGEON_SERVER_BIND`:
 
 ```bash
-docker ps --filter ancestor=algeon-server:x86-64-v4
+docker ps --filter ancestor=algeon-server:x86-64-v3
 ```
 
 ## Smoke-test Flight SQL

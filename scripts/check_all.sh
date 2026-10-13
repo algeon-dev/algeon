@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The one validation entry. With no arguments it runs the full pre-merge gate;
-# --fast is a partial edit loop. Test selection, GPU locking, and timeouts live
-# in .config/nextest.toml; this script runs everything else around the tests.
+# --fast is a partial edit loop, and --native-free is the partial subset that
+# needs no GPU or native RAPIDS build (GitHub Actions runs it). Test selection,
+# GPU locking, and timeouts live in .config/nextest.toml; this script runs
+# everything else around the tests.
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -15,11 +17,15 @@ readonly GPU_LOCK=/tmp/cudf-gpu.lock
 
 usage() {
   cat <<'USAGE'
-Usage: bash scripts/check_all.sh [--fast]
+Usage: bash scripts/check_all.sh [--fast | --native-free]
 
-  (no options)  Full pre-merge gate: policy, tests, static checks, hygiene.
-  --fast        Policy checks, rustfmt, and CPU tests. Partial: never full
-                validation.
+  (no options)   Full pre-merge gate: policy, tests, static checks, hygiene.
+  --fast         Policy checks, rustfmt, and CPU tests. Partial: never full
+                 validation.
+  --native-free  Policy checks, rustfmt, and DOCS_RS=1 lint, rustdoc, MSRV and
+                 packaging checks, plus the tests of packages that link no
+                 native library. Needs no GPU or native build. Partial: never
+                 full validation.
 
 Each phase logs to target/check-all/run.*/<phase>.log, or to
 CHECK_ALL_PHASE_LOG_DIR when set. target/check-all/latest points at the newest
@@ -31,6 +37,7 @@ mode=full
 case "$*" in
   '') ;;
   --fast) mode=fast ;;
+  --native-free) mode=native-free ;;
   -h | --help) usage; exit 0 ;;
   *) echo "ERROR: unknown arguments: $*" >&2; usage >&2; exit 2 ;;
 esac
@@ -48,12 +55,21 @@ if ! cargo nextest --version; then
   echo "ERROR: cargo-nextest is required. Install it with: cargo install --locked cargo-nextest" >&2
   exit 2
 fi
-if [[ "${mode}" == full ]]; then
+if [[ "${mode}" != fast ]]; then
   require_version "cargo-hack ${REQUIRED_CARGO_HACK_VERSION}" \
     "cargo install --locked --version ${REQUIRED_CARGO_HACK_VERSION} cargo-hack" cargo hack --version
 fi
 
-cargo +nightly -Z unstable-options config get env --format toml --show-origin \
+if [[ "${mode}" == native-free ]]; then
+  # Every build script takes its DOCS_RS branch and skips native discovery and
+  # linking. A separate target directory keeps those build-script outputs from
+  # replacing the native ones in target/.
+  export DOCS_RS=1 CARGO_TARGET_DIR="${ROOT}/target/native-free"
+fi
+
+# The whole merged config, because `config get env` fails on a host whose
+# Cargo configuration has no [env] table, such as a hosted CI runner.
+cargo +nightly -Z unstable-options config get --format toml --show-origin \
   | python3 scripts/ci/cargo_toolchain_environment.py || exit 2
 echo "check_all: LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"
 
@@ -222,6 +238,19 @@ feature_isolation() {
   return "${status}"
 }
 
+# Clippy, then orphan-source verification over its streams, then strict rustdoc.
+lint_and_docs() {
+  if run clippy clippy; then
+    run orphan-sources python3 scripts/ci/check_test_layout.py "${ROOT}" \
+      --clippy-artifacts "${LOG_DIR}/clippy-all-features.jsonl" \
+      --clippy-artifacts "${LOG_DIR}/clippy-feature-off.jsonl"
+  else
+    printf '%s\n' 'SKIP: orphan-source verification requires successful clippy streams.' >"${LOG_DIR}/orphan-sources.log"
+    record orphan-sources 'SKIP(clippy-failed)' - -
+  fi
+  RUSTDOCFLAGS="${RUSTDOCFLAGS:+${RUSTDOCFLAGS} }-D warnings" run rustdoc nice -n 10 cargo doc --workspace --all-features --no-deps --keep-going
+}
+
 # Lints the shipped server as packaged: only the algeon_server binary
 # with server.features from the packaging policy. Selecting no tests, examples,
 # or other members keeps dev-dependencies from enabling test-hooks, which the
@@ -230,12 +259,27 @@ shipped_clippy() {
   local features
   features=$(python3 scripts/build/cpu_packaging_policy.py shipped-features) || return 1
   nice -n 10 cargo clippy --manifest-path crates/algeon-server/Cargo.toml --bin algeon_server --no-default-features \
-    --features "${features}" --locked --target-dir "${ROOT}/target/check-all/shipped-clippy" -- -D warnings
+    --features "${features}" --locked -- -D warnings
+}
+
+# Tests of the packages that native_free_packages.py finds in this run's
+# metadata. Every other test binary links the native installs.
+native_free_tests() {
+  local metadata="${LOG_DIR}/native-free-metadata.json" packages package
+  local -a args=()
+  cargo metadata --all-features --format-version 1 --locked >"${metadata}" || return $?
+  packages=$(python3 scripts/ci/native_free_packages.py "${metadata}") || return $?
+  for package in ${packages}; do args+=(-p "${package}"); done
+  echo "native-free test packages: ${packages//$'\n'/ }"
+  cargo nextest run --locked --all-features "${args[@]}"
 }
 
 if [[ "${mode}" == full ]]; then
   PHASES=(gate rustfmt native-sources checked-bindings policy-scripts test-build tests doctests clippy orphan-sources rustdoc
     public-api-surface feature-isolation shipped-clippy msrv native-free docsrs-native-free public-api-consumers publication-policy)
+elif [[ "${mode}" == native-free ]]; then
+  PHASES=(gate rustfmt native-sources policy-scripts clippy orphan-sources rustdoc native-free-tests shipped-clippy msrv
+    docsrs-native-free public-api-consumers publication-policy)
 else
   PHASES=(gate rustfmt native-sources policy-scripts cpu-tests)
 fi
@@ -290,18 +334,10 @@ if [[ "${mode}" == full ]]; then
     record tests 'SKIP(test-build-failed)' - -
     run doctests doctests &
   fi
-  { if run clippy clippy; then
-      run orphan-sources python3 scripts/ci/check_test_layout.py "${ROOT}" \
-        --clippy-artifacts "${LOG_DIR}/clippy-all-features.jsonl" \
-        --clippy-artifacts "${LOG_DIR}/clippy-feature-off.jsonl"
-    else
-      printf '%s\n' 'SKIP: orphan-source verification requires successful clippy streams.' >"${LOG_DIR}/orphan-sources.log"
-      record orphan-sources 'SKIP(clippy-failed)' - -
-    fi
-    RUSTDOCFLAGS="${RUSTDOCFLAGS:+${RUSTDOCFLAGS} }-D warnings" run rustdoc nice -n 10 cargo doc --workspace --all-features --no-deps --keep-going
+  { lint_and_docs
     run public-api-surface nice -n 10 bash scripts/ci/check_public_api_surface.sh check --all-features; } &
   run feature-isolation feature_isolation &
-  run shipped-clippy shipped_clippy &
+  CARGO_TARGET_DIR="${ROOT}/target/check-all/shipped-clippy" run shipped-clippy shipped_clippy &
   CARGO_TARGET_DIR="${ROOT}/target/check-all/msrv" \
     run msrv nice -n 10 cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo &
   DOCS_RS=1 run native-free nice -n 10 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check &
@@ -309,6 +345,17 @@ if [[ "${mode}" == full ]]; then
   run public-api-consumers nice -n 10 python3 scripts/ci/check_public_api_consumers.py "${ROOT}" .config/policies/public-api \
     target/check-all/public-api-consumers &
   run publication-policy python3 scripts/ci/check_workspace_publication.py &
+elif [[ "${mode}" == native-free ]]; then
+  run publication-policy python3 scripts/ci/check_workspace_publication.py &
+  # Compilation runs one phase at a time to stay within a hosted runner's
+  # four cores and 16 GB of memory.
+  { lint_and_docs
+    run native-free-tests native_free_tests
+    run shipped-clippy shipped_clippy
+    run msrv nice -n 10 cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo
+    run docsrs-native-free nice -n 10 bash scripts/ci/check_docsrs_native_free.sh
+    run public-api-consumers nice -n 10 python3 scripts/ci/check_public_api_consumers.py "${ROOT}" .config/policies/public-api \
+      target/check-all/public-api-consumers; } &
 else
   run cpu-tests cargo nt -E 'not group(gpu) & not group(gpu-exclusive)' &
 fi
@@ -334,7 +381,7 @@ if [[ -n "${failures:-}" ]]; then
   echo
   echo "FAILED PHASES"
   printf '%s' "${failures}"
-  for phase in tests cpu-tests; do
+  for phase in tests cpu-tests native-free-tests; do
     [[ "${failures}" == *"${phase}: "* ]] || continue
     echo
     echo "--- ${phase}: nextest summary ---"
@@ -343,7 +390,7 @@ if [[ -n "${failures:-}" ]]; then
     printf '%s\n' "${summary:-$(tail -n 40 "${LOG_DIR}/${phase}.log")}"
     if [[ "${phase}" == tests ]]; then
       echo "Rerun only failed and unfinished tests: cargo nt -P gate -R latest"
-    else
+    elif [[ "${phase}" == cpu-tests ]]; then
       echo "Rerun only failed and unfinished tests: cargo nt -E 'not group(gpu) & not group(gpu-exclusive)' -R latest"
     fi
   done
@@ -352,9 +399,9 @@ fi
 if [[ ${status} -eq 0 ]]; then
   record gate PASS "${gate_started}" "$((SECONDS - gate_start))s"
   [[ "${mode}" == full ]] && echo "OK: full pre-merge gate passed." \
-    || echo "OK: fast checks passed. PARTIAL: this is not full pre-merge validation."
+    || echo "OK: ${mode} checks passed. PARTIAL: this is not full pre-merge validation."
 else
   record gate FAIL "${gate_started}" "$((SECONDS - gate_start))s"
-  echo "FAIL: $([[ "${mode}" == full ]] && echo "full pre-merge gate" || echo "fast checks") reported problems."
+  echo "FAIL: $([[ "${mode}" == full ]] && echo "full pre-merge gate" || echo "${mode} checks") reported problems."
 fi
 exit "${status}"

@@ -32,12 +32,12 @@ assert policy["clean_environment"]["explicit_inputs"] == [
     "ALGEON_NATIVE_DIR",
 ]
 cpu = policy["cpu"]
-assert cpu["baseline"] == "x86-64-v4"
-assert cpu["rustflags"] == ["-C", "target-cpu=x86-64-v4"]
-assert cpu["artifact_dir"] == "x86-64-v4"
-assert "x86-64-v4" in cpu["deployment_requirement"]
+assert cpu["baseline"] == "x86-64-v3"
+assert cpu["rustflags"] == ["-C", "target-cpu=x86-64-v3"]
+assert cpu["artifact_dir"] == "x86-64-v3"
+assert "x86-64-v3" in cpu["deployment_requirement"]
 PY
-echo "PASS: CPU packaging has one fixed x86-64-v4 contract"
+echo "PASS: CPU packaging has one fixed x86-64-v3 contract"
 
 shipped=$(python3 "${HELPER}" shipped-features)
 [[ "${shipped}" == "$(python3 "${HELPER}" normalize-features --features "${shipped}")" ]] \
@@ -127,7 +127,7 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
   CUDAHOSTCXX='g++ -march=native' AR='ar --plugin=/tmp/unsafe' \
   CMAKE='/tmp/ambient-cmake' CMAKE_GENERATOR='Unix Makefiles' \
   RUSTFLAGS='-C target-cpu=native' \
-  CARGO_BUILD_RUSTFLAGS='-C target-cpu=x86-64-v3' \
+  CARGO_BUILD_RUSTFLAGS='-C target-cpu=x86-64-v4' \
   python3 "${HELPER}" build \
     --features 'nvml' \
     --target-root "${target_root}" \
@@ -135,7 +135,7 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
     --explicit-env "ALGEON_NATIVE_DIR=${tmp_dir}/native" \
     >"${tmp_dir}/build.output"
 
-binary="${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/algeon_server"
+binary="${target_root}/x86-64-v3/x86_64-unknown-linux-gnu/release/algeon_server"
 build_record="${binary}.build-record.json"
 [[ -f "${binary}" && -f "${build_record}" ]] || fail "fake canonical build did not create artifact/record"
 
@@ -149,9 +149,9 @@ cpu = record["cpu"]
 command = record["cargo_command"]
 assert record["record_kind"] == "canonical-build-record"
 assert record["features"] == ["nvml"]
-assert cpu["baseline"] == "x86-64-v4"
+assert cpu["baseline"] == "x86-64-v3"
 assert cpu["target_triple"] == "x86_64-unknown-linux-gnu"
-assert cpu["effective_rustflags"] == ["-C", "target-cpu=x86-64-v4"]
+assert cpu["effective_rustflags"] == ["-C", "target-cpu=x86-64-v3"]
 assert record["rustc_version"].startswith("rustc 1.95.0")
 assert "LLVM version: 22.0.0" in record["rustc_vv"]
 assert record["cargo_version"].startswith("cargo 1.95.0")
@@ -166,7 +166,7 @@ assert record["fixed_build_environment"] == {
 assert set(record["fixed_tool_versions"]) == {"ar", "cc", "cmake", "cxx", "ninja"}
 assert all(record["fixed_tool_versions"].values())
 assert "--target" in command and "x86_64-unknown-linux-gnu" in command
-assert "target.x86_64-unknown-linux-gnu.rustflags=[\"-C\",\"target-cpu=x86-64-v4\"]" in command
+assert "target.x86_64-unknown-linux-gnu.rustflags=[\"-C\",\"target-cpu=x86-64-v3\"]" in command
 assert "--no-default-features" in command and "--locked" in command
 PY
 echo "PASS: ambient compiler selectors are replaced and build record captures fixed tool inputs"
@@ -213,7 +213,7 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text()
-path.write_text(text.replace('baseline = "x86-64-v4"', 'baseline = "x86-64-v3"', 1).replace('target-cpu=x86-64-v4', 'target-cpu=x86-64-v3', 1))
+path.write_text(text.replace('baseline = "x86-64-v3"', 'baseline = "x86-64-v4"', 1).replace('target-cpu=x86-64-v3', 'target-cpu=x86-64-v4', 1))
 PY
 status=0
 python3 "${HELPER}" --policy "${tmp_dir}/tampered-policy.toml" verify-build \
@@ -236,7 +236,7 @@ python3 "${HELPER}" create-manifest \
   >"${tmp_dir}/manifest.output"
 
 eval "$(python3 "${HELPER}" verify-manifest --manifest "${stage_manifest}" --dist-dir "${tmp_dir}/dist")"
-[[ "${CPU_BASELINE}" == "x86-64-v4" ]]
+[[ "${CPU_BASELINE}" == "x86-64-v3" ]]
 [[ "${CPU_IMAGE_ARCH}" == "amd64" ]]
 [[ "${CPU_TARGET_TRIPLE}" == "x86_64-unknown-linux-gnu" ]]
 [[ -n "${CPU_BINARY_SHA256}" ]]
@@ -288,15 +288,15 @@ grep -Fq 'build-record' "${tmp_dir}/skip-without-provenance.output" \
 # Exercise the complete SKIP/stage/image-entry path with the fake canonical artifact,
 # fake native libraries, and an isolated dist directory.
 mkdir -p "${tmp_dir}/cudf/lib" "${tmp_dir}/native" \
-  "${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib"
+  "${target_root}/x86-64-v3/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib"
 ln -s ../cudf "${tmp_dir}/native/cudf-install"
 for library in libcudf.so librmm.so librapids_logger.so; do
   printf 'fake %s\n' "${library}" >"${tmp_dir}/cudf/lib/${library}"
 done
 printf 'fake cudf bridge\n' \
-  >"${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib/libcudf_rust.so"
+  >"${target_root}/x86-64-v3/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib/libcudf_rust.so"
 printf 'fake cudf RMM interop bridge\n' \
-  >"${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib/libcudf_rust_rmm_interop.so"
+  >"${target_root}/x86-64-v3/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib/libcudf_rust_rmm_interop.so"
 cat >"${tmp_dir}/bin/patchelf" <<'SH'
 #!/usr/bin/bash
 set -euo pipefail
@@ -376,22 +376,22 @@ CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
 IMAGE_REPOSITORY=algeon-datafusion-test \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/build-image.sh >"${tmp_dir}/build-image.output"
-grep -Fq '==> Building image: algeon-datafusion-test:x86-64-v4' "${tmp_dir}/build-image.output" \
+grep -Fq '==> Building image: algeon-datafusion-test:x86-64-v3' "${tmp_dir}/build-image.output" \
   || fail "image builder omitted its build status"
-grep -Fq '==> SUCCESS: Docker image built: algeon-datafusion-test:x86-64-v4' "${tmp_dir}/build-image.output" \
+grep -Fq '==> SUCCESS: Docker image built: algeon-datafusion-test:x86-64-v3' "${tmp_dir}/build-image.output" \
   || fail "image builder omitted its success status"
 manifest_sha=$(sha256sum "${tmp_dir}/docker-dist/payload-manifest.json" | awk '{print $1}')
 binary_sha=$(sha256sum "${tmp_dir}/docker-dist/bin/algeon_server" | awk '{print $1}')
 for needle in \
   'build' \
   '--build-arg' \
-  'CPU_BASELINE=x86-64-v4' \
+  'CPU_BASELINE=x86-64-v3' \
   'CPU_ARCH=amd64' \
   'CPU_TARGET=x86_64-unknown-linux-gnu' \
   "CPU_BINARY_SHA256=${binary_sha}" \
   "CPU_MANIFEST_SHA256=${manifest_sha}" \
   '-t' \
-  'algeon-datafusion-test:x86-64-v4'; do
+  'algeon-datafusion-test:x86-64-v3'; do
   grep -Fxq -- "${needle}" "${tmp_dir}/docker.args" \
     || fail "image builder omitted Docker input: ${needle}"
 done
