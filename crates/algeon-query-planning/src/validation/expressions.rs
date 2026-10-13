@@ -20,7 +20,7 @@ use super::{
     types::{
         is_decimal_type, is_integral_type, require_arithmetic_type, require_boolean, require_comparable_types,
         require_compatible_types, require_date_or_timestamp, require_integral_type, require_remainder_type,
-        require_scalar_operator_value, require_string, require_timestamp_preserving_output, require_timestamp_second,
+        require_scalar_operator_value, require_string, require_timestamp, require_timestamp_preserving_output,
         temporal_duration_binary_output_type,
     },
 };
@@ -85,7 +85,7 @@ pub(crate) fn validate_expr(
             require_string(&data_type, "string predicate input")?;
             Ok(ArrowDataType::Boolean)
         },
-        Expr::StringLength { expr, output_type } => {
+        Expr::StringLength { expr, output_type, .. } => {
             let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_string(&data_type, "string length input")?;
             require_integral_type(output_type, "string length output")?;
@@ -155,8 +155,8 @@ pub(crate) fn validate_expr(
                 )
                 .with_fact("field", field.to_string()));
             }
-            if *field == DatePart::Minute {
-                validate_timestamp_second_integer_cast_expr(expr, input_schema, available_columns, ctx)?;
+            if DatePart::EXTRACT_TIME_FIELDS.contains(field) {
+                require_timestamp(&data_type, "EXTRACT time field input")?;
             } else {
                 require_date_or_timestamp(&data_type, "EXTRACT input")?;
             }
@@ -226,27 +226,6 @@ fn validate_cast_expr(
         .with_fact("target_type", format!("{target_type:?}")));
     }
     Ok(target_type.clone())
-}
-
-/// `EXTRACT(MINUTE)` runs natively only over a timezone-free second timestamp
-/// cast from an integer; see `DatePart::EXTRACT_FIELDS`.
-fn validate_timestamp_second_integer_cast_expr(
-    expr: &Expr,
-    input_schema: &SchemaRef,
-    available_columns: &BTreeSet<String>,
-    ctx: AnalysisContext<'_>,
-) -> Result<()> {
-    let Expr::Cast { expr, target_type } = expr else {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "query_engine.plan.validate_expr",
-            "native second timestamp minute operations currently require an integer-to-timestamp cast",
-        )
-        .with_fact("expression", expr));
-    };
-    require_timestamp_second(target_type, "timestamp cast target")?;
-    let source_type = validate_expr(expr, input_schema, available_columns, ctx)?;
-    require_integral_type(&source_type, "timestamp cast source")
 }
 
 pub(crate) fn validate_projection_output_expr(

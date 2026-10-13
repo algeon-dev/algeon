@@ -10,7 +10,8 @@ use datafusion::{
         regex::regexpreplace::RegexpReplaceFunc,
         string::{
             btrim::BTrimFunc, concat::ConcatFunc, contains::ContainsFunc, ends_with::EndsWithFunc, lower::LowerFunc,
-            ltrim::LtrimFunc, rtrim::RtrimFunc, starts_with::StartsWithFunc, upper::UpperFunc,
+            ltrim::LtrimFunc, octet_length::OctetLengthFunc, rtrim::RtrimFunc, starts_with::StartsWithFunc,
+            upper::UpperFunc,
         },
         unicode::{character_length::CharacterLengthFunc, substr::SubstrFunc},
     },
@@ -130,6 +131,7 @@ pub(in crate::native) enum ScalarFunctionKind {
     StartsWith,
     EndsWith,
     StringLength,
+    OctetLength,
     RegexpReplace,
     Concat,
     Abs,
@@ -170,6 +172,8 @@ impl ScalarFunctionKind {
             Ok(Self::EndsWith)
         } else if implementation.is::<CharacterLengthFunc>() {
             Ok(Self::StringLength)
+        } else if implementation.is::<OctetLengthFunc>() {
+            Ok(Self::OctetLength)
         } else if implementation.is::<RegexpReplaceFunc>() {
             Ok(Self::RegexpReplace)
         } else if implementation.is::<ConcatFunc>() {

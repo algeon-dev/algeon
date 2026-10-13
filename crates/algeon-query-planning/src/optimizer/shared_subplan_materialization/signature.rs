@@ -530,8 +530,9 @@ fn canonicalize_aggregate_input_expr(plan: &QueryPlan, input: NodeId, expr: &Exp
         Expr::EndsWith { expr, suffix } => {
             Expr::ends_with(canonicalize_aggregate_input_expr(plan, input, expr), suffix.clone())
         },
-        Expr::StringLength { expr, output_type } => Expr::StringLength {
+        Expr::StringLength { expr, unit, output_type } => Expr::StringLength {
             expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            unit: *unit,
             output_type: output_type.clone(),
         },
         Expr::RegexpReplace { expr, pattern, replacement, output_type } => Expr::RegexpReplace {

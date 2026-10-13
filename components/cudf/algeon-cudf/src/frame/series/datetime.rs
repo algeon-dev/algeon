@@ -56,4 +56,69 @@ impl SeriesDatetimeOps<'_> {
     pub fn day(&self) -> Result<Series> {
         self.series.datetime_component_with_context(DatetimeComponent::Day, self.ctx, "series::dt::day")
     }
+
+    /// Extract the hour of the day as an `INT16` Series.
+    ///
+    /// The input must be timestamp typed. Null input elements produce null
+    /// output elements. Hours range from 0 through 23.
+    ///
+    /// Equivalent to cuDF Python's `Series.dt.hour`.
+    ///
+    /// # Cost
+    /// Allocates a new `INT16` device column.
+    pub fn hour(&self) -> Result<Series> {
+        self.series.datetime_component_with_context(DatetimeComponent::Hour, self.ctx, "series::dt::hour")
+    }
+
+    /// Extract the minute of the hour as an `INT16` Series.
+    ///
+    /// The input must be timestamp typed. Null input elements produce null
+    /// output elements. Minutes range from 0 through 59.
+    ///
+    /// Equivalent to cuDF Python's `Series.dt.minute`.
+    ///
+    /// # Cost
+    /// Allocates a new `INT16` device column.
+    pub fn minute(&self) -> Result<Series> {
+        self.series.datetime_component_with_context(DatetimeComponent::Minute, self.ctx, "series::dt::minute")
+    }
+
+    /// Extract the second of the minute as an `INT16` Series.
+    ///
+    /// The input must be timestamp typed. Null input elements produce null
+    /// output elements. Seconds range from 0 through 59.
+    ///
+    /// Equivalent to cuDF Python's `Series.dt.second`.
+    ///
+    /// # Cost
+    /// Allocates a new `INT16` device column.
+    pub fn second(&self) -> Result<Series> {
+        self.series.datetime_component_with_context(DatetimeComponent::Second, self.ctx, "series::dt::second")
+    }
+
+    /// Extract the millisecond segment within the second as an `INT16` Series.
+    ///
+    /// The input must be timestamp typed. Null input elements produce null
+    /// output elements. Values range from 0 through 999 and are not a total of
+    /// milliseconds since midnight.
+    ///
+    /// # Cost
+    /// Allocates a new `INT16` device column.
+    pub fn millisecond(&self) -> Result<Series> {
+        self.series.datetime_component_with_context(DatetimeComponent::Millisecond, self.ctx, "series::dt::millisecond")
+    }
+
+    /// Extract the microsecond segment within the millisecond as an `INT16` Series.
+    ///
+    /// The input must be timestamp typed. Null input elements produce null
+    /// output elements. Values range from 0 through 999 and are not a total of
+    /// microseconds since midnight.
+    ///
+    /// Equivalent to cuDF Python's `Series.dt.microsecond`.
+    ///
+    /// # Cost
+    /// Allocates a new `INT16` device column.
+    pub fn microsecond(&self) -> Result<Series> {
+        self.series.datetime_component_with_context(DatetimeComponent::Microsecond, self.ctx, "series::dt::microsecond")
+    }
 }

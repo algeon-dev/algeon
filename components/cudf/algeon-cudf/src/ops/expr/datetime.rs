@@ -24,6 +24,31 @@ impl ExprDatetimeNamespace {
         Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Day }
     }
 
+    /// Extract the hour of the day, 0 through 23.
+    pub fn hour(self) -> Expr {
+        Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Hour }
+    }
+
+    /// Extract the minute of the hour, 0 through 59.
+    pub fn minute(self) -> Expr {
+        Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Minute }
+    }
+
+    /// Extract the second of the minute, 0 through 59.
+    pub fn second(self) -> Expr {
+        Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Second }
+    }
+
+    /// Extract the millisecond segment within the second, 0 through 999.
+    pub fn millisecond(self) -> Expr {
+        Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Millisecond }
+    }
+
+    /// Extract the microsecond segment within the millisecond, 0 through 999.
+    pub fn microsecond(self) -> Expr {
+        Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Microsecond }
+    }
+
     /// Floor timestamp values to the requested frequency.
     pub fn floor(self, frequency: DatetimeRoundingFrequency) -> Expr {
         Expr::DateTimeFloor { input: Box::new(self.0), frequency }

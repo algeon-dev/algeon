@@ -20,7 +20,8 @@ use datafusion::{
     physical_plan::joins::utils::{ColumnIndex, JoinFilter},
 };
 use query_planning::expr::{
-    AggregateFunction as NativeAggregateFunction, Expr as NativeExpr, LiteralValue as NativeLiteralValue, UnaryMathOp,
+    AggregateFunction as NativeAggregateFunction, DatePart as NativeDatePart, Expr as NativeExpr,
+    LiteralValue as NativeLiteralValue, StringLengthUnit, UnaryMathOp,
 };
 
 use super::{
@@ -755,6 +756,10 @@ fn every_supported_scalar_function_kind_validates_then_lowers() {
             scalar_function("character_length", unicode::character_length(), vec![text()], DataType::Int64),
         ),
         (
+            ScalarFunctionKind::OctetLength,
+            scalar_function("octet_length", string::octet_length(), vec![text()], DataType::Int32),
+        ),
+        (
             ScalarFunctionKind::RegexpReplace,
             scalar_function(
                 "regexp_replace",
@@ -807,6 +812,73 @@ fn every_supported_scalar_function_kind_validates_then_lowers() {
         let function = expr.downcast_ref::<ScalarFunctionExpr>().unwrap();
         assert_eq!(ScalarFunctionKind::from_scalar_function(function).unwrap(), kind);
         assert_validation_lowering_parity(function.name(), &expr, &schema);
+    }
+}
+
+#[test]
+fn string_length_functions_lower_to_their_own_unit() {
+    let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, true)]));
+    let characters = scalar_function(
+        "character_length",
+        unicode::character_length(),
+        vec![col("text", &schema).unwrap()],
+        DataType::Int32,
+    );
+    let bytes =
+        scalar_function("octet_length", string::octet_length(), vec![col("text", &schema).unwrap()], DataType::Int32);
+
+    match lower_physical_expr_for_test(&characters, &schema).unwrap() {
+        NativeExpr::StringLength { unit: StringLengthUnit::Characters, output_type: DataType::Int32, .. } => {},
+        other => panic!("character_length must lower to the character unit: {other:?}"),
+    }
+    match lower_physical_expr_for_test(&bytes, &schema).unwrap() {
+        NativeExpr::StringLength { unit: StringLengthUnit::Bytes, output_type: DataType::Int32, .. } => {},
+        other => panic!("octet_length must lower to the byte unit: {other:?}"),
+    }
+}
+
+#[test]
+fn extract_time_fields_validate_over_timestamps_and_reject_date32_timezone_and_nanosecond() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("ts_ns", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+        Field::new("ts_s", DataType::Timestamp(TimeUnit::Second, None), true),
+        Field::new("d", DataType::Date32, true),
+        Field::new("ts_utc", DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())), true),
+    ]));
+    let date_part = |field: &str, column: &str| {
+        scalar_function(
+            "date_part",
+            datetime::date_part(),
+            vec![lit(ScalarValue::Utf8(Some(field.to_string()))), col(column, &schema).unwrap()],
+            DataType::Int32,
+        )
+    };
+
+    for (name, expected) in [
+        ("hour", NativeDatePart::Hour),
+        ("minute", NativeDatePart::Minute),
+        ("second", NativeDatePart::Second),
+        ("millisecond", NativeDatePart::Millisecond),
+        ("microsecond", NativeDatePart::Microsecond),
+    ] {
+        for column in ["ts_ns", "ts_s"] {
+            let expr = date_part(name, column);
+            validate_physical_expr_contract(&expr, &schema)
+                .unwrap_or_else(|error| panic!("{name} over {column} must validate: {error:?}"));
+            match lower_physical_expr_for_test(&expr, &schema).unwrap() {
+                NativeExpr::Extract { field, .. } => assert_eq!(field, expected, "{name} over {column}"),
+                other => panic!("{name} over {column} must lower to EXTRACT: {other:?}"),
+            }
+        }
+    }
+
+    for (label, expr, reason) in [
+        ("hour over Date32", date_part("hour", "d"), CapabilityReason::UnsupportedType),
+        ("hour over a timezone timestamp", date_part("hour", "ts_utc"), CapabilityReason::UnsupportedType),
+        ("nanosecond over a timestamp", date_part("nanosecond", "ts_ns"), CapabilityReason::UnsupportedExpression),
+    ] {
+        let rejection = validate_physical_expr_contract(&expr, &schema).unwrap_err();
+        assert_eq!(rejection.capability_reason(), reason, "{label}");
     }
 }
 

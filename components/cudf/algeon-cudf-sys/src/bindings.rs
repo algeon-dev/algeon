@@ -711,6 +711,11 @@ pub const CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK: cudf_out_of_bounds_policy_t = 1;
 pub const CUDF_DATETIME_COMPONENT_YEAR: cudf_datetime_component_t = 0;
 pub const CUDF_DATETIME_COMPONENT_MONTH: cudf_datetime_component_t = 1;
 pub const CUDF_DATETIME_COMPONENT_DAY: cudf_datetime_component_t = 2;
+pub const CUDF_DATETIME_COMPONENT_HOUR: cudf_datetime_component_t = 3;
+pub const CUDF_DATETIME_COMPONENT_MINUTE: cudf_datetime_component_t = 4;
+pub const CUDF_DATETIME_COMPONENT_SECOND: cudf_datetime_component_t = 5;
+pub const CUDF_DATETIME_COMPONENT_MILLISECOND: cudf_datetime_component_t = 6;
+pub const CUDF_DATETIME_COMPONENT_MICROSECOND: cudf_datetime_component_t = 7;
 pub const CUDF_DATETIME_ROUNDING_DAY: cudf_datetime_rounding_frequency_t = 0;
 pub const CUDF_DATETIME_ROUNDING_HOUR: cudf_datetime_rounding_frequency_t = 1;
 pub const CUDF_DATETIME_ROUNDING_MINUTE: cudf_datetime_rounding_frequency_t = 2;
@@ -1429,7 +1434,7 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Extract a datetime component as an INT16 column.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
+    #[doc = " Extract a datetime component as an INT16 column.\n\n HOUR, MINUTE and SECOND are the time of day. MILLISECOND is the millisecond\n part of the second and MICROSECOND is the microsecond part of the\n millisecond, each 0 through 999. Time-of-day fields are non-negative for\n instants before the epoch.\n\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
     pub fn cudf_datetime_extract_component_ex(
         input: cudf_column_view_handle,
         component: cudf_datetime_component_t,

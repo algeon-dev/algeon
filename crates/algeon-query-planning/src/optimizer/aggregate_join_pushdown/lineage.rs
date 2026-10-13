@@ -325,8 +325,8 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn substitute_unqualified_colu
         },
         Expr::StartsWith { expr, prefix } => Expr::starts_with(substitute_unqualified_columns(*expr, map), prefix),
         Expr::EndsWith { expr, suffix } => Expr::ends_with(substitute_unqualified_columns(*expr, map), suffix),
-        Expr::StringLength { expr, output_type } => {
-            Expr::StringLength { expr: Box::new(substitute_unqualified_columns(*expr, map)), output_type }
+        Expr::StringLength { expr, unit, output_type } => {
+            Expr::StringLength { expr: Box::new(substitute_unqualified_columns(*expr, map)), unit, output_type }
         },
         Expr::RegexpReplace { expr, pattern, replacement, output_type } => Expr::RegexpReplace {
             expr: Box::new(substitute_unqualified_columns(*expr, map)),

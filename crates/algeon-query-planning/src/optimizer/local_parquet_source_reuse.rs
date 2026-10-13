@@ -862,7 +862,9 @@ fn branch_replay_predicate(predicate: Expr) -> Expr {
         Expr::StringContains { expr, pattern } => Expr::string_contains(branch_replay_predicate(*expr), pattern),
         Expr::StartsWith { expr, prefix } => Expr::starts_with(branch_replay_predicate(*expr), prefix),
         Expr::EndsWith { expr, suffix } => Expr::ends_with(branch_replay_predicate(*expr), suffix),
-        Expr::StringLength { expr, output_type } => Expr::string_length(branch_replay_predicate(*expr), output_type),
+        Expr::StringLength { expr, unit, output_type } => {
+            Expr::StringLength { expr: Box::new(branch_replay_predicate(*expr)), unit, output_type }
+        },
         Expr::RegexpReplace { expr, pattern, replacement, output_type } => {
             Expr::regexp_replace(branch_replay_predicate(*expr), pattern, replacement, output_type)
         },

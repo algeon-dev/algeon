@@ -256,6 +256,96 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
     }
 }
 
+async fn native_runtime_string_length_units_match_cpu() {
+    let cases = [("units", SQL_STRING_LENGTH_UNITS_QUERY), ("filter", SQL_STRING_LENGTH_FILTER_QUERY)];
+
+    for (name, sql) in cases {
+        let dir = unique_temp_dir(format!("algeon-datafusion-native-runtime-string-length-{name}").as_str());
+        let path = dir.join("input.parquet");
+        write_string_length_input_parquet(&path);
+
+        let cpu_batches = cpu_sql_output(&path, sql).await;
+        let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
+        let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
+        let optimization = optimize_with_pruning_template(native_physical_plan);
+        assert_eq!(
+            optimization.report.selected_count(),
+            1,
+            "{name} outcomes={:?}\n{plan_display}",
+            optimization.report.outcomes()
+        );
+        assert_eq!(
+            optimization.report.not_selected_count(),
+            0,
+            "{name} outcomes={:?}\n{plan_display}",
+            optimization.report.outcomes()
+        );
+        assert_algeon_native_exec(&optimization.plan, "string length plan must rewrite to AlgeonNativeExec");
+
+        let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+        reset_arrow_host_interop_observation_for_test();
+        let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+        let metrics = below_native_admission(&optimization.plan)
+            .metrics()
+            .expect("AlgeonNativeExec should expose DataFusion metrics");
+        assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0, "{name}");
+        assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1, "{name}");
+
+        assert_batches_equal(&cpu_batches, &native_batches);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+async fn native_runtime_timestamp_extract_fields_match_cpu() {
+    let cases = [
+        ("seconds", SQL_EXTRACT_TIME_FIELDS_SECONDS_QUERY),
+        ("milliseconds", SQL_EXTRACT_TIME_FIELDS_MILLISECONDS_QUERY),
+        ("microseconds", SQL_EXTRACT_TIME_FIELDS_MICROSECONDS_QUERY),
+        ("nanoseconds", SQL_EXTRACT_TIME_FIELDS_NANOSECONDS_QUERY),
+        ("minute-filter", SQL_EXTRACT_MINUTE_FILTER_QUERY),
+        ("aggregate-input", SQL_EXTRACT_AGGREGATE_INPUT_QUERY),
+        ("minute-from-integer-cast", SQL_EXTRACT_MINUTE_FROM_INTEGER_CAST_QUERY),
+    ];
+
+    for (name, sql) in cases {
+        let dir = unique_temp_dir(format!("algeon-datafusion-native-runtime-timestamp-extract-{name}").as_str());
+        let path = dir.join("input.parquet");
+        write_timestamp_extract_input_parquet(&path);
+
+        let cpu_batches = cpu_sql_output(&path, sql).await;
+        let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
+        let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
+        let optimization = optimize_with_pruning_template(native_physical_plan);
+        assert_eq!(
+            optimization.report.selected_count(),
+            1,
+            "{name} outcomes={:?}\n{plan_display}",
+            optimization.report.outcomes()
+        );
+        assert_eq!(
+            optimization.report.not_selected_count(),
+            0,
+            "{name} outcomes={:?}\n{plan_display}",
+            optimization.report.outcomes()
+        );
+        assert_algeon_native_exec(&optimization.plan, &format!("{name} must rewrite to AlgeonNativeExec"));
+
+        let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+        reset_arrow_host_interop_observation_for_test();
+        let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+        let metrics = below_native_admission(&optimization.plan)
+            .metrics()
+            .expect("AlgeonNativeExec should expose DataFusion metrics");
+        assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0, "{name}");
+        assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1, "{name}");
+
+        assert_batches_equal(&cpu_batches, &native_batches);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 async fn native_runtime_ln_exp_match_cpu_ieee_results() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-ln-exp");
     let path = dir.join("input.parquet");
@@ -1127,6 +1217,20 @@ fn scalar_expressions_cases_2() {
                 .build()
                 .expect("case runtime")
                 .block_on(native_runtime_negation_matches_wrapping_integers_and_ieee_float_bits())
+        }),
+        ("native_runtime_string_length_units_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_string_length_units_match_cpu())
+        }),
+        ("native_runtime_timestamp_extract_fields_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_timestamp_extract_fields_match_cpu())
         }),
         ("native_runtime_ln_exp_match_cpu_ieee_results", || {
             TestRuntimeBuilder::new_current_thread()

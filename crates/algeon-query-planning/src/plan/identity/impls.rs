@@ -5,7 +5,7 @@ use crate::{
     dynamic_filter::DynamicFilterRoute,
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, DatePart, Expr,
-        GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec, UnaryMathOp,
+        GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec, StringLengthUnit, UnaryMathOp,
     },
     plan::{
         AggregateNode, DenseVectorBinding, EdgeDedupStrategy, EdgeNormalizeNode, EdgeNormalizeSpec, EdgeWeightCombiner,
@@ -173,7 +173,7 @@ impl StableHash for WindowFrame {
     }
 }
 
-stable_hash_via_hash!(DatePart, UnaryMathOp, BinaryOp, AggregateFunction, LimitSpec, ColumnRef);
+stable_hash_via_hash!(DatePart, UnaryMathOp, StringLengthUnit, BinaryOp, AggregateFunction, LimitSpec, ColumnRef);
 
 stable_hash_fields! {
     CaseWhen { when, then }
@@ -275,9 +275,10 @@ impl StableHash for Expr {
                 expr.stable_hash(hasher);
                 suffix.stable_hash(hasher);
             },
-            Self::StringLength { expr, output_type } => {
+            Self::StringLength { expr, unit, output_type } => {
                 hasher.tag("string_length");
                 expr.stable_hash(hasher);
+                unit.stable_hash(hasher);
                 output_type.stable_hash(hasher);
             },
             Self::RegexpReplace { expr, pattern, replacement, output_type } => {

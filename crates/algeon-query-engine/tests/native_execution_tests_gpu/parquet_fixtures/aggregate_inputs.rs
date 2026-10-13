@@ -101,6 +101,66 @@ pub(crate) fn write_row_grouped_input_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
+/// Six rows over three row groups with one list column per supported list
+/// kind. Rows mix null lists, empty lists, and lists holding null elements, so
+/// a count of non-null lists differs from a count of non-null elements.
+pub(crate) fn write_row_grouped_list_input_parquet(path: &Path) -> Arc<Schema> {
+    let items_field = Arc::new(Field::new("element", DataType::Int64, true));
+    let names_field = Arc::new(Field::new("element", DataType::Utf8, true));
+    let pairs_field = Arc::new(Field::new("element", DataType::Int32, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("items", DataType::List(Arc::clone(&items_field)), true),
+        Field::new("names", DataType::LargeList(Arc::clone(&names_field)), true),
+        Field::new("pairs", DataType::FixedSizeList(Arc::clone(&pairs_field), 2), true),
+    ]));
+    // items = [NULL, [], [NULL], [1, NULL], [2, 3], NULL]
+    let items = ListArray::new(
+        items_field,
+        OffsetBuffer::new(ScalarBuffer::from(vec![0i32, 0, 0, 1, 3, 5, 5])),
+        Arc::new(Int64Array::from(vec![None, Some(1), None, Some(2), Some(3)])),
+        Some(NullBuffer::from(vec![false, true, true, true, true, false])),
+    );
+    // names = [["a"], NULL, [], [NULL], ["b", NULL], ["c"]]
+    let names = LargeListArray::new(
+        names_field,
+        OffsetBuffer::new(ScalarBuffer::from(vec![0i64, 1, 1, 1, 2, 4, 5])),
+        Arc::new(StringArray::from(vec![Some("a"), None, Some("b"), None, Some("c")])),
+        Some(NullBuffer::from(vec![true, false, true, true, true, true])),
+    );
+    // pairs = [[1, 2], NULL, [NULL, NULL], [3, 4], NULL, [5, 6]]
+    let pairs = FixedSizeListArray::new(
+        pairs_field,
+        2,
+        Arc::new(Int32Array::from(vec![
+            Some(1),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            Some(4),
+            None,
+            None,
+            Some(5),
+            Some(6),
+        ])),
+        Some(NullBuffer::from(vec![true, false, true, true, false, true])),
+    );
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])), Arc::new(items), Arc::new(names), Arc::new(pairs)],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
 pub(crate) fn write_nullable_string_grouped_aggregate_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Utf8, true),

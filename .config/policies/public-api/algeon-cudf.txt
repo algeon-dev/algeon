@@ -1986,7 +1986,12 @@ pub fn cudf::Series::into_series(self) -> cudf::core::error::Result<cudf::Series
 pub struct cudf::frame::series::SeriesDatetimeOps<'a>
 impl cudf::SeriesDatetimeOps<'_>
 pub fn cudf::SeriesDatetimeOps<'_>::day(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::hour(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::microsecond(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::millisecond(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::minute(&self) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesDatetimeOps<'_>::month(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::second(&self) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesDatetimeOps<'_>::year(&self) -> cudf::core::error::Result<cudf::Series>
 pub struct cudf::frame::series::SeriesOps<'a>
 impl cudf::SeriesOps<'_>
@@ -2817,7 +2822,12 @@ pub mod cudf::ops::copying
 pub mod cudf::ops::datetime
 #[repr(i32)] pub enum cudf::ops::datetime::DatetimeComponent
 pub cudf::ops::datetime::DatetimeComponent::Day = 2
+pub cudf::ops::datetime::DatetimeComponent::Hour = 3
+pub cudf::ops::datetime::DatetimeComponent::Microsecond = 7
+pub cudf::ops::datetime::DatetimeComponent::Millisecond = 6
+pub cudf::ops::datetime::DatetimeComponent::Minute = 4
 pub cudf::ops::datetime::DatetimeComponent::Month = 1
+pub cudf::ops::datetime::DatetimeComponent::Second = 5
 pub cudf::ops::datetime::DatetimeComponent::Year = 0
 #[repr(i32)] pub enum cudf::ops::datetime::DatetimeRoundingFrequency
 pub cudf::ops::datetime::DatetimeRoundingFrequency::Day = 0
@@ -3157,8 +3167,13 @@ pub struct cudf::ops::expr::ExprDatetimeNamespace(_)
 impl cudf::ops::expr::ExprDatetimeNamespace
 pub fn cudf::ops::expr::ExprDatetimeNamespace::day(self) -> cudf::Expr
 pub fn cudf::ops::expr::ExprDatetimeNamespace::floor(self, cudf::ops::datetime::DatetimeRoundingFrequency) -> cudf::Expr
+pub fn cudf::ops::expr::ExprDatetimeNamespace::hour(self) -> cudf::Expr
+pub fn cudf::ops::expr::ExprDatetimeNamespace::microsecond(self) -> cudf::Expr
+pub fn cudf::ops::expr::ExprDatetimeNamespace::millisecond(self) -> cudf::Expr
+pub fn cudf::ops::expr::ExprDatetimeNamespace::minute(self) -> cudf::Expr
 pub fn cudf::ops::expr::ExprDatetimeNamespace::month(self) -> cudf::Expr
 pub fn cudf::ops::expr::ExprDatetimeNamespace::offset(self, i32, i32, i64) -> cudf::Expr
+pub fn cudf::ops::expr::ExprDatetimeNamespace::second(self) -> cudf::Expr
 pub fn cudf::ops::expr::ExprDatetimeNamespace::year(self) -> cudf::Expr
 pub struct cudf::ops::expr::ExprStringNamespace(_)
 impl cudf::ops::expr::ExprStringNamespace
@@ -5760,7 +5775,12 @@ pub fn cudf::Series::into_series(self) -> cudf::core::error::Result<cudf::Series
 pub struct cudf::SeriesDatetimeOps<'a>
 impl cudf::SeriesDatetimeOps<'_>
 pub fn cudf::SeriesDatetimeOps<'_>::day(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::hour(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::microsecond(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::millisecond(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::minute(&self) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesDatetimeOps<'_>::month(&self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesDatetimeOps<'_>::second(&self) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesDatetimeOps<'_>::year(&self) -> cudf::core::error::Result<cudf::Series>
 pub struct cudf::SeriesOps<'a>
 impl cudf::SeriesOps<'_>

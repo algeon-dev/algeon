@@ -1,5 +1,6 @@
 use std::{fs::File, sync::Arc};
 
+use arrow::array::{TimestampMillisecondArray, TimestampSecondArray};
 use query_planning::{
     error::QueryError,
     expr::{CaseWhen, DatePart, UnaryMathOp},
@@ -75,6 +76,252 @@ fn native_query_projects_date64_and_time_types() {
         batch.column(2).as_any().downcast_ref::<Time64NanosecondArray>().unwrap().values().as_ref(),
         &[1_000_000_000, 86_399_000_000_000]
     );
+    admitted.finish();
+}
+
+fn project_gpu_resident_batch(
+    input_batch: &RecordBatch,
+    expressions: Vec<Expr>,
+    output_schema: Arc<Schema>,
+) -> RecordBatch {
+    let context = backend_context();
+    let input_schema = input_batch.schema();
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+    let projection = builder.add_projection(source, projection_outputs(expressions, output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "input".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, input_batch).unwrap()),
+            input_schema,
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let batch = batch.clone();
+    admitted.finish();
+    batch
+}
+
+fn native_query_extracts_time_fields_from_every_timestamp_unit() {
+    let units = ["s", "ms", "us", "ns"];
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("ts_s", DataType::Timestamp(TimeUnit::Second, None), true),
+        Field::new("ts_ms", DataType::Timestamp(TimeUnit::Millisecond, None), true),
+        Field::new("ts_us", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("ts_ns", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+    ]));
+    // Rows: 2020-03-04 12:34:56.789123456, the tick before the epoch, NULL, and 00:00:59.
+    let input_batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(TimestampSecondArray::from(vec![Some(1_583_325_296), Some(-1), None, Some(59)])),
+            Arc::new(TimestampMillisecondArray::from(vec![Some(1_583_325_296_789), Some(-1), None, Some(59_000)])),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                Some(1_583_325_296_789_123),
+                Some(-1),
+                None,
+                Some(59_000_000),
+            ])),
+            Arc::new(TimestampNanosecondArray::from(vec![
+                Some(1_583_325_296_789_123_456),
+                Some(-1),
+                None,
+                Some(59_000_000_000),
+            ])),
+        ],
+    )
+    .unwrap();
+    let fields = [
+        ("hour", DatePart::Hour),
+        ("minute", DatePart::Minute),
+        ("second", DatePart::Second),
+        ("millisecond", DatePart::Millisecond),
+        ("microsecond", DatePart::Microsecond),
+    ];
+    let mut expressions = Vec::new();
+    let mut output_fields = Vec::new();
+    for unit in units {
+        for (name, field) in fields {
+            expressions.push(Expr::extract(field, Expr::column(format!("ts_{unit}"))));
+            output_fields.push(Field::new(format!("{name}_{unit}"), DataType::Int32, true));
+        }
+    }
+
+    let batch = project_gpu_resident_batch(&input_batch, expressions, Arc::new(Schema::new(output_fields)));
+
+    // Per unit and field, the four rows in order. MILLISECOND and MICROSECOND
+    // include the whole seconds of the minute, and finer remainders are dropped.
+    let expected: [[[Option<i32>; 4]; 5]; 4] = [
+        [
+            [Some(12), Some(23), None, Some(0)],
+            [Some(34), Some(59), None, Some(0)],
+            [Some(56), Some(59), None, Some(59)],
+            [Some(56_000), Some(59_000), None, Some(59_000)],
+            [Some(56_000_000), Some(59_000_000), None, Some(59_000_000)],
+        ],
+        [
+            [Some(12), Some(23), None, Some(0)],
+            [Some(34), Some(59), None, Some(0)],
+            [Some(56), Some(59), None, Some(59)],
+            [Some(56_789), Some(59_999), None, Some(59_000)],
+            [Some(56_789_000), Some(59_999_000), None, Some(59_000_000)],
+        ],
+        [
+            [Some(12), Some(23), None, Some(0)],
+            [Some(34), Some(59), None, Some(0)],
+            [Some(56), Some(59), None, Some(59)],
+            [Some(56_789), Some(59_999), None, Some(59_000)],
+            [Some(56_789_123), Some(59_999_999), None, Some(59_000_000)],
+        ],
+        [
+            [Some(12), Some(23), None, Some(0)],
+            [Some(34), Some(59), None, Some(0)],
+            [Some(56), Some(59), None, Some(59)],
+            [Some(56_789), Some(59_999), None, Some(59_000)],
+            [Some(56_789_123), Some(59_999_999), None, Some(59_000_000)],
+        ],
+    ];
+    for (unit_index, unit) in units.iter().enumerate() {
+        for (field_index, (name, _)) in fields.iter().enumerate() {
+            let column = unit_index * fields.len() + field_index;
+            assert_eq!(batch.schema().field(column).data_type(), &DataType::Int32, "{name} over {unit}");
+            assert_eq!(batch.column(column).null_count(), 1, "{name} over {unit}");
+            assert_eq!(
+                int32_array(&batch, column).iter().collect::<Vec<_>>(),
+                expected[unit_index][field_index],
+                "{name} over {unit}"
+            );
+        }
+    }
+}
+
+fn native_query_extracts_minute_from_integer_second_cast_including_negative_seconds() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("epoch_s", DataType::Int64, true)]));
+    let input_batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![Arc::new(Int64Array::from(vec![
+            Some(-1),
+            Some(-61),
+            Some(-3_600),
+            Some(0),
+            Some(59),
+            Some(60),
+            Some(3_599),
+            None,
+        ]))],
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![Field::new("minute", DataType::Int32, true)]));
+
+    let batch = project_gpu_resident_batch(
+        &input_batch,
+        vec![Expr::extract(
+            DatePart::Minute,
+            Expr::cast(Expr::column("epoch_s"), DataType::Timestamp(TimeUnit::Second, None)),
+        )],
+        output_schema,
+    );
+
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Int32);
+    assert_eq!(
+        int32_array(&batch, 0).iter().collect::<Vec<_>>(),
+        [Some(59), Some(58), Some(0), Some(0), Some(0), Some(1), Some(59), None]
+    );
+}
+
+fn native_query_counts_string_characters_and_bytes() {
+    let context = backend_context();
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("name_utf8", DataType::Utf8, true),
+        Field::new("name_large", DataType::LargeUtf8, true),
+        Field::new("name_view", DataType::Utf8View, true),
+    ]));
+    // Every non-empty value has more bytes than characters, so a unit mix-up changes each of them.
+    let names = vec![Some("é"), Some("中"), Some("🙂"), Some("e\u{301}"), Some(""), None];
+    let input_batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(StringArray::from(names.clone())),
+            Arc::new(LargeStringArray::from(names.clone())),
+            Arc::new(StringViewArray::from(names)),
+        ],
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("chars_utf8", DataType::Int32, true),
+        Field::new("bytes_utf8", DataType::Int32, true),
+        Field::new("chars_large", DataType::Int64, true),
+        Field::new("bytes_large", DataType::Int64, true),
+        Field::new("chars_view", DataType::Int32, true),
+        Field::new("bytes_view", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(
+                vec![
+                    Expr::string_length(Expr::column("name_utf8"), DataType::Int32),
+                    Expr::octet_length(Expr::column("name_utf8"), DataType::Int32),
+                    Expr::string_length(Expr::column("name_large"), DataType::Int64),
+                    Expr::octet_length(Expr::column("name_large"), DataType::Int64),
+                    Expr::string_length(Expr::column("name_view"), DataType::Int32),
+                    Expr::octet_length(Expr::column("name_view"), DataType::Int32),
+                ],
+                output_schema,
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "input".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &input_batch).unwrap()),
+            Arc::clone(&input_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let expected_types =
+        [DataType::Int32, DataType::Int32, DataType::Int64, DataType::Int64, DataType::Int32, DataType::Int32];
+    for (index, expected) in expected_types.iter().enumerate() {
+        assert_eq!(batch.schema().field(index).data_type(), expected, "column {index}");
+        assert_eq!(batch.column(index).null_count(), 1, "column {index}");
+    }
+    let characters = [Some(1), Some(1), Some(1), Some(2), Some(0), None];
+    let bytes = [Some(2), Some(3), Some(4), Some(3), Some(0), None];
+    for index in [0, 4] {
+        assert_eq!(int32_array(batch, index).iter().collect::<Vec<_>>(), characters, "characters column {index}");
+    }
+    for index in [1, 5] {
+        assert_eq!(int32_array(batch, index).iter().collect::<Vec<_>>(), bytes, "bytes column {index}");
+    }
+    assert_eq!(int64_array(batch, 2).iter().collect::<Vec<_>>(), characters.map(|value| value.map(i64::from)));
+    assert_eq!(int64_array(batch, 3).iter().collect::<Vec<_>>(), bytes.map(|value| value.map(i64::from)));
     admitted.finish();
 }
 
@@ -529,6 +776,18 @@ fn scalar_expressions_cases_2() {
             "projection_validation::scalar_expressions::native_query_projects_date64_and_time_types",
             native_query_projects_date64_and_time_types,
         ),
+        (
+            "projection_validation::scalar_expressions::native_query_extracts_time_fields_from_every_timestamp_unit",
+            native_query_extracts_time_fields_from_every_timestamp_unit,
+        ),
+        (
+            "projection_validation::scalar_expressions::native_query_extracts_minute_from_integer_second_cast_including_negative_seconds",
+            native_query_extracts_minute_from_integer_second_cast_including_negative_seconds,
+        ),
+        (
+            "projection_validation::scalar_expressions::native_query_counts_string_characters_and_bytes",
+            native_query_counts_string_characters_and_bytes,
+        ),
     ]);
 }
 
@@ -577,6 +836,45 @@ fn native_query_rejects_date64_temporal_scalars_before_source_read() {
             Err(error) => error,
         };
         assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "{name}");
+        assert!(error.fact_value("path").is_none(), "{name} should fail before source read");
+    }
+}
+
+#[test]
+fn native_query_rejects_time_field_extraction_over_date32_and_timezone_before_source_read() {
+    let context = backend_context();
+    let cases = [
+        ("date32", DataType::Date32),
+        ("timestamp_with_timezone", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))),
+    ];
+
+    for (name, input_type) in cases {
+        let input_schema = Arc::new(Schema::new(vec![Field::new("event", input_type, true)]));
+        let source = LocalParquetSource::from_path(
+            format!("/tmp/does-not-need-to-exist-for-extract-time-{name}.parquet"),
+            Arc::clone(&input_schema),
+            vec!["event".to_string()],
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new("event_hour", DataType::Int32, true)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let projection = builder
+            .add_projection(
+                source,
+                projection_outputs(
+                    vec![Expr::extract(DatePart::Hour, Expr::column("event")).alias("event_hour")],
+                    output_schema,
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(projection).unwrap();
+
+        let error = match execute_query_plan(&context, &plan) {
+            Ok(_) => panic!("{name} should reject time field extraction before source read"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "{name}");
+        assert_eq!(error.fact_value("context"), Some("EXTRACT time field input"), "{name}");
         assert!(error.fact_value("path").is_none(), "{name} should fail before source read");
     }
 }

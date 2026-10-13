@@ -42,6 +42,26 @@ async fn default_sql_physical_plan_lowers_to_native_plan() {
 }
 
 #[tokio::test]
+async fn default_sql_distributed_global_list_count_lowers_to_native_plan() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-list-count");
+    let path = dir.join("input.parquet");
+    write_list_utf8_parquet_file(&path);
+    let plan = sql_plan(&path, SessionConfig::new(), "SELECT COUNT(tags) AS tag_rows FROM bench").await;
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let aggregates = native_aggregate_nodes(result.selected_plan());
+    assert_eq!(aggregates.len(), 1);
+    assert!(aggregates[0].spec.group_exprs.is_empty());
+    assert_eq!(native_aggregate_functions(result.selected_plan()), vec![AggregateFunction::Count]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-avg");
     let path = dir.join("input.parquet");

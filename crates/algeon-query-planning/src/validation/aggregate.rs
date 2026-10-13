@@ -1,5 +1,6 @@
 //! Aggregate node validation: output naming, AVG and statistical output
-//! contracts, and reserved state alias collisions.
+//! contracts, reserved state alias collisions, and which aggregates read only
+//! the validity of their argument.
 //!
 //! The backend proves it can bind the spec and reports the output names its
 //! binding produces (`BackendCapabilities::aggregate_output_names`); the
@@ -17,7 +18,10 @@ use super::{
     QueryError, QueryErrorCode, Result, aggregate_spec_has_avg, aggregate_spec_has_distinct,
     aggregate_spec_has_floating_statistical_aggregate, avg_division_type, lower_column_expr, lower_named_column_expr,
 };
-use crate::backend::{AggregateBinding, AnalysisContext};
+use crate::{
+    backend::{AggregateBinding, AnalysisContext},
+    expr::alias_wrapped_column,
+};
 
 const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__algeon_native_global_valid_count_";
 
@@ -58,6 +62,47 @@ pub fn global_count_star_expr(expr: &Expr) -> bool {
                 | LiteralValue::IntervalMonthDayNano { .. },
         )
     )
+}
+
+/// The parts of an aggregate that decide whether native execution reads its
+/// argument values or only the argument's top-level validity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AggregateArgumentUse {
+    /// Aggregate function applied to the argument.
+    pub function: AggregateFunction,
+    /// The aggregate uses SQL `DISTINCT` semantics.
+    pub distinct: bool,
+    /// The aggregate carries a SQL `FILTER (WHERE ...)` clause.
+    pub filtered: bool,
+    /// The aggregate has group keys.
+    pub grouped: bool,
+    /// The argument is a column, possibly aliased, not a computed expression.
+    pub column_argument: bool,
+}
+
+impl AggregateArgumentUse {
+    /// Whether the aggregate reads only the top-level validity of its
+    /// argument: a global `COUNT(column)` without `DISTINCT` or `FILTER`.
+    /// Such a count never dispatches a kernel over the values, so a carry
+    /// type admitted by [`is_validity_count_input_type`](super::is_validity_count_input_type)
+    /// is a valid argument.
+    pub fn reads_only_top_level_validity(self) -> bool {
+        self.function == AggregateFunction::Count
+            && !self.distinct
+            && !self.filtered
+            && !self.grouped
+            && self.column_argument
+    }
+}
+
+pub(crate) fn aggregate_argument_use(spec: &AggregateSpec, expr: &AggregateExpr) -> AggregateArgumentUse {
+    AggregateArgumentUse {
+        function: expr.function,
+        distinct: expr.distinct,
+        filtered: expr.filter.is_some(),
+        grouped: !spec.group_exprs.is_empty(),
+        column_argument: alias_wrapped_column(&expr.expr).is_some(),
+    }
 }
 
 pub(crate) fn validate_avg_state_alias_collisions(spec: &AggregateSpec, operation: &'static str) -> Result<()> {

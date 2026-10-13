@@ -5,9 +5,11 @@
 //! `UnsupportedType` code can say which operand failed. Two families the
 //! backend represents are refused as operator inputs here. Lists and narrow
 //! decimals are carry types: a node may read and project them unchanged but no
-//! kernel computes on them. Timestamps with a timezone have no cuDF
-//! representation beyond the raw instant. Keys, comparison operands and
-//! arithmetic operands must therefore be scalar, timezone-free types.
+//! kernel computes on them. The one exception is a validity-only global
+//! `COUNT`, which reads no values and so admits list carry types. Timestamps
+//! with a timezone have no cuDF representation beyond the raw instant. Keys,
+//! comparison operands and arithmetic operands must therefore be scalar,
+//! timezone-free types.
 
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 
@@ -41,14 +43,6 @@ pub(crate) fn require_date_or_timestamp(data_type: &ArrowDataType, context: &'st
         Ok(())
     } else {
         unsupported_type(context, data_type, "expected date or timezone-free timestamp")
-    }
-}
-
-pub(crate) fn require_timestamp_second(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
-    if matches!(data_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
-        Ok(())
-    } else {
-        unsupported_type(context, data_type, "expected timezone-free second timestamp")
     }
 }
 
@@ -90,6 +84,22 @@ pub(crate) fn require_timezone_free_operator_key(data_type: &ArrowDataType, cont
         unsupported_type(context, data_type, "expected scalar operator key")
     } else {
         Ok(())
+    }
+}
+
+/// Whether a column of this type is a valid argument of a global `COUNT` that
+/// reads only top-level validity. Such a count reads no values, so supported
+/// list carry types qualify; timezone timestamps and narrow decimals keep the
+/// value contract and are rejected.
+pub fn is_validity_count_input_type(data_type: &ArrowDataType) -> bool {
+    !is_timestamp_with_timezone(data_type) && !is_narrow_decimal_carry_type(data_type)
+}
+
+pub(crate) fn require_validity_count_input(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
+    if is_validity_count_input_type(data_type) {
+        Ok(())
+    } else {
+        unsupported_type(context, data_type, "expected scalar or list operator value")
     }
 }
 

@@ -1102,9 +1102,11 @@ fn remap_unqualified_columns(expr: &Expr, map_column: &mut impl FnMut(&ColumnRef
         Expr::EndsWith { expr, suffix } => {
             Some(Expr::ends_with(remap_unqualified_columns(expr, map_column)?, suffix.clone()))
         },
-        Expr::StringLength { expr, output_type } => {
-            Some(Expr::string_length(remap_unqualified_columns(expr, map_column)?, output_type.clone()))
-        },
+        Expr::StringLength { expr, unit, output_type } => Some(Expr::StringLength {
+            expr: Box::new(remap_unqualified_columns(expr, map_column)?),
+            unit: *unit,
+            output_type: output_type.clone(),
+        }),
         Expr::RegexpReplace { expr, pattern, replacement, output_type } => Some(Expr::regexp_replace(
             remap_unqualified_columns(expr, map_column)?,
             pattern.clone(),
@@ -1288,8 +1290,10 @@ fn strip_input_qualifiers(expr: &Expr) -> Expr {
         Expr::StringContains { expr, pattern } => Expr::string_contains(strip_input_qualifiers(expr), pattern.clone()),
         Expr::StartsWith { expr, prefix } => Expr::starts_with(strip_input_qualifiers(expr), prefix.clone()),
         Expr::EndsWith { expr, suffix } => Expr::ends_with(strip_input_qualifiers(expr), suffix.clone()),
-        Expr::StringLength { expr, output_type } => {
-            Expr::string_length(strip_input_qualifiers(expr), output_type.clone())
+        Expr::StringLength { expr, unit, output_type } => Expr::StringLength {
+            expr: Box::new(strip_input_qualifiers(expr)),
+            unit: *unit,
+            output_type: output_type.clone(),
         },
         Expr::RegexpReplace { expr, pattern, replacement, output_type } => Expr::regexp_replace(
             strip_input_qualifiers(expr),

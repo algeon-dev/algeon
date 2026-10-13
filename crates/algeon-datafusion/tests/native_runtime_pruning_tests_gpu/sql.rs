@@ -1,3 +1,9 @@
+use std::fs;
+
+use tokio::runtime::Builder as TestRuntimeBuilder;
+
+use super::*;
+
 pub(super) const SQL_SUM_EXPRESSION_QUERY: &str = "
 SELECT key, SUM(m00 + m01) AS sum_x00
 FROM bench
@@ -26,6 +32,17 @@ LIMIT 2
 pub(super) const SQL_COUNT_ONLY_QUERY: &str = "
 SELECT COUNT(*) AS count_rows
 FROM bench
+";
+
+pub(super) const SQL_LIST_GLOBAL_COUNT_QUERY: &str = "
+SELECT COUNT(items) AS item_rows, COUNT(pairs) AS pair_rows, COUNT(*) AS all_rows
+FROM bench
+";
+
+pub(super) const SQL_LIST_GLOBAL_COUNT_FILTERED_QUERY: &str = "
+SELECT COUNT(items) AS item_rows, COUNT(pairs) AS pair_rows
+FROM bench
+WHERE key >= 3
 ";
 
 // Runtime-filtered empty ROLLUP regression contract.
@@ -300,6 +317,85 @@ FROM (
 GROUP BY row_id, trim_default, ltrim_default, rtrim_default, trim_tab_default, btrim_chars
 ORDER BY row_id ASC
 LIMIT 20
+";
+
+pub(super) const SQL_STRING_LENGTH_UNITS_QUERY: &str = "
+SELECT row_id, character_length(name) AS name_chars, octet_length(name) AS name_bytes
+FROM bench
+ORDER BY row_id
+";
+
+pub(super) const SQL_STRING_LENGTH_FILTER_QUERY: &str = "
+SELECT row_id, octet_length(name) AS name_bytes
+FROM bench
+WHERE octet_length(name) <> character_length(name)
+ORDER BY row_id
+";
+
+pub(super) const SQL_EXTRACT_TIME_FIELDS_SECONDS_QUERY: &str = "
+SELECT
+    row_id,
+    EXTRACT(HOUR FROM ts_s) AS h,
+    EXTRACT(MINUTE FROM ts_s) AS mi,
+    EXTRACT(SECOND FROM ts_s) AS s,
+    EXTRACT(MILLISECOND FROM ts_s) AS ms,
+    EXTRACT(MICROSECOND FROM ts_s) AS us
+FROM bench
+ORDER BY row_id
+";
+
+pub(super) const SQL_EXTRACT_TIME_FIELDS_MILLISECONDS_QUERY: &str = "
+SELECT
+    row_id,
+    EXTRACT(HOUR FROM ts_ms) AS h,
+    EXTRACT(MINUTE FROM ts_ms) AS mi,
+    EXTRACT(SECOND FROM ts_ms) AS s,
+    EXTRACT(MILLISECOND FROM ts_ms) AS ms,
+    EXTRACT(MICROSECOND FROM ts_ms) AS us
+FROM bench
+ORDER BY row_id
+";
+
+pub(super) const SQL_EXTRACT_TIME_FIELDS_MICROSECONDS_QUERY: &str = "
+SELECT
+    row_id,
+    EXTRACT(HOUR FROM ts_us) AS h,
+    EXTRACT(MINUTE FROM ts_us) AS mi,
+    EXTRACT(SECOND FROM ts_us) AS s,
+    EXTRACT(MILLISECOND FROM ts_us) AS ms,
+    EXTRACT(MICROSECOND FROM ts_us) AS us
+FROM bench
+ORDER BY row_id
+";
+
+pub(super) const SQL_EXTRACT_TIME_FIELDS_NANOSECONDS_QUERY: &str = "
+SELECT
+    row_id,
+    EXTRACT(HOUR FROM ts_ns) AS h,
+    EXTRACT(MINUTE FROM ts_ns) AS mi,
+    EXTRACT(SECOND FROM ts_ns) AS s,
+    EXTRACT(MILLISECOND FROM ts_ns) AS ms,
+    EXTRACT(MICROSECOND FROM ts_ns) AS us
+FROM bench
+ORDER BY row_id
+";
+
+pub(super) const SQL_EXTRACT_MINUTE_FILTER_QUERY: &str = "
+SELECT row_id, EXTRACT(SECOND FROM ts_us) AS s
+FROM bench
+WHERE EXTRACT(MINUTE FROM ts_us) = 59
+ORDER BY row_id
+";
+
+pub(super) const SQL_EXTRACT_AGGREGATE_INPUT_QUERY: &str = "
+SELECT SUM(EXTRACT(SECOND FROM ts_ms) + 1) AS second_sum, MAX(EXTRACT(MICROSECOND FROM ts_ns)) AS max_us
+FROM bench
+";
+
+pub(super) const SQL_EXTRACT_MINUTE_FROM_INTEGER_CAST_QUERY: &str = "
+SELECT row_id, EXTRACT(MINUTE FROM to_timestamp_seconds(epoch_s)) AS m
+FROM bench
+ORDER BY row_id
 ";
 
 pub(super) const SQL_NULL_SEMANTICS_IN_LIST_QUERY: &str = "
@@ -704,3 +800,29 @@ FROM lineitem
 JOIN orders ON l_orderkey = o_orderkey
 WHERE o_orderpriority = 'NO SUCH PRIORITY'
 ";
+
+async fn native_runtime_default_sql_list_global_count_matches_cpu() {
+    for (name, sql) in [
+        ("list-global-count", SQL_LIST_GLOBAL_COUNT_QUERY),
+        ("list-global-count-filtered", SQL_LIST_GLOBAL_COUNT_FILTERED_QUERY),
+    ] {
+        let dir = unique_temp_dir(format!("algeon-datafusion-native-runtime-default-{name}").as_str());
+        let path = dir.join("input.parquet");
+        write_list_count_input_parquet(&path);
+
+        assert_default_sql_native_parity(&path, sql, None).await;
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn native_runtime_sql_cases_1() {
+    testing::run_named_cases(&[("native_runtime_default_sql_list_global_count_matches_cpu", || {
+        TestRuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("case runtime")
+            .block_on(native_runtime_default_sql_list_global_count_matches_cpu())
+    })]);
+}

@@ -22,7 +22,10 @@ pub fn is_timestamp_with_timezone(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::Timestamp(_, Some(_)))
 }
 
-/// Returns whether this Arrow type is a list admitted only for carry/projection.
+/// Returns whether this Arrow type is a list admitted for carry/projection and
+/// as the argument of a global, non-distinct, unfiltered `COUNT`, which reads
+/// only top-level validity (see
+/// [`AggregateArgumentUse`](crate::validation::AggregateArgumentUse)).
 pub fn is_supported_list_carry_type(data_type: &ArrowDataType) -> bool {
     match data_type {
         ArrowDataType::List(field) | ArrowDataType::LargeList(field) => is_supported_basic_list_child(field),

@@ -393,6 +393,7 @@ mod tests {
     use super::*;
     use crate::{
         admission::{AttemptExecutionManifest, AttemptExecutionOccurrence},
+        expr::Expr,
         plan::QueryPlanBuilder,
         source::{GpuResidentSource, LiteralBatchSource},
     };
@@ -474,5 +475,19 @@ mod tests {
         // `Debug` prints only the first and last ten values of a long array.
         changed[20] = -1;
         assert_ne!(literal_plan(values).execution_fingerprint(), literal_plan(changed).execution_fingerprint());
+    }
+
+    #[test]
+    fn character_and_octet_length_have_distinct_identity_and_display() {
+        let digest = |expr: &Expr| {
+            let mut hasher = PlanHasher::new();
+            expr.stable_hash(&mut hasher);
+            hasher.finish_digest()
+        };
+        let characters = Expr::string_length(Expr::column("s"), DataType::Int32);
+        let bytes = Expr::octet_length(Expr::column("s"), DataType::Int32);
+
+        assert_ne!(digest(&characters), digest(&bytes));
+        assert_ne!(characters.to_string(), bytes.to_string());
     }
 }

@@ -920,7 +920,9 @@ pub query_planning::expr::DatePart::Second
 pub query_planning::expr::DatePart::Year
 impl query_planning::expr::DatePart
 pub const query_planning::expr::DatePart::DATE_TRUNC_FIELDS: [Self; 7]
-pub const query_planning::expr::DatePart::EXTRACT_FIELDS: [Self; 4]
+pub const query_planning::expr::DatePart::EXTRACT_DATE_FIELDS: [Self; 3]
+pub const query_planning::expr::DatePart::EXTRACT_FIELDS: [Self; 8]
+pub const query_planning::expr::DatePart::EXTRACT_TIME_FIELDS: [Self; 5]
 pub fn query_planning::expr::DatePart::from_sql_name(&str) -> core::option::Option<Self>
 impl core::fmt::Display for query_planning::expr::DatePart
 pub fn query_planning::expr::DatePart::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -996,6 +998,7 @@ pub query_planning::expr::Expr::StringContains::pattern: alloc::string::String
 pub query_planning::expr::Expr::StringLength
 pub query_planning::expr::Expr::StringLength::expr: alloc::boxed::Box<query_planning::expr::Expr>
 pub query_planning::expr::Expr::StringLength::output_type: arrow_schema::datatype::DataType
+pub query_planning::expr::Expr::StringLength::unit: query_planning::expr::StringLengthUnit
 pub query_planning::expr::Expr::Substring
 pub query_planning::expr::Expr::Substring::expr: alloc::boxed::Box<query_planning::expr::Expr>
 pub query_planning::expr::Expr::Substring::length: core::option::Option<i32>
@@ -1042,6 +1045,7 @@ pub fn query_planning::expr::Expr::ltrim(Self, impl core::convert::Into<alloc::s
 pub fn query_planning::expr::Expr::not_in_list(Self, alloc::vec::Vec<Self>) -> Self
 pub fn query_planning::expr::Expr::not_like(Self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::expr::Expr::not_like_escape(Self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::expr::Expr::octet_length(Self, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::regexp_replace(Self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::round(Self, i32, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::rtrim(Self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -1099,6 +1103,9 @@ impl query_planning::expr::LiteralValue
 pub fn query_planning::expr::LiteralValue::data_type(&self) -> arrow_schema::datatype::DataType
 impl core::fmt::Display for query_planning::expr::LiteralValue
 pub fn query_planning::expr::LiteralValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum query_planning::expr::StringLengthUnit
+pub query_planning::expr::StringLengthUnit::Bytes
+pub query_planning::expr::StringLengthUnit::Characters
 pub enum query_planning::expr::UnaryMathOp
 pub query_planning::expr::UnaryMathOp::Ceil
 pub query_planning::expr::UnaryMathOp::Exp

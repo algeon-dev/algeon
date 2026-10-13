@@ -4,7 +4,8 @@ use arrow::{
     array::{
         ArrayRef, BinaryArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, FixedSizeListArray,
         Float64Array, Int32Array, Int32Builder, Int64Array, ListArray, MapBuilder, StringArray, StringBuilder,
-        StructArray, TimestampMicrosecondArray, TimestampNanosecondArray,
+        StructArray, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+        TimestampSecondArray,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Fields, Schema, TimeUnit},
@@ -542,6 +543,70 @@ pub(super) fn write_date64_parquet_file(path: &std::path::Path) {
         vec![
             Arc::new(Date64Array::from(vec![1_577_836_800_000, 1_580_428_800_000, 1_583_020_800_000])),
             Arc::new(Int64Array::from(vec![10, 20, 30])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn write_timestamp_extract_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
+        Field::new("ts_s", DataType::Timestamp(TimeUnit::Second, None), true),
+        Field::new("ts_ms", DataType::Timestamp(TimeUnit::Millisecond, None), true),
+        Field::new("ts_us", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("ts_ns", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+        Field::new("ts_utc", DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())), true),
+        Field::new("shipdate", DataType::Date32, true),
+        Field::new("epoch_s", DataType::Int64, true),
+    ]));
+    let ts_ns = vec![
+        Some(1_583_325_296_789_123_456),
+        Some(-1),
+        None,
+        Some(59_000_000_000),
+        Some(3_599_999_000_000),
+        Some(1_000_000_000_500_000_000),
+    ];
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 1, 2, 3, 4, 5])),
+            Arc::new(TimestampSecondArray::from(vec![
+                Some(1_583_325_296),
+                Some(-1),
+                None,
+                Some(59),
+                Some(3_599),
+                Some(1_000_000_000),
+            ])),
+            Arc::new(TimestampMillisecondArray::from(vec![
+                Some(1_583_325_296_789),
+                Some(-1),
+                None,
+                Some(59_000),
+                Some(3_599_999),
+                Some(1_000_000_000_500),
+            ])),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                Some(1_583_325_296_789_123),
+                Some(-1),
+                None,
+                Some(59_000_000),
+                Some(3_599_999_000),
+                Some(1_000_000_000_500_000),
+            ])),
+            Arc::new(TimestampNanosecondArray::from(ts_ns.clone())),
+            Arc::new(TimestampNanosecondArray::from(ts_ns).with_timezone("UTC")),
+            Arc::new(Date32Array::from(vec![
+                date32(2020, 3, 4),
+                date32(1969, 12, 31),
+                date32(1970, 1, 1),
+                date32(1970, 1, 1),
+                date32(1970, 1, 1),
+                date32(2001, 9, 9),
+            ])),
+            Arc::new(Int64Array::from(vec![Some(1_583_325_296), Some(-1), None, Some(59), Some(-61), Some(-3_600)])),
         ],
     )
     .unwrap();

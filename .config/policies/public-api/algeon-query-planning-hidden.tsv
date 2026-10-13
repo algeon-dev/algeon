@@ -195,10 +195,12 @@ query_planning::util::escape_kv_delimited	cross-crate	query-planning util	prod: 
 query_planning::util::fnv1a64	cross-crate	query-planning util	prod: algeon-datafusion, algeon-query-engine, algeon-query-runtime	narrow to pub(crate) once no other workspace crate names it
 query_planning::util::sum_optional_u64	cross-crate	query-planning util	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::validation	cross-crate	query-planning crate root	prod: algeon-datafusion, algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::validation::AggregateArgumentUse	cross-crate	query-planning validation	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
 query_planning::validation::global_count_star_expr	cross-crate	query-planning validation	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::validation::global_valid_count_state_alias	cross-crate	query-planning validation	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::validation::is_integral_type	cross-crate	query-planning validation	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
 query_planning::validation::is_string_type	cross-crate	query-planning validation	prod: algeon-datafusion, algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::validation::is_validity_count_input_type	cross-crate	query-planning validation	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
 query_planning::validation::plan_node_kind	cross-crate	query-planning validation	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::validation::projection_schema_mismatch_error	cross-crate	query-planning validation	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::validation::substring_stop_position	cross-crate	query-planning validation	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
