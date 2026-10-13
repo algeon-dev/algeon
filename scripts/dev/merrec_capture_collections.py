@@ -11,6 +11,8 @@ import re
 
 import pyarrow.parquet as pq
 
+from merrec_verify_common import MERREC_LICENSE
+
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "docs/research/merrec"
@@ -123,6 +125,7 @@ def main() -> None:
         raise ValueError("The saved CPU collection assessment is incomplete")
 
     capture = {
+        "license": MERREC_LICENSE,
         "query": {
             "name": record["name"],
             "query_id": record["query_id"],

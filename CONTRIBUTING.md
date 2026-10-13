@@ -3,8 +3,10 @@
 Algeon builds and runs on Linux x86-64 hosts with an NVIDIA GPU;
 [Prerequisites](website/docs/build/prerequisites.md) lists the exact
 requirements. Questions and bug reports go to
-[GitHub issues](https://github.com/algeon-dev/algeon/issues). Contributions
-are licensed under [Apache-2.0](LICENSE), like the rest of the project.
+[GitHub issues](https://github.com/algeon-dev/algeon/issues); security
+problems go through [SECURITY.md](SECURITY.md) instead. Contributions are
+licensed under [Apache-2.0](LICENSE), like the rest of the project, and
+participation follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Getting started
 

@@ -10,9 +10,12 @@ Third-party content in this repository
   2018-2025 Stichting DuckDB Foundation. TPC-H and TPC-DS are trademarks of
   the Transaction Processing Performance Council. Published timings are not
   audited TPC results.
-- MerRec (website/static/data/merrec-*.json, fixture/demo/merrec): derived
+- MerRec (website/static/data/merrec-*.json): saved query results derived
   from the MerRec dataset, Copyright Mercari, Inc., CC BY-NC 4.0. These files
-  carry the dataset's terms, not the Apache-2.0 license.
+  carry the dataset's terms, not the Apache-2.0 license; see
+  website/static/data/LICENSE-MERREC.md. The conversion scripts and SQL under
+  fixture/demo/merrec are Algeon code under Apache-2.0, and the converted
+  tables are not stored in the repository.
 - Amazon Reviews 2023 (fixture/demo/amazon_reviews_2023, website/static/data/
   amazon-*.json, website/src/data/amazonReviewMap.json): McAuley Lab, Hou et
   al. 2024 (arXiv:2403.03952). The repository stores scripts, checksums, product

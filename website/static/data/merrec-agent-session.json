@@ -1,4 +1,5 @@
 {
+ "license": "CC-BY-NC-4.0; derived from the MerRec dataset, Copyright Mercari, Inc.; see LICENSE-MERREC.md in this directory",
  "name": "merrec-agent-session",
  "recorded_at_utc": "2026-10-12T02:26:22Z",
  "method": "Statements written in order by an AI agent (Claude, in Claude Code) on 2026-10-12 against a freshly started MerRec scale server over Arrow Flight SQL, each written after reading the previous response, following the GPU UDTF discovery guide; responses are reproduced verbatim from the returned rows. The probes were sent after the session to record the planning-time errors for two wrong column names.",

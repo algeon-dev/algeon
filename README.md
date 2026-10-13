@@ -146,3 +146,11 @@ the other limits.
 Validation runs locally; the project does not currently have automated GitHub
 Actions CI/CD due to physical GPU hardware requirements. Hardware sponsorships
 or access to dedicated GPU runners are welcome.
+
+## License
+
+Algeon is licensed under the [Apache License 2.0](LICENSE). Third-party
+content with other terms is listed in [NOTICE](NOTICE); the saved MerRec
+results under `website/static/data/merrec-*.json` carry the dataset's
+[CC BY-NC 4.0](website/static/data/LICENSE-MERREC.md) terms.
+[SECURITY.md](SECURITY.md) explains how to report a vulnerability.

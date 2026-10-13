@@ -130,6 +130,7 @@ policy_scripts() {
   done
   python3 scripts/ci/tests/check_check_all_tests.py || status=1
   python3 scripts/ci/tests/check_single_brand_tests.py || status=1
+  { python3 scripts/ci/tests/check_third_party_data_tests.py && python3 scripts/ci/check_third_party_data.py; } || status=1
   python3 scripts/ci/tests/check_release_archives_tests.py || status=1
   python3 scripts/ci/tests/check_registry_consumer_tests.py || status=1
   test_layout_policy || status=1

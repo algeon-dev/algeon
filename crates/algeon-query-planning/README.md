@@ -9,7 +9,7 @@ the [API documentation boundary](https://algeon.dev/design#api-documentation).
 and admission contracts. Its resolved dependency closure, under the union of
 every feature, contains neither DataFusion nor any RAPIDS component, nor
 `query-runtime` or `query-engine`.
-[`scripts/ci/check_dependency_direction.py`](../../scripts/ci/check_dependency_direction.py)
+[`scripts/ci/check_dependency_direction.py`](https://github.com/algeon-dev/algeon/blob/main/scripts/ci/check_dependency_direction.py)
 enforces this by walking the resolved closure, because a helper crate can carry
 such a dependency without declaring it.
 

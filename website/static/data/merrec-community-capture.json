@@ -1,4 +1,5 @@
 {
+  "license": "CC-BY-NC-4.0; derived from the MerRec dataset, Copyright Mercari, Inc.; see LICENSE-MERREC.md in this directory",
   "query": {
     "name": "24_market_collections_final",
     "query_id": "6feed4bd-cdb7-4125-9080-2fa570b7111b",

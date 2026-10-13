@@ -355,6 +355,23 @@ whose build scripts link RAPIDS libraries. It remains std-only and cannot
 depend on crates built after it. Its policy suite is described under
 [Doctests and build support](#doctests-and-build-support).
 
+## Third-party data
+
+The repository license is Apache-2.0. Content under other terms is listed in
+[NOTICE](../NOTICE). The saved MerRec query results are derived from a CC
+BY-NC 4.0 dataset and live only under `website/static/data/merrec-*.json`,
+listed in [LICENSE-MERREC.md](../website/static/data/LICENSE-MERREC.md). Each
+capture names its terms in a top-level `license` field, which the capture
+writers under `scripts/dev` emit from `merrec_verify_common.MERREC_LICENSE`.
+No published crate, Docker image or release archive may include those files:
+the Docker scripts stage only the server binary and native libraries, and
+`release_archives.py` packages crate directories.
+[`check_third_party_data.py`](ci/check_third_party_data.py) enforces the
+location, the field, the file list and the packaging boundary in the policy
+phase. A new derived capture goes in that directory with the field and a line
+in `LICENSE-MERREC.md`; a derived file of another dataset needs its own entry
+in NOTICE and an extension of the check.
+
 ## API documentation boundary
 
 `algeon-datafusion` is the application-facing Rust crate. The query and GPU
