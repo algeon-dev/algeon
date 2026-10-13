@@ -5,6 +5,7 @@ use algeon_datafusion::native_report::{
         NativeTpcdsParityRow, ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus,
     },
 };
+use datafusion::prelude::SessionConfig;
 use query_planning::mode::StatisticalAggregateExecutionMode;
 
 #[test]
@@ -73,12 +74,15 @@ fn parity_report_to_tsv_emits_metadata_and_header() {
         native_runtime_failure: None,
     };
     let report = NativeTpcdsParityReport::from_rows(vec![row], ParityFloatTolerance::exact())
-        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant);
+        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
+        .with_cpu_session_config(&SessionConfig::new().with_target_partitions(16).with_batch_size(4096));
     let tsv = report.to_tsv();
     let first_line = tsv.lines().next().unwrap();
     assert_eq!(first_line, "# parity_float_tolerance_absolute=0");
     assert!(tsv.contains("# statistical_aggregate_execution_mode=gpu_native_tolerant\n"));
     assert!(tsv.contains("# statistical_aggregate_tolerance_contract=float_tolerant\n"));
+    assert!(tsv.contains("# cpu_target_partitions=16\n"));
+    assert!(tsv.contains("# cpu_batch_size=4096\n"));
     assert!(tsv.contains(NATIVE_TPCDS_PARITY_TSV_HEADER));
     // 28 columns separated by tabs in the data row.
     let data_line = tsv.lines().find(|line| line.starts_with("q01\t")).expect("data row should exist");

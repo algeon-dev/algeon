@@ -55,8 +55,11 @@ attributes are from the captured catalog.
 The [main capture](/data/amazon-reviews-capture.json) holds the executed
 vector-query SQL, query IDs, result rows, and preparation metadata. The
 [follow-up capture](/data/amazon-review-followup.json) holds the later
-raw-table checks and original reviews. Both are historical records of the
-executed queries.
+raw-table checks and the IDs of the matching reviews. Both are historical
+records of the executed queries. Saved results keep product titles, IDs,
+ratings, dates and coordinates; review text is not reproduced on this site.
+Amazon Reviews 2023 is published by the McAuley Lab (Hou et al., 2024,
+[arXiv:2403.03952](https://arxiv.org/abs/2403.03952)) for research use.
 
 The [query timings](/data/demo-query-timings.json) include planning, execution
 and result receipt.

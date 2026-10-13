@@ -161,10 +161,7 @@ fn native_group_only_distinct_preserves_schema_over_empty_join_output() {
             .with_output_projection(vec![
                 JoinOutputColumn::left(ColumnRef::input(0, "semantic", "semantic"), "semantic"),
                 JoinOutputColumn::right(ColumnRef::input(1, "vertexId", "vertexId"), "vertexId"),
-                JoinOutputColumn::right(
-                    ColumnRef::input(1, "vertexPriority", "vertexPriority"),
-                    "vertexPriority",
-                ),
+                JoinOutputColumn::right(ColumnRef::input(1, "vertexPriority", "vertexPriority"), "vertexPriority"),
             ])
             .with_build_side(JoinSide::Right),
             Arc::clone(&join_schema),

@@ -149,84 +149,14 @@ pub async fn tpcds_parity_workload_items_with_external_oracles(
     .await
 }
 
-/// Build TPC-DS parity report rows and optionally run external oracles.
+/// Build TPC-DS parity report rows using distinct CPU and native session
+/// configs, and optionally run external oracles.
 ///
 /// Unlike [`tpcds_parity_workload_items_with_external_oracles`], this converts
 /// each query into a stable report row before starting the next query so CPU and
 /// native output batches do not stay retained for the full selected workload.
-pub async fn tpcds_parity_report_rows_with_external_oracles(
-    root: &Path,
-    session_config: SessionConfig,
-    optimizer_config: AlgeonNativeOptimizerConfig,
-    query_filter: Option<&[String]>,
-    external_oracles: Option<TpcdsExternalOracleConfig>,
-    float_tolerance: ParityFloatTolerance,
-    progress: Option<&mut dyn FnMut(TpcdsParityProgressEvent<'_>)>,
-) -> WorkloadResult<Vec<NativeTpcdsParityRow>> {
-    tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit(
-        root,
-        session_config,
-        optimizer_config,
-        GpuDeviceMemoryLimit::default(),
-        query_filter,
-        external_oracles,
-        float_tolerance,
-        progress,
-    )
-    .await
-}
-
 #[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 pub async fn tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit(
-    root: &Path,
-    session_config: SessionConfig,
-    optimizer_config: AlgeonNativeOptimizerConfig,
-    device_memory_limit: GpuDeviceMemoryLimit,
-    query_filter: Option<&[String]>,
-    external_oracles: Option<TpcdsExternalOracleConfig>,
-    float_tolerance: ParityFloatTolerance,
-    progress: Option<&mut dyn FnMut(TpcdsParityProgressEvent<'_>)>,
-) -> WorkloadResult<Vec<NativeTpcdsParityRow>> {
-    tpcds_parity_report_rows_with_session_configs_and_external_oracles(
-        root,
-        session_config.clone(),
-        session_config,
-        optimizer_config,
-        device_memory_limit,
-        query_filter,
-        external_oracles,
-        float_tolerance,
-        progress,
-    )
-    .await
-}
-
-async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
-    root: &Path,
-    cpu_session_config: SessionConfig,
-    native_session_config: SessionConfig,
-    optimizer_config: AlgeonNativeOptimizerConfig,
-    device_memory_limit: GpuDeviceMemoryLimit,
-    query_filter: Option<&[String]>,
-    external_oracles: Option<TpcdsExternalOracleConfig>,
-) -> WorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
-    let runner =
-        TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config, device_memory_limit)
-            .await?;
-    let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
-    for query in TPCDS_QUERIES {
-        if !is_query_selected(query.id, query_filter) {
-            continue;
-        }
-
-        items.push(runner.run_query(root, query, external_oracles.as_ref()).await);
-    }
-    runner.close()?;
-    Ok(items)
-}
-
-#[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
-async fn tpcds_parity_report_rows_with_session_configs_and_external_oracles(
     root: &Path,
     cpu_session_config: SessionConfig,
     native_session_config: SessionConfig,
@@ -258,6 +188,30 @@ async fn tpcds_parity_report_rows_with_session_configs_and_external_oracles(
     }
     runner.close()?;
     Ok(rows)
+}
+
+async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
+    root: &Path,
+    cpu_session_config: SessionConfig,
+    native_session_config: SessionConfig,
+    optimizer_config: AlgeonNativeOptimizerConfig,
+    device_memory_limit: GpuDeviceMemoryLimit,
+    query_filter: Option<&[String]>,
+    external_oracles: Option<TpcdsExternalOracleConfig>,
+) -> WorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+    let runner =
+        TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config, device_memory_limit)
+            .await?;
+    let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
+    for query in TPCDS_QUERIES {
+        if !is_query_selected(query.id, query_filter) {
+            continue;
+        }
+
+        items.push(runner.run_query(root, query, external_oracles.as_ref()).await);
+    }
+    runner.close()?;
+    Ok(items)
 }
 
 struct TpcdsParityRunner {

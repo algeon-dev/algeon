@@ -1,0 +1,24 @@
+Algeon
+Copyright 2025-2026 Morris Tai and contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party content in this repository
+
+- TPC-H and TPC-DS query text (crates/workloads/src/tpch, crates/workloads/src/tpcds)
+  is the DuckDB rendering of the TPC specifications, MIT License, Copyright
+  2018-2025 Stichting DuckDB Foundation. TPC-H and TPC-DS are trademarks of
+  the Transaction Processing Performance Council. Published timings are not
+  audited TPC results.
+- MerRec (website/static/data/merrec-*.json, fixture/demo/merrec): derived
+  from the MerRec dataset, Copyright Mercari, Inc., CC BY-NC 4.0. These files
+  carry the dataset's terms, not the Apache-2.0 license.
+- Amazon Reviews 2023 (fixture/demo/amazon_reviews_2023, website/static/data/
+  amazon-*.json, website/src/data/amazonReviewMap.json): McAuley Lab, Hou et
+  al. 2024 (arXiv:2403.03952). The repository stores scripts, checksums, product
+  titles and query results only; no review text is redistributed.
+- EMBER2024 (website/static/data/ember2024-*.json): Apache License 2.0,
+  FutureComputing4AI.
+- cuDF, cuGraph, cuVS and cuML sources are tracked as submodules of forks of
+  the NVIDIA RAPIDS projects, Apache License 2.0; patches under
+  scripts/build/patches keep their upstream authorship.

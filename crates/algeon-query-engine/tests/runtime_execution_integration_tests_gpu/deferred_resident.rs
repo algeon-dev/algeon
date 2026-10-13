@@ -118,7 +118,10 @@ fn shared_two_join_fixture() -> (
             roles,
             JoinSpec::new(
                 JoinType::Left,
-                vec![JoinKey::new(ColumnRef::input(0, "second", "second"), ColumnRef::input(1, "vertexId", "vertexId"))],
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "second", "second"),
+                    ColumnRef::input(1, "vertexId", "vertexId"),
+                )],
             )
             .with_build_side(JoinSide::Right)
             .with_output_projection(vec![

@@ -29,7 +29,7 @@ use datafusion::{
         ExecutionPlan, collect,
         metrics::{MetricValue, MetricsSet},
     },
-    prelude::{SessionConfig, SessionContext},
+    prelude::SessionContext,
 };
 use query_planning::mode::StatisticalAggregateExecutionMode;
 use query_runtime::runtime::GpuDeviceMemoryLimit;

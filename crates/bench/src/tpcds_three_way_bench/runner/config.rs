@@ -2,14 +2,17 @@ use std::{error::Error, path::Path};
 
 use super::{
     AlgeonSessionStateBuilderExt, BenchConfig, BenchRuntime, Engine, GpuDeviceMemoryLimit,
-    RelationalExecutionSelection, SessionConfig, SessionContext, SessionStateBuilder, TPCDS_QUERIES,
-    TpcdsNativeProfileSettings, TpcdsQuery, register_tpcds_tables_with_native_metadata,
+    RelationalExecutionSelection, SessionContext, SessionStateBuilder, TPCDS_QUERIES, TpcdsNativeProfileSettings,
+    TpcdsQuery, register_tpcds_tables_with_native_metadata,
     tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings,
     tpcds_native_analytics_optimizer_config_with_profile_settings,
     tpcds_native_profile_settings_and_device_memory_limit_from_env, tpcds_native_profile_settings_with_env,
     tpcds_native_report_session_config,
 };
-use crate::gpu_backend::{build_report_gpu_backend, close_report_gpu_backend};
+use crate::{
+    gpu_backend::{build_report_gpu_backend, close_report_gpu_backend},
+    report_workload::tpcds::tpcds_tuned_cpu_session_config,
+};
 
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
@@ -86,7 +89,7 @@ fn env_usize(name: &str, default: usize) -> Result<usize, Box<dyn Error>> {
 pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>> {
     match cfg.engine {
         Engine::CpuDataFusion => {
-            let session_config = tuned_cpu_session_config();
+            let session_config = tpcds_tuned_cpu_session_config();
             let ctx = SessionContext::new_with_config(session_config);
             register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
             Ok(BenchRuntime {
@@ -130,7 +133,7 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             })
         },
         Engine::CostDeclinedDataFusion => {
-            let cpu_ctx = SessionContext::new_with_config(tuned_cpu_session_config());
+            let cpu_ctx = SessionContext::new_with_config(tpcds_tuned_cpu_session_config());
             register_tpcds_tables_with_native_metadata(&cpu_ctx, &cfg.root).await?;
             let native_ctx =
                 build_native_planning_context(&cfg.root, &cfg.native_profile, cfg.relational_execution).await?;
@@ -162,24 +165,4 @@ async fn build_native_planning_context(
     let ctx = SessionContext::new_with_state(state);
     register_tpcds_tables_with_native_metadata(&ctx, root).await?;
     Ok(ctx)
-}
-
-fn tuned_cpu_session_config() -> SessionConfig {
-    let target_partitions =
-        std::env::var("ALGEON_TPCDS_CPU_TARGET_PARTITIONS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(16);
-    let batch_size =
-        std::env::var("ALGEON_TPCDS_CPU_BATCH_SIZE").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(8192);
-    let mut config = SessionConfig::new()
-        .with_target_partitions(target_partitions)
-        .with_batch_size(batch_size)
-        .with_repartition_file_scans(true)
-        .with_repartition_aggregations(true)
-        .with_repartition_joins(true)
-        .with_repartition_sorts(true);
-    config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = true;
-    config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = true;
-    config.options_mut().optimizer.enable_join_dynamic_filter_pushdown = true;
-    config.options_mut().optimizer.enable_dynamic_filter_pushdown = true;
-    config.options_mut().execution.parquet.pushdown_filters = false;
-    config
 }

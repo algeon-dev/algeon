@@ -415,10 +415,8 @@ fn test_filter_expr_string_like_uses_boolean_mask_fallback() {
     let df = edge_df();
 
     reset_row_predicate_observation();
-    let filtered = df
-        .on(Exec::RETAINED)
-        .filter_expr(col("sourceId").str().like("a%") | col("sourceId").str().like("f%"))
-        .unwrap();
+    let filtered =
+        df.on(Exec::RETAINED).filter_expr(col("sourceId").str().like("a%") | col("sourceId").str().like("f%")).unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
     assert_eq!(

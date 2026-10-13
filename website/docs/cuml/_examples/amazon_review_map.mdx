@@ -9,11 +9,13 @@ dimensions and joins the output IDs to product names and review text.
 <CodeBlock language="sql">{capture.queries.headphone_umap2.sql}</CodeBlock>
 
 The first three records of the saved projection show the returned
-coordinates and source text.
+coordinates with the rating and year of each review. The saved sample keeps
+review IDs, coordinates, ratings and years; the review text stays in the
+source dataset.
 
 <Table>
-<thead><tr><th>Review ID</th><th>x</th><th>y</th><th>Original text</th></tr></thead>
-<tbody>{reviewMap.points.slice(0, 3).map(row => <tr key={row.id}><td>{row.id}</td><td>{row.x.toFixed(3)}</td><td>{row.y.toFixed(3)}</td><td>{row.text}</td></tr>)}</tbody>
+<thead><tr><th>Review ID</th><th>x</th><th>y</th><th>Rating</th><th>Year</th></tr></thead>
+<tbody>{reviewMap.points.slice(0, 3).map(row => <tr key={row.id}><td>{row.id}</td><td>{row.x.toFixed(3)}</td><td>{row.y.toFixed(3)}</td><td>{row.rating}</td><td>{row.year}</td></tr>)}</tbody>
 </Table>
 
 UMAP's output is a relation that can be joined to the review records in the
