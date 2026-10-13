@@ -33,8 +33,6 @@ max 1 active attempt).
 
 ### 1. Full deduplicated relations
 
-Earlier preparation scripts applied `int(digest_hex[:8], 16) % 100 == 0`, producing an arbitrary
-1% sample of train/test vectors (26,277 train and 6,102 test rows; 15,588 and 3,618 Win32 rows).
 This scale suite uses the full deduplicated relations:
 - `ember_research_vectors_train`: all 2,626,000 unique files.
 - `ember_research_vectors_test`: all 605,929 unique files.

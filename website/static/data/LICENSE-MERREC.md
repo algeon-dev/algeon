@@ -22,13 +22,9 @@ Dataset for Consumer-to-Consumer Recommendation Systems*. KDD 2025.
 Files covered:
 
 - `merrec-agent-session.json`
-- `merrec-audience-capture.json`
 - `merrec-barbie-control-seeds.json`
 - `merrec-barbie-listing-check.json`
 - `merrec-brand-map.json`
-- `merrec-community-capture.json`
-- `merrec-cosine-capture.json`
-- `merrec-graph-capture.json`
 - `merrec-pokemon-interest-check.json`
 - `merrec-scale-ann.json`
 - `merrec-scale-audience-funnel.json`
@@ -43,4 +39,3 @@ Files covered:
 - `merrec-scale-shopper-personas.json`
 - `merrec-scale-shopping-worlds.json`
 - `merrec-scale-world-bridges.json`
-- `merrec-segment-capture.json`
