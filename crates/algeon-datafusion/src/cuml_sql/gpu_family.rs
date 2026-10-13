@@ -252,20 +252,31 @@ fn descriptor_for_operation(operation: CumlOperation, availability: GpuFunctionA
         json!({"input": {"table": "input_vectors"}})
     };
     GpuFunctionDescriptor {
-        function_name: descriptor.sql_function_name.to_string(), provider: "cuml".to_string(),
-        signature: format!("{}({})", descriptor.sql_function_name,
-            descriptor.options.iter().map(|option| if matches!(option.kind, GpuOptionKind::RelationBinding) {
-                format!("{} => (relation subquery)", option.name)
-            } else { format!("{} => value", option.name) }).collect::<Vec<_>>().join(", ")),
-        summary: descriptor.summary.to_string(), relation_roles: Value::Array(relation_roles),
-        argument_descriptions: Value::Array(argument_descriptions), options_schema,
-        result_schemas: json!({"output_contract": output_contract(operation), "fields": fields}), validation_request_schema,
+        function_name: descriptor.sql_function_name.to_string(),
+        provider: "cuml".to_string(),
+        signature: format!(
+            "{}({})",
+            descriptor.sql_function_name,
+            descriptor
+                .options
+                .iter()
+                .map(|option| if matches!(option.kind, GpuOptionKind::RelationBinding) {
+                    format!("{} => (relation subquery)", option.name)
+                } else {
+                    format!("{} => value", option.name)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        summary: descriptor.summary.to_string(),
+        relation_roles: Value::Array(relation_roles),
+        argument_descriptions: Value::Array(argument_descriptions),
+        options_schema,
+        result_schemas: json!({"output_contract": output_contract(operation), "fields": fields}),
+        validation_request_schema,
         examples: json!([{"quickstart": {"display_name": descriptor.display_name, "use_this_when": descriptor.use_this_when, "sql": descriptor.quickstart_sql},
             "validation": {"function_name": descriptor.sql_function_name, "call": {"relations": relations, "options": options}}}]),
-        limitations: Value::Array([
-            "Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.",
-            "Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.",
-        ].into_iter().chain(descriptor.limitations.iter().copied()).map(|text| json!(text)).collect()),
+        limitations: Value::Array(descriptor.limitations.iter().map(|text| json!(text)).collect()),
         availability,
     }
 }

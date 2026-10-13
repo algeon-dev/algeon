@@ -20,6 +20,7 @@ import {
   renderDenseOutputSchema as renderOutputSchema,
   prose,
   renderFunctionPage,
+  renderVectorElementTypes,
   table,
   write,
 } from './gpu-docs-common.mjs';
@@ -164,9 +165,7 @@ function renderInputs(spec) {
     '',
     '### Vector element types',
     '',
-    table(['Element type', 'Valid metrics'], spec.relation_roles[0].fields.features.element_metric_support.map(support => [
-      code(support.element), support.metrics.length ? support.metrics.map(code).join(', ') : 'Not applicable',
-    ])),
+    renderVectorElementTypes(spec.relation_roles[0].fields.features.element_metric_support),
   ].join('\n');
 }
 
@@ -176,7 +175,7 @@ function renderVectorBindingShapes(spec) {
     return [
       `Each relation subquery must project an ${code('id')} field followed by either one or more feature fields of a supported element type (${vectorElementTypes(spec).map(code).join(', ')}) or exactly one list field of a supported element type, under any name.`,
       '',
-      'For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and its list field. Nullable field types are accepted; a null ID, feature value, list row, or list element fails the query.',
+      'For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and its list field. Nullable field types are accepted. A null ID, feature value, list row, or list element fails the query.',
     ].join('\n');
   }
   const binding = bindingOption.properties;
@@ -224,7 +223,6 @@ function renderPage(spec, sidebarPosition) {
     examples: existsSync(join(DOCS_DIR, '_examples', `${spec.function_name}.mdx`))
       ? narrativeExampleImport(`../_examples/${spec.function_name}.mdx`) : null,
     limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
-    discoveryLink: '../../reference/gpu-udtf-catalog.mdx',
   });
 }
 

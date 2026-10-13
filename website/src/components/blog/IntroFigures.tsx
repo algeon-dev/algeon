@@ -16,7 +16,7 @@ import {SANS, sketchHead, sketchLine, sketchPath, sketchRoundRect} from '@site/s
 
 /**
  * The introduction post's bespoke figures: the export-and-notebook detour
- * against one SQL statement, and the agent's investigation loop through the
+ * against one SQL query, and the agent's investigation loop through the
  * application's ontology, its backend service, Algeon, and the lakehouse.
  * Built from the Design diagrams' box, tone, figure, and sketch primitives so
  * the blog reads as the same hand-drawn visual system.
@@ -56,7 +56,7 @@ const RIGHT_NODES: DiagramNode[] = [
   {kind: 'sql', name: 'Join and aggregate the output', note: 'rows back to the caller', tone: 'plan'},
 ];
 const RIGHT_HEAD = 'WITH ALGEON: ONE PLAN';
-const RIGHT_GROUP = 'one SQL statement · one process';
+const RIGHT_GROUP = 'one SQL query · one process';
 const RIGHT_NOTE = ['the planner owns scan, pushdown,', 'join order and GPU placement'];
 
 function Spine({id, a, b, cx, label}: {id: string; a: Placed; b: Placed; cx: number; label?: string}) {
@@ -122,7 +122,7 @@ export function GlueVsPlanFigure({caption}: {caption?: React.ReactNode}) {
   // At 90% the figure and its caption fit below the navbar on an 800 px tall screen.
   return (
     <Figure caption={caption} svgW={svgW} svgH={svgH} minW={620} maxW={Math.round(svgW * 0.9)} center
-      ariaLabel="Left: export, notebook, GPU call, and import as separate steps. Right: one SQL statement with the algorithm as a UDTF.">
+      ariaLabel="Left: export, notebook, GPU call, and import as separate steps. Right: one SQL query with the algorithm as a UDTF.">
       <text x={leftX} y={EDGE + 14} fontSize={HEAD.size} letterSpacing={`${HEAD.track}em`}
         fill={COLOR.muted}>
         {LEFT_HEAD}
@@ -189,7 +189,7 @@ const LOOP_BACKEND: DiagramNode = {
 };
 const LOOP_ALGEON: DiagramNode = {
   kind: 'GPU query engine', name: 'Algeon',
-  note: ['plan · admit · run on one GPU', 'graph · vector · ML UDTFs'], tone: 'gpu',
+  note: ['plan · admit · run on the GPU', 'graph · vector · ML UDTFs'], tone: 'gpu',
 };
 const LOOP_LAKE: DiagramNode = {
   kind: 'world state · physical store', name: 'Lakehouse',
@@ -281,12 +281,12 @@ export function AgentLoopFigure({caption}: {caption?: React.ReactNode}) {
         <BackedLabel key={`l12-${j}`} x={(S.x + S.w + B.x) / 2}
           y={S.cy - 14 - (label12.length - 1 - j) * LABEL.lh} text={line} />
       ))}
-      {/* the statement goes down into Algeon */}
+      {/* the query goes down into Algeon */}
       {sketchLine('loop:b-g', B.cx, B.y + B.h + 2, B.cx, G.y - 2, edge)}
       {sketchHead('loop:b-g:head', B.cx, G.y, 'down', edge)}
       <text x={B.cx + 12} y={(B.y + B.h + G.y) / 2 + LABEL.size * 0.36} fontSize={LABEL.size}
         fontFamily={SANS} fill={COLOR.muted}>
-        one statement
+        one query
       </text>
       {/* Algeon reads the lakehouse */}
       {sketchLine('loop:g-l', G.x - 2, row2Cy, L.x + L.w + 2, row2Cy, edge)}

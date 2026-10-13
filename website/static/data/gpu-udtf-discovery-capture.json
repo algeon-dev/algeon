@@ -1,0 +1,300 @@
+{
+  "name": "gpu_udtf_discovery",
+  "captured_at_utc": "2026-10-11T06:53:32.865150+00:00",
+  "method": "Flight SQL queries against a release Algeon server with default settings; rows are reproduced as returned, with JSON columns kept as text.",
+  "server": {
+    "commit": "86d80af5ee1d",
+    "features": "cugraph,cuml,cuvs,nvml",
+    "binary_sha256": "1282e6dfd64d8b8a80518797cb7704be71e1a4d55f9ff187105a06a0da300d36",
+    "init_sql": "CREATE SCHEMA analytics;\nCREATE EXTERNAL TABLE analytics.edges STORED AS CSV LOCATION 'edges.csv' OPTIONS ('format.has_header' 'true');\nCREATE EXTERNAL TABLE analytics.follows STORED AS CSV LOCATION 'follows.csv' OPTIONS ('format.has_header' 'true');\n"
+  },
+  "list": {
+    "sql": "SELECT function_name, provider, available, summary\nFROM gpu_list_functions()\nWHERE provider IN ('cugraph', 'cuvs', 'cuml')\nORDER BY function_name;",
+    "rows": [
+      {
+        "function_name": "cugraph_betweenness_centrality",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Measure how often each vertex lies on shortest paths between other vertex pairs, exactly or from an explicit sample of source vertices."
+      },
+      {
+        "function_name": "cugraph_bfs",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Visit reachable vertices in increasing unweighted hop distance from one or more sources, returning distances and optional predecessors."
+      },
+      {
+        "function_name": "cugraph_core_number",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Assign each vertex the largest k for which it belongs to a k-core, where every vertex has degree at least k within that subgraph."
+      },
+      {
+        "function_name": "cugraph_cosine",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Compare the neighbor vectors of explicit vertex pairs using cosine similarity, with optional edge-weight contributions."
+      },
+      {
+        "function_name": "cugraph_degrees_all",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Count both incoming and outgoing edges for every vertex in the graph."
+      },
+      {
+        "function_name": "cugraph_ecg",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Stabilize community assignments by combining an ensemble of randomized Louvain partitions into a final consensus clustering."
+      },
+      {
+        "function_name": "cugraph_edge_betweenness_centrality",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Measure how often each edge lies on shortest paths between vertex pairs, exactly or from an explicit sample of source vertices."
+      },
+      {
+        "function_name": "cugraph_eigenvector_centrality",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Score vertices by connections to other high-scoring vertices, using power iteration to find the dominant eigenvector."
+      },
+      {
+        "function_name": "cugraph_force_atlas2",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Place vertices in two dimensions with a force-directed simulation that attracts connected vertices and repels vertices from one another."
+      },
+      {
+        "function_name": "cugraph_hits",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Compute mutually reinforcing hub and authority scores: strong hubs point to strong authorities, and strong authorities are linked from strong hubs."
+      },
+      {
+        "function_name": "cugraph_in_degrees_all",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Count incoming edges for every vertex in the graph."
+      },
+      {
+        "function_name": "cugraph_jaccard",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Compare explicit vertex pairs by dividing the size of their shared-neighbor intersection by the size of their neighbor union."
+      },
+      {
+        "function_name": "cugraph_k_core",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Return the edges of the maximal subgraph whose vertices each have degree at least k within that subgraph."
+      },
+      {
+        "function_name": "cugraph_katz_centrality",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Score vertices from the number of walks that reach them, attenuating longer walks and adding a baseline contribution."
+      },
+      {
+        "function_name": "cugraph_leiden",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Find modularity-based communities with a refinement step, and split each community into the connected components of its internal edges, so every returned community induces a connected subgraph."
+      },
+      {
+        "function_name": "cugraph_louvain",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Build a hierarchy of communities by greedily moving vertices and aggregating partitions to maximize modularity."
+      },
+      {
+        "function_name": "cugraph_minimum_spanning_tree",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Select a minimum-total-weight acyclic edge set, producing a spanning tree for a connected graph or a spanning forest otherwise."
+      },
+      {
+        "function_name": "cugraph_out_degrees_all",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Count outgoing edges for every vertex in the graph."
+      },
+      {
+        "function_name": "cugraph_overlap",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Compare explicit vertex pairs by dividing their shared-neighbor count by the smaller of their two neighbor counts."
+      },
+      {
+        "function_name": "cugraph_pagerank",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Rank vertices by the stationary probability of a damped random walk that follows outgoing edges."
+      },
+      {
+        "function_name": "cugraph_personalized_pagerank",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Rank vertices with PageRank while biasing random-walk restarts toward explicitly weighted personalization vertices."
+      },
+      {
+        "function_name": "cugraph_sorensen",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Compare explicit vertex pairs as twice their shared-neighbor count divided by the sum of their neighbor counts."
+      },
+      {
+        "function_name": "cugraph_spectral_modularity_maximization",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Partition vertices by running k-means on an embedding of the normalized graph Laplacian eigenvectors with the smallest eigenvalues. Modularity is not optimized directly."
+      },
+      {
+        "function_name": "cugraph_sssp",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Compute minimum path distances and predecessors from one source vertex, using edges.weight or unit cost 1 when that field is omitted."
+      },
+      {
+        "function_name": "cugraph_strongly_connected_components",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Label maximal directed subgraphs in which every vertex is reachable from every other vertex."
+      },
+      {
+        "function_name": "cugraph_triangle_count_all",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Count the number of three-vertex cycles incident to every vertex in the graph."
+      },
+      {
+        "function_name": "cugraph_weakly_connected_components",
+        "provider": "cugraph",
+        "available": true,
+        "summary": "Label maximal connected subgraphs after treating directed edges as undirected."
+      },
+      {
+        "function_name": "cuml_forest_predict",
+        "provider": "cuml",
+        "available": false,
+        "summary": "Score Float32 rows with a pretrained XGBoost, LightGBM, or Treelite forest through nvForest."
+      },
+      {
+        "function_name": "cuml_hdbscan",
+        "provider": "cuml",
+        "available": true,
+        "summary": "cuML HDBSCAN fits density-based clusters and returns query-local labels and membership probabilities."
+      },
+      {
+        "function_name": "cuml_logistic_regression",
+        "provider": "cuml",
+        "available": true,
+        "summary": "Fit a query-local cuML logistic or softmax classifier and score independent rows."
+      },
+      {
+        "function_name": "cuml_random_forest_classifier",
+        "provider": "cuml",
+        "available": true,
+        "summary": "Fit a query-local cuML random forest classifier and score independent rows."
+      },
+      {
+        "function_name": "cuml_random_forest_regressor",
+        "provider": "cuml",
+        "available": true,
+        "summary": "Fit a query-local cuML random forest regressor and score independent rows."
+      },
+      {
+        "function_name": "cuml_tsvd",
+        "provider": "cuml",
+        "available": true,
+        "summary": "cuML truncated SVD fits and transforms dense feature rows."
+      },
+      {
+        "function_name": "cuml_umap",
+        "provider": "cuml",
+        "available": true,
+        "summary": "cuML UMAP fits a deterministic, query-local manifold embedding for dense feature rows."
+      },
+      {
+        "function_name": "cuvs_brute_force_knn",
+        "provider": "cuvs",
+        "available": true,
+        "summary": "Exact brute-force nearest-neighbor search over dense vectors."
+      },
+      {
+        "function_name": "cuvs_cagra",
+        "provider": "cuvs",
+        "available": true,
+        "summary": "Query-local graph approximate nearest-neighbor search."
+      },
+      {
+        "function_name": "cuvs_ivf_flat",
+        "provider": "cuvs",
+        "available": true,
+        "summary": "Query-local inverted-file approximate nearest-neighbor search."
+      },
+      {
+        "function_name": "cuvs_ivf_pq",
+        "provider": "cuvs",
+        "available": true,
+        "summary": "Query-local product-quantized inverted-file nearest-neighbor search."
+      },
+      {
+        "function_name": "cuvs_kmeans",
+        "provider": "cuvs",
+        "available": true,
+        "summary": "K-means clustering assignments for dense vector rows."
+      },
+      {
+        "function_name": "cuvs_pairwise_distance",
+        "provider": "cuvs",
+        "available": true,
+        "summary": "Pairwise distance or similarity for every x and y vector row."
+      },
+      {
+        "function_name": "cuvs_pca",
+        "provider": "cuvs",
+        "available": true,
+        "summary": "Principal-component analysis transform for dense vector rows."
+      },
+      {
+        "function_name": "cuvs_top_k",
+        "provider": "cuvs",
+        "available": true,
+        "summary": "Select the smallest or largest values in every dense vector row."
+      }
+    ]
+  },
+  "valid_call": {
+    "sql": "SELECT *\nFROM gpu_validate_call(\n  'cugraph_pagerank',\n  '{\n    \"relations\":{\"edges\":{\"table\":\"analytics.edges\"}},\n    \"options\":{\"alpha\":0.9,\"directed\":true}\n  }'\n);",
+    "rows": [
+      {
+        "valid": true,
+        "error_code": null,
+        "message": "valid",
+        "function_name": "cugraph_pagerank",
+        "relations_resolved": true,
+        "normalized_call_json": "{\"relations\":{\"edges\":{\"table\":\"analytics.edges\"}},\"options\":{\"directed\":true,\"renumber\":true,\"construction_policy\":\"python_cugraph\",\"alpha\":0.9,\"epsilon\":0.00001,\"max_iterations\":100}}",
+        "output_schema_json": "{\"fields\":[{\"name\":\"vertex\",\"data_type\":\"Int64\",\"nullable\":false},{\"name\":\"value\",\"data_type\":\"Float64\",\"nullable\":false}]}",
+        "would_execute_gpu": true,
+        "details_json": "{\"edges\":{\"table\":\"analytics.edges\",\"resolved\":true,\"schema\":{\"fields\":[{\"name\":\"src\",\"data_type\":\"Int64\",\"nullable\":true},{\"name\":\"dst\",\"data_type\":\"Int64\",\"nullable\":true}]},\"src_dtype\":\"Int64\",\"dst_dtype\":\"Int64\"}}"
+      }
+    ]
+  },
+  "rejected_call": {
+    "sql": "SELECT *\nFROM gpu_validate_call(\n  'cugraph_pagerank',\n  '{\n    \"relations\":{\"edges\":{\"table\":\"analytics.follows\"}},\n    \"options\":{\"alpha\":0.9,\"max_iter\":50,\"tol\":0.0001}\n  }'\n);",
+    "rows": [
+      {
+        "valid": false,
+        "error_code": "unknown_option",
+        "message": "unknown option 'max_iter' for cugraph_pagerank. Did you mean 'max_iterations'? Valid options: directed, renumber, construction_policy, alpha, epsilon, max_iterations.; unknown option 'tol' for cugraph_pagerank. Valid options: directed, renumber, construction_policy, alpha, epsilon, max_iterations.; cuGraph edge child is missing canonical source column 'src'",
+        "function_name": "cugraph_pagerank",
+        "relations_resolved": true,
+        "normalized_call_json": "{\"relations\":{\"edges\":{\"table\":\"analytics.follows\"}},\"options\":{\"alpha\":0.9,\"max_iter\":50,\"tol\":0.0001}}",
+        "output_schema_json": "{}",
+        "would_execute_gpu": false,
+        "details_json": "{\"edges\":{\"table\":\"analytics.follows\",\"resolved\":true,\"schema\":{\"fields\":[{\"name\":\"follower_id\",\"data_type\":\"Int64\",\"nullable\":true},{\"name\":\"followee_id\",\"data_type\":\"Int64\",\"nullable\":true}]}},\"path\":\"options.max_iter\",\"argument\":\"max_iter\"}"
+      }
+    ]
+  }
+}

@@ -20,12 +20,7 @@ This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.m
 This query fits UMAP to all 3,225 Win32 challenge files using their 512-element
 normalized histograms, with `n_neighbors = 30` and `random_state = 42`. The SQL
 joins labels, weeks, SHA-256 values, and family names after the projection.
-These fields support later inspection; they are not UMAP input columns.
-
-The saved scatter includes all query rows and lets you select a captured
-projection. Its HDBSCAN filter uses the separate PCA-16 cluster assignments.
-Changing a projection or filter only selects saved output rows. It does not
-rerun UMAP or HDBSCAN.
+These fields support later inspection. They are not UMAP input columns.
 
 ```sql
 SELECT u.id,

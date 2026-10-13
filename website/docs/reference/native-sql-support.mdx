@@ -8,9 +8,9 @@ description: Which relational operators, expressions, casts, scalar functions, a
 
 Algeon selects a whole DataFusion physical-plan candidate for cuDF execution
 when every operator, expression, type and source in it has a native kernel
-with matching semantics. Memory is not a support criterion: an admitted query
-runs inside its grant and fails with a typed allocation error if it exceeds it.
-Check a production query with
+with matching semantics. Memory capacity does not govern planning support. An
+admitted query executes within its assigned grant and returns a typed
+allocation error if device memory is exhausted. Check a production query with
 [`algeon_explain_coverage`](../integration/gpu-coverage-validation.mdx)
 rather than this page.
 
@@ -18,16 +18,15 @@ rather than this page.
 
 | Area | Native forms |
 | --- | --- |
-| Sources | Local and S3 object-store Parquet; projected columns, row-group selection, partition columns, reader predicates and scan limits when their contracts are supported. |
+| Sources | Local and S3 object-store Parquet. Projected columns, row-group selection, partition columns, reader predicates and scan limits when their contracts are supported. |
 | Row operations | Filters, projections, stable or unstable sorts, `LIMIT`/`OFFSET`, and schema-compatible `UNION ALL`. A distinct `UNION` and `SELECT DISTINCT` are grouped aggregates. |
 | Aggregation | Global and grouped aggregation, admitted grouping sets, aggregate filters, and partial/final state when the state is explicitly modeled. |
 | Windows | `rank`, `row_number`, `lag`, `lead`, whole-partition aggregate windows, and cumulative `sum`/`min`/`max` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. `rank`, `lag` and `lead` require `ORDER BY`; `row_number` does not. An empty `OVER ()` aggregates the whole input as one partition. |
 | Joins | Equi joins and admitted residual or keyless forms for inner, outer, semi, anti, mark and cross joins. Build side, output projection, key types and residual expressions can narrow an otherwise supported join kind. |
-| Graph, vector, ML | UDTFs are separate GPU execution domains; see the [cuGraph](../cugraph/overview.mdx), [cuVS](../cuvs/overview.mdx) and [cuML](../cuml/overview.mdx) SQL APIs. |
+| Graph, vector, ML | UDTFs are separate GPU execution domains. See the [cuGraph](../cugraph/overview.mdx), [cuVS](../cuvs/overview.mdx) and [cuML](../cuml/overview.mdx) SQL APIs. |
 
 When a candidate is not supported, or an enabled cost rule does not select it,
-the DataFusion baseline remains in place. A runtime error after native
-execution starts is terminal and does not replay on CPU.
+the DataFusion baseline remains in place.
 
 ## Expressions
 
@@ -67,14 +66,17 @@ millisecond difference.
 
 | Family | Functions and limits |
 | --- | --- |
-| Strings | `substring`/`substr`, `lower`, `upper`, `trim`/`btrim`, `ltrim`, `rtrim`, `contains`, `starts_with`, `ends_with`, `character_length`/`length`, `regexp_replace`, `concat`. A substring start and optional length are literal integers with start >= 1 and length >= 0. Pattern, trim and replacement arguments are literals. |
-| Numeric | `abs`, `sqrt`, `ln`, `exp`, `floor`, `ceil`, `round` with an optional literal integer scale. `floor` and `ceil` take `Float32` or `Float64` and pass `NaN` and infinities through; decimal arguments are not native. `ln` and `exp` follow IEEE results and can differ from DataFusion CPU in the last bits. |
+| Strings | `substring`/`substr`, `lower`, `upper`, `trim`/`btrim`, `ltrim`, `rtrim`, `contains`, `starts_with`, `ends_with`, `character_length`/`length`, `octet_length`, `regexp_replace`, `concat`. A substring start and optional length are literal integers with start >= 1 and length >= 0. Pattern, trim and replacement arguments are literals. `octet_length` counts UTF-8 bytes without normalization, so it differs from `character_length` on multi-byte and combining characters. |
+| Numeric | `abs`, `sqrt`, `ln`, `exp`, `floor`, `ceil`, `round` with an optional literal integer scale. `floor` and `ceil` take `Float32` or `Float64` and pass `NaN` and infinities through. Decimal arguments are not native. `ln` and `exp` follow IEEE results and can differ from DataFusion CPU in the last bits. |
 | Nulls | `nullif` for compatible native types. |
-| Temporal | `date_part`/`extract` for admitted fields, `date_trunc` for day through microsecond units on timezone-free timestamps, `to_timestamp_seconds` for supported integer inputs. `date_part('epoch', ...)` is not native; DataFusion drops the fractional seconds of a duration longer than about 2.1 seconds there, so cast to `BIGINT` and divide instead. |
+| Temporal | `date_part`/`extract` for `year`, `month` and `day` over `DATE` or timezone-free timestamps, and for `hour`, `minute`, `second`, `millisecond` and `microsecond` over timezone-free timestamps of any resolution, each returning `INT` with DataFusion's values (`millisecond` and `microsecond` include the whole seconds of the minute). `date_trunc` for day through microsecond units on timezone-free timestamps, `to_timestamp_seconds` for supported integer inputs. `date_part('epoch', ...)` and `nanosecond` are not native. DataFusion drops the fractional seconds of a duration longer than about 2.1 seconds there, so cast to `BIGINT` and divide instead. |
 
 Carry types from [Data Type Support](./data-type-support.md) can be selected
 and returned but are not valid expression values, keys, sort or partition
-values, or aggregate and window inputs.
+values, or aggregate and window inputs. The one exception is a global
+`COUNT(column)` without `DISTINCT`, `FILTER` or `GROUP BY` over a `List`,
+`LargeList` or `FixedSizeList` column, which counts the non-null rows without
+reading the list values.
 
 ## Aggregates
 
@@ -91,8 +93,8 @@ other distinct aggregates and ordered aggregate arguments are not.
   aggregates is rejected.
 - `SELECT DISTINCT` and a distinct `UNION` are grouped aggregates over every
   output column. The final stage may read the partial stage through a
-  repartition, a coalesce, or a merge of sorted partitions without a fetch;
-  all three lower to one native aggregate. A final stage that reads any other
+  repartition, a coalesce, or a merge of sorted partitions without a fetch.
+  All three lower to one native aggregate. A final stage that reads any other
   operator is rejected, and the rejection names it.
 - An aggregate with `COUNT(DISTINCT expression)` reads its whole input before
   grouping, and that input must fit the memory grant. The optimizer splits it
@@ -102,7 +104,7 @@ other distinct aggregates and ordered aggregate arguments are not.
   aggregate beside the distinct count keeps the whole-input form.
 - Floating statistical aggregates run under the GPU-tolerant policy by default
   and can differ from DataFusion. The exact-host policy matches DataFusion with
-  fewer supported key and aggregate types; see
+  fewer supported key and aggregate types. See
   `statistical_aggregate_execution_mode` in
   [configuration](../integration/configuration.mdx).
 
@@ -111,9 +113,9 @@ other distinct aggregates and ordered aggregate arguments are not.
 Parquet is the native file format, read from local paths or `s3://` object
 stores. Schema mapping and remote read capability are validated before
 execution, and a scan that fails either check keeps the DataFusion baseline.
-Iceberg tables are not a supported source; see
+Iceberg tables are not a supported source. See
 [Iceberg support](../integration/overview.mdx#iceberg-support).
 Validate ad-hoc SQL with `algeon_explain_coverage`, or `EXPLAIN GPU` over
 Flight SQL, against the catalog and server configuration that will execute
-it; the [coverage page](../integration/gpu-coverage-validation.mdx) shows
+it. The [coverage page](../integration/gpu-coverage-validation.mdx) shows
 both forms and the `runtime_caveats` to read.

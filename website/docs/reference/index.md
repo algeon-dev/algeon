@@ -6,9 +6,6 @@ description: Reference material for GPU execution support boundaries, benchmark 
 
 # Reference
 
-Reference material for what runs on the GPU, how fast it runs, and the
-terms the design pages use.
-
 ## Available reference pages
 
 - [Native SQL Support](./native-sql-support.mdx) - which relational

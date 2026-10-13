@@ -40,44 +40,27 @@ Each relation argument is a parenthesized `SELECT` subquery. Metadata validation
 
 ### Vector element types
 
-| Element type | Valid metrics |
-| --- | --- |
-| `Float32` | Not applicable |
-| `Float64` | Not applicable |
+Feature values must be `Float32` or `Float64`.
 
 ## Arguments and options
 
 ### Scalar SQL arguments
 
-| Argument | Type | Required | Description |
-| --- | --- | --- | --- |
-| `penalty_l1` | `number` | no | L1 penalty. |
-| `penalty_l2` | `number` | no | L2 penalty. |
-| `max_iter` | `integer` | no | Maximum QN iterations. |
-| `linesearch_max_iter` | `integer` | no | Maximum line-search iterations. |
-| `lbfgs_memory` | `integer` | no | L-BFGS history length. |
-| `fit_intercept` | `boolean` | no | Fit an intercept. |
-| `penalty_normalized` | `boolean` | no | Normalize the penalty by row count. |
-| `grad_tol` | `number` | no | QN gradient tolerance. |
-| `change_tol` | `number` | no | QN objective change tolerance. |
-
-### SQL value argument schemas
-
-| Argument | Required | Literal shape | Default | Constraints | Description |
+| Argument | Type | Required | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `change_tol` | no | `number` | `0.00001` | minimum 0 | QN objective change tolerance. |
-| `fit_intercept` | no | `boolean` | `true` |  | Fit an intercept. |
-| `grad_tol` | no | `number` | `0.0001` | minimum 0 | QN gradient tolerance. |
-| `lbfgs_memory` | no | `integer` | `5` | minimum 1; maximum 2147483647 | L-BFGS history length. |
-| `linesearch_max_iter` | no | `integer` | `50` | minimum 1; maximum 2147483647 | Maximum line-search iterations. |
-| `max_iter` | no | `integer` | `1000` | minimum 1; maximum 2147483647 | Maximum QN iterations. |
-| `penalty_l1` | no | `number` | `0` | minimum 0 | L1 penalty. |
-| `penalty_l2` | no | `number` | `0` | minimum 0 | L2 penalty. |
-| `penalty_normalized` | no | `boolean` | `true` |  | Normalize the penalty by row count. |
+| `change_tol` | `number` | no | `0.00001` | minimum 0 | QN objective change tolerance. |
+| `fit_intercept` | `boolean` | no | `true` |  | Fit an intercept. |
+| `grad_tol` | `number` | no | `0.0001` | minimum 0 | QN gradient tolerance. |
+| `lbfgs_memory` | `integer` | no | `5` | minimum 1; maximum 2147483647 | L-BFGS history length. |
+| `linesearch_max_iter` | `integer` | no | `50` | minimum 1; maximum 2147483647 | Maximum line-search iterations. |
+| `max_iter` | `integer` | no | `1000` | minimum 1; maximum 2147483647 | Maximum QN iterations. |
+| `penalty_l1` | `number` | no | `0` | minimum 0 | L1 penalty. |
+| `penalty_l2` | `number` | no | `0` | minimum 0 | L2 penalty. |
+| `penalty_normalized` | `boolean` | no | `true` |  | Normalize the penalty by row count. |
 
 ### Vector binding shapes
 
-Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
+Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. The `training` relation also projects an Int32 `label`; the `predict` relation omits it. Nullable field types are accepted. A null ID, feature value, list row, list element, or label fails the query.
 
 The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
 
@@ -100,13 +83,9 @@ import Examples from '../_examples/cuml_logistic_regression.mdx';
 
 ## Limits
 
-- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
-- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
 - Training labels must be Int32 contiguous classes 0..C-1 and must not be null; predict must omit label and match the feature dimension.
 - Binary labels use logistic loss; three or more classes use softmax. Reaching max_iter is not an error.
 - probability covers only the predicted class; per-class probabilities are not returned. Class weights are not exposed, so threshold probability to trade precision for recall.
 - The model is query-local. An empty predict relation returns an empty result without a native call.
 - Coefficients and scores can differ slightly between runs, because the loss reduction accumulates with floating-point atomics; there is no seed option.
 - Float64 features, as wide columns or list elements, are narrowed to Float32 on the device before training or inference. Each value rounds to the nearest Float32, which keeps about seven significant digits; a value beyond the Float32 range becomes infinite and fails the query.
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

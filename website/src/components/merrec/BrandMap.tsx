@@ -255,7 +255,7 @@ export default function BrandMap({data}: {data: BrandMapCapture}): React.ReactEl
       ) : null}
 
       <figcaption>
-        {`${brandCount} brands placed by ForceAtlas2 from shared fans; colors are Leiden shopping worlds. Dot area grows with fans. Gray dots belong to worlds without a label. Select one or more worlds to highlight them and rank their most-liked brands together.`}
+        {`${brandCount} brands placed by ForceAtlas2 from shared fans. Colors are Leiden shopping worlds. Dot area grows with fans. Gray dots belong to worlds without a label. Select one or more worlds to highlight them and rank their most-liked brands together.`}
       </figcaption>
     </figure>
   );

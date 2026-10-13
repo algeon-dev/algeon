@@ -32,7 +32,7 @@ shared cuDF/RMM prefix and `target/native/cuvs-install` is the canonical cuVS
 install. The root `.gitmodules`, `Cargo.lock`, and `scripts/check_all.sh` are
 the only source, lockfile, and full-gate authorities.
 
-## validation
+## Validation
 
 ```bash
 cargo clippy -p cuvs -p cuvs-sys --all-targets --all-features -- -D warnings

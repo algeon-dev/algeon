@@ -18,7 +18,7 @@ Select the smallest or largest values in every dense vector row.
 
 ## Quickstart
 
-The call below expects the registered relation `input_vectors` (the `input` role), passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
+The call below expects the registered relation `input_vectors` (the `input` role), passed as a parenthesized `SELECT` subquery.
 
 ```sql
 SELECT *
@@ -40,31 +40,22 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 ### Vector element types
 
-| Element type | Valid metrics |
-| --- | --- |
-| `Float32` | Not applicable |
+Feature values must be `Float32`.
 
 ## Arguments and options
 
 ### Scalar SQL arguments
 
-| Argument | Type | Required | Description |
-| --- | --- | --- | --- |
-| `k` | `integer` | yes | Number of values selected from each row. |
-| `select` | `enum ("min", "max")` | yes | Select the minimum or maximum values. |
-
-### SQL value argument schemas
-
-| Argument | Required | Literal shape | Default | Constraints | Description |
+| Argument | Type | Required | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `k` | yes | `integer` | No default | minimum 1; maximum 4294967295 | Number of values selected from each row. |
-| `select` | yes | `string` | No default | one of `"min"`, `"max"` | Select the minimum or maximum values. |
+| `k` | `integer` | yes | No default | minimum 1; maximum 4294967295 | Number of values selected from each row. |
+| `select` | `string` | yes | No default | one of `"min"`, `"max"` | Select the minimum or maximum values. |
 
 ### Vector binding shapes
 
 Each relation subquery must project an `id` field followed by either one or more feature fields of a supported element type (`Float32`) or exactly one list field of a supported element type, under any name.
 
-For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and its list field. Nullable field types are accepted; a null ID, feature value, list row, or list element fails the query.
+For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and its list field. Nullable field types are accepted. A null ID, feature value, list row, or list element fails the query.
 
 ## Output
 
@@ -86,9 +77,5 @@ import Examples from '../_examples/cuvs_top_k.mdx';
 
 ## Limits
 
-- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
-- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
 - k must not exceed the vector dimension. Empty input returns an empty result with the stable schema.
 - Equal selected values are ordered by position; when ties straddle rank k, the selected positions among them are unspecified.
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

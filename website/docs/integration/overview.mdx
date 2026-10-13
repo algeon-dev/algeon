@@ -18,15 +18,12 @@ surface that matches the service boundary you own. Throughout these docs,
 
 The session and server APIs use the same GPU backend. By default, Algeon selects supported
 relational SQL for cuDF execution. Choose `functions_only` to keep ordinary SQL
-on DataFusion CPU while explicit GPU UDTFs run on GPU, or `native_required`
+on DataFusion CPU while explicit GPU UDTFs run on the GPU, or `native_required`
 to reject plans containing DataFusion CPU execution. See
 [Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode).
 
-The `cugraph`
-feature makes the `cugraph_*` UDTFs executable. The `cuvs` feature
-makes the documented `cuvs_*` UDTFs executable once the session
-installs cuVS SQL and a backend is configured; see
-[cuVS execution](../cuvs/overview.mdx#execution).
+The `cugraph`, `cuvs`, and `cuml` features make the matching UDTFs
+executable; see [Dependencies](./datafusion-session.mdx#dependencies).
 
 ## Iceberg support
 
@@ -48,16 +45,16 @@ store, so an `s3://` location fails there; an embedded session can still read
 2. **Pick an entry point.** Embed a
    [DataFusion session](./datafusion-session.mdx) in your Rust service or start
    the [Flight SQL server](./flight-sql-server.mdx) for remote clients.
-   In each case, declare the GPUs the process may use before running queries;
-   the server-side settings are in [Configuration](./configuration.mdx).
+   In each case, declare the GPUs the process may use before running queries.
+   The server-side settings are in [Configuration](./configuration.mdx).
 3. **Provide tables.** In an embedded session, register tables as you would
    in plain DataFusion (`CREATE EXTERNAL TABLE ... STORED AS PARQUET` or
-   `register_parquet`); see
+   `register_parquet`). See
    [Execute one attempt per query](./datafusion-session.mdx#execute-one-attempt-per-query).
    The server reads Parquet tables that clients register with
    `CREATE EXTERNAL TABLE`, as in the
    [citation table registration](./flight-sql-server.mdx#start-the-citation-demo-server).
-   If you use the `cugraph_*` or `cuvs_*` UDTFs, list and validate the installed
+   If you use the `cugraph_*`, `cuvs_*`, or `cuml_*` UDTFs, list and validate installed
    calls with [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx).
 4. **Check whether a query runs on the GPU.** Before shipping a query, ask for
    its planned execution path, and the reason for any part that stays on the
@@ -65,15 +62,10 @@ store, so an `s3://` location fails there; an embedded session can still read
    `algeon_explain_coverage` in embedded SQL, `EXPLAIN GPU` through Flight SQL,
    or `validate_query` in Rust. With the default `native_preferred` mode,
    relational candidates not selected for GPU execution stay in DataFusion.
-5. **Handle failures.** A GPU execution failure is not replayed on CPU; it
-   comes back as an error with a stable code, kind, and status. At your
-   application boundary, act on errors that carry a typed Algeon identity and
-   keep your existing policy for ordinary DataFusion failures. See
-   [Handling Errors](./handling-errors.mdx). Queries that cannot get GPU
-   execution capacity in time return `service_overloaded` backpressure rather
-   than waiting indefinitely; waiters are served first-in, first-out.
-
-The [cuGraph SQL API](../cugraph/overview.mdx) and
-[cuVS SQL API](../cuvs/overview.mdx) sections are the UDTF-level
-contracts. They share discovery and validation while documenting their distinct
-relation syntax, input semantics, lifecycle, and execution constraints.
+5. **Handle failures.** A GPU execution failure comes back as an error with
+   a stable code, kind, and status. At your application boundary, act on errors
+   that carry a typed Algeon identity and keep your existing policy for
+   ordinary DataFusion failures. See [Handling Errors](./handling-errors.mdx).
+   Queries that cannot get GPU execution capacity in time return
+   `service_overloaded` backpressure rather than waiting indefinitely. Waiters
+   are served first-in, first-out.

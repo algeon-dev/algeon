@@ -7,14 +7,12 @@ This example runs on the [citation network demo dataset](../../guides/datasets/c
 Take the 12 most-cited papers from 2015 through 2020 in the listed NLP fields,
 then compare each distinct-title pair by its bibliography overlap. Sørensen
 similarity weights the intersection by the sum of both reference-list sizes.
-The score describes shared citation background; project-specific relevance
-falls outside the measure.
+The score describes shared citation background.
 
-The UDTF requires an undirected graph. Positive IDs identify citing
-papers, while negative IDs identify reference-role vertices for cited papers.
-Outgoing bibliography neighbors are the negative IDs adjacent to each
-positive paper ID; citing papers remain on the positive-ID side. The edge
-projection omits weights, so each reference counts as one unit.
+The edge view gives cited papers negative IDs and citing papers positive IDs,
+so the undirected call compares outgoing reference lists, as the
+[Jaccard example](../udtfs/similarity/cugraph_jaccard.mdx?dataset=citation-network#examples)
+explains.
 
 ```sql
 CREATE OR REPLACE VIEW similarity_candidates AS

@@ -17,11 +17,6 @@ snapshot contains 4,894,081 papers and 45,564,149 citation edges, dated April 20
 
 An edge `src` → `dst` means paper `src` cites paper `dst`.
 
-- [Do citation communities match the catalog's research fields?](#research-communities)
-- [How are the papers around the Transformer connected?](#forceatlas2)
-- [Which papers share the Transformer's references?](#shared-background)
-- [Trace BERT to LSTM and reverse AlexNet's citations](#citation-paths)
-
 <span id="run-the-examples" />
 
 ## Do citation communities match the catalog's research fields? {/* #research-communities */}
@@ -54,18 +49,12 @@ An edge `src` → `dst` means paper `src` cites paper `dst`.
 | `paper_fos` | 45.0M | Paper-field-of-study links |
 
 `papers.n_citation` is AMiner's reported global count. In-graph degree counts
-only edges present in this snapshot; the
+only edges present in this snapshot. The
 [in-degree example](../../cugraph/udtfs/structure/cugraph_in_degrees_all.mdx#examples)
 compares them.
 
-The [Flight SQL guide](../../integration/flight-sql-server.mdx) covers client
-connection. The [cuGraph function catalog](../../cugraph/udtfs/index.mdx)
-contains more queries using these tables, including degree, centrality, and
-layout examples.
-
-
 **Seed paper records.** Queries use `paper_id` as the graph vertex. Titles can
-repeat across records; the examples select title and year together when
+repeat across records. The examples select title and year together when
 identifying a seed.
 
 | Paper | `paper_id` | Exact `title` in the corpus | `year` | Extra predicate |

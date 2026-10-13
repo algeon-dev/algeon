@@ -8,7 +8,7 @@ A six-group view of the dense citation core can show which catalog fields
 dominate each group and where labels mix. The query first keeps papers with at
 least 30 neighbors in the undirected citation graph, then partitions that core
 and reports each group's two most common `primary_fos` labels. The call
-passes the Int64 paper IDs directly; the
+passes the Int64 paper IDs directly. The
 [vertex codebook](../graph-options.mdx#vertex-codebook) maps them to Int32
 ids internally and decodes the result.
 

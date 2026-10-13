@@ -17,7 +17,7 @@ Rank vertices with PageRank while biasing random-walk restarts toward explicitly
 
 ## Quickstart
 
-The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, plus the registered relation `ppr_seeds` (the `personalization` relation with columns `vertex`, `value`). Substitute your own registered relations.
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, plus the registered relation `ppr_seeds` (the `personalization` relation with columns `vertex`, `value`).
 
 ```sql
 SELECT *
@@ -29,13 +29,9 @@ FROM cugraph_personalized_pagerank(
 
 ## Inputs
 
-Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns. Every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
 
-Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from `gpu_validate_call`.
-
-Logical string side-input limitations:
-
-- edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
+The vertex-ID types this UDTF accepts, the numeric types a per-call codebook maps to native ids, and its string-key limits are listed in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from `gpu_validate_call`.
 
 ## Arguments and options
 
@@ -67,7 +63,7 @@ Graph construction follows the shared defaults (`directed=true`, renumbering, `p
 | `vertex` | `Int64\|Utf8` | no | Vertex receiving the PageRank score. |
 | `value` | `Float64` | no | PageRank score for the vertex. |
 
-These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.
+These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -78,5 +74,3 @@ import Examples from '../../_examples/cugraph_personalized_pagerank.mdx';
 ## Limits
 
 - calls without an edge weight column repeat between runs; with one, scores can differ in the last digits because out-weight sums accumulate with floating-point atomics
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx).

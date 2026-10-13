@@ -55,7 +55,7 @@ topic to keep each near ten seconds. The case functions are plain `fn`s;
 one `#[test]` passes them to `cudf::testing::run_named_cases` through the
 `test-hooks` feature. Table runners import the helper from that owner module.
 Cases execute on the same thread in one process, with runtimes supplied by
-their fixtures. The helper reports all failing case names. A lazily installed default device memory manager is allowed
+their fixtures. The helper reports all failing case names. A lazily installed default device memory manager is permitted as
 shared table state. Thread-local, self-clearing one-shot native faults do
 not by themselves require a separate process; faults that can remain armed
 after a panic need an unwind guard or an independent test. Keep separate
@@ -66,10 +66,16 @@ tests for process-global or device-safety installation, spawned threads,
 `ALGEON_TEST_CASES` selects case names containing any comma-separated
 substring, for example `ALGEON_TEST_CASES=left_build,null_keys cargo nt -E
 'test(join_cases)'`. An unset or empty value runs the complete table. A
-nonempty selector matching no case fails; panicking cases still allow the
+non-empty selector matching no cases triggers a failure; panicking cases still allow the
 remaining selected cases to run. Each case must restore state during
 unwinding when later cases depend on it. The sys crate keeps an equivalent
 private helper because depending on cuDF would create a dependency cycle.
+
+The `tools` package owns the BFS predicate fixtures under
+`fixture/data/cugraph/`. The PageRank runner and required-oracle failure
+policy are shared through `algeon_datafusion::cugraph_sql::bench_support`, and
+upstream parity datasets prepared by `fixture/graph/prepare_cugraph.py` remain
+in `fixture/graph/cugraph/`.
 
 ## Layout checks
 
@@ -297,8 +303,7 @@ Rustdoc is always strict. The harness appends `-D warnings` after any
 caller-provided `RUSTDOCFLAGS`, and an earlier `-A warnings` cannot weaken it.
 
 The `public-api-surface` phase also checks the
-[application API documentation boundary](../website/docs/design/index.mdx#api-documentation).
-After comparing ordinary API snapshots, it extracts complete workspace
+[API documentation boundary](#api-documentation-boundary). After comparing ordinary API snapshots, it extracts complete workspace
 rustdoc JSON once with private and hidden items included. This provides
 method signatures for types exposed through another type's fields or methods.
 Each invocation copies that successful build's JSON into its own temporary
@@ -316,13 +321,71 @@ removal that fails while the signatures still match:
 bash scripts/ci/tests/check_public_api_surface_tests.sh
 ```
 
-The [shared build-support crate](../website/docs/build/overview.md#workspace-and-publication-contracts)
+The [shared build-support crate](#workspace-and-publication-contracts)
 has an isolated policy suite in the full gate's self-test phase. The suite can
 also run alone, without loading or modifying RAPIDS libraries:
 
 ```bash
 bash scripts/build/check_build_support.sh
 ```
+
+## Workspace and publication contracts
+
+Published packages use the `algeon-` prefix, and crate directory names match
+package names. `[workspace.dependencies]` retains bare dependency aliases
+through `package = "algeon-…"`. Rust imports and `dep:` features keep those
+identities. Refer to layers by their bare alias. Every renamed crate pins its
+`[lib] name` explicitly to preserve imports and public API snapshot names.
+
+Each crate declares `publish` directly: `publish = ["crates-io"]` for the
+release closure and `publish = false` otherwise. Do not set
+`[workspace.package].publish`. The allowlist and its validation belong to
+[`check_workspace_publication.py`](ci/check_workspace_publication.py), which
+rejects undeclared or mismatched publication settings.
+
+The release closure includes the normal and build dependencies needed to
+install `algeon-datafusion` from crates.io. Published implementation packages
+keep their owner APIs for workspace consumers. The
+[API documentation boundary](#api-documentation-boundary) determines which
+interfaces require application-facing rustdoc.
+
+[`algeon-build-support`](../components/algeon-build-support/Cargo.toml)
+(library `rapids_build_support`) is the shared build-dependency for packages
+whose build scripts link RAPIDS libraries. It remains std-only and cannot
+depend on crates built after it. Its policy suite is described under
+[Doctests and build support](#doctests-and-build-support).
+
+## API documentation boundary
+
+`algeon-datafusion` is the application-facing Rust crate. The query and GPU
+component crates, interop and build support are implementation dependencies
+published with it. Workspace code imports each contract from its owner;
+applications use the adapter and its re-exports. Query crates do not re-export
+another crate's modules as a facade. Public adapter signatures may use
+owner-crate types, with an adapter re-export for each exposed type; the
+[owner-type policy](../.config/policies/public-api/algeon-datafusion-owner-types.tsv)
+records that disposition.
+
+Visible adapter APIs require rustdoc, including public fields, enum variants
+and callable methods. The requirement also covers workspace-owned types
+re-exported by the adapter or reachable through its public signatures. Their
+documentation belongs at the defining item, so the adapter and internal
+consumers share one description. Document units, valid inputs, `None` meanings,
+errors and lifetime obligations where they affect callers.
+
+Internal cross-crate interfaces retain documentation for ownership, safety and
+other non-obvious invariants. They do not require application tutorials or
+exhaustive `missing_docs` enforcement merely because their package is published.
+Generated FFI declarations and existing hidden test interfaces stay outside
+the application documentation surface. Handwritten safety contracts remain
+with their owners. Hiding an item or changing its visibility requires the
+existing API review and cannot substitute for documenting an application API.
+Reports, metrics and native plan wrappers retain their existing contracts.
+
+The `public-api-surface` phase enforces this scope alongside the API snapshots
+([Doctests and build support](#doctests-and-build-support)). A passing
+completeness check establishes that documentation exists; review must still
+verify its claims against the implementation.
 
 ## Compile delay versus test delay
 

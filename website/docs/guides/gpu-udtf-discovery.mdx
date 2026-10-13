@@ -10,26 +10,20 @@ import CodeBlock from '@theme/CodeBlock';
 import Details from '@theme/Details';
 import Table from '@site/src/theme/MDXComponents/Table';
 import pagerank from '@site/gpu-function-specs/cugraph/cugraph_pagerank.json';
-import umap from '@site/gpu-function-specs/cuml/cuml_umap.json';
-import kmeans from '@site/gpu-function-specs/cuvs/cuvs_kmeans.json';
+import catalog from '@site/static/data/gpu-udtf-discovery-capture.json';
 import session from '@site/static/data/merrec-agent-session.json';
 
-export const errorOf = id => session.steps.find(item => item.step === id).error.replace(/^.*?message: /s, '');
+export const probeError = probe => probe.error.replace(/^.*?message: /s, '');
 export const wholeMs = value => Math.round(value * 1000).toLocaleString('en-US');
-export const listExample = [pagerank, umap, kmeans].map(({function_name, provider, available, summary}) => ({function_name, provider, available, summary}));
-export const validationExample = {
-  valid: true,
-  error_code: null,
-  would_execute_gpu: true,
-};
+export const asJson = row => JSON.stringify(Object.fromEntries(Object.entries(row).map(([key, value]) => [key, key.endsWith('_json') ? JSON.parse(value) : value])), null, 2);
+export const described = ['signature', 'relation_roles_json', 'options_schema_json', 'result_schemas_json', 'limitations_json'];
 
 # Discover & Validate GPU UDTFs
 
 Use this guide before adding a cuGraph, cuVS, or cuML UDTF to a query. It follows
 the same sequence for embedded sessions and Flight SQL: list what this build
-can run, inspect one UDTF's contract, validate the call statically (no
-data is read and nothing runs on the GPU), execute it, then check the complete
-query before production use.
+can run, inspect one UDTF's contract, validate the call statically, execute it,
+then check the complete query before production use.
 
 This page shows the workflow only. For every returned column, JSON schema, and
 validation-envelope rule, see the
@@ -40,23 +34,20 @@ validation-envelope rule, see the
 Start with the UDTFs available in the current build and session. Filter by
 provider when you already know the workload:
 
-~~~sql
-SELECT function_name, provider, available, summary
-FROM gpu_list_functions()
-WHERE provider IN ('cugraph', 'cuvs', 'cuml')
-ORDER BY function_name;
-~~~
+<CodeBlock language="sql">{catalog.list.sql}</CodeBlock>
 
-<Details summary="Example response · 3 rows shown">
-
-The example shows three rows from a build with all providers enabled.
-
-<CodeBlock language="json">{JSON.stringify(listExample, null, 2)}</CodeBlock>
+<Details summary="Example response">
+<Table>
+<thead><tr><th>function_name</th><th>provider</th><th>available</th><th>summary</th></tr></thead>
+<tbody>{catalog.list.rows.map(row => <tr key={row.function_name}><td><code>{row.function_name}</code></td><td>{row.provider}</td><td>{String(row.available)}</td><td>{row.summary}</td></tr>)}</tbody>
+</Table>
 </Details>
 
 `available=true` means the UDTF can be planned for GPU execution in this
-build and session; cuVS UDTFs require the `cuvs` feature. It does not prove
-that a surrounding query runs entirely on the GPU; step 5 covers that.
+build and session. It does not prove that a surrounding query runs entirely
+on the GPU. Step 5 covers that. cuVS UDTFs require the `cuvs` feature, and
+`cuml_forest_predict` requires a
+[models root](../integration/configuration.mdx#models-and-forest-inference).
 
 ## 2. Describe the selected UDTF
 
@@ -68,6 +59,10 @@ SELECT signature, relation_roles_json, options_schema_json, result_schemas_json,
 FROM gpu_describe_function('cugraph_pagerank');
 ~~~
 
+<Details summary="Example response">
+<CodeBlock language="json">{asJson(Object.fromEntries(described.map(column => [column, pagerank[column]])))}</CodeBlock>
+</Details>
+
 UDTF names are exact canonical names. The returned descriptor is useful
 when a client or agent needs to construct SQL dynamically, while the provider
 UDTF pages explain the same contract in task-specific terms.
@@ -77,23 +72,10 @@ UDTF pages explain the same contract in task-specific terms.
 Validate registered relation metadata and the provider-owned options before
 execution:
 
-~~~sql
-SELECT *
-FROM gpu_validate_call(
-  'cugraph_pagerank',
-  '{
-    "relations":{"edges":{"table":"analytics.edges"}},
-    "options":{"alpha":0.9,"directed":true}
-  }'
-);
-~~~
+<CodeBlock language="sql">{catalog.valid_call.sql}</CodeBlock>
 
-<Details summary="Example response · validation excerpt">
-
-The excerpt assumes cuGraph is enabled and `analytics.edges` is registered
-with `Int64` `src` and `dst` columns.
-
-<CodeBlock language="json">{JSON.stringify([validationExample], null, 2)}</CodeBlock>
+<Details summary="Example response · valid call">
+<CodeBlock language="json">{asJson(catalog.valid_call.rows[0])}</CodeBlock>
 </Details>
 
 This is static validation: it checks the named tables' or views' schemas and
@@ -101,20 +83,33 @@ the options, reads no data, and runs nothing on the GPU. Only registered
 tables or views resolve, and each one must already expose the role's canonical
 columns (`src`/`dst` for cuGraph edges, `id` plus feature columns for cuVS
 relations). A call whose relation aliases, filters, joins, or reads a CTE is
-not represented by this envelope; run `EXPLAIN GPU` on the final SQL instead,
+not represented by this envelope. Run `EXPLAIN GPU` on the final SQL instead,
 or register that derived relation as a view and validate the view.
+
+A rejected call also returns one row:
+
+<CodeBlock language="sql">{catalog.rejected_call.sql}</CodeBlock>
+
+<Details summary="Example response · rejected call">
+<CodeBlock language="json">{asJson(catalog.rejected_call.rows[0])}</CodeBlock>
+</Details>
+
+`message` lists every problem found in one pass. `error_code` and
+`details_json` locate the first.
 
 ## 4. Execute with the provider's relation syntax
 
-The catalog workflow is shared, but execution SQL intentionally differs:
+While the discovery and validation interfaces are identical across providers,
+execution syntax reflects each library's relation roles:
 
-- cuGraph passes each relation as a named parenthesized SELECT subquery, such
-  as cugraph_pagerank(edges => (SELECT src, dst FROM edges)).
-- cuVS passes each relation and value as named arguments, such as
-  cuvs_kmeans(input => (SELECT item_id AS id, d0, d1 FROM embeddings), n_clusters => 8).
+- cuGraph passes graph topologies via named relation subqueries (e.g.,
+  `edges => (SELECT src, dst FROM edges)`).
+- cuVS and cuML pass vector and training relations as named subqueries
+  alongside scalar options (e.g., `input => (SELECT ...)`, `k => 10`).
 
-Use the [cuGraph UDTFs](../cugraph/udtfs/index.mdx) and
-[cuVS UDTFs](../cuvs/udtfs/index.mdx) pages for each UDTF's signature,
+Use the [cuGraph UDTFs](../cugraph/udtfs/index.mdx),
+[cuVS UDTFs](../cuvs/udtfs/index.mdx), and
+[cuML UDTFs](../cuml/udtfs/index.mdx) pages for each UDTF's signature,
 input contract, outputs, and lifecycle.
 
 ## 5. Check whole-query GPU coverage
@@ -127,27 +122,28 @@ the final planned path.
 
 ## 6. The sequence on a recorded session
 
-A session over the [MerRec dataset](./datasets/merrec.mdx) followed these
-steps through Flight SQL, with an AI model writing the statements. It asked
-which brands moved toward Barbie's audience after the July 2023 film.
+A session over the [MerRec dataset](./datasets/merrec.mdx) followed this
+sequence through Flight SQL, with an AI agent writing each statement after
+reading the previous response. It asked which brands moved toward Barbie's
+audience after the July 2023 film.
 
 <Table>
-<thead><tr><th>Step</th><th>Statement</th><th>Outcome</th><th>Elapsed</th></tr></thead>
-<tbody>{session.steps.map(item => <tr key={item.step}><td>{item.step}</td><td>{item.intent}</td><td>{item.status === 'ok' ? 'rows' : 'planning error'}</td><td>{wholeMs(item.elapsed_s)} ms</td></tr>)}</tbody>
+<thead><tr><th>Step</th><th>Purpose</th><th>Outcome</th><th style={{textAlign: 'right'}}>Elapsed</th></tr></thead>
+<tbody>{session.steps.map(item => <tr key={item.step}><td>{item.step}</td><td>{item.intent}</td><td style={{whiteSpace: 'nowrap'}}>{item.status === 'ok' ? 'rows' : 'planning error'}</td><td style={{whiteSpace: 'nowrap', textAlign: 'right'}}>{wholeMs(item.elapsed_s)} ms</td></tr>)}</tbody>
 </Table>
 
-The two failures were guesses at column names, and each returned at planning
-time, before any row was read:
+Step 2 read the descriptor with `result_schemas_json`, and the call in step
+5 named its personalization and output columns correctly on the first
+attempt. The edge relation joins two tables under a date filter, which
+gpu_validate_call does not cover (section 3), and step 4 checked the composed
+query with `EXPLAIN GPU` instead. It reported the whole query on the GPU
+with no host boundary. The query itself ran four graph calls over 1.27
+billion events; the result and its control seeds are on the
+[MerRec page](./datasets/merrec.mdx#barbie).
 
-<CodeBlock language="text">{[errorOf(3), errorOf(4)].join('\n')}</CodeBlock>
+Two calls sent after the session show what the planner returns when a column
+name is wrong. One kept the source table's column names in the
+personalization relation, and one selected an output column the function
+does not produce. Each was rejected before any row was read:
 
-`EXPLAIN GPU` then reported the whole statement on the GPU with no host
-boundary, and the statement itself ran four graph calls over 1.27 billion
-events. The result and its control
-seeds are on the [MerRec page](./datasets/merrec.mdx#barbie).
-
-<div className="fineprint">
-
-The [session capture](/data/merrec-agent-session.json) holds every statement, its query ID where one was issued, the Flight status text of the failures and the returned rows, recorded on {session.recorded_at_utc} against the scale server configuration in `native_required` mode. Elapsed times cover one statement each; they exclude model generation and the pauses between calls.
-
-</div>
+<CodeBlock language="text">{session.probes.map(probeError).join('\n')}</CodeBlock>

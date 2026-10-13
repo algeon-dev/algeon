@@ -13,10 +13,9 @@ import {tpcdsSf100Benchmark} from '@site/src/data/tpcdsSf100Benchmark';
 ## GPU algorithms
 
 The GPU algorithms behind the `cugraph_*`, `cuvs_*` and `cuml_*` UDTFs are
-NVIDIA's libraries, and NVIDIA publishes their benchmarks. Algeon has not
-re-run them, and a UDTF call adds SQL planning, graph or index construction
-and result transfer on top of the kernel time they measure. Read them at
-the source:
+NVIDIA's libraries, and NVIDIA publishes their kernel-level benchmarks. Algeon executes
+them inside DataFusion physical plans alongside relational operators. Read the
+library benchmarks at the source:
 
 - [cuGraph](https://docs.nvidia.com/cugraph/latest/nx_cugraph/benchmarks/#benchmarks):
   speedup of nx-cugraph over NetworkX per algorithm on four graphs up to
@@ -30,8 +29,34 @@ the source:
   cuml.accel against scikit-learn, umap-learn and hdbscan per estimator,
   for training, inference and transforms.
 
-Benchmarks of the UDTFs themselves over the [demo datasets](../../guides/datasets/index.mdx)
-are planned.
+### End-to-end UDTF comparison (MerRec 1.27B events)
+
+End-to-end statement timings over the full six-month [MerRec dataset](../../guides/datasets/merrec.mdx)
+(1,268,092,738 events, 82,614,392 items on local NVMe, warm page cache) compare
+Algeon's GPU execution against CPU pipelines built from DuckDB on 32 threads
+and the matching library, on the same machine (Intel Xeon Platinum 8559C,
+32 vCPU, 256 GiB RAM, NVIDIA RTX PRO 6000 96 GB). GPU medians are from three
+runs on 2026-10-12 with one binary; the linked guide pages show earlier single
+captures.
+
+| Query | Algorithm family | Algeon GPU (median) | CPU baseline | GPU speedup | Result rows |
+| :--- | :--- | ---: | :--- | ---: | :--- |
+| [Barbie tie-ins](../../guides/datasets/merrec.mdx#barbie) (`10`) | cuGraph (PPR ×2, PageRank ×2) | 3.34 s | 23.3 s (DuckDB 1.5.6 + igraph 1.0.0) | 7.0× | Top 25 identical |
+| [Session audit](../../guides/datasets/merrec.mdx#sessions) (`12`) | cuGraph (WCC) | 2.19 s | 12.3 s (DuckDB + scipy 1.18.1) | 5.6× | Identical components |
+| [Audience funnel](../../guides/datasets/merrec.mdx#audience-funnel) (`30`) | cuGraph + cuVS + cuML | 19.4 s | 40.3 s (DuckDB + igraph + faiss + xgboost) | 2.1× | Borderline ties (2 shoppers) |
+| [World bridges](../../guides/datasets/merrec.mdx#bridges) (`31`) | cuGraph (Jaccard, Leiden, betweenness) | 16.9 s | 11.8 s (DuckDB + networkit 11.2.2) | 0.7× | Top 15 identical |
+
+#### Measurement details
+
+- **Barbie tie-ins (`10_barbie_tie_ins.sql`)**: Builds two undirected like graphs from 23 million distinct user-brand pairs (May–June and July–August), runs personalized PageRank from the Barbie vertex and global PageRank on each, and joins brand metadata.
+  - **Algeon (`native_required`)**: Median 3.34 s (first run 4.19 s). Relational extraction alone takes 1.04 s; four PageRank calls and joins take 2.3 s.
+  - **DuckDB 32 threads + igraph (PRPACK)**: Median 23.3 s. DuckDB DISTINCT join takes 2.3 s; `numpy.unique` renumbering and igraph C graph construction take 13.0 s; four PageRank calls take 7.7 s; final join takes 0.3 s.
+  - **DuckDB + scipy (power iteration)**: 32.1 s (single-threaded SpMV).
+  - **DuckDB + NetworkX 3.7**: 158 s. NetworkX defines tolerance as mean per-vertex error (`err < N * tol`). On 2.1 million vertices, the default `tol=1e-6` terminates after 1–2 iterations with incorrect rankings; matching cuGraph's absolute L1 tolerance requires `tol = 1e-5 / N`.
+  - **`functions_only` mode**: 15.1 s (first run 15.7 s). Ordinary SQL runs in DataFusion CPU while cuGraph stays on GPU. This is not a CPU baseline: the four UDTFs independently recompute the like graph and transfer data via host staging buffers. It measures the boundary-crossing overhead of mixed execution.
+- **Session audit (`12_session_audit.sql`)**: Weakly connected components over 39.8 million user-session edges. DuckDB string deduplication and renumbering takes 9.3 s, followed by 3.0 s in scipy `connected_components`.
+- **Audience funnel (`30_audience_funnel.sql`)**: Combines graph affinity (PPR), taste lookalikes (brute-force kNN), and purchase propensity (XGBoost inference) in one plan. The CPU pipeline requires passing intermediate tables through four separate libraries across host memory.
+- **World bridges (`31_world_bridges.sql`)**: Exact betweenness centrality is the bottleneck. cuGraph takes 11.3 s on it where networkit's Brandes implementation, parallel over sources on 32 threads, takes 1.7 s. The GPU wins the Jaccard stage (4.3 s against 6.1 s in DuckDB) and both Leiden runs finish within 1 s. Leiden partitions differ (70 worlds against 100), so only the betweenness ranking and neighbour counts were compared.
 
 ## Relational path
 
@@ -42,8 +67,8 @@ one warm-up and one measured iteration per query, on an AWS EC2 **g7e.8xlarge**:
 - Memory: 256 GiB.
 - GPU: NVIDIA RTX PRO 6000 Blackwell Server Edition, 96 GB.
 - Storage: local NVMe Parquet files. GPU reads use KvikIO compatibility mode
-  (`KVIKIO_COMPAT_MODE=ON`), without GPUDirect Storage. CPU reads use DataFusion's
-  Arrow Parquet reader.
+  with Algeon's default 64 I/O threads, without GPUDirect Storage. CPU reads
+  use DataFusion's Arrow Parquet reader.
 - DataFusion version `55.1`.
 
 ### TPC-H SF100
@@ -54,33 +79,22 @@ All 22 queries ran on the GPU path, and every output matched the CPU path.
 
 ### TPC-DS SF100
 
-The 2026-10-08 rerun completed all 99 queries on both paths with matching row
-counts. All 99 GPU queries used `NativeRequired`, with
-`selected=1 not_selected=0` in each planning report. Relational data operations
-ran on the GPU; SQL planning, execution coordination and result transfer still
-involve the CPU.
-
-Q04, Q74 and Q75 now include decimal division in the GPU join predicate through
-[native lowering](../../design/native-lowering.mdx#selection-fallback-and-mixed-execution).
-Separate `ordered_exact` comparisons matched all 100 result rows for each of
-these queries, with one native fragment and zero DataFusion host boundaries.
-The 99-query timing run checks output row counts; full result values were
-compared for these three queries.
+All 99 queries ran on the GPU path in `NativeRequired` mode, and {tpcdsSf100Benchmark.summary.parityMatchedCount === tpcdsSf100Benchmark.summary.queryCount
+  ? 'every result matched the CPU path'
+  : `${tpcdsSf100Benchmark.summary.parityMatchedCount} of ${tpcdsSf100Benchmark.summary.queryCount} results matched the CPU path`}.
 
 <TpcdsSf100Benchmark />
 
-GPU execution was faster for {tpcdsSf100Benchmark.summary.gpuFasterCount} queries;
-CPU execution was faster for {tpcdsSf100Benchmark.summary.gpuSlowerCount},
-including Q74 (1.57s CPU, 2.50s GPU). The aggregate CPU / GPU ratio uses the sum
-of measured query times, with the tuned CPU configuration below.
+GPU execution was faster for {tpcdsSf100Benchmark.summary.gpuFasterCount} queries
+and CPU for {tpcdsSf100Benchmark.summary.gpuSlowerCount}, including Q74
+(1.60s CPU, 2.41s GPU). The CPU / GPU ratio sums the measured query times under
+the tuned CPU configuration below.
 
 #### DataFusion CPU configuration
 
-The TPC-DS CPU baseline uses DataFusion 55.1.0 with 32 target partitions and
-32,768 rows per batch. Scan, join, aggregate and sort repartitioning are
-enabled. Dynamic filters are enabled for joins, top-k and aggregates. These
-[DataFusion settings](https://datafusion.apache.org/user-guide/configs.html)
-were used for the complete CPU rerun:
+The TPC-DS CPU baseline ran DataFusion 55.1.0 with these
+[settings](https://datafusion.apache.org/user-guide/configs.html). Settings
+not listed keep their defaults. The TPC-H run above used 8,192-row batches.
 
 <table>
   <thead>
@@ -93,19 +107,11 @@ were used for the complete CPU rerun:
   </tbody>
 </table>
 
-Parquet row-level filter pushdown and filter reordering are disabled.
-Statistics collection, row-group pruning and page-index pruning retain their
-enabled DataFusion defaults. The row-level pushdown comparison below retained
-dynamic filters and metadata pruning in both configurations.
-
-The TPC-H chart above retains its earlier run and uses 32 target partitions
-with an 8,192-row CPU batch. The 32,768-row setting applies to this TPC-DS rerun.
-
 #### CPU tuning comparison
 
-Five candidates were screened on Q03, Q04, Q07, Q23, Q64, Q74, Q75 and Q97, with
-zero warm-ups and one measured iteration. Profiles ran sequentially with the
-existing OS cache retained. Each produced matching output row counts.
+Five CPU profiles were screened on Q03, Q04, Q07, Q23, Q64, Q74, Q75 and Q97,
+one iteration each without warm-up. The fastest became the baseline above.
+Each figure is one iteration on one machine.
 
 <table>
   <thead>
@@ -123,37 +129,25 @@ existing OS cache retained. Each produced matching output row counts.
   </tbody>
 </table>
 
-The fastest tested candidate, 32 partitions with 32,768-row batches and
-row-level Parquet pushdown disabled, was then run across all 99 queries with
-one warm-up and one measured iteration. CPU time decreased from 243.92s at
-16 partitions and 8,192-row batches to 185.53s, a 23.94% reduction. This finite
-comparison establishes the selected configuration for this dataset and
-machine; it does not establish a universal optimum. One measured iteration
-does not quantify run-to-run variation.
-
 #### Measurement and reproduction
 
 Both paths use release builds with `target-cpu=x86-64-v4` and the same 24
 Parquet files, totalling 41,372,641,702 bytes and 959,037,905 rows. No caches
 were flushed. Each query's warm-up precedes its measured execution. `wall_ms`
 measures execution through result collection, including reads and GPU result
-transfer; successful-query SQL and physical planning time are excluded.
+transfer. Successful-query SQL and physical planning time are excluded.
 
 GPU runs use the `sf100_gpu_throughput` profile with
 `local_parquet_throughput` source planning, a 32 GiB source chunk limit and
 at most 1,024 row groups per chunk. Statistical aggregates use
 [`gpu_native_tolerant`](../../integration/configuration.mdx#native-settings).
-Variance and standard deviation run on the GPU and can differ from DataFusion
-in floating-point values.
 
-The recorded source was a working tree based on commit
-<code>{tpcdsSf100Benchmark.environment.sourceRevision.slice(0, 12)}</code>,
-including the decimal join predicate fix. The existing TPC-DS environment
-variables select the CPU partition and batch settings:
+The recorded source is commit
+<code>{tpcdsSf100Benchmark.environment.sourceRevision.slice(0, 12)}</code>.
+The TPC-DS environment variables select the CPU partition and batch settings:
 
 ```bash
 source env.sh
-export KVIKIO_COMPAT_MODE=ON
 export ALGEON_TPCDS_CPU_TARGET_PARTITIONS=32
 export ALGEON_TPCDS_CPU_BATCH_SIZE=32768
 export ALGEON_TPCDS_NATIVE_PROFILE=sf100_gpu_throughput
@@ -168,4 +162,32 @@ bash scripts/dev/bench_one.sh tpcds all --engine cpu_datafusion \
 bash scripts/dev/bench_one.sh tpcds all --engine native_gpu \
   --scale 100 --warmups 1 --iterations 1 \
   --parquet-dir "$ALGEON_PARQUET_DIR" --out /tmp/tpcds-gpu.tsv
+```
+
+`native_tpcds_parity_report` checks the result values. It runs each query on
+both paths in one process, with the CPU side on the same partition and batch
+settings, and compares every value. Rows are compared in order when the
+`ORDER BY` covers every output column, otherwise as a set. Floating-point
+columns, which are the GPU variance and standard deviation outputs under
+`gpu_native_tolerant`, accept an absolute and relative error of
+<code>{String(tpcdsSf100Benchmark.config.parity.floatToleranceAbsolute)}</code>;
+every other column must match exactly. The result-values column in the table
+names the mode used for each query.
+
+```bash
+export ALGEON_TPCDS_PARITY_FLOAT_ABS_TOLERANCE=0.00000001
+export ALGEON_TPCDS_PARITY_FLOAT_REL_TOLERANCE=0.00000001
+flock /tmp/cudf-gpu.lock cargo run --release -p bench --all-features \
+  --bin native_tpcds_parity_report > /tmp/tpcds-parity.tsv
+```
+
+The generator refuses a parity TSV whose dataset root, query set or CPU
+settings differ from the timing run:
+
+```bash
+python3 website/scripts/generate_tpcds_sf100_benchmark_ts.py \
+  --cpu-tsv /tmp/tpcds-cpu.tsv --gpu-tsv /tmp/tpcds-gpu.tsv \
+  --parity-tsv /tmp/tpcds-parity.tsv \
+  --environment /tmp/tpcds-environment.json \
+  --out website/src/data/tpcdsSf100Benchmark.ts
 ```

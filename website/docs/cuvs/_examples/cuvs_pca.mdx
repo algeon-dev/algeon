@@ -5,11 +5,6 @@ This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.m
 
 ### How much histogram variation remains visible in two PCA dimensions?
 
-The HDBSCAN review case reduces the 512-dimensional Win32 challenge histogram
-to 16 PCA components before clustering. A CPU geometry check reports that
-these 16 centered components retain 89.997% of the input variance
-for the 3,225-row cohort.
-
 The query returns two PCA coordinates for all 3,225 Win32 challenge rows. The
 first two centered components retain 71.187% of the variance. Labels and
 family names are joined after PCA for inspection; the PCA input consists only
@@ -25,10 +20,6 @@ The SQL result contains 3,225 rows and recorded `native` disposition.
 
 For the 16-component reduction followed by HDBSCAN, see the [full PCA and
 HDBSCAN SQL example](/cuml/udtfs/cuml_hdbscan#examples).
-
-The saved map keeps this PCA-2 view alongside the matching TSVD-2 and UMAP-2
-captures. Its cluster filter uses assignments from the separate 16-component
-PCA and HDBSCAN result.
 
 ```sql
 -- Project all Win32 challenge histograms to two principal components, preserving

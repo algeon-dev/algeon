@@ -104,7 +104,6 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
     gpuSuccessCount: number;
     speedup: number | null;
     maxPeakMemoryOperatorClassBytes: number;
-    rowsMatchCount: number;
     gpuFasterCount: number;
     gpuSlowerCount: number;
   };
@@ -161,8 +160,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
               {formatSeconds(typedSummary.gpuSuccessTotalMs)} across{' '}
               {typedSummary.gpuSuccessCount}/{typedSummary.queryCount} successful native
               queries, CPU / GPU {formatSpeedup(typedSummary.speedup, 2)}, largest task memory peak{' '}
-              {formatGiB(typedSummary.maxPeakMemoryOperatorClassBytes)}. Row counts matched on{' '}
-              {typedSummary.rowsMatchCount}/{typedSummary.queryCount} queries.
+              {formatGiB(typedSummary.maxPeakMemoryOperatorClassBytes)}.
             </li>
           </ul>
         </div>
@@ -332,7 +330,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
                       <th>GPU</th>
                       <th>Speedup</th>
                       <th>GPU outcome</th>
-                      <th>Rows</th>
+                      <th>Result values</th>
                       <th>Runtime class</th>
                       <th>Task memory peak</th>
                     </tr>
@@ -345,7 +343,9 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
                         <td>{formatMs(row.gpuMs ?? row.gpuWallMs)}</td>
                         <td>{formatSpeedup(row.speedup)}</td>
                         <td>{row.gpuOutcome}</td>
-                        <td>{row.rowsMatch ? 'match' : 'mismatch'}</td>
+                        <td title={row.parityDetail ?? undefined}>
+                          {row.parityStatus} · {row.comparisonMode}
+                        </td>
                         <td>{row.runtimeOperatorClass || '-'}</td>
                         <td>{formatGiB(row.peakMemoryOperatorClassBytes)}</td>
                       </tr>

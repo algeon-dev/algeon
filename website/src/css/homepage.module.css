@@ -1,11 +1,11 @@
 .hero {
   container-type: inline-size;
   padding-top: 0.5rem;
-  margin-bottom: 1.75rem;
+  margin-bottom: 2.5rem;
 }
 
 .hero h1 {
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
   font-size: min(3rem, 5cqi);
   line-height: 1.1;
   letter-spacing: -0.025em;
@@ -18,11 +18,24 @@
   font-size: 0.875rem;
 }
 
+/* The lead reads as the title's subtitle: muted like .heading-subtitle in
+   custom.css, close to the h1, and clearly apart from the body paragraph
+   that follows the buttons. */
 .lead {
-  max-width: 65ch;
+  max-width: 60ch;
   margin-bottom: 1.25rem;
-  font-size: 1.125rem;
-  line-height: 1.6;
+  font-size: 1.25rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--ifm-color-emphasis-700);
+  text-wrap: balance;
+}
+
+/* Each clause wraps and balances inside its own box, so the second clause
+   always starts a new line. A <br> stops balance after the break and leaves
+   an orphan on phones. */
+.lead > span {
+  display: inline-block;
 }
 
 .actions {
@@ -40,12 +53,6 @@
   outline-offset: 4px;
 }
 
-.heroNote {
-  margin: 1rem 0 0;
-  color: var(--ifm-font-color-secondary);
-  font-size: 0.9375rem;
-}
-
 :global(.theme-doc-markdown):has(.hero) > :global(.alert--warning) {
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
@@ -58,11 +65,18 @@
 
 @media (max-width: 576px) {
   .hero {
-    margin-bottom: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  /* 5cqi shrinks the one-line title below body size on a phone, so the
+     title wraps at a fixed size instead. */
+  .hero h1 {
+    font-size: 1.75rem;
+    white-space: normal;
   }
 
   .lead {
-    font-size: 1rem;
+    font-size: 1.125rem;
   }
 
   /* Three columns leave the "Current use" column about 90px wide on a phone,

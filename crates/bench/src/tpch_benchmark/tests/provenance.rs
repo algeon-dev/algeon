@@ -1,4 +1,5 @@
 use query_planning::execution_contracts::SourceChunkPlanningMode;
+use query_runtime::runtime::{KvikioCompatMode, KvikioProcessConfig};
 
 use super::*;
 use crate::tpch_benchmark::{
@@ -41,7 +42,7 @@ fn run_start_line_renders_unobservable_facts_as_unknown_not_defaults() {
     ] {
         assert!(line.contains(&format!(" {key}=unknown")), "{key} must render as unknown: {line}");
     }
-    assert!(line.contains(" kvikio_compat_mode=unset "));
+    assert!(line.contains(" kvikio_compat_mode=unknown kvikio_threads=unknown kvikio_task_size_bytes=unknown "));
     assert!(line.contains(" dataset_mode=sf100_external query_count=2 warmups=1 iterations=3 "));
     assert!(line.contains(
         " native_profile=custom profile_source=direct_config device_budget=15032385536 query_cap_bytes=15032385536 "
@@ -57,7 +58,11 @@ fn run_start_line_carries_device_identity_and_capacity_per_ordinal() {
         revision: Some("9a3dc99ab13b".to_string()),
         worktree_dirty: Some(true),
         fd_soft_limit: Some(1024),
-        kvikio_compat_mode: Some("ON".to_string()),
+        kvikio: Some(KvikioProcessConfig {
+            compat_mode: KvikioCompatMode::On,
+            thread_count: 64,
+            task_size_bytes: 4_194_304,
+        }),
         cpu_model: Some("Intel(R) Xeon(R) Platinum 8559C".to_string()),
         devices: vec![DeviceProvenance {
             ordinal: 0,
@@ -78,7 +83,9 @@ fn run_start_line_carries_device_identity_and_capacity_per_ordinal() {
     ));
     assert!(line.contains(" revision=9a3dc99ab13b worktree_dirty=true "));
     assert!(line.contains(" cpu_model=Intel(R)_Xeon(R)_Platinum_8559C "));
-    assert!(line.contains(" fd_soft_limit=1024 kvikio_compat_mode=ON "));
+    assert!(
+        line.contains(" fd_soft_limit=1024 kvikio_compat_mode=on kvikio_threads=64 kvikio_task_size_bytes=4194304 ")
+    );
     assert!(
         line.contains(" gpu_count=1 gpu0_model=NVIDIA_RTX_PRO_6000_Blackwell_Workstation_Edition gpu0_uuid=unknown ")
     );

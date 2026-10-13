@@ -6,15 +6,7 @@
 
 /* You can override the default Infima variables here. */
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
   --ifm-code-font-size: 95%;
-  --ifm-navbar-background-color: rgba(255, 255, 255, 0.6);
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
 
   --ag-ayu-bg: #0f1419;
@@ -97,6 +89,56 @@
   --search-local-input-active-border-color: var(--ag-ayu-accent);
 
   --docusaurus-highlighted-code-line-bg: rgba(230, 180, 80, 0.12);
+}
+
+/* Light theme: warm paper. Every gray shares one warm hue, so borders and
+   panels do not read as cool gray on the paper. Infima derives its emphasis,
+   content and surface colors from the gray ramp, and secondary buttons read
+   gray-900 directly, so the ramp is overridden at its root. Gray-0 is the
+   raised surface (cards, tables, menus), one step above the page; gray-100
+   is the sunk surface (code, footer). The primary is a dark ochre in the dark
+   theme's gold family. Body text, primary, links and gray-600 fine print
+   all reach WCAG AA (4.5:1) on the page color. */
+[data-theme='light'] {
+  --ifm-color-primary: #925b00;
+  --ifm-color-primary-dark: #895200;
+  --ifm-color-primary-darker: #804a00;
+  --ifm-color-primary-darkest: #713c00;
+  --ifm-color-primary-light: #9f6700;
+  --ifm-color-primary-lighter: #ac731a;
+  --ifm-color-primary-lightest: #b97f2b;
+
+  --ifm-color-gray-0: #fefcf6;
+  --ifm-color-gray-100: #efede5;
+  --ifm-color-gray-200: #e4e1da;
+  --ifm-color-gray-300: #dad7d0;
+  --ifm-color-gray-400: #c6c4bd;
+  --ifm-color-gray-500: #a7a49e;
+  --ifm-color-gray-600: #72706a;
+  --ifm-color-gray-700: #5d5b55;
+  --ifm-color-gray-800: #44423c;
+  --ifm-color-gray-900: #211f1a;
+  --ifm-color-gray-1000: #110f0b;
+  --ifm-color-content-secondary: #57554f;
+  --ifm-color-secondary: var(--ifm-color-gray-200);
+  --ifm-color-secondary-dark: var(--ifm-color-gray-300);
+  --ifm-color-secondary-darker: var(--ifm-color-gray-400);
+  --ifm-color-secondary-darkest: var(--ifm-color-gray-500);
+
+  --ifm-background-color: #f8f6ee;
+  --ifm-navbar-background-color: rgba(248, 246, 238, 0.72);
+  --ifm-heading-color: var(--ifm-color-emphasis-1000);
+  --ifm-link-color: #0f68a2;
+  --ifm-link-hover-color: var(--ifm-color-primary);
+  --ifm-code-background: var(--ifm-color-emphasis-100);
+  --ifm-table-stripe-background: rgba(33, 31, 26, 0.035);
+  --ifm-scrollbar-track-background-color: var(--ifm-color-emphasis-100);
+  --ifm-scrollbar-thumb-background-color: var(--ifm-color-emphasis-400);
+  --ifm-scrollbar-thumb-hover-background-color: var(--ifm-color-emphasis-500);
+
+  --search-local-modal-background: var(--ifm-color-emphasis-100);
+  --search-local-hit-background: var(--ifm-color-emphasis-0);
+  --search-local-muted-color: var(--ifm-color-emphasis-600);
 }
 
 /* Give the wide wordmark logo room to breathe in the navbar. */
@@ -185,9 +227,9 @@
 }
 
 .navbar {
-  background: rgba(255, 255, 255, 0.6);
-  border-bottom: 1px solid rgba(180, 188, 196, 0.42);
-  box-shadow: 0 10px 28px rgba(31, 41, 55, 0.08);
+  background: var(--ifm-navbar-background-color);
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+  box-shadow: 0 10px 28px rgba(33, 31, 26, 0.06);
 }
 
 /* The glass blur lives on a pseudo-element, never on `.navbar` itself: a
@@ -389,18 +431,18 @@
 }
 
 [data-theme='light'] .footer.footer--dark {
-  background: #f7f8fa;
-  border-top: 1px solid rgba(180, 188, 196, 0.5);
+  background: var(--ifm-color-emphasis-100);
+  border-top: 1px solid var(--ifm-color-emphasis-200);
 }
 
 [data-theme='light'] .footer.footer--dark .footer__title {
-  color: #1f2937;
+  color: var(--ifm-heading-color);
 }
 
 [data-theme='light'] .footer.footer--dark .footer__item,
 [data-theme='light'] .footer.footer--dark .footer__copyright,
 [data-theme='light'] .footer.footer--dark .footer__link-item {
-  color: #4b5563;
+  color: var(--ifm-color-content-secondary);
 }
 
 [data-theme='light'] .footer.footer--dark .footer__link-item:hover {
@@ -430,9 +472,21 @@
 
 /* Inline code tokens are identifiers; never break them across lines
    (e.g. `gpu_validate_call` splitting at the underscore). Long tokens move to the
-   next line whole; tables already scroll horizontally when needed. */
+   next line whole; tables already scroll horizontally when needed. Messages,
+   commands and statements go in fenced blocks, which scroll on their own. */
 .markdown :not(pre) > code {
   white-space: nowrap;
+}
+
+/* Below the single-column breakpoint one identifier can exceed the column
+   width, and nowrap would scroll the whole page sideways. break-word splits a
+   token only when it cannot fit on a line of its own, and leaves table
+   min-content widths unchanged. */
+@media (max-width: 996px) {
+  .markdown :not(pre) > code {
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
 }
 
 [data-theme='dark'] .theme-code-block {
@@ -451,7 +505,7 @@
 }
 
 .navbar__search .navbar__search-input {
-  background-color: rgba(15, 20, 25, 0.08);
+  background-color: rgba(33, 31, 26, 0.07);
   border-radius: 999px;
   font-size: 1rem;
   height: 2.45rem;
@@ -696,7 +750,7 @@
   }
 
   .blog-wrapper.blog-post-page main article > header,
-  .blog-wrapper.blog-post-page main article .markdown > :is(p, h2, h3, ul, ol, .fineprint) {
+  .blog-wrapper.blog-post-page main article .markdown > :is(p, h2, h3, ul, ol, .fineprint, blockquote) {
     max-width: var(--algeon-blog-prose-width);
     margin-inline: auto;
   }
@@ -955,6 +1009,23 @@ html[data-focus-mode='on'] .theme-layout-main {
 .markdown details.alert > summary + div {
   margin-top: 0.5rem;
   padding-top: 0.5rem;
+}
+
+/* Blockquote: quiet panel with primary accent border for definitions and
+   architectural notes. */
+.markdown blockquote {
+  margin: 1.25rem 0 1.5rem;
+  padding: 0.85rem 1.2rem;
+  border-left: 3px solid var(--ifm-color-primary);
+  background-color: var(--ifm-color-emphasis-100);
+  border-radius: 0 6px 6px 0;
+  color: var(--ifm-color-emphasis-900);
+  font-size: 1.05rem;
+  line-height: 1.55;
+}
+
+.markdown blockquote p:last-child {
+  margin-bottom: 0;
 }
 
 /* Fine print: provenance, capture links and execution records that most

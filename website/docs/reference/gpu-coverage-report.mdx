@@ -7,9 +7,9 @@ description: Columns, JSON fields, blocking kinds, candidate outcomes, remedies 
 # GPU Coverage Report
 
 This page defines every column, JSON field and code that
-`algeon_explain_coverage` and `EXPLAIN GPU` return. It is a lookup reference.
-The calls themselves, how to read a result and what the report does not
-guarantee are covered in [GPU Coverage Validation](../integration/gpu-coverage-validation.mdx).
+`algeon_explain_coverage` and `EXPLAIN GPU` return. The calls, how to read a
+result and what the report does not guarantee are in
+[GPU Coverage Validation](../integration/gpu-coverage-validation.mdx).
 
 ## Columns {/* #columns */}
 
@@ -17,17 +17,17 @@ The UDTF and Flight SQL return the same Arrow schema.
 
 | Column | Meaning |
 | --- | --- |
-| `query_id` | Flight SQL query identifier; null for an embedded UDTF call with no server query. |
+| `query_id` | Flight SQL query identifier, or null for an embedded UDTF call with no server query. |
 | `row_kind` | `summary` for final-plan coverage or `candidate` for one native candidate-selection outcome. |
 | `gpu_path` | `native`, `partial_native`, `cpu`, or terminal `rejected`. |
 | `gpu_fragments`, `cpu_boundaries` | Summary-row counts for GPU fragments and DataFusion CPU boundaries. |
 | `physical_root`, `post_native_plan_root` | Summary-row physical-plan roots, defined below the table. |
 | `candidate_shape`, `candidate_family`, `outcome` | Candidate-row shape, stable shape family and outcome. |
 | `reason_code`, `unsupported_category` | Stable candidate or terminal-rejection reason and its triage category. |
-| `remedy_code`, `remedy_kind`, `remedy` | Stable advice for a non-selected candidate; the kind is `user_action`, `config_action`, `engine_gap` or `cpu_preferred`. |
-| `blocking` | One line naming what blocked a `not_supported` candidate; null when the producing site could not name it. |
+| `remedy_code`, `remedy_kind`, `remedy` | Stable advice for a non-selected candidate. The kind is `user_action`, `config_action`, `engine_gap` or `cpu_preferred`. |
+| `blocking` | One line naming what blocked a `not_supported` candidate, or null when the producing site could not name it. |
 | `detail_json` | Summary metadata or candidate detail, its structured `blocking` subject, and cost evidence. |
-| `coverage_json` | The complete structured result on the summary row; null on candidate rows. |
+| `coverage_json` | The complete structured result on the summary row, or null on candidate rows. |
 
 - `physical_root` is the authoritative pre-native root captured by the retained
   optimizer diagnostics, and it is null when no native optimizer diagnostic
@@ -125,13 +125,18 @@ The remaining rules:
 - When the status message names a blocking plan element, it ends with
   `; EXPLAIN GPU lists every blocking candidate`, and `detail` ends before that
   clause.
-- `detail` can quote the query's own SQL and identifiers; it reaches the
+- `detail` can quote the query's own SQL and identifiers. It reaches the
   session that ran the statement and stays out of operational logs.
 
 Under `native_required`, `SELECT APPROX_PERCENTILE_CONT(x, 0.5) FROM t` returns
-`native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support aggregate function approx_percentile_cont`
-as `detail`. Its `not_supported` candidate row repeats the subject in `blocking`
-as `aggregate function approx_percentile_cont`.
+this `detail`:
+
+```text
+native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support aggregate function approx_percentile_cont
+```
+
+Its `not_supported` candidate row repeats the subject in `blocking` as
+`aggregate function approx_percentile_cont`.
 
 ## Candidate outcomes {/* #candidate-outcomes */}
 
@@ -141,7 +146,7 @@ values:
 
 | Outcome | Meaning | Evidence |
 | --- | --- | --- |
-| `selected` | The candidate was selected for native execution. | Candidate shape (`detail`); `reason_code`, `reason_kind` and `category` are absent. |
+| `selected` | The candidate was selected for native execution. | Candidate shape (`detail`). `reason_code`, `reason_kind` and `category` are absent. |
 | `not_supported` | The candidate is outside the native capability contract, or its DataFusion parent could not keep it. | `reason_code`, `reason_kind`, candidate shape (`detail`) and category. |
 | `not_selected_by_cost` | The candidate is native-capable, but a preference rule or cost threshold retained the DataFusion plan. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
 
@@ -153,7 +158,7 @@ values:
   first matches a plan that reads no column data, because every source is a
   literal with no columns or no rows and no GPU algorithm runs (reason
   `native_no_column_data_not_selected_by_cost`).
-- The second matches a plan whose every node is a literal source; native
+- The second matches a plan whose every node is a literal source. Native
   execution would only copy host rows to the device and back (reason
   `native_host_literal_passthrough_not_selected_by_cost`).
 - Otherwise an enabled cost threshold matched. A subtree whose candidate the
@@ -226,12 +231,12 @@ fingerprints do not claim that source metadata or table contents are unchanged.
 
 | Code | Meaning |
 | --- | --- |
-| `runtime_gpu_admission_unknown` | Query-service grants are acquired only at execution time and can wait or fail under concurrency; once admitted, each grant is immutable. |
+| `runtime_gpu_admission_unknown` | Query-service grants are acquired only at execution time and can wait or fail under concurrency. Once admitted, each grant is immutable. |
 | `device_memory_runtime_unknown` | Allocation, reservation and retry outcomes depend on data and concurrency. |
 | `native_runtime_failure_has_no_cpu_rescue` | Once native GPU execution starts, a native failure is terminal and Algeon does not replay it on CPU. |
 | `host_output_materialization` | Query output is materialized back to host Arrow outside the GPU-execution promise. |
 | `cugraph_runtime_validation_unknown` | cuGraph seed, personalization, weight and device checks can still fail at runtime. |
-| `execution_mode_plan_time_only` | Coverage acquires no device grant; capability-first admission and bounded execution happen later for the selected native plan. |
+| `execution_mode_plan_time_only` | Coverage acquires no device grant. Capability-first admission and bounded execution happen later for the selected native plan. |
 
 ## Rust surface {/* #rust-surface */}
 

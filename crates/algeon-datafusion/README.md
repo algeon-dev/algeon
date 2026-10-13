@@ -5,7 +5,7 @@ optimizer rules that lower supported DataFusion plans into Algeon's native GPU
 runtime, while preserving the executable DataFusion plan for candidates that
 are not selected.
 
-The adapter also provides SQL table functions for cuGraph and cuVS algorithms,
+The adapter also provides SQL table functions for cuGraph, cuVS, and cuML algorithms,
 structured planning and runtime diagnostics, and Parquet source integration.
 See the [Algeon documentation](https://algeon.dev) for setup,
 supported SQL, configuration, and operational contracts.

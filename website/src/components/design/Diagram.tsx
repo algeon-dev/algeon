@@ -32,7 +32,7 @@ import {
  * - StackDiagram: a top-down layering with optional boundary dividers.
  * - ArchitectureDiagram: the overview page's fixed component map.
  * - FlowDiagram: a pipeline with optional bands and return rails, for the
- *   "one statement" story on the overview and in the blog; left to right, or
+ *   "one query" story on the overview and in the blog; left to right, or
  *   top to bottom in a narrow figure.
  *
  * Nodes carrying a `detail` are clickable (and keyboard-focusable); the
@@ -341,7 +341,7 @@ function morph(from: SVGElement | null, update: () => void, to: () => SVGElement
  * scale, with an interactive figure's detail panel underneath. Node selection
  * stays in the figure's state, so the page and the dialog show the same
  * selection. */
-function FigureDialog({drawing, narrow, interactive, ariaLabel, panel, canvasRef, returnTo, onClosed}: {
+function FigureDialog({drawing, narrow, interactive, ariaLabel, panel, canvasRef, returnTo, openedByKeyboard, onClosed}: {
   drawing: FigureCanvas;
   narrow?: FigureCanvas;
   interactive?: boolean;
@@ -350,6 +350,8 @@ function FigureDialog({drawing, narrow, interactive, ariaLabel, panel, canvasRef
   canvasRef: React.RefObject<SVGSVGElement | null>;
   /** The page drawing the dialog's drawing shrinks back into on close. */
   returnTo: () => SVGElement | null;
+  /** Whether the viewport shows its focus ring when the dialog opens. */
+  openedByKeyboard: boolean;
   onClosed: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -364,7 +366,10 @@ function FigureDialog({drawing, narrow, interactive, ariaLabel, panel, canvasRef
     const viewport = viewportRef.current;
     if (!dialog || !viewport) return undefined;
     dialog.showModal();
-    viewport.focus({preventScroll: true});
+    // Script focus inherits the ring from a focused control that shows one,
+    // as the enlarge button does after Escape closed the dialog, so a mouse
+    // reopen would otherwise frame the viewport.
+    viewport.focus({preventScroll: true, focusVisible: openedByKeyboard});
     // Border-box sizes include scrollbars, so stepping to a scale that
     // overflows does not shrink the room that fit and the drawing choice read.
     const measure = () => {
@@ -427,11 +432,17 @@ function FigureDialog({drawing, narrow, interactive, ariaLabel, panel, canvasRef
 
   // A zoomed drawing overflows the viewport, and a morph would draw its
   // unclipped snapshot over the toolbar, so only a fitted drawing morphs back;
-  // otherwise the dialog crossfades out.
-  const close = () => morph(zoom === 'fit' ? canvasRef.current : null, () => {
-    dialogRef.current?.close();
-    flushSync(onClosed);
-  }, returnTo);
+  // otherwise the dialog crossfades out. The Escape keypress makes the focused
+  // control match :focus-visible, and the old snapshot would carry that ring
+  // out with the dialog, so focus leaves first; close() still returns it to
+  // the enlarge button.
+  const close = () => {
+    dialogRef.current?.querySelector<HTMLElement | SVGElement>(':focus')?.blur();
+    morph(zoom === 'fit' ? canvasRef.current : null, () => {
+      dialogRef.current?.close();
+      flushSync(onClosed);
+    }, returnTo);
+  };
 
   // Escape stays animated while the browser lets the page cancel it; when it
   // does not, the native close lands in onClose.
@@ -531,12 +542,16 @@ export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel,
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const dialogCanvasRef = useRef<SVGSVGElement>(null);
-  const [enlarged, setEnlarged] = useState(false);
+  const [enlarged, setEnlarged] = useState<'keyboard' | 'pointer' | null>(null);
   useOverflowEdges(scrollRef);
   // The wide or the narrow drawing, whichever the container query shows.
   const pageCanvas = () => Array.from(scrollRef.current?.querySelectorAll<SVGSVGElement>(':scope > svg') ?? [])
     .find((svg) => svg.getClientRects().length > 0) ?? null;
-  const open = () => morph(pageCanvas(), () => flushSync(() => setEnlarged(true)), () => dialogCanvasRef.current);
+  // Enter and Space on a button dispatch a click whose detail is 0.
+  const open = (e: React.MouseEvent) => {
+    const via = e.detail === 0 ? 'keyboard' : 'pointer';
+    morph(pageCanvas(), () => flushSync(() => setEnlarged(via)), () => dialogCanvasRef.current);
+  };
   return (
     <div className={styles.figure}>
       <figure style={{margin: 0}}>
@@ -566,7 +581,7 @@ export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel,
       {enlarged ? (
         <FigureDialog drawing={{svgW, svgH, minW, children}} narrow={narrow} interactive={interactive}
           ariaLabel={ariaLabel} panel={panel} canvasRef={dialogCanvasRef} returnTo={pageCanvas}
-          onClosed={() => setEnlarged(false)} />
+          openedByKeyboard={enlarged === 'keyboard'} onClosed={() => setEnlarged(null)} />
       ) : null}
     </div>
   );
@@ -895,7 +910,7 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
     tone: 'engine',
   };
   const gpu: DiagramNode = {
-    kind: 'same process · one device · one memory grant',
+    kind: 'same process · one memory grant',
     name: 'GPU execution',
     note: [
       'cuDF for the relational plan',

@@ -18,7 +18,7 @@ Principal-component analysis transform for dense vector rows.
 
 ## Quickstart
 
-The call below expects the registered relation `input_vectors` (the `input` role), passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
+The call below expects the registered relation `input_vectors` (the `input` role), passed as a parenthesized `SELECT` subquery.
 
 ```sql
 SELECT id, pc_0, pc_1
@@ -39,39 +39,26 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 ### Vector element types
 
-| Element type | Valid metrics |
-| --- | --- |
-| `Float32` | Not applicable |
+Feature values must be `Float32`.
 
 ## Arguments and options
 
 ### Scalar SQL arguments
 
-| Argument | Type | Required | Description |
-| --- | --- | --- | --- |
-| `n_components` | `integer` | yes | Number of principal-component columns emitted as pc_0 through pc_&lt;n_components - 1&gt;. |
-| `whiten` | `boolean` | no | Whether the query-local transformed components are whitened. |
-| `solver` | `enum ("cov_eig_dq", "cov_eig_jacobi")` | no | Covariance eigensolver used for this fit-transform call. |
-| `tol` | `number` | no | Non-negative eigensolver tolerance. |
-| `n_iterations` | `integer` | no | Maximum eigensolver iterations for this invocation. |
-| `flip_signs_based_on_u` | `boolean` | no | Whether cuVS applies its U-based component-sign convention. |
-
-### SQL value argument schemas
-
-| Argument | Required | Literal shape | Default | Constraints | Description |
+| Argument | Type | Required | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `flip_signs_based_on_u` | no | `boolean` | `false` |  | Whether cuVS applies its U-based component-sign convention. |
-| `n_components` | yes | `integer` | No default | minimum 1; maximum 2147483647 | Number of principal-component columns emitted as pc_0 through pc_&lt;n_components - 1&gt;. |
-| `n_iterations` | no | `integer` | `15` | minimum 1; maximum 2147483647 | Maximum eigensolver iterations for this invocation. |
-| `solver` | no | `string` | `"cov_eig_dq"` | one of `"cov_eig_dq"`, `"cov_eig_jacobi"` | Covariance eigensolver used for this fit-transform call. |
-| `tol` | no | `number` | `0` | minimum 0 | Non-negative eigensolver tolerance. |
-| `whiten` | no | `boolean` | `false` |  | Whether the query-local transformed components are whitened. |
+| `flip_signs_based_on_u` | `boolean` | no | `false` |  | Whether cuVS applies its U-based component-sign convention. |
+| `n_components` | `integer` | yes | No default | minimum 1; maximum 2147483647 | Number of principal-component columns emitted as pc_0 through pc_&lt;n_components - 1&gt;. |
+| `n_iterations` | `integer` | no | `15` | minimum 1; maximum 2147483647 | Maximum eigensolver iterations for this invocation. |
+| `solver` | `string` | no | `"cov_eig_dq"` | one of `"cov_eig_dq"`, `"cov_eig_jacobi"` | Covariance eigensolver used for this fit-transform call. |
+| `tol` | `number` | no | `0` | minimum 0 | Non-negative eigensolver tolerance. |
+| `whiten` | `boolean` | no | `false` |  | Whether the query-local transformed components are whitened. |
 
 ### Vector binding shapes
 
 Each relation subquery must project an `id` field followed by either one or more feature fields of a supported element type (`Float32`) or exactly one list field of a supported element type, under any name.
 
-For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and its list field. Nullable field types are accepted; a null ID, feature value, list row, or list element fails the query.
+For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and its list field. Nullable field types are accepted. A null ID, feature value, list row, or list element fails the query.
 
 ## Output
 
@@ -91,10 +78,6 @@ import Examples from '../_examples/cuvs_pca.mdx';
 
 ## Limits
 
-- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
-- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
-- Fits and transforms the evaluated input in one statement; it does not return a reusable transform, components, or explained-variance metadata.
+- Fits and transforms the evaluated input in one call; it does not return a reusable transform, components, or explained-variance metadata.
 - The evaluated input needs at least two rows and two dimensions, and n_components must not exceed the evaluated dimension.
 - Component sign orientation is not a semantic label. The output schema changes with the literal n_components option.
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

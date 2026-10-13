@@ -1,4 +1,4 @@
-A "shoppers like you" feature needs relevant matches for many shoppers. The [MerRec dataset](../../guides/datasets/merrec.mdx) supplies `mr_taste64`, a prepared table of category-view-share vectors for 2,080,743 shoppers with at least 20 views before September 1. Each method returns ten neighbors per shopper. A product team can use the comparison to decide how much match quality it will trade for approximate search.
+The [MerRec dataset](../../guides/datasets/merrec.mdx) supplies `mr_taste64`, a prepared table of category-view-share vectors for 2,080,743 shoppers with at least 20 views before September 1. Each method searches the table against itself and returns ten neighbors per shopper.
 
 Recall compares neighbor IDs with exact search. Some shoppers have identical vectors, so the last column also checks whether a returned distance is within `1e-5` of the exact tenth-neighbor distance.
 
@@ -9,7 +9,7 @@ Recall compares neighbor IDs with exact search. Some shoppers have identical vec
 | IVF-Flat | 98.2% | 99.0% |
 | IVF-PQ | 86.1% | 90.4% |
 
-CAGRA and IVF-Flat retain more than 98% of exact neighbor IDs for this batch, while IVF-PQ retains 86.1%. These methods build an index within each statement, so a smaller query batch still pays that construction cost. The product team needs both recall and the cost of its expected batch size before choosing a method.
+CAGRA and IVF-Flat retain more than 98% of exact neighbor IDs for this batch, while IVF-PQ retains 86.1%. These methods build a new index on every run, so a smaller query batch still pays that construction cost. Choosing a method depends on both recall and the expected batch size.
 
 <details>
 <summary>Executed SQL: CAGRA neighbors and recall</summary>

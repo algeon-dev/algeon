@@ -296,10 +296,10 @@ export default function EmberMap({
       </div>
       <figcaption>
         All {integer.format(data.points.length)} saved challenge Win32 rows are included. Projection and cluster
-        values come from saved SQL results; changing filters does not rerun SQL. Family is post-fit metadata.
+        values come from saved SQL results. Switching the projection or changing a filter does not rerun SQL. Family is post-fit metadata.
         HDBSCAN clusters were fitted to PCA-16 coordinates, while this map can display PCA-2, TSVD-2, or UMAP-2.
         Cluster IDs are local to this capture. Coordinates are visual projections with no calibrated malware-risk
-        interpretation. Noise (-1) records rows left unassigned under these HDBSCAN parameters; that label alone
+        interpretation. Noise (-1) records rows left unassigned under these HDBSCAN parameters. That label alone
         carries no novelty classification. <a href="/data/ember2024-map.json">Download the saved capture data</a>.
       </figcaption>
       <details className={styles.provenance}>

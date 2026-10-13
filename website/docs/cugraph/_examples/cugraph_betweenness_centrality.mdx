@@ -15,13 +15,11 @@ import MerRecScaleBridges from './merrec_scale_bridges.mdx';
 
 {/* Hand-owned examples for cugraph_betweenness_centrality. NOT generated; safe to edit. */}
 
-This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
-
 ### Which papers connect the most citation routes across AI research?
 
 A paper can connect many shortest citation routes without having the largest
 citation count. This query ranks papers by betweenness in a selected 2010s AI
-subgraph.
+subgraph of the [citation network](../../guides/datasets/citation-network.mdx).
 
 ```sql
 CREATE OR REPLACE VIEW ai_nodes AS

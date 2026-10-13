@@ -16,18 +16,20 @@ Use the release adapter and its compatible DataFusion dependency range:
 
 ```toml
 [dependencies]
-algeon-datafusion = { version = "=0.1.0", features = ["cugraph"] }
+algeon-datafusion = { version = "0.1.0", features = ["cugraph", "cuvs", "cuml"] }
 datafusion = "55.1"
 futures = "0.3"
 ```
 
-`datafusion = "55.1"` permits compatible 55.x updates. The Rust adapter version
-is pinned to `0.1.0`; build its native libraries from the matching `v0.1.0`
-source tag. Follow [Use as a Rust dependency](../build/rust-dependency.md) for
-native build order, the external application, and its runtime loader
-configuration. That guide includes a complete async `main` with query result
-checks and backend shutdown. These commands require the release tag and registry
-packages to be available; the installation recipe does not confirm publication.
+The dependency ranges permit Algeon 0.1.x and DataFusion 55.x updates. Build
+native libraries from the source tag matching the resolved Algeon version
+recorded in the application's `Cargo.lock`, such as `v0.1.0` for `0.1.0`.
+An Algeon version update requires native libraries from the corresponding
+release. Follow [Building for an Application](../build/rust-dependency.md)
+for the native build order and the application's build and runtime loader
+configuration. That guide pins `0.1.0`. Update its source tag and adapter
+version together when using another Algeon release. The recipe requires the
+`v0.1.0` tag and the crates.io packages.
 
 The `algeon-datafusion` crate has no default features. Add `cugraph` for graph SQL, `cuvs`
 for vector SQL, `cuml` for machine-learning SQL, and `nvml` for optional device
@@ -59,12 +61,12 @@ let ctx = SessionContext::new_with_state(state);
 
 Every selected ordinal needs one profile and one matching ownership
 declaration. `AlgeonGpuDeviceProfile::new(0)` uses automatic capacity and one
-active attempt; add explicit limits only when your deployment requires them.
+active attempt. Add explicit limits only when your deployment requires them.
 
 Only one live backend may exist in a process. Clone and share this backend
 across every session and frontend instead of building another one.
 
-## Add cuGraph and cuVS SQL
+## Add cuGraph, cuVS, and cuML SQL {/* #add-cugraph-and-cuvs-sql */}
 
 `install_on` installs backend-bound native rules and coverage. It does not
 install cuGraph, cuVS, or cuML SQL. To enable the `cugraph_*` UDTFs on
@@ -86,14 +88,14 @@ let ctx = SessionContext::new_with_state(state);
 
 cuGraph UDTFs resolve the backend's admission and native execution
 configuration from session state when executed. To add the `cuvs_*` UDTFs,
-chain `try_with_cuvs_sql()` in the same manner; it takes no configuration. The
+chain `try_with_cuvs_sql()` in the same manner. It takes no configuration. The
 UDTFs execute only when the crate was built with the `cuvs` feature. For
-`cuml_*` UDTFs, chain `try_with_cuml_sql()` as well; execution requires
+`cuml_*` UDTFs, chain `try_with_cuml_sql()` as well. Execution requires
 the `cuml` feature. It installs no models root, so `cuml_forest_predict` is
 registered but stays unavailable with `model_root_unconfigured`. To enable
 it, chain `try_with_cuml_sql_config` instead with a `CumlSqlConfig` whose
-`model_store: Option<CumlModelStoreConfig>` names the root;
-`try_with_cuml_sql()` equals `try_with_cuml_sql_config(CumlSqlConfig::default())`:
+`model_store: Option<CumlModelStoreConfig>` names the root.
+`try_with_cuml_sql()` is equivalent to `try_with_cuml_sql_config(CumlSqlConfig::default())`:
 
 ```rust
 use algeon_datafusion::cuml_sql::{CumlModelStoreConfig, CumlSqlConfig};
@@ -107,7 +109,7 @@ let state = backend
 ```
 
 `CumlModelStoreConfig::new` defaults `max_model_bytes` to
-`CumlModelStoreConfig::DEFAULT_MAX_MODEL_BYTES` (256 MiB); set the field
+`CumlModelStoreConfig::DEFAULT_MAX_MODEL_BYTES` (256 MiB). Set the field
 directly for a different cap. See [cuVS execution](../cuvs/overview.mdx#execution) and
 [cuML execution](../cuml/overview.mdx#execution-and-lifetime).
 
@@ -144,7 +146,7 @@ The attempt clones the session into invocation-local planning state. Its report
 records the final disposition, admission grant, timing, and terminal outcome.
 Completion seals on stream EOF, error, cancellation, or drop. Taking the
 receiver before planning and awaiting it after the result is what keeps the
-report available on the error path; returning early with `?` on the stream
+report available on the error path. Returning early with `?` on the stream
 would drop the attempt and route the report to the abandoned-report queue.
 
 Frameworks may own this boundary for you. The Algeon Flight SQL server, for
@@ -206,13 +208,13 @@ let backend = AlgeonGpuBackend::builder()
 Planning does not acquire a GPU grant. Admission begins when the first native
 stream is polled, and all native nodes in that attempt share the selected
 device and immutable grant. A full queue or expired wait returns structured
-`service_overloaded` backpressure. Eligible waiters are served in FIFO order;
-there is no overtaking policy.
+`service_overloaded` backpressure. Eligible waiters are served in FIFO order.
+There is no overtaking policy.
 
 Native execution policy is owned solely by the backend builder. Configure native execution with
 `with_native_execution_config(...)` on `AlgeonGpuBackend::builder()` before `build()`.
 
-DataFusion sessions carry standard DataFusion configuration only; native execution policy
+DataFusion sessions carry standard DataFusion configuration only. Native execution policy
 and graph input bounds cannot be altered via SQL `SET` or session extensions.
 
 ## Choose an execution mode
@@ -221,8 +223,8 @@ Set `AlgeonGpuExecutionMode` on the shared backend before installing sessions:
 
 | Rust mode | Behavior | Use it when |
 | --- | --- | --- |
-| `NativePreferred` (default) | Select supported relational SQL for native GPU execution; retain DataFusion for unsupported or unselected candidates. Explicit GPU UDTFs still run on GPU. | You want GPU acceleration for ordinary SQL as well as graph, vector, and ML functions. |
-| `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU; run explicit `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs on GPU. | You want DataFusion to scan, join, filter, and aggregate around GPU algorithms. |
+| `NativePreferred` (default) | Select supported relational SQL for native GPU execution. Retain DataFusion for unsupported or unselected candidates. Explicit GPU UDTFs still run on GPU. | You want GPU acceleration for ordinary SQL as well as graph, vector, and ML functions. |
+| `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU. Run explicit `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs on GPU. | You want DataFusion to scan, join, filter, and aggregate around GPU algorithms. |
 | `NativeRequired` | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | You need to enforce a plan with no DataFusion CPU operators. |
 
 This replaces the backend construction above, using the same `device`:
@@ -238,7 +240,7 @@ let backend = AlgeonGpuBackend::builder()
 
 Install the required UDTF families with the features and session methods
 shown [above](#add-cugraph-and-cuvs-sql). `FunctionsOnly` changes relational
-planning; it does not register UDTFs or remove their GPU runtime and
+planning. It does not register UDTFs or remove their GPU runtime and
 backend requirements. The Flight SQL equivalents are documented in
 [Configuration](./configuration.mdx#execution-mode).
 
@@ -252,19 +254,19 @@ admission and immutable query grant.
 
 CPU-to-GPU input boundaries stage Arrow data in host memory before upload.
 The current staging path does not spill: cuGraph host input and output staging
-each default to a 1 GiB ceiling; cuVS host input staging has a cumulative 1 GiB ceiling
-across one operation's inputs; cuML uses the same staging boundary.
+each default to a 1 GiB ceiling. cuVS host input staging has a cumulative 1 GiB ceiling
+across one operation's inputs. cuML uses the same staging boundary.
 DataFusion's memory pool can impose a lower
-limit. These are host staging limits, separate from the GPU query cap; keep
+limit. These are host staging limits, separate from the GPU query cap. Keep
 intermediate inputs bounded. See the runnable
-[execution modes example](https://github.com/algeon-dev/algeon/blob/main/crates/examples/src/bin/functions_only_modes.rs)
-for PageRank with CPU filtering and ordering.
+[PageRank example](https://github.com/algeon-dev/algeon/blob/main/crates/examples/src/bin/graph_pagerank.rs)
+for PageRank with a CPU join and ordering.
 
 ### DataFusion fallback and GPU-only plans
 
 An explicit GPU UDTF has no CPU algorithm fallback. Unsupported UDTF
-inputs, memory exhaustion, cancellation, and runtime failures remain errors;
-after GPU execution starts, Algeon never replays the query on CPU. See
+inputs, memory exhaustion, cancellation, and runtime failures remain errors.
+After GPU execution starts, Algeon never replays the query on CPU. See
 [Handling Errors](./handling-errors.mdx) for the structured error contract.
 `NativeRequired` checks the completed plan without replanning under a different
 policy.
@@ -278,14 +280,14 @@ evidence through SQL.
 
 Per-attempt evidence comes from `QueryAttemptReport`. The backend's
 `diagnostics()` reads the admission snapshot and the device ledger, cache,
-memory-failure, and execution-pool reports in one call;
+memory-failure, and execution-pool reports in one call.
 `backend_metrics_snapshot()` and `device_telemetry_snapshots()` stay
 separate. At
 shutdown, stop accepting work, drain streams and sessions, then call
 `close_and_wait` on the shared backend.
 
 See the runnable
-[attempt lifecycle example](https://github.com/algeon-dev/algeon/blob/main/crates/examples/src/bin/attempt_lifecycle.rs)
+[Parquet query example](https://github.com/algeon-dev/algeon/blob/main/crates/examples/src/bin/query_parquet.rs)
 for the complete per-query path.
 
 ## Direct optimizer install
@@ -305,5 +307,9 @@ let state = SessionStateBuilder::new_with_default_features()
 ```
 
 This path has no admission owner. Native execution fails locally with
-`gpu_backend_required`, so production GPU execution should always install a
+`gpu_backend_required`, so production GPU execution should always install an
 `AlgeonGpuBackend`.
+
+The public optimizer rule name is also its deduplication key. Use
+[`ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/session.rs)
+when registering or deduplicating the rule.

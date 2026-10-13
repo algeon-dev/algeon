@@ -11,22 +11,11 @@ UDTFs (user-defined table functions) in DataFusion SQL sessions. Each
 `cuvs_*` UDTF reads a relation of vectors, runs one GPU vector operation and
 returns rows the same query can join and filter. Exact and approximate
 nearest neighbors, pairwise distances, per-row top-k, KMeans and PCA are
-available, and every index lives inside its statement.
-
-## UDTFs
-
-The [cuVS UDTFs](./udtfs/index.mdx) index groups every function into the
-Nearest Neighbors, Distance, Selection, Cluster and Preprocessing families.
-Each function page documents its inputs, arguments, output and limits, and
-links back to [Vector Inputs](./vector-inputs.mdx) for the shared input
-contract.
-
-## Discovery and validation
-
-Use [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
-for the shared list, describe, validate, and execute workflow. The detailed
-column and request schemas are in the
-[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx).
+available, and each query execution builds its own index. The
+[cuVS UDTFs](./udtfs/index.mdx) index lists every function;
+[Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx) and the
+[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx) cover discovery and
+validation.
 
 ## Questions to explore
 
@@ -68,12 +57,8 @@ Every `cuvs_*` execution relation is a parenthesized `SELECT` subquery. The
 relation remains an explicit planner child, so it can use ordinary session
 tables, views, CTEs, Parquet scans, or a preceding SQL result.
 Bare table identifiers and quoted table-name strings are not execution inputs.
-
-For metadata-only validation, `gpu_validate_call` instead resolves a named
-registered table or view and checks its schema without scanning rows or
-invoking the GPU. [Vector Inputs](./vector-inputs.mdx) documents relation
-identity, dense-vector binding shapes, and the validation-versus-runtime
-boundary.
+[Vector Inputs](./vector-inputs.mdx) documents relation identity, dense-vector
+binding shapes, and the validation-versus-runtime boundary.
 
 ## Execution
 
@@ -95,11 +80,11 @@ A `cuvs_*` call runs on the GPU when all of the following hold:
    memory domain.
 
 At runtime, `cuvs_*` calls use the admitted query memory domain, and its
-allocator enforces the configured cap; an input that does not fit that cap
+allocator enforces the configured cap. An input that does not fit that cap
 fails with a typed allocation error rather than spilling.
 
-cuVS SQL has no persistent cross-statement cache: every index, KMeans model,
-PCA transform and result relation is local to its statement, and the server's
+cuVS SQL keeps nothing between query executions. Every index, KMeans model,
+PCA transform and result relation is local to one execution, and the server's
 source and graph caches do not cache cuVS artifacts. See
 [Configuration](../integration/configuration.mdx) for server cache configuration
 and bounded memory limits.
@@ -107,10 +92,3 @@ and bounded memory limits.
 The [GPU table functions design](../design/gpu-table-functions.mdx#cuvs-and-cuml-layouts-and-result-ownership)
 explains matrix packing, borrowed tensor lifetimes and output-buffer adoption
 when vector results feed further SQL operators.
-
-## Next steps
-
-- [Integrate cuVS](../integration/overview.mdx): pick an embedded session or
-  the Flight SQL server, then confirm availability with `gpu_list_functions`.
-- [Configure the server](../integration/configuration.mdx): set the memory
-  cap for each device that every call runs inside.

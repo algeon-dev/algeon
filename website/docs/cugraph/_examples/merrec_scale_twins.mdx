@@ -20,9 +20,8 @@ scores.
 <tbody>{capture.records.slice(0, 14).map(row => <tr key={`${row.brand_a}|${row.brand_b}`}><td>{row.brand_a}</td><td>{row.brand_b}</td><td>{n(row.fans_a)}</td><td>{n(row.fans_b)}</td><td>{row.jaccard.toFixed(3)}</td></tr>)}</tbody>
 </Table>
 
-The table shows the first 14 of {capture.rows} rows. The complete statement
-took **{capture.median_elapsed_s_after_first.toFixed(2)} s** over Flight SQL,
-including planning, execution and result receipt.
+The table shows the first 14 of {capture.rows} rows. The query
+took **{capture.median_elapsed_s_after_first.toFixed(2)} s** over Flight SQL.
 
 Most of the highest-scoring pairs are one brand entered twice: TXT and
 Tomorrow X Together, Air Jordan and Jordan, Mugler and Thierry Mugler, Yves
@@ -30,17 +29,16 @@ Saint Laurent and its YSL variant, Christian Dior and Dior, A Bathing Ape
 and Bape, Hermès and HERMES, BabyBjorn and BABYBJÖRN. No name was compared
 to find them. The remaining pairs are distinct brands that one audience
 follows together, such as Hello Kitty and Sanrio, Konami and Yu-Gi-Oh!, or
-Panini and Topps. The first group is a merge list for review; the second
-group is material for cross-brand navigation.
+Panini and Topps.
 
-The pair list is a SQL relation, so the same statement could join each
+The pair list is a SQL relation, so the same query could join each
 pair's leaf categories or price ranges to separate duplicates from
 companions. Scores over the full six months hide seasonal pairs; a date
 filter on the events restricts the window.
 
 <div className="fineprint">
 
-The plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
+The plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries. The largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
 The [capture](/data/merrec-scale-brand-twins.json) contains the executed SQL, query IDs, timings and every result row.
 
 </div>

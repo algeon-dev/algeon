@@ -185,7 +185,7 @@ normalize_queries() {
     for part in "${parts[@]}"; do
         if [[ "${part}" =~ ^q([0-9]{1,2})$ ]]; then
             num="${BASH_REMATCH[1]}"
-            part="$(printf 'q%02d' "${num}")"
+            part="$(printf 'q%02d' "$((10#${num}))")"
         fi
         if [[ -n "${part}" ]]; then
             out="${out:+${out},}${part}"

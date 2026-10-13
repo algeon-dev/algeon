@@ -5,8 +5,8 @@ This example runs on the [citation network demo dataset](../../guides/datasets/c
 ### How much of each paper's reported citation count appears in this dataset?
 
 `papers.n_citation` stores AMiner's reported count, while `in_degree` counts
-incoming edges present in this dataset. Their difference measures a metadata
-gap; it does not identify where unmatched citations came from.
+incoming edges present in this dataset. Their difference measures the gap between
+reported metadata and the edges present in this snapshot.
 
 ```sql
 SELECT p.year, d.in_degree AS in_graph, p.n_citation AS reported,

@@ -4,7 +4,7 @@
 
 This matrix is generated from each UDTF descriptor’s structured `edges.vertex_id_contract`. It is the authoritative overview of numeric endpoint inputs, the numeric types a per-call codebook maps to native ids, logical string endpoint inputs, canonical string output, the native vertex id type, and side-input limitations.
 
-Logical string input means any `Utf8`, `LargeUtf8`, or `Utf8View` edge endpoint. The physical string types may be mixed within one graph call; vertex-identity outputs use the declared canonical string type. A per-call codebook maps string vertices, and numeric vertices the native graph cannot index, to dense native ids and decodes results back to the input vertex type.
+Logical string input means any `Utf8`, `LargeUtf8`, or `Utf8View` edge endpoint. The physical string types may be mixed within one graph call. Vertex-identity outputs use the declared canonical string type. A per-call codebook maps string vertices, and numeric vertices the native graph cannot index, to dense native ids and decodes results back to the input vertex type.
 
 | UDTF | Numeric endpoint types | Numeric types mapped by codebook | Logical string endpoint types | Canonical string output | Native vertex id type | Logical side-input limitation |
 | --- | --- | --- | --- | --- | --- | --- |

@@ -4,17 +4,20 @@
 import argparse
 import contextlib
 import csv
+import ctypes
 import gzip
 import importlib.util
 import io
 import json
+import mmap
+import os
 from pathlib import Path
 import re
 import shutil
 import sys
 import time
 
-from pyarrow import flight
+from pyarrow import flight, py_buffer
 import pyarrow.parquet as pq
 
 
@@ -25,6 +28,12 @@ DATA = ROOT / "target/merrec-exploration/results"
 SOURCE_DATA = ROOT / "fixture/demo/merrec/parquet"
 SOURCE_REGISTRATION = ROOT / "fixture/demo/merrec/scripts/scale/00_register_sources.sql"
 MAX_CSV_ROWS = 100_000
+SOURCE_TABLES = ("items", "events")
+# mincore(2) defines only the low bit of each vector byte; the other bits are reserved.
+RESIDENT_BIT = bytes(value & 1 for value in range(256))
+
+LIBC = ctypes.CDLL(None, use_errno=True)
+LIBC.mincore.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p)
 
 
 def load_research_client():
@@ -137,9 +146,44 @@ def capture_runtime_artifact(client, name, query_id):
         return {"status": "error", "error": str(error)}
 
 
+def page_cache_resident_fraction(path):
+    with open(path, "rb") as source:
+        length = os.fstat(source.fileno()).st_size
+        if length == 0:
+            return 1.0
+        pages = -(-length // mmap.PAGESIZE)
+        vector = ctypes.create_string_buffer(pages)
+        with mmap.mmap(source.fileno(), 0, prot=mmap.PROT_READ) as mapping:
+            # ctypes.from_buffer rejects read-only mappings. The temporary pyarrow buffer
+            # releases its export within this statement, so close() still succeeds.
+            address = py_buffer(mapping).address
+            if LIBC.mincore(address, length, vector) != 0:
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error), str(path))
+    return vector.raw.translate(RESIDENT_BIT).count(1) / pages
+
+
+def source_cache_residency():
+    if not SOURCE_DATA.is_dir():
+        return {"status": "skipped", "reason": "data_dir_missing"}
+    residency = {}
+    for name in SOURCE_TABLES:
+        source = SOURCE_DATA / f"{name}.parquet"
+        for path in sorted(source.rglob("*.parquet")) if source.is_dir() else [source]:
+            key = str(path.relative_to(SOURCE_DATA))
+            try:
+                residency[key] = round(page_cache_resident_fraction(path), 4)
+            except OSError as error:
+                residency[key] = str(error)
+    return residency
+
+
 def run_and_export(client, name, sql):
+    # Measured per run because each run warms the page cache for the next one.
+    source_cache_resident = source_cache_residency()
     with contextlib.redirect_stdout(io.StringIO()):
         record = client.run(name, sql)
+    record["source_cache_resident"] = source_cache_resident
     record["runtime_artifact"] = capture_runtime_artifact(client, name, record.get("query_id"))
 
     if record["status"] == "ok":
@@ -210,7 +254,7 @@ def prepare_scale_features(client):
 
 def capture_input_manifest(client, registered_data_dir=None):
     source_paths = {}
-    for name in ("items", "events"):
+    for name in SOURCE_TABLES:
         table, _ = client.execute(f"SHOW CREATE TABLE merrec_{name}")
         definition = table.to_pylist()[0]["definition"]
         location = re.search(r"\bLOCATION\s+'((?:[^']|'')*)'", definition, re.IGNORECASE)

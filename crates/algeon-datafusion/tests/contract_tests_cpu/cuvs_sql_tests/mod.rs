@@ -340,10 +340,11 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         for relation_role in descriptor.relation_roles {
             assert!(page.contains(&format!("`{}`", relation_role.as_str())), "{}", page_path.display());
         }
+        let element_types = page_section(&page, "### Vector element types");
         for support in descriptor.vector_element_support {
-            assert!(page.contains(&format!("| `{}` |", support.element.as_str())), "{}", page_path.display());
+            assert!(element_types.contains(&format!("`{}`", support.element.as_str())), "{}", page_path.display());
             if let Some(metric) = support.metrics.first() {
-                assert!(page.contains(&format!("`{metric}`")), "{}", page_path.display());
+                assert!(element_types.contains(&format!("`{metric}`")), "{}", page_path.display());
             }
         }
         for option in descriptor.options.iter().filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
@@ -415,6 +416,12 @@ async fn captured_relation_roles_and_limitations_equal_the_catalog_descriptors()
 
 fn mdx_table_text(value: &str) -> String {
     value.replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// The body of one generated section, from its heading to the next heading.
+fn page_section<'a>(page: &'a str, heading: &str) -> &'a str {
+    let (_, rest) = page.split_once(heading).unwrap_or_else(|| panic!("generated page is missing {heading}"));
+    rest.split_once("\n#").map_or(rest, |(section, _)| section)
 }
 
 /// Schema nullability is not part of the input contract: null values fail at

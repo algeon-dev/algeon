@@ -1,5 +1,5 @@
 ---
-sidebar_position: 4
+sidebar_position: 5
 sidebar_label: Docker
 description: Build the Algeon Flight SQL server image from locally built native artifacts and smoke-test Flight SQL.
 ---
@@ -7,15 +7,13 @@ description: Build the Algeon Flight SQL server image from locally built native 
 # Building with Docker
 
 The Docker image packages the standalone Flight SQL server plus the exact
-locally built RAPIDS libraries it was linked against. It is a **packaging step after a
-source build**, not a replacement for building the component crates under
-`components/` and the root workspace from source.
+locally built RAPIDS libraries it was linked against.
 
 :::note[Docker requires a source build]
 
 Complete [Building from Source](./from-source.md) before following this page.
-`docker/stage-docker-payload.sh` packages the locally built native libraries;
-it cannot create their cuDF, cuVS, cuML, or cuGraph artifacts itself.
+`docker/stage-docker-payload.sh` packages the locally built native libraries.
+It cannot create their cuDF, cuVS, cuML, or cuGraph artifacts itself.
 
 :::
 
@@ -29,7 +27,7 @@ The image build has two phases:
    cuDF/RMM libraries, then adds cuVS, cuGraph, and cuML libraries for the
    selected features. cuGraph always brings its cuVS runtime dependency.
    It strips staged artifacts with `strip --strip-unneeded` when `strip` is
-   available; the Docker copies can therefore be smaller than the source
+   available. The Docker copies can therefore be smaller than the source
    install, while `NO_STRIP=1` preserves available symbols. It rewrites
    RUNPATHs when `patchelf` is available.
 2. `docker/build-image.sh` runs `docker build` after verifying the staged
@@ -39,8 +37,7 @@ The image build has two phases:
 
 ## Prerequisites
 
-Complete [Building from Source](./from-source.md) first for the features you
-want to package. The default full image expects these root-owned artifacts:
+The default full image expects these root-owned artifacts:
 
 ```text
 algeon/
@@ -55,7 +52,7 @@ algeon/
 └── target/native/cuml-install/lib/libnvforest.so
 ```
 
-The cuDF script also installs `libcudf_rust_rmm_interop.so` beside the shim;
+The cuDF script also installs `libcudf_rust_rmm_interop.so` beside the shim.
 `docker/stage-docker-payload.sh` stages both automatically. Docker consumes the
 matching install prefixes under `ALGEON_NATIVE_DIR`.
 
@@ -64,7 +61,7 @@ needs neither optional native artifact. Production examples keep `nvml` enabled 
 device telemetry is available without affecting admission decisions.
 
 `readelf` and `ldd` are required for the loader-closure checks. `patchelf` and
-`strip` (binutils) are recommended; without `patchelf` the image resolves its
+`strip` (binutils) are recommended. Without `patchelf` the image resolves its
 libraries through `LD_LIBRARY_PATH=/app/lib`.
 
 Install Docker and configure GPU containers with the
@@ -113,9 +110,9 @@ Staging always runs its own clean build of `algeon_server`, from an isolated
 working directory and a clean `CARGO_HOME`, with the fixed target triple and
 `target-cpu=x86-64-v4` from `.config/policies/cpu-packaging.toml`. It writes a
 build record (binary hash, policy fingerprint, features, target triple and
-codegen flags) beside the binary; an ordinary `target/release` build has no
+codegen flags) beside the binary. An ordinary `target/release` build has no
 such record and is not reused. Expect about five minutes on a warm native
-prefix; it took 5 min 04 s on 2026-10-09.
+prefix. It took 5 min 04 s on 2026-10-09.
 
 `SKIP_CARGO_BUILD=1` re-stages a payload from a previous packaging build only:
 
@@ -145,7 +142,7 @@ With the default features, `docker images` reported 3.68 GB disk usage and
 
 :::warning[Build machine versus target host CPU]
 This image targets x86-64-v4. Both the build machine and every target host must
-support that instruction set; otherwise the binary may terminate with `SIGILL`
+support that instruction set. Otherwise the binary may terminate with `SIGILL`
 before `main`. See [CPU requirement](./prerequisites.md#cpu-requirement).
 :::
 
@@ -180,10 +177,11 @@ docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
 ```
 
 The [configuration reference](../integration/configuration.mdx#complete-example)
-lists every key; any scalar key can also be passed as an `ALGEON_SERVER_*`
+lists every key. Any scalar key can also be passed as an `ALGEON_SERVER_*`
 variable with `-e`. The image's `ALGEON_SERVER_BIND` overrides `bind` in a
 mounted file, so change the container port with
-`-e ALGEON_SERVER_BIND=0.0.0.0:<port>`; the healthcheck reads that variable. The server runs as UID 1001 in the container, so mounted
+`-e ALGEON_SERVER_BIND=0.0.0.0:<port>`. The healthcheck reads that variable.
+The server runs as UID 1001 in the container, so mounted
 files must be readable by that user.
 
 Table locations are paths inside the container. With the data directory
@@ -247,7 +245,7 @@ The result has a `vertex` and a `value` column with one row per vertex.
 - Staging fails with `ldd could not resolve libcugraph.so to a canonical
   libcuvs.so` (or `libcuml.so`): the installed library's RUNPATH does not name
   the cuVS prefix it was built against. `scripts/build/build_libcugraph.sh`
-  and `build_libcuml.sh` write that RUNPATH at install time; rebuild the
+  and `build_libcuml.sh` write that RUNPATH at install time. Rebuild the
   library with the current scripts, in the order on
   [Building from Source](./from-source.md#3-build-the-native-stack).
 - The container starts but the first GPU query fails with

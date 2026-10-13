@@ -76,8 +76,8 @@ the authoring rules live in the root [AGENTS.md](../AGENTS.md#deslop).
 front matter in the policy phase. Its self-test is
 `ci/tests/check_prose_slop_tests.sh`.
 
-`check_all.sh` takes no arguments for the full pre-merge gate, or `--fast` for
-a partial edit loop (policy checks, rustfmt, and CPU tests).
+`check_all.sh` runs the full pre-merge gate without arguments, or accepts
+`--fast` for a partial edit loop (policy checks, rustfmt, and CPU tests).
 `ci/cargo_toolchain_environment.py` prints the effective Cargo toolchain
 environment at gate startup. `ci/tests/check_check_all_tests.py` exercises
 gate ordering, loader propagation and failure continuation with mocked Cargo.
@@ -94,7 +94,7 @@ is not part of the gate. Its self-test is
 
 `ci/check_public_api_surface.sh` compares the API snapshots and invokes
 `ci/check_public_api_docs.py` for the
-[application API documentation boundary](../website/docs/design/index.mdx#api-documentation).
+[API documentation boundary](test-harness.md#api-documentation-boundary).
 The documentation check uses complete workspace rustdoc JSON to inspect owner
 types reached through the application API. Its real-rustdoc regression suite,
 `ci/tests/check_public_api_docs_tests.py`, runs from the existing snapshot

@@ -8,7 +8,7 @@ configuration outside `scripts/`.
   for script ownership and test scheduling, and
   [Feature coverage](test-harness.md#feature-coverage) before
   changing Cargo validation or packaging features.
-- Read [Workspace and publication contracts](../website/docs/build/overview.md#workspace-and-publication-contracts)
+- Read [Workspace and publication contracts](test-harness.md#workspace-and-publication-contracts)
   before changing manifests, source registration or shared build support.
 - Use [README.md](README.md) for the directory map; update it and all callers
   when moving or adding scripts.

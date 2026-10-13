@@ -3,6 +3,12 @@ import type {PrismTheme} from 'prism-react-renderer';
 
 const prismLight = {
   ...prismThemes.github,
+  plain: {
+    ...prismThemes.github.plain,
+    // GitHub's cool gray would sit on the warm paper page; custom.css owns
+    // the light code surface.
+    backgroundColor: 'var(--ifm-code-background)',
+  },
   styles: [
     ...prismThemes.github.styles,
     {

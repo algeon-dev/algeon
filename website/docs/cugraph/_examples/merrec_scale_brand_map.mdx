@@ -4,7 +4,7 @@ import brandMap from '@site/static/data/merrec-brand-map.json';
 
 The [MerRec](../../guides/datasets/merrec.mdx) map places brands with shared fans nearby. Medical scrubs, golf, cameras, and bridal wear appear as separate regions. A merchandising team can inspect these groups before testing navigation collections.
 
-The statement derives distinct shopper-brand likes, scores the 5,000 brands with the most fans using Jaccard similarity, and keeps each brand's five nearest links for the layout. Leiden assigns colors from brand pairs whose Jaccard score reaches 0.02.
+The query derives distinct shopper-brand likes, scores the 5,000 brands with the most fans using Jaccard similarity, and keeps each brand's five nearest links for the layout. Leiden assigns colors from brand pairs whose Jaccard score reaches 0.02.
 
 <CodeBlock language="sql" className="no-collapse">{brandMap.query.sql}</CodeBlock>
 

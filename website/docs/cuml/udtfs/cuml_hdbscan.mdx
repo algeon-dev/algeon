@@ -35,44 +35,29 @@ Each relation argument is a parenthesized `SELECT` subquery. Metadata validation
 
 | Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
-| `input` | yes | `table` | Dense feature rows fitted and transformed in this statement. |
+| `input` | yes | `table` | Dense feature rows evaluated by the call. |
 
 ### Vector element types
 
-| Element type | Valid metrics |
-| --- | --- |
-| `Float32` | Not applicable |
-| `Float64` | Not applicable |
+Feature values must be `Float32` or `Float64`.
 
 ## Arguments and options
 
 ### Scalar SQL arguments
 
-| Argument | Type | Required | Description |
-| --- | --- | --- | --- |
-| `min_samples` | `integer` | no | Minimum samples in a core-distance neighborhood. |
-| `min_cluster_size` | `integer` | no | Minimum size of a selected cluster. |
-| `max_cluster_size` | `integer` | no | Maximum cluster size; zero disables the bound. |
-| `cluster_selection_epsilon` | `number` | no | Nonnegative threshold for cluster selection. |
-| `alpha` | `number` | no | Positive mutual-reachability distance scale. |
-| `allow_single_cluster` | `boolean` | no | Allow one cluster to cover all input rows. |
-| `cluster_selection_method` | `enum ("eom", "leaf")` | no | Select clusters by excess of mass or leaf nodes. |
-
-### SQL value argument schemas
-
-| Argument | Required | Literal shape | Default | Constraints | Description |
+| Argument | Type | Required | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `allow_single_cluster` | no | `boolean` | `false` |  | Allow one cluster to cover all input rows. |
-| `alpha` | no | `number` | `1` | greater than 0 | Positive mutual-reachability distance scale. |
-| `cluster_selection_epsilon` | no | `number` | `0` | minimum 0 | Nonnegative threshold for cluster selection. |
-| `cluster_selection_method` | no | `string` | `"eom"` | one of `"eom"`, `"leaf"` | Select clusters by excess of mass or leaf nodes. |
-| `max_cluster_size` | no | `integer` | `0` | minimum 0; maximum 2147483647 | Maximum cluster size; zero disables the bound. |
-| `min_cluster_size` | no | `integer` | `5` | minimum 2; maximum 2147483647 | Minimum size of a selected cluster. |
-| `min_samples` | no | `integer` | `5` | minimum 1; maximum 2147483647 | Minimum samples in a core-distance neighborhood. |
+| `allow_single_cluster` | `boolean` | no | `false` |  | Allow one cluster to cover all input rows. |
+| `alpha` | `number` | no | `1` | greater than 0 | Positive mutual-reachability distance scale. |
+| `cluster_selection_epsilon` | `number` | no | `0` | minimum 0 | Nonnegative threshold for cluster selection. |
+| `cluster_selection_method` | `string` | no | `"eom"` | one of `"eom"`, `"leaf"` | Select clusters by excess of mass or leaf nodes. |
+| `max_cluster_size` | `integer` | no | `0` | minimum 0; maximum 2147483647 | Maximum cluster size; zero disables the bound. |
+| `min_cluster_size` | `integer` | no | `5` | minimum 2; maximum 2147483647 | Minimum size of a selected cluster. |
+| `min_samples` | `integer` | no | `5` | minimum 1; maximum 2147483647 | Minimum samples in a core-distance neighborhood. |
 
 ### Vector binding shapes
 
-Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
+Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. Nullable field types are accepted. A null ID, feature value, list row, or list element fails the query.
 
 The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
 
@@ -95,11 +80,7 @@ import Examples from '../_examples/cuml_hdbscan.mdx';
 
 ## Limits
 
-- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
-- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
 - L2SqrtExpanded distance and brute-force kNN are fixed.
 - Float64 features, as wide columns or list elements, are narrowed to Float32 on the device before training or inference. Each value rounds to the nearest Float32, which keeps about seven significant digits; a value beyond the Float32 range becomes infinite and fails the query.
 - Empty input returns an empty result. Other inputs require min_samples &lt; rows, min_cluster_size &lt;= rows, and max_cluster_size &lt;= rows; row-dependent conditions are checked at execution.
 - Cluster ID -1 denotes noise. The fit and output are query-local.
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

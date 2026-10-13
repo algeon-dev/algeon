@@ -36,35 +36,25 @@ Each relation argument is a parenthesized `SELECT` subquery. Metadata validation
 
 | Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
-| `input` | yes | `table` | Dense feature rows fitted and transformed in this statement. |
+| `input` | yes | `table` | Dense feature rows evaluated by the call. |
 
 ### Vector element types
 
-| Element type | Valid metrics |
-| --- | --- |
-| `Float32` | Not applicable |
+Feature values must be `Float32`.
 
 ## Arguments and options
 
 ### Scalar SQL arguments
 
-| Argument | Type | Required | Description |
-| --- | --- | --- | --- |
-| `model` | `string` | yes | Model file path relative to the server-configured models root. |
-| `model_format` | `enum ("xgboost_json", "xgboost_ubjson", "xgboost_legacy", "lightgbm", "treelite")` | yes | Serialized format of the model file. |
-| `output` | `enum ("scores", "class_index")` | no | Return the model's postprocessed scores, or the index of the largest class score. |
-
-### SQL value argument schemas
-
-| Argument | Required | Literal shape | Default | Constraints | Description |
+| Argument | Type | Required | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `model` | yes | `string` | No default | minimum string length 1; maximum string length 1024 | Model file path relative to the server-configured models root. |
-| `model_format` | yes | `string` | No default | one of `"xgboost_json"`, `"xgboost_ubjson"`, `"xgboost_legacy"`, `"lightgbm"`, `"treelite"` | Serialized format of the model file. |
-| `output` | no | `string` | `"scores"` | one of `"scores"`, `"class_index"` | Return the model's postprocessed scores, or the index of the largest class score. |
+| `model` | `string` | yes | No default | minimum string length 1; maximum string length 1024 | Model file path relative to the server-configured models root. |
+| `model_format` | `string` | yes | No default | one of `"xgboost_json"`, `"xgboost_ubjson"`, `"xgboost_legacy"`, `"lightgbm"`, `"treelite"` | Serialized format of the model file. |
+| `output` | `string` | no | `"scores"` | one of `"scores"`, `"class_index"` | Return the model's postprocessed scores, or the index of the largest class score. |
 
 ### Vector binding shapes
 
-Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
+Each relation subquery projects an `id` and either feature columns in dimension order or one list column, with the element types listed under Vector element types. Nullable field types are accepted. A null ID, feature value, list row, or list element fails the query.
 
 The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
 
@@ -91,11 +81,7 @@ import Examples from '../_examples/cuml_forest_predict.mdx';
 
 ## Limits
 
-- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
-- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
 - Scores pretrained XGBoost (JSON, UBJSON, legacy binary), LightGBM text, and Treelite checkpoint forests with nvForest. Multi-target models are rejected at planning.
 - Features must be Float32 without null values and match the model feature count. Forests with double-precision thresholds widen the features to Float64 on the device.
 - output =&gt; 'class_index' requires a model with at least two outputs and resolves ties to the lowest class index.
-- model resolves under the server-configured models root, and files above max_model_bytes are rejected. Each statement reads and imports the model once; there is no cross-statement model cache.
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).
+- model resolves under the server-configured models root, and files above max_model_bytes are rejected. The model is read and imported each time a query is planned; there is no model cache.

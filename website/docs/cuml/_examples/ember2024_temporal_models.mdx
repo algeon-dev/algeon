@@ -8,7 +8,7 @@ weeks 0 to 51, using the same 512 normalized byte and byte-entropy histogram
 features. Evaluation uses 359,994 later Win32 files from weeks 52 to 63 and
 counts both benign files flagged and malicious files missed.
 
-The statement fits both models, predicts labels for the later files, then
+The query fits both models, predicts labels for the later files, then
 joins the known labels and aggregates the errors.
 Predictions are class IDs `0` and `1`. Test labels are joined after prediction.
 
@@ -25,7 +25,7 @@ The later test set contains 179,994 benign and 180,000 malicious files.
 
 Random forest flags 15,440 fewer benign files and misses 7,118 fewer malicious
 files in this fit. It still misses 23,468 malicious files. These results
-describe one fit with the recorded options; repeated training can change the logistic
+describe one fit with the recorded options. Repeated training can change the logistic
 result.
 
 <div className="fineprint">

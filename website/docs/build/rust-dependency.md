@@ -1,27 +1,28 @@
 ---
-sidebar_position: 1.5
-sidebar_label: Rust Dependency
-description: Build matching release native libraries and run algeon-datafusion in an external Rust application.
+sidebar_position: 6
+sidebar_label: Application Build
+description: Build the native libraries an external Rust application needs from the matching Algeon release, then configure its build and runtime loader environment.
 ---
 
-# Use as a Rust dependency
+# Building for an Application
 
-The application-facing crate is `algeon-datafusion`. This guide describes the
-`0.1.0` registry installation with native libraries built from the matching
-`v0.1.0` Algeon source tag. The commands require that tag and the release
-packages to be available. Archive consumer validation before publication does
-not establish registry or tag availability.
+An application takes `algeon-datafusion` from the registry and builds the
+native RAPIDS libraries and Algeon shims separately, from the Algeon source
+tag that matches the crate version. This page covers that native side: which
+install prefixes each Cargo feature needs, how to build them from the matching
+tag, and how the application finds them at build time and at run time. The
+application code, from the backend to execution modes, is in
+[DataFusion Session](../integration/datafusion-session.mdx).
 
-Cargo installs the Rust packages. The native RAPIDS libraries and Algeon shims
-are built separately from the matching source checkout. Keep those install
-prefixes available at application build time and runtime.
+The commands describe the `0.1.0` release with native libraries from the
+`v0.1.0` tag and require that tag and the release packages to be available.
 
 ## 1. Select the release and configure the native build
 
 Install the [prerequisites](./prerequisites.md), including a compatible NVIDIA
 driver, CUDA toolkit, native host compiler, CMake, Ninja and Rust 1.95 or newer.
 A registry application that enables `cugraph` also compiles a C++20 shim against
-the installed headers; see
+the installed headers. See
 [Registry application build environment](./prerequisites.md#registry-application-build-environment).
 
 Clone the matching native source release into a directory separate from the
@@ -47,7 +48,7 @@ git submodule update --init --recursive
 Run the [build shell block](./from-source.md#2-configure-the-build-shell) from
 that checkout. It sets the absolute `ALGEON_ROOT`, CUDA paths and host compiler
 paths, and clears native overrides from other checkouts. Choose one
-`CMAKE_CUDA_ARCHITECTURES` value for all native layers before building; `NATIVE`
+`CMAKE_CUDA_ARCHITECTURES` value for all native layers before building. `NATIVE`
 targets the build host's GPU. For deployment to another GPU model, use an
 [explicit architecture list](./from-source.md#choosing-cuda-architectures).
 
@@ -90,16 +91,16 @@ bash scripts/build/build_libcuml.sh
 
 The scripts install libraries, headers and build metadata under
 `$ALGEON_ROOT/target/native`. The cuDF, cuGraph and cuML installations carry
-Algeon crate-version markers; their Rust crates reject missing or incompatible
+Algeon crate-version markers. Their Rust crates reject missing or incompatible
 markers. Copy complete prefixes when staging artifacts, including `include/`,
 CMake exports and `share/` metadata. All layers use the cuDF prefix's shared RMM.
 The [source-build reference](./from-source.md#3-build-the-native-stack) lists
 installation checks for each component.
 
 `server` adds the embedded Flight SQL API and `nvml` adds optional live device
-diagnostics. Neither adds a RAPIDS install directory; `nvml` needs the NVIDIA
+diagnostics. Neither adds a RAPIDS install directory. `nvml` needs the NVIDIA
 driver's NVML runtime. Algorithm features select their own native directories
-as listed above. Select application features explicitly; `--all-features` on
+as listed above. Select application features explicitly. `--all-features` on
 Algeon's implementation crates can include developer-only `test-hooks`.
 
 ## 3. Create an external application
@@ -151,12 +152,17 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"
 ```
 
-The full `src/main.rs` below writes a small Parquet input in a temporary
-directory, installs one backend into a caller-owned session and executes a
-relational aggregate with `NativeRequired`. It checks result values and the
-attempt's completion report. Optional features add small cuVS, cuGraph and cuML
-queries. The application closes the backend and removes its input directory
-after execution, including on query errors.
+The copied `src/main.rs` is the release consumer check's application. It
+writes a small Parquet input in a temporary directory, installs one backend
+into a caller-owned session, executes a relational aggregate with
+`NativeRequired` and checks the result values and the attempt's completion
+report. Optional features add small cuVS, cuGraph and cuML queries, and the
+application closes the backend and removes its input directory afterwards,
+including on query errors. [DataFusion Session](../integration/datafusion-session.mdx)
+explains the same steps one at a time.
+
+<details>
+<summary>The complete <code>src/main.rs</code></summary>
 
 {/* registry-consumer:src/main.rs */}
 ```rust
@@ -443,9 +449,10 @@ fn require(condition: bool, message: &str) -> Result<()> {
 }
 ```
 
+</details>
+
 The manifest and source are the canonical
 [release consumer fixture](https://github.com/algeon-dev/algeon/tree/main/scripts/ci/fixtures/registry-consumer).
-The consumer check verifies that these displayed snippets match the fixture.
 No path dependency or repository `.cargo/config.toml` is required by the
 application.
 
@@ -455,7 +462,7 @@ Keep `ALGEON_NATIVE_DIR`, the CUDA selectors and the compiler settings from the
 native build shell in the application shell. `ALGEON_NATIVE_DIR` supplies build
 discovery; `LD_LIBRARY_PATH` supplies runtime discovery. A dependency's
 build-script rpath arguments do not propagate to the final application binary.
-The application may supply its own RUNPATH as a deployment choice; the commands
+The application may supply its own RUNPATH as a deployment choice. The commands
 here use an explicit loader environment.
 
 For the relational configuration, export the cuDF/RMM and CUDA directories,
@@ -502,12 +509,11 @@ Inspect required library resolution with the GNU loader on x86-64 Linux:
 
 The command should succeed and resolve Algeon and RAPIDS libraries to the
 selected install prefixes. ELF `DT_AUXILIARY` filters are
-[optional](https://www.sourceware.org/binutils/docs/ld/Options.html#index-g_t_002df);
+[optional](https://www.sourceware.org/binutils/docs/ld/Options.html#index-g_t_002df).
 `ldd` can list a missing auxiliary filter even when required libraries resolve.
-A successful `cargo check` does not execute the linker or the runtime loader.
 Direct binary execution confirms the query's result assertions on the available
 GPU.
 
-Continue with [DataFusion Session](../integration/datafusion-session.mdx) to
-configure execution modes, add SQL function families, and share one backend
-across application sessions.
+Return to [DataFusion Session](../integration/datafusion-session.mdx) for the
+application code: the backend, SQL function families, execution modes and
+attempt observation.

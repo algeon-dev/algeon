@@ -13,7 +13,7 @@ those reviews.
 
 SQL defines the eligible products before exact nearest-neighbor search, then
 joins ranked IDs to titles and review counts. The request and product vectors
-were encoded before the query. Both are L2 normalized; squared L2 distance
+were encoded before the query. Both are L2 normalized. Squared L2 distance
 `d` converts to cosine similarity as `1 - d / 2`.
 
 <CodeBlock language="sql">{capture.queries.travel_shortlist.sql}</CodeBlock>
@@ -28,12 +28,11 @@ filters and satisfying the request:
 
 <p className="fineprint">The query took {timings.queries.amazon.travel_shortlist.elapsed_s.toFixed(2)} s.</p>
 
-The VELKPRO title describes office calls and an on-ear design. Its vector is
-close enough to rank second, but a reviewer still needs to check or reject it
-against the travel request. Similarity does not verify specifications or
-noise-cancellation quality.
+The VELKPRO title describes office calls and an on-ear design. Its vector
+ranks second, but product specifications and design allow a reviewer to
+filter it from the travel shortlist.
 
-A later [raw-table check](/data/amazon-review-followup.json) found {followup.eligible.rows[0].eligible_products} eligible products;
+A later [raw-table check](/data/amazon-review-followup.json) found {followup.eligible.rows[0].eligible_products} eligible products, and
 {capture.verification.travel_shortlist.eligible_products} had vectors in the sampled corpus. The other
 {followup.eligible.rows[0].eligible_products - capture.verification.travel_shortlist.eligible_products} were outside this search.
 
@@ -45,8 +44,8 @@ The [main capture](/data/amazon-reviews-capture.json) retains all ten candidates
 
 ### Which Sony listings should an editor compare?
 
-For catalog maintenance, a separate query finds ten nearest listings for
-each of 10,000 query products in a one-million-product corpus. An editor can
+For catalog maintenance, a separate query retrieves the ten nearest listings
+for each of 10,000 query products within a one-million-product corpus. An editor can
 then compare condition, color and accessories before treating them as alternatives.
 
 <CodeBlock language="sql">{capture.queries.catalog_batch.sql}</CodeBlock>
@@ -62,5 +61,5 @@ For a midnight-blue Sony WH-1000XM4, three leading matches are:
 
 The shared model name explains why these are useful comparison candidates.
 Condition and bundle contents still determine the editing decision. The SQL
-returns 100,000 matches and joins their titles in the same statement; it does
+returns 100,000 matches with their titles already joined. It does
 not establish that the pairs are duplicate SKUs.

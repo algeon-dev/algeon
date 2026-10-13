@@ -22,7 +22,7 @@ and aggregations operate on GPU columns. The CPU still plans the query,
 reads metadata and submits work. The host application's Tokio runtime carries
 that CPU work, while GPU jobs run on a separately sized runtime that Algeon
 creates for each device ([Runtimes and threads](#runtimes-and-threads)).
-Local files and object storage can supply the input; a query attempt uses one
+Local files and object storage can supply the input. A query attempt uses one
 GPU.
 
 An embedded application and the Flight SQL server use the same execution
@@ -68,13 +68,8 @@ their dependencies. Ownership across the query crates is:
 | `query-engine` | Native execution composition | `crates/algeon-query-engine` |
 
 The adapter imports each query crate directly. The engine imports planning
-and runtime; runtime imports planning. These three query crates have no
-DataFusion dependency. Imports come from the crate that owns the item; query
-crates do not re-export another crate's modules as a facade. Public adapter
-signatures may use owner-crate types, with an adapter re-export for each exposed
-type. The
-[owner-type policy](https://github.com/algeon-dev/algeon/blob/main/.config/policies/public-api/algeon-datafusion-owner-types.tsv)
-records that disposition.
+and runtime. Runtime imports planning. These three query crates have no
+DataFusion dependency. Imports come from the crate that owns the item.
 
 Below them, the GPU component crates provide Rust APIs over NVIDIA's RAPIDS
 libraries:
@@ -87,44 +82,21 @@ libraries:
 | `cuml` | Machine learning operations and forest inference. |
 
 The adapter, runtime and engine call the components they need directly.
-Component APIs bind operations to a CUDA stream and memory resource; native
+Component APIs bind operations to a CUDA stream and memory resource. Native
 RAPIDS libraries perform the work. Shared interop contracts preserve buffer
 ownership across library boundaries. The
 [cuDF component README](https://github.com/algeon-dev/algeon/blob/main/components/cudf/README.md)
 shows how one binding meets these rules: its layers, handle ownership, stream
 provenance and memory domains.
 
-Backend memory models belong to their component owners. IR, facts, schedules
-and admission contracts remain backend neutral.
-
 ## API documentation
 
-`algeon-datafusion` is the application-facing Rust crate. The query and GPU
+`algeon-datafusion` is the application-facing Rust crate; the query and GPU
 component crates, interop and build support are implementation dependencies
-published with it. Workspace code imports each contract from its owner;
-applications use the adapter and its re-exports. Publication requirements
-are defined in [Workspace and publication contracts](../build/overview.md#workspace-and-publication-contracts).
-
-Visible adapter APIs require rustdoc, including public fields, enum variants
-and callable methods. The requirement also covers workspace-owned types
-re-exported by the adapter or reachable through its public signatures. Their
-documentation belongs at the defining item, so the adapter and internal
-consumers share one description. Document units, valid inputs, `None` meanings,
-errors and lifetime obligations where they affect callers.
-
-Internal cross-crate interfaces retain documentation for ownership, safety and
-other non-obvious invariants. They do not require application tutorials or
-exhaustive `missing_docs` enforcement merely because their package is published.
-Generated FFI declarations and existing hidden test interfaces stay outside
-the application documentation surface; handwritten safety contracts remain
-with their owners. Hiding an item or changing its visibility requires the
-existing API review and cannot substitute for documenting an application API.
-Reports, metrics and native plan wrappers retain their existing contracts.
-
-The [documentation checks](../build/tests.md) enforce this scope alongside the
-API snapshots and owner-type policy. A passing completeness check establishes
-that documentation exists; review must still verify its claims against the
-implementation.
+published with it. Visible adapter APIs, and the workspace-owned types they
+expose, carry rustdoc at the defining item. The
+[API documentation boundary](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#api-documentation-boundary)
+defines that scope, and the [documentation checks](../build/tests.md) enforce it.
 
 ## Runtimes and threads {/* #runtimes-and-threads */}
 
@@ -136,7 +108,7 @@ Three Tokio runtimes serve a query.
 | GPU pool, one per device | `GpuExecutionPool` at backend build | `worker_count` workers plus blocking-lane threads, named `algeon-gpu-{d}` | cuDF, cuGraph, cuVS and cuML calls |
 | Object-store control | First query service in the process | Tokio default, named `algeon-object-store-control` | Footer and cache-fill fetches |
 
-The library builds no host runtime; the host's runtime needs the time driver
+The library builds no host runtime. The host's runtime needs the time driver
 for admission waits and deadlines. The pool uses Tokio as a fixed-width thread
 pool that keeps synchronous GPU calls off the host runtime. A job is an `async`
 block with a synchronous GPU body and holds its worker until the body returns.
@@ -144,9 +116,9 @@ Query execution jobs take at most `worker_count - 1` workers, which leaves one
 for context setup and release cleanup. Chunk lane jobs and source reads use the
 blocking lane of the same runtime.
 
-A submission takes a job-class permit without waiting. A saturated class
-returns `service_overloaded`, and the admission envelope of a placed attempt is
-the one bounded waiter. A pool thread that must wait on an async primitive
+A submission acquires a job-class permit immediately. If a class is saturated,
+the service returns `service_overloaded`, making the admission envelope of a
+placed attempt the sole bounded waiting point. A pool thread that must wait on an async primitive
 parks in `block_until`, which polls under `unconstrained` because an exhausted
 Tokio cooperative budget returns `Pending` without registering the waker. A
 job submitted from inside the same pool runs inline. Host-side `spawn_blocking`
@@ -162,6 +134,7 @@ password verification.
 | `algeon-stream-cleanup-d{d}-p{p}` | One per stream pool | Synchronizes returned streams |
 | `algeon-gpu-close` | One per backend | Backend close cleanup |
 | `algeon-observation-completion-observation`, `algeon-observation-completion-activity-tail` | One each per backend | Observation delivery |
+| KvikIO thread pool | 64 per process, started at backend build | Compatibility-mode `pread` tasks and `s3://` range reads |
 
 An `atexit` hook joins registered CUDA-capable workers before libcudart tears
 down.
@@ -170,19 +143,9 @@ down.
 
 ## Follow the data
 
-1. [From SQL to a GPU plan](./native-lowering.mdx) explains the translation of
-   CPU partitions and SQL semantics into a native schedule.
-2. [From Parquet to GPU memory](./data-path.mdx) follows bytes through local
-   storage, KvikIO, staging buffers and decoding.
-3. [Inside GPU execution](./gpu-execution.mdx) connects column layouts,
-   parallel work and CUDA streams.
-4. [GPU table functions](./gpu-table-functions.mdx) follows cuDF buffers through
-   cuGraph, cuVS and cuML, then back into relational operations.
-5. [Memory and query lifetime](./admission.mdx) explains admission, where each
-   step of an attempt runs, allocation limits, cancellation and safe reuse
-   after a query finishes.
-6. [Error ownership](./errors.mdx) assigns each failure to the layer that owns
-   it and defines what each diagnostic surface may disclose.
-
-Configuration and API examples live in [Integrating Algeon](../integration/overview.mdx).
-The [Glossary](../reference/glossary.md) defines the vocabulary used here.
+The next six pages follow a query in sidebar order, from
+[SQL to a GPU plan](./native-lowering.mdx) through
+[Parquet to GPU memory](./data-path.mdx), [GPU execution](./gpu-execution.mdx),
+[GPU table functions](./gpu-table-functions.mdx) and
+[memory and query lifetime](./admission.mdx) to
+[error ownership](./errors.mdx). Each ends with a link to the next.

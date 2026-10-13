@@ -15,15 +15,14 @@ import MerRecScaleWorlds from './merrec_scale_worlds.mdx';
 
 {/* Hand-owned examples for cugraph_leiden. NOT generated; safe to edit. */}
 
-This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
-
 ### Would another community algorithm split our largest research groups?
 
 A research catalog may use citation communities to organize a field into
 reading groups. Before treating those groups as fixed boundaries, compare
-Louvain and Leiden on the same 2010s AI subgraph. For each large Louvain group,
-this query counts how many Leiden groups contain at least 50 of its papers.
-The overlap measures sensitivity to the choice of algorithm.
+Louvain and Leiden on the same 2010s AI subgraph of the
+[citation network](../../guides/datasets/citation-network.mdx). For each large
+Louvain group, this query counts how many Leiden groups contain at least 50 of
+its papers. The overlap measures sensitivity to the choice of algorithm.
 
 ```sql
 CREATE OR REPLACE VIEW ai_nodes AS
@@ -67,7 +66,7 @@ ORDER BY leiden_parts DESC, members DESC;
 
 In this capture, the largest Louvain group overlaps five Leiden groups with
 at least 50 papers each. A `leiden_parts` value of 1 allows smaller fragments
-below that threshold; it does not establish that the group remained intact.
+below that threshold. It does not establish that the group remained intact.
 Community IDs are local labels, and membership can vary between GPU runs even
 with a fixed seed. Compare the membership of papers, rather than label values
 from separate executions.

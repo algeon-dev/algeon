@@ -1,500 +1,524 @@
 {
- "hot_wheels": {
-  "name": "32_barbie_control_hot_wheels",
-  "sql_file": "fixture/demo/merrec/scripts/scale/32_barbie_control_hot_wheels.sql",
-  "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 9877 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 9877 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 9877\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
-  "binary_sha256": "d056bb09189db05e0b1ced0463aae97b12abdc0787b12cd41b1658ab6d622565",
-  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
-  "runs": [
-   {
-    "name": "32_barbie_control_hot_wheels_r1",
-    "query_id": "0c974460-2358-462b-b6fb-bc67b9de1e1d",
-    "elapsed_s": 3.7593707509804517,
-    "native_fragments": 11,
-    "host_boundaries": 0,
-    "allocator_peak_bytes": 14150245817,
-    "query_limit_bytes": 96636764160
-   },
-   {
-    "name": "32_barbie_control_hot_wheels_r2",
-    "query_id": "5f4da655-6114-4bac-bbe2-1753e84ec072",
-    "elapsed_s": 3.7053593550808728,
-    "native_fragments": 11,
-    "host_boundaries": 0,
-    "allocator_peak_bytes": 14150245817,
-    "query_limit_bytes": 96636764160
-   },
-   {
-    "name": "32_barbie_control_hot_wheels_r3",
-    "query_id": "7423d2f6-4061-418c-86db-d0305bf9d0fc",
-    "elapsed_s": 3.9924424700438976,
-    "native_fragments": 11,
-    "host_boundaries": 0,
-    "allocator_peak_bytes": 14150245817,
-    "query_limit_bytes": 96636764160
-   }
-  ],
-  "median_elapsed_s_after_first": 3.848900912562385,
-  "rows": 25,
-  "identical_results_across_runs": true,
-  "schema": [
-   "brand_name: string_view",
-   "fans_before: int64",
-   "fans_after: int64",
-   "lift_before: double",
-   "lift_after: double",
-   "lift_change: double"
-  ],
-  "records": [
-   {
-    "brand_name": "Skullcandy",
-    "fans_before": 1016,
-    "fans_after": 1343,
-    "lift_before": 0.58192111764026,
-    "lift_after": 0.9283103940320494,
-    "lift_change": 1.5952512563840742
-   },
-   {
-    "brand_name": "NYX",
-    "fans_before": 2781,
-    "fans_after": 4253,
-    "lift_before": 0.592113245871551,
-    "lift_after": 0.9056867447900205,
-    "lift_change": 1.5295836583708078
-   },
-   {
-    "brand_name": "Joules",
-    "fans_before": 1048,
-    "fans_after": 1426,
-    "lift_before": 0.5599442261315005,
-    "lift_after": 0.8290676160687053,
-    "lift_change": 1.4806253504862505
-   },
-   {
-    "brand_name": "WILLOW",
-    "fans_before": 1275,
-    "fans_after": 1437,
-    "lift_before": 0.4202462574025176,
-    "lift_after": 0.5971607161287528,
-    "lift_change": 1.4209780708571167
-   },
-   {
-    "brand_name": "Monat",
-    "fans_before": 1837,
-    "fans_after": 2022,
-    "lift_before": 0.33437436457221414,
-    "lift_after": 0.4750774670398132,
-    "lift_change": 1.4207951247925636
-   },
-   {
-    "brand_name": "Oscar de la Renta",
-    "fans_before": 1149,
-    "fans_after": 1360,
-    "lift_before": 0.5113092522503999,
-    "lift_after": 0.7107559009566703,
-    "lift_change": 1.390070486361152
-   },
-   {
-    "brand_name": "Lovevery",
-    "fans_before": 4567,
-    "fans_after": 5537,
-    "lift_before": 0.4538326753643273,
-    "lift_after": 0.6294465366246816,
-    "lift_change": 1.3869572879902823
-   },
-   {
-    "brand_name": "Princess House",
-    "fans_before": 1921,
-    "fans_after": 2329,
-    "lift_before": 0.44636905438720365,
-    "lift_after": 0.612144194160095,
-    "lift_change": 1.371385825570895
-   },
-   {
-    "brand_name": "Glamlite",
-    "fans_before": 1898,
-    "fans_after": 2236,
-    "lift_before": 0.8415135623234626,
-    "lift_after": 1.1387952689429437,
-    "lift_change": 1.3532702500939746
-   },
-   {
-    "brand_name": "Medela",
-    "fans_before": 1367,
-    "fans_after": 1612,
-    "lift_before": 0.4925926325361318,
-    "lift_after": 0.6626681023222148,
-    "lift_change": 1.3452659632979955
-   },
-   {
-    "brand_name": "Corelle",
-    "fans_before": 2029,
-    "fans_after": 2470,
-    "lift_before": 0.5251667341030082,
-    "lift_after": 0.6963951926462706,
-    "lift_change": 1.3260458963299016
-   },
-   {
-    "brand_name": "ALDO",
-    "fans_before": 4571,
-    "fans_after": 6379,
-    "lift_before": 0.5283855225274339,
-    "lift_after": 0.6876829283174616,
-    "lift_change": 1.301479505017583
-   },
-   {
-    "brand_name": "Laredo",
-    "fans_before": 1038,
-    "fans_after": 1241,
-    "lift_before": 0.5308570815712031,
-    "lift_after": 0.6839400749436788,
-    "lift_change": 1.2883695041222556
-   },
-   {
-    "brand_name": "Primark",
-    "fans_before": 1966,
-    "fans_after": 2987,
-    "lift_before": 0.8072447227047551,
-    "lift_after": 1.038432419133618,
-    "lift_change": 1.286391090491425
-   },
-   {
-    "brand_name": "Fresh",
-    "fans_before": 1136,
-    "fans_after": 1325,
-    "lift_before": 0.5427998558340502,
-    "lift_after": 0.6982419567759424,
-    "lift_change": 1.286370932621278
-   },
-   {
-    "brand_name": "Circus by Sam Edelman",
-    "fans_before": 1150,
-    "fans_after": 1290,
-    "lift_before": 0.5287931431573307,
-    "lift_after": 0.6797071042749738,
-    "lift_change": 1.2853931883771457
-   },
-   {
-    "brand_name": "Tea Collection",
-    "fans_before": 2275,
-    "fans_after": 2628,
-    "lift_before": 0.5918852584478448,
-    "lift_after": 0.7590804368972836,
-    "lift_change": 1.2824790380620226
-   },
-   {
-    "brand_name": "Viking",
-    "fans_before": 2041,
-    "fans_after": 2360,
-    "lift_before": 0.6619038261289504,
-    "lift_after": 0.8449873572836946,
-    "lift_change": 1.2766014093399065
-   },
-   {
-    "brand_name": "Dunkin'",
-    "fans_before": 1580,
-    "fans_after": 1459,
-    "lift_before": 0.6198281208431357,
-    "lift_after": 0.7912232668631132,
-    "lift_change": 1.2765204421297203
-   },
-   {
-    "brand_name": "Thrive",
-    "fans_before": 1086,
-    "fans_after": 1122,
-    "lift_before": 0.44630098751764924,
-    "lift_after": 0.5693386112652932,
-    "lift_change": 1.2756830640953452
-   },
-   {
-    "brand_name": "Epson",
-    "fans_before": 1514,
-    "fans_after": 1822,
-    "lift_before": 0.502979099449561,
-    "lift_after": 0.6411813247011827,
-    "lift_change": 1.274767332087684
-   },
-   {
-    "brand_name": "Younique",
-    "fans_before": 1889,
-    "fans_after": 2075,
-    "lift_before": 0.4338190347503871,
-    "lift_after": 0.5486616241764402,
-    "lift_change": 1.2647246437495112
-   },
-   {
-    "brand_name": "IKEA",
-    "fans_before": 6069,
-    "fans_after": 7485,
-    "lift_before": 0.5895619032782744,
-    "lift_after": 0.7442709373974591,
-    "lift_change": 1.2624135536216317
-   },
-   {
-    "brand_name": "G.H. Bass & Co.",
-    "fans_before": 1090,
-    "fans_after": 1370,
-    "lift_before": 0.5331912705789879,
-    "lift_after": 0.6703096916606072,
-    "lift_change": 1.2571655401123196
-   },
-   {
-    "brand_name": "Veja",
-    "fans_before": 2315,
-    "fans_after": 2465,
-    "lift_before": 0.3462577909164556,
-    "lift_after": 0.4350115448110449,
-    "lift_change": 1.256322763625566
-   }
-  ]
- },
- "nike": {
-  "name": "33_barbie_control_nike",
-  "sql_file": "fixture/demo/merrec/scripts/scale/33_barbie_control_nike.sql",
-  "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 15987 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 15987 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 15987\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
-  "binary_sha256": "d056bb09189db05e0b1ced0463aae97b12abdc0787b12cd41b1658ab6d622565",
-  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
-  "runs": [
-   {
-    "name": "33_barbie_control_nike_r1",
-    "query_id": "9c06b56a-472b-4924-adf3-85420f574f3f",
-    "elapsed_s": 3.864736070856452,
-    "native_fragments": 11,
-    "host_boundaries": 0,
-    "allocator_peak_bytes": 14117295801,
-    "query_limit_bytes": 96636764160
-   },
-   {
-    "name": "33_barbie_control_nike_r2",
-    "query_id": "a5c86bc2-c8d2-4e1c-b946-b30f13cf31e8",
-    "elapsed_s": 3.871306023094803,
-    "native_fragments": 11,
-    "host_boundaries": 0,
-    "allocator_peak_bytes": 14117295801,
-    "query_limit_bytes": 96636764160
-   },
-   {
-    "name": "33_barbie_control_nike_r3",
-    "query_id": "b2d33408-fbd5-4ea2-a832-17e747e3a0f5",
-    "elapsed_s": 3.7137612199876457,
-    "native_fragments": 11,
-    "host_boundaries": 0,
-    "allocator_peak_bytes": 14117295801,
-    "query_limit_bytes": 96636764160
-   }
-  ],
-  "median_elapsed_s_after_first": 3.7925336215412244,
-  "rows": 25,
-  "identical_results_across_runs": true,
-  "schema": [
-   "brand_name: string_view",
-   "fans_before: int64",
-   "fans_after: int64",
-   "lift_before: double",
-   "lift_after: double",
-   "lift_change: double"
-  ],
-  "records": [
-   {
-    "brand_name": "Texas Instruments",
-    "fans_before": 1115,
-    "fans_after": 3404,
-    "lift_before": 0.5184780398401325,
-    "lift_after": 0.6528761883768172,
-    "lift_change": 1.2592166653348036
-   },
-   {
-    "brand_name": "BabyBjorn",
-    "fans_before": 1047,
-    "fans_after": 1172,
-    "lift_before": 0.5349017801001713,
-    "lift_after": 0.6532007269469713,
-    "lift_change": 1.2211601292944774
-   },
-   {
-    "brand_name": "Dunkin'",
-    "fans_before": 1580,
-    "fans_after": 1459,
-    "lift_before": 0.5379493417964479,
-    "lift_after": 0.626993471239213,
-    "lift_change": 1.1655251201635601
-   },
-   {
-    "brand_name": "Stanley",
-    "fans_before": 16209,
-    "fans_after": 16642,
-    "lift_before": 0.5829980466565138,
-    "lift_after": 0.6744527369646148,
-    "lift_change": 1.1568696341824685
-   },
-   {
-    "brand_name": "Huk",
-    "fans_before": 1078,
-    "fans_after": 1116,
-    "lift_before": 1.029980686426229,
-    "lift_after": 1.1884664469239097,
-    "lift_change": 1.1538725556569278
-   },
-   {
-    "brand_name": "BABYBJ\u00d6RN",
-    "fans_before": 1293,
-    "fans_after": 1486,
-    "lift_before": 0.5303766357829263,
-    "lift_after": 0.6109460404462597,
-    "lift_change": 1.1519097924522999
-   },
-   {
-    "brand_name": "Dakine",
-    "fans_before": 1041,
-    "fans_after": 1387,
-    "lift_before": 0.7095430110426518,
-    "lift_after": 0.813230849564991,
-    "lift_change": 1.1461332673405846
-   },
-   {
-    "brand_name": "HydroJug",
-    "fans_before": 1289,
-    "fans_after": 1178,
-    "lift_before": 0.7336836924584518,
-    "lift_after": 0.8352741730425819,
-    "lift_change": 1.1384663195166806
-   },
-   {
-    "brand_name": "Lanvin",
-    "fans_before": 1222,
-    "fans_after": 1508,
-    "lift_before": 1.1318917069689234,
-    "lift_after": 1.2880676158528852,
-    "lift_change": 1.1379777834950158
-   },
-   {
-    "brand_name": "TXT",
-    "fans_before": 4544,
-    "fans_after": 4145,
-    "lift_before": 0.26097272424937873,
-    "lift_after": 0.29555750668358927,
-    "lift_change": 1.1325225942047576
-   },
-   {
-    "brand_name": "Rodan + Fields",
-    "fans_before": 1096,
-    "fans_after": 1208,
-    "lift_before": 0.5700946279163152,
-    "lift_after": 0.6450268935539696,
-    "lift_change": 1.13143829457143
-   },
-   {
-    "brand_name": "Astro",
-    "fans_before": 1504,
-    "fans_after": 1762,
-    "lift_before": 0.4695345515997191,
-    "lift_after": 0.5300074456328587,
-    "lift_change": 1.1287932779964895
-   },
-   {
-    "brand_name": "WILLOW",
-    "fans_before": 1275,
-    "fans_after": 1437,
-    "lift_before": 0.5331618867195068,
-    "lift_after": 0.6013755680637705,
-    "lift_change": 1.127941780992591
-   },
-   {
-    "brand_name": "Franklin Mint",
-    "fans_before": 1451,
-    "fans_after": 1998,
-    "lift_before": 0.5495919961159599,
-    "lift_after": 0.6192247911704423,
-    "lift_change": 1.1266990704860818
-   },
-   {
-    "brand_name": "Roberta Roller Rabbit",
-    "fans_before": 1010,
-    "fans_after": 1223,
-    "lift_before": 0.6837177572831998,
-    "lift_after": 0.7701552380552551,
-    "lift_change": 1.1264227524461565
-   },
-   {
-    "brand_name": "Tomorrow X Together",
-    "fans_before": 7509,
-    "fans_after": 7281,
-    "lift_before": 0.23879737541641907,
-    "lift_after": 0.26830951620572685,
-    "lift_change": 1.1235865374895515
-   },
-   {
-    "brand_name": "Peppa Pig",
-    "fans_before": 1458,
-    "fans_after": 1893,
-    "lift_before": 0.6466953572522272,
-    "lift_after": 0.7265187959447328,
-    "lift_change": 1.123432830926251
-   },
-   {
-    "brand_name": "Roblox",
-    "fans_before": 1107,
-    "fans_after": 1502,
-    "lift_before": 0.5104941926722658,
-    "lift_after": 0.5726039251523877,
-    "lift_change": 1.1216658942876476
-   },
-   {
-    "brand_name": "Capezio",
-    "fans_before": 1213,
-    "fans_after": 2017,
-    "lift_before": 0.7995911915600972,
-    "lift_after": 0.896353786224005,
-    "lift_change": 1.1210150833141528
-   },
-   {
-    "brand_name": "AGOLDE",
-    "fans_before": 1613,
-    "fans_after": 1493,
-    "lift_before": 0.7334799078535471,
-    "lift_after": 0.8219429029922529,
-    "lift_change": 1.1206072507119977
-   },
-   {
-    "brand_name": "Stokke",
-    "fans_before": 1079,
-    "fans_after": 1247,
-    "lift_before": 0.46080491941473306,
-    "lift_after": 0.5132021405257449,
-    "lift_change": 1.1137080332769913
-   },
-   {
-    "brand_name": "Skullcandy",
-    "fans_before": 1016,
-    "fans_after": 1343,
-    "lift_before": 0.7162955341816903,
-    "lift_after": 0.7964258840435434,
-    "lift_change": 1.1118677222431597
-   },
-   {
-    "brand_name": "CeraVe",
-    "fans_before": 1547,
-    "fans_after": 1563,
-    "lift_before": 0.753141542974654,
-    "lift_after": 0.836258959522619,
-    "lift_change": 1.110360950505637
-   },
-   {
-    "brand_name": "Summersalt",
-    "fans_before": 1124,
-    "fans_after": 1052,
-    "lift_before": 0.741878594245341,
-    "lift_after": 0.8228077877928709,
-    "lift_change": 1.1090868427466267
-   },
-   {
-    "brand_name": "little sleepies",
-    "fans_before": 15629,
-    "fans_after": 17436,
-    "lift_before": 0.5757583938591101,
-    "lift_after": 0.6360152669036717,
-    "lift_change": 1.1046565255274536
-   }
-  ]
- }
+  "hot_wheels": {
+    "name": "32_barbie_control_hot_wheels",
+    "sql_file": "fixture/demo/merrec/scripts/scale/32_barbie_control_hot_wheels.sql",
+    "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 9877 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 9877 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 9877\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
+    "binary_sha256": "7abdf27818945f6afadba5b0fb18bf5c4a31e34af8e3cddd4763c346ef7b078d",
+    "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+    "runs": [
+      {
+        "name": "32_barbie_control_hot_wheels_r1",
+        "query_id": "e6daba40-1fb6-4d3b-bf14-62d6752d9df0",
+        "elapsed_s": 3.5996125149540603,
+        "native_fragments": 11,
+        "host_boundaries": 0,
+        "allocator_peak_bytes": 14150245817,
+        "query_limit_bytes": 96636764160,
+        "source_cache_resident": {
+          "items.parquet": 0.2011,
+          "events.parquet": 0.1031
+        }
+      },
+      {
+        "name": "32_barbie_control_hot_wheels_r2",
+        "query_id": "3ea65bac-440a-4514-901c-95d73c1db417",
+        "elapsed_s": 3.245327527169138,
+        "native_fragments": 11,
+        "host_boundaries": 0,
+        "allocator_peak_bytes": 14150245817,
+        "query_limit_bytes": 96636764160,
+        "source_cache_resident": {
+          "items.parquet": 0.2011,
+          "events.parquet": 0.1031
+        }
+      },
+      {
+        "name": "32_barbie_control_hot_wheels_r3",
+        "query_id": "75ffd0bf-22b8-4cc1-a6a4-7427f5355e39",
+        "elapsed_s": 3.368450060952455,
+        "native_fragments": 11,
+        "host_boundaries": 0,
+        "allocator_peak_bytes": 14150245817,
+        "query_limit_bytes": 96636764160,
+        "source_cache_resident": {
+          "items.parquet": 0.2011,
+          "events.parquet": 0.1031
+        }
+      }
+    ],
+    "median_elapsed_s_after_first": 3.3068887940607965,
+    "rows": 25,
+    "identical_results_across_runs": true,
+    "schema": [
+      "brand_name: string_view",
+      "fans_before: int64",
+      "fans_after: int64",
+      "lift_before: double",
+      "lift_after: double",
+      "lift_change: double"
+    ],
+    "records": [
+      {
+        "brand_name": "Skullcandy",
+        "fans_before": 1016,
+        "fans_after": 1343,
+        "lift_before": 0.58192111764026,
+        "lift_after": 0.9283103940320494,
+        "lift_change": 1.5952512563840742
+      },
+      {
+        "brand_name": "NYX",
+        "fans_before": 2781,
+        "fans_after": 4253,
+        "lift_before": 0.592113245871551,
+        "lift_after": 0.9056867447900205,
+        "lift_change": 1.5295836583708078
+      },
+      {
+        "brand_name": "Joules",
+        "fans_before": 1048,
+        "fans_after": 1426,
+        "lift_before": 0.5599442261315005,
+        "lift_after": 0.8290676160687053,
+        "lift_change": 1.4806253504862505
+      },
+      {
+        "brand_name": "WILLOW",
+        "fans_before": 1275,
+        "fans_after": 1437,
+        "lift_before": 0.4202462574025176,
+        "lift_after": 0.5971607161287528,
+        "lift_change": 1.4209780708571167
+      },
+      {
+        "brand_name": "Monat",
+        "fans_before": 1837,
+        "fans_after": 2022,
+        "lift_before": 0.33437436457221414,
+        "lift_after": 0.4750774670398132,
+        "lift_change": 1.4207951247925636
+      },
+      {
+        "brand_name": "Oscar de la Renta",
+        "fans_before": 1149,
+        "fans_after": 1360,
+        "lift_before": 0.5113092522503999,
+        "lift_after": 0.7107559009566703,
+        "lift_change": 1.390070486361152
+      },
+      {
+        "brand_name": "Lovevery",
+        "fans_before": 4567,
+        "fans_after": 5537,
+        "lift_before": 0.4538326753643273,
+        "lift_after": 0.6294465366246816,
+        "lift_change": 1.3869572879902823
+      },
+      {
+        "brand_name": "Princess House",
+        "fans_before": 1921,
+        "fans_after": 2329,
+        "lift_before": 0.44636905438720365,
+        "lift_after": 0.612144194160095,
+        "lift_change": 1.371385825570895
+      },
+      {
+        "brand_name": "Glamlite",
+        "fans_before": 1898,
+        "fans_after": 2236,
+        "lift_before": 0.8415135623234626,
+        "lift_after": 1.1387952689429437,
+        "lift_change": 1.3532702500939746
+      },
+      {
+        "brand_name": "Medela",
+        "fans_before": 1367,
+        "fans_after": 1612,
+        "lift_before": 0.4925926325361318,
+        "lift_after": 0.6626681023222148,
+        "lift_change": 1.3452659632979955
+      },
+      {
+        "brand_name": "Corelle",
+        "fans_before": 2029,
+        "fans_after": 2470,
+        "lift_before": 0.5251667341030082,
+        "lift_after": 0.6963951926462706,
+        "lift_change": 1.3260458963299016
+      },
+      {
+        "brand_name": "ALDO",
+        "fans_before": 4571,
+        "fans_after": 6379,
+        "lift_before": 0.5283855225274339,
+        "lift_after": 0.6876829283174616,
+        "lift_change": 1.301479505017583
+      },
+      {
+        "brand_name": "Laredo",
+        "fans_before": 1038,
+        "fans_after": 1241,
+        "lift_before": 0.5308570815712031,
+        "lift_after": 0.6839400749436788,
+        "lift_change": 1.2883695041222556
+      },
+      {
+        "brand_name": "Primark",
+        "fans_before": 1966,
+        "fans_after": 2987,
+        "lift_before": 0.8072447227047551,
+        "lift_after": 1.038432419133618,
+        "lift_change": 1.286391090491425
+      },
+      {
+        "brand_name": "Fresh",
+        "fans_before": 1136,
+        "fans_after": 1325,
+        "lift_before": 0.5427998558340502,
+        "lift_after": 0.6982419567759424,
+        "lift_change": 1.286370932621278
+      },
+      {
+        "brand_name": "Circus by Sam Edelman",
+        "fans_before": 1150,
+        "fans_after": 1290,
+        "lift_before": 0.5287931431573307,
+        "lift_after": 0.6797071042749738,
+        "lift_change": 1.2853931883771457
+      },
+      {
+        "brand_name": "Tea Collection",
+        "fans_before": 2275,
+        "fans_after": 2628,
+        "lift_before": 0.5918852584478448,
+        "lift_after": 0.7590804368972836,
+        "lift_change": 1.2824790380620226
+      },
+      {
+        "brand_name": "Viking",
+        "fans_before": 2041,
+        "fans_after": 2360,
+        "lift_before": 0.6619038261289504,
+        "lift_after": 0.8449873572836946,
+        "lift_change": 1.2766014093399065
+      },
+      {
+        "brand_name": "Dunkin'",
+        "fans_before": 1580,
+        "fans_after": 1459,
+        "lift_before": 0.6198281208431357,
+        "lift_after": 0.7912232668631132,
+        "lift_change": 1.2765204421297203
+      },
+      {
+        "brand_name": "Thrive",
+        "fans_before": 1086,
+        "fans_after": 1122,
+        "lift_before": 0.44630098751764924,
+        "lift_after": 0.5693386112652932,
+        "lift_change": 1.2756830640953452
+      },
+      {
+        "brand_name": "Epson",
+        "fans_before": 1514,
+        "fans_after": 1822,
+        "lift_before": 0.502979099449561,
+        "lift_after": 0.6411813247011827,
+        "lift_change": 1.274767332087684
+      },
+      {
+        "brand_name": "Younique",
+        "fans_before": 1889,
+        "fans_after": 2075,
+        "lift_before": 0.4338190347503871,
+        "lift_after": 0.5486616241764402,
+        "lift_change": 1.2647246437495112
+      },
+      {
+        "brand_name": "IKEA",
+        "fans_before": 6069,
+        "fans_after": 7485,
+        "lift_before": 0.5895619032782744,
+        "lift_after": 0.7442709373974591,
+        "lift_change": 1.2624135536216317
+      },
+      {
+        "brand_name": "G.H. Bass & Co.",
+        "fans_before": 1090,
+        "fans_after": 1370,
+        "lift_before": 0.5331912705789879,
+        "lift_after": 0.6703096916606072,
+        "lift_change": 1.2571655401123196
+      },
+      {
+        "brand_name": "Veja",
+        "fans_before": 2315,
+        "fans_after": 2465,
+        "lift_before": 0.3462577909164556,
+        "lift_after": 0.4350115448110449,
+        "lift_change": 1.256322763625566
+      }
+    ]
+  },
+  "nike": {
+    "name": "33_barbie_control_nike",
+    "sql_file": "fixture/demo/merrec/scripts/scale/33_barbie_control_nike.sql",
+    "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 15987 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 15987 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 15987\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
+    "binary_sha256": "7abdf27818945f6afadba5b0fb18bf5c4a31e34af8e3cddd4763c346ef7b078d",
+    "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+    "runs": [
+      {
+        "name": "33_barbie_control_nike_r1",
+        "query_id": "299aede6-dc1e-4387-a880-46084bbb7e21",
+        "elapsed_s": 3.3492760218214244,
+        "native_fragments": 11,
+        "host_boundaries": 0,
+        "allocator_peak_bytes": 14117295801,
+        "query_limit_bytes": 96636764160,
+        "source_cache_resident": {
+          "items.parquet": 0.2011,
+          "events.parquet": 0.1031
+        }
+      },
+      {
+        "name": "33_barbie_control_nike_r2",
+        "query_id": "f33d9cae-cd17-4d13-ae1c-d8c750ed39ba",
+        "elapsed_s": 3.223707170924172,
+        "native_fragments": 11,
+        "host_boundaries": 0,
+        "allocator_peak_bytes": 14117295801,
+        "query_limit_bytes": 96636764160,
+        "source_cache_resident": {
+          "items.parquet": 0.2011,
+          "events.parquet": 0.1031
+        }
+      },
+      {
+        "name": "33_barbie_control_nike_r3",
+        "query_id": "f42b32de-ffce-423c-a6f4-febf115594c1",
+        "elapsed_s": 3.387070269091055,
+        "native_fragments": 11,
+        "host_boundaries": 0,
+        "allocator_peak_bytes": 14117295801,
+        "query_limit_bytes": 96636764160,
+        "source_cache_resident": {
+          "items.parquet": 0.2011,
+          "events.parquet": 0.1031
+        }
+      }
+    ],
+    "median_elapsed_s_after_first": 3.3053887200076133,
+    "rows": 25,
+    "identical_results_across_runs": true,
+    "schema": [
+      "brand_name: string_view",
+      "fans_before: int64",
+      "fans_after: int64",
+      "lift_before: double",
+      "lift_after: double",
+      "lift_change: double"
+    ],
+    "records": [
+      {
+        "brand_name": "Texas Instruments",
+        "fans_before": 1115,
+        "fans_after": 3404,
+        "lift_before": 0.5184780398401325,
+        "lift_after": 0.6528761883768172,
+        "lift_change": 1.2592166653348036
+      },
+      {
+        "brand_name": "BabyBjorn",
+        "fans_before": 1047,
+        "fans_after": 1172,
+        "lift_before": 0.5349017801001713,
+        "lift_after": 0.6532007269469713,
+        "lift_change": 1.2211601292944774
+      },
+      {
+        "brand_name": "Dunkin'",
+        "fans_before": 1580,
+        "fans_after": 1459,
+        "lift_before": 0.5379493417964479,
+        "lift_after": 0.626993471239213,
+        "lift_change": 1.1655251201635601
+      },
+      {
+        "brand_name": "Stanley",
+        "fans_before": 16209,
+        "fans_after": 16642,
+        "lift_before": 0.5829980466565138,
+        "lift_after": 0.6744527369646148,
+        "lift_change": 1.1568696341824685
+      },
+      {
+        "brand_name": "Huk",
+        "fans_before": 1078,
+        "fans_after": 1116,
+        "lift_before": 1.029980686426229,
+        "lift_after": 1.1884664469239097,
+        "lift_change": 1.1538725556569278
+      },
+      {
+        "brand_name": "BABYBJ\u00d6RN",
+        "fans_before": 1293,
+        "fans_after": 1486,
+        "lift_before": 0.5303766357829263,
+        "lift_after": 0.6109460404462597,
+        "lift_change": 1.1519097924522999
+      },
+      {
+        "brand_name": "Dakine",
+        "fans_before": 1041,
+        "fans_after": 1387,
+        "lift_before": 0.7095430110426518,
+        "lift_after": 0.813230849564991,
+        "lift_change": 1.1461332673405846
+      },
+      {
+        "brand_name": "HydroJug",
+        "fans_before": 1289,
+        "fans_after": 1178,
+        "lift_before": 0.7336836924584518,
+        "lift_after": 0.8352741730425819,
+        "lift_change": 1.1384663195166806
+      },
+      {
+        "brand_name": "Lanvin",
+        "fans_before": 1222,
+        "fans_after": 1508,
+        "lift_before": 1.1318917069689234,
+        "lift_after": 1.2880676158528852,
+        "lift_change": 1.1379777834950158
+      },
+      {
+        "brand_name": "TXT",
+        "fans_before": 4544,
+        "fans_after": 4145,
+        "lift_before": 0.26097272424937873,
+        "lift_after": 0.29555750668358927,
+        "lift_change": 1.1325225942047576
+      },
+      {
+        "brand_name": "Rodan + Fields",
+        "fans_before": 1096,
+        "fans_after": 1208,
+        "lift_before": 0.5700946279163152,
+        "lift_after": 0.6450268935539696,
+        "lift_change": 1.13143829457143
+      },
+      {
+        "brand_name": "Astro",
+        "fans_before": 1504,
+        "fans_after": 1762,
+        "lift_before": 0.4695345515997191,
+        "lift_after": 0.5300074456328587,
+        "lift_change": 1.1287932779964895
+      },
+      {
+        "brand_name": "WILLOW",
+        "fans_before": 1275,
+        "fans_after": 1437,
+        "lift_before": 0.5331618867195068,
+        "lift_after": 0.6013755680637705,
+        "lift_change": 1.127941780992591
+      },
+      {
+        "brand_name": "Franklin Mint",
+        "fans_before": 1451,
+        "fans_after": 1998,
+        "lift_before": 0.5495919961159599,
+        "lift_after": 0.6192247911704423,
+        "lift_change": 1.1266990704860818
+      },
+      {
+        "brand_name": "Roberta Roller Rabbit",
+        "fans_before": 1010,
+        "fans_after": 1223,
+        "lift_before": 0.6837177572831998,
+        "lift_after": 0.7701552380552551,
+        "lift_change": 1.1264227524461565
+      },
+      {
+        "brand_name": "Tomorrow X Together",
+        "fans_before": 7509,
+        "fans_after": 7281,
+        "lift_before": 0.23879737541641907,
+        "lift_after": 0.26830951620572685,
+        "lift_change": 1.1235865374895515
+      },
+      {
+        "brand_name": "Peppa Pig",
+        "fans_before": 1458,
+        "fans_after": 1893,
+        "lift_before": 0.6466953572522272,
+        "lift_after": 0.7265187959447328,
+        "lift_change": 1.123432830926251
+      },
+      {
+        "brand_name": "Roblox",
+        "fans_before": 1107,
+        "fans_after": 1502,
+        "lift_before": 0.5104941926722658,
+        "lift_after": 0.5726039251523877,
+        "lift_change": 1.1216658942876476
+      },
+      {
+        "brand_name": "Capezio",
+        "fans_before": 1213,
+        "fans_after": 2017,
+        "lift_before": 0.7995911915600972,
+        "lift_after": 0.896353786224005,
+        "lift_change": 1.1210150833141528
+      },
+      {
+        "brand_name": "AGOLDE",
+        "fans_before": 1613,
+        "fans_after": 1493,
+        "lift_before": 0.7334799078535471,
+        "lift_after": 0.8219429029922529,
+        "lift_change": 1.1206072507119977
+      },
+      {
+        "brand_name": "Stokke",
+        "fans_before": 1079,
+        "fans_after": 1247,
+        "lift_before": 0.46080491941473306,
+        "lift_after": 0.5132021405257449,
+        "lift_change": 1.1137080332769913
+      },
+      {
+        "brand_name": "Skullcandy",
+        "fans_before": 1016,
+        "fans_after": 1343,
+        "lift_before": 0.7162955341816903,
+        "lift_after": 0.7964258840435434,
+        "lift_change": 1.1118677222431597
+      },
+      {
+        "brand_name": "CeraVe",
+        "fans_before": 1547,
+        "fans_after": 1563,
+        "lift_before": 0.753141542974654,
+        "lift_after": 0.836258959522619,
+        "lift_change": 1.110360950505637
+      },
+      {
+        "brand_name": "Summersalt",
+        "fans_before": 1124,
+        "fans_after": 1052,
+        "lift_before": 0.741878594245341,
+        "lift_after": 0.8228077877928709,
+        "lift_change": 1.1090868427466267
+      },
+      {
+        "brand_name": "little sleepies",
+        "fans_before": 15629,
+        "fans_after": 17436,
+        "lift_before": 0.5757583938591101,
+        "lift_after": 0.6360152669036717,
+        "lift_change": 1.1046565255274536
+      }
+    ]
+  }
 }

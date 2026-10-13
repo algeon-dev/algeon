@@ -17,7 +17,7 @@ Partition vertices by running k-means on an embedding of the normalized graph La
 
 ## Quickstart
 
-The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`.
 
 ```sql
 SELECT *
@@ -28,13 +28,9 @@ FROM cugraph_spectral_modularity_maximization(
 
 ## Inputs
 
-Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns. Every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
 
-Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int32`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The native graph indexes `Int32` vertices only, so `Int64` vertex IDs are mapped to dense `Int32` ids by a per-call codebook and decoded back to the input type in the result; the distinct vertex count must fit in `Int32`. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from `gpu_validate_call`.
-
-Logical string side-input limitations:
-
-- edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
+The vertex-ID types this UDTF accepts, the numeric types a per-call codebook maps to native ids, and its string-key limits are listed in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from `gpu_validate_call`.
 
 ## Arguments and options
 
@@ -57,7 +53,7 @@ Every `edge_id` column must have the integer type of `src` and `dst`; string-key
 
 ### Graph construction options
 
-This UDTF requires `directed=false` (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
+This UDTF requires `directed=false` (undirected/symmetric graph). All other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
 
 ## Output
 
@@ -66,7 +62,7 @@ This UDTF requires `directed=false` (undirected/symmetric graph); all other grap
 | `vertex` | `Int64\|Utf8` | no | Vertex assigned to a spectral clustering partition. |
 | `community` | `Int64` | no | Cluster identifier assigned by spectral modularity maximization. |
 
-These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.
+These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -80,5 +76,3 @@ import Examples from '../../_examples/cugraph_spectral_modularity_maximization.m
 - the native graph type indexes Int32 vertices only; Int64 and string vertex columns run through a per-call codebook that fails when the distinct vertex count exceeds Int32::MAX
 - edge_id columns are rejected when Int64 vertices are mapped to Int32 ids
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
-
-To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx).

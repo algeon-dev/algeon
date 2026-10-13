@@ -10,13 +10,11 @@ labels. For bibliographies A and B, the cosine score is
 `|A ∩ B| / sqrt(|A| × |B|)`. Its denominator, the geometric mean of the two
 list sizes, accounts for bibliographies of different lengths.
 
-The UDTF requires an undirected graph. Positive IDs represent citing
-papers, and negative IDs represent cited-paper reference roles. This keeps
-each positive paper ID adjacent only to negative IDs for its references;
-papers that cite BERT remain positive vertices. The edge projection omits
-weights, giving each reference a unit contribution. Candidate pairs exclude
-records whose title matches BERT's, avoiding title-identical editions as
-separate suggestions.
+The edge view gives cited papers negative IDs and citing papers positive IDs,
+so the undirected call compares outgoing reference lists, as the
+[Jaccard example](../udtfs/similarity/cugraph_jaccard.mdx?dataset=citation-network#examples)
+explains. Candidate pairs exclude records whose title matches BERT's, avoiding
+title-identical editions as separate suggestions.
 
 ```sql
 CREATE OR REPLACE VIEW similarity_seed AS
@@ -69,6 +67,6 @@ LIMIT 5;
 *MASS* and BERT share 19 references. BERT has 55 references in the graph and
 MASS has 53, so the score is `19 / sqrt(55 × 53) = 0.352`.
 
-The result ranks bibliography similarity; topic meaning is outside the score. For
+The result ranks bibliography similarity. Topic meaning is outside the score. For
 intersection divided by the union of references, see the
 [Jaccard similarity example](../udtfs/similarity/cugraph_jaccard.mdx).
