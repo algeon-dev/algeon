@@ -689,10 +689,7 @@ impl SourceReuseRewrite {
         // shared source has different roles, so they are cleared. Keeping them
         // would report wrong evidence.
         for file in &mut files {
-            file.projected_row_group_compressed_bytes = None;
-            file.projected_row_group_uncompressed_bytes = None;
-            file.pure_filter_row_group_compressed_bytes = None;
-            file.pure_filter_row_group_uncompressed_bytes = None;
+            file.clear_column_byte_estimates();
         }
 
         let schema = Arc::new(Schema::new(fields));

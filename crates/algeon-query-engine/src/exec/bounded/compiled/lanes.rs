@@ -177,7 +177,7 @@ impl LaneWorkLease {
     fn acquire_for_run(context: &ExecutionContext, requested_lanes: usize) -> Result<Vec<Self>> {
         let mut leases = Vec::with_capacity(requested_lanes);
         for lane in 0..requested_lanes {
-            let acquired = context.try_acquire_attempt_work_lease().map_err(|error| {
+            let acquired = context.try_acquire_attempt_work_lease(|| None).map_err(|error| {
                 error.with_fact("execution_lane", lane).with_fact("execution_lane_count", requested_lanes)
             })?;
             match acquired {

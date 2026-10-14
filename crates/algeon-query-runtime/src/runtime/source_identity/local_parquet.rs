@@ -121,6 +121,11 @@ fn push_complete_source_contract(output: &mut String, source: &LocalParquetSourc
             format!("file.{index}.pure_filter_uncompressed"),
             file.pure_filter_row_group_uncompressed_bytes.as_deref(),
         );
+        push_optional_u64_vec(
+            output,
+            format!("file.{index}.row_group_decoded"),
+            file.row_group_decoded_bytes.as_deref(),
+        );
         push_optional_u64_vec(output, format!("file.{index}.row_group_rows"), file.row_group_rows.as_deref());
         // This footer fact is part of the complete source contract. It does
         // not change decoded rows, but it may change a graph admission
@@ -244,6 +249,7 @@ mod tests {
             known_pure_filter_uncompressed_bytes: None,
             estimated_chunk_bytes: None,
             estimated_source_read_bytes: None,
+            estimated_decoded_bytes: None,
             exact_source_read_preflight_bytes: None,
             source_file_row_groups: None,
             source_file_row_group_bytes: None,
@@ -251,6 +257,7 @@ mod tests {
             source_file_projected_uncompressed_bytes: None,
             source_file_pure_filter_compressed_bytes: None,
             source_file_pure_filter_uncompressed_bytes: None,
+            source_file_row_group_decoded_bytes: None,
             source_file_row_group_rows: None,
             reader_decimal_types: Vec::new(),
             reader_decimal_types_footer_verified: false,

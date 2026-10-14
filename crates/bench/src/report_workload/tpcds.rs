@@ -102,7 +102,7 @@ pub const TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
 pub const TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str = "sf100_gpu_throughput";
 /// Profile name used when explicit settings do not match a named profile.
 pub const TPCDS_NATIVE_PROFILE_CUSTOM: &str = "custom";
-/// SF100 throughput profile source byte target of 32 GiB.
+/// SF100 throughput profile source byte target of 32 GiB of decoded chunk bytes.
 pub const TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64 = 34_359_738_368;
 /// SF100 throughput profile row-group batch target.
 pub const TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;

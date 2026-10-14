@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, fs::File, path::Path, sync::Arc};
 
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use query_planning::{
+    chunk::decoded::row_group_decoded_bytes_from_footer,
     parquet_stats::{ColumnByteKind, row_group_column_bytes},
     source::SourceColumnRef,
 };
@@ -33,24 +34,24 @@ pub(super) mod fixture_local_parquet_source {
         read_columns: Vec<String>,
     ) -> NativeLocalParquetSource {
         let (read_column_indexes, projected_column_indexes) = fixture_column_indexes(&schema, &read_columns);
-        NativeLocalParquetSource::from_files(
+        with_fixture_decoded_bytes(NativeLocalParquetSource::from_files(
             files
                 .into_iter()
                 .map(|file| enrich_fixture_local_parquet_file(file, &read_column_indexes, &projected_column_indexes))
                 .collect(),
             schema,
             read_columns,
-        )
+        ))
     }
 
     pub(crate) fn zero_column_count(files: Vec<LocalParquetFile>) -> NativeLocalParquetSource {
         let read_column_indexes = BTreeSet::new();
-        NativeLocalParquetSource::zero_column_count(
+        with_fixture_decoded_bytes(NativeLocalParquetSource::zero_column_count(
             files
                 .into_iter()
                 .map(|file| enrich_fixture_local_parquet_file(file, &read_column_indexes, &read_column_indexes))
                 .collect(),
-        )
+        ))
     }
 
     pub(crate) fn count_star_probe(
@@ -63,7 +64,34 @@ pub(super) mod fixture_local_parquet_source {
             .into_iter()
             .map(|file| enrich_fixture_local_parquet_file(file, &read_column_indexes, &projected_column_indexes))
             .collect();
-        NativeLocalParquetSource::count_star_probe(files, read_schema, read_columns)
+        with_fixture_decoded_bytes(NativeLocalParquetSource::count_star_probe(files, read_schema, read_columns))
+    }
+
+    /// Adds the decoded read-column estimate that adapter lowering derives
+    /// from each written file's footer.
+    fn with_fixture_decoded_bytes(mut source: NativeLocalParquetSource) -> NativeLocalParquetSource {
+        let decoded = source
+            .files
+            .iter()
+            .map(|file| {
+                if file.row_group_decoded_bytes.is_some() || !file.path.is_file() {
+                    return None;
+                }
+                let reader = SerializedFileReader::try_from(file.path.as_path()).ok()?;
+                row_group_decoded_bytes_from_footer(
+                    reader.metadata(),
+                    &source.schema,
+                    &source.read_columns,
+                    &source.read_column_file_indices,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (file, decoded) in source.files.iter_mut().zip(decoded) {
+            if decoded.is_some() {
+                file.row_group_decoded_bytes = decoded;
+            }
+        }
+        source
     }
 }
 

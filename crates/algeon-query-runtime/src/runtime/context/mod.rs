@@ -10,16 +10,17 @@
 //! stream first checks a `QueryServiceResourceEpoch`. Pool clones, grant
 //! clones, and stream leases retain that epoch, so the service cannot reach
 //! idle while they live and their work fails once the service or the query
-//! handle closes; the cudf runtime only validates it (see `runtime`).
-//! Standalone contexts skip that layer. The admission contract is in
-//! `website/docs/design/admission.mdx#from-capability-validation-to-admission`;
+//! handle closes; the cudf runtime only validates it (see `runtime`). A host
+//! fence on the context's own stream acquires nothing and is not gated (see
+//! `synchronize_stream`). Standalone contexts skip that layer. The admission
+//! contract is in `website/docs/design/admission.mdx#from-capability-validation-to-admission`;
 //! the cancellation and release contracts are in
 //! `website/docs/design/admission.mdx#resident-handoff-and-release`.
 
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-use cudf::{DeviceId, Runtime as CudfRuntime};
+use cudf::{DeviceId, Error as CudfError, Runtime as CudfRuntime};
 use query_planning::{
     admission::AttemptCapabilityEvidence,
     capability::AggregateStrategyExecutionOptions,
@@ -366,6 +367,21 @@ impl ExecutionContext {
     /// Attach a server-generation I/O lifecycle to this context clone.
     pub fn with_io_lifecycle(self, lifecycle: IoLifecycle) -> Self {
         self.with_plan(|plan| plan.io_lifecycle = Some(lifecycle))
+    }
+
+    /// Host-fences this context's stream and returns any asynchronous device
+    /// fault that stream reports.
+    ///
+    /// Unlike [`runtime`](Self::runtime), the fence does not check the query
+    /// or service epoch. It enqueues no work and allocates nothing, so cleanup
+    /// that runs after cancellation released the query handle can still
+    /// complete the work it issued and attribute a fault to it. The caller
+    /// must hold the stream binding or the lease from `with_stream_lease`
+    /// that this context was created under; a borrowed context that outlives
+    /// its lease would fence a pooled stream another attempt may own.
+    #[doc(hidden)]
+    pub fn synchronize_stream(&self) -> std::result::Result<(), CudfError> {
+        self.stream.runtime().synchronize()
     }
 
     /// Returns a shared handle to the runtime.

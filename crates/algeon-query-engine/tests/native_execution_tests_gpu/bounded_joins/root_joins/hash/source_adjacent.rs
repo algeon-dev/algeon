@@ -113,7 +113,8 @@ fn bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode() {
             LocalParquetFile::new(&left_path)
                 .with_file_size_bytes(fs::metadata(&left_path).unwrap().len())
                 .with_row_group_bytes(left_row_group_bytes.clone())
-                .with_projected_row_group_bytes(left_row_group_bytes.clone(), left_row_group_bytes)
+                .with_projected_row_group_bytes(left_row_group_bytes.clone(), left_row_group_bytes.clone())
+                .with_row_group_decoded_bytes(left_row_group_bytes)
                 .with_row_group_rows(vec![left_rows_per_row_group as u64; left_row_groups]),
         ],
         Arc::clone(&left_schema),

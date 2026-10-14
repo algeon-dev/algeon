@@ -108,9 +108,12 @@ does not charge it as a device allocation.
 
 The query domain's allocator alone enforces the query cap shared by all
 execution lanes. An allocation exceeding the cap returns a typed failure at
-its source. Chunking can reduce live intermediates, but an input, hash table
-or result that cannot fit can still fail. Native execution does not provide
-general disk spilling.
+its source. Chunking can reduce live intermediates. When the cap rejects an
+allocation while a source chunk is read, staged through the filters and
+projections that run on it, or partitioned for an aggregate, the chunk splits
+in half by row group and runs again, up to the configured retry attempts. An
+input, hash table or result that cannot fit can still fail. Native execution
+does not provide general disk spilling.
 
 ## Completion and resident data {/* #resident-handoff-and-release */}
 
@@ -135,8 +138,13 @@ the same path through a per-statement token.
 The attempt releases its grant once its outcome is terminal and no fragment is
 running. Ending one fragment's stream does not release the grant. Retained
 outputs and pending GPU work must settle before their resources can be reused.
-A failed completion fence or cleanup closes admission on the affected device
-and records the failure.
+At release, the attempt's cleanup stream is synchronized and its memory domain
+sampled. A failed synchronization, a persistent CUDA fault, or memory still
+charged to the attempt closes admission on that device. A cleanup callback
+dropped before it ran, or a domain sample that fails on a healthy device,
+leaves fault isolation unknown, and the backend then rejects new GPU work. A
+failed fence inside a task is recorded in the attempt report and does not
+change admission by itself.
 
 ## Runtime observations
 

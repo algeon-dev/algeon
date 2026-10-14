@@ -1,7 +1,9 @@
 /// Slot model used to derive a per-source-task chunk target from a device budget.
 ///
-/// Each slot represents one live chunk-sized region that may coexist during the
-/// source task. The model is a planning heuristic. It does not record the
+/// Each slot represents one live region the size of a chunk's decoded read
+/// columns ([`crate::chunk::decoded`]) that may coexist during the source
+/// task. Stages that widen their input, such as a projection adding columns,
+/// are not modeled. The model is a planning heuristic. It does not record the
 /// executor's allocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceTaskMemoryModel {

@@ -50,14 +50,6 @@ impl AttemptAuxiliarySlots {
         self.capacity
     }
 
-    pub(crate) fn acquire_with_cancellation(
-        self: &Arc<Self>,
-        cancellation: &ExecutionCancellation,
-        operation: &'static str,
-    ) -> Result<AttemptAuxiliaryPermit> {
-        self.acquire_blocking(cancellation, None, operation)
-    }
-
     pub(crate) fn acquire_with_cancellation_deadline(
         self: &Arc<Self>,
         cancellation: &ExecutionCancellation,
@@ -234,14 +226,14 @@ mod attempt_auxiliary_slots_tests {
         let slots = AttemptAuxiliarySlots::new(7, 1);
         let active = ExecutionCancellation::new();
         let held = slots
-            .acquire_with_cancellation(&active, "query_engine.test.attempt_auxiliary_slots")
+            .acquire_with_cancellation_deadline(&active, None, "query_engine.test.attempt_auxiliary_slots")
             .expect("first auxiliary permit fits the attempt envelope");
         assert_eq!(slots.in_use_for_test(), 1);
 
         let cancelled = ExecutionCancellation::new();
         cancelled.cancel();
         let cancelled_error = slots
-            .acquire_with_cancellation(&cancelled, "query_engine.test.attempt_auxiliary_slots")
+            .acquire_with_cancellation_deadline(&cancelled, None, "query_engine.test.attempt_auxiliary_slots")
             .expect_err("cancelled waiter must not exceed the attempt envelope");
         assert_eq!(cancelled_error.code(), QueryErrorCode::Cancelled);
 
@@ -260,7 +252,7 @@ mod attempt_auxiliary_slots_tests {
 
         drop(held);
         let released = slots
-            .acquire_with_cancellation(&active, "query_engine.test.attempt_auxiliary_slots")
+            .acquire_with_cancellation_deadline(&active, None, "query_engine.test.attempt_auxiliary_slots")
             .expect("dropping the permit returns this attempt's capacity");
         assert_eq!(slots.in_use_for_test(), 1);
         drop(released);
@@ -273,7 +265,7 @@ mod attempt_auxiliary_slots_tests {
         let second_attempt = AttemptAuxiliarySlots::new(3, 1);
         let cancellation = ExecutionCancellation::new();
         let first = first_attempt
-            .acquire_with_cancellation(&cancellation, "query_engine.test.attempt_auxiliary_slots")
+            .acquire_with_cancellation_deadline(&cancellation, None, "query_engine.test.attempt_auxiliary_slots")
             .expect("first attempt reserves its only slot");
 
         let first_exhausted = first_attempt
@@ -286,7 +278,7 @@ mod attempt_auxiliary_slots_tests {
         assert_eq!(first_exhausted.fact_value("reason"), Some("attempt_auxiliary_slot_wait_timeout"));
 
         let second = second_attempt
-            .acquire_with_cancellation(&cancellation, "query_engine.test.attempt_auxiliary_slots")
+            .acquire_with_cancellation_deadline(&cancellation, None, "query_engine.test.attempt_auxiliary_slots")
             .expect("second attempt retains its independently admitted share");
         assert_eq!(first_attempt.in_use_for_test(), 1);
         assert_eq!(second_attempt.in_use_for_test(), 1);

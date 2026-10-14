@@ -108,6 +108,10 @@ pub struct SourceChunk {
     pub estimated_chunk_bytes: Option<u64>,
     /// Best available source-read budget estimate in bytes.
     pub estimated_source_read_bytes: Option<u64>,
+    /// Estimated decoded device bytes of the read columns
+    /// ([`crate::chunk::decoded`]), when every row group has an estimate.
+    /// Chunk and batch planning compare it with the source-byte target.
+    pub estimated_decoded_bytes: Option<u64>,
     /// Exact cudf source-read budget in bytes for fixed-width projected columns.
     pub exact_source_read_preflight_bytes: Option<u64>,
     /// Source-level selected row groups, before chunking.
@@ -122,6 +126,8 @@ pub struct SourceChunk {
     pub source_file_pure_filter_compressed_bytes: Option<Vec<u64>>,
     /// Per-row-group pure-filter uncompressed bytes for the full file, if available.
     pub source_file_pure_filter_uncompressed_bytes: Option<Vec<u64>>,
+    /// Per-row-group decoded read-column estimates for the full file, if available.
+    pub source_file_row_group_decoded_bytes: Option<Vec<u64>>,
     /// Per-row-group row counts for the full file, if available.
     pub source_file_row_group_rows: Option<Vec<u64>>,
     /// Per-read-column decimal storage types proven from Parquet metadata.
@@ -153,6 +159,12 @@ pub struct SourceChunk {
 impl SourceChunk {
     pub fn row_group_count(&self) -> usize {
         self.row_group_indexes.len()
+    }
+
+    /// Bytes this chunk counts against a source-byte target: the decoded
+    /// estimate, or the encoded source-read bytes when it has none.
+    pub fn planning_bytes(&self) -> Option<u64> {
+        self.estimated_decoded_bytes.or_else(|| super::planner::batchable_chunk_source_read_bytes(self))
     }
 
     /// Returns the represented row-group count for this chunk when known.
@@ -195,6 +207,7 @@ impl SourceChunk {
             self.source_file_projected_uncompressed_bytes.as_ref().map(Vec::len),
             self.source_file_pure_filter_compressed_bytes.as_ref().map(Vec::len),
             self.source_file_pure_filter_uncompressed_bytes.as_ref().map(Vec::len),
+            self.source_file_row_group_decoded_bytes.as_ref().map(Vec::len),
         ]
         .into_iter()
         .flatten()

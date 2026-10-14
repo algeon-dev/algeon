@@ -90,6 +90,9 @@ pub(in crate::exec::bounded::aggregate) struct CompiledIncrementalPartitionedMer
     min_flush_bytes: u64,
     max_attempts: usize,
     pending_raw: Vec<CommittedPartial>,
+    /// The first zero-row partial, kept only while no partial has rows, so an
+    /// all-empty stream projects a device frame instead of building one.
+    empty_partial: Option<CommittedPartial>,
     pending_raw_bytes: u64,
     pending: Vec<Vec<CommittedPartial>>,
     pending_bytes: Vec<u64>,
@@ -121,7 +124,8 @@ pub(in crate::exec::bounded::aggregate) struct IncrementalPartitionStates {
 impl<'a> CompiledIncrementalPartitionedMerge<'a> {
     /// `expected_partials` is the stream's known chunk count (or eager frame
     /// count) and `expected_input_rows` its known row total when the producer
-    /// declared one; both only seed the partition count from the first batch.
+    /// declared one; both only seed the partition count when the first batch
+    /// is partitioned before every partial has arrived.
     pub(in crate::exec::bounded::aggregate) fn new(
         context: &ExecutionContext,
         node_id: NodeId,
@@ -150,6 +154,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             min_flush_bytes: policy.incremental_min_flush_bytes(partition_target_bytes),
             max_attempts: RetryLimits::of(context).max_attempts,
             pending_raw: Vec::new(),
+            empty_partial: None,
             pending_raw_bytes: 0,
             pending: Vec::new(),
             pending_bytes: Vec::new(),
@@ -230,14 +235,16 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
 
     /// Merges everything still pending and returns each non-empty partition's single merged state
     /// without finalizing it, for `execute_incremental_source_adjacent_final_aggregate_merge`.
+    /// A row-balanced stream whose partials were all empty never fixed a partition count, so it
+    /// reports zero partitions and no states.
     pub(in crate::exec::bounded::aggregate) fn finish_partition_states(
         mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
     ) -> Result<IncrementalPartitionStates> {
         if !self.pending_raw.is_empty() {
-            self.partition_pending_raw(execution)?;
+            self.partition_pending_raw(execution, true)?;
         }
-        let partition_count = self.partition_count.unwrap_or(1);
+        let partition_count = self.partition_count.unwrap_or(0);
         let mut partitions = Vec::new();
         for partition_index in 0..partition_count {
             self.flush_partition(execution, partition_index)?;
@@ -257,7 +264,9 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         })
     }
 
-    /// Folds one partial into the merge.
+    /// Folds one partial into the merge. Empty partials are not counted, so an
+    /// input chunk that produced no groups cannot turn a single partial into a
+    /// partitioned merge.
     ///
     /// Pending work that the new partial would push over the batch threshold
     /// is merged before the partial is retained, so a failed merge leaves this
@@ -268,12 +277,19 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         execution: &mut BoundedExecutionAttempt<'_>,
         partial: CommittedPartial,
     ) -> Result<()> {
+        if partial.frame.num_rows() == 0 {
+            if self.partial_count == 0 && self.empty_partial.is_none() {
+                self.empty_partial = Some(partial);
+            }
+            return Ok(());
+        }
+        self.empty_partial = None;
         let partial_bytes = partial.device_bytes();
         if !self.pending_raw.is_empty()
             && (self.pending_raw.len() >= MAX_PENDING_PARTIALS
                 || self.pending_raw_bytes.saturating_add(partial_bytes) > self.partition_batch_bytes)
         {
-            self.partition_pending_raw(execution)?;
+            self.partition_pending_raw(execution, false)?;
             self.flush_ready_partitions(execution)?;
         }
         self.input_rows = self.input_rows.saturating_add(partial.frame.num_rows() as u64);
@@ -315,6 +331,17 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         streamed_output: bool,
     ) -> Result<ResidentFrameStreamPayload> {
         if self.partial_count == 0 {
+            if let Some(partial) = self.empty_partial.take() {
+                return execute_compiled_final_aggregate_projection(
+                    execution,
+                    self.node_id,
+                    self.aggregate,
+                    self.input_schema,
+                    self.output_schema,
+                    partial,
+                )
+                .map(|frame| ResidentFrameStreamPayload::new(vec![frame]));
+            }
             return execute_compiled_bounded_aggregate_from_empty_input(
                 execution,
                 self.node_id,
@@ -339,7 +366,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             .map(|frame| ResidentFrameStreamPayload::new(vec![frame]));
         }
         if !self.pending_raw.is_empty() {
-            self.partition_pending_raw(execution)?;
+            self.partition_pending_raw(execution, true)?;
         }
         let partition_count = self.partition_count.unwrap_or(1);
         let timer = Instant::now();
@@ -406,10 +433,17 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         ))
     }
 
-    /// Partition count from the first batch: its partial bytes scaled to the
-    /// declared input rows when known, else to the expected partial count.
-    fn partition_count_for_first_batch(&self, context: &ExecutionContext) -> usize {
+    /// Partition count from the first batch. With every partial pending
+    /// (`complete`), their bytes are the whole merge input. Otherwise the
+    /// pending bytes are scaled to the declared input rows when known, else to
+    /// the expected partial count. The row scaling compares the producer's
+    /// declared input rows with partial output rows, so it overestimates when
+    /// the aggregate reduces rows or a join or filter producer drops them; a
+    /// lazy producer that does not know its frame count has no other measure
+    /// of progress.
+    fn partition_count_for_first_batch(&self, context: &ExecutionContext, complete: bool) -> usize {
         let estimated_total_bytes = match self.expected_input_rows {
+            _ if complete => self.pending_raw_bytes,
             Some(rows) if self.input_rows > 0 => (u128::from(self.pending_raw_bytes) * u128::from(rows)
                 / u128::from(self.input_rows))
             .min(u128::from(u64::MAX)) as u64,
@@ -426,11 +460,12 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
 
     /// Concatenates the pending raw partials and hash-partitions them once, so
     /// each partition receives one aligned slice per batch, regardless of the chunk count.
-    fn partition_pending_raw(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<()> {
+    /// `complete` says no further partial will arrive.
+    fn partition_pending_raw(&mut self, execution: &mut BoundedExecutionAttempt<'_>, complete: bool) -> Result<()> {
         let partition_count = match self.partition_count {
             Some(count) => count,
             None => {
-                let count = self.partition_count_for_first_batch(execution.context());
+                let count = self.partition_count_for_first_batch(execution.context(), complete);
                 self.partition_count = Some(count);
                 self.pending = (0..count).map(|_| Vec::new()).collect();
                 self.pending_bytes = vec![0; count];

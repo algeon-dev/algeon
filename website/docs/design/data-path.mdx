@@ -67,7 +67,10 @@ amortize syscall and submission overhead.
 Source reads run as `SupervisedWorker` jobs on the blocking
 lane of the GPU execution runtime, each backed by an attempt auxiliary
 permit. A read issued from an execution lane runs inline on that
-lane. None of these source read tasks execute on the host runtime. A `max_source_reads_in_flight` above 1
+lane. Reads never wait for a permit, because the coordinator may hold every
+permit through its own lanes. With none free, a required read runs inline on
+the coordinator and a prefetch is skipped. None of these source read tasks
+execute on the host runtime. A `max_source_reads_in_flight` above 1
 enables prefetch.
 
 KvikIO's settings are global to the process. Algeon's cuDF component applies

@@ -12,8 +12,9 @@ use super::{
 use crate::observability::{RuntimeTaskId, RuntimeWorkerId};
 
 impl ExecutionContext {
-    /// Acquires one attempt work lease: an attempt auxiliary permit, a
-    /// service stream lease, and the derived context that owns them.
+    /// Acquires one attempt work lease (an attempt auxiliary permit, a
+    /// service stream lease, and the derived context that owns them) only if
+    /// this attempt's auxiliary envelope has a free slot right now.
     ///
     /// This is the single bundle behind every piece of auxiliary attempt work
     /// (execution lanes and scheduled source reads alike). The derived
@@ -21,36 +22,19 @@ impl ExecutionContext {
     /// the lease's lifetime, so its native forks never reach a stream another
     /// live holder is launching on. The permit it takes is what bounds those
     /// claims to the pool's width.
-    #[doc(hidden)]
-    pub fn acquire_attempt_work_lease(
-        &self,
-        source_worker: Option<(RuntimeTaskId, RuntimeWorkerId)>,
-    ) -> Result<AttemptWorkLease> {
-        // Admission reserves this bounded auxiliary share per attempt. Hold
-        // the local permit for the exact lifetime of the derived stream lease,
-        // so another attempt's reservation remains physically reachable.
-        let attempt_auxiliary_permit = self
-            .admitted()
-            .map(|attempt| {
-                attempt.auxiliary_slots.acquire_with_cancellation(
-                    self.cancellation(),
-                    "query_engine.runtime.attempt_work_lease.attempt_auxiliary_acquire",
-                )
-            })
-            .transpose()?;
-        self.derive_attempt_work_lease(source_worker, attempt_auxiliary_permit)
-    }
-
-    /// Acquires one attempt work lease only if this attempt's auxiliary
-    /// envelope has a free slot right now.
     ///
-    /// Callers that already hold an attempt auxiliary permit (the root
-    /// execution job dispatching lanes among them) must never block on a
-    /// second one, because the holder they would wait for may be waiting on
-    /// them. Returns `Ok(None)` when the envelope is fully claimed, so the
-    /// caller narrows its own width and does not deadlock.
+    /// Work inside an attempt never waits for one of these permits: the root
+    /// execution job may already hold every permit through its own lanes, and
+    /// any other holder may be waiting on that job. Returns `Ok(None)` when
+    /// the envelope is fully claimed, so the caller narrows its own width or
+    /// runs the work on its own context. `source_worker` runs only once the
+    /// permit is held and names the source-read worker the lease runs for, so
+    /// a caller registers that worker only for a lease it actually gets.
     #[doc(hidden)]
-    pub fn try_acquire_attempt_work_lease(&self) -> Result<Option<AttemptWorkLease>> {
+    pub fn try_acquire_attempt_work_lease(
+        &self,
+        source_worker: impl FnOnce() -> Option<(RuntimeTaskId, RuntimeWorkerId)>,
+    ) -> Result<Option<AttemptWorkLease>> {
         let attempt_auxiliary_permit = match self.admitted() {
             Some(attempt) => {
                 match attempt
@@ -63,7 +47,7 @@ impl ExecutionContext {
             },
             None => None,
         };
-        self.derive_attempt_work_lease(None, attempt_auxiliary_permit).map(Some)
+        self.derive_attempt_work_lease(source_worker(), attempt_auxiliary_permit).map(Some)
     }
 
     /// Leases the service stream and derives the work context once the

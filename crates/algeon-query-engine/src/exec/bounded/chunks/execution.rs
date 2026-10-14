@@ -25,24 +25,29 @@ pub(in crate::exec::bounded) struct RawSourceInput {
 /// applied, without running a partial aggregate. Returns the raw filtered and
 /// projected data with the represented source row-group count.
 ///
-/// Used by the distinct aggregate path where all raw source data must be
-/// concatenated before a single groupby can produce a correct COUNT(DISTINCT).
+/// `attempt` and `max_attempts` are the caller's retry position for this
+/// chunk; they only label the facts of a failed read or stage.
 pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     chunk: &SourceChunk,
+    attempt: usize,
+    max_attempts: usize,
 ) -> Result<RawSourceInput> {
     execution.context().check_cancellation("query_engine.exec.bounded.raw_source_chunk")?;
-    let source = read_bounded_chunk_source(execution, bounded.source, chunk)
-        .map_err(|error| attach_chunk_resource_facts(error, chunk, "source_chunk_read", 1, 1, execution.metrics()))?;
+    let source = read_bounded_chunk_source(execution, bounded.source, chunk).map_err(|error| {
+        attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, execution.metrics())
+    })?;
     let source_row_group_count = reported_source_chunk_read_row_groups(chunk, source.observed_row_group_count);
     let source_rows = source.frame.num_rows() as u64;
     let source_bytes = source.observed_bytes;
     let input = CommittedPartial::with_device_bytes(source.frame, source.observed_bytes);
-    let partial = execute_source_adjacent_chunk_stages(execution, bounded, chunk, input, 1, 1)?;
+    let partial = execute_source_adjacent_chunk_stages(execution, bounded, chunk, input, attempt, max_attempts)?;
     Ok(RawSourceInput { partial, source_row_group_count, source_rows, source_bytes })
 }
 
+/// Multi-chunk form of `execute_bounded_raw_source_chunk`. A batch is not
+/// split by row group, so its facts always report the first attempt.
 pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,

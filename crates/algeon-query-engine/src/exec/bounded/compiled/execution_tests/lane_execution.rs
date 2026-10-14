@@ -1427,7 +1427,7 @@ fn resident_aggregate_without_lanes_skips_root_adoption_copy() {
     // Hold every auxiliary permit so the run obtains no lane.
     let mut held = Vec::new();
     while let Some(lease) =
-        test_context.try_acquire_attempt_work_lease().expect("auxiliary try-acquire should not error")
+        test_context.try_acquire_attempt_work_lease(|| None).expect("auxiliary try-acquire should not error")
     {
         held.push(lease);
     }

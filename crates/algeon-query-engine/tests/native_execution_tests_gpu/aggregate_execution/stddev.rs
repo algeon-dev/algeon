@@ -1426,6 +1426,7 @@ fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
             LocalParquetFile::new(&left_path)
                 .with_file_size_bytes(fs::metadata(&left_path).unwrap().len())
                 .with_projected_row_group_bytes(vec![2048; 5], vec![2048; 5])
+                .with_row_group_decoded_bytes(vec![2048; 5])
                 .with_row_group_rows(vec![1; 5]),
         ],
         Arc::clone(&left_schema),

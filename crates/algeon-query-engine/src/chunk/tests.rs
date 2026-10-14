@@ -6,16 +6,15 @@ use std::{
 };
 
 use arrow::{
-    array::Int64Array,
+    array::{Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_planning::{
     chunk::{
-        LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES,
-        SourceChunkPlanningOptions, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
-        decimal::validate_supplied_reader_decimal_types_match_footer,
+        LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
+        SourceTaskMemoryModel, decimal::validate_supplied_reader_decimal_types_match_footer,
     },
     error::QueryErrorCode,
     execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
@@ -51,6 +50,7 @@ fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
         known_pure_filter_uncompressed_bytes: Some(0),
         estimated_chunk_bytes: Some(bytes),
         estimated_source_read_bytes: Some(bytes),
+        estimated_decoded_bytes: None,
         exact_source_read_preflight_bytes: Some(bytes),
         source_file_row_groups: None,
         source_file_row_group_bytes: Some(vec![bytes]),
@@ -58,6 +58,7 @@ fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
         source_file_projected_uncompressed_bytes: Some(vec![bytes]),
         source_file_pure_filter_compressed_bytes: Some(vec![0]),
         source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
+        source_file_row_group_decoded_bytes: None,
         source_file_row_group_rows: Some(vec![1]),
         reader_decimal_types: Vec::new(),
         reader_decimal_types_footer_verified: false,
@@ -129,6 +130,58 @@ fn write_i64_parquet(path: &PathBuf, values: &[i64], max_row_group_rows: usize) 
 }
 
 #[test]
+fn source_chunks_bound_decoded_dictionary_strings_by_the_byte_target() {
+    let path = std::env::temp_dir().join(format!(
+        "query-engine-decoded-chunk-target-{}-{}.parquet",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int64, false),
+        Field::new("label", DataType::Utf8, false),
+    ]));
+    let rows = 8 * 4096;
+    let labels = ['a', 'b', 'c'].map(|fill| fill.to_string().repeat(200));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..rows as i64)),
+            Arc::new(StringArray::from_iter_values((0..rows).map(|row| labels[row % 3].as_str()))),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder()
+        .set_column_dictionary_enabled("key".into(), false)
+        .set_max_row_group_row_count(Some(4096))
+        .build();
+    let mut writer = ArrowWriter::try_new(fs::File::create(&path).unwrap(), Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path.clone())],
+        schema,
+        vec!["key".to_string(), "label".to_string()],
+    );
+    // Each row group decodes to 4096 * (8 key + 8 offset + 200 label) bytes,
+    // so two fit the target; its dictionary-encoded footer bytes all fit.
+    let target = 2 * 1024 * 1024;
+
+    let plan = plan_local_parquet_source_chunks(
+        NodeId::from_index_for_test(3),
+        &source,
+        SourceChunkPlanningPolicy::new(Some(target), LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK),
+    )
+    .unwrap();
+
+    assert!(plan.chunks.iter().map(|chunk| chunk.known_projected_uncompressed_bytes.unwrap()).sum::<u64>() < target);
+    assert_eq!(plan.chunks.iter().map(|chunk| chunk.row_group_indexes.len()).collect::<Vec<_>>(), vec![2, 2, 2, 2]);
+    for chunk in &plan.chunks {
+        assert_eq!(chunk.estimated_decoded_bytes, Some(2 * 4096 * (8 + 8 + 200)));
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn adaptive_source_targets_follow_immutable_grant_and_explicit_targets() {
     let model = SourceTaskMemoryModel::aggregate_pipeline(true);
     for grant in [256 * 1024 * 1024, 8 * 1024 * 1024 * 1024, 64 * 1024 * 1024 * 1024] {
@@ -149,7 +202,7 @@ fn local_throughput_source_chunk_planning_raises_row_group_cap_for_large_local_k
     let source = local_source();
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
         &source,
-        bounded_policy(LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES, 64 * 1024 * 1024, 1),
+        bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
         SourceChunkPlanningMode::LocalParquetThroughput,
     );
 
@@ -160,9 +213,7 @@ fn local_throughput_source_chunk_planning_raises_row_group_cap_for_large_local_k
 #[test]
 fn local_throughput_source_chunk_planning_uses_configured_expert_options() {
     let source = local_source();
-    let options = SourceChunkPlanningOptions::default()
-        .with_local_parquet_throughput_min_device_budget_bytes(8 * 1024 * 1024 * 1024)
-        .with_local_parquet_throughput_max_row_groups_per_chunk(16);
+    let options = SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(16);
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
         &source,
         bounded_policy(8 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
@@ -183,15 +234,6 @@ fn source_chunk_planning_options_reject_zero_thresholds() {
 
     assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
-    assert_eq!(error.fact_value("reason"), Some("zero"));
-
-    let error = SourceChunkPlanningOptions::default()
-        .with_local_parquet_throughput_min_device_budget_bytes(0)
-        .validate()
-        .unwrap_err();
-
-    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
-    assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_min_device_budget_bytes"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 
@@ -219,7 +261,7 @@ fn local_throughput_source_chunk_planning_accepts_local_cache_reader_path() {
     let source = source_from_file(file);
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
         &source,
-        bounded_policy(LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES, 64 * 1024 * 1024, 1),
+        bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
         SourceChunkPlanningMode::LocalParquetThroughput,
     );
 
@@ -356,15 +398,19 @@ fn remote_direct_decimal_reader_predicate_rejects_supplied_footer_type_mismatch(
     assert!(!error.to_string().contains("s3://bucket"));
 }
 
-fn local_throughput_source_chunk_planning_keeps_small_budget_conservative() {
+#[test]
+fn local_throughput_source_chunk_planning_widens_chunks_under_a_small_grant() {
+    // The source-byte target scales chunks with the grant, so a 24 GiB grant
+    // still plans throughput chunks.
     let source = local_source();
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
         &source,
-        bounded_policy(LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES - 1, 64 * 1024 * 1024, 1),
+        bounded_policy(24 * 1024 * 1024 * 1024, MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES, 1),
         SourceChunkPlanningMode::LocalParquetThroughput,
     );
 
-    assert_eq!(policy.max_row_groups_per_chunk, 1);
+    assert_eq!(policy.source_chunk_planning_reason(), "local_parquet_throughput_admitted");
+    assert_eq!(policy.max_row_groups_per_chunk, LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
 }
 
 #[test]
@@ -529,7 +575,6 @@ fn local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sou
 #[test]
 fn local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sources() {
     local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sources_case();
-    local_throughput_source_chunk_planning_keeps_small_budget_conservative();
     local_throughput_source_chunk_planning_rejects_object_store_sources();
 }
 

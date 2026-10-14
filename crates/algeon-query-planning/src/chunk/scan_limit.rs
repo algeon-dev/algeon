@@ -47,6 +47,7 @@ pub fn apply_source_scan_limit_to_chunks(
             if limited.is_empty() {
                 chunk.scan_limit_rows = Some(0);
                 chunk.known_row_count = Some(0);
+                chunk.estimated_decoded_bytes = Some(0);
                 chunk.exact_source_read_preflight_bytes =
                     exact_source_read_preflight_bytes(source, chunk.known_row_count, chunk.zero_column_count, sizing);
                 limited.push(chunk);
@@ -175,6 +176,11 @@ pub(crate) fn rewrite_scan_limited_chunk_selection(
     let estimated_chunk_bytes = known_projected_uncompressed_bytes
         .or(known_row_group_bytes)
         .or_else(|| scan_limited_proportional_file_bytes(&chunk, selected_row_groups.len()));
+    let estimated_decoded_bytes =
+        sum_selected_row_group_values(chunk.source_file_row_group_decoded_bytes.as_ref(), &selected_row_groups)
+            .or_else(|| {
+                proportional_bytes(chunk.estimated_decoded_bytes, selected_row_groups.len(), chunk.row_group_count())
+            });
     let estimated_source_read_bytes = source_read_uncompressed_bytes(
         source,
         known_projected_uncompressed_bytes,
@@ -192,6 +198,7 @@ pub(crate) fn rewrite_scan_limited_chunk_selection(
     chunk.known_pure_filter_uncompressed_bytes = known_pure_filter_uncompressed_bytes;
     chunk.estimated_chunk_bytes = estimated_chunk_bytes;
     chunk.estimated_source_read_bytes = estimated_source_read_bytes;
+    chunk.estimated_decoded_bytes = estimated_decoded_bytes;
     chunk.exact_source_read_preflight_bytes =
         exact_source_read_preflight_bytes(source, Some(selected_row_group_rows), chunk.zero_column_count, sizing);
     chunk.known_row_count = Some(output_row_count);

@@ -505,6 +505,7 @@ stable_hash_fields! {
         projected_row_group_uncompressed_bytes,
         pure_filter_row_group_compressed_bytes,
         pure_filter_row_group_uncompressed_bytes,
+        row_group_decoded_bytes,
         row_group_rows,
         graph_vertex_upper_bound,
         graph_simple_directed_edge_topology,

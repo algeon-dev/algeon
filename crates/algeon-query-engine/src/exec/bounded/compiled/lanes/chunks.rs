@@ -14,7 +14,10 @@
 //! On cancellation, a commit failure, a saturated pool or a lane panic the
 //! window aborts: completed outputs still have their events synchronized (for
 //! attribution) and are dropped, and `ChunkFlights::drop` joins every job
-//! still running before the run can return its lane leases.
+//! still running before the run can return its lane leases. The run returns
+//! the first failure it observed. A job joined during that drain may fail on
+//! its own; that is the job's outcome, not a cleanup step, and only failed
+//! fences are recorded as cleanup failures.
 
 use std::{
     collections::BTreeMap,
@@ -111,22 +114,23 @@ impl<O> Drop for ChunkFlights<O> {
         // after each join. `join` blocks the coordinator but holds no pool permit,
         // so the workers it waits for can always finish.
         while let Some((ordinal, flight)) = self.jobs.pop_first() {
-            let result = flight.handle.join().and_then(|result| result);
-            match result {
-                Ok(completed) => {
-                    if let Some(readiness) = completed.readiness
-                        && let Err(sync_error) = readiness.synchronize()
-                    {
-                        record_cleanup_failure(
-                            self.observation_scope.as_ref(),
-                            CleanupFailurePhase::TaskExecution,
-                            &chunk_readiness_error(ordinal, flight.lane, flight.fork, sync_error),
-                        );
-                    }
-                },
-                Err(error) => {
-                    record_cleanup_failure(self.observation_scope.as_ref(), CleanupFailurePhase::TaskExecution, &error);
-                },
+            // A failed job is secondary to the error the run already returns.
+            // A job that returned an error fenced its stream and recorded any
+            // fence failure in `finish_lane_work`; a panicked or discarded
+            // job's stream is fenced by the lease's stream cleanup before
+            // reuse. Only the readiness fence of a completed output is a
+            // cleanup step here.
+            let Ok(completed) = flight.handle.join().and_then(|result| result) else {
+                continue;
+            };
+            if let Some(readiness) = completed.readiness
+                && let Err(sync_error) = readiness.synchronize()
+            {
+                record_cleanup_failure(
+                    self.observation_scope.as_ref(),
+                    CleanupFailurePhase::TaskExecution,
+                    &chunk_readiness_error(ordinal, flight.lane, flight.fork, sync_error),
+                );
             }
         }
     }
@@ -468,7 +472,9 @@ impl AggregateLaneDispatch {
 /// provenance fences. When the event cannot be recorded, the worker host-fences its stream
 /// and returns `readiness: None`, so success is never reported for unverified work. A work
 /// failure also host-fences the stream: the original error is returned, and a fault observed
-/// by that fence is recorded as a cleanup failure.
+/// by that fence is recorded as a cleanup failure. Both fences go through
+/// `synchronize_stream`, which the query epoch does not gate, so they still run after a
+/// cancellation released the query handle.
 fn finish_lane_work<O>(
     execution: &BoundedExecutionAttempt<'_>,
     result: Result<O>,
@@ -493,14 +499,12 @@ fn finish_lane_work<O>(
                     eprintln!(
                         "[query_engine::finish_lane_work] warning: failed to record chunk readiness on the lane stream, falling back to host synchronization: {record_error}"
                     );
-                    execution.context().runtime().and_then(|runtime| {
-                        runtime.synchronize().map_err(|error| {
-                            cudf_query_error(
-                                "query_engine.compiled.aggregate_chunk_sync",
-                                "failed to synchronize aggregate chunk work",
-                                error,
-                            )
-                        })
+                    execution.context().synchronize_stream().map_err(|error| {
+                        cudf_query_error(
+                            "query_engine.compiled.aggregate_chunk_sync",
+                            "failed to synchronize aggregate chunk work",
+                            error,
+                        )
                     })?;
                     None
                 },
@@ -508,16 +512,16 @@ fn finish_lane_work<O>(
             Ok(LaneWorkOutput { output, readiness })
         },
         Err(error) => {
-            if let Err(sync_error) = execution.context().runtime().and_then(|runtime| {
-                runtime.synchronize().map_err(|error| {
-                    cudf_query_error(
+            if let Err(sync_error) = execution.context().synchronize_stream() {
+                record_cleanup_failure(
+                    observation_scope,
+                    CleanupFailurePhase::TaskExecution,
+                    &cudf_query_error(
                         "query_engine.compiled.aggregate_chunk_sync",
                         "failed to synchronize failed aggregate chunk work",
-                        error,
-                    )
-                })
-            }) {
-                record_cleanup_failure(observation_scope, CleanupFailurePhase::TaskExecution, &sync_error);
+                        sync_error,
+                    ),
+                );
             }
             Err(error)
         },
@@ -529,20 +533,20 @@ fn finish_lane_work<O>(
 /// exists to surface an asynchronous fault before the output enters
 /// coordinator state, where source retry can no longer replay the chunk.
 /// After a work failure the fence runs for the same reason and its own error
-/// is recorded as a cleanup failure, with the work error returned.
+/// is recorded as a cleanup failure, with the work error returned. The fence
+/// is not gated by the query epoch, so it also runs after cancellation
+/// released the query handle.
 fn finish_chunk_work<O>(
     execution: &BoundedExecutionAttempt<'_>,
     result: Result<O>,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<O> {
-    let synchronized = execution.context().runtime().and_then(|runtime| {
-        runtime.synchronize().map_err(|error| {
-            cudf_query_error(
-                "query_engine.compiled.aggregate_chunk_sync",
-                "failed to synchronize aggregate chunk work",
-                error,
-            )
-        })
+    let synchronized = execution.context().synchronize_stream().map_err(|error| {
+        cudf_query_error(
+            "query_engine.compiled.aggregate_chunk_sync",
+            "failed to synchronize aggregate chunk work",
+            error,
+        )
     });
     match result {
         Ok(output) => {

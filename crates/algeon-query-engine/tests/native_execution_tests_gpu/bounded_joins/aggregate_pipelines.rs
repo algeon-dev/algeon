@@ -595,3 +595,179 @@ fn bounded_stddev_join_aggregate_uses_exact_statistical_contract() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// Probe rows `(key, value = 1, d)` with `d` from `d_of_row`, written in row
+/// groups of `row_group_rows`, joined on `d` against a dimension holding
+/// `dimension_keys`, then grouped by `key` with `sum_count` SUMs of `value`.
+fn grouped_sums_over_dimension_join_plan(
+    dir: &Path,
+    rows: usize,
+    row_group_rows: usize,
+    key_of_row: impl Fn(usize) -> i64,
+    d_of_row: impl Fn(usize) -> i64,
+    dimension_keys: &[i64],
+    sum_count: usize,
+) -> QueryPlan {
+    let probe_path = dir.join("probe.parquet");
+    let probe_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int64, false),
+        Field::new("value", DataType::Int64, false),
+        Field::new("d", DataType::Int64, false),
+    ]));
+    let probe = RecordBatch::try_new(
+        Arc::clone(&probe_schema),
+        vec![
+            Arc::new(Int64Array::from((0..rows).map(&key_of_row).collect::<Vec<_>>())),
+            Arc::new(Int64Array::from(vec![1_i64; rows])),
+            Arc::new(Int64Array::from((0..rows).map(&d_of_row).collect::<Vec<_>>())),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(&probe_path, Arc::clone(&probe_schema), probe, row_group_rows);
+    let dimension_path = dir.join("dimension.parquet");
+    let dimension_schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Int64, false)]));
+    let dimension =
+        RecordBatch::try_new(Arc::clone(&dimension_schema), vec![Arc::new(Int64Array::from(dimension_keys.to_vec()))])
+            .unwrap();
+    write_record_batch_with_row_group_rows(&dimension_path, Arc::clone(&dimension_schema), dimension, 1024);
+
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int64, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let mut aggregate_fields = vec![Field::new("key", DataType::Int64, false)];
+    aggregate_fields.extend((0..sum_count).map(|index| Field::new(format!("sum_{index}"), DataType::Int64, true)));
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        (0..sum_count)
+            .map(|index| AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), format!("sum_{index}")))
+            .collect(),
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let probe = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&probe_path).with_file_size_bytes(fs::metadata(&probe_path).unwrap().len())],
+        probe_schema,
+        vec!["key".to_string(), "value".to_string(), "d".to_string()],
+    )));
+    let dimension = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&dimension_path).with_file_size_bytes(fs::metadata(&dimension_path).unwrap().len())],
+        dimension_schema,
+        vec!["d".to_string()],
+    )));
+    let join = builder
+        .add_join(
+            probe,
+            dimension,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+            ])
+            .with_build_side(JoinSide::Right),
+            join_schema,
+        )
+        .unwrap();
+    let aggregate = builder.add_aggregate(join, aggregate, Arc::new(Schema::new(aggregate_fields))).unwrap();
+    let sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
+}
+
+/// Context whose 1 KiB source chunk cap reads every probe row group as its
+/// own batch, so the aggregate receives one partial per row group.
+fn row_group_batched_join_context() -> BackendQueryContext {
+    backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
+        max_source_chunk_bytes: 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    })
+}
+
+fn final_merge_fact<'a>(metrics: &'a QueryMetrics, fact: &str) -> Option<&'a str> {
+    metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.contains_key("partitioned_merge_partition_count"))
+        .and_then(|decision| decision.facts.get(fact))
+        .map(String::as_str)
+}
+
+/// A probe chunk that joins to no rows still yields a zero-row partial. It
+/// must not count as a second partial, which would replace the single
+/// partial's direct projection with a partitioned final merge.
+#[test]
+fn bounded_join_aggregate_projects_a_single_partial_when_another_probe_chunk_joins_no_rows() {
+    let dir = unique_temp_dir("query-engine-bounded-join-aggregate-empty-partial");
+    let row_group_rows = 4096;
+    // The first row group matches the dimension on every row. The second holds
+    // only `d` values 1 and 3, so it joins to zero rows while its [1, 3] range
+    // still overlaps the dimension's {0, 2} and is read.
+    let plan = grouped_sums_over_dimension_join_plan(
+        &dir,
+        2 * row_group_rows,
+        row_group_rows,
+        |row| (row % 4) as i64,
+        |row| if row < row_group_rows { 0 } else { 1 + 2 * (row % 2) as i64 },
+        &[0, 2],
+        1,
+    );
+    let context = row_group_batched_join_context();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.partial_aggregate_count, 2, "each probe batch yields a partial");
+    assert_eq!(metrics.final_merge_attempts, 0);
+    assert_eq!(final_merge_fact(metrics, "partitioned_merge_partition_count"), None);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[0, 1, 2, 3]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1024; 4]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// The final merge sizes its partitions from the partial bytes it holds. The
+/// join declares its 1,048,576 probe rows, but only 1,024 rows match and the
+/// four partials hold 16 group rows (about 33 KB). Scaling those bytes by
+/// declared probe rows over partial rows (65,536x, about 2 GiB) against the
+/// 128 MiB aggregate partition target would select 17 partitions; the partial
+/// bytes select one.
+#[test]
+fn bounded_join_aggregate_sizes_final_merge_partitions_from_partial_bytes_not_probe_rows() {
+    let dir = unique_temp_dir("query-engine-bounded-join-aggregate-selective-partition-count");
+    let rows = 1 << 20;
+    let plan = grouped_sums_over_dimension_join_plan(
+        &dir,
+        rows,
+        rows / 4,
+        |row| ((row / 1024) % 4) as i64,
+        |row| (row % 1024) as i64,
+        &[0],
+        256,
+    );
+    let context = row_group_batched_join_context();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.partial_aggregate_count, 4);
+    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(final_merge_fact(metrics, "partitioned_merge_incremental_partials"), Some("4"));
+    assert_eq!(final_merge_fact(metrics, "partitioned_merge_partition_count"), Some("1"));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[0, 1, 2, 3]);
+    for column in 1..=256 {
+        assert_eq!(int64_array(batch, column).values().as_ref(), &[256; 4]);
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}

@@ -12,11 +12,12 @@ pub struct MemoryControlPolicy {
     /// Allocation cap of the attempt. The runtime's device ledger enforces it;
     /// planning only sizes chunks against it.
     pub device_budget_bytes: u64,
-    /// Source-byte grouping target. `u64::MAX` leaves the configured target
-    /// unset; source tasks derive a finite target from the admitted grant.
+    /// Source-byte grouping target, compared with each chunk's decoded size
+    /// estimate (`crate::chunk::decoded`). `u64::MAX` leaves the configured
+    /// target unset; source tasks derive a finite target from the admitted grant.
     pub max_source_chunk_bytes: u64,
     /// Row groups coalesced into one source chunk. The throughput planning
-    /// mode may raise it under the thresholds `crate::chunk` owns.
+    /// mode may raise it to the row-group cap `crate::chunk` owns.
     pub max_row_groups_per_chunk: usize,
     /// Attempts the engine's retry may spend splitting one chunk after an
     /// allocation failure.
@@ -28,7 +29,8 @@ pub struct MemoryControlPolicy {
 impl MemoryControlPolicy {
     /// No configured source-byte ceiling; the immutable grant sizes batches.
     pub const DEFAULT_MAX_SOURCE_CHUNK_BYTES: u64 = u64::MAX;
-    /// Individual row groups remain retryable units within coalesced reads.
+    /// One row group per chunk. The default throughput planning mode raises
+    /// this cap for local Parquet sources; the conservative mode keeps it.
     pub const DEFAULT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
     /// Default retry limit for splitting a source chunk after allocation failure.
     pub const DEFAULT_MAX_RETRY_ATTEMPTS: usize = 3;
@@ -56,14 +58,21 @@ impl MemoryControlPolicy {
 
 /// How source chunk planning sizes local Parquet chunks. The chosen mode and
 /// the reason for it are recorded in each chunk plan.
+///
+/// In both modes the source-byte target bounds each chunk's decoded size, and
+/// a chunk whose allocation the query cap rejects is split by row group and
+/// retried within the policy's retry limits.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceChunkPlanningMode {
-    /// Chunks follow `max_row_groups_per_chunk`, one row group by default, so
-    /// every chunk is a retryable unit.
-    #[default]
+    /// Chunks follow `max_row_groups_per_chunk`, one row group by default.
+    /// Each chunk is then the smallest retry unit, but per-chunk work such as
+    /// partial aggregation grows with the table's row-group count.
     Conservative,
-    /// May coalesce many row groups into one chunk when the device budget is
-    /// large enough; `crate::chunk` owns the row-group and budget thresholds.
+    /// Raises a one-row-group cap so a chunk of a local Parquet source can hold
+    /// many row groups up to the source-byte target; `crate::chunk` owns the
+    /// row-group cap and the source conditions. A source that does not qualify
+    /// keeps conservative chunks.
+    #[default]
     LocalParquetThroughput,
 }
 

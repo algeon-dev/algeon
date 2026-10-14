@@ -60,15 +60,13 @@ pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batches_for_work_w
     if work_width <= 1 || batches.len() >= work_width {
         return batches;
     }
-    let Some(total_bytes) = batches
-        .iter()
-        .map(|batch| batch.estimated_source_read_bytes)
-        .try_fold(0u64, |total, bytes| bytes.and_then(|bytes| total.checked_add(bytes)))
+    let Some(total_bytes) =
+        chunks.iter().try_fold(0u64, |total, chunk| chunk.planning_bytes().and_then(|bytes| total.checked_add(bytes)))
     else {
         return batches;
     };
     // One large read cannot fill the run's independently leased work lanes.
-    // Cap batch size by the same source-byte evidence used by the planner.
+    // Cap batch size by the same per-chunk bytes the planner compares.
     let lane_target_bytes = total_bytes.div_ceil(work_width as u64).max(1);
     plan_source_chunk_batches(chunks, Some(max_batch_source_read_bytes.unwrap_or(u64::MAX).min(lane_target_bytes)))
 }

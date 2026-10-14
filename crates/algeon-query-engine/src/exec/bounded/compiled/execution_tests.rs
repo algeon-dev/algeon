@@ -29,6 +29,7 @@ use query_planning::{
     capability::{JoinForm, JoinStrategy, Rejection},
     dynamic_filter::DynamicFilterProducer,
     error::{QueryErrorCode, Result},
+    execution_contracts::SourceChunkPlanningMode,
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, GroupingSetsSpec,
         LimitSpec, LiteralValue, SortExpr, SortSpec,
@@ -128,6 +129,9 @@ fn build_suite_backend() -> Result<GpuBackendCore> {
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 1,
         min_retry_chunk_row_groups: 1,
+        // Throughput planning would coalesce the fixtures' row groups into one
+        // chunk; these cases exercise multi-chunk streaming.
+        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         ..QueryExecutionConfig::default()
     };
     // One backend owns the suite; each exact-plan context acquires its own handle.

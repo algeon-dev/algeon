@@ -59,7 +59,7 @@ pub const CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT: &str = "clickbench_gpu_throu
 pub const CLICKBENCH_NATIVE_PROFILE_CUSTOM: &str = "custom";
 /// Throughput profile device budget, matching the TPC SF100 95 GiB probe.
 pub const CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64 = 102_005_473_280;
-/// Throughput profile source byte target of 32 GiB.
+/// Throughput profile source byte target of 32 GiB of decoded read columns.
 pub const CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64 = 34_359_738_368;
 /// Throughput profile row-group batch target.
 pub const CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;

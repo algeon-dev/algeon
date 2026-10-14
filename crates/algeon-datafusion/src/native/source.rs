@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 #[cfg(feature = "cugraph")]
 use std::sync::Arc;
 
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{Schema, SchemaRef};
 #[cfg(feature = "cugraph")]
 use datafusion::{datasource::source::DataSourceExec, physical_plan::ExecutionPlan};
 use datafusion::{
@@ -21,6 +21,7 @@ use datafusion::{
 };
 use parquet::file::metadata::{KeyValue, ParquetMetaData};
 use query_planning::{
+    chunk::decoded::row_group_decoded_bytes_from_footer,
     expr::LiteralValue as NativeLiteralValue,
     parquet_stats::{ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column},
     source::{
@@ -329,7 +330,7 @@ pub(super) fn local_parquet_files(
         {
             native_file = native_file.with_row_groups(row_groups.clone());
         }
-        native_file = attach_row_group_byte_metadata(native_file, column_requirements);
+        native_file = attach_row_group_byte_metadata(native_file, &source_schema, column_requirements);
         native_files.push(native_file);
     }
     Ok(native_files)
@@ -388,6 +389,7 @@ fn object_store_file_uri(file_scan: &FileScanConfig, file: &PartitionedFile) -> 
 
 pub(super) fn attach_row_group_byte_metadata(
     mut native_file: NativeLocalParquetFile,
+    source_schema: &Schema,
     column_requirements: &NativeParquetColumnRequirements,
 ) -> NativeLocalParquetFile {
     let Ok(footer) = parquet_footer(native_file.path.as_path()) else {
@@ -440,6 +442,14 @@ pub(super) fn attach_row_group_byte_metadata(
         .collect::<Option<Vec<_>>>();
     if let (Some(compressed), Some(uncompressed)) = (pure_filter_compressed_bytes, pure_filter_uncompressed_bytes) {
         native_file = native_file.with_pure_filter_row_group_bytes(compressed, uncompressed);
+    }
+    if let Some(decoded_bytes) = row_group_decoded_bytes_from_footer(
+        metadata,
+        source_schema,
+        &column_requirements.read_columns,
+        &column_requirements.read_column_file_indices,
+    ) {
+        native_file = native_file.with_row_group_decoded_bytes(decoded_bytes);
     }
     if let Some(row_group_rows) = metadata
         .row_groups()

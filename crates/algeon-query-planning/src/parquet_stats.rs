@@ -11,6 +11,13 @@ use parquet::{
     schema::types::SchemaDescriptor,
 };
 
+/// Returns the leaf column indexes of a top-level root column, in footer
+/// order. A primitive root has one leaf; a nested root has one per primitive
+/// field beneath it.
+pub(crate) fn root_column_leaf_indices(schema: &SchemaDescriptor, root_index: usize) -> Vec<usize> {
+    (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index).collect()
+}
+
 /// Returns the only primitive leaf column for a top-level root column.
 ///
 /// Nested roots and roots that map to zero or multiple leaves return `None`.

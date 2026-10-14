@@ -634,6 +634,7 @@ pub(super) fn source_file_needs_footer_metadata(source: &LocalParquetSource, fil
         || file.projected_row_group_uncompressed_bytes.is_none()
         || file.pure_filter_row_group_compressed_bytes.is_none()
         || file.pure_filter_row_group_uncompressed_bytes.is_none()
+        || file.row_group_decoded_bytes.is_none()
         || file.row_group_rows.is_none()
         || object_store_decimal_reader_predicate_requires_footer_contract(source, file)
         || (file.reader_decimal_types.is_empty()

@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, fs::File, path::Path, sync::Arc};
 
 use cudf::Exec;
+use query_planning::expr::CaseWhen;
 
 use super::*;
 
@@ -277,6 +278,7 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
                 .with_file_size_bytes(fs::metadata(&path).unwrap().len())
                 .with_row_group_bytes(vec![2 * 1024 * 1024; 3])
                 .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 3], vec![2 * 1024 * 1024; 3])
+                .with_row_group_decoded_bytes(vec![2 * 1024 * 1024; 3])
                 .with_row_group_rows(vec![2, 2, 2]),
         ],
         Arc::clone(&input_schema),
@@ -652,6 +654,10 @@ fn grouped_cases_policy_1_2() {
             "aggregate_execution::grouped::bounded_native_query_executes_min_max_count_and_final_merge",
             bounded_native_query_executes_min_max_count_and_final_merge,
         ),
+        (
+            "aggregate_execution::grouped::bounded_native_query_returns_no_groups_when_row_balanced_source_adjacent_partials_are_all_empty",
+            bounded_native_query_returns_no_groups_when_row_balanced_source_adjacent_partials_are_all_empty,
+        ),
     ]);
 }
 
@@ -745,6 +751,74 @@ fn bounded_native_query_executes_source_adjacent_grouped_sum_with_empty_partitio
     assert_eq!(batch.num_rows(), 3);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 1, 3]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[707, 404, 404]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Every chunk's filter rejects all rows, so each row-balanced partition yields only a zero-row
+/// partial and the unaligned incremental merge finishes without ever seeing a row.
+fn bounded_native_query_returns_no_groups_when_row_balanced_source_adjacent_partials_are_all_empty() {
+    let dir = unique_temp_dir("query-engine-bounded-source-adjacent-row-balanced-all-empty");
+    let path = dir.join("input.parquet");
+    let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
+    let input_schema = write_row_grouped_input_parquet(&path);
+
+    // A Float64 key is outside the group-key partitioner's integer and string key contract.
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("fkey", DataType::Float64, false),
+        Field::new("x00", DataType::Int64, false),
+    ]));
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("fkey", DataType::Float64, false),
+        Field::new("sum_x00", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![2 * 1024 * 1024; 3])
+                .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 3], vec![2 * 1024 * 1024; 3])
+                .with_row_group_decoded_bytes(vec![2 * 1024 * 1024; 3])
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
+    );
+    let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(1_000)));
+    let projection = vec![
+        Expr::cast(Expr::column("key"), DataType::Float64).alias("fkey"),
+        Expr::binary(Expr::column("m00"), BinaryOp::Add, Expr::column("m01")).alias("x00"),
+    ];
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("fkey")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("x00"), "sum_x00")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.source_chunks_committed, 3);
+    let partial_strategies = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+        .filter_map(|decision| decision.facts.get("source_adjacent_partition_strategy").map(String::as_str))
+        .collect::<Vec<_>>();
+    assert!(!partial_strategies.is_empty(), "the partitioned source-adjacent path must run");
+    assert!(partial_strategies.iter().all(|strategy| *strategy == "row_balanced"), "{partial_strategies:?}");
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().fields(), aggregated_schema.fields());
+    assert_eq!(batch.num_rows(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -963,6 +1037,7 @@ fn assert_bounded_native_query_combines_nullable_integer_groups_across_source_la
                 .with_file_size_bytes(fs::metadata(&path).unwrap().len())
                 .with_row_group_bytes(vec![4 * 1024 * 1024; row_groups])
                 .with_projected_row_group_bytes(vec![4 * 1024 * 1024; row_groups], vec![4 * 1024 * 1024; row_groups])
+                .with_row_group_decoded_bytes(vec![4 * 1024 * 1024; row_groups])
                 .with_row_group_rows(vec![rows_per_group as u64; row_groups]),
         ],
         Arc::clone(&input_schema),
@@ -1202,6 +1277,7 @@ fn bounded_native_query_does_not_force_group_key_partitions_from_large_source_es
                 .with_file_size_bytes(fs::metadata(&path).unwrap().len())
                 .with_row_group_bytes(vec![large_row_group_bytes; 3])
                 .with_projected_row_group_bytes(vec![large_row_group_bytes; 3], vec![large_row_group_bytes; 3])
+                .with_row_group_decoded_bytes(vec![large_row_group_bytes; 3])
                 .with_row_group_rows(vec![40, 40, 40]),
         ],
         Arc::clone(&input_schema),
@@ -1572,6 +1648,7 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
                 .with_file_size_bytes(fs::metadata(&path).unwrap().len())
                 .with_row_group_bytes(vec![2 * 1024 * 1024; 3])
                 .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 3], vec![2 * 1024 * 1024; 3])
+                .with_row_group_decoded_bytes(vec![2 * 1024 * 1024; 3])
                 .with_row_group_rows(vec![2, 2, 2]),
         ],
         Arc::clone(&input_schema),
@@ -1700,6 +1777,7 @@ fn bounded_native_query_coalesces_many_source_adjacent_grouped_row_groups_by_bud
                     vec![row_group_bytes; row_group_count],
                     vec![row_group_bytes; row_group_count],
                 )
+                .with_row_group_decoded_bytes(vec![row_group_bytes; row_group_count])
                 .with_row_group_rows(vec![1; row_group_count]),
         ],
         Arc::clone(&input_schema),
@@ -1993,6 +2071,155 @@ fn assert_bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_r
     }
     assert_eq!(seen_a, (rows / 2 / 2) as i64);
     assert_eq!(seen_b, (rows / 2 / 2) as i64);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+const DICTIONARY_LABEL_ROW_GROUPS: usize = 8;
+const DICTIONARY_LABEL_ROWS_PER_ROW_GROUP: usize = 131_072;
+const DICTIONARY_LABEL_KEY_COUNT: usize = 65_536;
+const DICTIONARY_LABEL_BYTES: usize = 200;
+
+/// Two dictionary-label files read by `key`, three `CASE WHEN label = ...`
+/// indicators and a literal, then summed per `key`. Decoding a label costs
+/// about 200 bytes per row while its footer bytes stay near zero, and the
+/// projection keeps five Int64 columns per row.
+fn dictionary_label_indicator_plan(dir: &Path, column_statistics: bool) -> QueryPlan {
+    let paths = (0..2).map(|file| dir.join(format!("part-{file}.parquet"))).collect::<Vec<_>>();
+    let mut input_schema = None;
+    for path in &paths {
+        input_schema = Some(write_dictionary_label_parquet(
+            path,
+            DICTIONARY_LABEL_ROW_GROUPS,
+            DICTIONARY_LABEL_ROWS_PER_ROW_GROUP,
+            DICTIONARY_LABEL_KEY_COUNT,
+            DICTIONARY_LABEL_BYTES,
+            column_statistics,
+        ));
+    }
+    let source = fixture_local_parquet_source::from_files(
+        paths.iter().map(LocalParquetFile::new).collect(),
+        input_schema.expect("two fixture files"),
+        vec!["key".to_string(), "label".to_string()],
+    );
+    let labels = dictionary_labels(DICTIONARY_LABEL_BYTES);
+    let indicator = |label: &str| {
+        Expr::case(
+            vec![CaseWhen::new(
+                Expr::binary(Expr::column("label"), BinaryOp::Eq, Expr::literal(LiteralValue::Utf8(label.to_string()))),
+                Expr::literal(LiteralValue::Int64(1)),
+            )],
+            Expr::literal(LiteralValue::Int64(0)),
+        )
+    };
+    let staged_columns = ["is_a", "is_b", "is_c", "one"];
+    let projected_schema = Arc::new(Schema::new(
+        std::iter::once(Field::new("key", DataType::Int64, false))
+            .chain(staged_columns.iter().map(|name| Field::new(*name, DataType::Int64, false)))
+            .collect::<Vec<_>>(),
+    ));
+    let projection = vec![
+        Expr::column("key"),
+        indicator(&labels[0]).alias("is_a"),
+        indicator(&labels[1]).alias("is_b"),
+        indicator(&labels[2]).alias("is_c"),
+        Expr::literal(LiteralValue::Int64(1)).alias("one"),
+    ];
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        staged_columns
+            .iter()
+            .map(|name| AggregateExpr::new(AggregateFunction::Sum, Expr::column(*name), format!("sum_{name}")))
+            .collect(),
+    );
+    let aggregated_schema = Arc::new(Schema::new(
+        std::iter::once(Field::new("key", DataType::Int64, false))
+            .chain(staged_columns.iter().map(|name| Field::new(format!("sum_{name}"), DataType::Int64, true)))
+            .collect::<Vec<_>>(),
+    ));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
+}
+
+fn assert_dictionary_label_indicator_sums(result: &QueryExecutionResult) {
+    let mut expected = BTreeMap::<i64, [i64; 4]>::new();
+    for _file in 0..2 {
+        for row in 0..DICTIONARY_LABEL_ROW_GROUPS * DICTIONARY_LABEL_ROWS_PER_ROW_GROUP {
+            let sums = expected.entry((row % DICTIONARY_LABEL_KEY_COUNT) as i64).or_default();
+            sums[row % 3] += 1;
+            sums[3] += 1;
+        }
+    }
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let keys = int64_array(batch, 0);
+    let actual = (0..batch.num_rows())
+        .map(|row| (keys.value(row), std::array::from_fn(|column| int64_array(batch, column + 1).value(row))))
+        .collect::<BTreeMap<i64, [i64; 4]>>();
+    assert_eq!(batch.num_rows(), DICTIONARY_LABEL_KEY_COUNT);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn bounded_native_query_splits_a_singleton_partitioned_raw_chunk_by_row_group_after_query_cap_rejection() {
+    let dir = unique_temp_dir("query-engine-partitioned-raw-chunk-split-retry");
+    let plan = dictionary_label_indicator_plan(&dir, false);
+    // One chunk per file: the explicit byte target exceeds the grant, so only
+    // the row-group cap sizes chunks. A whole file decodes to about 210 MB and
+    // stages 42 MB more under this 192 MiB grant; half a file fits.
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 192 * 1024 * 1024,
+        max_source_chunk_bytes: 1 << 40,
+        max_row_groups_per_chunk: DICTIONARY_LABEL_ROW_GROUPS,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 2);
+    assert_eq!(metrics.source_chunks_committed, 2, "a split chunk commits once");
+    assert_eq!(metrics.row_groups_committed, 2 * DICTIONARY_LABEL_ROW_GROUPS as u64);
+    assert!(metrics.source_chunks_retried >= 1, "the first whole-file read must split: {metrics:?}");
+    assert!(metrics.retry_resource_exhausted_count >= 1);
+    let partial_strategies = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+        .filter_map(|decision| decision.facts.get("source_adjacent_partition_strategy").cloned())
+        .collect::<Vec<_>>();
+    assert!(partial_strategies.iter().any(|strategy| strategy == "group_key"), "{partial_strategies:?}");
+    assert_dictionary_label_indicator_sums(&result);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_sizes_throughput_chunks_by_decoded_dictionary_strings() {
+    let dir = unique_temp_dir("query-engine-throughput-decoded-chunk-target");
+    let plan = dictionary_label_indicator_plan(&dir, true);
+    // Footer size statistics report the 200-byte labels. A row group decodes
+    // to about 28 MB against a 33 MB decoded target (224 MiB over seven
+    // slots), while its footer bytes would admit a whole file per chunk.
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 224 * 1024 * 1024,
+        max_source_chunk_bytes: MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES,
+        max_row_groups_per_chunk: MemoryControlPolicy::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK,
+        max_retry_attempts: MemoryControlPolicy::DEFAULT_MAX_RETRY_ATTEMPTS,
+        min_retry_chunk_row_groups: MemoryControlPolicy::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS,
+    })
+    .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert!(metrics.source_chunks_planned > 2, "decoded sizing must split each file: {metrics:?}");
+    assert_eq!(metrics.source_chunks_committed, metrics.source_chunks_planned);
+    assert_eq!(metrics.row_groups_committed, 2 * DICTIONARY_LABEL_ROW_GROUPS as u64);
+    assert_eq!(metrics.source_chunks_retried, 0, "planned chunks must fit without a split retry");
+    assert_eq!(metrics.retry_resource_exhausted_count, 0);
+    assert_dictionary_label_indicator_sums(&result);
 
     fs::remove_dir_all(dir).unwrap();
 }
