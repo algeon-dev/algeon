@@ -261,6 +261,7 @@ pub(super) fn validate_file_row_group_metadata_lengths(file: &LocalParquetFile, 
         file.projected_row_group_uncompressed_bytes.as_ref(),
         file.pure_filter_row_group_compressed_bytes.as_ref(),
         file.pure_filter_row_group_uncompressed_bytes.as_ref(),
+        file.row_group_decoded_bytes.as_ref(),
         file.row_group_rows.as_ref(),
     ]
     .into_iter()
@@ -277,6 +278,7 @@ pub(super) fn validate_file_row_group_metadata_lengths(file: &LocalParquetFile, 
         ("projected_row_group_uncompressed_bytes", file.projected_row_group_uncompressed_bytes.as_ref()),
         ("pure_filter_row_group_compressed_bytes", file.pure_filter_row_group_compressed_bytes.as_ref()),
         ("pure_filter_row_group_uncompressed_bytes", file.pure_filter_row_group_uncompressed_bytes.as_ref()),
+        ("row_group_decoded_bytes", file.row_group_decoded_bytes.as_ref()),
         ("row_group_rows", file.row_group_rows.as_ref()),
     ] {
         if let Some(values) = values

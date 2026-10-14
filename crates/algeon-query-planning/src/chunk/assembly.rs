@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 
 use arrow::datatypes::DataType;
 
-use super::{SourceChunk, SourceChunkPlanningPolicy, SourceReadSizing, row_group::RowGroupMetadata};
+use super::{
+    SourceChunk, SourceChunkPlanningPolicy, SourceReadSizing, decoded::ReadColumnWidths, row_group::RowGroupMetadata,
+};
 use crate::{
     datatypes::arrow_fixed_width_byte_size,
     error::{QueryError, QueryErrorCode, Result},
@@ -78,6 +80,7 @@ pub fn append_row_group_chunks(
 ) {
     let max_row_groups = policy.effective_max_row_groups_per_chunk();
     let row_group_count_basis = metadata.map_or(row_groups.len(), RowGroupMetadata::row_group_count).max(1);
+    let read_column_widths = ReadColumnWidths::of(&source.schema, &source.read_columns);
     let mut current = PendingChunk::default();
 
     for row_group in row_groups {
@@ -93,10 +96,18 @@ pub fn append_row_group_chunks(
             metadata.and_then(|metadata| metadata.pure_filter_uncompressed_bytes(*row_group));
         let row_group_rows = metadata.and_then(|metadata| metadata.row_group_rows(*row_group));
         let retained_output_bytes = projected_uncompressed_bytes.or(estimated_row_group_bytes);
-        let source_read_planning_bytes =
+        let source_read_bytes =
             source_read_uncompressed_bytes(source, projected_uncompressed_bytes, pure_filter_uncompressed_bytes)
                 .or(retained_output_bytes);
-        if current.should_flush_before(source_read_planning_bytes, max_row_groups, policy.max_source_chunk_bytes) {
+        // The source-byte target bounds decoded bytes. Without per-column
+        // footer detail the estimate comes from the schema widths; a row group
+        // without a row count, or a source without read columns, counts its
+        // encoded bytes.
+        let decoded_bytes = metadata
+            .and_then(|metadata| metadata.decoded_bytes(*row_group))
+            .or_else(|| read_column_widths.decoded_bytes(row_group_rows?, source_read_bytes?));
+        let planning_bytes = decoded_bytes.or(source_read_bytes);
+        if current.should_flush_before(planning_bytes, max_row_groups, policy.max_source_chunk_bytes) {
             push_pending_chunk(
                 source_node_id,
                 source,
@@ -115,7 +126,8 @@ pub fn append_row_group_chunks(
         current.push(
             *row_group,
             row_group_bytes,
-            source_read_planning_bytes,
+            planning_bytes,
+            decoded_bytes,
             projected_compressed_bytes,
             projected_uncompressed_bytes,
             pure_filter_compressed_bytes,
@@ -164,6 +176,7 @@ pub(crate) fn push_pending_chunk(
     let known_pure_filter_compressed_bytes = pending.known_pure_filter_compressed_bytes();
     let known_pure_filter_uncompressed_bytes = pending.known_pure_filter_uncompressed_bytes();
     let known_row_count = pending.known_rows();
+    let estimated_decoded_bytes = pending.known_decoded_bytes();
     let estimated_chunk_bytes = known_projected_uncompressed_bytes
         .or(known_row_group_bytes)
         .or_else(|| proportional_bytes(file.file_size_bytes, pending.row_groups.len(), planned_row_group_count));
@@ -194,6 +207,7 @@ pub(crate) fn push_pending_chunk(
         known_pure_filter_uncompressed_bytes,
         estimated_chunk_bytes,
         estimated_source_read_bytes,
+        estimated_decoded_bytes,
         exact_source_read_preflight_bytes,
         source_file_row_groups: file.row_groups.clone(),
         source_file_row_group_bytes: metadata.and_then(RowGroupMetadata::row_group_bytes_vec),
@@ -202,6 +216,7 @@ pub(crate) fn push_pending_chunk(
         source_file_pure_filter_compressed_bytes: metadata.and_then(RowGroupMetadata::pure_filter_compressed_bytes_vec),
         source_file_pure_filter_uncompressed_bytes: metadata
             .and_then(RowGroupMetadata::pure_filter_uncompressed_bytes_vec),
+        source_file_row_group_decoded_bytes: metadata.and_then(RowGroupMetadata::decoded_bytes_vec),
         source_file_row_group_rows: metadata.and_then(RowGroupMetadata::row_group_rows_vec),
         reader_decimal_types: reader_decimal_types.to_vec(),
         reader_decimal_types_footer_verified,
@@ -329,6 +344,7 @@ pub fn single_all_row_groups_chunk(
         known_pure_filter_uncompressed_bytes: None,
         estimated_chunk_bytes: file.file_size_bytes,
         estimated_source_read_bytes: file.file_size_bytes,
+        estimated_decoded_bytes: None,
         exact_source_read_preflight_bytes: None,
         source_file_row_groups: file.row_groups.clone(),
         source_file_row_group_bytes: None,
@@ -336,6 +352,7 @@ pub fn single_all_row_groups_chunk(
         source_file_projected_uncompressed_bytes: None,
         source_file_pure_filter_compressed_bytes: None,
         source_file_pure_filter_uncompressed_bytes: None,
+        source_file_row_group_decoded_bytes: None,
         source_file_row_group_rows: None,
         reader_decimal_types: reader_decimal_types.to_vec(),
         reader_decimal_types_footer_verified,
@@ -384,6 +401,7 @@ pub fn zero_column_count_identity_chunk(
     chunk.known_row_count = Some(0);
     chunk.estimated_chunk_bytes = Some(0);
     chunk.estimated_source_read_bytes = Some(0);
+    chunk.estimated_decoded_bytes = Some(0);
     chunk.exact_source_read_preflight_bytes =
         exact_source_read_preflight_bytes(source, chunk.known_row_count, true, sizing);
     chunk.size_estimate_based = false;
@@ -411,12 +429,14 @@ pub(crate) struct PendingChunk {
     known_projected_uncompressed_bytes: u64,
     known_pure_filter_compressed_bytes: u64,
     known_pure_filter_uncompressed_bytes: u64,
+    known_decoded_bytes: u64,
     known_rows: u64,
     has_unknown_bytes: bool,
     has_unknown_projected_compressed_bytes: bool,
     has_unknown_projected_uncompressed_bytes: bool,
     has_unknown_pure_filter_compressed_bytes: bool,
     has_unknown_pure_filter_uncompressed_bytes: bool,
+    has_unknown_decoded_bytes: bool,
     has_unknown_rows: bool,
 }
 
@@ -427,6 +447,7 @@ impl PendingChunk {
         row_group: usize,
         row_group_bytes: Option<u64>,
         planning_bytes: Option<u64>,
+        decoded_bytes: Option<u64>,
         projected_compressed_bytes: Option<u64>,
         projected_uncompressed_bytes: Option<u64>,
         pure_filter_compressed_bytes: Option<u64>,
@@ -465,6 +486,11 @@ impl PendingChunk {
                 self.known_pure_filter_uncompressed_bytes.saturating_add(pure_filter_uncompressed_bytes);
         } else {
             self.has_unknown_pure_filter_uncompressed_bytes = true;
+        }
+        if let Some(decoded_bytes) = decoded_bytes {
+            self.known_decoded_bytes = self.known_decoded_bytes.saturating_add(decoded_bytes);
+        } else {
+            self.has_unknown_decoded_bytes = true;
         }
         if let Some(row_group_rows) = row_group_rows {
             self.known_rows = self.known_rows.saturating_add(row_group_rows);
@@ -516,6 +542,10 @@ impl PendingChunk {
         (!self.has_unknown_pure_filter_uncompressed_bytes).then_some(self.known_pure_filter_uncompressed_bytes)
     }
 
+    fn known_decoded_bytes(&self) -> Option<u64> {
+        (!self.has_unknown_decoded_bytes).then_some(self.known_decoded_bytes)
+    }
+
     fn known_rows(&self) -> Option<u64> {
         (!self.has_unknown_rows).then_some(self.known_rows)
     }
@@ -528,12 +558,14 @@ impl PendingChunk {
         self.known_projected_uncompressed_bytes = 0;
         self.known_pure_filter_compressed_bytes = 0;
         self.known_pure_filter_uncompressed_bytes = 0;
+        self.known_decoded_bytes = 0;
         self.known_rows = 0;
         self.has_unknown_bytes = false;
         self.has_unknown_projected_compressed_bytes = false;
         self.has_unknown_projected_uncompressed_bytes = false;
         self.has_unknown_pure_filter_compressed_bytes = false;
         self.has_unknown_pure_filter_uncompressed_bytes = false;
+        self.has_unknown_decoded_bytes = false;
         self.has_unknown_rows = false;
     }
 }

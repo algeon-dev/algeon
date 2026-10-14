@@ -39,10 +39,13 @@ packages have been published.
 ## Native source batching
 
 Native source batching uses the immutable admission grant when no source-byte
-target is configured. Individual row groups remain retryable units; compatible
-units are coalesced into reads. Source-adjacent aggregates size later reads from
-observed decoded and staged bytes per row, including retained allocation-domain
-usage. Explicit `native.max_source_chunk_bytes` and
+target is configured. The target bounds each chunk's decoded size, which the
+Parquet footer estimates per row group. The default `local_parquet_throughput`
+planning mode lets a local Parquet chunk hold up to 1,024 row groups within that
+target; `conservative` keeps `native.max_row_groups_per_chunk` row groups per
+chunk and coalesces compatible chunks into reads. Source-adjacent aggregates
+size later reads from observed decoded and staged bytes per row, including
+retained allocation-domain usage. Explicit `native.max_source_chunk_bytes` and
 `native.max_row_groups_per_chunk` settings bound the configured grouping targets.
-The query-domain allocator enforces the grant, and allocation failures retain
-the bounded split-retry path.
+The query-domain allocator enforces the grant, and a chunk whose allocation it
+rejects splits by row group and retries within `native.max_retry_attempts`.

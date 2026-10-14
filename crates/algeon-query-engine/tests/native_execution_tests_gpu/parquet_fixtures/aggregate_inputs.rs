@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path, sync::Arc};
 
-use parquet::basic::Compression;
+use parquet::{basic::Compression, file::properties::EnabledStatistics};
 
 use super::*;
 
@@ -688,6 +688,56 @@ pub(crate) fn write_cardinality_shift_string_key_parquet(
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
     writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+/// Labels of [`write_dictionary_label_parquet`]; row `r` of each file carries
+/// label `r % 3`.
+pub(crate) fn dictionary_labels(label_bytes: usize) -> [String; 3] {
+    ['a', 'b', 'c'].map(|fill| fill.to_string().repeat(label_bytes))
+}
+
+/// Uncompressed row groups of a plain Int64 `key` (`row % key_count`) and a
+/// dictionary-encoded `label` cycling through three `label_bytes`-long values.
+///
+/// The dictionary keeps the label's encoded size near zero while its decoded
+/// strings take about `label_bytes` per row. Without column statistics the
+/// footer omits the unencoded byte-array size, so only a read reveals that size.
+pub(crate) fn write_dictionary_label_parquet(
+    path: &Path,
+    row_groups: usize,
+    rows_per_row_group: usize,
+    key_count: usize,
+    label_bytes: usize,
+    column_statistics: bool,
+) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int64, false),
+        Field::new("label", DataType::Utf8, false),
+    ]));
+    let labels = dictionary_labels(label_bytes);
+    let statistics = if column_statistics { EnabledStatistics::Page } else { EnabledStatistics::None };
+    let props = WriterProperties::builder()
+        .set_compression(Compression::UNCOMPRESSED)
+        .set_column_dictionary_enabled("key".into(), false)
+        .set_column_dictionary_enabled("label".into(), true)
+        .set_statistics_enabled(statistics)
+        .set_max_row_group_row_count(Some(rows_per_row_group))
+        .build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    for row_group in 0..row_groups {
+        let rows = row_group * rows_per_row_group..(row_group + 1) * rows_per_row_group;
+        let keys = rows.clone().map(|row| (row % key_count) as i64).collect::<Vec<_>>();
+        let label_values = rows.map(|row| labels[row % 3].as_str()).collect::<Vec<_>>();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(keys)), Arc::new(StringArray::from(label_values))],
+        )
+        .unwrap();
+        writer.write(&batch).unwrap();
+    }
     writer.close().unwrap();
     schema
 }

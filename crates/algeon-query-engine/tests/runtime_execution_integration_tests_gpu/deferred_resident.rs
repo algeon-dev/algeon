@@ -231,7 +231,10 @@ fn leased_context_preserves_activated_deferred_resident_phase() {
     first.insert("right".to_string(), empty_resident_handle(context, &schema, Some(&producer_b)));
     let activated = context.with_admitted_gpu_inputs(&consumer, &first).expect("activation");
 
-    let lease = activated.acquire_attempt_work_lease(None).expect("attempt work lease");
+    let lease = activated
+        .try_acquire_attempt_work_lease(|| None)
+        .expect("attempt work lease acquires without error")
+        .expect("the attempt's auxiliary permit is free");
     let leased = lease.context();
     leased
         .validate_admitted_plan_capabilities_with_gpu_inputs(&consumer, &first)

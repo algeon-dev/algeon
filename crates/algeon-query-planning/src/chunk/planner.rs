@@ -36,8 +36,10 @@ fn source_read_bytes_for_batch_chunks(chunks: &[SourceChunk]) -> Option<u64> {
 /// Groups compatible adjacent chunks for multi-source Parquet reads.
 ///
 /// Incompatible chunks remain singleton batches. `max_batch_source_read_bytes`
-/// is a planning target; chunks without source-read byte estimates are kept as
-/// singleton batches so batching cannot defeat the bounded memory policy.
+/// is a planning target compared with each chunk's decoded estimate, or its
+/// source-read bytes when it has none; chunks without either estimate are kept
+/// as singleton batches so batching cannot defeat the bounded memory policy.
+/// A batch's `estimated_source_read_bytes` stays the sum of encoded bytes.
 pub fn plan_source_chunk_batches(
     chunks: &[SourceChunk],
     max_batch_source_read_bytes: Option<u64>,
@@ -48,8 +50,8 @@ pub fn plan_source_chunk_batches(
 /// Groups compatible adjacent chunks like [`plan_source_chunk_batches`] and
 /// additionally caps each batch's known row count.
 ///
-/// Source-read bytes describe encoded input; a row cap lets a consumer bound
-/// the decoded working set it observed on earlier batches. Chunks without a
+/// A row cap lets a consumer bound the working set it observed on earlier
+/// batches, which can exceed the decoded estimate after stages run. Chunks without a
 /// known row count stay singleton batches while a row cap is in effect.
 pub fn plan_source_chunk_batches_with_row_cap(
     chunks: &[SourceChunk],
@@ -59,17 +61,19 @@ pub fn plan_source_chunk_batches_with_row_cap(
     let mut batches = Vec::new();
     let mut current = Vec::new();
     let mut current_bytes: Option<u64> = Some(0);
+    let mut current_planning_bytes: Option<u64> = Some(0);
     let mut current_rows: Option<u64> = Some(0);
     let mut current_reason: Option<&'static str> = None;
 
     for chunk in chunks {
         let chunk_bytes = batchable_chunk_source_read_bytes(chunk);
+        let chunk_planning_bytes = chunk.planning_bytes();
         let extension_rejection = current.last().and_then(|previous| {
             source_chunk_batch_extension_rejection(
                 previous,
-                current_bytes,
+                current_planning_bytes,
                 chunk,
-                chunk_bytes,
+                chunk_planning_bytes,
                 max_batch_source_read_bytes,
             )
             .or_else(|| source_chunk_batch_row_extension_rejection(current_rows, chunk, max_batch_rows))
@@ -81,15 +85,19 @@ pub fn plan_source_chunk_batches_with_row_cap(
             }
             push_source_chunk_batch(&mut batches, &mut current, current_bytes, current_reason);
             current_bytes = Some(0);
+            current_planning_bytes = Some(0);
             current_rows = Some(0);
             current_reason = None;
         }
 
         if let Some(reason) = chunk_multi_source_batch_rejection(chunk) {
             current_bytes = None;
+            current_planning_bytes = None;
             current_reason.get_or_insert(reason);
         } else {
             current_bytes = current_bytes.and_then(|total| chunk_bytes.and_then(|bytes| total.checked_add(bytes)));
+            current_planning_bytes = current_planning_bytes
+                .and_then(|total| chunk_planning_bytes.and_then(|bytes| total.checked_add(bytes)));
         }
         current_rows = current_rows.and_then(|total| chunk.known_row_count.and_then(|rows| total.checked_add(rows)));
         current.push(chunk.clone());
@@ -241,7 +249,7 @@ pub fn annotate_source_chunk_batching_reasons(
     }
 }
 
-fn batchable_chunk_source_read_bytes(chunk: &SourceChunk) -> Option<u64> {
+pub(super) fn batchable_chunk_source_read_bytes(chunk: &SourceChunk) -> Option<u64> {
     chunk
         .estimated_source_read_bytes
         .or(chunk.known_row_group_bytes)

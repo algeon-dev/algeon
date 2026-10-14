@@ -2,9 +2,11 @@
 //!
 //! The query domain's allocator is the only enforcer of the attempt's cap (see
 //! `website/docs/design/admission.mdx#allocation-enforcement`, "The allocation
-//! path"). The policy here decides how much encoded input one read or one raw
-//! batch requests at a time, so that the decoded columns, staged copies and
-//! partition slices that are live together usually fit under that cap. A miss
+//! path"). The policy here decides how much input one read or one raw batch
+//! requests at a time, measured by the planner's decoded estimate
+//! (`query_planning::chunk::decoded`), so that the decoded columns, staged
+//! copies and partition slices that are live together usually fit under that
+//! cap. A miss
 //! surfaces as a typed allocation failure that the chunk-split retry handles;
 //! nothing in this module reserves memory or vetoes an allocation.
 
@@ -17,8 +19,9 @@ use query_planning::{chunk::SourceChunkPlanningPolicy, execution_contracts::Memo
 /// planning mode until production evidence shows a stable tuning contract.
 ///
 /// Every method is a pure function of its arguments and the policy constants.
-/// Byte inputs are the planner's encoded-size estimates unless a name says
-/// `observed` or `decoded`; the working-set models translate between the two.
+/// Byte targets bound the planner's decoded estimates, which fall back to
+/// encoded footer bytes for chunks without one. Inputs named `observed` come
+/// from frames the attempt has already produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec::bounded) struct BoundedSourceBatchingPolicy {
     source_batch_read_max_planned_bytes: u64,
@@ -29,7 +32,6 @@ pub(in crate::exec::bounded) struct BoundedSourceBatchingPolicy {
     source_adjacent_partitioned_aggregate_min_batch_bytes: u64,
     source_adjacent_partitioned_aggregate_batch_budget_divisor: u64,
     source_adjacent_raw_batch_working_set_budget_divisor: u64,
-    source_adjacent_raw_batch_cold_variable_width_row_bytes: u64,
     source_adjacent_raw_batch_stage_copy_factor: u64,
     source_adjacent_local_reduction_max_output_rows_ppm: u64,
     source_adjacent_local_reduction_max_partial_bytes_divisor: u64,
@@ -53,10 +55,6 @@ impl BoundedSourceBatchingPolicy {
     /// One raw source batch's modeled working set (decoded input plus the
     /// stage, partition, and slice copies) may use this fraction of the cap.
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_BATCH_WORKING_SET_BUDGET_DIVISOR: u64 = 2;
-    /// Before any batch has been observed, a variable-width column is modeled
-    /// as this many device bytes per row beside its encoded payload: the
-    /// per-row offsets or view entries that Parquet's encoded size omits.
-    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_BATCH_COLD_VARIABLE_WIDTH_ROW_BYTES: u64 = 16;
     /// Copies of the staged (filtered and projected) batch that can be live at
     /// once: the stage output, its hash partition, and the partition slices.
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_BATCH_STAGE_COPY_FACTOR: u64 = 3;
@@ -74,7 +72,7 @@ impl BoundedSourceBatchingPolicy {
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_PARTITION_OCCUPANCY_DIVISOR: usize =
         4;
 
-    /// Encoded-byte target for one generic (not source-adjacent) source batch.
+    /// Byte target for one generic (not source-adjacent) source batch.
     ///
     /// The base target is the grant-derived `max_source_chunk_bytes` of the
     /// planning policy. `decode_scratch_risk` is set by the caller when the
@@ -109,16 +107,15 @@ impl BoundedSourceBatchingPolicy {
     }
 
     /// Row-group cap for each chunk of a grouped aggregate with a string group
-    /// key (applied by `apply_source_adjacent_aggregate_chunk_caps`). The
-    /// footer's encoded size of a string column does not bound its decoded
-    /// offsets and characters, and libcudf groupby state over string keys grows
-    /// with distinct keys, so the chunk is bounded by row-group count as well
-    /// as by bytes.
+    /// key (applied by `apply_source_adjacent_aggregate_chunk_caps`). libcudf
+    /// groupby state over string keys grows with distinct keys, which no byte
+    /// estimate of the input bounds, so the chunk is bounded by row-group count
+    /// as well as by bytes.
     pub(in crate::exec::bounded) fn source_adjacent_grouped_aggregate_max_operator_row_groups(self) -> usize {
         self.source_adjacent_grouped_aggregate_max_operator_row_groups
     }
 
-    /// Encoded-byte target for one raw source batch, the multi-chunk read that
+    /// Byte target for one raw source batch, the multi-chunk read that
     /// stays unaggregated until the source-adjacent filter and projections have
     /// run. The policy's `max_source_chunk_bytes` remains an upper bound; the
     /// working-set share below can only lower it.
@@ -202,25 +199,13 @@ impl BoundedSourceBatchingPolicy {
     }
 
     /// Modeled working-set bytes per row before any batch of this source has
-    /// been observed.
-    ///
-    /// Fixed-width read columns decode to their Arrow width regardless of
-    /// Parquet encoding; each variable-width column adds its per-row entry
-    /// beside the footer's projected uncompressed bytes, which are the only
-    /// payload evidence available before a read.
+    /// been observed: the planner's decoded estimate per row, counted once for
+    /// the decoded input and once per staged copy.
     pub(in crate::exec::bounded) fn source_adjacent_raw_batch_cold_working_set_bytes_per_row(
         self,
-        fixed_width_bytes_per_row: u64,
-        variable_width_columns: u64,
-        projected_uncompressed_bytes_per_row: u64,
+        decoded_bytes_per_row: u64,
     ) -> u64 {
-        fixed_width_bytes_per_row
-            .saturating_add(
-                variable_width_columns.saturating_mul(self.source_adjacent_raw_batch_cold_variable_width_row_bytes),
-            )
-            .saturating_add(projected_uncompressed_bytes_per_row)
-            .max(1)
-            .saturating_mul(1 + self.source_adjacent_raw_batch_stage_copy_factor)
+        decoded_bytes_per_row.max(1).saturating_mul(1 + self.source_adjacent_raw_batch_stage_copy_factor)
     }
 
     /// Modeled working-set bytes per row from observed decoded and staged bytes.
@@ -281,8 +266,6 @@ impl Default for BoundedSourceBatchingPolicy {
                 Self::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_BATCH_BUDGET_DIVISOR,
             source_adjacent_raw_batch_working_set_budget_divisor:
                 Self::DEFAULT_SOURCE_ADJACENT_RAW_BATCH_WORKING_SET_BUDGET_DIVISOR,
-            source_adjacent_raw_batch_cold_variable_width_row_bytes:
-                Self::DEFAULT_SOURCE_ADJACENT_RAW_BATCH_COLD_VARIABLE_WIDTH_ROW_BYTES,
             source_adjacent_raw_batch_stage_copy_factor: Self::DEFAULT_SOURCE_ADJACENT_RAW_BATCH_STAGE_COPY_FACTOR,
             source_adjacent_local_reduction_max_output_rows_ppm:
                 Self::DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_OUTPUT_ROWS_PPM,

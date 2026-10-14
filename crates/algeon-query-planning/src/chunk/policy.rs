@@ -6,13 +6,10 @@ use crate::{
 };
 
 /// Row-group cap used by local-throughput source planning when the configured
-/// policy is the conservative one-row-group shape.
+/// policy is the conservative one-row-group shape. It bounds how much source
+/// one chunk retry reads again; the source-byte target sizes the chunk.
 pub const LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize =
     SourceChunkPlanningOptions::DEFAULT_LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK;
-/// Minimum bounded device budget before local-throughput planning can raise the
-/// row-group cap. Smaller budgets keep conservative source chunks.
-pub const LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64 =
-    SourceChunkPlanningOptions::DEFAULT_LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES;
 
 /// Expert policy for local Parquet source chunk planning heuristics.
 ///
@@ -23,19 +20,13 @@ pub const LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64 =
 #[non_exhaustive]
 pub struct SourceChunkPlanningOptions {
     local_parquet_throughput_max_row_groups_per_chunk: usize,
-    local_parquet_throughput_min_device_budget_bytes: u64,
 }
 
 impl SourceChunkPlanningOptions {
     pub(crate) const DEFAULT_LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
-    pub(crate) const DEFAULT_LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 
     pub(crate) fn local_parquet_throughput_max_row_groups_per_chunk(&self) -> usize {
         self.local_parquet_throughput_max_row_groups_per_chunk
-    }
-
-    pub(crate) fn local_parquet_throughput_min_device_budget_bytes(&self) -> u64 {
-        self.local_parquet_throughput_min_device_budget_bytes
     }
 
     /// Sets the row-group cap available when local-throughput planning widens a
@@ -46,26 +37,12 @@ impl SourceChunkPlanningOptions {
         self
     }
 
-    /// Sets the minimum device budget in bytes that permits local-throughput
-    /// chunk widening. A smaller budget retains conservative chunks.
-    /// The value must be nonzero; this setter does not validate it.
-    pub fn with_local_parquet_throughput_min_device_budget_bytes(mut self, bytes: u64) -> Self {
-        self.local_parquet_throughput_min_device_budget_bytes = bytes;
-        self
-    }
-
-    /// Rejects zero row-group or device-budget limits with
-    /// [`QueryErrorCode::InvalidConfiguration`].
+    /// Rejects a zero row-group limit with [`QueryErrorCode::InvalidConfiguration`].
     pub fn validate(&self) -> QueryResult<()> {
         validate_source_chunk_planning_nonzero_usize(
             "local_parquet_throughput_max_row_groups_per_chunk",
             self.local_parquet_throughput_max_row_groups_per_chunk,
-        )?;
-        validate_source_chunk_planning_nonzero_u64(
-            "local_parquet_throughput_min_device_budget_bytes",
-            self.local_parquet_throughput_min_device_budget_bytes,
-        )?;
-        Ok(())
+        )
     }
 }
 
@@ -74,20 +51,11 @@ impl Default for SourceChunkPlanningOptions {
         Self {
             local_parquet_throughput_max_row_groups_per_chunk:
                 Self::DEFAULT_LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
-            local_parquet_throughput_min_device_budget_bytes:
-                Self::DEFAULT_LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES,
         }
     }
 }
 
 fn validate_source_chunk_planning_nonzero_usize(field: &'static str, value: usize) -> QueryResult<()> {
-    if value == 0 {
-        return Err(source_chunk_planning_zero_error(field, value));
-    }
-    Ok(())
-}
-
-fn validate_source_chunk_planning_nonzero_u64(field: &'static str, value: u64) -> QueryResult<()> {
     if value == 0 {
         return Err(source_chunk_planning_zero_error(field, value));
     }
@@ -108,7 +76,9 @@ fn source_chunk_planning_zero_error(field: &'static str, value: impl std::fmt::D
 /// Policy that controls how a local Parquet source is split into chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceChunkPlanningPolicy {
-    /// Target upper bound, in bytes, for source-read planning per chunk.
+    /// Target upper bound, in decoded bytes ([`crate::chunk::decoded`]), for
+    /// one chunk's read columns. A row group without a decoded estimate counts
+    /// its encoded source-read bytes.
     ///
     /// `None` means row-group grouping is constrained only by
     /// [`max_row_groups_per_chunk`](Self::max_row_groups_per_chunk).
@@ -149,7 +119,8 @@ impl SourceChunkPlanningPolicy {
     /// The default source-byte setting uses
     /// `device_budget_bytes / model.live_slot_count()`. Explicit targets at or
     /// below the grant are bounded by the same live-slot target. An explicit
-    /// target above the grant remains available for allocation retry.
+    /// target above the grant remains available for allocation retry. Both
+    /// targets bound the same decoded estimate.
     pub fn for_source_task(memory_policy: MemoryControlPolicy, model: SourceTaskMemoryModel) -> Self {
         let base = Self::from(memory_policy);
         let MemoryControlPolicy { device_budget_bytes, max_source_chunk_bytes, max_row_groups_per_chunk, .. } =
@@ -175,7 +146,7 @@ impl SourceChunkPlanningPolicy {
         mode: SourceChunkPlanningMode,
         options: SourceChunkPlanningOptions,
     ) -> Self {
-        Self::for_source_task(memory_policy, model).with_source_planning_mode(source, memory_policy, mode, options)
+        Self::for_source_task(memory_policy, model).with_source_planning_mode(source, mode, options)
     }
 
     /// Derives a source policy from memory policy and source planning mode.
@@ -199,7 +170,7 @@ impl SourceChunkPlanningPolicy {
         mode: SourceChunkPlanningMode,
         options: SourceChunkPlanningOptions,
     ) -> Self {
-        Self::from(memory_policy).with_source_planning_mode(source, memory_policy, mode, options)
+        Self::from(memory_policy).with_source_planning_mode(source, mode, options)
     }
 
     pub(super) fn effective_max_row_groups_per_chunk(self) -> usize {
@@ -209,7 +180,6 @@ impl SourceChunkPlanningPolicy {
     fn with_source_planning_mode(
         mut self,
         source: &LocalParquetSource,
-        memory_policy: MemoryControlPolicy,
         mode: SourceChunkPlanningMode,
         options: SourceChunkPlanningOptions,
     ) -> Self {
@@ -217,7 +187,7 @@ impl SourceChunkPlanningPolicy {
             return self;
         }
         self.source_chunk_planning_mode = mode;
-        if !local_parquet_throughput_planning_admitted(source, memory_policy, self, options) {
+        if !local_parquet_throughput_planning_admitted(source, self) {
             self.source_chunk_planning_reason = "local_parquet_throughput_rejected";
             return self;
         }
@@ -258,15 +228,10 @@ impl From<MemoryControlPolicy> for SourceChunkPlanningPolicy {
     }
 }
 
-fn local_parquet_throughput_planning_admitted(
-    source: &LocalParquetSource,
-    memory_policy: MemoryControlPolicy,
-    policy: SourceChunkPlanningPolicy,
-    options: SourceChunkPlanningOptions,
-) -> bool {
-    if memory_policy.device_budget_bytes < options.local_parquet_throughput_min_device_budget_bytes() {
-        return false;
-    }
+/// Whether throughput planning may raise a one-row-group cap for `source`.
+/// The grant does not enter here: the source-byte target already scales the
+/// widened chunks with it.
+fn local_parquet_throughput_planning_admitted(source: &LocalParquetSource, policy: SourceChunkPlanningPolicy) -> bool {
     if policy.max_row_groups_per_chunk != 1 || policy.max_source_chunk_bytes.is_none() {
         return false;
     }

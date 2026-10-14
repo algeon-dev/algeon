@@ -33,13 +33,13 @@ fn server_config_accepts_extended_native_query_knobs() {
         ("ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK", "8".to_string()),
         ("ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS", "5".to_string()),
         ("ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT", "4".to_string()),
-        ("ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE", "local_parquet_throughput".to_string()),
+        ("ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE", "conservative".to_string()),
         ("ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE", "gpu_native_tolerant".to_string()),
     ]);
     let config = load(env).unwrap();
     let native = config.native_optimizer_config.native_execution_config();
     assert_eq!(native.source_scheduler_policy().max_source_reads_in_flight(), 4);
-    assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
     assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
 }
 

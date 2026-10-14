@@ -29,7 +29,7 @@ fn query_service_handle_exposes_configured_execution_policies() {
         SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(33);
     let config = QueryExecutionConfig {
         source_scheduler_policy: SourceSchedulerPolicy::new(4),
-        source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
+        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::GpuNativeTolerant,
         planning_policy,
         aggregate_strategy_execution_options,
@@ -43,7 +43,7 @@ fn query_service_handle_exposes_configured_execution_policies() {
     let handle = service.admit_query().unwrap();
 
     assert_eq!(handle.source_scheduler_policy(), SourceSchedulerPolicy::new(4));
-    assert_eq!(handle.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(handle.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
     assert_eq!(handle.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
     assert_eq!(handle.planning_policy(), planning_policy);
     assert_eq!(handle.aggregate_strategy_execution_options(), aggregate_strategy_execution_options);

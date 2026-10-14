@@ -80,7 +80,7 @@ execution_mode = "native_preferred"             # ALGEON_SERVER_NATIVE_EXECUTION
 max_row_groups_per_chunk = 1                    # ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
 max_retry_attempts = 3                          # ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS
 max_source_reads_in_flight = 2                  # ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT
-source_chunk_planning_mode = "conservative"     # ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE
+source_chunk_planning_mode = "local_parquet_throughput"  # ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE
 statistical_aggregate_execution_mode = "gpu_native_tolerant"  # ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
 
 [observability]
@@ -235,16 +235,27 @@ commit and enabled features.
 | `max_row_groups_per_chunk` | `1` |
 | `max_retry_attempts` | `3` |
 | `max_source_reads_in_flight` | `2` |
-| `source_chunk_planning_mode` | `conservative` (or `local_parquet_throughput`) |
+| `source_chunk_planning_mode` | `local_parquet_throughput` (or `conservative`) |
 | `statistical_aggregate_execution_mode` | `gpu_native_tolerant` (or `datafusion_exact_host_welford`) |
 
 - Device capacity comes only from [`[[admission.device_profiles]]`](#admission).
   Native settings carry no device-budget planning placeholder.
-- Without `max_source_chunk_bytes`, the immutable grant sizes source reads. An
-  explicit value limits the source-byte grouping target. The startup log
-  prints `auto` for an unset value.
-- Compatible row-group chunks coalesce into batches. One row group per chunk
-  keeps each a separate retry unit inside a coalesced read.
+- Without `max_source_chunk_bytes`, the immutable grant divided by the chunk
+  regions the consuming task keeps live sets the source-byte target. An
+  explicit value up to the grant lowers that target, and a larger one replaces
+  it. The startup log prints `auto` for an unset value.
+- Both targets bound a chunk's decoded size, estimated from the Parquet
+  footer. A dictionary-encoded string column counts at its decoded width, not
+  its encoded size.
+- `local_parquet_throughput` lets one chunk of a local Parquet source hold up
+  to 1,024 row groups within the target when `max_row_groups_per_chunk` is `1`.
+  Other sources keep one row group per chunk. `conservative` plans
+  `max_row_groups_per_chunk` row groups per chunk; compatible chunks then
+  coalesce into batched reads under the same target.
+- When the grant rejects an allocation while a chunk is read, staged through
+  its source-adjacent filters and projections or partitioned for an aggregate,
+  the chunk splits in half by row group and runs again, up to
+  `max_retry_attempts` attempts.
 - Before the next read, source-adjacent aggregates account for observed
   decoded and staged bytes per row and live allocation-domain usage. The
   allocator enforces the grant, retained aggregate and graph state included.

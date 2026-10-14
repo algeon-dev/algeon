@@ -736,6 +736,11 @@ pub struct LocalParquetFile {
     pub pure_filter_row_group_compressed_bytes: Option<Vec<u64>>,
     /// Estimated or known uncompressed byte sizes for pure-filter file columns.
     pub pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
+    /// Estimated decoded device bytes of the source's read columns, in physical
+    /// Parquet row-group order. Chunk planning compares this estimate with the
+    /// source-byte target; frontends derive it with
+    /// [`row_group_decoded_bytes_from_footer`](crate::chunk::decoded::row_group_decoded_bytes_from_footer).
+    pub row_group_decoded_bytes: Option<Vec<u64>>,
     /// Estimated or known row counts in physical Parquet row-group order.
     ///
     /// The vector covers every physical row group; `row_groups`, when present,
@@ -780,6 +785,7 @@ impl fmt::Debug for LocalParquetFile {
             .field("projected_row_group_uncompressed_bytes", &self.projected_row_group_uncompressed_bytes)
             .field("pure_filter_row_group_compressed_bytes", &self.pure_filter_row_group_compressed_bytes)
             .field("pure_filter_row_group_uncompressed_bytes", &self.pure_filter_row_group_uncompressed_bytes)
+            .field("row_group_decoded_bytes", &self.row_group_decoded_bytes)
             .field("row_group_rows", &self.row_group_rows)
             .field("graph_vertex_upper_bound", &self.graph_vertex_upper_bound)
             .field("graph_simple_directed_edge_topology", &self.graph_simple_directed_edge_topology)
@@ -791,6 +797,18 @@ impl fmt::Debug for LocalParquetFile {
 }
 
 impl LocalParquetFile {
+    /// Clears the byte estimates that depend on the source's column roles, so
+    /// a rewrite that changes which columns are read or projected never keeps
+    /// figures measured for the old columns. The engine reloads them from the
+    /// footer.
+    pub(crate) fn clear_column_byte_estimates(&mut self) {
+        self.projected_row_group_compressed_bytes = None;
+        self.projected_row_group_uncompressed_bytes = None;
+        self.pure_filter_row_group_compressed_bytes = None;
+        self.pure_filter_row_group_uncompressed_bytes = None;
+        self.row_group_decoded_bytes = None;
+    }
+
     /// Creates a file descriptor with no optional metadata.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
@@ -808,6 +826,7 @@ impl LocalParquetFile {
             projected_row_group_uncompressed_bytes: None,
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
+            row_group_decoded_bytes: None,
             row_group_rows: None,
             graph_vertex_upper_bound: None,
             graph_simple_directed_edge_topology: None,
@@ -834,6 +853,7 @@ impl LocalParquetFile {
             projected_row_group_uncompressed_bytes: None,
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
+            row_group_decoded_bytes: None,
             row_group_rows: None,
             graph_vertex_upper_bound: None,
             graph_simple_directed_edge_topology: None,
@@ -859,6 +879,7 @@ impl LocalParquetFile {
             projected_row_group_uncompressed_bytes: None,
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
+            row_group_decoded_bytes: None,
             row_group_rows: None,
             graph_vertex_upper_bound: None,
             graph_simple_directed_edge_topology: None,
@@ -915,6 +936,12 @@ impl LocalParquetFile {
     ) -> Self {
         self.pure_filter_row_group_compressed_bytes = Some(compressed_bytes);
         self.pure_filter_row_group_uncompressed_bytes = Some(uncompressed_bytes);
+        self
+    }
+
+    /// Sets the decoded read-column byte estimate in physical Parquet row-group order.
+    pub fn with_row_group_decoded_bytes(mut self, decoded_bytes: Vec<u64>) -> Self {
+        self.row_group_decoded_bytes = Some(decoded_bytes);
         self
     }
 

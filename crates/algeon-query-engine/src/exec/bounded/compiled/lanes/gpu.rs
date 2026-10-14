@@ -7,8 +7,8 @@ use std::{
     cell::RefCell,
     fs::File,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{Arc, Barrier, Mutex, MutexGuard},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use arrow::{
@@ -21,10 +21,10 @@ use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_planning::{
     admission::{AttemptCapabilityEvidence, admit},
     error::{QueryErrorCode, Result},
-    expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LimitSpec},
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, ColumnRef, Expr, LimitSpec},
     mode::StatisticalAggregateExecutionMode,
     pipeline::{CompiledPipeline, PipelineTaskKind, ResidentDataForm},
-    plan::{ProjectionOutput, QueryPlan, QueryPlanBuilder},
+    plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlan, QueryPlanBuilder},
     policy::PlanningPolicy,
     source::{LiteralBatchSource, LocalParquetSource, SourceNode},
 };
@@ -32,23 +32,27 @@ use query_runtime::{
     attempt::{AttemptOwner, BeginAttemptRequest},
     metrics::QueryMetrics,
     observability::{
-        AttemptDisposition, AttemptQueryId, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
-        RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTaskId, RuntimeTerminalOutcome,
-        RuntimeTimelineEvent, RuntimeWorkerId, StreamLeaseLifecycleState,
+        AttemptCleanupDisposition, AttemptDisposition, AttemptQueryId, PlanExecutionId, RuntimeObservationConfig,
+        RuntimeObservationOwner, RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTaskId,
+        RuntimeTerminalOutcome, RuntimeTimelineEvent, RuntimeWorkerId, StreamLeaseLifecycleState,
     },
     runtime::{
-        AdmittedQueryContext, ExecutionContext, GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig,
-        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind, GpuMemoryOwnership,
-        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, resident::GpuResidentInputMap,
+        AdmittedQueryContext, ExecutionCancellation, ExecutionContext, GpuBackendConfig, GpuBackendCore,
+        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind,
+        GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
+        resident::GpuResidentInputMap,
     },
 };
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 
-use super::{LaneDispatchSupport, run_resident_lane_borrow};
+use super::{AggregateLaneDispatch, LaneDispatchSupport, run_resident_lane_borrow};
 use crate::{
     exec::{
         ExecutionMetrics, QueryExecutionRequest, admit_query_plan,
-        bounded::compiled::{CompiledGpuTaskExecutor, CompiledPipelineScheduler},
+        bounded::{
+            BoundedExecutionAttempt,
+            compiled::{CompiledGpuTaskExecutor, CompiledPipelineScheduler},
+        },
         execute_query_plan, materialize_gpu_result_to_host,
         output::QueryOutput,
     },
@@ -98,6 +102,17 @@ impl LaneBackendGuard {
     }
 
     fn admit(&self, plan: &QueryPlan, cap_bytes: Option<u64>) -> Result<LaneTestContext> {
+        self.admit_with_cancellation(plan, cap_bytes, ExecutionCancellation::new())
+    }
+
+    /// Admits `plan` and acquires its root context with `cancellation`, so a
+    /// test can bound the run with a deadline.
+    fn admit_with_cancellation(
+        &self,
+        plan: &QueryPlan,
+        cap_bytes: Option<u64>,
+        cancellation: ExecutionCancellation,
+    ) -> Result<LaneTestContext> {
         admit_query_plan(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())?;
         let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
         let mut backend = self.backend.borrow_mut();
@@ -111,7 +126,7 @@ impl LaneBackendGuard {
             .expect("lane backend is installed")
             .session_capability()
             .admit_query_with_request(request)?;
-        let context = handle.acquire_context()?;
+        let context = handle.acquire_context_with_cancellation(cancellation)?;
         Ok(LaneTestContext { context, _handle: handle, _attempt: None })
     }
 
@@ -436,7 +451,7 @@ fn serial_compiled_cancelled_attempt_stops_before_any_task_runs() {
 /// with `ServiceOverloaded` or deadlock, and the run would not complete.
 ///
 /// The stream-lease observation pins the permit shape without timing: every
-/// lease this run acquires is a lane lease, which `acquire_attempt_work_lease`
+/// lease this run acquires is a lane lease, which `try_acquire_attempt_work_lease`
 /// records with no source worker in its scope.
 #[test]
 fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
@@ -568,17 +583,99 @@ fn resident_chunk_cancellation_drains_workers_without_committing() {
     lifecycle.finish(RuntimeTerminalOutcome::Cancelled);
 }
 
+/// A cancelled attempt whose terminal commit releases the query handle while
+/// two lane jobs still run keeps its cleanup clean. Both jobs fail with
+/// `Cancelled` after the release; each lane's post-error fence still runs on
+/// its own stream, and the sibling job's work error is a secondary outcome,
+/// not a failed cleanup step.
+#[test]
+fn lane_work_failing_after_handle_release_records_no_cleanup_failure() {
+    let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
+    let plan = literal_union_plan();
+    let LaneTestContext { context: admitted, _handle: handle, _attempt: attempt } =
+        backend.admit_as(&plan, "lane-released-work-failure").expect("lane attempt admits");
+    let attempt = attempt.expect("admit_as begins an attempt");
+    let completion = attempt.completion();
+    let root: ExecutionContext = admitted.context().clone();
+    let execution_lifecycle =
+        root.begin_runtime_execution_observation(PlanExecutionId::new("lane-released-work-failure-plan"));
+    let context =
+        root.with_runtime_execution_scope(execution_lifecycle.execution_scope()).expect("observation scope applies");
+    let width = context.attempt_stream_provider_route().expect("admitted context carries a fork route").lane_capacity();
+    assert_eq!(width, 2, "this test holds both lanes of a width-2 run inside their work");
+
+    let entered = Arc::new(Barrier::new(width + 1));
+    let release = Arc::new(Barrier::new(width + 1));
+    // As a client cancel does: the token fires and the terminal commit
+    // requests the grant release, which closes the query epoch while both
+    // lanes are still inside their work.
+    let canceller = {
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        let cancellation = context.cancellation().clone();
+        std::thread::spawn(move || {
+            entered.wait();
+            cancellation.cancel();
+            attempt.commit_terminal(RuntimeTerminalOutcome::Cancelled).expect("the cancel terminalizes the attempt");
+            release.wait();
+            attempt
+        })
+    };
+
+    let metrics = ExecutionMetrics::detached("lane-released-work-failure");
+    let error = {
+        let mut execution = BoundedExecutionAttempt::new(&context, context.device_budget_bytes(), &metrics);
+        let mut remaining = width;
+        AggregateLaneDispatch::with_available_lanes(&mut execution, |dispatch, execution| {
+            assert_eq!(dispatch.width(), width, "both lanes are free at run start");
+            dispatch.execute_work(
+                execution,
+                &mut remaining,
+                |remaining, _| {
+                    if *remaining == 0 {
+                        return Ok(None);
+                    }
+                    *remaining -= 1;
+                    Ok(Some(()))
+                },
+                move |execution, ()| {
+                    entered.wait();
+                    release.wait();
+                    execution.context().check_cancellation("query_engine.test.lane_work_after_handle_release")
+                },
+                |_, _, ()| panic!("a cancelled run commits no lane output"),
+            )
+        })
+        .expect_err("lane work observes the cancellation")
+    };
+    let attempt = canceller.join().expect("the cancelling thread joins");
+    assert_eq!(error.code(), QueryErrorCode::Cancelled, "the first lane's cancellation is the primary error");
+
+    execution_lifecycle.finish(RuntimeTerminalOutcome::Cancelled);
+    drop(context);
+    drop(root);
+    drop(admitted);
+    drop(handle);
+    let report = completion.wait_timeout(Duration::from_secs(30)).expect("the cancelled attempt publishes its report");
+    assert_eq!(
+        report.cleanup_failure_count, 0,
+        "lane work errors are not cleanup failures; first recorded: {:?}",
+        report.first_cleanup_failure
+    );
+    assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
+    drop(attempt);
+}
+
 /// A source read issued from an attempt work lease runs inline on that
 /// lease's own context and stream, and it does not lease a nested worker.
 ///
 /// This is the invariant that keeps the permit chain acyclic: the caller
 /// already holds this attempt's auxiliary permit behind its lease, so a
-/// nested `acquire_attempt_work_lease` would make a permit holder block on a
-/// second permit of the same attempt. At full lane width that nesting
-/// deadlocks outright; this test deliberately holds only one of the
-/// backend's two attempt auxiliary permits, so a nested lease would still
-/// succeed. The assertion below then fails on the observation, and no timeout
-/// is involved.
+/// nested work lease would make a permit holder consume a second permit of
+/// the same attempt. This test deliberately holds only one of the backend's
+/// two attempt auxiliary permits, so a nested lease would still succeed.
+/// The assertion below then fails on the observation, and no timeout is
+/// involved.
 ///
 /// The plan is a grouped aggregate, because that is the shape whose chunk
 /// execution reaches `ScheduledLocalParquetRead`. The work-lease context is what
@@ -652,7 +749,10 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     // purpose: a regression that leased a nested worker would acquire it and
     // be observed. The free permit lets that lease succeed, so the test does
     // not block forever.
-    let lane_lease = context.acquire_attempt_work_lease(None).expect("lane work lease acquires");
+    let lane_lease = context
+        .try_acquire_attempt_work_lease(|| None)
+        .expect("lane work lease acquires without error")
+        .expect("the attempt's first auxiliary permit is free");
     let lane_context = lane_lease.context().clone();
     assert!(lane_context.is_attempt_work_lease_context(), "a lane context is a work-lease context");
 
@@ -691,6 +791,132 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     drop(lane_lease);
 }
 
+/// A join leaf read through the source scheduler on the attempt's root
+/// context, while that same context holds every attempt auxiliary permit,
+/// runs its required reads inline and skips its prefetches.
+///
+/// This is the TPC-H q17 shape: the root coordinator leases every free permit
+/// for its lanes, then streams a join leaf on its own thread. A required read
+/// that waited for a permit would wait on its own caller. The root context's
+/// deadline turns that wait into a `Cancelled` error instead of a hung test,
+/// so a regression fails the `expect` on the result.
+///
+/// Each leaf has one chunk per row group, and each row group exceeds the
+/// source-batch target, so no batch merges chunks and the backend's default
+/// two reads in flight route both leaves through the scheduler.
+#[test]
+fn join_leaf_source_reads_from_a_root_holding_every_auxiliary_permit_run_inline() {
+    let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
+    let dir = unique_temp_dir("query-engine-root-held-permits-join-leaf");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    const ROWS_PER_ROW_GROUP: usize = 200_000;
+    const ROW_GROUPS: usize = 3;
+    const ROWS: usize = ROWS_PER_ROW_GROUP * ROW_GROUPS;
+    // Right keys are sparse multiples of `KEY_STRIDE`, spread over every left
+    // row group, so no row group is pruned and the join output stays small.
+    const KEY_STRIDE: usize = 1000;
+    let left_keys: Vec<i32> = (0..ROWS).map(|row| row as i32).collect();
+    let left_values: Vec<i64> = (0..ROWS).map(|row| row as i64).collect();
+    let right_keys: Vec<i32> = (0..ROWS).map(|row| (row * KEY_STRIDE) as i32).collect();
+    let right_values: Vec<i64> = (0..ROWS).map(|row| row as i64 * 3).collect();
+    write_row_grouped_key_value_parquet(&left_path, &left_keys, &left_values, ROWS_PER_ROW_GROUP);
+    write_row_grouped_key_value_parquet(&right_path, &right_keys, &right_values, ROWS_PER_ROW_GROUP);
+
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, true)]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("left_v", DataType::Int64, true),
+        Field::new("right_v", DataType::Int64, true),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        &left_path,
+        Arc::clone(&schema),
+        vec!["k".into(), "v".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        &right_path,
+        Arc::clone(&schema),
+        vec!["k".into(), "v".into()],
+    )));
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "left_k"), ColumnRef::input(1, "k", "right_k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "left_k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "left_v"), "left_v"),
+                JoinOutputColumn::right(ColumnRef::input(1, "v", "right_v"), "right_v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
+
+    let cancellation = ExecutionCancellation::with_deadline(Some(Instant::now() + Duration::from_secs(30)));
+    let test_context = backend.admit_with_cancellation(&plan, None, cancellation).expect("hash join admits");
+    let context: ExecutionContext = test_context.context.context().clone();
+    let lane_capacity =
+        context.attempt_stream_provider_route().expect("admitted context carries a fork route").lane_capacity();
+
+    // As the lane dispatcher does on the root coordinator: lease every
+    // attempt auxiliary permit and hold the leases for the whole run.
+    let mut lane_leases = Vec::new();
+    while let Some(lease) = context.try_acquire_attempt_work_lease(|| None).expect("lane lease reports no error") {
+        lane_leases.push(lease);
+    }
+    assert_eq!(lane_leases.len(), lane_capacity, "the root holds every attempt auxiliary permit");
+
+    let attempt_observation = context.runtime_observation().clone();
+    let run_start = attempt_observation.live_snapshot().expect("observation is live").events().len();
+    let admitted_plan =
+        admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
+            .expect("hash join plan admits");
+    let (result, metrics, _observation) =
+        execute_query_plan(&context, QueryExecutionRequest::admitted(&admitted_plan)).into_parts();
+    let metrics = metrics.snapshot();
+    let output = result.expect("join leaf reads run inline instead of waiting for a permit the root holds");
+    let QueryOutput::HostArrow(batch) = output else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let mut rows: Vec<(Option<i32>, Option<i64>, Option<i64>)> = int32_values(&batch, 0)
+        .into_iter()
+        .zip(int64_values(&batch, 1))
+        .zip(int64_values(&batch, 2))
+        .map(|((key, left_value), right_value)| (key, left_value, right_value))
+        .collect();
+    rows.sort();
+    let expected: Vec<(Option<i32>, Option<i64>, Option<i64>)> = (0..ROWS)
+        .filter(|row| row * KEY_STRIDE < ROWS)
+        .map(|row| (Some((row * KEY_STRIDE) as i32), Some((row * KEY_STRIDE) as i64), Some(row as i64 * 3)))
+        .collect();
+    assert_eq!(rows, expected, "every matching key joins exactly once");
+
+    assert_eq!(metrics.source_chunks_planned, (2 * ROW_GROUPS) as u64, "each leaf plans one chunk per row group");
+    assert_eq!(metrics.source_chunks_committed, metrics.source_chunks_planned);
+    assert_eq!(metrics.source_read_prefetches_started, 0, "no prefetch starts without a free permit");
+    assert_eq!(
+        metrics.source_read_prefetches_skipped,
+        (2 * (ROW_GROUPS - 1)) as u64,
+        "each leaf's scheduler skips the prefetch ahead of every chunk after its first"
+    );
+    let snapshot = attempt_observation.live_snapshot().expect("observation remains live");
+    let (run_lane_leases, source_worker_leases) = count_acquired_stream_leases(&snapshot.events()[run_start..]);
+    assert_eq!(
+        (run_lane_leases, source_worker_leases),
+        (0, 0),
+        "with every permit held, no read leases a worker of its own"
+    );
+    drop(lane_leases);
+}
+
 /// The reviewer's scenario at the owner level: a source-worker-style lease
 /// held live while the dispatcher's lane leases are taken.
 ///
@@ -724,13 +950,16 @@ fn every_live_attempt_caller_holds_a_distinct_fork_including_the_root() {
     // A scheduled source read takes its lease this way, naming the
     // worker it runs for. Before this fix that call registered no claim.
     let source_worker_lease = context
-        .acquire_attempt_work_lease(Some((
-            RuntimeTaskId::new("fork-isolation-source-task"),
-            RuntimeWorkerId::new("fork-isolation-source-worker"),
-        )))
-        .expect("the source-worker lease acquires");
+        .try_acquire_attempt_work_lease(|| {
+            Some((
+                RuntimeTaskId::new("fork-isolation-source-task"),
+                RuntimeWorkerId::new("fork-isolation-source-worker"),
+            ))
+        })
+        .expect("the source-worker lease acquires without error")
+        .expect("the attempt's first auxiliary permit is free");
     let lane_lease = context
-        .try_acquire_attempt_work_lease()
+        .try_acquire_attempt_work_lease(|| None)
         .expect("a lane lease acquires without error")
         .expect("the attempt's second auxiliary permit is free");
 
@@ -759,7 +988,7 @@ fn every_live_attempt_caller_holds_a_distinct_fork_including_the_root() {
     let surviving = held[0];
     drop(lane_lease);
     let replacement = context
-        .try_acquire_attempt_work_lease()
+        .try_acquire_attempt_work_lease(|| None)
         .expect("the freed permit is reusable")
         .expect("the released permit is free again");
     assert_ne!(
@@ -1174,7 +1403,7 @@ fn host_sink_handoff_never_reports_success_early_or_releases_its_grant() {
     for _ in 0..capacity {
         reacquired.push(
             context
-                .try_acquire_attempt_work_lease()
+                .try_acquire_attempt_work_lease(|| None)
                 .expect("lease reacquire reports no error")
                 .expect("a released lane permit is reusable"),
         );

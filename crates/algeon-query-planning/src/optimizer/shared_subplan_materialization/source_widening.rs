@@ -190,6 +190,9 @@ pub(super) fn widen_local_parquet_source(
         source.read_column_file_indices.iter().copied().map(SourceColumnRef::File).collect();
     source.pure_filter_columns.clear();
     source.pure_filter_column_source_refs.clear();
+    for file in &mut source.files {
+        file.clear_column_byte_estimates();
+    }
     source.refresh_diagnostics();
     true
 }

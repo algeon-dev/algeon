@@ -1177,9 +1177,10 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         metrics.partial_aggregate_count > 1,
         "filtered direct join-output aggregate should produce multiple streamed partials"
     );
-    assert_eq!(metrics.final_merge_attempts, 1);
-    assert_eq!(metrics.final_merge_levels, 1);
-    assert_partitioned_final_merge_strategy(metrics);
+    // Every joined row reaches one streamed partial. The other partials are
+    // empty and are not merged, so that partial is projected directly.
+    assert_eq!(metrics.final_merge_attempts, 0);
+    assert_eq!(metrics.final_merge_levels, 0);
     assert!(
         metrics.partial_aggregate_count <= metrics.source_chunks_committed.saturating_mul(2),
         "filtered direct join-output aggregate should keep stream partial count proportional to source chunks, partials={}, source_chunks={}",

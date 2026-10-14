@@ -169,7 +169,7 @@ fn source_adjacent_partitioned_live_working_set_fits_budget(
     let mut known_chunk_bytes = 0u64;
     let mut unknown_chunk_bytes = false;
     for chunk in chunks {
-        match chunk.estimated_chunk_bytes.or(chunk.estimated_source_read_bytes) {
+        match chunk.planning_bytes() {
             Some(chunk_bytes) => {
                 largest_source_batch_bytes = largest_source_batch_bytes.max(chunk_bytes);
                 known_chunk_bytes = known_chunk_bytes.saturating_add(chunk_bytes);

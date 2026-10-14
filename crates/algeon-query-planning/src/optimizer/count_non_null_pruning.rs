@@ -570,6 +570,9 @@ fn prune_local_parquet_source(source: &LocalParquetSource, required: &RequiredCo
     };
     let mut pruned = source.clone();
     pruned.files = files;
+    for file in &mut pruned.files {
+        file.clear_column_byte_estimates();
+    }
     pruned.schema = schema;
     pruned.output_schema_override = output_schema_override;
     pruned.read_columns = read_columns;

@@ -131,6 +131,10 @@ pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_grou
     );
     let known_row_count = checked_row_group_sum(parent.source_file_row_group_rows.as_deref(), &row_group_indexes)
         .or_else(|| proportional_bytes(parent.known_row_count, row_group_indexes.len(), parent_row_group_count));
+    let estimated_decoded_bytes =
+        checked_row_group_sum(parent.source_file_row_group_decoded_bytes.as_deref(), &row_group_indexes).or_else(
+            || proportional_bytes(parent.estimated_decoded_bytes, row_group_indexes.len(), parent_row_group_count),
+        );
 
     SourceChunk {
         source_node_id: parent.source_node_id,
@@ -150,6 +154,7 @@ pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_grou
         known_pure_filter_uncompressed_bytes,
         estimated_chunk_bytes,
         estimated_source_read_bytes,
+        estimated_decoded_bytes,
         exact_source_read_preflight_bytes: None,
         source_file_row_groups: parent.source_file_row_groups.clone(),
         source_file_row_group_bytes: parent.source_file_row_group_bytes.clone(),
@@ -157,6 +162,7 @@ pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_grou
         source_file_projected_uncompressed_bytes: parent.source_file_projected_uncompressed_bytes.clone(),
         source_file_pure_filter_compressed_bytes: parent.source_file_pure_filter_compressed_bytes.clone(),
         source_file_pure_filter_uncompressed_bytes: parent.source_file_pure_filter_uncompressed_bytes.clone(),
+        source_file_row_group_decoded_bytes: parent.source_file_row_group_decoded_bytes.clone(),
         source_file_row_group_rows: parent.source_file_row_group_rows.clone(),
         reader_decimal_types: parent.reader_decimal_types.clone(),
         reader_decimal_types_footer_verified: parent.reader_decimal_types_footer_verified,
@@ -228,6 +234,7 @@ mod tests {
             known_pure_filter_uncompressed_bytes: Some(0),
             estimated_chunk_bytes: Some(400),
             estimated_source_read_bytes: Some(400),
+            estimated_decoded_bytes: Some(800),
             exact_source_read_preflight_bytes: Some(400),
             source_file_row_groups: Some(vec![0, 1, 2, 3]),
             source_file_row_group_bytes: Some(vec![100, 100, 100, 100]),
@@ -235,6 +242,7 @@ mod tests {
             source_file_projected_uncompressed_bytes: Some(vec![100, 100, 100, 100]),
             source_file_pure_filter_compressed_bytes: Some(vec![0, 0, 0, 0]),
             source_file_pure_filter_uncompressed_bytes: Some(vec![0, 0, 0, 0]),
+            source_file_row_group_decoded_bytes: Some(vec![200, 200, 200, 200]),
             source_file_row_group_rows: Some(vec![10, 10, 10, 10]),
             reader_decimal_types: vec![ParquetReaderDecimalType::new(
                 "price",

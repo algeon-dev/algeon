@@ -42,7 +42,7 @@ use query_planning::{
     admission::AttemptCapabilityEvidence,
     chunk::SourceChunkPlanningPolicy,
     error::{QueryErrorCode, Result as QueryEngineResult},
-    execution_contracts::MemoryControlPolicy,
+    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
         SortExpr, SortSpec,
@@ -100,6 +100,7 @@ struct BackendTestPolicy {
     source_scheduler_policy: SourceSchedulerPolicy,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     planning_policy: PlanningPolicy,
+    source_chunk_planning_mode: SourceChunkPlanningMode,
 }
 
 impl Default for BackendTestPolicy {
@@ -113,6 +114,9 @@ impl Default for BackendTestPolicy {
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
             planning_policy: PlanningPolicy::default(),
+            // Fixtures size their chunks through `max_row_groups_per_chunk`;
+            // throughput planning would widen a one-row-group cap.
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         }
     }
 }
@@ -136,6 +140,7 @@ impl BackendTestPolicy {
                 source_scheduler_policy: SourceSchedulerPolicy::default(),
                 statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
                 planning_policy: PlanningPolicy::default(),
+                source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
             },
             device_budget_bytes,
         )
@@ -187,6 +192,7 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
                     source_scheduler_policy: policy.source_scheduler_policy,
                     statistical_aggregate_execution_mode: policy.statistical_aggregate_execution_mode,
                     planning_policy: policy.planning_policy,
+                    source_chunk_planning_mode: policy.source_chunk_planning_mode,
                     ..QueryExecutionConfig::default()
                 },
                 QueueBounds::default(),
@@ -325,6 +331,11 @@ fn backend_runtime_with_policy(policy: BackendTestPolicy) -> Arc<cudf::Runtime> 
 impl BackendQueryContext {
     fn with_source_work_per_attempt(mut self, source_work_per_attempt: usize) -> Self {
         self.policy.source_work_per_attempt = source_work_per_attempt;
+        self
+    }
+
+    fn with_source_chunk_planning_mode(mut self, source_chunk_planning_mode: SourceChunkPlanningMode) -> Self {
+        self.policy.source_chunk_planning_mode = source_chunk_planning_mode;
         self
     }
 

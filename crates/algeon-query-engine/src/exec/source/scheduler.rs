@@ -2,10 +2,12 @@
 //!
 //! `ScheduledLocalParquetRead::spawn` starts one chunk read and the consumer ends it with either
 //! `finish` (take the decoded frame at the commit point) or `abandon` (join and discard).
-//! A read runs in one of two arms. From an attempt's root context it is submitted as a
-//! `SupervisedWorker` job on the device executor's blocking lane, holding an `AttemptWorkLease`
-//! (attempt auxiliary permit plus a leased stream) until it is joined. From a context that already
-//! is an attempt work lease, such as an execution lane, it runs inline on that lease.
+//! A read runs in one of two arms. From an attempt's root context with an attempt auxiliary
+//! permit free, it is submitted as a `SupervisedWorker` job on the device executor's blocking
+//! lane, holding an `AttemptWorkLease` (that permit plus a leased stream) until it is joined.
+//! Otherwise it runs inline on the caller's context and stream: under an attempt work lease, such
+//! as an execution lane, or on a root context whose permits are all held. The caller never waits
+//! for a permit, because the root coordinator may itself hold every one through its lanes.
 //!
 //! This module does not count reads outstanding. The join-leaf scheduler keeps at most one
 //! optional read ahead of the required one, and only when `max_source_reads_in_flight` exceeds 1;
@@ -64,12 +66,8 @@ enum ScheduledLocalParquetReadState {
         source_read_lease: Box<AttemptWorkLease>,
         observation: Option<Arc<SourceReadObservation>>,
     },
-    /// A read already issued from an attempt work lease, which ran inline on
-    /// that lease's context and stream.
-    ///
-    /// The caller holds the attempt auxiliary permit behind that lease, so
-    /// leasing a second one here would let a holder of one permit block on
-    /// another permit of the same attempt.
+    /// A read that already ran on the caller's context and stream, either an
+    /// attempt work lease or a root context with no auxiliary permit free.
     Inline { result: Box<ScheduledLocalParquetReadResult>, observation: Option<Arc<SourceReadObservation>> },
 }
 
@@ -338,8 +336,8 @@ where
     })
 }
 
-/// The one source-read body, run either on a leased worker or inline on an
-/// attempt work lease's own context and stream.
+/// The one source-read body, run either on a leased worker or inline on the
+/// caller's own context and stream.
 ///
 /// The returned closure never fails as a whole; a read error travels inside the result so that
 /// `finish` can attach the chunk facts at the join. It records one terminal lifecycle
@@ -435,33 +433,38 @@ impl Drop for SourceReadWorkerGuard {
     }
 }
 
-/// Takes the attempt work lease first and starts the queue-wait clock second, so the queue-wait
-/// metric covers only the time between admission and worker start and excludes the wait for the
-/// attempt auxiliary permit and a stream. May block on both until they are free; the wait
-/// observes the context's cancellation.
-fn acquire_source_read_lease_then_enqueue(
+/// Takes an attempt work lease for one read only if an attempt auxiliary permit is free now.
+///
+/// With the permit held, deriving the lease can still wait, cancellably, for a service stream.
+/// The read's observation is registered only once the permit is held, so a read that never
+/// starts leaves no task or worker definition behind for a later read of the same chunk to
+/// collide with. Callers start the queue-wait clock after this returns, so the queue-wait metric
+/// excludes the stream wait.
+fn try_acquire_source_read_lease(
     context: &ExecutionContext,
-    observation: Option<&Arc<SourceReadObservation>>,
-) -> Result<(AttemptWorkLease, SourceReadQueueStart)> {
-    let lease = context.acquire_attempt_work_lease(observation.map(|observation| observation.source_worker_scope()))?;
-    let queue_start = SourceReadQueueStart::new(observation.map(Arc::as_ref));
-    Ok((lease, queue_start))
+    chunk: &SourceChunk,
+    attempt: usize,
+) -> Result<Option<(AttemptWorkLease, Option<Arc<SourceReadObservation>>)>> {
+    let mut observation = None;
+    let lease = context.try_acquire_attempt_work_lease(|| {
+        observation = SourceReadObservation::new(context, chunk, attempt);
+        observation.as_ref().map(|observation| observation.source_worker_scope())
+    })?;
+    Ok(lease.map(|lease| (lease, observation)))
 }
 
 impl ScheduledLocalParquetRead {
-    /// Starts reading `chunk`.
+    /// Starts a required read of `chunk`.
     ///
-    /// From an attempt work lease context the read completes before this returns, and a read
-    /// error is deferred to `finish`. From any other context the call first takes an attempt work
-    /// lease, which blocks until an attempt auxiliary permit and a stream are free (cancellable),
-    /// then submits the read to the device executor and returns without waiting for it. Errors
-    /// from lease acquisition or submission, including a submission refused during process exit,
-    /// are returned here and nothing is left running. `budget_bytes` and `budget_boundary` are
+    /// The calling thread never waits for an attempt auxiliary permit. From an attempt's root
+    /// context with a permit free, the read takes an attempt work lease, is submitted to the
+    /// device executor, and this returns without waiting for it. Otherwise the read completes on
+    /// the calling context and stream before this returns, with a read error deferred to `finish`:
+    /// that covers an attempt work lease context, which already holds a permit, and a root
+    /// context whose permits are all held, possibly by lanes this same thread leased. Errors from
+    /// lease acquisition or submission, including a submission refused during process exit, are
+    /// returned here and nothing is left running. `budget_bytes` and `budget_boundary` are
     /// forwarded to the bounded chunk read unchanged.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
-    )]
     pub(in crate::exec) fn spawn(
         context: ExecutionContext,
         metrics: ExecutionMetrics,
@@ -469,28 +472,107 @@ impl ScheduledLocalParquetRead {
         chunk: SourceChunk,
         budget_bytes: u64,
         budget_boundary: &'static str,
-        prefetch: bool,
         attempt: usize,
     ) -> Result<Self> {
-        let observation = SourceReadObservation::new(&context, &chunk, attempt);
-        // A read issued from an attempt work lease already holds that
-        // attempt's auxiliary permit. Leasing another one here would make a
-        // permit holder wait on a second permit of the same attempt, so the
-        // read runs inline on the lease's own context and stream instead.
-        if context.is_attempt_work_lease_context() {
-            let queue_start = SourceReadQueueStart::new(observation.as_deref());
-            let result = run_source_read_worker(
-                queue_start,
-                observation.clone(),
-                read_local_parquet_chunk_worker(context, source, chunk.clone(), budget_bytes, budget_boundary, metrics),
-            );
-            return Ok(Self {
+        if !context.is_attempt_work_lease_context()
+            && let Some((lease, observation)) = try_acquire_source_read_lease(&context, &chunk, attempt)?
+        {
+            return Self::submit_on_lease(
+                lease,
+                observation,
+                metrics,
+                source,
                 chunk,
-                state: ScheduledLocalParquetReadState::Inline { result: Box::new(result), observation },
-                prefetch,
-            });
+                budget_bytes,
+                budget_boundary,
+                false,
+            );
         }
-        let (source_read_lease, queue_start) = acquire_source_read_lease_then_enqueue(&context, observation.as_ref())?;
+        let observation = SourceReadObservation::new(&context, &chunk, attempt);
+        Ok(Self::run_inline(context, observation, metrics, source, chunk, budget_bytes, budget_boundary, false))
+    }
+
+    /// Starts an optional read of `chunk` ahead of its consumer, or returns `None` when that
+    /// would hold the calling thread.
+    ///
+    /// From an attempt's root context the read runs only on a free attempt auxiliary permit,
+    /// as in `spawn`; with none free nothing is started or recorded and the caller reads the
+    /// chunk later through `spawn`. From an attempt work lease context the read runs inline, as
+    /// in `spawn`.
+    pub(in crate::exec) fn spawn_prefetch(
+        context: ExecutionContext,
+        metrics: ExecutionMetrics,
+        source: LocalParquetSource,
+        chunk: SourceChunk,
+        budget_bytes: u64,
+        budget_boundary: &'static str,
+        attempt: usize,
+    ) -> Result<Option<Self>> {
+        if context.is_attempt_work_lease_context() {
+            let observation = SourceReadObservation::new(&context, &chunk, attempt);
+            return Ok(Some(Self::run_inline(
+                context,
+                observation,
+                metrics,
+                source,
+                chunk,
+                budget_bytes,
+                budget_boundary,
+                true,
+            )));
+        }
+        let Some((lease, observation)) = try_acquire_source_read_lease(&context, &chunk, attempt)? else {
+            return Ok(None);
+        };
+        Self::submit_on_lease(lease, observation, metrics, source, chunk, budget_bytes, budget_boundary, true).map(Some)
+    }
+
+    // A read issued from an attempt work lease already holds that attempt's auxiliary permit,
+    // and a root context with no permit free may be the holder of every one through its own
+    // lanes. Leasing, or waiting for, another permit could then make a permit holder wait on
+    // itself, so the read runs on the caller's own context and stream instead.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+    )]
+    fn run_inline(
+        context: ExecutionContext,
+        observation: Option<Arc<SourceReadObservation>>,
+        metrics: ExecutionMetrics,
+        source: LocalParquetSource,
+        chunk: SourceChunk,
+        budget_bytes: u64,
+        budget_boundary: &'static str,
+        prefetch: bool,
+    ) -> Self {
+        let queue_start = SourceReadQueueStart::new(observation.as_deref());
+        let result = run_source_read_worker(
+            queue_start,
+            observation.clone(),
+            read_local_parquet_chunk_worker(context, source, chunk.clone(), budget_bytes, budget_boundary, metrics),
+        );
+        Self {
+            chunk,
+            state: ScheduledLocalParquetReadState::Inline { result: Box::new(result), observation },
+            prefetch,
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+    )]
+    fn submit_on_lease(
+        source_read_lease: AttemptWorkLease,
+        observation: Option<Arc<SourceReadObservation>>,
+        metrics: ExecutionMetrics,
+        source: LocalParquetSource,
+        chunk: SourceChunk,
+        budget_bytes: u64,
+        budget_boundary: &'static str,
+        prefetch: bool,
+    ) -> Result<Self> {
+        let queue_start = SourceReadQueueStart::new(observation.as_deref());
         let thread_context = source_read_lease.context().clone();
         let worker_cancellation = thread_context.cancellation().clone();
         let worker_executor = thread_context.gpu_executor()?;

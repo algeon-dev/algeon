@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use parquet::file::metadata::ParquetMetaData;
 
+use super::decoded::source_row_group_decoded_bytes_from_footer;
 use crate::{
     parquet_stats::{ColumnByteKind, row_group_column_bytes},
     source::{LocalParquetFile, LocalParquetSource, SourceColumnRef},
@@ -16,6 +17,7 @@ pub struct RowGroupMetadata {
     projected_uncompressed_bytes: Option<Vec<u64>>,
     pure_filter_compressed_bytes: Option<Vec<u64>>,
     pure_filter_uncompressed_bytes: Option<Vec<u64>>,
+    decoded_bytes: Option<Vec<u64>>,
     row_group_rows: Option<Vec<u64>>,
 }
 
@@ -27,6 +29,7 @@ impl RowGroupMetadata {
             .or(self.projected_compressed_bytes.as_ref())
             .or(self.pure_filter_uncompressed_bytes.as_ref())
             .or(self.pure_filter_compressed_bytes.as_ref())
+            .or(self.decoded_bytes.as_ref())
             .or(self.row_group_rows.as_ref())
             .map_or(0, Vec::len)
     }
@@ -51,6 +54,10 @@ impl RowGroupMetadata {
         self.pure_filter_uncompressed_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
     }
 
+    pub(crate) fn decoded_bytes(&self, row_group: usize) -> Option<u64> {
+        self.decoded_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
+    }
+
     pub(crate) fn row_group_rows(&self, row_group: usize) -> Option<u64> {
         self.row_group_rows.as_ref().and_then(|rows| rows.get(row_group).copied())
     }
@@ -73,6 +80,10 @@ impl RowGroupMetadata {
 
     pub(crate) fn pure_filter_uncompressed_bytes_vec(&self) -> Option<Vec<u64>> {
         self.pure_filter_uncompressed_bytes.clone()
+    }
+
+    pub(crate) fn decoded_bytes_vec(&self) -> Option<Vec<u64>> {
+        self.decoded_bytes.clone()
     }
 
     pub(crate) fn row_group_rows_vec(&self) -> Option<Vec<u64>> {
@@ -128,6 +139,7 @@ pub fn row_group_metadata_from_footer(metadata: &ParquetMetaData, source: &Local
                 row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Uncompressed)
             })
             .collect::<Option<Vec<_>>>(),
+        decoded_bytes: source_row_group_decoded_bytes_from_footer(metadata, source),
         row_group_rows: metadata
             .row_groups()
             .iter()
@@ -168,6 +180,11 @@ pub fn source_row_group_metadata(
         footer_metadata.as_ref().and_then(RowGroupMetadata::pure_filter_uncompressed_bytes_vec),
         footer_row_group_count,
     );
+    let decoded_bytes = merge_row_group_values(
+        file.row_group_decoded_bytes.clone(),
+        footer_metadata.as_ref().and_then(RowGroupMetadata::decoded_bytes_vec),
+        footer_row_group_count,
+    );
     let row_group_rows = merge_row_group_values(
         file.row_group_rows.clone(),
         footer_metadata.as_ref().and_then(RowGroupMetadata::row_group_rows_vec),
@@ -179,6 +196,7 @@ pub fn source_row_group_metadata(
         || projected_uncompressed_bytes.is_some()
         || pure_filter_compressed_bytes.is_some()
         || pure_filter_uncompressed_bytes.is_some()
+        || decoded_bytes.is_some()
         || row_group_rows.is_some()
     {
         Some(RowGroupMetadata {
@@ -187,6 +205,7 @@ pub fn source_row_group_metadata(
             projected_uncompressed_bytes,
             pure_filter_compressed_bytes,
             pure_filter_uncompressed_bytes,
+            decoded_bytes,
             row_group_rows,
         })
     } else {
@@ -221,7 +240,8 @@ mod tests {
             projected_compressed_bytes: Some(bytes.clone()),
             projected_uncompressed_bytes: Some(bytes.clone()),
             pure_filter_compressed_bytes: Some(bytes.clone()),
-            pure_filter_uncompressed_bytes: Some(bytes),
+            pure_filter_uncompressed_bytes: Some(bytes.clone()),
+            decoded_bytes: Some(bytes),
             row_group_rows: Some(rows),
         }
     }

@@ -85,7 +85,7 @@ use read_serial::{
 };
 use scheduler::{
     abandon_join_leaf_reads, fill_optional_join_leaf_reads, read_join_leaf_source_chunks_with_scheduler,
-    start_join_leaf_scheduled_source_read, start_next_required_join_leaf_read,
+    start_join_leaf_prefetch_source_read, start_next_required_join_leaf_read,
 };
 use stages::apply_join_leaf_source_stream_stages;
 pub(in crate::exec::bounded) use stream::bounded_join_leaf_local_parquet_source_frame_stream;
@@ -467,10 +467,8 @@ pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source
         return Ok(None);
     }
     let chunk = stream.chunks.first().expect("single chunk checked");
-    execution.metrics().record_source_read_prefetch_started();
-    let scheduled =
-        start_join_leaf_scheduled_source_read(execution, &stream.source, chunk, "join_source_read_prefetch", true, 1)?;
-    Ok(Some(BoundedJoinLeafLocalParquetSourcePrefetch { scheduled }))
+    Ok(start_join_leaf_prefetch_source_read(execution, &stream.source, chunk)?
+        .map(|scheduled| BoundedJoinLeafLocalParquetSourcePrefetch { scheduled }))
 }
 
 fn join_leaf_source_prefetch_remote_reader_admitted(source: &LocalParquetSource) -> bool {

@@ -3,7 +3,9 @@
 //! Chunk plans split one native source node into file or row-group ranges that
 //! can be scheduled under a bounded memory policy. Byte fields are device-side
 //! planning estimates unless explicitly named as compressed Parquet bytes or
-//! exact source-read preflight bytes.
+//! exact source-read preflight bytes. Source-byte targets bound the decoded
+//! estimate of [`decoded`] and fall back to encoded footer bytes only for row
+//! groups without one.
 
 use arrow::datatypes::DataType as ArrowDataType;
 
@@ -20,6 +22,7 @@ use crate::{
 pub mod assembly;
 #[doc(hidden)]
 pub mod decimal;
+pub mod decoded;
 mod memory;
 mod model;
 mod planner;
@@ -35,8 +38,7 @@ pub use planner::{
     annotate_source_chunk_batching_reasons, plan_source_chunk_batches, plan_source_chunk_batches_with_row_cap,
 };
 pub use policy::{
-    LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES,
-    SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
+    LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
 };
 
 /// What the execution backend contributes to exact source-read sizing.

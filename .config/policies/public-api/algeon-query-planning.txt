@@ -376,9 +376,12 @@ pub query_planning::capability::SubgraphInvariant::kind: query_planning::capabil
 pub query_planning::capability::SubgraphInvariant::nodes: alloc::vec::Vec<query_planning::plan::NodeId>
 pub fn query_planning::capability::aggregate_strategy_capability_decision(&query_planning::expr::AggregateSpec, &arrow_schema::schema::Schema, query_planning::capability::AggregateExecutionStage) -> query_planning::capability::AggregateStrategyCapabilityDecision
 pub mod query_planning::chunk
+pub mod query_planning::chunk::decoded
+pub fn query_planning::chunk::decoded::row_group_decoded_bytes_from_footer(&parquet::file::metadata::ParquetMetaData, &arrow_schema::schema::Schema, &[alloc::string::String], &[usize]) -> core::option::Option<alloc::vec::Vec<u64>>
 pub struct query_planning::chunk::SourceChunk
 pub query_planning::chunk::SourceChunk::chunk_index: usize
 pub query_planning::chunk::SourceChunk::estimated_chunk_bytes: core::option::Option<u64>
+pub query_planning::chunk::SourceChunk::estimated_decoded_bytes: core::option::Option<u64>
 pub query_planning::chunk::SourceChunk::estimated_source_read_bytes: core::option::Option<u64>
 pub query_planning::chunk::SourceChunk::exact_source_read_preflight_bytes: core::option::Option<u64>
 pub query_planning::chunk::SourceChunk::file_index: usize
@@ -408,6 +411,7 @@ pub query_planning::chunk::SourceChunk::source_file_projected_uncompressed_bytes
 pub query_planning::chunk::SourceChunk::source_file_pure_filter_compressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_pure_filter_uncompressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_row_group_bytes: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceChunk::source_file_row_group_decoded_bytes: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_row_group_rows: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_row_groups: core::option::Option<alloc::vec::Vec<usize>>
 pub query_planning::chunk::SourceChunk::source_node_id: query_planning::plan::NodeId
@@ -415,6 +419,7 @@ pub query_planning::chunk::SourceChunk::stable_id: alloc::string::String
 pub query_planning::chunk::SourceChunk::zero_column_count: bool
 impl query_planning::chunk::SourceChunk
 pub fn query_planning::chunk::SourceChunk::known_read_row_group_count(&self) -> core::option::Option<usize>
+pub fn query_planning::chunk::SourceChunk::planning_bytes(&self) -> core::option::Option<u64>
 pub fn query_planning::chunk::SourceChunk::row_group_count(&self) -> usize
 pub fn query_planning::chunk::SourceChunk::selects_all_known_file_row_groups(&self) -> bool
 pub struct query_planning::chunk::SourceChunkBatch
@@ -443,7 +448,6 @@ pub fn query_planning::chunk::SourceChunkPlan::row_group_count(&self) -> usize
 impl query_planning::chunk::SourceChunkPlanningOptions
 pub fn query_planning::chunk::SourceChunkPlanningOptions::validate(&self) -> query_planning::error::Result<()>
 pub fn query_planning::chunk::SourceChunkPlanningOptions::with_local_parquet_throughput_max_row_groups_per_chunk(self, usize) -> Self
-pub fn query_planning::chunk::SourceChunkPlanningOptions::with_local_parquet_throughput_min_device_budget_bytes(self, u64) -> Self
 impl core::default::Default for query_planning::chunk::SourceChunkPlanningOptions
 pub fn query_planning::chunk::SourceChunkPlanningOptions::default() -> Self
 pub struct query_planning::chunk::SourceChunkPlanningPolicy
@@ -477,7 +481,6 @@ pub const fn query_planning::chunk::SourceTaskMemoryModel::source_read_preflight
 pub const fn query_planning::chunk::SourceTaskMemoryModel::source_read_slots(self) -> u64
 pub const fn query_planning::chunk::SourceTaskMemoryModel::unary_chain_frame() -> Self
 pub const query_planning::chunk::LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
-pub const query_planning::chunk::LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64
 pub fn query_planning::chunk::annotate_source_chunk_batching_reasons(&mut [query_planning::chunk::SourceChunk], core::option::Option<&'static str>, core::option::Option<u64>)
 pub fn query_planning::chunk::plan_source_chunk_batches(&[query_planning::chunk::SourceChunk], core::option::Option<u64>) -> alloc::vec::Vec<query_planning::chunk::SourceChunkBatch>
 pub fn query_planning::chunk::plan_source_chunk_batches_with_row_cap(&[query_planning::chunk::SourceChunk], core::option::Option<u64>, core::option::Option<u64>) -> alloc::vec::Vec<query_planning::chunk::SourceChunkBatch>
@@ -3467,6 +3470,7 @@ pub query_planning::source::LocalParquetFile::pure_filter_row_group_uncompressed
 pub query_planning::source::LocalParquetFile::reader_decimal_types: alloc::vec::Vec<query_planning::source::ParquetReaderDecimalType>
 pub query_planning::source::LocalParquetFile::resolved_source: query_planning::source::ResolvedParquetSource
 pub query_planning::source::LocalParquetFile::row_group_bytes: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::source::LocalParquetFile::row_group_decoded_bytes: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::source::LocalParquetFile::row_group_null_counts: alloc::collections::btree::map::BTreeMap<usize, alloc::vec::Vec<core::option::Option<u64>>>
 pub query_planning::source::LocalParquetFile::row_group_rows: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::source::LocalParquetFile::row_groups: core::option::Option<alloc::vec::Vec<usize>>
@@ -3486,6 +3490,7 @@ pub fn query_planning::source::LocalParquetFile::with_pure_filter_row_group_byte
 pub fn query_planning::source::LocalParquetFile::with_reader_decimal_types(self, alloc::vec::Vec<query_planning::source::ParquetReaderDecimalType>) -> Self
 pub fn query_planning::source::LocalParquetFile::with_resolved_parquet_source(self, query_planning::source::ResolvedParquetSource) -> core::result::Result<Self, alloc::string::String>
 pub fn query_planning::source::LocalParquetFile::with_row_group_bytes(self, alloc::vec::Vec<u64>) -> Self
+pub fn query_planning::source::LocalParquetFile::with_row_group_decoded_bytes(self, alloc::vec::Vec<u64>) -> Self
 pub fn query_planning::source::LocalParquetFile::with_row_group_null_counts(self, usize, alloc::vec::Vec<core::option::Option<u64>>) -> Self
 pub fn query_planning::source::LocalParquetFile::with_row_group_rows(self, alloc::vec::Vec<u64>) -> Self
 pub fn query_planning::source::LocalParquetFile::with_row_groups(self, alloc::vec::Vec<usize>) -> Self

@@ -3,9 +3,10 @@
 //!
 //! Each scheduled read is a `ScheduledLocalParquetRead`: a worker job on an attempt work
 //! lease (one auxiliary permit and one leased stream) that decodes one chunk, or an inline
-//! read when the calling thread already runs under such a lease. The calling thread owns
-//! the queue of started reads and must settle every one, by `finish` or `abandon`, before it
-//! returns, because a started read holds a permit and a stream until it is joined.
+//! read when the calling thread already runs under such a lease or finds no permit free. The
+//! calling thread owns the queue of started reads and must settle every one, by `finish` or
+//! `abandon`, before it returns, because a started worker read holds a permit and a stream
+//! until it is joined.
 
 use std::collections::VecDeque;
 
@@ -110,14 +111,7 @@ pub(super) fn start_next_required_join_leaf_read(
     next_chunk_index: &mut usize,
 ) -> Result<()> {
     if let Some(chunk) = chunks.get(*next_chunk_index) {
-        pending.push_back(start_join_leaf_scheduled_source_read(
-            execution,
-            source,
-            chunk,
-            "join_source_read",
-            false,
-            1,
-        )?);
+        pending.push_back(start_join_leaf_scheduled_source_read(execution, source, chunk)?);
         *next_chunk_index += 1;
     }
     Ok(())
@@ -125,8 +119,9 @@ pub(super) fn start_next_required_join_leaf_read(
 /// Starts at most one prefetch read when `max_source_reads_in_flight` exceeds 1 and no read
 /// is pending.
 ///
-/// A chunk whose minimum decode budget fails `join_leaf_prefetch_admitted` is counted as
-/// skipped and left unstarted; the loop's required-read start picks it up later.
+/// A chunk whose minimum decode budget fails `join_leaf_prefetch_admitted`, or that finds no
+/// attempt auxiliary permit free, is counted as skipped and left unstarted; the loop's
+/// required-read start picks it up later.
 pub(super) fn fill_optional_join_leaf_reads(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -144,31 +139,50 @@ pub(super) fn fill_optional_join_leaf_reads(
             execution.metrics().record_source_read_prefetch_skipped();
             break;
         }
-        execution.metrics().record_source_read_prefetch_started();
-        pending.push_back(start_join_leaf_scheduled_source_read(
-            execution,
-            source,
-            chunk,
-            "join_source_read_prefetch",
-            true,
-            1,
-        )?);
+        let Some(read) = start_join_leaf_prefetch_source_read(execution, source, chunk)? else {
+            break;
+        };
+        pending.push_back(read);
         *next_chunk_index += 1;
     }
     Ok(())
 }
-/// Records one source chunk attempt and starts a scheduled read of `chunk`.
-///
-/// Waits, cancellably, for an attempt auxiliary permit when the calling thread is not
-/// already under a work lease; under one, the read runs to completion inside this call.
-/// `prefetch` labels the read in the metrics and `attempt` names it in observations.
-pub(super) fn start_join_leaf_scheduled_source_read(
+
+/// Starts a prefetch read of `chunk` on a free attempt auxiliary permit, recording the chunk
+/// attempt and the prefetch start, or counts the prefetch as skipped and returns `None` when no
+/// permit is free.
+pub(super) fn start_join_leaf_prefetch_source_read(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    memory_boundary: &'static str,
-    prefetch: bool,
-    attempt: usize,
+) -> Result<Option<ScheduledLocalParquetRead>> {
+    execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_scheduler_start")?;
+    let Some(read) = ScheduledLocalParquetRead::spawn_prefetch(
+        execution.context().clone(),
+        execution.metrics().clone(),
+        source.clone(),
+        chunk.clone(),
+        execution.device_budget_bytes(),
+        "join_source_read_prefetch",
+        1,
+    )?
+    else {
+        execution.metrics().record_source_read_prefetch_skipped();
+        return Ok(None);
+    };
+    execution.metrics().record_source_chunk_attempt();
+    execution.metrics().record_source_read_prefetch_started();
+    Ok(Some(read))
+}
+
+/// Records one source chunk attempt and starts a required scheduled read of `chunk`.
+///
+/// Never waits for an attempt auxiliary permit: with none free the read runs to completion
+/// inside this call, as it does under a work lease.
+fn start_join_leaf_scheduled_source_read(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
 ) -> Result<ScheduledLocalParquetRead> {
     execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_scheduler_start")?;
     execution.metrics().record_source_chunk_attempt();
@@ -178,9 +192,8 @@ pub(super) fn start_join_leaf_scheduled_source_read(
         source.clone(),
         chunk.clone(),
         execution.device_budget_bytes(),
-        memory_boundary,
-        prefetch,
-        attempt,
+        "join_source_read",
+        1,
     )
 }
 
