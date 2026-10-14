@@ -216,46 +216,263 @@ fn compare_record_batches_row_count_mismatch_is_explicit() {
 }
 
 #[test]
-fn parity_report_retries_unordered_only_for_partial_order_by_ties() {
+fn parity_report_preserves_order_by_keys_and_only_reorders_ties() {
     let schema = int_string_schema();
-    let cpu_batch = int_string_batch(&schema, &[1, 1], &[Some("a"), Some("b")]);
-    let native_batch = int_string_batch(&schema, &[1, 1], &[Some("b"), Some("a")]);
-    let partial_item = NativeTpcdsParityWorkloadItem {
-        query_id: "partial".to_string(),
-        sql: "SELECT id, label FROM t ORDER BY id".to_string(),
-        cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded {
-            schema: Arc::clone(&schema),
-            batches: vec![cpu_batch.clone()],
-        },
-        native_planning: accepted_native_planning(&schema),
-        native_runtime: NativeTpcdsParityNativeRuntimeOutcome::Succeeded {
-            schema: Arc::clone(&schema),
-            batches: vec![native_batch.clone()],
-            metrics: MetricsSet::new(),
-        },
-        duckdb_output: NativeTpcdsParityExternalOutput::NotConfigured,
-    };
-    let total_item = NativeTpcdsParityWorkloadItem {
-        query_id: "total".to_string(),
-        sql: "SELECT id, label FROM t ORDER BY id, label".to_string(),
-        cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded { schema: Arc::clone(&schema), batches: vec![cpu_batch] },
-        native_planning: accepted_native_planning(&schema),
-        native_runtime: NativeTpcdsParityNativeRuntimeOutcome::Succeeded {
-            schema: Arc::clone(&schema),
-            batches: vec![native_batch],
-            metrics: MetricsSet::new(),
-        },
-        duckdb_output: NativeTpcdsParityExternalOutput::NotConfigured,
-    };
+    let cases = [
+        (
+            "reversed_unique_keys",
+            "ORDER BY id",
+            vec![1, 2, 3],
+            vec!["a", "b", "c"],
+            vec![3, 2, 1],
+            vec!["c", "b", "a"],
+            ParityStatus::Mismatched,
+        ),
+        (
+            "ties",
+            "ORDER BY id",
+            vec![1, 1, 1, 2, 2],
+            vec!["a", "a", "b", "c", "d"],
+            vec![1, 1, 1, 2, 2],
+            vec!["b", "a", "a", "d", "c"],
+            ParityStatus::Matched,
+        ),
+        (
+            "reversed_tie_groups",
+            "ORDER BY id",
+            vec![1, 1, 2, 2],
+            vec!["a", "b", "c", "d"],
+            vec![2, 2, 1, 1],
+            vec!["d", "c", "b", "a"],
+            ParityStatus::Mismatched,
+        ),
+        (
+            "interleaved_groups",
+            "ORDER BY id",
+            vec![1, 1, 2, 2],
+            vec!["a", "b", "c", "d"],
+            vec![1, 2, 1, 2],
+            vec!["a", "c", "b", "d"],
+            ParityStatus::Mismatched,
+        ),
+        (
+            "duplicate_changed",
+            "ORDER BY id",
+            vec![1, 1, 1],
+            vec!["a", "a", "b"],
+            vec![1, 1, 1],
+            vec!["a", "b", "b"],
+            ParityStatus::Mismatched,
+        ),
+        (
+            "total_order",
+            "ORDER BY id, label",
+            vec![1, 1],
+            vec!["a", "b"],
+            vec![1, 1],
+            vec!["b", "a"],
+            ParityStatus::Mismatched,
+        ),
+        (
+            "unresolved_expression",
+            "ORDER BY id + 0",
+            vec![1, 2],
+            vec!["a", "b"],
+            vec![2, 1],
+            vec!["b", "a"],
+            ParityStatus::Mismatched,
+        ),
+        (
+            "partly_resolved",
+            "ORDER BY id, label || ''",
+            vec![1, 1],
+            vec!["a", "b"],
+            vec![1, 1],
+            vec!["b", "a"],
+            ParityStatus::Mismatched,
+        ),
+        (
+            "hidden_key",
+            "ORDER BY hidden",
+            vec![1, 1],
+            vec!["a", "b"],
+            vec![1, 1],
+            vec!["b", "a"],
+            ParityStatus::Mismatched,
+        ),
+        ("unordered", "", vec![1, 2], vec!["a", "b"], vec![2, 1], vec!["b", "a"], ParityStatus::Matched),
+    ];
+    for (name, ordering, cpu_ids, cpu_labels, native_ids, native_labels, expected) in cases {
+        let cpu_labels = cpu_labels.into_iter().map(Some).collect::<Vec<_>>();
+        let native_labels = native_labels.into_iter().map(Some).collect::<Vec<_>>();
+        let cpu = int_string_batch(&schema, &cpu_ids, &cpu_labels);
+        let native = int_string_batch(&schema, &native_ids, &native_labels);
+        let item = parity_item(&format!("SELECT id, label FROM t {ordering}"), cpu, native);
+        let report = NativeTpcdsParityReport::collect([item], ParityFloatTolerance::exact());
+        let row = &report.rows[0];
+        assert_eq!(row.parity_status, expected, "{name}: {:?}", row.parity_detail);
+        assert_eq!(
+            row.duckdb_output.cpu_parity_status, expected,
+            "oracle {name}: {:?}",
+            row.duckdb_output.cpu_parity_detail
+        );
+        assert_eq!(
+            row.comparison_mode,
+            if ordering.is_empty() { ParityComparisonMode::UnorderedExact } else { ParityComparisonMode::OrderedExact },
+            "{name}"
+        );
+        if expected == ParityStatus::Matched {
+            assert_eq!(row.cpu_output_fingerprint, row.native_output_fingerprint, "{name}");
+        } else {
+            assert!(row.parity_detail.is_some(), "{name}");
+        }
+    }
+}
 
-    let report = NativeTpcdsParityReport::collect([partial_item, total_item], ParityFloatTolerance::exact());
-    let partial = report.rows.iter().find(|row| row.query_id == "partial").unwrap();
-    assert_eq!(partial.parity_status, ParityStatus::Matched);
-    assert_eq!(partial.comparison_mode, ParityComparisonMode::UnorderedExact);
+#[test]
+fn parity_report_resolves_aliases_quoted_columns_and_ordinals() {
+    let schema = int_string_schema();
+    let cpu = int_string_batch(&schema, &[1, 1, 2, 2], &[Some("a"), Some("b"), Some("c"), Some("d")]);
+    let native = int_string_batch(&schema, &[1, 1, 2, 2], &[Some("b"), Some("a"), Some("d"), Some("c")]);
+    for sql in [
+        "SELECT id, label FROM t ORDER BY 1 ASC NULLS LAST LIMIT 4",
+        "SELECT id, label FROM t ORDER BY \"id\"",
+        "SELECT id, label FROM t ORDER BY t.id",
+        "SELECT source_id AS id, label FROM t ORDER BY source_id",
+        "SELECT t.source_id AS id, label FROM t ORDER BY t.source_id",
+        "SELECT abs(source_id) AS id, label FROM t ORDER BY abs(source_id)",
+    ] {
+        let report = NativeTpcdsParityReport::collect(
+            [parity_item(sql, cpu.clone(), native.clone())],
+            ParityFloatTolerance::exact(),
+        );
+        assert_eq!(report.rows[0].parity_status, ParityStatus::Matched, "{sql}: {:?}", report.rows[0].parity_detail);
+        assert_eq!(report.rows[0].comparison_mode, ParityComparisonMode::OrderedExact, "{sql}");
+    }
+}
 
-    let total = report.rows.iter().find(|row| row.query_id == "total").unwrap();
-    assert_eq!(total.parity_status, ParityStatus::Mismatched);
-    assert_eq!(total.comparison_mode, ParityComparisonMode::OrderedExact);
+#[test]
+fn parity_report_does_not_infer_hidden_qualified_keys_from_output_names() {
+    let schema = int_string_schema();
+    let cpu = int_string_batch(&schema, &[1, 1], &[Some("a"), Some("b")]);
+    let native = int_string_batch(&schema, &[1, 1], &[Some("b"), Some("a")]);
+    for sql in [
+        "SELECT t.id, t.label FROM t JOIN u ON t.id = u.parent_id ORDER BY u.id",
+        "SELECT abs(id) AS id, label FROM t ORDER BY t.id",
+    ] {
+        let report = NativeTpcdsParityReport::collect(
+            [parity_item(sql, cpu.clone(), native.clone())],
+            ParityFloatTolerance::exact(),
+        );
+        assert_eq!(report.rows[0].parity_status, ParityStatus::Mismatched, "{sql}");
+        assert_eq!(report.rows[0].duckdb_output.cpu_parity_status, ParityStatus::Mismatched, "{sql}");
+    }
+}
+
+#[test]
+fn parity_report_uses_every_order_by_key_with_nulls() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("label", DataType::Utf8, true),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let batch = |ids: Vec<Option<i64>>, labels: Vec<&str>, values: Vec<i64>| {
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(ids)),
+                Arc::new(StringArray::from(labels)),
+                Arc::new(Int64Array::from(values)),
+            ],
+        )
+        .unwrap()
+    };
+    let cpu = batch(vec![None, None, None, Some(2), Some(2)], vec!["a", "a", "b", "a", "a"], vec![1, 2, 3, 4, 5]);
+    let tied = batch(vec![None, None, None, Some(2), Some(2)], vec!["a", "a", "b", "a", "a"], vec![2, 1, 3, 5, 4]);
+    let wrong_secondary_key =
+        batch(vec![None, None, None, Some(2), Some(2)], vec!["b", "a", "a", "a", "a"], vec![3, 2, 1, 5, 4]);
+    let sql = "SELECT id, label, value FROM t ORDER BY id DESC NULLS FIRST, label ASC";
+    for (native, expected) in [(tied, ParityStatus::Matched), (wrong_secondary_key, ParityStatus::Mismatched)] {
+        let report =
+            NativeTpcdsParityReport::collect([parity_item(sql, cpu.clone(), native)], ParityFloatTolerance::exact());
+        assert_eq!(report.rows[0].parity_status, expected);
+        assert_eq!(report.rows[0].duckdb_output.cpu_parity_status, expected);
+    }
+}
+
+#[test]
+fn parity_report_float_tolerance_does_not_merge_distinct_sort_keys() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("value", DataType::Float64, false),
+        Field::new("label", DataType::Utf8, false),
+    ]));
+    let batch = |values: Vec<f64>, labels: Vec<&str>| {
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Float64Array::from(values)), Arc::new(StringArray::from(labels))],
+        )
+        .unwrap()
+    };
+    let cases = [
+        (
+            batch(vec![1.0, 1.00000001, 2.0], vec!["a", "a", "c"]),
+            batch(vec![1.00000001, 1.0, 2.0], vec!["a", "a", "c"]),
+            ParityStatus::Mismatched,
+        ),
+        (
+            batch(vec![1.0, 1.0, 2.0], vec!["a", "b", "c"]),
+            batch(vec![1.00000001, 1.00000001, 2.00000001], vec!["b", "a", "c"]),
+            ParityStatus::Matched,
+        ),
+        (
+            batch(vec![1.0, 1.00000001, 2.0], vec!["a", "b", "c"]),
+            batch(vec![1.00000001, 1.0, 2.0], vec!["b", "a", "c"]),
+            ParityStatus::Mismatched,
+        ),
+    ];
+    for (cpu, native, expected) in cases {
+        let item = parity_item("SELECT value, label FROM t ORDER BY value", cpu, native);
+        let report = NativeTpcdsParityReport::collect([item], ParityFloatTolerance::new(1e-6, 0.0));
+        assert_eq!(report.rows[0].parity_status, expected);
+        assert_eq!(report.rows[0].duckdb_output.cpu_parity_status, expected);
+        assert_eq!(report.rows[0].comparison_mode, ParityComparisonMode::OrderedFloatTolerant);
+    }
+
+    let cpu = batch(vec![2.0, 1.00000001, 1.0], vec!["c", "a", "a"]);
+    let reversed = batch(vec![2.0, 1.0, 1.00000001], vec!["c", "a", "a"]);
+    let rounded = batch(vec![2.00000001, 1.00000002, 1.00000001], vec!["c", "a", "a"]);
+    for (native, expected) in [(reversed, ParityStatus::Mismatched), (rounded, ParityStatus::Matched)] {
+        let item = parity_item("SELECT value, label FROM t ORDER BY value DESC", cpu.clone(), native);
+        let report = NativeTpcdsParityReport::collect([item], ParityFloatTolerance::new(1e-6, 0.0));
+        assert_eq!(report.rows[0].parity_status, expected);
+        assert_eq!(report.rows[0].duckdb_output.cpu_parity_status, expected);
+    }
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("value", DataType::Float64, false),
+        Field::new("label", DataType::Utf8, false),
+    ]));
+    let batch = |values: Vec<f64>| {
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 1, 2, 2])),
+                Arc::new(Float64Array::from(values)),
+                Arc::new(StringArray::from(vec!["a"; 4])),
+            ],
+        )
+        .unwrap()
+    };
+    let cpu = batch(vec![1.00000001, 1.0, 2.00000001, 2.0]);
+    let reversed = batch(vec![1.0, 1.00000001, 2.00000001, 2.0]);
+    let rounded = batch(vec![1.00000002, 1.00000001, 2.00000002, 2.00000001]);
+    for (native, expected) in [(reversed, ParityStatus::Mismatched), (rounded, ParityStatus::Matched)] {
+        let item = parity_item("SELECT id, value, label FROM t ORDER BY id, value DESC", cpu.clone(), native);
+        let report = NativeTpcdsParityReport::collect([item], ParityFloatTolerance::new(1e-6, 0.0));
+        assert_eq!(report.rows[0].parity_status, expected);
+        assert_eq!(report.rows[0].duckdb_output.cpu_parity_status, expected);
+    }
 }
 
 #[test]
@@ -286,6 +503,7 @@ fn parity_status_for_cpu_failure_flags_cpu_failed_and_skips_comparison() {
 fn sql_has_top_level_order_by_detects_outer_order_by() {
     assert!(sql_has_top_level_order_by("SELECT * FROM t ORDER BY a"));
     assert!(sql_has_top_level_order_by("\nSELECT * FROM t\nORDER BY a\nLIMIT 100\n"));
+    assert!(sql_has_top_level_order_by("(SELECT * FROM t ORDER BY a)"));
 }
 
 #[test]
@@ -368,5 +586,23 @@ fn accepted_native_planning(schema: &Arc<Schema>) -> NativeTpcdsParityNativePlan
             source_diagnostics: Vec::new(),
             capability_contract: NativeCapabilityContractDiagnostics::default(),
         }),
+    }
+}
+
+fn parity_item(sql: &str, cpu: RecordBatch, native: RecordBatch) -> NativeTpcdsParityWorkloadItem {
+    let schema = cpu.schema();
+    let cpu_batches = vec![cpu.slice(0, 1), cpu.slice(1, cpu.num_rows() - 1)];
+    let native_batches = vec![native.slice(0, native.num_rows() - 1), native.slice(native.num_rows() - 1, 1)];
+    NativeTpcdsParityWorkloadItem {
+        query_id: "ordering".to_string(),
+        sql: sql.to_string(),
+        cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded { schema: Arc::clone(&schema), batches: cpu_batches },
+        native_planning: accepted_native_planning(&schema),
+        native_runtime: NativeTpcdsParityNativeRuntimeOutcome::Succeeded {
+            schema: Arc::clone(&schema),
+            batches: native_batches.clone(),
+            metrics: MetricsSet::new(),
+        },
+        duckdb_output: NativeTpcdsParityExternalOutput::Succeeded { schema, batches: native_batches },
     }
 }

@@ -7,8 +7,11 @@
 //!
 //! Output fingerprints use a stable FNV-1a hash over schema metadata and
 //! canonicalized row values. They are diagnostic identifiers. They are not
-//! cryptographic hashes. Unordered comparisons sort canonical rows before
-//! comparing values; ordered comparisons preserve batch row order.
+//! cryptographic hashes. Unordered comparisons sort all canonical rows. SQL
+//! ordered comparisons preserve the sequence of ordering keys and sort only
+//! contiguous rows with equal keys. Unresolved keys retain emitted row order.
+//! Float tolerance applies to value comparison and does not define key ties.
+//! Float ordering keys retain their declared direction under tolerance.
 
 use arrow::{
     array::{
@@ -39,7 +42,7 @@ mod report;
 // Private `use` items are visible to this module and its descendants. The
 // submodules import these names with `use super::*;`.
 use canonical::{CanonicalField, collect_canonical_rows, compare_canonical_rows};
-use compare::{ParityCompareOptions, compare_record_batches_with_options};
+use compare::{ParityCompareOptions, ParityRowOrdering, compare_record_batches_with_options, sql_row_ordering};
 pub use compare::{
     ParityComparisonResult, compare_record_batches, sql_has_top_level_order_by,
     sql_top_level_order_by_covers_output_columns,
