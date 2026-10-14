@@ -22,12 +22,15 @@ fn prepare_from_column_view_with_readiness<'a>(
     readiness: ProducerReadiness<'a>,
 ) -> Result<PreparedColumnExport<'a>, InteropError> {
     let projection = prepared_column_projection_from_view(view, operation, default_device, 0, 0)?;
-    PreparedColumnExport::try_new(
-        projection.column.id(),
-        projection.semantic_columns,
-        projection.bindings,
-        PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
-    )
+    // SAFETY: The view and readiness borrow live producer storage on this device.
+    unsafe {
+        PreparedColumnExport::try_new(
+            projection.column.id(),
+            projection.semantic_columns,
+            projection.bindings,
+            PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
+        )
+    }
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -36,13 +39,16 @@ fn prepare_host_from_column_view(
     operation: &'static str,
 ) -> Result<PreparedColumnExport<'static>, InteropError> {
     let projection = prepared_host_column_projection_from_view(view, operation, 0, 0)?;
-    PreparedColumnExport::try_new(
-        projection.column.id(),
-        projection.semantic_columns,
-        projection.bindings,
-        PreparedAccess::Host,
-    )
-    .map(|export| export.with_retained_owner(Arc::new(projection.retained_host_buffers)))
+    // SAFETY: Projection owns host copies and attaches their Arc before exposure.
+    unsafe {
+        PreparedColumnExport::try_new(
+            projection.column.id(),
+            projection.semantic_columns,
+            projection.bindings,
+            PreparedAccess::Host,
+        )
+    }
+    .map(|export| unsafe { export.with_retained_owner(Arc::new(projection.retained_host_buffers)) })
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -57,21 +63,25 @@ fn prepare_from_owned_column_root_with_readiness(
         retained_column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let default_device = retained_column.execution_domain().device_id().ordinal() as i32;
     let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
-    PreparedColumnExport::try_new(
-        projection.column.id(),
-        projection.semantic_columns,
-        to_static_bindings(operation, projection.bindings)?,
-        PreparedAccess::Device {
-            readiness: to_static_readiness(operation, readiness)?,
-            backend: runtime_lease::shared_cuda_lease_backend(),
-        },
-    )
+    // SAFETY: Projection comes from this owned column; the export retains its
+    // column domain and any readiness event before consumer access.
+    unsafe {
+        PreparedColumnExport::try_new(
+            projection.column.id(),
+            projection.semantic_columns,
+            to_static_bindings(operation, projection.bindings)?,
+            PreparedAccess::Device {
+                readiness: to_static_readiness(operation, readiness)?,
+                backend: runtime_lease::shared_cuda_lease_backend(),
+            },
+        )
+    }
     .map(|export| {
         match retained_event {
             // `to_static_readiness` stores only the raw CUDA event pointer, so
             // the export must co-own the event for its whole lifetime.
-            Some(event) => export.with_retained_owner(Arc::new((Arc::clone(&retained_column), event))),
-            None => export.with_retained_owner(Arc::<Column>::clone(&retained_column)),
+            Some(event) => unsafe { export.with_retained_owner(Arc::new((Arc::clone(&retained_column), event))) },
+            None => unsafe { export.with_retained_owner(Arc::<Column>::clone(&retained_column)) },
         }
     })
     .map_err(|error| error.with_context("operation", operation))
@@ -84,12 +94,15 @@ pub(super) fn prepare_from_owned_column<'a>(
     let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let (default_device, readiness) = prepared_device_readiness(operation, column.execution_domain())?;
     let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
-    PreparedColumnExport::try_new(
-        projection.column.id(),
-        projection.semantic_columns,
-        projection.bindings,
-        PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
-    )
+    // SAFETY: Projection preserves the column borrow and its readiness domain.
+    unsafe {
+        PreparedColumnExport::try_new(
+            projection.column.id(),
+            projection.semantic_columns,
+            projection.bindings,
+            PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
+        )
+    }
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -107,13 +120,16 @@ pub(super) fn prepare_host_from_owned_column(
 ) -> Result<PreparedColumnExport<'static>, InteropError> {
     let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let projection = prepared_host_column_projection_from_view(&view, operation, 0, 0)?;
-    PreparedColumnExport::try_new(
-        projection.column.id(),
-        projection.semantic_columns,
-        projection.bindings,
-        PreparedAccess::Host,
-    )
-    .map(|export| export.with_retained_owner(Arc::new(projection.retained_host_buffers)))
+    // SAFETY: Projection owns host copies and attaches their Arc before exposure.
+    unsafe {
+        PreparedColumnExport::try_new(
+            projection.column.id(),
+            projection.semantic_columns,
+            projection.bindings,
+            PreparedAccess::Host,
+        )
+    }
+    .map(|export| unsafe { export.with_retained_owner(Arc::new(projection.retained_host_buffers)) })
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -233,12 +249,15 @@ impl Column {
         let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
         let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
-        PreparedColumnExport::try_new(
-            projection.column.id(),
-            projection.semantic_columns,
-            projection.bindings,
-            PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
-        )
+        // SAFETY: both column storage and readiness remain borrowed for the export.
+        unsafe {
+            PreparedColumnExport::try_new(
+                projection.column.id(),
+                projection.semantic_columns,
+                projection.bindings,
+                PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
+            )
+        }
         .map_err(|error| error.with_context("operation", operation))
     }
 

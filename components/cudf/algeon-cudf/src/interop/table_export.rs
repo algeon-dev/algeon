@@ -191,12 +191,15 @@ pub(super) fn prepare_table_export_from_view_with_readiness<'a>(
     let (num_rows, _) = table_dimensions(view, operation)?;
     let projection = build_device_table_projection_from_view(view, operation, default_device)?;
     let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
-    PreparedTableExport::try_new(
-        table,
-        projection.semantic_columns,
-        projection.bindings,
-        PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
-    )
+    // SAFETY: Projection preserves the table view and readiness borrows.
+    unsafe {
+        PreparedTableExport::try_new(
+            table,
+            projection.semantic_columns,
+            projection.bindings,
+            PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
+        )
+    }
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -208,9 +211,12 @@ pub(super) fn prepare_host_table_export_from_view(
     let (num_rows, _) = table_dimensions(view, operation)?;
     let projection = build_host_table_projection_from_view(view, operation)?;
     let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
-    PreparedTableExport::try_new(table, projection.semantic_columns, projection.bindings, PreparedAccess::Host)
-        .map(|export| export.with_retained_owner(Arc::new(projection.retained_host_buffers)))
-        .map_err(|error| error.with_context("operation", operation))
+    // SAFETY: Projection owns each host buffer and attaches them before exposure.
+    unsafe {
+        PreparedTableExport::try_new(table, projection.semantic_columns, projection.bindings, PreparedAccess::Host)
+    }
+    .map(|export| unsafe { export.with_retained_owner(Arc::new(projection.retained_host_buffers)) })
+    .map_err(|error| error.with_context("operation", operation))
 }
 
 pub(super) fn prepare_device_table_export_from_columns<'a, I>(
@@ -240,12 +246,15 @@ where
     let projection = build_device_table_projection_from_columns(columns, operation, context.default_device)?;
     let readiness = context.readiness;
     let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
-    PreparedTableExport::try_new(
-        table,
-        projection.semantic_columns,
-        projection.bindings,
-        PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
-    )
+    // SAFETY: Projection preserves all column borrows and the producer readiness.
+    unsafe {
+        PreparedTableExport::try_new(
+            table,
+            projection.semantic_columns,
+            projection.bindings,
+            PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
+        )
+    }
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -263,21 +272,25 @@ pub(super) fn prepare_into_owned_table_root_with_readiness(
     let default_device = retained_table.execution_domain().device_id().ordinal() as i32;
     let projection = build_device_table_projection_from_view(&view, operation, default_device)?;
     let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
-    PreparedTableExport::try_new(
-        table,
-        projection.semantic_columns,
-        to_static_bindings(operation, projection.bindings)?,
-        PreparedAccess::Device {
-            readiness: to_static_readiness(operation, readiness)?,
-            backend: runtime_lease::shared_cuda_lease_backend(),
-        },
-    )
+    // SAFETY: Projection comes from the retained table and keeps its domain
+    // and any readiness event alive before consumer access.
+    unsafe {
+        PreparedTableExport::try_new(
+            table,
+            projection.semantic_columns,
+            to_static_bindings(operation, projection.bindings)?,
+            PreparedAccess::Device {
+                readiness: to_static_readiness(operation, readiness)?,
+                backend: runtime_lease::shared_cuda_lease_backend(),
+            },
+        )
+    }
     .map(|export| {
         match retained_event {
             // `to_static_readiness` stores only the raw CUDA event pointer, so
             // the export must co-own the event for its whole lifetime.
-            Some(event) => export.with_retained_owner(Arc::new((Arc::clone(&retained_table), event))),
-            None => export.with_retained_owner(Arc::<Table>::clone(&retained_table)),
+            Some(event) => unsafe { export.with_retained_owner(Arc::new((Arc::clone(&retained_table), event))) },
+            None => unsafe { export.with_retained_owner(Arc::<Table>::clone(&retained_table)) },
         }
     })
     .map_err(|error| error.with_context("operation", operation))
@@ -303,7 +316,10 @@ where
 {
     let projection = build_host_table_projection_from_columns(columns, operation)?;
     let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
-    PreparedTableExport::try_new(table, projection.semantic_columns, projection.bindings, PreparedAccess::Host)
-        .map(|export| export.with_retained_owner(Arc::new(projection.retained_host_buffers)))
-        .map_err(|error| error.with_context("operation", operation))
+    // SAFETY: Projection owns each host buffer and attaches them before exposure.
+    unsafe {
+        PreparedTableExport::try_new(table, projection.semantic_columns, projection.bindings, PreparedAccess::Host)
+    }
+    .map(|export| unsafe { export.with_retained_owner(Arc::new(projection.retained_host_buffers)) })
+    .map_err(|error| error.with_context("operation", operation))
 }

@@ -85,7 +85,7 @@ struct CountingLeaseBackend {
     drop_incomplete_calls: Arc<AtomicUsize>,
 }
 
-impl ActiveLeaseBackend for CountingLeaseBackend {
+unsafe impl ActiveLeaseBackend for CountingLeaseBackend {
     fn complete(
         &self,
         _readiness: ProducerReadiness<'_>,
@@ -108,7 +108,7 @@ impl ActiveLeaseBackend for CountingLeaseBackend {
 #[derive(Clone)]
 struct FailingActivationBackend;
 
-impl ActiveLeaseBackend for FailingActivationBackend {
+unsafe impl ActiveLeaseBackend for FailingActivationBackend {
     fn activate(
         &self,
         _readiness: ProducerReadiness<'_>,
@@ -181,7 +181,7 @@ struct RecordingLeaseBackend {
     recorded: Arc<Mutex<Vec<RecordedLeaseBindings>>>,
 }
 
-impl ActiveLeaseBackend for RecordingLeaseBackend {
+unsafe impl ActiveLeaseBackend for RecordingLeaseBackend {
     fn activate(
         &self,
         _readiness: ProducerReadiness<'_>,

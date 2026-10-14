@@ -43,7 +43,7 @@ fn device_binding(id: u32, addr: usize, byte_len: usize, device: i32) -> BufferB
 
 fn prepared_readiness() -> ProducerReadiness<'static> {
     ProducerReadiness::DeviceStreamOrdered {
-        stream: CudaStreamHandle::from_raw_on_device(fake_ptr(0x5000) as *mut core::ffi::c_void, 0).unwrap(),
+        stream: unsafe { CudaStreamHandle::from_raw_on_device(fake_ptr(0x5000) as *mut core::ffi::c_void, 0) }.unwrap(),
     }
 }
 
@@ -71,7 +71,7 @@ struct DropCountingBackend {
     complete_calls: Arc<AtomicUsize>,
 }
 
-impl ActiveLeaseBackend for DropCountingBackend {
+unsafe impl ActiveLeaseBackend for DropCountingBackend {
     fn complete(
         &self,
         _readiness: ProducerReadiness<'_>,
@@ -95,18 +95,20 @@ impl ActiveLeaseBackend for DropCountingBackend {
 fn prepared_column_export_drop_on_worker_thread_runs_fallback_once_and_releases_root() {
     let drop_calls = Arc::new(AtomicUsize::new(0));
     let complete_calls = Arc::new(AtomicUsize::new(0));
-    let export = PreparedColumnExport::try_new(
-        ColumnId::new(1),
-        vec![fixed_width_column(1, 11, 3, 0)],
-        vec![device_binding(11, 0x1000, 12, 0)],
-        PreparedAccess::Device {
-            readiness: prepared_readiness(),
-            backend: LeaseBackend::new(DropCountingBackend {
-                drop_calls: Arc::clone(&drop_calls),
-                complete_calls: Arc::clone(&complete_calls),
-            }),
-        },
-    )
+    let export = unsafe {
+        PreparedColumnExport::try_new(
+            ColumnId::new(1),
+            vec![fixed_width_column(1, 11, 3, 0)],
+            vec![device_binding(11, 0x1000, 12, 0)],
+            PreparedAccess::Device {
+                readiness: prepared_readiness(),
+                backend: LeaseBackend::new(DropCountingBackend {
+                    drop_calls: Arc::clone(&drop_calls),
+                    complete_calls: Arc::clone(&complete_calls),
+                }),
+            },
+        )
+    }
     .unwrap();
 
     thread::scope(|scope| {
@@ -137,12 +139,14 @@ fn prepared_column_export_drop_on_worker_thread_runs_fallback_once_and_releases_
 
 #[test]
 fn prepared_table_export_can_be_completed_from_worker_thread() {
-    let export = PreparedTableExport::try_new(
-        SemanticTable::new(3, vec![ColumnId::new(1)], None),
-        vec![fixed_width_column(1, 11, 3, 0)],
-        vec![device_binding(11, 0x1000, 12, 0)],
-        device_access(prepared_readiness()),
-    )
+    let export = unsafe {
+        PreparedTableExport::try_new(
+            SemanticTable::new(3, vec![ColumnId::new(1)], None),
+            vec![fixed_width_column(1, 11, 3, 0)],
+            vec![device_binding(11, 0x1000, 12, 0)],
+            device_access(prepared_readiness()),
+        )
+    }
     .unwrap();
 
     thread::scope(|scope| {

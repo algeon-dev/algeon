@@ -135,14 +135,14 @@ pub struct rapids_interop::CudaEventHandle<'a>
 impl rapids_interop::CudaEventHandle<'_>
 pub fn rapids_interop::CudaEventHandle<'_>::as_raw(&self) -> *mut core::ffi::c_void
 pub fn rapids_interop::CudaEventHandle<'_>::device(&self) -> i32
-pub fn rapids_interop::CudaEventHandle<'_>::from_raw_on_device(*mut core::ffi::c_void, i32) -> rapids_interop::Result<Self>
+pub unsafe fn rapids_interop::CudaEventHandle<'_>::from_raw_on_device(*mut core::ffi::c_void, i32) -> rapids_interop::Result<Self>
 impl core::marker::Send for rapids_interop::CudaEventHandle<'_>
 impl core::marker::Sync for rapids_interop::CudaEventHandle<'_>
 pub struct rapids_interop::CudaStreamHandle<'a>
 impl rapids_interop::CudaStreamHandle<'_>
 pub fn rapids_interop::CudaStreamHandle<'_>::as_raw(&self) -> *mut core::ffi::c_void
 pub fn rapids_interop::CudaStreamHandle<'_>::device(&self) -> i32
-pub fn rapids_interop::CudaStreamHandle<'_>::from_raw_on_device(*mut core::ffi::c_void, i32) -> rapids_interop::Result<Self>
+pub unsafe fn rapids_interop::CudaStreamHandle<'_>::from_raw_on_device(*mut core::ffi::c_void, i32) -> rapids_interop::Result<Self>
 impl core::marker::Send for rapids_interop::CudaStreamHandle<'_>
 impl core::marker::Sync for rapids_interop::CudaStreamHandle<'_>
 pub struct rapids_interop::DataType
@@ -154,7 +154,7 @@ pub fn rapids_interop::DataType::scale(&self) -> i32
 pub struct rapids_interop::DeviceMemoryResourceHandle<'a>
 impl rapids_interop::DeviceMemoryResourceHandle<'_>
 pub fn rapids_interop::DeviceMemoryResourceHandle<'_>::as_raw(&self) -> *mut core::ffi::c_void
-pub fn rapids_interop::DeviceMemoryResourceHandle<'_>::from_raw(*mut core::ffi::c_void) -> rapids_interop::Result<Self>
+pub unsafe fn rapids_interop::DeviceMemoryResourceHandle<'_>::from_raw(*mut core::ffi::c_void) -> rapids_interop::Result<Self>
 impl core::marker::Send for rapids_interop::DeviceMemoryResourceHandle<'_>
 impl core::marker::Sync for rapids_interop::DeviceMemoryResourceHandle<'_>
 pub struct rapids_interop::ExecutionBinding<'a>
@@ -192,7 +192,7 @@ pub fn rapids_interop::LeaseBackend::fmt(&self, &mut core::fmt::Formatter<'_>) -
 pub struct rapids_interop::LeaseCompletion
 impl rapids_interop::LeaseCompletion
 pub fn rapids_interop::LeaseCompletion::is_ready(&self) -> rapids_interop::Result<bool>
-pub fn rapids_interop::LeaseCompletion::release_stream_ordered(self)
+pub unsafe fn rapids_interop::LeaseCompletion::release_stream_ordered(self)
 pub fn rapids_interop::LeaseCompletion::synchronize(&mut self) -> rapids_interop::Result<()>
 impl core::fmt::Debug for rapids_interop::LeaseCompletion
 pub fn rapids_interop::LeaseCompletion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -200,20 +200,20 @@ impl core::ops::drop::Drop for rapids_interop::LeaseCompletion
 pub fn rapids_interop::LeaseCompletion::drop(&mut self)
 pub struct rapids_interop::PreparedColumnExport<'a>
 impl<'a> rapids_interop::PreparedColumnExport<'a>
-pub fn rapids_interop::PreparedColumnExport<'a>::access(&self) -> &rapids_interop::PreparedAccess<'a>
-pub fn rapids_interop::PreparedColumnExport<'a>::bindings(&self) -> &[rapids_interop::BufferBinding<'a>]
+pub fn rapids_interop::PreparedColumnExport<'a>::access(&self) -> &rapids_interop::PreparedAccess<'_>
+pub fn rapids_interop::PreparedColumnExport<'a>::bindings(&self) -> &[rapids_interop::BufferBinding<'_>]
 pub fn rapids_interop::PreparedColumnExport<'a>::column(&self) -> &rapids_interop::SemanticColumn
 pub fn rapids_interop::PreparedColumnExport<'a>::profile(&self) -> rapids_interop::PreparedExportProfile
 pub fn rapids_interop::PreparedColumnExport<'a>::retained_owner(&self) -> core::option::Option<&alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>>
 pub fn rapids_interop::PreparedColumnExport<'a>::semantic_columns(&self) -> &[rapids_interop::SemanticColumn]
 pub fn rapids_interop::PreparedColumnExport<'a>::try_activate_read_lease<'export, 'consumer>(&'export self, rapids_interop::ReadStartAuthority<'consumer>, rapids_interop::CompletionAuthority<'consumer>) -> rapids_interop::Result<rapids_interop::ActiveColumnReadLease<'export, 'a, 'consumer>>
-pub fn rapids_interop::PreparedColumnExport<'a>::try_new(rapids_interop::ColumnId, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'a>>, rapids_interop::PreparedAccess<'a>) -> rapids_interop::Result<Self>
-pub fn rapids_interop::PreparedColumnExport<'a>::with_retained_owner(self, alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>) -> Self
+pub unsafe fn rapids_interop::PreparedColumnExport<'a>::try_new(rapids_interop::ColumnId, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'a>>, rapids_interop::PreparedAccess<'a>) -> rapids_interop::Result<Self>
+pub unsafe fn rapids_interop::PreparedColumnExport<'a>::with_retained_owner(self, alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>) -> Self
 pub struct rapids_interop::PreparedTableExport<'a>
 impl<'a> rapids_interop::PreparedTableExport<'a>
-pub fn rapids_interop::PreparedTableExport<'a>::access(&self) -> &rapids_interop::PreparedAccess<'a>
-pub fn rapids_interop::PreparedTableExport<'a>::binding(&self, rapids_interop::BufferId) -> core::option::Option<&rapids_interop::BufferBinding<'a>>
-pub fn rapids_interop::PreparedTableExport<'a>::bindings(&self) -> &[rapids_interop::BufferBinding<'a>]
+pub fn rapids_interop::PreparedTableExport<'a>::access(&self) -> &rapids_interop::PreparedAccess<'_>
+pub fn rapids_interop::PreparedTableExport<'a>::binding(&self, rapids_interop::BufferId) -> core::option::Option<&rapids_interop::BufferBinding<'_>>
+pub fn rapids_interop::PreparedTableExport<'a>::bindings(&self) -> &[rapids_interop::BufferBinding<'_>]
 pub fn rapids_interop::PreparedTableExport<'a>::columns(&self) -> &[rapids_interop::SemanticColumn]
 pub fn rapids_interop::PreparedTableExport<'a>::profile(&self) -> rapids_interop::PreparedExportProfile
 pub fn rapids_interop::PreparedTableExport<'a>::retained_owner(&self) -> core::option::Option<&alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>>
@@ -223,8 +223,8 @@ pub fn rapids_interop::PreparedTableExport<'a>::table(&self) -> &rapids_interop:
 pub fn rapids_interop::PreparedTableExport<'a>::top_level_column(&self, rapids_interop::ColumnId) -> core::option::Option<&rapids_interop::SemanticColumn>
 pub fn rapids_interop::PreparedTableExport<'a>::top_level_column_by_name(&self, &str) -> core::option::Option<&rapids_interop::SemanticColumn>
 pub fn rapids_interop::PreparedTableExport<'a>::try_activate_read_lease<'export, 'consumer>(&'export self, rapids_interop::ReadStartAuthority<'consumer>, rapids_interop::CompletionAuthority<'consumer>) -> rapids_interop::Result<rapids_interop::ActiveTableReadLease<'export, 'a, 'consumer>>
-pub fn rapids_interop::PreparedTableExport<'a>::try_new(rapids_interop::SemanticTable, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'a>>, rapids_interop::PreparedAccess<'a>) -> rapids_interop::Result<Self>
-pub fn rapids_interop::PreparedTableExport<'a>::with_retained_owner(self, alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>) -> Self
+pub unsafe fn rapids_interop::PreparedTableExport<'a>::try_new(rapids_interop::SemanticTable, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'a>>, rapids_interop::PreparedAccess<'a>) -> rapids_interop::Result<Self>
+pub unsafe fn rapids_interop::PreparedTableExport<'a>::with_retained_owner(self, alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>) -> Self
 pub struct rapids_interop::SemanticColumn
 impl rapids_interop::SemanticColumn
 pub fn rapids_interop::SemanticColumn::data_type(&self) -> rapids_interop::DataType
@@ -242,11 +242,12 @@ pub fn rapids_interop::SemanticTable::names(&self) -> core::option::Option<&[all
 pub fn rapids_interop::SemanticTable::new(usize, alloc::vec::Vec<rapids_interop::ColumnId>, core::option::Option<alloc::vec::Vec<alloc::string::String>>) -> Self
 pub fn rapids_interop::SemanticTable::num_rows(&self) -> usize
 pub trait rapids_interop::ActiveLeaseActivation: core::marker::Send + core::marker::Sync
-pub trait rapids_interop::ActiveLeaseBackend: core::marker::Send + core::marker::Sync
+pub unsafe trait rapids_interop::ActiveLeaseBackend: core::marker::Send + core::marker::Sync
 pub fn rapids_interop::ActiveLeaseBackend::activate(&self, rapids_interop::ProducerReadiness<'_>, rapids_interop::ReadStartAuthority<'_>, rapids_interop::CompletionAuthority<'_>) -> rapids_interop::Result<rapids_interop::LeaseActivation>
 pub fn rapids_interop::ActiveLeaseBackend::complete(&self, rapids_interop::ProducerReadiness<'_>, rapids_interop::CompletionAuthority<'_>) -> rapids_interop::Result<core::option::Option<rapids_interop::CompletionWitness>>
 pub fn rapids_interop::ActiveLeaseBackend::drop_incomplete(&self, rapids_interop::ProducerReadiness<'_>, rapids_interop::CompletionAuthority<'_>) -> rapids_interop::Result<()>
-pub trait rapids_interop::CompletionWitnessBackend: core::marker::Send + core::marker::Sync
+pub unsafe trait rapids_interop::CompletionWitnessBackend: core::marker::Send + core::marker::Sync
 pub fn rapids_interop::CompletionWitnessBackend::is_ready(&self) -> rapids_interop::Result<bool>
+pub fn rapids_interop::CompletionWitnessBackend::quarantine(&self, &rapids_interop::InteropError)
 pub fn rapids_interop::CompletionWitnessBackend::synchronize(&self) -> rapids_interop::Result<()>
 pub type rapids_interop::Result<T> = core::result::Result<T, rapids_interop::InteropError>

@@ -309,14 +309,14 @@ where
         child_validity.validity,
         ColumnLayout::BinaryLike { offsets: BufferId::new(2), data: BufferId::new(3) },
     );
-    let export = PreparedColumnExport::try_new(
-        ColumnId::new(0),
-        vec![list_column, child_column],
-        bindings,
-        PreparedAccess::Host,
-    )
-    .map_err(|error| error::from_interop_in(error, operation))?
-    .with_retained_owner(Arc::new(retained_buffers));
+    // SAFETY: validated Arrow offsets and values project into owned host buffers
+    // that are retained below before consumer access.
+    let export = unsafe {
+        PreparedColumnExport::try_new(ColumnId::new(0), vec![list_column, child_column], bindings, PreparedAccess::Host)
+    }
+    .map_err(|error| error::from_interop_in(error, operation))?;
+    // SAFETY: these buffers own every projected host binding.
+    let export = unsafe { export.with_retained_owner(Arc::new(retained_buffers)) };
 
     Column::try_import_from_prepared_column_export_into_runtime(&export, runtime)
         .map_err(|error| error::from_interop_in(error, operation))
@@ -454,14 +454,14 @@ fn fixed_width_list_array_to_column(
         child_validity.validity,
         ColumnLayout::FixedWidth { values: BufferId::new(2) },
     );
-    let export = PreparedColumnExport::try_new(
-        ColumnId::new(0),
-        vec![list_column, child_column],
-        bindings,
-        PreparedAccess::Host,
-    )
-    .map_err(|error| error::from_interop_in(error, operation))?
-    .with_retained_owner(Arc::new(retained_buffers));
+    // SAFETY: validated Arrow offsets and values project into owned host buffers
+    // that are retained below before consumer access.
+    let export = unsafe {
+        PreparedColumnExport::try_new(ColumnId::new(0), vec![list_column, child_column], bindings, PreparedAccess::Host)
+    }
+    .map_err(|error| error::from_interop_in(error, operation))?;
+    // SAFETY: these buffers own every projected host binding.
+    let export = unsafe { export.with_retained_owner(Arc::new(retained_buffers)) };
 
     Column::try_import_from_prepared_column_export_into_runtime(&export, runtime)
         .map_err(|error| error::from_interop_in(error, operation))

@@ -60,6 +60,21 @@ the source and destination allocations with their execution domain when teardown
 cannot prove completion. DeviceBuffer host
 writes require exclusive Rust access.
 
+Shared prepared exports are adopted through the unsafe constructors in
+`algeon-interop`; raw buffer descriptors do not grant read access. cuDF export
+adapters prove the allocation, placement and native layout contracts and bind
+descriptor access to the export borrow. Attached storage owners accumulate and
+remain held by active leases and pending completions. Explicit release without
+waiting requires a previously established producer wait after consumer reads.
+
+Incomplete prepared reads synchronize the consumer stream directly, including
+after completion-event setup or a borrowed witness wait fails. A failed final
+cleanup quarantines the owning device and retains storage for process lifetime.
+An unowned borrowed export cannot retain storage after its borrow ends; failed
+fallback terminates the process before that release. Consumers exposing borrowed
+asynchronous views require an unsafe completion obligation that also covers a
+forgotten lease.
+
 Failure callbacks and their `callback_arg` must remain valid for the lifetime
 specified by the creating API. They run on the allocating thread and must not
 unwind across the C boundary, allocate through the same memory resource, or

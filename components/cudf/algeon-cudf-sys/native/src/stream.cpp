@@ -398,6 +398,12 @@ cudf_status_t cudf_raw_cuda_stream_synchronize(void* raw_stream)
   CUDF_RUST_TRY
   {
     auto stream = rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(raw_stream)};
+    cudf::rust::test_support::record_stream_synchronize();
+    if (cudf::rust::test_support::stream_synchronize_should_fail()) {
+      set_error("forced raw stream synchronization failure for tests");
+      return CUDF_ERROR_CUDA;
+    }
+    cudf::rust::test_support::wait_for_stream_synchronize_release();
     stream.synchronize();
     cudf_record_synchronized_stream(stream);
     return CUDF_SUCCESS;

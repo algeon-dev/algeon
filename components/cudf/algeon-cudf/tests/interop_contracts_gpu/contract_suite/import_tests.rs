@@ -672,12 +672,14 @@ pub(crate) mod error_mapping_contracts {
         let source = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
         let device_export = source.try_prepare_device_column_export().unwrap();
 
-        let err = PreparedColumnExport::try_new(
-            device_export.column().id(),
-            device_export.semantic_columns().to_vec(),
-            device_export.bindings().to_vec(),
-            PreparedAccess::Host,
-        )
+        let err = unsafe {
+            PreparedColumnExport::try_new(
+                device_export.column().id(),
+                device_export.semantic_columns().to_vec(),
+                device_export.bindings().to_vec(),
+                PreparedAccess::Host,
+            )
+        }
         .unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::PlacementUnsupported);
@@ -693,7 +695,7 @@ pub(crate) mod error_mapping_contracts {
 
         struct SyncFailureWitness;
 
-        impl CompletionWitnessBackend for SyncFailureWitness {
+        unsafe impl CompletionWitnessBackend for SyncFailureWitness {
             fn is_ready(&self) -> std::result::Result<bool, InteropError> {
                 Ok(false)
             }
@@ -706,7 +708,7 @@ pub(crate) mod error_mapping_contracts {
 
         struct SyncFailureBackend;
 
-        impl ActiveLeaseBackend for SyncFailureBackend {
+        unsafe impl ActiveLeaseBackend for SyncFailureBackend {
             fn complete(
                 &self,
                 _readiness: ProducerReadiness<'_>,
@@ -718,9 +720,24 @@ pub(crate) mod error_mapping_contracts {
             fn drop_incomplete(
                 &self,
                 _readiness: ProducerReadiness<'_>,
-                _completion: CompletionAuthority<'_>,
+                completion: CompletionAuthority<'_>,
             ) -> std::result::Result<(), InteropError> {
-                Ok(())
+                match completion {
+                    CompletionAuthority::SynchronousByReturn => Ok(()),
+                    CompletionAuthority::SameDeviceStream { stream } => {
+                        // SAFETY: the import retains the destination runtime
+                        // and source export through this fallback.
+                        let status = unsafe { cudf_sys::cudf_raw_cuda_stream_synchronize(stream.as_raw()) };
+                        if status == cudf_sys::CUDF_SUCCESS {
+                            Ok(())
+                        } else {
+                            Err(InteropError::new(
+                                InteropErrorKind::ReadinessUnavailable,
+                                "test stream fallback failed",
+                            ))
+                        }
+                    },
+                }
             }
         }
 

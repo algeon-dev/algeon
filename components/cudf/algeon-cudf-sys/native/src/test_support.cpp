@@ -27,6 +27,56 @@
 extern "C" cudf_status_t cudf_rust_test_support_io_kvikio_active_io_begin();
 extern "C" cudf_status_t cudf_rust_test_support_io_kvikio_active_io_end();
 
+cudf_status_t cudf_test_cuda_launch_host_function(void* raw_stream,
+                                                void (*callback)(void*),
+                                                void* argument)
+{
+  CUDF_RUST_TRY
+  {
+    auto const status = cudaLaunchHostFunc(static_cast<cudaStream_t>(raw_stream), callback, argument);
+    if (status != cudaSuccess) {
+      set_error(cudaGetErrorString(status));
+      return CUDF_ERROR_CUDA;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_test_cuda_copy_device_async(void* raw_stream,
+                                             void* destination,
+                                             void const* source,
+                                             size_t byte_len)
+{
+  CUDF_RUST_TRY
+  {
+    auto const status = cudaMemcpyAsync(destination, source, byte_len, cudaMemcpyDeviceToDevice,
+                                       static_cast<cudaStream_t>(raw_stream));
+    if (status != cudaSuccess) {
+      set_error(cudaGetErrorString(status));
+      return CUDF_ERROR_CUDA;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_test_cuda_copy_to_host(void* destination,
+                                        void const* source,
+                                        size_t byte_len)
+{
+  CUDF_RUST_TRY
+  {
+    auto const status = cudaMemcpy(destination, source, byte_len, cudaMemcpyDeviceToHost);
+    if (status != cudaSuccess) {
+      set_error(cudaGetErrorString(status));
+      return CUDF_ERROR_CUDA;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 namespace {
 constexpr std::size_t k_exec_mr_observation_capacity = 64;
 

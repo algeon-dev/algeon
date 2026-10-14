@@ -16,9 +16,11 @@ pub(crate) fn execution_binding<'a>(
     let mr = domain.memory_resource();
     let stream_ptr = stream.interop_raw_handle();
     let mr_ptr = mr.interop_raw_handle();
+    // SAFETY: runtime accessors borrow this domain or its retained owner, which
+    // owns the stream and MR and preserves their device identity.
     Ok(ExecutionBinding::new(
-        CudaStreamHandle::from_raw_on_device(stream_ptr, options.options().device)?,
-        DeviceMemoryResourceHandle::from_raw(mr_ptr)?,
+        unsafe { CudaStreamHandle::from_raw_on_device(stream_ptr, options.options().device) }?,
+        unsafe { DeviceMemoryResourceHandle::from_raw(mr_ptr) }?,
     ))
 }
 
@@ -32,9 +34,13 @@ pub(super) fn prepared_device_readiness<'a>(
     let stream = domain.stream();
     let stream_ptr = stream.interop_raw_handle();
     let device = options.options().device;
+    // SAFETY: the producer column/table borrows or retains this domain, and
+    // the domain owns this live stream on the selected device.
     Ok((
         device,
-        ProducerReadiness::DeviceStreamOrdered { stream: CudaStreamHandle::from_raw_on_device(stream_ptr, device)? },
+        ProducerReadiness::DeviceStreamOrdered {
+            stream: unsafe { CudaStreamHandle::from_raw_on_device(stream_ptr, device) }?,
+        },
     ))
 }
 
@@ -60,9 +66,12 @@ pub(super) fn prepared_device_event_readiness<'a>(
     let event_ptr = event
         .interop_raw_handle()
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    // SAFETY: the readiness borrows the event and its device was checked above.
     Ok((
         device,
-        ProducerReadiness::DeviceEventOrdered { event: CudaEventHandle::from_raw_on_device(event_ptr, event_device)? },
+        ProducerReadiness::DeviceEventOrdered {
+            event: unsafe { CudaEventHandle::from_raw_on_device(event_ptr, event_device) }?,
+        },
     ))
 }
 
@@ -94,14 +103,16 @@ pub(super) fn to_static_readiness(
     operation: &'static str,
     readiness: ProducerReadiness<'_>,
 ) -> Result<ProducerReadiness<'static>, InteropError> {
+    // SAFETY: owned export construction retains the column/table domain and,
+    // for event readiness, the event itself before exposing this descriptor.
     match readiness {
         ProducerReadiness::DeviceStreamOrdered { stream } => Ok(ProducerReadiness::DeviceStreamOrdered {
-            stream: CudaStreamHandle::from_raw_on_device(stream.as_raw(), stream.device()).map_err(|error| {
-                error.with_context("operation", operation).with_context("readiness", "device_stream_ordered")
-            })?,
+            stream: unsafe { CudaStreamHandle::from_raw_on_device(stream.as_raw(), stream.device()) }.map_err(
+                |error| error.with_context("operation", operation).with_context("readiness", "device_stream_ordered"),
+            )?,
         }),
         ProducerReadiness::DeviceEventOrdered { event } => Ok(ProducerReadiness::DeviceEventOrdered {
-            event: CudaEventHandle::from_raw_on_device(event.as_raw(), event.device()).map_err(|error| {
+            event: unsafe { CudaEventHandle::from_raw_on_device(event.as_raw(), event.device()) }.map_err(|error| {
                 error.with_context("operation", operation).with_context("readiness", "device_event_ordered")
             })?,
         }),

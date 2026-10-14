@@ -146,6 +146,14 @@ leaves fault isolation unknown, and the backend then rejects new GPU work. A
 failed fence inside a task is recorded in the attempt report and does not
 change admission by itself.
 
+Shared interop final cleanup follows the
+[`algeon-interop` lease contract](https://github.com/algeon-dev/algeon/blob/main/components/algeon-interop/src/lease.rs).
+cuDF records a failed final read fence or incomplete cleanup through device-health
+quarantine, which rejects new device work. Retained producer allocations remain
+charged to their memory domain for process lifetime when completion cannot be
+proved; cleanup does not report those bytes as reclaimed. Borrowed storage with
+no retained owner requires a successful fallback before its borrow ends.
+
 ## Runtime observations
 
 Reports, TSV, DataFusion metrics and `QueryMetrics` are projections of one

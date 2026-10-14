@@ -6,7 +6,7 @@ use super::{SHARED_COMPLETION_WITNESS_READY_OP, SHARED_COMPLETION_WITNESS_SYNC_O
 use crate::{
     core::error::Result,
     interop::map_cudf_error,
-    runtime::{CudaEvent, DeviceId, device_guard::DeviceGuard},
+    runtime::{self, CudaEvent, DeviceId, device_guard::DeviceGuard},
 };
 
 pub(super) struct SharedCudaCompletionWitnessState {
@@ -23,7 +23,9 @@ impl SharedCudaCompletionWitnessState {
     }
 }
 
-impl CompletionWitnessBackend for SharedCudaCompletionWitnessState {
+// SAFETY: the owned event is recorded after consumer reads. CUDA calls enter
+// its device and establish readiness only on a successful native result.
+unsafe impl CompletionWitnessBackend for SharedCudaCompletionWitnessState {
     fn is_ready(&self) -> rapids_interop::Result<bool> {
         let _guard = DeviceGuard::new(self.device()).map_err(|error| {
             map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETION_WITNESS_READY_OP, error)
@@ -40,6 +42,10 @@ impl CompletionWitnessBackend for SharedCudaCompletionWitnessState {
         self.event.synchronize().map_err(|error| {
             map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETION_WITNESS_SYNC_OP, error)
         })
+    }
+
+    fn quarantine(&self, error: &InteropError) {
+        runtime::quarantine_device_resource(self.device(), SHARED_COMPLETION_WITNESS_SYNC_OP, error);
     }
 }
 

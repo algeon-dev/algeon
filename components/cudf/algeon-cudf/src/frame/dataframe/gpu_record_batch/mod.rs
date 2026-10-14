@@ -63,10 +63,10 @@ fn prepare_list_export<'a>(
     contract: ListExportContract,
     operation: &'static str,
 ) -> Result<(ListExportParts<'a>, Option<validation::FiniteValidationProof>)> {
-    let export = producer
-        .try_prepare_device_column_export()
-        .map_err(|error| error::from_interop_in(error, operation))?
-        .with_retained_owner(Arc::<Column>::clone(producer));
+    let export =
+        producer.try_prepare_device_column_export().map_err(|error| error::from_interop_in(error, operation))?;
+    // SAFETY: the column owns all projected buffers and its readiness stream.
+    let export = unsafe { export.with_retained_owner(Arc::<Column>::clone(producer)) };
     let parts = validate_list_export(export, contract, operation)?;
     let child = producer
         .view()

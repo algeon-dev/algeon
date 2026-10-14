@@ -193,7 +193,19 @@ pub struct CudaStreamHandle<'a> {
 impl CudaStreamHandle<'_> {
     /// Construct a borrowed stream handle from a raw non-null pointer plus its
     /// CUDA device identity.
-    pub fn from_raw_on_device(raw: *mut c_void, device: i32) -> Result<Self> {
+    ///
+    /// # Safety
+    ///
+    /// `raw` must identify a live CUDA stream on `device`. It must remain valid
+    /// for `'a` and support use from any host thread. A retained prepared export
+    /// may carry its owner; its borrowed accessors then limit handle use to the
+    /// export's lifetime.
+    ///
+    /// ```compile_fail,E0133
+    /// use rapids_interop::CudaStreamHandle;
+    /// let _ = CudaStreamHandle::from_raw_on_device(0x1000usize as *mut _, 0);
+    /// ```
+    pub unsafe fn from_raw_on_device(raw: *mut c_void, device: i32) -> Result<Self> {
         let raw = validate_cuda_handle(raw, device, "CUDA stream", "cuda_stream.device", "cuda_stream")?;
         Ok(Self { raw, device, _lifetime: PhantomData })
     }
@@ -207,12 +219,9 @@ impl CudaStreamHandle<'_> {
     }
 }
 
-// SAFETY: This crate never dereferences the stream pointer or passes it to
-// CUDA; it only copies and compares the address. Sending or sharing the handle
-// therefore cannot race inside this crate. `from_raw_on_device` accepts any
-// lifetime, so `'a` does not prove that the stream is alive: the producer
-// guarantees that. Code that passes the pointer to CUDA relies on that
-// guarantee and on CUDA accepting a stream from any host thread.
+// SAFETY: raw construction requires a live stream usable from any host thread.
+// Borrowed accessors preserve its owner lifetime. Copying the opaque handle
+// does not mutate host storage, and CUDA synchronizes concurrent stream calls.
 unsafe impl Send for CudaStreamHandle<'_> {}
 unsafe impl Sync for CudaStreamHandle<'_> {}
 
@@ -227,7 +236,18 @@ pub struct CudaEventHandle<'a> {
 impl CudaEventHandle<'_> {
     /// Construct a borrowed event handle from a raw non-null pointer plus its
     /// CUDA device identity.
-    pub fn from_raw_on_device(raw: *mut c_void, device: i32) -> Result<Self> {
+    ///
+    /// # Safety
+    ///
+    /// `raw` must identify a live CUDA event on `device`, valid for `'a` and
+    /// usable from any host thread. A retained export may carry the event owner
+    /// under the same rules as [`CudaStreamHandle::from_raw_on_device`].
+    ///
+    /// ```compile_fail,E0133
+    /// use rapids_interop::CudaEventHandle;
+    /// let _ = CudaEventHandle::from_raw_on_device(0x1000usize as *mut _, 0);
+    /// ```
+    pub unsafe fn from_raw_on_device(raw: *mut c_void, device: i32) -> Result<Self> {
         let raw = validate_cuda_handle(raw, device, "CUDA event", "cuda_event.device", "cuda_event")?;
         Ok(Self { raw, device, _lifetime: PhantomData })
     }
@@ -241,9 +261,8 @@ impl CudaEventHandle<'_> {
     }
 }
 
-// SAFETY: As with `CudaStreamHandle`, this crate never dereferences the event
-// pointer or passes it to CUDA. The producer, not `'a`, guarantees that the
-// event outlives every use of the handle.
+// SAFETY: raw construction requires a live event usable from any host thread.
+// Copies preserve the borrowed owner lifetime and retain no mutable host state.
 unsafe impl Send for CudaEventHandle<'_> {}
 unsafe impl Sync for CudaEventHandle<'_> {}
 
@@ -256,7 +275,18 @@ pub struct DeviceMemoryResourceHandle<'a> {
 
 impl DeviceMemoryResourceHandle<'_> {
     /// Construct a borrowed memory-resource handle from a raw non-null pointer.
-    pub fn from_raw(raw: *mut c_void) -> Result<Self> {
+    ///
+    /// # Safety
+    ///
+    /// `raw` must identify a live RMM device memory resource for `'a`. The
+    /// resource must support concurrent calls from any host thread and outlive
+    /// all allocations made through the handle.
+    ///
+    /// ```compile_fail,E0133
+    /// use rapids_interop::DeviceMemoryResourceHandle;
+    /// let _ = DeviceMemoryResourceHandle::from_raw(0x1000usize as *mut _);
+    /// ```
+    pub unsafe fn from_raw(raw: *mut c_void) -> Result<Self> {
         let raw = NonNull::new(raw).ok_or_else(|| {
             InteropError::new(InteropErrorKind::InvalidView, "device memory resource handle must be non-null")
                 .with_context("field", "mr")
@@ -269,10 +299,8 @@ impl DeviceMemoryResourceHandle<'_> {
     }
 }
 
-// SAFETY: This crate never dereferences the memory-resource pointer. A caller
-// that allocates through it relies on the producer keeping the resource alive
-// and on the resource supporting concurrent use; `from_raw` accepts any
-// lifetime, so `'a` cannot enforce either.
+// SAFETY: raw construction requires a live resource that supports concurrent
+// allocation calls and outlives the borrowed handle and its allocations.
 unsafe impl Send for DeviceMemoryResourceHandle<'_> {}
 unsafe impl Sync for DeviceMemoryResourceHandle<'_> {}
 
@@ -432,7 +460,9 @@ pub enum Placement {
     CudaDevice { device: i32 },
 }
 
-/// Borrowed byte span that backs an interop buffer binding.
+/// Address and length of a byte span. This descriptor grants no read access;
+/// [`PreparedColumnExport::try_new`](crate::PreparedColumnExport::try_new)
+/// establishes the storage contract before a safe consumer can read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoundBytes<'a> {
     base_ptr: NonNull<c_void>,
@@ -468,11 +498,9 @@ impl BoundBytes<'_> {
     }
 }
 
-// SAFETY: `BoundBytes` is a `Copy` address-plus-length descriptor for host or
-// device memory, and this crate never dereferences the address. Moving or
-// sharing it across threads copies an integer-like value and cannot race here.
-// `from_raw_parts` accepts any lifetime (cudf produces `'static` bindings), so
-// the producer, not `'a`, guarantees that the storage outlives every read.
+// SAFETY: descriptors carry no read authority and this crate does not
+// dereference them. The unsafe prepared-export constructor establishes storage
+// validity and lifetime before any safe consumer can read the addresses.
 unsafe impl Send for BoundBytes<'_> {}
 unsafe impl Sync for BoundBytes<'_> {}
 

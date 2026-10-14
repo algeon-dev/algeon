@@ -1,10 +1,8 @@
-//! External interop boundary.
+//! Data interchange between `cudf`, Apache Arrow, and RAPIDS components.
 //!
-//! This module moves data between `cudf` and other systems such as Arrow and
-//! RAPIDS. Most callers should use the methods on [`crate::Series`] for one
-//! column or [`crate::DataFrame`] for a table. Use [`crate::core::Column`] and
-//! [`crate::core::Table`] only when explicit low-level ownership or borrowing
-//! control is required.
+//! Tabular interop operations are exposed on [`crate::DataFrame`] and
+//! [`crate::Series`]. Lower-level interchange operates on [`crate::core::Column`]
+//! and [`crate::core::Table`].
 //!
 //! To export from `cudf`, call `try_prepare_*_export` to prepare data for
 //! consumer access or copying.
@@ -82,8 +80,11 @@ use crate::{
 /// This does not transfer ownership. The returned handle is valid only for the
 /// lifetime of `stream`.
 pub fn cuda_stream_handle(stream: &CudaStream) -> Result<rapids_interop::CudaStreamHandle<'_>, InteropError> {
-    rapids_interop::CudaStreamHandle::from_raw_on_device(stream.interop_raw_handle(), stream.device().ordinal_raw())
-        .map_err(|error| error.with_context("operation", "interop::cuda_stream_handle"))
+    // SAFETY: the handle borrows the stream owner and preserves its device.
+    unsafe {
+        rapids_interop::CudaStreamHandle::from_raw_on_device(stream.interop_raw_handle(), stream.device().ordinal_raw())
+    }
+    .map_err(|error| error.with_context("operation", "interop::cuda_stream_handle"))
 }
 
 /// Borrow a `cudf` CUDA event as a shared RAPIDS interop event handle.
@@ -94,6 +95,7 @@ pub fn cuda_event_handle(event: &CudaEvent) -> Result<rapids_interop::CudaEventH
     let raw = event
         .interop_raw_handle()
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, "interop::cuda_event_handle", error))?;
-    rapids_interop::CudaEventHandle::from_raw_on_device(raw, event.device().ordinal_raw())
+    // SAFETY: the handle borrows the event owner and preserves its device.
+    unsafe { rapids_interop::CudaEventHandle::from_raw_on_device(raw, event.device().ordinal_raw()) }
         .map_err(|error| error.with_context("operation", "interop::cuda_event_handle"))
 }

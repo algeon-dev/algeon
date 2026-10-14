@@ -39,7 +39,7 @@ struct TrackingWitness {
     synchronizations: Arc<AtomicUsize>,
 }
 
-impl CompletionWitnessBackend for TrackingWitness {
+unsafe impl CompletionWitnessBackend for TrackingWitness {
     fn is_ready(&self) -> InteropResult<bool> {
         Ok(false)
     }
@@ -55,7 +55,7 @@ struct TrackingLeaseBackend {
     synchronizations: Arc<AtomicUsize>,
 }
 
-impl ActiveLeaseBackend for TrackingLeaseBackend {
+unsafe impl ActiveLeaseBackend for TrackingLeaseBackend {
     fn complete(
         &self,
         _readiness: ProducerReadiness<'_>,
@@ -168,12 +168,14 @@ fn prepared_tensor_completion_and_incomplete_drop_are_safe() {
     let column = runtime.column_from_slice(&[1.0_f32, 2.0, 3.0, 4.0]).expect("column");
     let export = column.try_prepare_device_column_export().expect("prepared export");
 
-    let lease = resources.activate_prepared_tensor::<f32>(&export, &[2, 2], None).expect("activate prepared tensor");
+    let lease =
+        unsafe { resources.activate_prepared_tensor::<f32>(&export, &[2, 2], None) }.expect("activate prepared tensor");
     assert_eq!(lease.tensor().shape(), &[2, 2]);
     let completion = lease.complete().expect("complete prepared tensor");
     assert!(completion.is_ready().expect("completed read readiness"));
 
-    let abandoned = resources.activate_prepared_tensor::<f32>(&export, &[4], None).expect("activate abandoned tensor");
+    let abandoned =
+        unsafe { resources.activate_prepared_tensor::<f32>(&export, &[4], None) }.expect("activate abandoned tensor");
     drop(abandoned);
     assert!(runtime.stream().is_ready().expect("query stream readiness"));
 }
@@ -185,16 +187,20 @@ fn prepared_completion_retains_owner_until_drop_and_synchronizes_before_release(
     let marker = Arc::new(());
     let synchronizations = Arc::new(AtomicUsize::new(0));
     let export = column_export_with_lease_backend_for_test(
-        &series
-            .try_prepare_device_column_export()
-            .expect("prepared export")
-            .with_retained_owner(Arc::<()>::clone(&marker)),
+        &unsafe {
+            series
+                .try_prepare_device_column_export()
+                .expect("prepared export")
+                .with_retained_owner(Arc::<()>::clone(&marker))
+        },
         LeaseBackend::new(TrackingLeaseBackend { synchronizations: Arc::clone(&synchronizations) }),
     )
     .expect("lease backend");
 
-    let completion =
-        resources.activate_prepared_tensor::<f32>(&export, &[2], None).expect("activate").complete().expect("complete");
+    let completion = unsafe { resources.activate_prepared_tensor::<f32>(&export, &[2], None) }
+        .expect("activate")
+        .complete()
+        .expect("complete");
     assert_eq!(synchronizations.load(Ordering::SeqCst), 0);
     drop(export);
     drop(series);
@@ -215,8 +221,10 @@ fn prepared_completion_without_retained_owner_synchronizes_before_return() {
     )
     .expect("lease backend");
 
-    let completion =
-        resources.activate_prepared_tensor::<f32>(&export, &[2], None).expect("activate").complete().expect("complete");
+    let completion = unsafe { resources.activate_prepared_tensor::<f32>(&export, &[2], None) }
+        .expect("activate")
+        .complete()
+        .expect("complete");
     assert!(completion.is_ready().expect("completed read readiness"));
     assert_eq!(synchronizations.load(Ordering::SeqCst), 1);
 }
