@@ -55,6 +55,10 @@ cugraph-oracle = [
   "algeon-datafusion/cugraph",
   "algeon-datafusion/bench-support",
 ]
+# flight-sql-stress result checking with the TPC-DS parity comparator. The
+# base stress client stays CPU-only; this feature links cuDF through
+# algeon-datafusion, and cudf-sys is direct so build.rs bakes the native rpath.
+flight-sql-stress-check = ["dep:algeon-datafusion", "dep:cudf-sys", "algeon-datafusion/bench-support"]
 # Explicit black-box E2E runners; each drives a child process over the network.
 # The runtime-observability runner reads only the runtime's JSONL schema
 # constant, to validate retained artifacts.
@@ -170,6 +174,10 @@ name = "refresh_cugraph_oracle"
 path = "src/bin/refresh_cugraph_oracle.rs"
 required-features = ["cugraph-oracle"]
 test = false
+
+[dev-dependencies]
+# Paused-clock tests drive the open-loop scheduler and the admission sampler.
+tokio = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 rapids-build-support = { workspace = true }

@@ -17,8 +17,9 @@ use serde_json::{Value, json};
 use super::{
     E2eResult,
     params::{EVIDENCE_SCHEMA, ObservabilityLimits, RuntimeParams},
-    validation::{parse_u64_field, tsv_section, tsv_section_single_row},
+    validation::{parse_u64_field, tsv_section_single_row},
 };
+use crate::diagnostics_tsv::tsv_section;
 
 pub(super) const CONTROL_SCHEMA: &str = "algeon_datafusion.query_runtime_artifact.control";
 /// Every runtime artifact control carries exactly these fields, whatever its

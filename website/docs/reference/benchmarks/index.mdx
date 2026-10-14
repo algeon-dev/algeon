@@ -1,12 +1,19 @@
 ---
 sidebar_position: 1
 title: Benchmarks
-description: Where NVIDIA publishes the benchmarks of the GPU libraries behind the UDTFs, and Algeon's own TPC-H and TPC-DS SF100 runs.
+description: Where NVIDIA publishes the benchmarks of the GPU libraries behind the UDTFs, and Algeon's own TPC-H and TPC-DS SF100 runs, including concurrent TPC-H streams through algeon_server.
 ---
 
 import TpchSf100Benchmark from '@site/src/components/benchmarks/TpchSf100Benchmark';
 import TpcdsSf100Benchmark from '@site/src/components/benchmarks/TpcdsSf100Benchmark';
+import ServerLoadBenchmark, {ServerLoadOverloadTable} from '@site/src/components/benchmarks/ServerLoadBenchmark';
 import {tpcdsSf100Benchmark} from '@site/src/data/tpcdsSf100Benchmark';
+import {serverLoadBenchmark} from '@site/src/data/serverLoadBenchmark';
+
+export const gpuSeries = (active) =>
+  serverLoadBenchmark.series.find((s) => s.executionMode === 'native_required' && s.maxActiveAttempts === active);
+export const cpuSeries = serverLoadBenchmark.series.find((s) => s.executionMode === 'functions_only');
+export const gib = (bytes) => (bytes / 1024 ** 3).toFixed(1);
 
 # Benchmarks
 
@@ -194,4 +201,112 @@ python3 website/scripts/generate_tpcds_sf100_benchmark_ts.py \
   --parity-tsv /tmp/tpcds-parity.tsv \
   --environment /tmp/tpcds-environment.json \
   --out website/src/data/tpcdsSf100Benchmark.ts
+```
+
+### Concurrent TPC-H streams through algeon_server
+
+The runs above time one query at a time inside a benchmark process. In this
+run, `algeon_server` served the 22 TPC-H SF100 queries to 1 to 16 concurrent
+Flight SQL clients on the same g7e.8xlarge. Each client ran one stream: the 22
+queries in its own seeded order, twice, with the first pass as warm-up. The
+GPU server ran every query in `native_required` mode. The CPU path is the same
+binary with `execution_mode = "functions_only"`, which plans every query
+through DataFusion on the CPU. Queries that call GPU UDTFs go through the same
+admission queue and memory caps; this run uses relational SQL only.
+
+<ServerLoadBenchmark />
+
+With the server's default settings, the GPU completed
+{gpuSeries(2).peak.completedQps.toFixed(2)} queries per second
+({Math.round(gpuSeries(2).peak.completedQps * 3600).toLocaleString('en-US')} per
+hour) at {gpuSeries(2).peak.streams} streams. More streams added latency
+without adding throughput. The CPU path peaked at
+{cpuSeries.peak.completedQps.toFixed(2)} queries per second, and the GPU
+default completed {(gpuSeries(2).peak.completedQps / cpuSeries.peak.completedQps).toFixed(1)}
+times as many.
+
+The admission setting `max_active_attempts` (A below) sets where throughput
+levels off. A GPU runs at most A queries at once and holds later ones in a
+FIFO queue. Each admitted query gets a fixed memory cap, the device's managed
+capacity divided by A: {gib(gpuSeries(1).queryLimitBytes)} GiB at A=1,
+{gib(gpuSeries(2).queryLimitBytes)} GiB at the default A=2 and
+{gib(gpuSeries(3).queryLimitBytes)} GiB at A=3 on this GPU. A=1 stayed near
+{gpuSeries(1).peak.completedQps.toFixed(2)} queries per second from two
+streams up. A=3 reached {gpuSeries(3).peak.completedQps.toFixed(2)},
+{Math.round((gpuSeries(3).peak.completedQps / gpuSeries(2).peak.completedQps - 1) * 100)}%
+above the default. All 22 queries completed under each of the three caps. A
+query that allocates more than its cap fails with `query_memory_limit_exceeded`
+while the other admitted queries continue. Raising A therefore raises
+throughput for queries that fit the smaller cap and lowers the largest query
+the server can run. [Memory and query lifetime](../../design/admission.mdx)
+describes the queue, the caps and how the allocator enforces them.
+
+#### Load above capacity
+
+In the overload runs, the client submitted queries to the default
+configuration at a fixed rate for five minutes after 30 seconds of warm-up. It
+sent each query on schedule whether or not earlier ones had finished, picking
+among the 22 queries with a seeded draw. C below is the default configuration's
+highest median throughput, {serverLoadBenchmark.overload.capacityQps.toFixed(2)}
+queries per second. Values are medians of
+{serverLoadBenchmark.config.overloadRepeats} runs.
+
+<ServerLoadOverloadTable />
+
+Completed throughput held between 1.6 and 1.7 queries per second when the
+offered rate doubled. The server rejected the excess with `service_overloaded`.
+A query that found all {serverLoadBenchmark.config.maxQueuedAttempts} queue
+places taken received it after a median 49 ms. A queued query that had not
+started within `max_queue_wait_ms` ({serverLoadBenchmark.config.maxQueueWaitMs / 1000} s)
+received it when the wait expired. Accepted queries at 1.5 × C and above waited in a
+full queue before running, and their p95 latency rose to 32 s. Every accepted
+result matched the CPU reference. After each run the server reported no active
+queries and no granted memory.
+
+#### Server load measurement
+
+- Client and server ran on one machine over loopback. `taskset` pinned the
+  client to {serverLoadBenchmark.environment.clientCpuThreads} vCPUs and the
+  server to the other {serverLoadBenchmark.environment.serverCpuThreads}. The
+  Parquet files were fully resident in the page cache before each run.
+- The server is a release build of commit
+  <code>{serverLoadBenchmark.environment.sourceRevision.slice(0, 12)}</code>
+  (`algeon_server` SHA-256
+  <code>{serverLoadBenchmark.environment.serverBinarySha256.slice(0, 16)}</code>…).
+  The default configuration is
+  [`tpch-sf100-server.toml`](https://github.com/algeon-dev/algeon/blob/main/crates/tools/fixtures/stress/tpch-sf100-server.toml),
+  which sets only `native_required` and the table registrations. A=1 and A=3
+  add one `[[admission.device_profiles]]` entry. The CPU path ran with
+  `datafusion.execution.target_partitions = 32` and
+  `datafusion.execution.batch_size = 32768`.
+- Each point is the median of {serverLoadBenchmark.config.repeats} runs, with
+  a fresh server for each run. Throughput counts queries completed in the
+  measured pass, from the moment every stream finished warm-up to the last
+  completion. Latency runs from `GetFlightInfo` to the last result batch.
+- Every result was compared with references recorded by the CPU path, using
+  the comparison rules and tolerances of the TPC-DS parity report above.
+  {serverLoadBenchmark.summary.gpuResultsMatched.toLocaleString('en-US')} GPU
+  results matched, warm-up passes included. Q11 returns no rows at SF100
+  because the DuckDB query text fixes its `FRACTION` at 0.0001 where the
+  specification uses 0.0001 / SF. Its check compares only the schema.
+- This run is derived from TPC-H and is not a TPC-H Throughput Test. It runs
+  no refresh functions, orders each stream from seed
+  {serverLoadBenchmark.config.seed} and reports no TPC metric.
+
+The
+[stress runbook](https://github.com/algeon-dev/algeon/blob/main/crates/tools/fixtures/stress/RUNBOOK.md#tpc-h-sf100-streams)
+lists the server, reference, streams and overload commands for
+`algeon_tools flight-sql-stress` and the directory layout the page generator
+reads. The generator refuses runs whose configuration, queries or references
+differ, a failed stream query, a result mismatch, and an overload run off its
+rate or limited by the client:
+
+```bash
+python3 website/scripts/generate_server_load_benchmark_ts.py \
+  --profile target/stress/server-load/gpu-a1.toml --profile target/stress/server-load/gpu-a2.toml \
+  --profile target/stress/server-load/gpu-a3.toml --profile target/stress/server-load/cpu.toml \
+  --streams-root target/stress/server-load/streams --overload-root target/stress/server-load/overload \
+  --reference target/stress/tpch-sf100-reference-run \
+  --environment target/stress/server-load/environment.json \
+  --out website/src/data/serverLoadBenchmark.ts
 ```

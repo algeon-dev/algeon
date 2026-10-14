@@ -12,7 +12,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import statistics
 import subprocess
 import time
@@ -26,11 +25,10 @@ QUERIES = ("q01", "q06", "q15", "q17", "q18", "q03")
 
 
 def sql_by_id(catalog: Path) -> dict[str, str]:
-    source = catalog.read_text()
-    matches = re.findall(r'id: "(q\d\d)",\s*sql: r#"(.*?)"#', source, re.DOTALL)
-    if len(matches) != 22 or len(dict(matches)) != 22:
-        raise ValueError(f"expected 22 unique TPC-H queries in {catalog}")
-    return dict(matches)
+    files = sorted(catalog.glob("q[0-9][0-9].sql"))
+    if len(files) != 22:
+        raise ValueError(f"expected 22 TPC-H queries in {catalog}")
+    return {path.stem: path.read_text() for path in files}
 
 
 def connect(dataset: Path, extension: Path | None) -> duckdb.DuckDBPyConnection:
@@ -107,7 +105,7 @@ def main() -> None:
     if not selected_queries or any(query not in QUERIES for query in selected_queries) or len(set(selected_queries)) != len(selected_queries):
         parser.error("queries must be unique IDs from " + ",".join(QUERIES))
     root = Path(__file__).resolve().parents[2]
-    catalog = root / "crates/workloads/src/tpch/catalog.rs"
+    catalog = root / "crates/workloads/src/tpch/queries"
     extension = args.sirius_root.resolve() / "build/release/extension/sirius/sirius.duckdb_extension"
     os.environ["SIRIUS_CONFIG_FILE"] = str(args.config.resolve())
     sql = sql_by_id(catalog)
@@ -123,7 +121,7 @@ def main() -> None:
         "sirius_tracked_diff_sha256": git_diff_sha256(args.sirius_root),
         "sirius_untracked_paths": git_output(args.sirius_root, "ls-files", "--others", "--exclude-standard").splitlines(),
         "catalog": str(catalog),
-        "catalog_sha256": hashlib.sha256(catalog.read_bytes()).hexdigest(),
+        "catalog_sha256": hashlib.sha256(b"".join(path.read_bytes() for path in sorted(catalog.glob("q[0-9][0-9].sql")))).hexdigest(),
         "dataset": str(args.dataset.resolve()),
         "dataset_files": dataset_files,
         "sirius_extension": str(extension),

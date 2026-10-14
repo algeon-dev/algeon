@@ -155,6 +155,11 @@
   background: var(--ifm-color-emphasis-0);
 }
 
+/* Long column headers wrap so a narrow table fits without scrolling. */
+.wrapHeaders th {
+  white-space: normal;
+}
+
 .queryCell {
   color: var(--ifm-heading-color);
   font-weight: 700;

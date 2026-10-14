@@ -58,6 +58,8 @@ mod shadow_estimate_report;
 mod connection_retry;
 #[cfg(all(feature = "datafusion-baseline-contract-validate", not(test)))]
 mod datafusion_baseline_contract_validate;
+// Shared by flight-sql-stress admission sampling and the runtime-observability runner.
+mod diagnostics_tsv;
 #[cfg(not(test))]
 mod flight_sql_query;
 // The stress driver carries pure parser/reduction unit tests, so it compiles
@@ -68,6 +70,7 @@ mod flight_sql_stress;
 #[cfg(feature = "single-node-multi-gpu-validate")]
 #[cfg_attr(test, allow(dead_code))]
 mod single_node_multi_gpu_validate;
+mod split_mix64;
 #[cfg(feature = "validate-query")]
 mod validate_query;
 #[tokio::main(flavor = "current_thread")]
@@ -112,7 +115,7 @@ fn print_usage() {
            flock /tmp/cudf-gpu.lock cargo run -p tools --features shadow-estimate-report -- shadow-estimate-report --workload tpch|tpcds [OPTIONS]\n\
            cargo run -p tools -- flight-sql-cugraph-smoke [URL]\n\
            cargo run -p tools -- flight-sql-query [--connect-timeout-secs N] [URL] [SQL]\n\
-           cargo run -p tools -- flight-sql-stress --config flight-stress-profile.json --out-dir DIR\n\
+           cargo run -p tools [--features flight-sql-stress-check] -- flight-sql-stress --config flight-stress-profile.json --out-dir DIR\n\
            flock /tmp/cudf-gpu.lock cargo run -p tools --features server-runtime-observability-e2e -- server-runtime-observability-e2e [OPTIONS]\n\
            flock /tmp/cudf-gpu.lock cargo run -p tools --features embedded-backend-e2e -- embedded-backend-e2e [--citation-data DIR]\n\
            flock /tmp/cudf-gpu.lock cargo run -p tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>\n\

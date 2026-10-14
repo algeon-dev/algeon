@@ -11,7 +11,7 @@
 use serde::Serialize;
 
 use super::profile::{ArrivalMode, MAX_PLANNED_ATTEMPTS, RateOverrunPolicy, SchedulingProfile};
-use crate::ToolResult;
+use crate::{ToolResult, split_mix64::SplitMix64};
 
 /// Which measurement window an arrival belongs to. Warmup arrivals execute but
 /// are excluded from reported rates and latency distributions.
@@ -318,7 +318,7 @@ fn plan_rate(
     let mut offset_ns = step_start_ns;
     while arrivals.len() < MAX_PLANNED_ATTEMPTS {
         // Exponential interarrival: -mean * ln(U), U in (0, 1].
-        let gap_ns = (-mean_gap_ns * rng.next_unit_interval().ln()).round();
+        let gap_ns = (-mean_gap_ns * next_unit_interval(rng).ln()).round();
         let gap_ns = if gap_ns.is_finite() && gap_ns >= 0.0 { gap_ns as u64 } else { 0 };
         offset_ns = offset_ns.saturating_add(gap_ns);
         if offset_ns >= horizon_ns {
@@ -359,31 +359,11 @@ fn seconds_to_ns(seconds: u64) -> ToolResult<u64> {
     seconds.checked_mul(1_000_000_000).ok_or_else(|| "scheduling window overflows nanoseconds".into())
 }
 
-/// SplitMix64, implemented here so the recorded seed maps to the same schedule
-/// across toolchain and crate-version changes.
-struct SplitMix64 {
-    state: u64,
-}
-
-impl SplitMix64 {
-    const fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    /// A draw in (0, 1]; zero is excluded so the exponential transform stays
-    /// finite.
-    fn next_unit_interval(&mut self) -> f64 {
-        let value = self.next_u64() >> 11;
-        (value as f64 + 1.0) / (1_u64 << 53) as f64
-    }
+/// A SplitMix64 draw in (0, 1]; zero is excluded so the exponential transform
+/// stays finite.
+fn next_unit_interval(rng: &mut SplitMix64) -> f64 {
+    let value = rng.next_u64() >> 11;
+    (value as f64 + 1.0) / (1_u64 << 53) as f64
 }
 
 #[cfg(test)]

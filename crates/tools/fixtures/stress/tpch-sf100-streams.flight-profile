@@ -1,0 +1,43 @@
+{
+  "schema": "algeon_datafusion.flight_sql_stress.run_profile",
+  "name": "tpch-sf100-streams",
+  "server": {
+    "url": "http://127.0.0.1:50051",
+    "config_file": "tpch-sf100-server.toml"
+  },
+  "statements": [
+    { "name": "q01", "sql_file": "../../../workloads/src/tpch/queries/q01.sql" },
+    { "name": "q02", "sql_file": "../../../workloads/src/tpch/queries/q02.sql" },
+    { "name": "q03", "sql_file": "../../../workloads/src/tpch/queries/q03.sql" },
+    { "name": "q04", "sql_file": "../../../workloads/src/tpch/queries/q04.sql" },
+    { "name": "q05", "sql_file": "../../../workloads/src/tpch/queries/q05.sql" },
+    { "name": "q06", "sql_file": "../../../workloads/src/tpch/queries/q06.sql" },
+    { "name": "q07", "sql_file": "../../../workloads/src/tpch/queries/q07.sql" },
+    { "name": "q08", "sql_file": "../../../workloads/src/tpch/queries/q08.sql" },
+    { "name": "q09", "sql_file": "../../../workloads/src/tpch/queries/q09.sql" },
+    { "name": "q10", "sql_file": "../../../workloads/src/tpch/queries/q10.sql" },
+    { "name": "q11", "sql_file": "../../../workloads/src/tpch/queries/q11.sql" },
+    { "name": "q12", "sql_file": "../../../workloads/src/tpch/queries/q12.sql" },
+    { "name": "q13", "sql_file": "../../../workloads/src/tpch/queries/q13.sql" },
+    { "name": "q14", "sql_file": "../../../workloads/src/tpch/queries/q14.sql" },
+    { "name": "q15", "sql_file": "../../../workloads/src/tpch/queries/q15.sql" },
+    { "name": "q16", "sql_file": "../../../workloads/src/tpch/queries/q16.sql" },
+    { "name": "q17", "sql_file": "../../../workloads/src/tpch/queries/q17.sql" },
+    { "name": "q18", "sql_file": "../../../workloads/src/tpch/queries/q18.sql" },
+    { "name": "q19", "sql_file": "../../../workloads/src/tpch/queries/q19.sql" },
+    { "name": "q20", "sql_file": "../../../workloads/src/tpch/queries/q20.sql" },
+    { "name": "q21", "sql_file": "../../../workloads/src/tpch/queries/q21.sql" },
+    { "name": "q22", "sql_file": "../../../workloads/src/tpch/queries/q22.sql" }
+  ],
+  "load": {
+    "arrival_mode": "streams",
+    "clients": 4,
+    "seed": 20261013,
+    "passes": 2,
+    "warmup_passes": 1,
+    "connection_mode": "pooled"
+  },
+  "admission_sampling": {
+    "interval_ms": 1000
+  }
+}
