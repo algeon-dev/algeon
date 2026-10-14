@@ -495,7 +495,17 @@ fn validation_request_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlCon
             "options": options_schema(algorithm, config)
         }
     });
-    let constraints = group_constraints(algorithm, true);
+    let mut constraints = group_constraints(algorithm, true);
+    if algorithm == CugraphAlgorithm::Bfs {
+        constraints.push(json!({
+            "if": {"properties": {"options": {
+                "required": ["output_mode"],
+                "properties": {"output_mode": {"const": "path"}}
+            }}},
+            "then": {"properties": {"relations": {"required": ["target_vertices"]}}},
+            "else": {"properties": {"relations": {"not": {"required": ["target_vertices"]}}}}
+        }));
+    }
     if !constraints.is_empty() {
         schema["allOf"] = Value::Array(constraints);
     }

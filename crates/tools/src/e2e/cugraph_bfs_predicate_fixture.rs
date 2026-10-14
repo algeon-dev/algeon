@@ -3,7 +3,7 @@
 //! This is an explicit tools acceptance command because it needs CUDA and
 //! Python cuGraph.
 //! It writes a deterministic numeric graph fixture under `fixture/data/cugraph/`, which
-//! is gitignored, then compares normalized
+//! is gitignored, then compares nullable vertex
 //! `cugraph_bfs(... include_edges ...)` output against a Python cuGraph
 //! oracle built from the same allowed-edge relation.
 
@@ -69,7 +69,7 @@ pub async fn run_numeric_include_edges_acceptance() {
             "SELECT vertex, distance, reachable \
              FROM cugraph_bfs(\
                   edges => (SELECT src, dst FROM bfs_raw_edges), source_vertex => 0,\
-                  construction_policy => 'raw_libcugraph', output_mode => 'normalized',\
+                  construction_policy => 'raw_libcugraph', output_mode => 'vertices',\
                   include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM bfs_allowed_edges)) \
              ORDER BY vertex",
         )
@@ -154,7 +154,7 @@ pub async fn run_utf8_include_edges_acceptance() {
             "SELECT vertex, distance, reachable \
              FROM cugraph_bfs(\
                   edges => (SELECT src, dst FROM bfs_utf8_raw_edges), source_vertex => 'v00000000',\
-                  construction_policy => 'raw_libcugraph', output_mode => 'normalized',\
+                  construction_policy => 'raw_libcugraph', output_mode => 'vertices',\
                   include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM bfs_utf8_allowed_edges)) \
              ORDER BY vertex",
         )
@@ -333,52 +333,70 @@ pub async fn run_utf8_vertex_predicates_acceptance() {
         (
             "include_vertices",
             &fixture.included_vertices,
-            "construction_policy => 'raw_libcugraph', output_mode => 'normalized', \
+            "construction_policy => 'raw_libcugraph', output_mode => 'vertices', \
               include_vertices => (SELECT vertex_id AS vertex FROM bfs_utf8_included_vertices)",
         ),
         (
             "exclude_vertices",
             &fixture.excluded_vertices,
-            "construction_policy => 'raw_libcugraph', output_mode => 'normalized', \
+            "construction_policy => 'raw_libcugraph', output_mode => 'vertices', \
               exclude_vertices => (SELECT vertex_id AS vertex FROM bfs_utf8_excluded_vertices)",
         ),
-        (
-            "target_vertices",
-            &fixture.target_vertices,
-            "construction_policy => 'raw_libcugraph', output_mode => 'normalized', return_target_info => true, \
-              target_vertices => (SELECT vertex_id AS vertex FROM bfs_utf8_target_vertices)",
-        ),
+        ("target_vertices", &fixture.target_vertices, "construction_policy => 'raw_libcugraph', depth_limit => 2"),
     ];
 
     for (mode, predicate_path, call_arguments) in cases {
         let oracle = python_bfs_utf8_vertex_predicate_oracle(&fixture, predicate_path, mode)
             .expect("Python cuGraph oracle is required for the selected UTF-8 BFS predicate acceptance test");
-        let select_list = if mode == "target_vertices" {
-            "vertex, distance, reachable, target_found, target_distance"
+        let sql = if mode == "target_vertices" {
+            let boundary_target = vertex_label((fixture.vertex_count - 1).min(2));
+            format!(
+                "WITH bfs AS (\
+                   SELECT vertex, distance FROM cugraph_bfs(\
+                     edges => (SELECT src, dst FROM bfs_utf8_raw_edges), source_vertex => 'v00000000', {call_arguments})), \
+                 targets AS (\
+                   SELECT vertex_id AS vertex FROM bfs_utf8_target_vertices \
+                   UNION ALL SELECT 'v00000000' \
+                   UNION ALL SELECT '{boundary_target}' \
+                   UNION ALL SELECT 'missing-target') \
+                 SELECT t.vertex, b.distance, b.distance IS NOT NULL AS reachable \
+                 FROM targets t LEFT JOIN bfs b ON b.vertex = t.vertex \
+                 ORDER BY t.vertex"
+            )
         } else {
-            "vertex, distance, reachable"
+            format!(
+                "SELECT vertex, distance, reachable \
+                 FROM cugraph_bfs(edges => (SELECT src, dst FROM bfs_utf8_raw_edges), source_vertex => 'v00000000', {call_arguments}) \
+                 ORDER BY vertex"
+            )
         };
-        let sql = format!(
-            "SELECT {select_list} \
-             FROM cugraph_bfs(edges => (SELECT src, dst FROM bfs_utf8_raw_edges), source_vertex => 'v00000000', {call_arguments}) \
-             ORDER BY vertex"
-        );
         let sql_start = Instant::now();
         let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
         let sql_ms = sql_start.elapsed().as_secs_f64() * 1000.0;
         let actual = normalized_utf8_bfs_reachability_rows(&batches);
 
         assert_eq!(actual, oracle.rows, "SQL Utf8 BFS {mode} predicate output must match the Python cuGraph oracle",);
-        assert_eq!(actual.len(), fixture.vertex_count as usize);
-        assert!(
-            actual.iter().any(|row| !row.reachable),
-            "{mode} fixture case should prove predicate filtering / early-stop with unreachable rows",
-        );
         if mode == "target_vertices" {
+            assert_eq!(actual.len(), fixture.target_vertex_count + 3);
             assert!(
-                actual.iter().all(|row| row.target_found == Some(true) && row.target_distance.is_some()),
-                "target_vertices fixture should expose target metadata on every SQL output row",
+                actual.iter().any(|row| row.vertex == "missing-target" && row.distance.is_none() && !row.reachable),
+                "target join must retain a target absent from the graph",
             );
+            let boundary_target = vertex_label((fixture.vertex_count - 1).min(2));
+            assert!(
+                actual
+                    .iter()
+                    .any(|row| row.vertex == boundary_target && row.distance.is_some_and(|distance| distance > 0)),
+                "BFS must reach targets beyond the source target instead of stopping at the first hit",
+            );
+        } else {
+            assert_eq!(actual.len(), fixture.vertex_count as usize);
+            if fixture.excluded_vertex_count > 0 {
+                assert!(
+                    actual.iter().any(|row| !row.reachable),
+                    "{mode} fixture case should prove predicate filtering with unreached rows",
+                );
+            }
         }
 
         eprintln!(
@@ -449,8 +467,6 @@ struct StringBfsReachabilityRow {
     vertex: String,
     distance: Option<i64>,
     reachable: bool,
-    target_found: Option<bool>,
-    target_distance: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1051,13 +1067,13 @@ except Exception as exc:
     sys.exit(77)
 
 mode = sys.argv[3]
+vertex_count = int(sys.argv[4])
 t0 = time.perf_counter()
 edges = cudf.read_parquet(sys.argv[1])[["src", "dst"]]
 predicate = cudf.read_parquet(sys.argv[2])
 t1 = time.perf_counter()
 labels = cudf.concat([edges["src"], edges["dst"]]).drop_duplicates().sort_values()
 filtered = edges
-target_distance = None
 if mode == "include_vertices":
     vertices = predicate["vertex_id"]
     filtered = edges[edges["src"].isin(vertices) & edges["dst"].isin(vertices)]
@@ -1072,34 +1088,29 @@ t2 = time.perf_counter()
 graph = cugraph.Graph(directed=True)
 graph.from_cudf_edgelist(filtered, source="src", destination="dst", renumber=True)
 t3 = time.perf_counter()
-result = cugraph.bfs(graph, start="v00000000")
+result = cugraph.bfs(graph, start="v00000000", depth_limit=2) if mode == "target_vertices" else cugraph.bfs(graph, start="v00000000")
 t4 = time.perf_counter()
 result["distance"] = result["distance"].astype("int64")
-if mode == "target_vertices":
-    target_hits = result.merge(predicate, left_on="vertex", right_on="vertex_id", how="inner")
-    reachable_targets = target_hits[target_hits["distance"] < 2147483647]
-    if len(reachable_targets) > 0:
-        target_distance = int(reachable_targets["distance"].min())
-target_found = target_distance is not None
-
 distance_rows = result[["vertex", "distance"]].to_pandas()
 distance_by_vertex = {
     str(row.vertex): int(row.distance)
     for row in distance_rows.itertuples(index=False)
 }
 rows = []
-for vertex in [str(value) for value in labels.to_pandas().tolist()]:
+vertices = [str(value) for value in labels.to_pandas().tolist()]
+if mode == "target_vertices":
+    vertices = sorted(
+        [str(value) for value in predicate["vertex_id"].to_pandas().tolist()]
+        + ["v00000000", f"v{min(vertex_count - 1, 2):08}", "missing-target"]
+    )
+for vertex in vertices:
     distance = distance_by_vertex.get(vertex)
     if distance is not None and distance >= 2147483647:
-        distance = None
-    if target_distance is not None and distance is not None and distance > target_distance:
         distance = None
     rows.append({
         "vertex": vertex,
         "distance": distance,
         "reachable": distance is not None,
-        "target_found": target_found if mode == "target_vertices" else None,
-        "target_distance": target_distance if mode == "target_vertices" else None,
     })
 t5 = time.perf_counter()
 print(json.dumps({
@@ -1122,6 +1133,7 @@ print(json.dumps({
         .arg(&fixture.raw_edges)
         .arg(predicate_path)
         .arg(mode)
+        .arg(fixture.vertex_count.to_string())
         .output()
     {
         Ok(output) => output,
@@ -1179,10 +1191,6 @@ fn normalized_utf8_bfs_reachability_rows(batches: &[RecordBatch]) -> Vec<StringB
         let vertices = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
         let distances = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
         let reachable_column = batch.column(2).as_any().downcast_ref::<BooleanArray>().unwrap();
-        let target_found_column =
-            (batch.num_columns() > 3).then(|| batch.column(3).as_any().downcast_ref::<BooleanArray>().unwrap());
-        let target_distance_column =
-            (batch.num_columns() > 4).then(|| batch.column(4).as_any().downcast_ref::<Int64Array>().unwrap());
         for row in 0..batch.num_rows() {
             let distance = (!distances.is_null(row)).then(|| distances.value(row));
             let reachable = reachable_column.value(row);
@@ -1192,16 +1200,7 @@ fn normalized_utf8_bfs_reachability_rows(batches: &[RecordBatch]) -> Vec<StringB
                 "normalized reachable must agree with nullable distance for vertex {}",
                 vertices.value(row),
             );
-            let target_found = target_found_column.map(|column| column.value(row));
-            let target_distance =
-                target_distance_column.and_then(|column| (!column.is_null(row)).then(|| column.value(row)));
-            rows.push(StringBfsReachabilityRow {
-                vertex: vertices.value(row).to_string(),
-                distance,
-                reachable,
-                target_found,
-                target_distance,
-            });
+            rows.push(StringBfsReachabilityRow { vertex: vertices.value(row).to_string(), distance, reachable });
         }
     }
     rows
@@ -1305,8 +1304,6 @@ fn parse_python_utf8_bfs_reachability_oracle(stdout: &[u8]) -> PythonUtf8BfsReac
             vertex: row["vertex"].as_str().unwrap().to_string(),
             distance: row["distance"].as_i64(),
             reachable: row["reachable"].as_bool().unwrap(),
-            target_found: row["target_found"].as_bool(),
-            target_distance: row["target_distance"].as_i64(),
         })
         .collect();
     PythonUtf8BfsReachabilityOracle {

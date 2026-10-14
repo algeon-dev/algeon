@@ -26,12 +26,13 @@
   "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
   "notes": [
     "BFS path mode returns one shortest path; the relational path check enumerates all 10 two-hop chains for these seed records.",
+    "The reach SQL was migrated to vertices after capture. Captured rows and measurements come from the equivalent normalized BFS call.",
     "Bibliography SQL uses native_preferred. native_required rejects distributed aggregate lowering in this query. The saved observation records CPU/GPU boundaries; no SQL workaround was used."
   ],
   "reach": {
     "name": "citation-reach",
     "captured_at_utc": "2026-10-07T05:42:40.817941+00:00",
-    "sql": "SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year\nFROM cugraph_bfs(\n  edges => (SELECT dst AS src, src AS dst FROM citation_edges_by_dst),\n  sources => (SELECT paper_id AS vertex FROM papers\n              WHERE title = 'ImageNet Classification with Deep Convolutional Neural Networks'\n                AND year = 2012),\n  depth_limit => 3, output_mode => 'normalized') b\nJOIN papers p ON p.paper_id = b.vertex\nWHERE b.reachable\nGROUP BY b.distance\nORDER BY b.distance;",
+    "sql": "SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year\nFROM cugraph_bfs(\n  edges => (SELECT dst AS src, src AS dst FROM citation_edges_by_dst),\n  sources => (SELECT paper_id AS vertex FROM papers\n              WHERE title = 'ImageNet Classification with Deep Convolutional Neural Networks'\n                AND year = 2012),\n  depth_limit => 3, output_mode => 'vertices') b\nJOIN papers p ON p.paper_id = b.vertex\nWHERE b.reachable\nGROUP BY b.distance\nORDER BY b.distance;",
     "query_id": "845bab69-ef96-4662-85bb-e33c5ed40827",
     "rows": [
       {

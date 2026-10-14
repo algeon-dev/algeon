@@ -721,7 +721,8 @@ pub(super) fn register_string_vertex_memtable(
 pub(super) fn bfs_distance_for(batch: &RecordBatch, vertex: i64) -> Option<i64> {
     let vertices = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
     let distances = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
-    (0..batch.num_rows()).find_map(|row| (vertices.value(row) == vertex).then(|| distances.value(row)))
+    (0..batch.num_rows())
+        .find_map(|row| (vertices.value(row) == vertex && !distances.is_null(row)).then(|| distances.value(row)))
 }
 
 pub(super) fn string_bfs_distance_for(batch: &RecordBatch, vertex: &str) -> Option<i64> {

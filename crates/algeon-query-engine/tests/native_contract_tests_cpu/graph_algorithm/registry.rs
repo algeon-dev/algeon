@@ -33,16 +33,6 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     assert!(!edge_normalize.spec.add_reverse);
     assert_eq!(edge_normalize.spec.dedup.as_str(), "keep_last");
     assert_eq!(edge_normalize.spec.weight_combiner.as_str(), "keep_last_input_order");
-
-    let mut bfs_params = GraphBfsParams::new(0, None);
-    bfs_params.return_target_info = true;
-    let schema =
-        GraphAlgorithm::Bfs.definition().result_schema_for_params(&GraphAlgorithmParams::Bfs(Box::new(bfs_params)));
-    assert_eq!(
-        schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
-        vec!["vertex", "distance", "predecessor", "target_found", "target_distance"],
-        "BFS target-info schema is native descriptor-owned",
-    );
 }
 
 #[test]
@@ -148,7 +138,6 @@ fn bfs_predicate_side_inputs_are_explicit_native_ir_edges() {
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
         path_output: None,
-        return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
@@ -164,6 +153,7 @@ fn bfs_predicate_side_inputs_are_explicit_native_ir_edges() {
     };
     assert_eq!(graph.inputs, vec![graph.edge_input(), targets]);
     assert_eq!(plan.root_node().input_ids(), &[graph.edge_input(), targets]);
+    assert_eq!(graph.output_schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::Bfs).as_ref());
 
     let display = plan.to_string();
     assert!(display.contains("side_inputs=n1"));
@@ -299,7 +289,6 @@ fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
         path_output: None,
-        return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,

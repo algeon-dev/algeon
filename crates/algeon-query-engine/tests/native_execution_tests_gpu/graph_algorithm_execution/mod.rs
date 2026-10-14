@@ -78,8 +78,8 @@ fn graph_algorithm_execution_cases_2() {
             similarity::bounded_similarity_accepts_gpu_pair_input_exactly_once,
         ),
         (
-            "graph_algorithm_execution::bfs::bfs_target_metadata_columns_are_shaped_when_requested",
-            bfs::bfs_target_metadata_columns_are_shaped_when_requested,
+            "graph_algorithm_execution::bfs::bfs_target_predicate_keeps_raw_output_and_target_diagnostics",
+            bfs::bfs_target_predicate_keeps_raw_output_and_target_diagnostics,
         ),
         (
             "graph_algorithm_execution::reproducible_results::betweenness_scores_are_bitwise_stable_across_runs",

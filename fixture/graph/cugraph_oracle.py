@@ -5,7 +5,7 @@ Produces deterministic JSON output for a single (dataset, algorithm,
 params) triple by running RAPIDS Python cuGraph on a local CSV fixture
 prepared from the pinned cuGraph source. The Rust parity harness reads
 these JSON files from ``fixture/graph/cugraph/oracle/`` and compares the
-native cuGraph execution path against them.
+cuGraph SQL execution path against them.
 
 The script intentionally has a narrow interface so the Rust
 ``refresh_cugraph_oracle`` binary and the parity harness can both invoke
@@ -218,21 +218,32 @@ def _personalized_pagerank(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[s
 
 
 def _bfs(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
+    import numpy as np
+
     source_vertex = int(params["source_vertex"])
     depth_limit = params.get("depth_limit")
     kwargs: Dict[str, Any] = {"start": source_vertex}
     if depth_limit is not None and depth_limit != 0:
         kwargs["depth_limit"] = int(depth_limit)
     df = cugraph_mod.bfs(graph, **kwargs).sort_values("vertex").reset_index(drop=True)
-    distances = df["distance"].to_pandas().tolist()
-    predecessors_pd = df["predecessor"].to_pandas()
+    distance_sentinel = np.iinfo(df["distance"].dtype).max
+    distances = [
+        None if int(distance) == distance_sentinel else int(distance)
+        for distance in df["distance"].to_pandas().tolist()
+    ]
+    vertices = [int(vertex) for vertex in df["vertex"].to_pandas().tolist()]
+    if depth_limit == 0:
+        # Python cuGraph treats zero as unlimited; SQL reaches only the source.
+        distances = [0 if vertex == source_vertex else None for vertex in vertices]
     predecessors = [
-        None if (p is None or int(p) < 0) else int(p) for p in predecessors_pd.tolist()
+        None if distance is None or distance == 0 or predecessor is None or int(predecessor) < 0 else int(predecessor)
+        for distance, predecessor in zip(distances, df["predecessor"].to_pandas().tolist())
     ]
     return {
-        "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
-        "distance": [int(d) for d in distances],
+        "vertex": vertices,
+        "distance": distances,
         "predecessor": predecessors,
+        "reachable": [distance is not None for distance in distances],
     }
 
 

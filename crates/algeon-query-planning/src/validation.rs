@@ -752,10 +752,6 @@ fn validate_graph_algorithm_side_inputs(
                     return Err(graph_algorithm_error("BFS path output requires a target_vertices binding")
                         .with_fact("reason", "bfs_path_target_binding_missing"));
                 }
-                if params.return_target_info {
-                    return Err(graph_algorithm_error("BFS path output cannot also return target metadata")
-                        .with_fact("reason", "bfs_path_target_metadata_conflict"));
-                }
             }
             validate_graph_predicate_input(
                 params.source_vertices.as_ref(),

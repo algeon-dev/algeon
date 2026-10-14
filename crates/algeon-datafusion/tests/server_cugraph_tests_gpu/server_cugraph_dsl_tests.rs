@@ -148,6 +148,31 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
         .try_decode_schema()
         .unwrap();
 
+    for mode in ["", ", output_mode => 'vertices'"] {
+        let sql = format!(
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 0{mode}) ORDER BY vertex"
+        );
+        let info = client.execute(sql, None).await.unwrap();
+        let advertised = info.clone().try_decode_schema().unwrap();
+        assert_eq!(
+            advertised.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>(),
+            vec![
+                Field::new("vertex", DataType::Int64, false),
+                Field::new("distance", DataType::Int64, true),
+                Field::new("predecessor", DataType::Int64, true),
+                Field::new("reachable", DataType::Boolean, false),
+            ]
+        );
+        let ticket = info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+        let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+        let batch = single_batch(&batches);
+        assert_eq!(batch.schema().as_ref(), &advertised);
+        assert_eq!(int64_column(batch, 0), vec![0, 1, 2, 3]);
+        assert_eq!(int64_column(batch, 1), vec![0, 1, 2, 1]);
+        assert!(batch.column(2).is_null(0));
+        assert!((0..batch.num_rows()).all(|row| bool_value(batch, 3, row)));
+    }
+
     server.abort();
     let _ = fs::remove_dir_all(&dir);
 

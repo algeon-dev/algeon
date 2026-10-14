@@ -464,7 +464,7 @@ async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
 }
 
 #[tokio::test]
-async fn cugraph_bfs_normalized_output_mode_is_opt_in() {
+async fn cugraph_bfs_default_and_explicit_vertices_share_the_nullable_schema() {
     let state = SessionStateBuilder::new_with_default_features()
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("install cuGraph SQL")
@@ -482,7 +482,7 @@ async fn cugraph_bfs_normalized_output_mode_is_opt_in() {
     let df = ctx
         .sql(
             "SELECT * FROM cugraph_bfs(\
-             edges => (SELECT src, dst FROM graph_edges), source_vertex => 0, output_mode => 'normalized')",
+             edges => (SELECT src, dst FROM graph_edges), source_vertex => 0, output_mode => 'vertices')",
         )
         .await
         .unwrap();
@@ -511,7 +511,7 @@ async fn cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains() 
     let error = ctx
         .sql(
             "SELECT * FROM cugraph_bfs(\
-             edges => (SELECT src, dst FROM numeric_edges), source_vertex => 'a', output_mode => 'normalized')",
+             edges => (SELECT src, dst FROM numeric_edges), source_vertex => 'a', output_mode => 'vertices')",
         )
         .await
         .unwrap_err()
@@ -536,7 +536,7 @@ async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema()
         .sql(
             "SELECT * FROM cugraph_bfs(\
              edges => (SELECT src, dst FROM raw_edges),\
-             sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'normalized')",
+             sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'vertices')",
         )
         .await
         .unwrap();
@@ -593,7 +593,7 @@ async fn cugraph_bfs_string_subplans_lower_to_native_gpu_producers() {
             "SELECT * FROM cugraph_bfs(\
              edges => (SELECT src, dst FROM raw_edges),\
              sources => (SELECT vertex_id AS vertex FROM bfs_sources),\
-             include_vertices => (SELECT vertex_id AS vertex FROM included), output_mode => 'normalized')",
+             include_vertices => (SELECT vertex_id AS vertex FROM included), output_mode => 'vertices')",
         )
         .await
         .unwrap();
@@ -693,7 +693,7 @@ async fn cugraph_relation_projections_preserve_exact_camel_case_columns() {
         (
             r#"SELECT * FROM cugraph_bfs(
                 edges => (SELECT "edgeSrc" AS src, "edgeDst" AS dst, "edgeWeight" AS weight FROM camel_edges),
-                source_vertex => 0, target_vertices => (SELECT "targetVertex" AS vertex FROM camel_target))"#,
+                source_vertex => 0, output_mode => 'path', target_vertices => (SELECT "targetVertex" AS vertex FROM camel_target))"#,
             "BFS target relation",
         ),
         (
@@ -743,8 +743,9 @@ fn cugraph_sql_planning_schema_contracts_are_exact() {
         schema_fields(CugraphAlgorithm::Bfs),
         vec![
             Field::new("vertex", DataType::Int64, false),
-            Field::new("distance", DataType::Int64, false),
+            Field::new("distance", DataType::Int64, true),
             Field::new("predecessor", DataType::Int64, true),
+            Field::new("reachable", DataType::Boolean, false),
         ],
     );
     assert_eq!(

@@ -28,7 +28,7 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
             "bfs",
             format!(
                 "SELECT COUNT(*) AS reached FROM cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), \
-                 source_vertex => {seed}, depth_limit => 3, output_mode => 'normalized')"
+                 source_vertex => {seed}, depth_limit => 3, output_mode => 'vertices')"
             ),
             false,
             false,
@@ -38,7 +38,7 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
             "bfs_deep",
             format!(
                 "SELECT COUNT(*) AS reached FROM cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), \
-                 source_vertex => {seed}, output_mode => 'normalized')"
+                 source_vertex => {seed}, output_mode => 'vertices')"
             ),
             false,
             false,
@@ -48,7 +48,7 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
             format!(
                 "SELECT vertex, distance, predecessor, reachable FROM \
                  cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), source_vertex => {seed}, \
-                 output_mode => 'normalized')"
+                 output_mode => 'vertices')"
             ),
             false,
             false,
@@ -58,7 +58,7 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
             format!(
                 "SELECT vertex, distance, predecessor, reachable FROM \
                  cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), source_vertex => {seed}, \
-                 output_mode => 'normalized') ORDER BY vertex"
+                 output_mode => 'vertices') ORDER BY vertex"
             ),
             false,
             false,

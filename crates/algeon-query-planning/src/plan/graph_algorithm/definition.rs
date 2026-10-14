@@ -502,7 +502,10 @@ impl GraphOperationDefinition {
         self.empty_input_policy
     }
 
-    /// Stable SQL-facing result schema for this algorithm.
+    /// Native base result schema for this algorithm.
+    ///
+    /// See [`stable_graph_result_schema`] for BFS's raw result contract and the
+    /// SQL adapter's separate vertex-result schema.
     pub fn output_schema(&self) -> SchemaRef {
         stable_graph_result_schema(self.algorithm)
     }
@@ -608,15 +611,7 @@ impl GraphOperationDefinition {
                 Field::new("distance", DataType::Int64, false),
             ]));
         }
-        let mut fields =
-            self.base_result_schema().fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
-        if let GraphAlgorithmParams::Bfs(params) = params
-            && params.return_target_info
-        {
-            fields.push(Field::new("target_found", DataType::Boolean, false));
-            fields.push(Field::new("target_distance", DataType::Int64, true));
-        }
-        Arc::new(Schema::new(fields))
+        self.base_result_schema()
     }
 }
 

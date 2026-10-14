@@ -158,22 +158,16 @@ fn apply_option(
         },
         "output_mode" if algorithm == CugraphAlgorithm::Bfs => {
             let mode = match json_string(value, key)?.as_str() {
-                "raw" => CugraphBfsOutputMode::Raw,
-                "normalized" => CugraphBfsOutputMode::Normalized,
+                "vertices" => CugraphBfsOutputMode::Vertices,
                 "path" => CugraphBfsOutputMode::Path,
                 other => {
                     return Err(invalid_option(format!(
-                        "unsupported BFS output_mode '{other}', expected 'raw', 'normalized', or 'path'"
+                        "unsupported BFS output_mode '{other}', expected 'vertices' or 'path'"
                     )));
                 },
             };
             if let CugraphAlgorithmParams::Bfs(params) = params {
                 params.output.mode = mode;
-            }
-        },
-        "return_target_info" if algorithm == CugraphAlgorithm::Bfs => {
-            if let CugraphAlgorithmParams::Bfs(params) = params {
-                params.output.return_target_info = json_bool(value, key)?;
             }
         },
         "max_level"

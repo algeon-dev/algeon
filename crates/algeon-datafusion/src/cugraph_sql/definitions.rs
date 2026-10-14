@@ -118,7 +118,6 @@ pub struct CugraphArgumentGroup {
 pub enum CugraphArgumentApplicability {
     Always,
     WhenIn { argument: &'static str, values: &'static [&'static str] },
-    WhenAnyEquals { conditions: &'static [(&'static str, &'static str)] },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +128,6 @@ pub enum CugraphNativeDefault {
     MaxLevel,
     DepthLimit,
     OutputMode,
-    ReturnTargetInfo,
     Threshold,
     Resolution,
     Beta,
@@ -229,11 +227,10 @@ const ALLOWED_TRUE: &[CugraphAllowedValue] = &[CugraphAllowedValue::Boolean(true
 const CONSTRUCTION_POLICIES: &[CugraphAllowedValue] =
     &[CugraphAllowedValue::Text("python_cugraph"), CugraphAllowedValue::Text("raw_libcugraph")];
 const OUTPUT_MODES: &[CugraphAllowedValue] =
-    &[CugraphAllowedValue::Text("raw"), CugraphAllowedValue::Text("normalized"), CugraphAllowedValue::Text("path")];
+    &[CugraphAllowedValue::Text("vertices"), CugraphAllowedValue::Text("path")];
 const DEGREE_TYPES: &[CugraphAllowedValue] =
     &[CugraphAllowedValue::Text("in"), CugraphAllowedValue::Text("out"), CugraphAllowedValue::Text("in_out")];
-const WHEN_RAW_OR_NORMALIZED: &[&str] = &["raw", "normalized"];
-const WHEN_TARGET_VERTICES: &[(&str, &str)] = &[("output_mode", "path"), ("return_target_info", "true")];
+const WHEN_PATH: &[&str] = &["path"];
 
 const EDGE_COLUMNS: &[CugraphRelationColumnDefinition] = &[
     CugraphRelationColumnDefinition {
@@ -507,8 +504,8 @@ const ARG_TARGET_VERTICES: CugraphArgumentDefinition = relation_arg(
     VERTEX_COLUMNS,
     false,
     None,
-    CugraphArgumentApplicability::WhenAnyEquals { conditions: WHEN_TARGET_VERTICES },
-    "BFS target vertices required for path output or target information",
+    CugraphArgumentApplicability::WhenIn { argument: "output_mode", values: WHEN_PATH },
+    "BFS target relation required only for path output; it must contain exactly one row at execution",
 );
 const ARG_INCLUDE_EDGE_IDS: CugraphArgumentDefinition = relation_arg(
     "include_edge_ids",
@@ -612,20 +609,6 @@ const ARG_OUTPUT_MODE: CugraphArgumentDefinition = value_arg(
     OUTPUT_MODES,
     "BFS output shape",
 );
-const ARG_RETURN_TARGET_INFO: CugraphArgumentDefinition = CugraphArgumentDefinition {
-    kind: CugraphArgumentKind::Value(CugraphValueDefinition {
-        value_type: CugraphArgumentType::Boolean,
-        nullable: false,
-        default: CugraphDefaultValue::Native(CugraphNativeDefault::ReturnTargetInfo),
-        range: None,
-        allowed_values: EMPTY_ALLOWED,
-    }),
-    name: "return_target_info",
-    required: false,
-    group: None,
-    applies_when: CugraphArgumentApplicability::WhenIn { argument: "output_mode", values: WHEN_RAW_OR_NORMALIZED },
-    description: "whether raw or normalized BFS output includes target information",
-};
 const ARG_MAX_LEVEL: CugraphArgumentDefinition = value_arg(
     "max_level",
     CugraphArgumentType::UInt32,
@@ -1057,7 +1040,6 @@ const BFS_ARGUMENTS: &[CugraphArgumentDefinition] = &[
     ARG_SOURCE_VERTICES,
     ARG_DEPTH_LIMIT,
     ARG_OUTPUT_MODE,
-    ARG_RETURN_TARGET_INFO,
 ];
 const LOUVAIN_ARGUMENTS: &[CugraphArgumentDefinition] = &[
     ARG_EDGES,
@@ -1349,9 +1331,6 @@ fn native_default(field: CugraphNativeDefault, algorithm: CugraphAlgorithm) -> R
         (CugraphNativeDefault::MaxLevel, CugraphAlgorithmParams::Ecg(params)) => json!(params.max_level),
         (CugraphNativeDefault::DepthLimit, CugraphAlgorithmParams::Bfs(params)) => json!(params.depth_limit),
         (CugraphNativeDefault::OutputMode, CugraphAlgorithmParams::Bfs(params)) => json!(params.output.mode.as_str()),
-        (CugraphNativeDefault::ReturnTargetInfo, CugraphAlgorithmParams::Bfs(params)) => {
-            json!(params.output.return_target_info)
-        },
         (CugraphNativeDefault::Threshold, CugraphAlgorithmParams::Louvain(params)) => json!(params.threshold),
         (CugraphNativeDefault::Threshold, CugraphAlgorithmParams::Ecg(params)) => json!(params.threshold),
         (CugraphNativeDefault::Resolution, CugraphAlgorithmParams::Louvain(params)) => json!(params.resolution),

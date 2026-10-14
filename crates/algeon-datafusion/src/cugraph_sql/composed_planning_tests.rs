@@ -32,7 +32,7 @@ const CPU_INPUT_BFS_SQL: &str = "SELECT vertex, distance, predecessor \
           source_vertex => 0, construction_policy => 'raw_libcugraph') \
      ORDER BY vertex";
 
-const RAW_BFS_TOP_K_SQL: &str = "SELECT vertex, distance, predecessor \
+const BFS_VERTICES_TOP_K_SQL: &str = "SELECT vertex, distance, predecessor \
      FROM cugraph_bfs(edges => (SELECT src, dst FROM phase_c_top_k_edges), \
           source_vertex => 0, construction_policy => 'raw_libcugraph') \
      ORDER BY distance \
@@ -280,12 +280,12 @@ fn composed_planning_tests_cases_1() {
                 .expect("case runtime")
                 .block_on(cpu_input_bfs_orders_by_vertex_through_composed_native_plan())
         }),
-        ("raw_bfs_top_k_consumer_keeps_sort_limit_structure", || {
+        ("bfs_vertices_top_k_consumer_keeps_sort_limit_structure", || {
             TestRuntimeBuilder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("case runtime")
-                .block_on(raw_bfs_top_k_consumer_keeps_sort_limit_structure())
+                .block_on(bfs_vertices_top_k_consumer_keeps_sort_limit_structure())
         }),
         ("pagerank_top_k_consumer_keeps_source_sort_limit_structure", || {
             TestRuntimeBuilder::new_current_thread()
@@ -476,9 +476,8 @@ async fn cpu_input_bfs_orders_by_vertex_through_composed_native_plan() {
     let plan = df.create_physical_plan().await.unwrap();
     let composed = find_composed_exec(plan.as_ref()).expect("backend SQL should compose the downstream native plan");
     let native_plan = composed.native_plan();
-    assert_eq!(native_plan.nodes().len(), 2, "BFS ORDER BY should lower to one source and one sort");
-    let [source_node, sort_node] = native_plan.nodes() else {
-        panic!("BFS ORDER BY should lower to exactly GpuResidentSource -> Sort");
+    let [source_node, projection_node, sort_node] = native_plan.nodes() else {
+        panic!("BFS ORDER BY should lower to GpuResidentSource -> Projection -> Sort:\n{native_plan}");
     };
     let PlanNode::Source(source) = &source_node.kind else {
         panic!("BFS ORDER BY native input must be a source node");
@@ -487,29 +486,38 @@ async fn cpu_input_bfs_orders_by_vertex_through_composed_native_plan() {
         panic!("BFS ORDER BY native input must remain GPU-resident");
     };
     assert!(!source.input_name.is_empty(), "the graph result source must retain its runtime identity");
+    assert_eq!(
+        schema_field_names(source_node.output_schema().as_ref()),
+        vec!["vertex", "distance", "predecessor", "reachable"]
+    );
+    let PlanNode::Projection(projection) = &projection_node.kind else {
+        panic!("BFS consumer must project its selected fields from the full vertex result:\n{native_plan}");
+    };
+    assert_eq!(projection.input, source_node.id);
+    assert_eq!(schema_field_names(projection_node.output_schema().as_ref()), vec!["vertex", "distance", "predecessor"]);
     let PlanNode::Sort(sort) = &sort_node.kind else {
         panic!("BFS ORDER BY native consumer must be a Sort node");
     };
-    assert_eq!(sort.input, source_node.id, "the Sort must consume the graph-result source directly");
+    assert_eq!(sort.input, projection_node.id, "the Sort must consume the selected vertex fields");
     assert_eq!(sort.spec.expressions.len(), 1, "BFS ORDER BY must use one supported sort key");
     assert_eq!(sort.spec.expressions[0].expr, Expr::column("vertex"));
     assert_eq!(native_plan.root_id(), sort_node.id, "the native sort must be the composed consumer root");
 }
 
-async fn raw_bfs_top_k_consumer_keeps_sort_limit_structure() {
+async fn bfs_vertices_top_k_consumer_keeps_sort_limit_structure() {
     let (_backend, ctx) = backend_context();
     register_phase_c_top_k_edges(&ctx, "phase_c_top_k_edges", DataType::Float64);
 
-    let top_k_plan = ctx.sql(RAW_BFS_TOP_K_SQL).await.unwrap().create_physical_plan().await.unwrap();
+    let top_k_plan = ctx.sql(BFS_VERTICES_TOP_K_SQL).await.unwrap().create_physical_plan().await.unwrap();
     assert_eq!(schema_field_names(top_k_plan.schema().as_ref()), vec!["vertex", "distance", "predecessor"]);
     assert!(top_k_plan.schema().field_with_name("predecessor").unwrap().is_nullable());
     let top_k_composed =
-        find_composed_exec(top_k_plan.as_ref()).expect("raw BFS top-k must lower to one composed native consumer");
+        find_composed_exec(top_k_plan.as_ref()).expect("BFS vertices top-k must lower to one composed native consumer");
     let top_k_native_plan = top_k_composed.native_plan().to_string();
     for expected in ["GpuResidentSource", "Sort", "Limit"] {
         assert!(
             top_k_native_plan.contains(expected),
-            "raw BFS top-k consumer must include {expected}:\n{top_k_native_plan}"
+            "BFS vertices top-k consumer must include {expected}:\n{top_k_native_plan}"
         );
     }
 }

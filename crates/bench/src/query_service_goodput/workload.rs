@@ -167,7 +167,7 @@ fn graph_sql(name: &str, seed: i64) -> Option<String> {
         ),
         "bfs" => format!(
             "SELECT COUNT(*) AS reached, SUM(distance) AS total FROM cugraph_bfs(edges => (SELECT src, dst FROM {GRAPH_EDGE_TABLE}), \
-             source_vertex => {seed}, output_mode => 'normalized')"
+             source_vertex => {seed}, output_mode => 'vertices')"
         ),
         "sssp" => format!(
             "SELECT COUNT(*) AS n, SUM(distance) AS total FROM cugraph_sssp(edges => (SELECT src, dst, weight FROM {GRAPH_EDGE_TABLE}), \

@@ -445,6 +445,7 @@ binary(/_cpu$/)
     | cugraph_sql::exec::tests::graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output
     | cugraph_sql::exec::tests::cugraph_algo_exec_does_not_request_input_repartitioning
     | cugraph_sql::exec::tests::logical_bfs_path_gpu_plan_decodes_the_bounded_path_schema
+    | cugraph_sql::exec::tests::bfs_vertices_gpu_plan_normalizes_native_schema_before_decode_projection_and_limit
     | cugraph_sql::exec::tests::bfs_path_exec_declares_ordering_only_while_path_index_is_preserved
     | cugraph_sql::exec::tests::string_pagerank_plan_restores_subsumed_top_k_order_after_decode
     | cugraph_sql::exec::tests::m1_string_algorithms_share_the_int64_codebook_and_vertex_decode_path
@@ -469,7 +470,7 @@ binary(/_cpu$/)
     | cugraph_sql::exec::tests::cugraph_algo_exec_bypasses_graph_residency_for_datafusion_parquet_scan_limit
     | cugraph_sql::exec::tests::cugraph_algo_exec_bypasses_graph_residency_for_logical_bfs_datafusion_parquet_edge_source
     | cugraph_sql::exec::tests::cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_parquet_edge_source
-    | cugraph_sql::exec::tests::cugraph_bfs_path_projection_fanout_shares_one_full_result_producer
+    | cugraph_sql::exec::tests::cugraph_bfs_projection_fanout_shares_one_full_result_producer
     | cugraph_sql::exec::tests::graph_residency_schema_guard_rejects_descriptor_dtype_mismatch
     | cugraph_sql::exec::tests::standalone_bounded_cugraph_rejects_native_child_execution_without_admission
     | cugraph_sql::exec::tests::cugraph_prepares_nested_native_source_metadata_before_graph_admission

@@ -22,13 +22,6 @@ pub struct GraphBfsParams {
     /// bindings remain the canonical `source_vertices`/`source_vertex` and
     /// `predicates.target_vertices` fields above.
     pub path_output: Option<GraphBfsPathOutput>,
-    /// Whether the BFS output should include per-row target metadata columns.
-    ///
-    /// When true, `target_vertices` must be present. The executor appends
-    /// `target_found BOOLEAN` and nullable `target_distance INT64`; it does
-    /// not expose a target vertex because cuGraph does not define a stable
-    /// tie-break for equally near targets.
-    pub return_target_info: bool,
 }
 
 impl GraphBfsParams {
@@ -41,7 +34,6 @@ impl GraphBfsParams {
             predicates: GraphBfsPredicateInputs::default(),
             endpoint_policy: GraphBfsEndpointPolicy::Strict,
             path_output: None,
-            return_target_info: false,
         }
     }
 

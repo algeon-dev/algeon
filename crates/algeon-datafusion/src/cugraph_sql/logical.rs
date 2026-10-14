@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 #[cfg(feature = "cugraph")]
 use super::CugraphAlgoExec;
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsSource,
     CugraphForceAtlas2InitialPositionsTable, CugraphForceAtlas2VertexAttributesTable, CugraphGraphEdgePredicateTable,
     CugraphGraphPredicateTable, CugraphSqlConfig,
     definitions::{CugraphArgumentKind, arguments_for_algorithm},
@@ -309,14 +309,18 @@ fn validate_relation_combinations(params: &CugraphAlgorithmParams) -> Result<()>
             if bfs.predicates.include_vertices.is_some() && bfs.predicates.exclude_vertices.is_some() {
                 return Err(plan("BFS include_vertices and exclude_vertices are mutually exclusive"));
             }
-            if bfs.output.return_target_info && bfs.predicates.target_vertices.is_none() {
-                return Err(plan("BFS return_target_info requires target_vertices"));
-            }
-            if bfs.output.mode == super::CugraphBfsOutputMode::Path && bfs.output.return_target_info {
-                return Err(plan("BFS path output cannot combine with return_target_info=true"));
-            }
-            if bfs.output.mode == super::CugraphBfsOutputMode::Path && bfs.predicates.target_vertices.is_none() {
-                return Err(plan("BFS path output requires target_vertices"));
+            match (bfs.output.mode, bfs.predicates.target_vertices.is_some()) {
+                (CugraphBfsOutputMode::Vertices, true) => {
+                    return Err(plan(
+                        "BFS target_vertices requires output_mode='path'; join targets to vertices output for distances",
+                    )
+                    .with_fact("relation_role", CugraphRelationRole::TargetVertices.as_str()));
+                },
+                (CugraphBfsOutputMode::Path, false) => {
+                    return Err(plan("BFS path output requires target_vertices")
+                        .with_fact("relation_role", CugraphRelationRole::TargetVertices.as_str()));
+                },
+                _ => {},
             }
         },
         CugraphAlgorithmParams::ForceAtlas2(force)

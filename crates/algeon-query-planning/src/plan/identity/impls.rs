@@ -647,7 +647,6 @@ stable_hash_fields! {
         predicates,
         endpoint_policy,
         path_output,
-        return_target_info,
     }
     GraphBfsPredicateInputs { include_vertices, exclude_vertices, target_vertices, include_edge_ids, include_edges }
     GraphPredicateInput { input, column }

@@ -181,7 +181,7 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             format!(
                 "SELECT COUNT(*) AS reached FROM {CUGRAPH_BFS_FUNCTION}(\
                  edges => (SELECT src, dst FROM {DBLP_EDGE_TABLE}), source_vertex => {DBLP_TRAVERSAL_SOURCE}, \
-                 output_mode => 'normalized')"
+                 output_mode => 'vertices')"
             ),
             true,
         ),
@@ -253,7 +253,7 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
                 "SELECT vertex, distance, reachable \
                  FROM {CUGRAPH_BFS_FUNCTION}(\
                  edges => (SELECT src, dst FROM {DBLP_EDGE_TABLE}), source_vertex => {DBLP_TRAVERSAL_SOURCE}, \
-                 depth_limit => 8, output_mode => 'normalized')"
+                 depth_limit => 8, output_mode => 'vertices')"
             ),
             true,
         ),

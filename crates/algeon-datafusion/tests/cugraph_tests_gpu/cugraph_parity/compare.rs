@@ -7,7 +7,7 @@ use algeon_datafusion::cugraph_sql::{
     parity::{ParityComparator, ParitySpec, ParityTolerance, ParityTruthSource},
 };
 use arrow::{
-    array::{Array, Float32Array, Float64Array, Int32Array, Int64Array},
+    array::{Array, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array},
     datatypes::DataType,
     record_batch::RecordBatch,
 };
@@ -20,6 +20,7 @@ enum Cell {
     Null,
     Int(i64),
     Float(f64),
+    Bool(bool),
 }
 
 impl Cell {
@@ -28,6 +29,14 @@ impl Cell {
             Self::Int(value) => Ok(value),
             Self::Null => Err(format!("column '{column}' row {row} is null, expected an integer")),
             Self::Float(value) => Err(format!("column '{column}' row {row} is {value}, expected an integer")),
+            Self::Bool(value) => Err(format!("column '{column}' row {row} is {value}, expected an integer")),
+        }
+    }
+
+    fn nullable_integer(self, column: &str, row: usize) -> Result<Option<i64>, String> {
+        match self {
+            Self::Null => Ok(None),
+            value => value.integer(column, row).map(Some),
         }
     }
 
@@ -36,6 +45,7 @@ impl Cell {
             Self::Int(value) => value as f64,
             Self::Float(value) => value,
             Self::Null => return Err(format!("column '{column}' row {row} is null, expected a number")),
+            Self::Bool(value) => return Err(format!("column '{column}' row {row} is {value}, expected a number")),
         };
         if !value.is_finite() {
             return Err(format!("column '{column}' row {row} is non-finite: {value}"));
@@ -99,6 +109,7 @@ fn append_array(output: &mut Vec<Cell>, array: &dyn Array, data_type: &DataType)
         DataType::Int64 => append_primitive!(Int64Array, Int),
         DataType::Float32 => append_primitive!(Float32Array, Float),
         DataType::Float64 => append_primitive!(Float64Array, Float),
+        DataType::Boolean => append_primitive!(BooleanArray, Bool),
         other => return Err(format!("cuGraph parity comparator does not support Arrow dtype {other:?}")),
     }
     Ok(())
@@ -131,6 +142,7 @@ fn oracle_table(document: &Value, actual_columns: impl Iterator<Item = String>) 
 fn json_cell(value: &Value) -> Result<Cell, String> {
     match value {
         Value::Null => Ok(Cell::Null),
+        Value::Bool(value) => Ok(Cell::Bool(*value)),
         Value::Number(number) if number.is_i64() || number.is_u64() => {
             number.as_i64().map(Cell::Int).ok_or_else(|| format!("oracle integer {number} does not fit i64"))
         },
@@ -139,7 +151,7 @@ fn json_cell(value: &Value) -> Result<Cell, String> {
             .filter(|value| value.is_finite())
             .map(Cell::Float)
             .ok_or_else(|| format!("oracle number {number} is not a finite f64")),
-        other => Err(format!("oracle cell must be numeric or null, got {other}")),
+        other => Err(format!("oracle cell must be numeric, boolean or null, got {other}")),
     }
 }
 
@@ -258,16 +270,32 @@ fn compare_similarity_multiset(actual: &Table, expected: &Table, abs: f64, rel: 
 }
 
 fn compare_bfs(actual: &Table, expected: &Table, edges: &[ParityEdge]) -> Result<(), String> {
-    compare_named_exact(actual, expected, &["vertex", "distance"])?;
+    compare_named_exact(actual, expected, &["vertex", "distance", "reachable"])?;
     let vertices = actual.integer_column("vertex")?;
-    let distances = actual.integer_column("distance")?;
+    let distances = actual
+        .column("distance")?
+        .iter()
+        .enumerate()
+        .map(|(row, value)| value.nullable_integer("distance", row))
+        .collect::<Result<Vec<_>, _>>()?;
     let predecessors = actual.column("predecessor")?;
-    let expected_predecessors = expected.column("predecessor")?;
+    let reachable = actual.column("reachable")?;
     let distance_by_vertex = vertices.iter().copied().zip(distances.iter().copied()).collect::<BTreeMap<_, _>>();
     let edge_set = edges.iter().map(|edge| (edge.source, edge.destination)).collect::<BTreeSet<_>>();
     for (row, ((vertex, distance), predecessor)) in vertices.iter().zip(&distances).zip(predecessors).enumerate() {
-        let predecessor = predecessor_vertex(*predecessor, row)?;
-        let expected_predecessor = predecessor_vertex(expected_predecessors[row], row)?;
+        if reachable[row] != Cell::Bool(distance.is_some()) {
+            return Err(format!(
+                "BFS vertex {vertex} reachable {:?} disagrees with distance {distance:?}",
+                reachable[row]
+            ));
+        }
+        let predecessor = predecessor.nullable_integer("predecessor", row)?;
+        let Some(distance) = distance else {
+            if predecessor.is_some() {
+                return Err(format!("unreached BFS vertex {vertex} must not have predecessor {predecessor:?}"));
+            }
+            continue;
+        };
         if *distance == 0 {
             if predecessor.is_some() {
                 return Err(format!(
@@ -276,19 +304,14 @@ fn compare_bfs(actual: &Table, expected: &Table, edges: &[ParityEdge]) -> Result
             }
             continue;
         }
-        if predecessor.is_none() && expected_predecessor.is_none() {
-            // The oracle marks unreachable vertices with no predecessor. Its
-            // exact distance sentinel has already matched above.
-            continue;
-        }
         let predecessor = predecessor
             .ok_or_else(|| format!("BFS vertex {vertex} at positive distance {distance} is missing its predecessor"))?;
         let predecessor_distance = distance_by_vertex
             .get(&predecessor)
             .ok_or_else(|| format!("BFS vertex {vertex} refers to absent predecessor {predecessor}"))?;
-        if predecessor_distance.checked_add(1) != Some(*distance) {
+        if predecessor_distance.and_then(|distance| distance.checked_add(1)) != Some(*distance) {
             return Err(format!(
-                "BFS predecessor distance mismatch for vertex {vertex}: predecessor {predecessor} has distance {predecessor_distance}, vertex distance is {distance}"
+                "BFS predecessor distance mismatch for vertex {vertex}: predecessor {predecessor} has distance {predecessor_distance:?}, vertex distance is {distance}"
             ));
         }
         if !edge_set.contains(&(predecessor, *vertex)) {
@@ -354,6 +377,7 @@ fn predecessor_vertex(value: Cell, row: usize) -> Result<Option<i64>, String> {
         Cell::Int(value) if value < 0 => Ok(None),
         Cell::Int(value) => Ok(Some(value)),
         Cell::Float(value) => Err(format!("predecessor row {row} has floating-point value {value}")),
+        Cell::Bool(value) => Err(format!("predecessor row {row} has boolean value {value}")),
     }
 }
 
@@ -1315,13 +1339,40 @@ mod tests {
 
     #[test]
     fn bfs_comparison_accepts_alternate_valid_predecessor_tree() {
-        let bfs_table = |predecessors: Vec<i64>| Table {
-            rows: 4,
-            columns: BTreeMap::from([
-                ("vertex".to_string(), vec![0, 1, 2, 3].into_iter().map(Cell::Int).collect()),
-                ("distance".to_string(), vec![0, 1, 1, 2].into_iter().map(Cell::Int).collect()),
-                ("predecessor".to_string(), predecessors.into_iter().map(Cell::Int).collect()),
-            ]),
+        let bfs_batch = |predecessors: Vec<Option<i64>>, reachable: Vec<bool>| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("vertex", DataType::Int64, false),
+                Field::new("distance", DataType::Int64, true),
+                Field::new("predecessor", DataType::Int64, true),
+                Field::new("reachable", DataType::Boolean, false),
+            ]));
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4])),
+                    Arc::new(Int64Array::from(vec![Some(0), Some(1), Some(1), Some(2), None])),
+                    Arc::new(Int64Array::from(predecessors)),
+                    Arc::new(BooleanArray::from(reachable)),
+                ],
+            )
+            .unwrap()
+        };
+        let expected_document = serde_json::json!({"result": {
+            "vertex": [0, 1, 2, 3, 4],
+            "distance": [0, 1, 1, 2, null],
+            "predecessor": [null, 0, 0, 2, null],
+            "reachable": [true, true, true, true, false],
+        }});
+        let spec = ParitySpec {
+            label: "bfs test",
+            algorithm: CugraphAlgorithm::Bfs,
+            dataset: "test",
+            params_json: r#"{"source_vertex":0}"#,
+            seed: None,
+            truth_source: ParityTruthSource::OracleJson,
+            oracle_relpath: None,
+            comparator: ParityComparator::ExactInt,
+            tolerance: ParityTolerance::exact(),
         };
         let edges = [
             ParityEdge { source: 0, destination: 1, weight: 1.0 },
@@ -1329,8 +1380,18 @@ mod tests {
             ParityEdge { source: 1, destination: 3, weight: 1.0 },
             ParityEdge { source: 2, destination: 3, weight: 1.0 },
         ];
-        compare_bfs(&bfs_table(vec![-1, 0, 0, 1]), &bfs_table(vec![-1, 0, 0, 2]), &edges).unwrap();
-        let error = compare_bfs(&bfs_table(vec![-1, 0, 0, 0]), &bfs_table(vec![-1, 0, 0, 2]), &edges).unwrap_err();
-        assert!(error.contains("predecessor distance mismatch"), "unexpected error: {error}");
+        let reachable = vec![true, true, true, true, false];
+        let actual = bfs_batch(vec![None, Some(0), Some(0), Some(1), None], reachable.clone());
+        compare(&spec, &[actual], &expected_document, None, &edges).unwrap();
+
+        for (predecessors, reachable, expected_error) in [
+            (vec![None, Some(0), Some(0), Some(0), None], reachable.clone(), "predecessor distance mismatch"),
+            (vec![None, Some(0), Some(0), Some(1), Some(0)], reachable, "unreached BFS vertex"),
+            (vec![None, Some(0), Some(0), Some(1), None], vec![true, true, true, true, true], "reachable"),
+        ] {
+            let error =
+                compare(&spec, &[bfs_batch(predecessors, reachable)], &expected_document, None, &edges).unwrap_err();
+            assert!(error.contains(expected_error), "unexpected error: {error}");
+        }
     }
 }

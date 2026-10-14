@@ -407,7 +407,6 @@ impl CugraphAlgoExec {
         };
         if params.depth_limit.is_some()
             || params.predicates.has_inputs()
-            || params.output.return_target_info
             || params.output.mode == CugraphBfsOutputMode::Path
         {
             return None;
@@ -427,7 +426,6 @@ impl CugraphAlgoExec {
             device_ordinal,
             resident_graph_key: Some(resident_graph_key),
             source_vertex,
-            normalized_output: params.output.mode == CugraphBfsOutputMode::Normalized,
             projection: self.result_options.projection.clone(),
             limit: self.result_options.limit,
             max_output_staging_bytes: self.host_boundary_config.max_output_staging_bytes(),

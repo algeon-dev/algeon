@@ -86,8 +86,18 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
         ),
     )
     .await?;
-    let schema = execute_schema(&mut client, &format!("SELECT vertex, distance FROM {graph_view} LIMIT 0")).await?;
-    if schema.fields().len() != 2 || schema.field(0).name() != "vertex" || schema.field(1).name() != "distance" {
+    let schema = execute_schema(&mut client, &format!("SELECT * FROM {graph_view} LIMIT 0")).await?;
+    let expected_fields = [
+        ("vertex", DataType::Int64, false),
+        ("distance", DataType::Int64, true),
+        ("predecessor", DataType::Int64, true),
+        ("reachable", DataType::Boolean, false),
+    ];
+    if schema.fields().len() != expected_fields.len()
+        || schema.fields().iter().zip(expected_fields).any(|(field, (name, data_type, nullable))| {
+            field.name() != name || field.data_type() != &data_type || field.is_nullable() != nullable
+        })
+    {
         return Err(format!("unexpected graph schema: {schema:?}").into());
     }
 

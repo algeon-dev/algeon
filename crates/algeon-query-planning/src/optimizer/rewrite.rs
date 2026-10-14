@@ -325,7 +325,6 @@ mod tests {
             },
             endpoint_policy: GraphBfsEndpointPolicy::Strict,
             path_output: None,
-            return_target_info: true,
         };
         let spec = GraphAlgorithmSpec::with_stable_schema(
             GraphAlgorithm::Bfs,

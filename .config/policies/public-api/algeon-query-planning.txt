@@ -2650,7 +2650,6 @@ pub query_planning::plan::GraphBfsParams::depth_limit: core::option::Option<i64>
 pub query_planning::plan::GraphBfsParams::endpoint_policy: query_planning::plan::GraphBfsEndpointPolicy
 pub query_planning::plan::GraphBfsParams::path_output: core::option::Option<query_planning::plan::GraphBfsPathOutput>
 pub query_planning::plan::GraphBfsParams::predicates: query_planning::plan::GraphBfsPredicateInputs
-pub query_planning::plan::GraphBfsParams::return_target_info: bool
 pub query_planning::plan::GraphBfsParams::source_vertex: i64
 pub query_planning::plan::GraphBfsParams::source_vertices: core::option::Option<query_planning::plan::GraphPredicateInput>
 impl query_planning::plan::GraphBfsParams

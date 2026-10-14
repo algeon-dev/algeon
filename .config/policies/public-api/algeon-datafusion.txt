@@ -230,9 +230,8 @@ pub algeon_datafusion::cugraph_sql::CugraphAlgorithmParams::StronglyConnectedCom
 pub algeon_datafusion::cugraph_sql::CugraphAlgorithmParams::TriangleCountAll(algeon_datafusion::cugraph_sql::CugraphTriangleCountAllParams)
 pub algeon_datafusion::cugraph_sql::CugraphAlgorithmParams::WeaklyConnectedComponents(algeon_datafusion::cugraph_sql::CugraphWccParams)
 pub enum algeon_datafusion::cugraph_sql::CugraphBfsOutputMode
-pub algeon_datafusion::cugraph_sql::CugraphBfsOutputMode::Normalized
 pub algeon_datafusion::cugraph_sql::CugraphBfsOutputMode::Path
-pub algeon_datafusion::cugraph_sql::CugraphBfsOutputMode::Raw
+pub algeon_datafusion::cugraph_sql::CugraphBfsOutputMode::Vertices
 impl algeon_datafusion::cugraph_sql::CugraphBfsOutputMode
 pub const fn algeon_datafusion::cugraph_sql::CugraphBfsOutputMode::as_str(self) -> &'static str
 pub enum algeon_datafusion::cugraph_sql::CugraphBfsSource
@@ -316,7 +315,6 @@ pub fn algeon_datafusion::cugraph_sql::CugraphBetweennessSeeds::is_empty(&self) 
 pub fn algeon_datafusion::cugraph_sql::CugraphBetweennessSeeds::len(&self) -> usize
 pub struct algeon_datafusion::cugraph_sql::CugraphBfsOutputOptions
 pub algeon_datafusion::cugraph_sql::CugraphBfsOutputOptions::mode: algeon_datafusion::cugraph_sql::CugraphBfsOutputMode
-pub algeon_datafusion::cugraph_sql::CugraphBfsOutputOptions::return_target_info: bool
 pub struct algeon_datafusion::cugraph_sql::CugraphBfsParams
 pub algeon_datafusion::cugraph_sql::CugraphBfsParams::depth_limit: core::option::Option<i64>
 pub algeon_datafusion::cugraph_sql::CugraphBfsParams::output: algeon_datafusion::cugraph_sql::CugraphBfsOutputOptions

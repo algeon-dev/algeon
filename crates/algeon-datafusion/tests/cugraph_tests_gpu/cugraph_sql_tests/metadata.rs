@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig;
 
 use super::{support::*, *};
@@ -143,8 +145,26 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
     assert!(json_array_item_by_name(&arguments, "source_vertex").is_object());
     let options = json_value(string_value(batch, 4, 0));
     assert_eq!(options["properties"]["directed"]["default"], true);
+    assert_eq!(options["properties"]["output_mode"]["enum"], serde_json::json!(["vertices", "path"]));
+    assert_eq!(options["properties"]["output_mode"]["default"], "vertices");
+    assert!(options["properties"].get("return_target_info").is_none());
+    assert!(!arguments.as_array().unwrap().iter().any(|argument| argument["name"] == "return_target_info"));
     let schemas = json_value(string_value(batch, 5, 0));
     assert_eq!(schemas["call_specific_authority"], "gpu_validate_call");
+    assert_eq!(schemas["default_schema"], "vertices");
+    assert_eq!(
+        schemas["schemas"].as_object().unwrap().keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from(["path", "vertices"])
+    );
+    assert_eq!(
+        schemas["schemas"]["vertices"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["vertex", "distance", "predecessor", "reachable"]
+    );
     assert!(schemas["field_descriptions"].as_array().unwrap().iter().any(|field| field["name"] == "vertex"));
     let request_schema = json_value(string_value(batch, 6, 0));
     assert_eq!(request_schema["properties"]["relations"]["required"], serde_json::json!(["edges"]));
@@ -239,7 +259,7 @@ async fn cugraph_validation_uses_common_envelope_and_preserves_graph_facts() {
         serde_json::json!({
             "source_vertex": 0,
             "depth_limit": 2,
-            "output_mode": "normalized",
+            "output_mode": "vertices",
         }),
     )
     .await;
@@ -256,7 +276,7 @@ async fn cugraph_validation_uses_common_envelope_and_preserves_graph_facts() {
         .sql(
             "SELECT * FROM cugraph_bfs(\
              edges => (SELECT src, dst, weight FROM target_edges), source_vertex => 0,\
-             depth_limit => 2, output_mode => 'normalized')",
+             depth_limit => 2, output_mode => 'vertices')",
         )
         .await
         .unwrap();
@@ -286,6 +306,40 @@ async fn cugraph_validation_output_schema_matches_pagerank_provider_for_each_ver
             ctx.sql(&format!("SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM {edges}))")).await.unwrap();
         assert_eq!(df.schema().field(0).data_type(), &expected_vertex_type, "{edges} PageRank vertex type");
         assert_validation_schema_matches(&batch, df.schema().inner());
+    }
+}
+
+#[tokio::test]
+async fn cugraph_bfs_validation_and_sql_agree_on_each_vertex_domain() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    for (index, input_type) in
+        [DataType::Int32, DataType::Int64, DataType::Utf8, DataType::LargeUtf8, DataType::Utf8View]
+            .into_iter()
+            .enumerate()
+    {
+        let table = format!("bfs_edges_{index}");
+        register_edge_memtable(&ctx, &table, input_type.clone(), input_type.clone(), DataType::Float64);
+        let (source, source_sql, output_type) = match input_type {
+            DataType::Int32 | DataType::Int64 => (serde_json::json!(0), "0", input_type),
+            _ => (serde_json::json!("a"), "'a'", DataType::Utf8),
+        };
+        for mode in [None, Some("vertices")] {
+            let mut options = serde_json::json!({"source_vertex": source});
+            if let Some(mode) = mode {
+                options["output_mode"] = serde_json::json!(mode);
+            }
+            let batch = validate(&ctx, "cugraph_bfs", &table, options).await;
+            assert!(bool_value(&batch, 0, 0), "{}", string_value(&batch, 2, 0));
+            let mode_sql = mode.map(|mode| format!(", output_mode => '{mode}'")).unwrap_or_default();
+            let df = ctx.sql(&format!("SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM {table}), source_vertex => {source_sql}{mode_sql})")).await.unwrap();
+            assert_eq!(df.schema().field(0).data_type(), &output_type);
+            assert_eq!(df.schema().field(2).data_type(), &output_type);
+            assert_validation_schema_matches(&batch, df.schema().inner());
+        }
     }
 }
 
@@ -620,7 +674,11 @@ async fn cugraph_vertex_id_descriptors_match_registry_string_contracts() {
             .unwrap()
             .values()
             .flat_map(|schema| schema["fields"].as_array().unwrap())
-            .any(|field| field["data_type"] == "Int64|Utf8");
+            .any(|field| {
+                field["data_type"]
+                    .as_str()
+                    .is_some_and(|data_type| data_type.split('|').any(|data_type| data_type == "Utf8"))
+            });
         assert!(has_logical_output, "{}", definition.sql_function_name);
     }
 }
