@@ -1,8 +1,15 @@
-use std::collections::BTreeSet;
+use datafusion::sql::sqlparser::{
+    ast::{
+        Expr as SqlExpr, Ident, OrderByKind, Query as SqlQuery, Select, SelectItem, SetExpr, Statement, TableFactor,
+        Value, ValueWithSpan,
+    },
+    dialect::GenericDialect,
+    parser::Parser,
+};
 
 use super::{
-    DataType, ParityComparisonMode, ParityFloatTolerance, ParityStatus, RecordBatch, Schema, collect_canonical_rows,
-    compare_canonical_rows, fingerprint_rows, fingerprint_schema_only,
+    CanonicalField, DataType, ParityComparisonMode, ParityFloatTolerance, ParityStatus, RecordBatch, Schema,
+    collect_canonical_rows, compare_canonical_rows, fingerprint_rows, fingerprint_schema_only,
 };
 
 /// Result of comparing CPU and native Arrow outputs.
@@ -38,7 +45,7 @@ pub fn compare_record_batches(
         cpu_batches,
         native_schema,
         native_batches,
-        ordered,
+        &if ordered { ParityRowOrdering::Ordered } else { ParityRowOrdering::Unordered },
         tolerance,
         ParityCompareOptions::strict_native(),
     )
@@ -60,18 +67,44 @@ impl ParityCompareOptions {
     }
 }
 
+pub(super) enum ParityRowOrdering {
+    Unordered,
+    Ordered,
+    OrderBy(Vec<ParitySortKey>),
+}
+
+pub(super) struct ParitySortKey {
+    column: usize,
+    descending: bool,
+}
+
+pub(super) fn sql_row_ordering(sql: &str, schema: Option<&Schema>) -> ParityRowOrdering {
+    let Some(query) = parse_query(sql) else {
+        return ParityRowOrdering::Ordered;
+    };
+    if !query.pipe_operators.is_empty() {
+        return ParityRowOrdering::Ordered;
+    }
+    if query.order_by.is_none() {
+        return ParityRowOrdering::Unordered;
+    }
+    schema
+        .and_then(|schema| order_by_keys(&query, schema))
+        .map_or(ParityRowOrdering::Ordered, ParityRowOrdering::OrderBy)
+}
+
 pub(super) fn compare_record_batches_with_options(
     cpu_schema: &Schema,
     cpu_batches: &[RecordBatch],
     native_schema: &Schema,
     native_batches: &[RecordBatch],
-    ordered: bool,
+    ordering: &ParityRowOrdering,
     tolerance: ParityFloatTolerance,
     options: ParityCompareOptions,
 ) -> ParityComparisonResult {
     let schema_diff = compare_schemas(cpu_schema, native_schema, options);
     let float_tolerant = tolerance.is_enabled() && schema_has_float_column(cpu_schema);
-    let mode = ParityComparisonMode::select(ordered, float_tolerant);
+    let mode = ParityComparisonMode::select(!matches!(ordering, ParityRowOrdering::Unordered), float_tolerant);
 
     if let Some(detail) = schema_diff {
         return ParityComparisonResult {
@@ -108,9 +141,16 @@ pub(super) fn compare_record_batches_with_options(
         },
     };
     let mut cpu_rows = cpu_rows;
-    if !ordered {
-        cpu_rows.sort();
-        native_rows.sort();
+    match ordering {
+        ParityRowOrdering::Unordered => {
+            cpu_rows.sort();
+            native_rows.sort();
+        },
+        ParityRowOrdering::Ordered => {},
+        ParityRowOrdering::OrderBy(keys) => {
+            sort_tied_rows(&mut cpu_rows, keys);
+            sort_tied_rows(&mut native_rows, keys);
+        },
     }
 
     let cpu_fingerprint = fingerprint_rows(cpu_schema, &cpu_rows);
@@ -140,7 +180,70 @@ pub(super) fn compare_record_batches_with_options(
         }
     }
 
+    if float_tolerant
+        && let ParityRowOrdering::OrderBy(keys) = ordering
+        && let Some((row, column)) = float_key_inversion(&native_rows, keys)
+    {
+        return ParityComparisonResult {
+            status: ParityStatus::Mismatched,
+            mode,
+            detail: Some(format!(
+                "row {row}: ORDER BY column {column} ({}) is out of order",
+                cpu_schema.field(column).name()
+            )),
+            cpu_fingerprint,
+            native_fingerprint,
+        };
+    }
+
     ParityComparisonResult { status: ParityStatus::Matched, mode, detail: None, cpu_fingerprint, native_fingerprint }
+}
+
+fn sort_tied_rows(rows: &mut [Vec<CanonicalField>], keys: &[ParitySortKey]) {
+    let mut start = 0;
+    while start < rows.len() {
+        let mut end = start + 1;
+        // Approximate float equality is not transitive and cannot define a tie group.
+        while end < rows.len()
+            && keys.iter().all(|key| {
+                !matches!(rows[start][key.column], CanonicalField::Unsupported(_))
+                    && rows[start][key.column] == rows[end][key.column]
+            })
+        {
+            end += 1;
+        }
+        rows[start..end].sort();
+        start = end;
+    }
+}
+
+fn float_key_inversion(rows: &[Vec<CanonicalField>], keys: &[ParitySortKey]) -> Option<(usize, usize)> {
+    // Value comparison fixes non-float key sequences exactly. Float tolerance can still admit an inversion.
+    for (index, pair) in rows.windows(2).enumerate() {
+        for key in keys {
+            let before = &pair[0][key.column];
+            let after = &pair[1][key.column];
+            if matches!(before, CanonicalField::Unsupported(_)) {
+                break;
+            }
+            if before == after {
+                continue;
+            }
+            if let (CanonicalField::Float { width, bits: before }, CanonicalField::Float { bits: after, .. }) =
+                (before, after)
+            {
+                let order = match width {
+                    32 => f32::from_bits(*before as u32).total_cmp(&f32::from_bits(*after as u32)),
+                    _ => f64::from_bits(*before).total_cmp(&f64::from_bits(*after)),
+                };
+                if (key.descending && order.is_lt()) || (!key.descending && order.is_gt()) {
+                    return Some((index + 1, key.column));
+                }
+            }
+            break;
+        }
+    }
+    None
 }
 
 pub(super) fn compare_schemas(cpu: &Schema, native: &Schema, options: ParityCompareOptions) -> Option<String> {
@@ -202,172 +305,122 @@ pub(super) fn schema_has_float_column(schema: &Schema) -> bool {
     schema.fields().iter().any(|field| matches!(field.data_type(), DataType::Float32 | DataType::Float64))
 }
 
-/// Detect whether the given SQL has a top-level `ORDER BY` clause that
-/// determines the row order of the result. Strings, comments, and
-/// parenthesized subqueries are ignored.
-pub fn sql_has_top_level_order_by(sql: &str) -> bool {
-    let depth_zero = strip_to_depth_zero(sql);
-    let lowered = depth_zero.to_ascii_lowercase();
-    top_level_order_by_start(&lowered).is_some()
-}
-
-/// Returns true when the top-level `ORDER BY` names every output column.
+/// Detect whether the given SQL has a top-level `ORDER BY` clause.
 ///
-/// This is a conservative total-order signal for parity comparison. A query may
-/// still be deterministic through uniqueness constraints, but those constraints
-/// are not visible here, so partial `ORDER BY` lists are treated as order-tie
-/// candidates.
+/// Unparseable SQL is conservatively treated as ordered. Ordering inside a
+/// derived table, window, string or comment does not order the outer result.
+pub fn sql_has_top_level_order_by(sql: &str) -> bool {
+    parse_query(sql).is_none_or(|query| query.order_by.is_some() || !query.pipe_operators.is_empty())
+}
+
+/// Returns true when every output column is a top-level `ORDER BY` key.
+///
+/// Keys may refer to output names, projected expressions or 1-based positions.
+/// Unresolved keys return false. Partial lists may still determine a total
+/// order through uniqueness constraints, which are not available here.
 pub fn sql_top_level_order_by_covers_output_columns(sql: &str, schema: &Schema) -> bool {
-    let depth_zero = strip_to_depth_zero(sql);
-    let lowered = depth_zero.to_ascii_lowercase();
-    let Some(start) = top_level_order_by_start(&lowered) else {
-        return false;
-    };
-    let mut clause = &lowered[start..];
-    for keyword in ["limit", "fetch", "offset"] {
-        if let Some(index) = find_word(clause.as_bytes(), keyword.as_bytes()) {
-            clause = &clause[..index];
-        }
-    }
-    let order_columns = clause.split(',').filter_map(normalized_order_by_column).collect::<BTreeSet<_>>();
-    schema.fields().iter().all(|field| order_columns.contains(&field.name().to_ascii_lowercase()))
+    parse_query(sql)
+        .and_then(|query| order_by_keys(&query, schema))
+        .is_some_and(|keys| (0..schema.fields().len()).all(|index| keys.iter().any(|key| key.column == index)))
 }
 
-fn top_level_order_by_start(lowered_depth_zero_sql: &str) -> Option<usize> {
-    let bytes = lowered_depth_zero_sql.as_bytes();
-    let mut i = 0;
-    while i + 8 <= bytes.len() {
-        if matches_word_at(bytes, i, b"order") && {
-            let after = skip_whitespace(bytes, i + 5);
-            matches_word_at(bytes, after, b"by")
-        } {
-            return Some(skip_whitespace(bytes, skip_whitespace(bytes, i + 5) + 2));
-        }
-        i += 1;
-    }
-    None
-}
-
-fn find_word(bytes: &[u8], word: &[u8]) -> Option<usize> {
-    let mut i = 0;
-    while i + word.len() <= bytes.len() {
-        if matches_word_at(bytes, i, word) {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
-fn normalized_order_by_column(term: &str) -> Option<String> {
-    let tokens = term.split_whitespace().collect::<Vec<_>>();
-    let first = tokens.first()?.trim_matches(|c: char| c == '"' || c == '`');
-    if first.is_empty() {
+fn parse_query(sql: &str) -> Option<Box<SqlQuery>> {
+    let mut statements = Parser::parse_sql(&GenericDialect, sql).ok()?;
+    if statements.len() != 1 {
         return None;
     }
-    if let Ok(ordinal) = first.parse::<usize>() {
-        return Some(format!("#{ordinal}"));
+    let Statement::Query(mut query) = statements.pop()? else {
+        return None;
+    };
+    // Parentheses around the whole query preserve its result ordering.
+    while query.order_by.is_none() && query.pipe_operators.is_empty() {
+        let SetExpr::Query(inner) = query.body.as_ref() else {
+            break;
+        };
+        query = inner.clone();
     }
-    let column =
-        first.rsplit_once('.').map_or(first, |(_, column)| column).trim_matches(|c: char| c == '"' || c == '`');
-    (!column.is_empty()).then(|| column.to_ascii_lowercase())
+    Some(query)
 }
 
-fn strip_to_depth_zero(sql: &str) -> String {
-    let mut output = String::with_capacity(sql.len());
-    let chars: Vec<char> = sql.chars().collect();
-    let mut i = 0;
-    let mut depth: i32 = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-            output.push(' ');
-            continue;
-        }
-        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
-            i += 2;
-            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                i += 1;
-            }
-            i += 2;
-            output.push(' ');
-            continue;
-        }
-        if c == '\'' {
-            i += 1;
-            while i < chars.len() {
-                if chars[i] == '\'' && i + 1 < chars.len() && chars[i + 1] == '\'' {
-                    i += 2;
-                    continue;
-                }
-                if chars[i] == '\'' {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            output.push(' ');
-            continue;
-        }
-        if c == '"' {
-            i += 1;
-            while i < chars.len() && chars[i] != '"' {
-                i += 1;
-            }
-            if i < chars.len() {
-                i += 1;
-            }
-            output.push(' ');
-            continue;
-        }
-        if c == '(' {
-            depth += 1;
-            output.push(' ');
-            i += 1;
-            continue;
-        }
-        if c == ')' {
-            depth = (depth - 1).max(0);
-            output.push(' ');
-            i += 1;
-            continue;
-        }
-        if depth == 0 {
-            output.push(c);
-        } else {
-            output.push(' ');
-        }
-        i += 1;
+fn order_by_keys(query: &SqlQuery, schema: &Schema) -> Option<Vec<ParitySortKey>> {
+    let order_by = query.order_by.as_ref()?;
+    if order_by.interpolate.is_some() || !query.pipe_operators.is_empty() {
+        return None;
     }
-    output
+    let OrderByKind::Expressions(keys) = &order_by.kind else {
+        return None;
+    };
+    if keys.is_empty() {
+        return None;
+    }
+    keys.iter()
+        .map(|key| {
+            if key.with_fill.is_some() {
+                return None;
+            }
+            resolve_order_by_column(&key.expr, query, schema)
+                .map(|column| ParitySortKey { column, descending: !key.options.asc.unwrap_or(true) })
+        })
+        .collect()
 }
 
-fn matches_word_at(bytes: &[u8], pos: usize, word: &[u8]) -> bool {
-    if pos + word.len() > bytes.len() {
-        return false;
+fn resolve_order_by_column(expr: &SqlExpr, query: &SqlQuery, schema: &Schema) -> Option<usize> {
+    match expr {
+        SqlExpr::Value(ValueWithSpan { value: Value::Number(position, _), .. }) => {
+            return position.parse::<usize>().ok()?.checked_sub(1).filter(|&index| index < schema.fields().len());
+        },
+        SqlExpr::Identifier(ident) => {
+            let mut matches =
+                schema.fields().iter().enumerate().filter(|(_, field)| identifier_matches(ident, field.name()));
+            if let Some((index, _)) = matches.next() {
+                return matches.next().is_none().then_some(index);
+            }
+        },
+        _ => {},
     }
-    if !word.iter().zip(bytes[pos..pos + word.len()].iter()).all(|(a, b)| a == b) {
-        return false;
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return None;
+    };
+    // Wildcard expansion changes projection positions, so they cannot index the schema.
+    if select.projection.len() != schema.fields().len()
+        || select
+            .projection
+            .iter()
+            .any(|item| !matches!(item, SelectItem::UnnamedExpr(_) | SelectItem::ExprWithAlias { .. }))
+    {
+        return None;
     }
-    if pos > 0 && is_word_byte(bytes[pos - 1]) {
-        return false;
-    }
-    if pos + word.len() < bytes.len() && is_word_byte(bytes[pos + word.len()]) {
-        return false;
-    }
-    true
+    let unqualified = match expr {
+        SqlExpr::CompoundIdentifier(parts) if parts.len() == 2 && is_single_table_qualifier(&parts[0], select) => {
+            Some(SqlExpr::Identifier(parts[1].clone()))
+        },
+        _ => None,
+    };
+    select.projection.iter().position(|item| {
+        let projected = match item {
+            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => expr,
+            _ => return false,
+        };
+        projected == expr || unqualified.as_ref().is_some_and(|expr| projected == expr)
+    })
 }
 
-fn skip_whitespace(bytes: &[u8], mut pos: usize) -> usize {
-    while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-        pos += 1;
-    }
-    pos
+fn identifier_matches(ident: &Ident, name: &str) -> bool {
+    if ident.quote_style.is_some() { ident.value == name } else { ident.value.to_ascii_lowercase() == name }
 }
 
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
+fn is_single_table_qualifier(qualifier: &Ident, select: &Select) -> bool {
+    let [table] = select.from.as_slice() else {
+        return false;
+    };
+    if !table.joins.is_empty() {
+        return false;
+    }
+    let TableFactor::Table { name, alias, .. } = &table.relation else {
+        return false;
+    };
+    if let Some(alias) = alias {
+        return qualifier == &alias.name;
+    }
+    name.0.last().and_then(|part| part.as_ident()).is_some_and(|name| name == qualifier)
 }

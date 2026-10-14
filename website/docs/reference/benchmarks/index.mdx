@@ -177,8 +177,11 @@ bash scripts/dev/bench_one.sh tpcds all --engine native_gpu \
 
 `native_tpcds_parity_report` checks the result values. It runs each query on
 both paths in one process, with the CPU side on the same partition and batch
-settings, and compares every value. Rows are compared in order when the
-`ORDER BY` covers every output column, otherwise as a set. Floating-point
+settings, and compares every value. A top-level `ORDER BY` preserves the
+sequence of sorting keys. Rows may exchange positions only within contiguous
+groups equal on every key; unresolved keys retain emitted row order. Queries
+without top-level ordering use multiset comparison, preserving duplicate
+counts. Tie groups require exact key equality. Floating-point
 columns, which are the GPU variance and standard deviation outputs under
 `gpu_native_tolerant`, accept an absolute and relative error of
 <code>{String(tpcdsSf100Benchmark.config.parity.floatToleranceAbsolute)}</code>;
@@ -283,8 +286,7 @@ queries and no granted memory.
   a fresh server for each run. Throughput counts queries completed in the
   measured pass, from the moment every stream finished warm-up to the last
   completion. Latency runs from `GetFlightInfo` to the last result batch.
-- Every result was compared with references recorded by the CPU path, using
-  the comparison rules and tolerances of the TPC-DS parity report above.
+- Every result was compared with references recorded by the CPU path.
   {serverLoadBenchmark.summary.gpuResultsMatched.toLocaleString('en-US')} GPU
   results matched, warm-up passes included. Q11 returns no rows at SF100
   because the DuckDB query text fixes its `FRACTION` at 0.0001 where the

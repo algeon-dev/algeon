@@ -5,10 +5,9 @@ use datafusion::prelude::SessionConfig;
 use super::{
     CandidateOutcomeKind, ExecutionPlan, FinalPlanDisposition, MetricsSet, NATIVE_TPCDS_PARITY_TSV_COLUMNS,
     NATIVE_TPCDS_PARITY_TSV_HEADER, NativeDataFusionExecutionMetrics, NativeDataFusionRuntimeOutcome,
-    NativePlanningDiagnostics, NativePlanningFailure, ParityCompareOptions, ParityComparisonResult, RecordBatch,
-    Schema, SchemaRef, StatisticalAggregateExecutionMode, TsvRow, WorkloadDatasetMetadata,
-    compare_record_batches_with_options, fingerprint_batches, post_native_plan_coverage, sql_has_top_level_order_by,
-    sql_top_level_order_by_covers_output_columns, stable_tsv_field, unsupported_category,
+    NativePlanningDiagnostics, NativePlanningFailure, ParityCompareOptions, ParityRowOrdering, RecordBatch, SchemaRef,
+    StatisticalAggregateExecutionMode, TsvRow, WorkloadDatasetMetadata, compare_record_batches_with_options,
+    fingerprint_batches, post_native_plan_coverage, sql_row_ordering, stable_tsv_field, unsupported_category,
     write_workload_dataset_metadata,
 };
 use crate::report::CandidateOutcome;
@@ -47,11 +46,11 @@ impl ParityStatus {
 /// Row-order and float-tolerance mode used for output comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParityComparisonMode {
-    /// Compare canonical rows in emitted order with exact value equality.
+    /// Preserve row ordering with exact values, allowing permutations within resolved SQL key ties.
     OrderedExact,
     /// Sort canonical rows before exact value comparison.
     UnorderedExact,
-    /// Compare emitted rows in order, allowing configured float tolerance.
+    /// Preserve row ordering and SQL key ties, allowing configured float tolerance for values.
     OrderedFloatTolerant,
     /// Sort canonical rows, then allow configured float tolerance.
     UnorderedFloatTolerant,
@@ -561,8 +560,6 @@ fn parity_row_for_item(
     item: NativeTpcdsParityWorkloadItem,
     float_tolerance: ParityFloatTolerance,
 ) -> NativeTpcdsParityRow {
-    let ordered = sql_has_top_level_order_by(&item.sql);
-
     let (cpu_planning_status, cpu_runtime_status, cpu_batches, cpu_schema, cpu_runtime_failure) = match item.cpu_outcome
     {
         NativeTpcdsParityCpuOutcome::Succeeded { schema, batches } => {
@@ -575,10 +572,7 @@ fn parity_row_for_item(
             (ParityStageStatus::Succeeded, ParityStageStatus::Failed, None, None, Some(message))
         },
     };
-    let ordered_total = ordered
-        && cpu_schema
-            .as_ref()
-            .is_some_and(|schema| sql_top_level_order_by_covers_output_columns(&item.sql, schema.as_ref()));
+    let ordering = sql_row_ordering(&item.sql, cpu_schema.as_deref());
 
     let (
         native_planning_outcome,
@@ -639,16 +633,14 @@ fn parity_row_for_item(
             cpu_batches: cpu_batches.as_deref(),
             native_schema: native_schema.as_ref(),
             native_batches: native_batches.as_deref(),
-            ordered,
-            ordered_total,
+            ordering: &ordering,
             float_tolerance,
         });
     let duckdb_output = summarize_external_output(
         item.duckdb_output,
         cpu_schema.as_ref(),
         cpu_batches.as_deref(),
-        ordered,
-        ordered_total,
+        &ordering,
         float_tolerance,
     );
 
@@ -683,8 +675,7 @@ fn summarize_external_output(
     output: NativeTpcdsParityExternalOutput,
     cpu_schema: Option<&SchemaRef>,
     cpu_batches: Option<&[RecordBatch]>,
-    ordered: bool,
-    ordered_total: bool,
+    ordering: &ParityRowOrdering,
     float_tolerance: ParityFloatTolerance,
 ) -> NativeTpcdsParityExternalOutputSummary {
     match output {
@@ -721,13 +712,12 @@ fn summarize_external_output(
                     output_fingerprint,
                 };
             };
-            let comparison = compare_record_batches_with_sql_ordering(
+            let comparison = compare_record_batches_with_options(
                 cpu_schema.as_ref(),
                 cpu_batches,
                 schema.as_ref(),
                 &batches,
-                ordered,
-                ordered_total,
+                ordering,
                 float_tolerance,
                 ParityCompareOptions::cross_engine_oracle(),
             );
@@ -782,8 +772,7 @@ struct ParityInputs<'a> {
     cpu_batches: Option<&'a [RecordBatch]>,
     native_schema: Option<&'a SchemaRef>,
     native_batches: Option<&'a [RecordBatch]>,
-    ordered: bool,
-    ordered_total: bool,
+    ordering: &'a ParityRowOrdering,
     float_tolerance: ParityFloatTolerance,
 }
 
@@ -818,52 +807,14 @@ fn derive_parity_outcome(
             None,
         );
     };
-    let result = compare_record_batches_with_sql_ordering(
+    let result = compare_record_batches_with_options(
         cpu_schema.as_ref(),
         cpu_batches,
         native_schema.as_ref(),
         native_batches,
-        inputs.ordered,
-        inputs.ordered_total,
+        inputs.ordering,
         inputs.float_tolerance,
         ParityCompareOptions::strict_native(),
     );
     (result.status, result.mode, result.detail, Some(result.cpu_fingerprint), Some(result.native_fingerprint))
-}
-
-#[expect(clippy::too_many_arguments, reason = "inputs are distinct domain values that share no owner")]
-fn compare_record_batches_with_sql_ordering(
-    cpu_schema: &Schema,
-    cpu_batches: &[RecordBatch],
-    native_schema: &Schema,
-    native_batches: &[RecordBatch],
-    ordered: bool,
-    ordered_total: bool,
-    float_tolerance: ParityFloatTolerance,
-    options: ParityCompareOptions,
-) -> ParityComparisonResult {
-    let result = compare_record_batches_with_options(
-        cpu_schema,
-        cpu_batches,
-        native_schema,
-        native_batches,
-        ordered,
-        float_tolerance,
-        options,
-    );
-    if !ordered || ordered_total || result.status != ParityStatus::Mismatched {
-        return result;
-    }
-    if !result.detail.as_deref().is_some_and(|detail| detail.starts_with("row ")) {
-        return result;
-    }
-    compare_record_batches_with_options(
-        cpu_schema,
-        cpu_batches,
-        native_schema,
-        native_batches,
-        false,
-        float_tolerance,
-        options,
-    )
 }
