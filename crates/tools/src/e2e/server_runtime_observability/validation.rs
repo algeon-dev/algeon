@@ -1,48 +1,12 @@
-use std::{
-    collections::BTreeMap,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use tokio::time;
 use tonic::transport::Channel;
 
 use super::{E2eResult, flight::get_admission_stats};
+use crate::diagnostics_tsv::{TsvRow, tsv_section};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-
-pub(super) type TsvRow = BTreeMap<String, String>;
-
-pub(super) fn tsv_section(payload: &str, name: &str) -> E2eResult<Vec<TsvRow>> {
-    let marker = format!("[{name}]");
-    let mut lines = payload.lines().skip_while(|line| *line != marker).skip(1);
-    let header = lines.next().ok_or_else(|| format!("missing [{name}] section in payload:\n{payload}"))?;
-    if header.is_empty() || header.starts_with('[') {
-        return Err(format!("missing [{name}] TSV header in payload:\n{payload}").into());
-    }
-    let columns = header.split('\t').collect::<Vec<_>>();
-    let mut rows = Vec::new();
-    for line in lines {
-        if line.is_empty() || line.starts_with('[') {
-            break;
-        }
-        if line.starts_with('#') {
-            continue;
-        }
-        let values = line.split('\t').collect::<Vec<_>>();
-        if values.len() != columns.len() {
-            return Err(format!(
-                "[{name}] TSV width mismatch: {} columns, {} values in {line:?}",
-                columns.len(),
-                values.len()
-            )
-            .into());
-        }
-        rows.push(
-            columns.iter().zip(values).map(|(column, value)| ((*column).to_string(), value.to_string())).collect(),
-        );
-    }
-    Ok(rows)
-}
 
 pub(super) fn tsv_section_single_row(payload: &str, name: &str) -> E2eResult<TsvRow> {
     let rows = tsv_section(payload, name)?;

@@ -1,0 +1,7 @@
+# Default admission profile with GPU-only relational execution. Start
+# algeon_server from the repository root: init_sql and the table locations it
+# registers resolve against the server's working directory.
+init_sql = "crates/tools/fixtures/stress/tpch-sf100-init.sql"
+
+[native]
+execution_mode = "native_required"
