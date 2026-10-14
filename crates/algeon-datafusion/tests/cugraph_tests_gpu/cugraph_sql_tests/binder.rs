@@ -21,7 +21,7 @@ async fn cugraph_named_binder_derives_canonical_edge_and_bfs_schema() {
             "SELECT * FROM cugraph_bfs(\
              edges => (SELECT src, dst, weight FROM edges),\
              sources => (SELECT vertex_id AS vertex FROM sources),\
-             output_mode => 'normalized')",
+             output_mode => 'vertices')",
         )
         .await
         .unwrap();

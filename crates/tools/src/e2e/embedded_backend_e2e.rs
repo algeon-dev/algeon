@@ -364,7 +364,7 @@ async fn assert_ad_hoc_graph(client: &mut FlightClient, seed: i64) -> E2eResult<
             "SELECT COUNT(*) \
              FROM cugraph_bfs(\
                  edges => (SELECT src, dst FROM {view}), source_vertex => {seed}, \
-                 depth_limit => 1, output_mode => 'normalized') \
+                 depth_limit => 1, output_mode => 'vertices') \
              WHERE reachable"
         ),
     )

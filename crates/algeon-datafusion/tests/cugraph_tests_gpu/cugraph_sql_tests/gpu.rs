@@ -49,7 +49,7 @@ const CPU_INPUT_BFS_SQL: &str = "SELECT vertex, distance, predecessor \
           construction_policy => 'raw_libcugraph') \
      ORDER BY vertex";
 
-const RAW_BFS_TOP_K_SQL: &str = "SELECT vertex, distance, predecessor \
+const BFS_TOP_K_SQL: &str = "SELECT vertex, distance, predecessor \
      FROM cugraph_bfs(\
           edges => (SELECT src, dst FROM phase_c_top_k_edges), source_vertex => 0, \
           construction_policy => 'raw_libcugraph') \
@@ -339,17 +339,17 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
 
     let top_k_attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let top_k_completion = top_k_attempt.completion();
-    let top_k_plan = top_k_attempt.plan_sql(&ctx, RAW_BFS_TOP_K_SQL).await.unwrap();
+    let top_k_plan = top_k_attempt.plan_sql(&ctx, BFS_TOP_K_SQL).await.unwrap();
     assert_eq!(schema_field_names(top_k_plan.schema().as_ref()), vec!["vertex", "distance", "predecessor"]);
     assert!(top_k_plan.schema().field_with_name("predecessor").unwrap().is_nullable());
     let mut top_k_stream = top_k_attempt.execute_physical_plan(Arc::clone(&top_k_plan), &ctx).unwrap();
     let mut top_k_batches = Vec::new();
     while let Some(batch) = top_k_stream.next().await {
-        top_k_batches.push(batch.expect("raw BFS top-k must execute through the admitted composed schedule"));
+        top_k_batches.push(batch.expect("BFS top-k must execute through the admitted composed schedule"));
     }
     let report = top_k_completion.await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
-    assert!(report.admission.is_some(), "raw BFS top-k must execute under one admitted fixed cap");
+    assert!(report.admission.is_some(), "BFS top-k must execute under one admitted fixed cap");
     assert_eq!(top_k_batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 100);
     let distances = top_k_batches
         .iter()
@@ -1134,7 +1134,7 @@ async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
     const DEVICE_CAPACITY_BYTES: u64 = 256 * 1024 * 1024;
     const VERTICES: i64 = 12_000;
     const BFS_SQL: &str = "SELECT COUNT(*) AS reached, SUM(distance) AS total \
-         FROM cugraph_bfs(edges => (SELECT src, dst FROM overlap_edges), source_vertex => 0, output_mode => 'normalized')";
+         FROM cugraph_bfs(edges => (SELECT src, dst FROM overlap_edges), source_vertex => 0, output_mode => 'vertices')";
 
     // Parquet edges (not a MemTable) so the planner attaches graph residency
     // and mints a singleflight key: a directed cycle plus antipodal chords
@@ -1368,6 +1368,20 @@ fn gpu_cases_2() {
                 .expect("case runtime")
                 .block_on(cugraph_sql_gpu_bfs_path_depth_zero_returns_the_source_target_vertex())
         }),
+        ("cugraph_sql_gpu_bfs_vertices_normalize_each_domain_and_depth_zero", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_vertices_normalize_each_domain_and_depth_zero())
+        }),
+        ("cugraph_sql_gpu_bfs_target_join_retains_distant_unreached_and_absent_targets", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_bfs_target_join_retains_distant_unreached_and_absent_targets())
+        }),
         ("cugraph_sql_gpu_bfs_depth_limit_counts_hops_and_clamps_to_the_vertex_type", || {
             TestRuntimeBuilder::new_current_thread()
                 .enable_all()
@@ -1443,12 +1457,12 @@ fn gpu_cases_4() {
                 .expect("case runtime")
                 .block_on(cugraph_sql_gpu_absent_traversal_sources_reach_the_client_as_invalid_input())
         }),
-        ("cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch", || {
+        ("cugraph_sql_gpu_bfs_path_unreached_targets_are_empty_and_cardinality_is_required", || {
             TestRuntimeBuilder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("case runtime")
-                .block_on(cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch())
+                .block_on(cugraph_sql_gpu_bfs_path_unreached_targets_are_empty_and_cardinality_is_required())
         }),
         ("cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch", || {
             TestRuntimeBuilder::new_current_thread()
@@ -2000,7 +2014,7 @@ async fn cugraph_sql_gpu_camel_case_side_inputs_execute_every_shared_relation_sh
         (
             "target_vertices",
             "SELECT * FROM cugraph_bfs(\
-             edges => (SELECT \"edgeSrc\" AS src, \"edgeDst\" AS dst FROM camelEdges), source_vertex => 0, \
+             edges => (SELECT \"edgeSrc\" AS src, \"edgeDst\" AS dst FROM camelEdges), source_vertex => 0, output_mode => 'path', \
              target_vertices => (SELECT \"targetVertex\" AS vertex FROM camelTargets))",
         ),
         (
@@ -2037,7 +2051,7 @@ async fn cugraph_sql_gpu_bfs_numeric_source_list_executes_multi_source() {
             "SELECT vertex, distance, reachable \
              FROM cugraph_bfs(\
                   edges => (SELECT src, dst FROM raw_edges), source_vertices => [0, 10], \
-                  construction_policy => 'raw_libcugraph', output_mode => 'normalized')",
+                  construction_policy => 'raw_libcugraph', output_mode => 'vertices')",
         )
         .await
         .unwrap()
@@ -2061,7 +2075,7 @@ async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
             "SELECT vertex, distance, predecessor, reachable \
              FROM cugraph_bfs(\
                   edges => (SELECT src, dst FROM raw_edges), source_vertices => ['a', 'x'], \
-                  construction_policy => 'raw_libcugraph', output_mode => 'normalized')",
+                  construction_policy => 'raw_libcugraph', output_mode => 'vertices')",
         )
         .await
         .unwrap()
@@ -2203,6 +2217,131 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
+async fn cugraph_sql_gpu_bfs_vertices_normalize_each_domain_and_depth_zero() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    for (index, input_type) in
+        [DataType::Int32, DataType::Int64, DataType::Utf8, DataType::LargeUtf8, DataType::Utf8View]
+            .into_iter()
+            .enumerate()
+    {
+        let table = format!("nullable_bfs_edges_{index}");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", input_type.clone(), false),
+            Field::new("dst", input_type.clone(), false),
+        ]));
+        let column = |values: &[i64]| -> ArrayRef {
+            match input_type {
+                DataType::Int32 => {
+                    Arc::new(Int32Array::from(values.iter().map(|value| *value as i32).collect::<Vec<_>>()))
+                },
+                DataType::Int64 => Arc::new(Int64Array::from(values.to_vec())),
+                DataType::Utf8 => Arc::new(StringArray::from(
+                    values.iter().map(|value| ((b'a' + *value as u8) as char).to_string()).collect::<Vec<_>>(),
+                )),
+                DataType::LargeUtf8 => Arc::new(LargeStringArray::from(
+                    values.iter().map(|value| ((b'a' + *value as u8) as char).to_string()).collect::<Vec<_>>(),
+                )),
+                DataType::Utf8View => Arc::new(StringViewArray::from(
+                    values.iter().map(|value| ((b'a' + *value as u8) as char).to_string()).collect::<Vec<_>>(),
+                )),
+                _ => unreachable!(),
+            }
+        };
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![column(&[0, 1, 2, 4]), column(&[1, 2, 3, 5])]).unwrap();
+        ctx.register_table(&table, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+        let (source, output_type) = match input_type {
+            DataType::Int32 | DataType::Int64 => ("0", input_type),
+            _ => ("'a'", DataType::Utf8),
+        };
+        let expected_schema = Schema::new(vec![
+            Field::new("vertex", output_type.clone(), false),
+            Field::new("distance", DataType::Int64, true),
+            Field::new("predecessor", output_type, true),
+            Field::new("reachable", DataType::Boolean, false),
+        ]);
+        let identity = |array: &dyn Array, row: usize| -> i64 {
+            match array.data_type() {
+                DataType::Int32 => i64::from(array.as_any().downcast_ref::<Int32Array>().unwrap().value(row)),
+                DataType::Int64 => array.as_any().downcast_ref::<Int64Array>().unwrap().value(row),
+                DataType::Utf8 => {
+                    i64::from(array.as_any().downcast_ref::<StringArray>().unwrap().value(row).as_bytes()[0] - b'a')
+                },
+                other => panic!("unexpected BFS vertex type {other:?}"),
+            }
+        };
+        for depth in [0, 2, 3] {
+            for mode in ["", ", output_mode => 'vertices'"] {
+                let sql = format!(
+                    "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM {table}), source_vertex => {source}, depth_limit => {depth}{mode}) ORDER BY vertex"
+                );
+                let df = ctx.sql(&sql).await.unwrap();
+                assert_eq!(df.schema().inner().as_ref(), &expected_schema);
+                let batches = df.collect().await.unwrap();
+                let mut observed = Vec::new();
+                for batch in &batches {
+                    assert_eq!(batch.schema().as_ref(), &expected_schema);
+                    let distances = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+                    let predecessors = batch.column(2);
+                    let reachable = batch.column(3).as_any().downcast_ref::<BooleanArray>().unwrap();
+                    for row in 0..batch.num_rows() {
+                        let vertex = identity(batch.column(0).as_ref(), row);
+                        let distance = (!distances.is_null(row)).then(|| distances.value(row));
+                        let predecessor = (!predecessors.is_null(row)).then(|| identity(predecessors.as_ref(), row));
+                        assert_eq!(reachable.value(row), distance.is_some(), "{sql}: vertex {vertex}");
+                        observed.push((vertex, distance, predecessor, reachable.value(row)));
+                    }
+                }
+                let expected = (0..6)
+                    .map(|vertex| {
+                        let reached = vertex <= depth && vertex <= 3;
+                        (vertex, reached.then_some(vertex), (reached && vertex > 0).then_some(vertex - 1), reached)
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(observed, expected, "{sql}");
+            }
+        }
+        let empty = ctx
+            .sql(&format!(
+                "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM {table}), source_vertex => {source}) LIMIT 0"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(empty.schema().inner().as_ref(), &expected_schema);
+        assert_eq!(empty.collect().await.unwrap().iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+    }
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+async fn cugraph_sql_gpu_bfs_target_join_retains_distant_unreached_and_absent_targets() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_disconnected_bfs_edges(&ctx, "target_join_edges");
+    register_i64_vertex_values(&ctx, "distance_targets", "vertex", vec![2, 3, 11, 99]);
+    let joined = "WITH bfs AS (SELECT vertex, distance FROM cugraph_bfs(edges => (SELECT src, dst FROM target_join_edges), source_vertex => 0, depth_limit => 2)) \
+         SELECT t.vertex AS target, b.distance, b.distance IS NOT NULL AS reachable \
+         FROM distance_targets t LEFT JOIN bfs b ON b.vertex = t.vertex";
+    let batches = ctx.sql(&format!("{joined} ORDER BY target")).await.unwrap().collect().await.unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(int64_column(batch, 0), vec![2, 3, 11, 99]);
+    let distances = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(distances.iter().collect::<Vec<_>>(), vec![Some(1), Some(2), None, None]);
+    let reachable = batch.column(2).as_any().downcast_ref::<BooleanArray>().unwrap();
+    assert_eq!(reachable.iter().collect::<Vec<_>>(), vec![Some(true), Some(true), Some(false), Some(false)]);
+    let summary = ctx
+        .sql(&format!(
+            "SELECT COUNT(distance) > 0 AS target_found, MIN(distance) AS nearest_distance FROM ({joined}) hits"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let summary = single_batch(&summary);
+    assert!(bool_value(summary, 0, 0));
+    assert_eq!(int64_column(summary, 1), vec![1]);
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
 async fn cugraph_sql_gpu_bfs_path_depth_zero_returns_the_source_target_vertex() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2246,7 +2385,7 @@ async fn cugraph_sql_gpu_bfs_depth_limit_counts_hops_and_clamps_to_the_vertex_ty
         let batches = ctx
             .sql(&format!(
                 "SELECT vertex, reachable FROM cugraph_bfs(\
-                 edges => (SELECT src, dst FROM hop_edges), source_vertex => 0, output_mode => 'normalized'{depth})"
+                 edges => (SELECT src, dst FROM hop_edges), source_vertex => 0, output_mode => 'vertices'{depth})"
             ))
             .await
             .unwrap()
@@ -2481,27 +2620,43 @@ async fn cugraph_sql_gpu_absent_traversal_sources_reach_the_client_as_invalid_in
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
-async fn cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch() {
+async fn cugraph_sql_gpu_bfs_path_unreached_targets_are_empty_and_cardinality_is_required() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
-    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_disconnected_bfs_edges(&ctx, "path_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0]);
-    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![99]);
-
-    let batches = ctx
-        .sql(
-            "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs(\
-                  edges => (SELECT src, dst FROM raw_edges),\
-                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
-                  target_vertices => (SELECT vertex_id AS vertex FROM targets))",
-        )
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
+    for (index, target, depth) in [(0, 99, 2), (1, 11, 2), (2, 3, 1)] {
+        let table = format!("unreached_target_{index}");
+        register_i64_vertex_values(&ctx, &table, "vertex_id", vec![target]);
+        let batches = ctx
+            .sql(&format!(
+                "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM path_edges), \
+             sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path', \
+             target_vertices => (SELECT vertex_id AS vertex FROM {table}), depth_limit => {depth})"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_empty_i64_path_batch(single_batch(&batches));
+    }
+    for (table, targets) in [("no_targets", vec![]), ("multiple_targets", vec![2, 3])] {
+        register_i64_vertex_values(&ctx, table, "vertex_id", targets.clone());
+        let error = ctx
+            .sql(&format!(
+                "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM path_edges), source_vertex => 0, \
+             output_mode => 'path', target_vertices => (SELECT vertex_id AS vertex FROM {table}))"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .expect_err("path requires exactly one target row");
+        assert!(error.to_string().contains("exactly one target vertex"), "{error}");
+        let target_rows = targets.len().to_string();
+        assert_eq!(typed_algeon_error(&error).fact_value("target_rows"), Some(target_rows.as_str()));
+    }
     drop_session_context_on_blocking_thread(ctx).await;
-    assert_empty_i64_path_batch(single_batch(&batches));
 }
 
 async fn cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch() {
@@ -2962,7 +3117,7 @@ async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
             "SELECT vertex, distance, predecessor, reachable \
              FROM cugraph_bfs(\
                   edges => (SELECT src, dst FROM raw_edges),\
-                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'normalized',\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'vertices',\
                   construction_policy => 'raw_libcugraph')",
         )
         .await
@@ -3442,7 +3597,7 @@ async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
             "SELECT vertex, distance, predecessor, reachable \
              FROM cugraph_bfs(\
                   edges => (SELECT src, dst FROM raw_edges), source_vertex => 'a',\
-                  construction_policy => 'raw_libcugraph', output_mode => 'normalized',\
+                  construction_policy => 'raw_libcugraph', output_mode => 'vertices',\
                   include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM allowed_edges))",
         )
         .await
@@ -3466,7 +3621,7 @@ async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
             "SELECT vertex, distance, predecessor, reachable \
              FROM cugraph_bfs(\
                   edges => (SELECT src, dst FROM raw_edges), source_vertex => 'a',\
-                  construction_policy => 'raw_libcugraph', output_mode => 'normalized')",
+                  construction_policy => 'raw_libcugraph', output_mode => 'vertices')",
         )
         .await
         .unwrap()
@@ -3541,10 +3696,10 @@ async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
 
     let error = ctx
         .sql(
-            "SELECT vertex, distance, predecessor \
+            "SELECT * \
              FROM cugraph_bfs(\
                   edges => (SELECT src, dst FROM raw_edges), source_vertex => 0,\
-                  construction_policy => 'raw_libcugraph',\
+                  construction_policy => 'raw_libcugraph', output_mode => 'path',\
                   target_vertices => (SELECT vertex_id AS vertex FROM targets))",
         )
         .await

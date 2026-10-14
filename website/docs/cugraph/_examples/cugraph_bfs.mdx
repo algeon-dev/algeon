@@ -24,7 +24,7 @@ SELECT b.distance, COUNT(*) AS papers
 FROM cugraph_bfs(
   edges => (SELECT dst AS src, src AS dst FROM citation_edges_by_dst),
   sources => (SELECT vertex FROM cnn_founders), depth_limit => 2,
-  output_mode => 'normalized') b
+  output_mode => 'vertices') b
 JOIN papers p ON p.paper_id = b.vertex
 WHERE b.reachable
 GROUP BY b.distance
@@ -67,7 +67,7 @@ FROM cugraph_bfs(
             FROM attention_ancestry a
             JOIN papers ps ON ps.paper_id = a.src
             JOIN papers pd ON pd.paper_id = a.dst),
-  source_vertex => 'Attention is all you need', output_mode => 'normalized') b
+  source_vertex => 'Attention is all you need', output_mode => 'vertices') b
 WHERE b.distance <= 1
 ORDER BY b.distance, b.vertex
 LIMIT 6;
@@ -93,3 +93,47 @@ title matches the question. Here BFS returns the title as a `Utf8` vertex:
 
 String graphs reject `edge_id` columns and edge-ID predicate relations. See the
 [Vertex ID support](../graph-options.mdx#vertex-id-support-by-udtf) matrix.
+
+### How far are several target papers from one source?
+
+Join targets to the default `vertices` result to retain every requested ID,
+including targets absent from the graph. This example follows references from
+BERT for at most four hops. A null distance means the search did not reach the
+target within that depth; it does not establish that the target is unreachable
+in the full graph.
+
+```sql
+WITH bfs AS (
+  SELECT vertex, distance
+  FROM cugraph_bfs(
+    edges => (SELECT src, dst FROM citation_edges),
+    sources => (SELECT paper_id AS vertex FROM papers
+                WHERE title = 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding'
+                  AND year = 2018),
+    depth_limit => 4)
+), targets AS (
+  SELECT paper_id AS vertex FROM papers
+  WHERE (title = 'Attention is all you need' AND year = 2017)
+     OR (title = 'Long short-term memory' AND year = 1997)
+), target_distances AS (
+  SELECT t.vertex AS target, b.distance,
+         b.distance IS NOT NULL AS reachable
+  FROM targets t LEFT JOIN bfs b ON b.vertex = t.vertex
+)
+SELECT target, distance, reachable
+FROM target_distances
+ORDER BY target;
+```
+
+To return one summary row, replace the final `SELECT` with
+`SELECT COUNT(distance) > 0 AS target_found, MIN(distance) AS target_distance
+FROM target_distances`. The summary describes the target set rather than each
+BFS vertex. The search completes the specified depth or exhausts the frontier,
+which can process more vertices than stopping at the first target hit.
+Latency and memory use can therefore differ from the former target calls.
+
+Calls using `output_mode => 'normalized'` or `'raw'` must switch to `vertices`
+or omit `output_mode`. Use `distance IS NULL` or `reachable` instead of comparing
+sentinels. Remove `return_target_info`; express summaries with the join and
+aggregate above. Use `target_vertices` inside `cugraph_bfs` only with
+`output_mode => 'path'`, which requires exactly one target row at execution.

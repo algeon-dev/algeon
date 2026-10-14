@@ -2,8 +2,9 @@ use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
 use algeon_datafusion::{
     cugraph_sql::{
-        CUGRAPH_ECG_FUNCTION, CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_PAGERANK_FUNCTION,
-        CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION, CUGRAPH_SSSP_FUNCTION, CugraphSqlConfig,
+        CUGRAPH_BFS_FUNCTION, CUGRAPH_ECG_FUNCTION, CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION,
+        CUGRAPH_PAGERANK_FUNCTION, CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION, CUGRAPH_SSSP_FUNCTION,
+        CugraphSqlConfig,
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
@@ -443,6 +444,72 @@ async fn cugraph_validation_reports_undeclared_source_options_as_unknown() {
         assert_eq!(code.as_deref(), Some(UNKNOWN_OPTION), "{function} {option}");
         assert_eq!(details["argument"], option, "{function} {option}");
     }
+}
+
+#[tokio::test]
+async fn cugraph_bfs_rejects_retired_output_options_in_sql_and_metadata() {
+    let ctx = cugraph_context();
+    let bfs = describe(&ctx, CUGRAPH_BFS_FUNCTION).await;
+    for (option, value, expected_reason, expected_code) in [
+        ("output_mode", json!("raw"), INVALID_VALUE, INVALID_VALUE),
+        ("output_mode", json!("normalized"), INVALID_VALUE, INVALID_VALUE),
+        ("return_target_info", json!(true), "unknown_argument", UNKNOWN_OPTION),
+        ("return_target_info", json!(false), "unknown_argument", UNKNOWN_OPTION),
+    ] {
+        let overrides = Map::from_iter([(option.to_string(), value.clone())]);
+        let rejection = plan_rejection(&ctx, &bfs, &overrides).await.expect("retired BFS option must not plan");
+        assert_eq!(rejection.code, ErrorCode::InvalidRequest, "{option} => {value}");
+        assert_eq!(rejection.reason.as_deref(), Some(expected_reason), "{option} => {value}");
+        assert!(rejection.message.contains(option), "{}", rejection.message);
+        let (valid, code, message, _) = validate(&ctx, &bfs, &overrides).await;
+        assert!(!valid, "{option} => {value}");
+        assert_eq!(code.as_deref(), Some(expected_code), "{option} => {value}");
+        assert!(message.contains(option), "{message}");
+    }
+}
+
+#[tokio::test]
+async fn cugraph_bfs_targets_require_path_in_sql_and_metadata() {
+    let ctx = cugraph_context();
+    register_table(&ctx, "targets", &[("vertex", DataType::Int64)]);
+    for mode in [None, Some("vertices"), Some("path")] {
+        let option = mode.map(|mode| format!(", output_mode => '{mode}'")).unwrap_or_default();
+        let sql = format!(
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM edges), source_vertex => 0{option}, \
+             target_vertices => (SELECT vertex FROM targets))"
+        );
+        let planned = ctx.state().create_logical_plan(&sql).await;
+        let mut options = json!({"source_vertex": 0});
+        if let Some(mode) = mode {
+            options["output_mode"] = json!(mode);
+        }
+        let call = json!({
+            "relations": {"edges": {"table": "edges"}, "target_vertices": {"table": "targets"}},
+            "options": options,
+        });
+        let batch =
+            collect(&ctx, &format!("SELECT valid, message FROM gpu_validate_call('cugraph_bfs', '{call}')")).await;
+        let valid = batch.column(0).as_any().downcast_ref::<BooleanArray>().unwrap().value(0);
+        assert_eq!(valid, mode == Some("path"), "{mode:?}");
+        if mode == Some("path") {
+            planned.expect("path accepts the target relation");
+        } else {
+            let error = planned.expect_err("vertices rejects targets during planning");
+            assert_eq!(error.find_algeon_error().unwrap().code(), ErrorCode::InvalidExecutionPlan);
+            assert!(error.to_string().contains("path"), "{error}");
+            assert!(text(&batch, "message", 0).unwrap().contains("path"));
+        }
+    }
+
+    let error = ctx.state().create_logical_plan(
+        "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM edges), source_vertex => 0, output_mode => 'path')"
+    ).await.expect_err("path requires its target relation");
+    assert!(error.to_string().contains("target_vertices"), "{error}");
+    let bfs = describe(&ctx, CUGRAPH_BFS_FUNCTION).await;
+    let (valid, _, message, _) =
+        validate(&ctx, &bfs, &Map::from_iter([("output_mode".to_string(), json!("path"))])).await;
+    assert!(!valid);
+    assert!(message.contains("target_vertices"), "{message}");
 }
 
 #[tokio::test]

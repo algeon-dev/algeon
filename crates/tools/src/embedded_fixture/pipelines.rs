@@ -129,7 +129,7 @@ impl Pipeline {
                            SELECT vertex, distance, reachable \
                            FROM cugraph_bfs(\
                              edges => (SELECT src, dst FROM citation_edges), source_vertex => {seed}, \
-                             depth_limit => {max_depth}, output_mode => 'normalized') \
+                             depth_limit => {max_depth}, output_mode => 'vertices') \
                          ) \
                          SELECT b.distance, COUNT(*) AS papers, MIN(p.title) AS sample_title \
                          FROM bfs b \

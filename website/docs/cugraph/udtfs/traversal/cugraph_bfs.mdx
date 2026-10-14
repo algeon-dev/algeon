@@ -1,7 +1,7 @@
 ---
 title: BFS
 sidebar_label: BFS
-description: "Visit reachable vertices in increasing unweighted hop distance from one or more sources, returning distances and optional predecessors."
+description: "Run unweighted BFS from one or more sources, returning nullable vertex distances and predecessors with reachable, or one source-to-target path."
 slug: /cugraph/udtfs/cugraph_bfs
 ---
 
@@ -13,7 +13,7 @@ UDTF: `cugraph_bfs`
 
 Official cuGraph reference: [C API](https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/traversal/#_CPPv411cugraph_bfsPK25cugraph_resource_handle_tP15cugraph_graph_tP39cugraph_type_erased_device_array_view_t6bool_t6size_t6bool_t6bool_tPP22cugraph_paths_result_tPP15cugraph_error_t)
 
-Visit reachable vertices in increasing unweighted hop distance from one or more sources, returning distances and optional predecessors.
+Run unweighted BFS from one or more sources, returning nullable vertex distances and predecessors with reachable, or one source-to-target path.
 
 ## Quickstart
 
@@ -44,7 +44,7 @@ The vertex-ID types this UDTF accepts, the numeric types a per-call codebook map
 | `sources` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li></ul> | optional BFS source relation; exactly one of sources, source_vertex, and source_vertices is required |
 | `include_vertices` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li></ul> | vertices retained by BFS predicate filtering |
 | `exclude_vertices` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li></ul> | vertices removed by BFS predicate filtering |
-| `target_vertices` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li></ul> | BFS target vertices required for path output or target information |
+| `target_vertices` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li></ul> | BFS target relation required only for path output; it must contain exactly one row at execution |
 | `include_edge_ids` | no | <ul><li>`edge_id`: `Int32`, `Int64`</li></ul> | edge identifiers retained by BFS predicate filtering |
 | `include_edges` | no | <ul><li>`src`, `dst`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`edge_id` (optional): `Int32`, `Int64`</li></ul> | edge predicate relation with src, dst, and optional edge_id columns |
 
@@ -55,8 +55,7 @@ Vertex columns of `sources`, `include_vertices`, `exclude_vertices`, `target_ver
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `depth_limit` | `integer\|null` | `null` | min 0; max 9223372036854776000 | number of hops to expand; 0 reaches only the sources, and null or absent is unlimited; limits above the vertex type's maximum are unlimited |
-| `output_mode` | `string` | `"raw"` | one of `"raw"`, `"normalized"`, `"path"` | BFS output shape |
-| `return_target_info` | `boolean` | `false` |  | whether raw or normalized BFS output includes target information |
+| `output_mode` | `string` | `"vertices"` | one of `"vertices"`, `"path"` | BFS output shape |
 | `source_vertex` | `integer\|string` | No default |  | scalar source vertex; BFS source selectors are mutually exclusive |
 | `source_vertices` | `array` | No default |  | non-empty homogeneous BFS source vertex array; mutually exclusive with source_vertex and sources |
 
@@ -66,53 +65,24 @@ Graph construction follows the shared defaults (`directed=true`, renumbering, `p
 
 ## Output
 
-### `raw` (default)
+### `vertices` (default)
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
-| `distance` | `Int64` | no | Hop-count distance from the nearest selected BFS source vertex. |
-| `predecessor` | `Int64\|Utf8` | yes | Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode. |
-
-### `normalized`
-
-| Column | Type | Nullable | Description |
-| --- | --- | --- | --- |
-| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
-| `distance` | `Int64` | yes | Hop-count distance from the nearest selected BFS source vertex. |
-| `predecessor` | `Int64\|Utf8` | yes | Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode. |
-| `reachable` | `Boolean` | no | Whether the vertex is reachable under normalized BFS output. |
-
-### `normalized_with_target_info`
-
-| Column | Type | Nullable | Description |
-| --- | --- | --- | --- |
-| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
-| `distance` | `Int64` | yes | Hop-count distance from the nearest selected BFS source vertex. |
-| `predecessor` | `Int64\|Utf8` | yes | Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode. |
-| `reachable` | `Boolean` | no | Whether the vertex is reachable under normalized BFS output. |
-| `target_found` | `Boolean` | no | Whether a requested target vertex was reached by the BFS traversal. |
-| `target_distance` | `Int64` | yes | Hop-count distance to the requested target vertex, null when the target was not reached. |
+| `vertex` | `Int32\|Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
+| `distance` | `Int64` | yes | Hop-count distance from the nearest selected BFS source vertex within the predicates and depth limit; null when unreached in vertices output. |
+| `predecessor` | `Int32\|Int64\|Utf8` | yes | Previous vertex on the discovered BFS tree, null for selected sources and vertices not reached within the predicates and depth limit. |
+| `reachable` | `Boolean` | no | Whether the vertex was reached within the predicates and depth limit; equivalent to distance IS NOT NULL. |
 
 ### `path`
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
 | `path_index` | `Int64` | no | Zero-based row position in the reconstructed source-to-target path. |
-| `source` | `Int64\|Utf8` | no | Source vertex for the reconstructed BFS path. |
-| `target` | `Int64\|Utf8` | no | Target vertex for the reconstructed BFS path. |
-| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
-| `distance` | `Int64` | no | Hop-count distance from the nearest selected BFS source vertex. |
-
-### `raw_with_target_info`
-
-| Column | Type | Nullable | Description |
-| --- | --- | --- | --- |
-| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
-| `distance` | `Int64` | no | Hop-count distance from the nearest selected BFS source vertex. |
-| `predecessor` | `Int64\|Utf8` | yes | Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode. |
-| `target_found` | `Boolean` | no | Whether a requested target vertex was reached by the BFS traversal. |
-| `target_distance` | `Int64` | yes | Hop-count distance to the requested target vertex, null when the target was not reached. |
+| `source` | `Int32\|Int64\|Utf8` | no | Source vertex for the reconstructed BFS path. |
+| `target` | `Int32\|Int64\|Utf8` | no | Target vertex for the reconstructed BFS path. |
+| `vertex` | `Int32\|Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
+| `distance` | `Int64` | no | Hop-count distance from the nearest selected BFS source vertex within the predicates and depth limit; null when unreached in vertices output. |
 
 These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.
 
@@ -126,8 +96,12 @@ import Examples from '../../_examples/cugraph_bfs.mdx';
 
 - source_vertices and the sources relation are multi-source BFS, not one BFS per source
 - source_vertices and the sources relation must contain at most one source per connected component
-- raw/normalized output does not expose origin source per vertex
+- vertices output does not expose origin source per vertex
+- sources have distance 0 and null predecessor; unreached graph vertices remain in vertices output with null distance and predecessor
+- reachable describes arrival within the predicates and depth limit; vertices beyond that limit and disconnected vertices both return false
 - string logical vertex-domain BFS rejects edges.edge_id and edge-id predicate relations
+- target_vertices is required for path output and rejected for vertices output; join target relations to vertices output for multiple target distances
 - path output requires exactly one target row at execution time
+- vertices output searches until the depth limit or frontier exhaustion; path output stops after completing the target's BFS depth
 - descriptor option schema is typed registry metadata; validate_call remains the authoritative call-specific checker
 - distances and reachability repeat between runs; when a vertex has several shortest-path parents, the returned predecessor can differ

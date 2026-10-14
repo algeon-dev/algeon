@@ -275,7 +275,13 @@ impl GraphAlgorithmNode {
     }
 }
 
-/// Stable SQL-facing result schema for graph algorithms.
+/// Native base result schema for graph algorithms using Int64 vertex ids.
+///
+/// BFS returns raw `vertex`, `distance`, and `predecessor` columns. The SQL
+/// adapter owns the four-column `vertices` result with nullable distances and
+/// `reachable`; native callers retain the underlying distance sentinel.
+/// Use [`graph_result_schema_for_params`] for bounded BFS path output and
+/// [`graph_result_schema_for_vertex_type`] for the input graph's vertex-id dtype.
 pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
     let fields = match algorithm {
         GraphAlgorithm::PageRank
@@ -382,15 +388,15 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
-/// Expected graph result schema after algorithm-specific output options.
+/// Native result schema after algorithm-specific output options.
 ///
-/// Most graph algorithms use [`stable_graph_result_schema`] without change. BFS can
-/// opt into target metadata columns through [`GraphBfsParams::return_target_info`].
+/// Most graph algorithms use [`stable_graph_result_schema`] without change. BFS
+/// returns the raw three-column vertex result unless bounded path output is requested.
 pub fn graph_result_schema_for_params(algorithm: GraphAlgorithm, params: &GraphAlgorithmParams) -> SchemaRef {
     algorithm.definition().result_schema_for_params(params)
 }
 
-/// Expected graph result schema in the input graph's numeric vertex-id domain.
+/// Native result schema in the input graph's numeric vertex-id domain.
 pub fn graph_result_schema_for_vertex_type(
     algorithm: GraphAlgorithm,
     params: &GraphAlgorithmParams,

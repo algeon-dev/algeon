@@ -580,7 +580,7 @@ pub struct CugraphBfsParams {
     pub depth_limit: Option<i64>,
     /// Optional relation-backed predicate inputs.
     pub predicates: CugraphBfsPredicateInputs,
-    /// SQL result-shape options. Defaults use the raw cuGraph distance/sentinel schema.
+    /// SQL result-shape options. Defaults use nullable vertex results with `reachable`.
     pub output: CugraphBfsOutputOptions,
 }
 
@@ -969,30 +969,22 @@ pub(crate) fn is_string_vertex_dtype(data_type: &DataType) -> bool {
 
 /// SQL-visible BFS output options.
 ///
-/// `mode = Raw` exposes the raw cuGraph distance/sentinel schema.
-/// `mode = Normalized` adds `reachable` and converts
-/// unreachable distance / absent predecessor sentinels to nulls. `mode = Path`
-/// reconstructs one source-to-target path from the BFS predecessor output.
-/// `return_target_info = true` is an explicit schema-widening request that
-/// requires a target-vertex predicate and appends `target_found` plus nullable
-/// `target_distance` to every output row for raw / normalized output.
+/// The default vertices output converts unreached distances and absent
+/// predecessors to nulls. Path output reconstructs one source-to-target path
+/// from the BFS predecessor output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CugraphBfsOutputOptions {
-    /// Result schema and sentinel-normalization mode.
+    /// Result shape, defaulting to one row per graph vertex.
     pub mode: CugraphBfsOutputMode,
-    /// Whether target metadata is requested.
-    pub return_target_info: bool,
 }
 
 /// BFS SQL result-shape selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CugraphBfsOutputMode {
-    /// Preserve the raw `vertex`, `distance`, `predecessor` schema.
-    #[default]
-    Raw,
     /// Return `vertex`, nullable `distance`, nullable `predecessor`, and
-    /// `reachable`.
-    Normalized,
+    /// `reachable`, indicating arrival within the predicates and depth limit.
+    #[default]
+    Vertices,
     /// Return one row per vertex on the reconstructed source-to-target path.
     Path,
 }
@@ -1001,8 +993,7 @@ impl CugraphBfsOutputMode {
     /// Stable JSON label used by `output_mode` and metadata UDTFs.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Raw => "raw",
-            Self::Normalized => "normalized",
+            Self::Vertices => "vertices",
             Self::Path => "path",
         }
     }
@@ -1017,7 +1008,7 @@ pub struct CugraphBfsPredicateInputs {
     pub include_vertices: Option<CugraphGraphPredicateTable>,
     /// Optional excluded-vertex relation; absence excludes no vertices by this predicate.
     pub exclude_vertices: Option<CugraphGraphPredicateTable>,
-    /// Optional target-vertex relation used for target metadata or path output.
+    /// Target-vertex relation required for path output and rejected for vertices output.
     pub target_vertices: Option<CugraphGraphPredicateTable>,
     /// Optional allowed edge-id relation, requiring an edge-id input contract.
     pub include_edge_ids: Option<CugraphGraphPredicateTable>,
@@ -1495,11 +1486,22 @@ impl Default for CugraphForceAtlas2Params {
     }
 }
 
-/// Returns the algorithm registry's base result schema.
+/// Returns the algorithm's default SQL result schema for Int64 vertex IDs.
 ///
-/// Use [`result_schema_for_params`] for BFS options that change the result shape.
+/// BFS defaults to nullable vertex results with `reachable`. Native algorithm
+/// results use the schema owned by `query_planning`. Use
+/// [`result_schema_for_params`] for a parsed call, whose BFS output may be a path.
 pub fn stable_result_schema(algorithm: CugraphAlgorithm) -> SchemaRef {
-    algorithm.native_algorithm().definition().base_result_schema()
+    if algorithm == CugraphAlgorithm::Bfs {
+        bfs_result_schema(&CugraphBfsParams {
+            source: CugraphBfsSource::default(),
+            depth_limit: None,
+            predicates: CugraphBfsPredicateInputs::default(),
+            output: CugraphBfsOutputOptions::default(),
+        })
+    } else {
+        algorithm.native_algorithm().definition().base_result_schema()
+    }
 }
 
 /// SQL output schema for one BFS call after applying output options.
@@ -1517,13 +1519,8 @@ pub(crate) fn bfs_result_schema_for_vertex_domain(
 
 fn bfs_result_schema_with_vertex_type(params: &CugraphBfsParams, vertex_type: DataType) -> SchemaRef {
     let predecessor_type = vertex_type.clone();
-    let mut fields = match params.output.mode {
-        CugraphBfsOutputMode::Raw => vec![
-            Field::new("vertex", vertex_type, false),
-            Field::new("distance", DataType::Int64, false),
-            Field::new("predecessor", predecessor_type, true),
-        ],
-        CugraphBfsOutputMode::Normalized => vec![
+    let fields = match params.output.mode {
+        CugraphBfsOutputMode::Vertices => vec![
             Field::new("vertex", vertex_type, false),
             Field::new("distance", DataType::Int64, true),
             Field::new("predecessor", predecessor_type, true),
@@ -1537,10 +1534,6 @@ fn bfs_result_schema_with_vertex_type(params: &CugraphBfsParams, vertex_type: Da
             Field::new("distance", DataType::Int64, false),
         ],
     };
-    if params.output.mode != CugraphBfsOutputMode::Path && params.output.return_target_info {
-        fields.push(Field::new("target_found", DataType::Boolean, false));
-        fields.push(Field::new("target_distance", DataType::Int64, true));
-    }
     Arc::new(Schema::new(fields))
 }
 
@@ -1589,17 +1582,24 @@ mod tests {
     use query_planning::plan::stable_graph_result_schema;
 
     use super::stable_result_schema;
-    use crate::cugraph_sql::registry::CUGRAPH_OPERATION_REGISTRY;
+    use crate::cugraph_sql::{
+        CugraphAlgorithm, CugraphAlgorithmParams, registry::CUGRAPH_OPERATION_REGISTRY, result_schema_for_params,
+    };
 
     #[test]
-    fn registry_algorithm_sql_output_schemas_agree_with_native_engine() {
+    fn registry_default_sql_output_schemas_agree_with_owning_contract() {
         for entry in CUGRAPH_OPERATION_REGISTRY {
             let sql_schema = stable_result_schema(entry.algorithm);
-            let native_schema = stable_graph_result_schema(entry.algorithm.native_algorithm());
+            let expected_schema = if entry.algorithm == CugraphAlgorithm::Bfs {
+                let params = CugraphAlgorithmParams::from_native_defaults(entry.algorithm, None).unwrap();
+                result_schema_for_params(entry.algorithm, &params)
+            } else {
+                stable_graph_result_schema(entry.algorithm.native_algorithm())
+            };
             assert_eq!(
                 sql_schema.as_ref(),
-                native_schema.as_ref(),
-                "SQL-facing output schema for {} must mirror the native engine schema",
+                expected_schema.as_ref(),
+                "default SQL output schema for {} must agree with its owning contract",
                 entry.sql_function_name,
             );
         }

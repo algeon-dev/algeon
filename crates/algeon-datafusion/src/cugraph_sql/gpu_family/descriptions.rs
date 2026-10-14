@@ -13,25 +13,15 @@ fn is_similarity(algorithm: CugraphAlgorithm) -> bool {
 pub(super) fn result_field_descriptions_json(algorithm: CugraphAlgorithm) -> String {
     if algorithm == CugraphAlgorithm::Bfs {
         return Value::Array(
-            [
-                "vertex",
-                "distance",
-                "predecessor",
-                "reachable",
-                "target_found",
-                "target_distance",
-                "path_index",
-                "source",
-                "target",
-            ]
-            .into_iter()
-            .map(|name| {
-                json!({
-                    "name": name,
-                    "description": result_field_description(algorithm, name)
+            ["vertex", "distance", "predecessor", "reachable", "path_index", "source", "target"]
+                .into_iter()
+                .map(|name| {
+                    json!({
+                        "name": name,
+                        "description": result_field_description(algorithm, name)
+                    })
                 })
-            })
-            .collect(),
+                .collect(),
         )
         .to_string();
     }
@@ -64,16 +54,14 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
         (CugraphAlgorithm::KatzCentrality, "vertex") => "Vertex receiving the Katz centrality score.",
         (CugraphAlgorithm::KatzCentrality, "value") => "Katz centrality score for the vertex.",
         (CugraphAlgorithm::Bfs, "vertex") => "Vertex reached or considered by the BFS traversal.",
-        (CugraphAlgorithm::Bfs, "distance") => "Hop-count distance from the nearest selected BFS source vertex.",
+        (CugraphAlgorithm::Bfs, "distance") => {
+            "Hop-count distance from the nearest selected BFS source vertex within the predicates and depth limit; null when unreached in vertices output."
+        },
         (CugraphAlgorithm::Bfs, "predecessor") => {
-            "Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode."
+            "Previous vertex on the discovered BFS tree, null for selected sources and vertices not reached within the predicates and depth limit."
         },
-        (CugraphAlgorithm::Bfs, "reachable") => "Whether the vertex is reachable under normalized BFS output.",
-        (CugraphAlgorithm::Bfs, "target_found") => {
-            "Whether a requested target vertex was reached by the BFS traversal."
-        },
-        (CugraphAlgorithm::Bfs, "target_distance") => {
-            "Hop-count distance to the requested target vertex, null when the target was not reached."
+        (CugraphAlgorithm::Bfs, "reachable") => {
+            "Whether the vertex was reached within the predicates and depth limit; equivalent to distance IS NOT NULL."
         },
         (CugraphAlgorithm::Bfs, "path_index") => "Zero-based row position in the reconstructed source-to-target path.",
         (CugraphAlgorithm::Bfs, "source") => "Source vertex for the reconstructed BFS path.",
@@ -185,9 +173,13 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
         limitations.extend([
             "source_vertices and the sources relation are multi-source BFS, not one BFS per source",
             "source_vertices and the sources relation must contain at most one source per connected component",
-            "raw/normalized output does not expose origin source per vertex",
+            "vertices output does not expose origin source per vertex",
+            "sources have distance 0 and null predecessor; unreached graph vertices remain in vertices output with null distance and predecessor",
+            "reachable describes arrival within the predicates and depth limit; vertices beyond that limit and disconnected vertices both return false",
             "string logical vertex-domain BFS rejects edges.edge_id and edge-id predicate relations",
+            "target_vertices is required for path output and rejected for vertices output; join target relations to vertices output for multiple target distances",
             "path output requires exactly one target row at execution time",
+            "vertices output searches until the depth limit or frontier exhaustion; path output stops after completing the target's BFS depth",
             "options_schema_json is typed registry metadata; validate_call remains the authoritative call-specific checker",
         ]);
     }
@@ -232,7 +224,7 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
 pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
     match algorithm {
         CugraphAlgorithm::Bfs => {
-            "Visit reachable vertices in increasing unweighted hop distance from one or more sources, returning distances and optional predecessors."
+            "Run unweighted BFS from one or more sources, returning nullable vertex distances and predecessors with reachable, or one source-to-target path."
         },
         CugraphAlgorithm::PageRank => {
             "Rank vertices by the stationary probability of a damped random walk that follows outgoing edges."
@@ -397,41 +389,37 @@ fn bfs_examples(_algorithm: CugraphAlgorithm) -> Vec<Value> {
             "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, depth_limit => 4)",
         ),
         bfs_example(
-            "normalized_bfs",
+            "vertices_output",
             json!({
                 "source_vertex": 123,
                 "depth_limit": 4,
-                "output_mode": "normalized"
+                "output_mode": "vertices"
             }),
             &[],
-            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, depth_limit => 4, output_mode => 'normalized')",
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, depth_limit => 4, output_mode => 'vertices')",
         ),
         bfs_example(
             "multi_source_bfs_list",
             json!({
-                "source_vertices": [123, 456],
-                "output_mode": "normalized"
+                "source_vertices": [123, 456]
             }),
             &[],
-            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertices => [123, 456], output_mode => 'normalized')",
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertices => [123, 456])",
         ),
         bfs_example(
             "multi_source_bfs_table",
-            json!({
-                "output_mode": "normalized"
-            }),
+            json!({}),
             &[("sources", "bfs_sources")],
-            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'normalized')",
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), sources => (SELECT vertex_id AS vertex FROM bfs_sources))",
         ),
         bfs_example(
-            "target_metadata",
+            "target_distances",
             json!({
                 "source_vertex": 123,
-                "output_mode": "normalized",
-                "return_target_info": true
+                "depth_limit": 4
             }),
-            &[("target_vertices", "targets")],
-            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, target_vertices => (SELECT vertex_id AS vertex FROM targets), output_mode => 'normalized', return_target_info => true)",
+            &[],
+            "WITH bfs AS (SELECT vertex, distance FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, depth_limit => 4)) SELECT t.vertex_id AS target, b.distance, b.distance IS NOT NULL AS reachable FROM targets t LEFT JOIN bfs b ON b.vertex = t.vertex_id",
         ),
         bfs_example(
             "path_output",

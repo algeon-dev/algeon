@@ -6,12 +6,9 @@ use crate::cugraph_sql::{CugraphAlgorithm, stable_result_schema};
 pub(super) fn result_schemas_json(algorithm: CugraphAlgorithm) -> String {
     let (default_schema, schemas) = if algorithm == CugraphAlgorithm::Bfs {
         (
-            "raw",
+            "vertices",
             json!({
-                "raw": bfs_raw_mode_schema(false),
-                "normalized": bfs_normalized_mode_schema(false),
-                "raw_with_target_info": bfs_raw_mode_schema(true),
-                "normalized_with_target_info": bfs_normalized_mode_schema(true),
+                "vertices": bfs_vertices_mode_schema(),
                 "path": bfs_path_mode_schema()
             }),
         )
@@ -52,45 +49,23 @@ fn schema_json_value(schema: &SchemaRef) -> Value {
     })
 }
 
-fn bfs_raw_mode_schema(with_target_info: bool) -> Value {
-    json!({"fields": bfs_raw_mode_fields(with_target_info)})
-}
-
-fn bfs_raw_mode_fields(with_target_info: bool) -> Vec<Value> {
-    let mut fields = vec![
-        metadata_field("vertex", "Int64|Utf8", false),
-        metadata_field("distance", "Int64", false),
-        metadata_field("predecessor", "Int64|Utf8", true),
-    ];
-    append_bfs_target_info_fields(&mut fields, with_target_info);
-    fields
-}
-
-fn bfs_normalized_mode_schema(with_target_info: bool) -> Value {
-    let mut fields = vec![
-        metadata_field("vertex", "Int64|Utf8", false),
+fn bfs_vertices_mode_schema() -> Value {
+    let fields = vec![
+        metadata_field("vertex", "Int32|Int64|Utf8", false),
         metadata_field("distance", "Int64", true),
-        metadata_field("predecessor", "Int64|Utf8", true),
+        metadata_field("predecessor", "Int32|Int64|Utf8", true),
         metadata_field("reachable", "Boolean", false),
     ];
-    append_bfs_target_info_fields(&mut fields, with_target_info);
     json!({"fields": fields})
-}
-
-fn append_bfs_target_info_fields(fields: &mut Vec<Value>, with_target_info: bool) {
-    if with_target_info {
-        fields.push(metadata_field("target_found", "Boolean", false));
-        fields.push(metadata_field("target_distance", "Int64", true));
-    }
 }
 
 fn bfs_path_mode_schema() -> Value {
     json!({
         "fields": [
             metadata_field("path_index", "Int64", false),
-            metadata_field("source", "Int64|Utf8", false),
-            metadata_field("target", "Int64|Utf8", false),
-            metadata_field("vertex", "Int64|Utf8", false),
+            metadata_field("source", "Int32|Int64|Utf8", false),
+            metadata_field("target", "Int32|Int64|Utf8", false),
+            metadata_field("vertex", "Int32|Int64|Utf8", false),
             metadata_field("distance", "Int64", false)
         ]
     })

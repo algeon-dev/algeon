@@ -49,7 +49,7 @@ use query_runtime::{
 };
 use tokio::{runtime::Builder as TestRuntimeBuilder, task::yield_now, time::timeout};
 
-use super::*;
+use super::{node::projected_schema, *};
 use crate::{
     attempt::{AlgeonAttempt, AttemptOptions, attempt_ticket_for_test},
     backend::InstalledTestGpuBackend,
@@ -559,7 +559,7 @@ fn bfs_spec() -> CugraphAlgorithmSpec {
         source: CugraphBfsSource::scalar_i64(0),
         depth_limit: Some(3),
         predicates: Default::default(),
-        output: CugraphBfsOutputOptions { mode: CugraphBfsOutputMode::Normalized, return_target_info: false },
+        output: CugraphBfsOutputOptions { mode: CugraphBfsOutputMode::Vertices },
     }));
     CugraphAlgorithmSpec {
         algorithm: CugraphAlgorithm::Bfs,
@@ -580,7 +580,7 @@ fn bfs_utf8_spec() -> CugraphAlgorithmSpec {
         source: CugraphBfsSource::scalar_utf8("alice"),
         depth_limit: Some(3),
         predicates: Default::default(),
-        output: CugraphBfsOutputOptions { mode: CugraphBfsOutputMode::Normalized, return_target_info: false },
+        output: CugraphBfsOutputOptions { mode: CugraphBfsOutputMode::Vertices },
     }));
     CugraphAlgorithmSpec {
         algorithm: CugraphAlgorithm::Bfs,
@@ -667,40 +667,22 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
         None,
         AlgeonNativeExecutionConfig::default(),
     )
-    .expect("raw BFS producer should build");
+    .expect("vertices BFS producer should build");
     assert_eq!(
         gpu_resident_producer_unique_output_key(&bfs),
         Some(std::collections::BTreeSet::from(["vertex".to_string()])),
     );
 
-    let mut normalized_bfs_spec = bfs_spec();
-    let CugraphAlgorithmParams::Bfs(params) = &mut normalized_bfs_spec.params else { unreachable!() };
-    params.output.mode = CugraphBfsOutputMode::Normalized;
-    normalized_bfs_spec.output_schema = result_schema_for_params(CugraphAlgorithm::Bfs, &normalized_bfs_spec.params);
-    let normalized_bfs = CugraphAlgoExec::try_new(
-        normalized_bfs_spec,
-        Arc::clone(&edge_source),
-        Vec::new(),
-        None,
-        None,
-        AlgeonNativeExecutionConfig::default(),
-    )
-    .expect("normalized BFS producer should build");
-    assert_eq!(
-        gpu_resident_producer_unique_output_key(&normalized_bfs),
-        Some(std::collections::BTreeSet::from(["vertex".to_string()])),
-    );
-
-    let projected_normalized_bfs = CugraphAlgoExec::try_new(
-        normalized_bfs.spec,
+    let projected_bfs = CugraphAlgoExec::try_new(
+        bfs.spec,
         Arc::clone(&edge_source),
         Vec::new(),
         Some(vec![1]),
         None,
         AlgeonNativeExecutionConfig::default(),
     )
-    .expect("projected normalized BFS producer should build");
-    assert_eq!(gpu_resident_producer_unique_output_key(&projected_normalized_bfs), None);
+    .expect("projected BFS producer should build");
+    assert_eq!(gpu_resident_producer_unique_output_key(&projected_bfs), None);
 
     let path_bfs = CugraphAlgoExec::try_new(
         bfs_utf8_path_spec(),
@@ -745,6 +727,67 @@ fn cugraph_algo_exec_does_not_request_input_repartitioning() {
     .expect("cuGraph exec should build");
 
     assert_eq!(exec.benefits_from_input_partitioning(), vec![false]);
+}
+
+#[test]
+fn bfs_vertices_gpu_plan_normalizes_native_schema_before_decode_projection_and_limit() {
+    for (domain, vertex_type) in [
+        (CugraphVertexIdDomain::Int32, DataType::Int32),
+        (CugraphVertexIdDomain::Int64, DataType::Int64),
+        (CugraphVertexIdDomain::StringLogical, DataType::Utf8),
+    ] {
+        let mut spec = if domain == CugraphVertexIdDomain::StringLogical { bfs_utf8_spec() } else { bfs_spec() };
+        let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
+        params.output = CugraphBfsOutputOptions::default();
+        spec.output_schema = result_schema_for_vertex_domain(spec.algorithm, &spec.params, Some(&domain));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", vertex_type.clone(), false),
+            Field::new("dst", vertex_type.clone(), false),
+        ]));
+        let expected_full_schema = Arc::new(Schema::new(vec![
+            Field::new("vertex", vertex_type.clone(), false),
+            Field::new("distance", DataType::Int64, true),
+            Field::new("predecessor", vertex_type, true),
+            Field::new("reachable", DataType::Boolean, false),
+        ]));
+        for (projection, limit) in [(None, None), (Some(vec![2, 3]), Some(2)), (None, Some(0))] {
+            let exec = CugraphAlgoExec::try_new(
+                spec.clone(),
+                Arc::new(EmptyExec::new(Arc::clone(&schema))),
+                Vec::new(),
+                projection.clone(),
+                limit,
+                AlgeonNativeExecutionConfig::default(),
+            )
+            .expect("BFS producer must plan with the call-specific schema");
+            let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
+                spec: spec.clone(),
+                edge_schema: Arc::clone(&schema),
+                predicate_schemas: Vec::new(),
+                predicate_row_upper_bounds: Vec::new(),
+                result_options: CugraphResultPlanOptions::new(projection.clone(), limit),
+                edge_normalize_inserted: false,
+                edge_row_upper_bound: Some(3),
+                edge_vertex_upper_bound: Some(5),
+            })
+            .expect("BFS GPU plan must normalize its native result");
+            let expected_schema = projected_schema(&expected_full_schema, projection.as_ref()).unwrap();
+            assert_eq!(exec.schema(), expected_schema, "{domain:?}, {projection:?}, {limit:?}");
+            assert_eq!(plan.output_schema(), &expected_schema, "{domain:?}, {projection:?}, {limit:?}");
+            let graph = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))).unwrap();
+            assert_eq!(graph.output_schema().fields().len(), 3, "native BFS base shape: {domain:?}");
+            let normalized = plan
+                .nodes()
+                .iter()
+                .find(|node| matches!(&node.kind, PlanNode::Projection(projection) if projection.input == graph.id))
+                .expect("normalization must consume the raw native result before decoding");
+            let native_type = if domain == CugraphVertexIdDomain::Int32 { DataType::Int32 } else { DataType::Int64 };
+            assert_eq!(normalized.output_schema().field(0), &Field::new("vertex", native_type.clone(), false));
+            assert_eq!(normalized.output_schema().field(1), &Field::new("distance", DataType::Int64, true));
+            assert_eq!(normalized.output_schema().field(2), &Field::new("predecessor", native_type, true));
+            assert_eq!(normalized.output_schema().field(3), &Field::new("reachable", DataType::Boolean, false));
+        }
+    }
 }
 
 #[test]
@@ -1950,14 +1993,19 @@ fn singleflight_test_exec(source_vertex: i64, depth_limit: Option<i64>) -> Cugra
         depth_limit,
         CugraphGraphConstructionPolicy::RawLibcugraph,
         "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
-        CugraphBfsOutputMode::Normalized,
+        CugraphBfsOutputMode::Vertices,
         None,
         None,
     )
 }
 
 fn bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth() {
-    let first = singleflight_test_exec(1, None).bfs_singleflight_key(0).expect("deep scalar BFS should qualify");
+    let first_exec = singleflight_test_exec(1, None);
+    assert_eq!(
+        first_exec.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["vertex", "distance", "predecessor", "reachable"],
+    );
+    let first = first_exec.bfs_singleflight_key(0).expect("deep scalar BFS should qualify");
     let same = singleflight_test_exec(1, None).bfs_singleflight_key(0).expect("same deep BFS should qualify");
     let other_source =
         singleflight_test_exec(2, None).bfs_singleflight_key(0).expect("other scalar BFS should qualify");
@@ -1966,40 +2014,29 @@ fn bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth() {
         None,
         CugraphGraphConstructionPolicy::PythonCugraph,
         "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
-        CugraphBfsOutputMode::Normalized,
+        CugraphBfsOutputMode::Vertices,
         None,
         None,
     )
     .bfs_singleflight_key(0)
-    .expect("normalized scalar BFS should qualify");
+    .expect("vertices scalar BFS should qualify");
     let other_graph = singleflight_test_exec_with_options(
         1,
         None,
         CugraphGraphConstructionPolicy::RawLibcugraph,
         "local:other-edges.parquet:1024:mtime=2026-07-13T00:00:00Z",
-        CugraphBfsOutputMode::Normalized,
+        CugraphBfsOutputMode::Vertices,
         None,
         None,
     )
     .bfs_singleflight_key(0)
     .expect("other resident graph should qualify");
-    let raw_output = singleflight_test_exec_with_options(
-        1,
-        None,
-        CugraphGraphConstructionPolicy::RawLibcugraph,
-        "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
-        CugraphBfsOutputMode::Raw,
-        None,
-        None,
-    )
-    .bfs_singleflight_key(0)
-    .expect("raw-output scalar BFS should qualify");
     let projected = singleflight_test_exec_with_options(
         1,
         None,
         CugraphGraphConstructionPolicy::RawLibcugraph,
         "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
-        CugraphBfsOutputMode::Normalized,
+        CugraphBfsOutputMode::Vertices,
         Some(vec![0, 3]),
         None,
     )
@@ -2010,7 +2047,7 @@ fn bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth() {
         None,
         CugraphGraphConstructionPolicy::RawLibcugraph,
         "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
-        CugraphBfsOutputMode::Normalized,
+        CugraphBfsOutputMode::Vertices,
         None,
         Some(17),
     )
@@ -2025,7 +2062,6 @@ fn bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth() {
         first, python_noop_graph,
         "a footer-proven simple directed edge source makes Python normalization a no-op, so it shares the raw graph key"
     );
-    assert_ne!(first, raw_output, "raw and normalized BFS outputs must never coalesce");
     assert_ne!(first, projected, "different projections must never coalesce");
     assert_ne!(first, limited, "different limits must never coalesce");
     assert!(singleflight_test_exec(1, Some(3)).bfs_singleflight_key(0).is_none());
@@ -2246,7 +2282,7 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
         .sql(
             "SELECT distance, COUNT(*) AS reached \
              FROM cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), \
-             source_vertex => 0, depth_limit => 3, output_mode => 'normalized') \
+             source_vertex => 0, depth_limit => 3, output_mode => 'vertices') \
              WHERE distance <= 3 GROUP BY distance",
         )
         .await
@@ -2266,7 +2302,7 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
 }
 
 #[tokio::test]
-async fn cugraph_bfs_path_projection_fanout_shares_one_full_result_producer() {
+async fn cugraph_bfs_projection_fanout_shares_one_full_result_producer() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
@@ -2283,8 +2319,17 @@ async fn cugraph_bfs_path_projection_fanout_shares_one_full_result_producer() {
             .unwrap();
     ctx.register_table("targets", Arc::new(MemTable::try_new(target_schema, vec![vec![targets]]).unwrap())).unwrap();
 
-    let plan = ctx
-        .sql(
+    let queries = [
+        (
+            "WITH bfs AS (\
+             SELECT * FROM cugraph_bfs(\
+               edges => (SELECT src, dst FROM citation_edges), source_vertex => 0, depth_limit => 3\
+             )) \
+             SELECT curr.distance FROM bfs curr \
+             JOIN bfs prev ON curr.predecessor = prev.vertex WHERE curr.reachable",
+            vec!["vertex", "distance", "predecessor", "reachable"],
+        ),
+        (
             "WITH path AS (\
              SELECT path_index, vertex FROM cugraph_bfs(\
                edges => (SELECT src, dst FROM citation_edges), source_vertex => 0, depth_limit => 3,\
@@ -2292,37 +2337,36 @@ async fn cugraph_bfs_path_projection_fanout_shares_one_full_result_producer() {
              )) \
              SELECT curr.vertex FROM path curr \
              JOIN path prev ON curr.path_index = prev.path_index + 1",
-        )
-        .await
-        .unwrap()
-        .create_physical_plan()
-        .await
-        .unwrap();
-    let mut producers = Vec::new();
-    collect_cugraph_execs(Arc::clone(&plan), &mut producers);
+            vec!["path_index", "source", "target", "vertex", "distance"],
+        ),
+    ];
+    for (sql, expected_fields) in queries {
+        let plan = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
+        let mut producers = Vec::new();
+        collect_cugraph_execs(Arc::clone(&plan), &mut producers);
 
-    assert!(producers.len() >= 2, "the self-join should retain both projected scan occurrences");
-    assert_eq!(
-        producers.iter().map(|producer| producer.gpu_result_input_name.as_str()).collect::<BTreeSet<_>>().len(),
-        1,
-        "column pruning must not mint a second authoritative BFS occurrence"
-    );
-    let full_schema = producers[0].schema();
-    assert!(
-        full_schema.field_with_name("path_index").is_ok()
-            && full_schema.field_with_name("vertex").is_ok()
-            && producers.iter().all(|producer| producer.schema() == full_schema),
-        "each projected scan must wrap the same full path producer schema: {:?}",
-        producers
-            .iter()
-            .map(|producer| {
-                (
-                    producer.gpu_result_input_name.clone(),
-                    producer.schema().fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>()
-    );
+        assert!(producers.len() >= 2, "the self-join should retain both projected scan occurrences");
+        assert_eq!(
+            producers.iter().map(|producer| producer.gpu_result_input_name.as_str()).collect::<BTreeSet<_>>().len(),
+            1,
+            "column pruning must not mint a second authoritative BFS occurrence"
+        );
+        let full_schema = producers[0].schema();
+        assert_eq!(full_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(), expected_fields);
+        assert!(
+            producers.iter().all(|producer| producer.schema() == full_schema),
+            "each projected scan must wrap the same full BFS producer schema: {:?}",
+            producers
+                .iter()
+                .map(|producer| {
+                    (
+                        producer.gpu_result_input_name.clone(),
+                        producer.schema().fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 /// This query aggregates the ForceAtlas2 output on the native side. Keep that

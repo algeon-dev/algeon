@@ -241,7 +241,7 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
     );
     let mut root_schema = Arc::clone(&graph_spec.output_schema);
     let mut root = builder.add_graph_algorithm(graph_input, graph_predicates, graph_spec).map_err(native_plan_error)?;
-    if let Some(outputs) = bfs_normalized_output_projection(&execution_spec, &graph_edge_schema)? {
+    if let Some(outputs) = bfs_vertices_output_projection(&execution_spec, &graph_edge_schema)? {
         root = builder.add_projection(root, outputs).map_err(native_plan_error)?;
         root_schema = Arc::clone(&execution_spec.output_schema);
     }
@@ -397,18 +397,18 @@ fn bfs_path_output_row_bound(
     Ok(Some(vertex_rows.map_or(depth_rows, |rows| rows.min(depth_rows))))
 }
 
-pub(super) fn bfs_normalized_output_projection(
+fn bfs_vertices_output_projection(
     spec: &CugraphAlgorithmSpec,
     edge_schema: &SchemaRef,
 ) -> Result<Option<Vec<ProjectionOutput>>> {
     let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
         return Ok(None);
     };
-    if params.output.mode != CugraphBfsOutputMode::Normalized {
+    if params.output.mode != CugraphBfsOutputMode::Vertices {
         return Ok(None);
     }
 
-    let unreachable_sentinel = bfs_unreachable_distance_sentinel(spec, edge_schema)?;
+    let unreachable_sentinel = bfs_unreachable_distance_sentinel(edge_schema)?;
     let predecessor_type = spec
         .output_schema
         .field_with_name("predecessor")
@@ -429,7 +429,7 @@ pub(super) fn bfs_normalized_output_projection(
         NativeExpr::binary(NativeExpr::column("predecessor"), BinaryOp::Eq, NativeExpr::literal(predecessor_absent));
 
     let fields = spec.output_schema.fields();
-    let mut outputs = vec![
+    let outputs = vec![
         ProjectionOutput::new(NativeExpr::column("vertex"), fields[0].as_ref().clone()),
         ProjectionOutput::new(
             NativeExpr::case(
@@ -454,14 +454,10 @@ pub(super) fn bfs_normalized_output_projection(
             fields[3].as_ref().clone(),
         ),
     ];
-    if params.output.return_target_info {
-        outputs.push(ProjectionOutput::new(NativeExpr::column("target_found"), fields[4].as_ref().clone()));
-        outputs.push(ProjectionOutput::new(NativeExpr::column("target_distance"), fields[5].as_ref().clone()));
-    }
     Ok(Some(outputs))
 }
 
-pub(super) fn bfs_unreachable_distance_sentinel(_spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<i64> {
+fn bfs_unreachable_distance_sentinel(edge_schema: &SchemaRef) -> Result<i64> {
     let source_field = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN).map_err(|_| {
         plan("cuGraph BFS output normalization could not find canonical source column 'src' in edge schema")
     })?;
@@ -709,7 +705,6 @@ pub(super) fn native_bfs_params(
             )
         }),
     };
-    native.return_target_info = params.output.return_target_info;
     if params.output.mode == CugraphBfsOutputMode::Path {
         native.endpoint_policy = GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint;
         native.path_output = Some(GraphBfsPathOutput::new(
@@ -744,7 +739,7 @@ mod tests {
             source,
             depth_limit: Some(3),
             predicates: Default::default(),
-            output: CugraphBfsOutputOptions { mode: output_mode, return_target_info: false },
+            output: CugraphBfsOutputOptions { mode: output_mode },
         }));
         CugraphAlgorithmSpec {
             algorithm: CugraphAlgorithm::Bfs,
@@ -817,7 +812,7 @@ mod tests {
     fn admission_evidence_matches_runtime_bfs_logical_and_path_prepared_shapes() {
         let projection = vec![0];
         assert_admission_evidence_matches_runtime_prepared_plan(
-            &bfs_spec(CugraphBfsSource::scalar_utf8("alice"), CugraphBfsOutputMode::Normalized),
+            &bfs_spec(CugraphBfsSource::scalar_utf8("alice"), CugraphBfsOutputMode::Vertices),
             edge_schema(DataType::Utf8),
             Some(&projection),
             Some(2),
@@ -832,7 +827,7 @@ mod tests {
 
     #[test]
     fn graph_scope_preserves_source_vertex_bound_across_admission_and_runtime_plans() {
-        let spec = bfs_spec(CugraphBfsSource::scalar_i64(0), CugraphBfsOutputMode::Raw);
+        let spec = bfs_spec(CugraphBfsSource::scalar_i64(0), CugraphBfsOutputMode::Vertices);
         let edge_schema = edge_schema(DataType::Int64);
         let definition = CugraphPlanDefinition {
             spec,

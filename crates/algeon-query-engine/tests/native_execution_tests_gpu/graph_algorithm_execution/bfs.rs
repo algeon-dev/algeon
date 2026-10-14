@@ -281,7 +281,6 @@ pub(super) fn bfs_include_edge_ids_filters_edges() {
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
         path_output: None,
-        return_target_info: false,
     };
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
@@ -381,7 +380,6 @@ pub(super) fn bfs_include_edges_relation_filters_by_source_destination() {
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
         path_output: None,
-        return_target_info: false,
     };
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
@@ -677,7 +675,7 @@ pub(super) fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     admitted.finish();
 }
 
-pub(super) fn bfs_target_metadata_columns_are_shaped_when_requested() {
+pub(super) fn bfs_target_predicate_keeps_raw_output_and_target_diagnostics() {
     let context = backend_context();
 
     let edge_schema = Arc::new(Schema::new(vec![
@@ -686,7 +684,7 @@ pub(super) fn bfs_target_metadata_columns_are_shaped_when_requested() {
     ]));
     let edge_batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
-        vec![Arc::new(Int32Array::from(vec![0, 1, 0])), Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        vec![Arc::new(Int32Array::from(vec![0, 1, 0, 2])), Arc::new(Int32Array::from(vec![1, 2, 3, 4]))],
     )
     .unwrap();
 
@@ -707,7 +705,6 @@ pub(super) fn bfs_target_metadata_columns_are_shaped_when_requested() {
     )));
     let mut params = GraphBfsParams::new(0, None);
     params.predicates.target_vertices = Some(GraphPredicateInput::new(1, "vertex_id"));
-    params.return_target_info = true;
     let params = GraphAlgorithmParams::Bfs(Box::new(params));
     let output_schema = graph_result_schema_for_vertex_type(GraphAlgorithm::Bfs, &params, &DataType::Int32);
     let spec = GraphAlgorithmSpec::new(
@@ -746,12 +743,15 @@ pub(super) fn bfs_target_metadata_columns_are_shaped_when_requested() {
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };
-    let target_found = boolean_array(batch, 3);
-    let target_distance = int64_array(batch, 4);
-    for row in 0..batch.num_rows() {
-        assert!(target_found.value(row));
-        assert_eq!(target_distance.value(row), 2);
-    }
+    assert_eq!(batch.schema().as_ref(), int32_stable_graph_result_schema(GraphAlgorithm::Bfs).as_ref());
+    let vertices = graph_vertex_values(batch, 0);
+    let distances = int64_array(batch, 1);
+    let distance_for = |vertex: i64| {
+        (0..batch.num_rows()).find_map(|row| (vertices.value(row) == vertex).then(|| distances.value(row)))
+    };
+    assert_eq!(distance_for(0), Some(0));
+    assert_eq!(distance_for(2), Some(2));
+    assert_eq!(distance_for(4), Some(i64::from(i32::MAX)));
 
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);

@@ -1,5 +1,5 @@
 use cudf::{
-    DataFrameJoinOptions, DataType, NullEquality, Series, TypeId, core::DeviceSlice,
+    DataFrameJoinOptions, NullEquality, Series, TypeId, core::DeviceSlice,
     frame::dataframe::DataFrameFilteredJoinOptions,
 };
 use cugraph::{
@@ -162,11 +162,10 @@ pub(super) fn execute_bfs(
                         target_info,
                     )?
                 } else {
-                    let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+                    result.to_dataframe(runtime).map_err(map_cugraph_error(
                         "query_engine.graph_algorithm.bfs_result",
                         "failed to convert cuGraph BFS result to cudf DataFrame",
-                    ))?;
-                    append_bfs_target_metadata_columns(runtime, params, frame, target_info)?
+                    ))?
                 };
                 (frame, target_metadata)
             },
@@ -264,11 +263,10 @@ pub(super) fn execute_bfs(
                         target_info,
                     )?
                 } else {
-                    let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+                    result.to_dataframe(runtime).map_err(map_cugraph_error(
                         "query_engine.graph_algorithm.bfs_result",
                         "failed to convert cuGraph BFS result to cudf DataFrame",
-                    ))?;
-                    append_bfs_target_metadata_columns(runtime, params, frame, target_info)?
+                    ))?
                 };
                 (frame, target_metadata)
             },
@@ -443,13 +441,6 @@ impl BfsPredicateColumns {
                 QueryErrorCode::InvalidPlan,
                 "query_engine.graph_algorithm.bfs_predicates",
                 "BFS include_vertices and exclude_vertices predicates are mutually exclusive",
-            ));
-        }
-        if params.return_target_info && params.predicates.target_vertices.is_none() {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.graph_algorithm.bfs_target_metadata",
-                "BFS return_target_info requires a target_vertices predicate input",
             ));
         }
         if params.predicates.include_edge_ids.is_some() && !graph_has_edge_id_binding {
@@ -1375,63 +1366,6 @@ fn bfs_target_metadata(target_info: Option<&BfsTargetInfo>) -> String {
         ),
         None => "target_found=not_requested,target_distance=none".to_string(),
     }
-}
-
-fn append_bfs_target_metadata_columns(
-    runtime: &cudf::Runtime,
-    params: &GraphBfsParams,
-    frame: DataFrame,
-    target_info: Option<BfsTargetInfo>,
-) -> Result<DataFrame> {
-    if !params.return_target_info {
-        return Ok(frame);
-    }
-    let frame = frame.copy_into_runtime(runtime).map_err(|error| {
-        cudf_query_error(
-            "query_engine.graph_algorithm.bfs_target_metadata",
-            "failed to place BFS result in metadata runtime",
-            error,
-        )
-    })?;
-    let info = target_info.ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.graph_algorithm.bfs_target_metadata",
-            "BFS target metadata was requested but cuGraph returned no target metadata",
-        )
-    })?;
-    let row_count = frame.num_rows();
-    let target_found = runtime
-        .scalar(info.target_found)
-        .and_then(|scalar| runtime.series_from_scalar(&scalar, row_count))
-        .map_err(|error| {
-            cudf_query_error(
-                "query_engine.graph_algorithm.bfs_target_metadata",
-                "failed to materialize BFS target_found metadata column",
-                error,
-            )
-        })?;
-    let target_distance = match info.target_distance {
-        Some(distance) => runtime.scalar(distance).and_then(|scalar| runtime.series_from_scalar(&scalar, row_count)),
-        None => runtime.nulls(DataType::new(TypeId::Int64), row_count),
-    }
-    .map_err(|error| {
-        cudf_query_error(
-            "query_engine.graph_algorithm.bfs_target_metadata",
-            "failed to materialize BFS target_distance metadata column",
-            error,
-        )
-    })?;
-    frame
-        .with_column("target_found", target_found)
-        .and_then(|frame| frame.with_column("target_distance", target_distance))
-        .map_err(|error| {
-            cudf_query_error(
-                "query_engine.graph_algorithm.bfs_target_metadata",
-                "failed to append BFS target metadata columns",
-                error,
-            )
-        })
 }
 
 pub(super) fn execute_sssp(

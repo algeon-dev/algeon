@@ -8,14 +8,15 @@ use query_planning::plan::NodeId;
 
 use super::{
     AggregateSpec, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, ColumnRef, CugraphAlgorithmParams,
-    CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsParams, CugraphBfsSourceVertex,
-    CugraphLogicalOutputMultiplicity, CugraphVertexSelector, DataType, Error, ErrorCode, GraphAlgorithm,
-    GraphAlgorithmParams, GraphBfsParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LiteralBatchSource,
-    NativeExpr, PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder, RecordBatch, Result, Schema, SchemaRef,
-    SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec, lowering::native_plan_error, plan,
-    result_schema_for_params, vertex_id_domain_for_call,
+    CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsSourceVertex,
+    CugraphLogicalOutputMultiplicity, CugraphVertexSelector, DataType, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
+    JoinType, LiteralBatchSource, NativeExpr, PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder,
+    RecordBatch, Result, Schema, SchemaRef, SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec,
+    lowering::native_plan_error, plan, result_schema_for_params, vertex_id_domain_for_call,
 };
-use crate::cugraph_sql::{CugraphVertexIdDomain, registry::CugraphLogicalOutputColumn};
+use crate::cugraph_sql::{
+    CugraphVertexIdDomain, registry::CugraphLogicalOutputColumn, types::bfs_result_schema_for_vertex_domain,
+};
 
 const LOGICAL_VERTEX_COLUMN: &str = "__vertex_id_logical";
 const NATIVE_VERTEX_COLUMN: &str = "__vertex_id";
@@ -159,7 +160,7 @@ pub(super) fn add_logical_mapping_plan(
     }
 
     Ok(LogicalMappingPlan {
-        execution_spec: logical_execution_spec(spec)?,
+        execution_spec: logical_execution_spec(spec),
         encoded_edge,
         encoded_edge_schema,
         encoded_predicates,
@@ -361,13 +362,15 @@ fn decode_relation_column(
     ))
 }
 
-fn logical_execution_spec(spec: &CugraphAlgorithmSpec) -> Result<CugraphAlgorithmSpec> {
+fn logical_execution_spec(spec: &CugraphAlgorithmSpec) -> CugraphAlgorithmSpec {
     let mut execution_spec = spec.clone();
     execution_spec.output_schema = match &spec.params {
-        CugraphAlgorithmParams::Bfs(params) => bfs_numeric_execution_schema(params)?,
+        CugraphAlgorithmParams::Bfs(params) => {
+            bfs_result_schema_for_vertex_domain(params, &CugraphVertexIdDomain::Int64)
+        },
         _ => result_schema_for_params(spec.algorithm, &spec.params),
     };
-    Ok(execution_spec)
+    execution_spec
 }
 
 pub(super) fn logical_literal_vertex_batch(spec: &CugraphAlgorithmSpec) -> Result<Option<(RecordBatch, String)>> {
@@ -421,49 +424,4 @@ fn logical_betweenness_seed_values(seeds: &CugraphBetweennessSeeds) -> Result<(&
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(("__seed_vertex", values))
-}
-
-fn bfs_numeric_execution_schema(params: &CugraphBfsParams) -> Result<SchemaRef> {
-    let native_schema = bfs_native_result_schema(params.output.return_target_info);
-    let fields: Vec<_> = match params.output.mode {
-        CugraphBfsOutputMode::Raw => native_schema.fields().iter().map(|field| field.as_ref().clone()).collect(),
-        CugraphBfsOutputMode::Path => vec![
-            Field::new("path_index", DataType::Int64, false),
-            Field::new("source", DataType::Int64, false),
-            Field::new("target", DataType::Int64, false),
-            Field::new("vertex", DataType::Int64, false),
-            Field::new("distance", DataType::Int64, false),
-        ],
-        CugraphBfsOutputMode::Normalized => Arc::new(Schema::new(vec![
-            normalized_bfs_base_field(&native_schema, "vertex", false)?,
-            normalized_bfs_base_field(&native_schema, "distance", true)?,
-            normalized_bfs_base_field(&native_schema, "predecessor", true)?,
-            Field::new("reachable", DataType::Boolean, false),
-        ]))
-        .fields()
-        .iter()
-        .map(|field| field.as_ref().clone())
-        .chain(native_schema.fields().iter().skip(3).map(|field| field.as_ref().clone()))
-        .collect(),
-    };
-    Ok(Arc::new(Schema::new(fields)))
-}
-
-fn bfs_native_result_schema(return_target_info: bool) -> SchemaRef {
-    let mut native_params = GraphBfsParams::new(0, None);
-    native_params.return_target_info = return_target_info;
-    GraphAlgorithm::Bfs.definition().result_schema_for_params(&GraphAlgorithmParams::Bfs(Box::new(native_params)))
-}
-
-fn normalized_bfs_base_field(schema: &SchemaRef, name: &'static str, nullable: bool) -> Result<Field> {
-    let field = schema.field_with_name(name).map_err(|error| {
-        Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "algeon_datafusion.cugraph_sql.bfs_result_schema",
-            "native BFS descriptor is missing a raw BFS base field",
-        )
-        .with_fact("column", name)
-        .with_source(error)
-    })?;
-    Ok(Field::new(field.name(), field.data_type().clone(), nullable))
 }
