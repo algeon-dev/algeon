@@ -96,6 +96,25 @@ unsafe extern "C" {
     pub fn cudf_test_stream_fail_synchronize();
     pub fn cudf_test_stream_allow_synchronize();
     pub fn cudf_test_stream_synchronize_call_count(out: *mut i32) -> cudf_status_t;
+    #[doc = " Queue a host callback on a borrowed CUDA stream. The callback and argument\n must outlive execution; the callback must not call CUDA or unwind."]
+    pub fn cudf_test_cuda_launch_host_function(
+        raw_stream: *mut core::ffi::c_void,
+        callback: ::core::option::Option<unsafe extern "C" fn(arg1: *mut core::ffi::c_void)>,
+        argument: *mut core::ffi::c_void,
+    ) -> cudf_status_t;
+    #[doc = " Queue a device read. Both ranges must remain valid through stream completion."]
+    pub fn cudf_test_cuda_copy_device_async(
+        raw_stream: *mut core::ffi::c_void,
+        destination: *mut core::ffi::c_void,
+        source: *const core::ffi::c_void,
+        byte_len: usize,
+    ) -> cudf_status_t;
+    #[doc = " Copy a completed device range to writable host memory before return."]
+    pub fn cudf_test_cuda_copy_to_host(
+        destination: *mut core::ffi::c_void,
+        source: *const core::ffi::c_void,
+        byte_len: usize,
+    ) -> cudf_status_t;
     pub fn cudf_test_memory_resource_create_stats(out: *mut cudf_memory_resource_handle) -> cudf_status_t;
     pub fn cudf_test_memory_resource_create_fail_first_allocation(
         upstream: cudf_memory_resource_handle,

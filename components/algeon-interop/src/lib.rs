@@ -17,7 +17,9 @@
 //!
 //! # Construction
 //!
-//! `try_new` returns `Err` for any graph it cannot validate:
+//! Raw addresses are descriptors. The unsafe `try_new` constructors require
+//! live storage, valid contents and placement before granting safe read access.
+//! Their graph checks return `Err` for structural mismatches:
 //!
 //! - Column ids and buffer ids are unique. The graph is acyclic and holds
 //!   exactly the columns reachable from the root, through [`ColumnLayout`]
@@ -39,11 +41,19 @@
 //! producer device, and the export's [`LeaseBackend`] starts, completes, or
 //! drops each lease; a lease dropped without completing runs the backend's
 //! drop fallback.
+//! Active leases retain storage owners before returning from activation,
+//! including when a caller forgets the lease. Consumers that expose borrowed
+//! asynchronous reads must require an unsafe lifetime obligation; a destructor
+//! cannot protect storage when it is forgotten.
 //!
 //! [`ActiveColumnReadLease::complete`] and [`ActiveTableReadLease::complete`]
 //! return a [`LeaseCompletion`]. It keeps the export's retained owner alive
 //! until the consumer's reads of producer storage have finished, and leaks the
-//! owner if that wait fails while it is dropped.
+//! owner if that wait fails while it is dropped. Failed incomplete cleanup
+//! retains the owner and activation resources. Without an owner it aborts before
+//! ending the producer borrow. Backend final-cleanup errors enter its runtime's
+//! device-health quarantine. Explicit completion errors still run the fallback
+//! until completion has been proved or a pending witness retains storage.
 
 mod contract;
 mod lease;

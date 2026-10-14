@@ -65,7 +65,8 @@ struct TestCompletionWitness {
     fail: bool,
 }
 
-impl CompletionWitnessBackend for TestCompletionWitness {
+// SAFETY: these leases enqueue no native work; the failed wait keeps its owner.
+unsafe impl CompletionWitnessBackend for TestCompletionWitness {
     fn is_ready(&self) -> InteropResult<bool> {
         Ok(!self.fail)
     }
@@ -84,7 +85,8 @@ struct WitnessLeaseBackend {
     fail_witness: bool,
 }
 
-impl ActiveLeaseBackend for WitnessLeaseBackend {
+// SAFETY: these tests model completion ownership without submitting reads.
+unsafe impl ActiveLeaseBackend for WitnessLeaseBackend {
     fn complete(
         &self,
         _readiness: ProducerReadiness<'_>,
@@ -106,12 +108,16 @@ impl ActiveLeaseBackend for WitnessLeaseBackend {
 /// `owner`, so only the returned pending completion keeps `owner` alive.
 fn pending_input_completion(runtime: &cudf::Runtime, owner: Arc<()>, fail_witness: bool) -> DeferredInputCompletion {
     let series = runtime.series(&[0i32, 1]).expect("series");
-    let export = column_export_with_lease_backend_for_test(
-        &series.try_prepare_device_column_export().expect("prepared export"),
-        LeaseBackend::new(WitnessLeaseBackend { fail_witness }),
-    )
-    .expect("lease backend")
-    .with_retained_owner(owner);
+    // SAFETY: the existing export retains its column; the marker is an extra
+    // owner used to observe the mocked completion lifetime.
+    let export = unsafe {
+        column_export_with_lease_backend_for_test(
+            &series.try_prepare_device_column_export().expect("prepared export"),
+            LeaseBackend::new(WitnessLeaseBackend { fail_witness }),
+        )
+        .expect("lease backend")
+        .with_retained_owner(owner)
+    };
     let stream = cuda_stream_handle(runtime.stream()).expect("stream handle");
     let lease = export
         .try_activate_read_lease(

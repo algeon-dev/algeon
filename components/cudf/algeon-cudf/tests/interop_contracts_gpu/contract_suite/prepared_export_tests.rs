@@ -475,7 +475,7 @@ pub(crate) mod lease_contracts {
             complete_calls: Arc<AtomicUsize>,
         }
 
-        impl ActiveLeaseBackend for CountingBackend {
+        unsafe impl ActiveLeaseBackend for CountingBackend {
             fn complete(
                 &self,
                 _readiness: ProducerReadiness<'_>,

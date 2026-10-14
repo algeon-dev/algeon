@@ -39,6 +39,13 @@ struct ExportRoot<'a> {
 }
 
 impl<'a> ExportRoot<'a> {
+    fn retain_owner(&mut self, owner: Arc<dyn Any + Send + Sync>) {
+        self.retained_owner = Some(match self.retained_owner.take() {
+            Some(previous) => Arc::new((previous, owner)),
+            None => owner,
+        });
+    }
+
     /// Requires the bindings of a device export's graph, already validated
     /// with `graph_device` as their shared device, to share its readiness
     /// device.
@@ -72,7 +79,7 @@ impl<'a> ExportRoot<'a> {
                 Some(DeviceLease::new(backend.clone(), *readiness, activation))
             },
         };
-        Ok(LeaseCore::new(read_start, completion, device))
+        Ok(LeaseCore::new(read_start, completion, device, self.retained_owner.clone()))
     }
 }
 
@@ -86,7 +93,24 @@ pub struct PreparedColumnExport<'a> {
 impl<'a> PreparedColumnExport<'a> {
     /// Validates the graph reachable from `root`. `semantic_columns` must
     /// contain `root` and every column reachable from it, and nothing else.
-    pub fn try_new(
+    ///
+    /// # Safety
+    ///
+    /// Every binding must describe initialized, aligned storage readable on
+    /// its declared placement with contents valid for the semantic layout.
+    /// Storage and readiness handles must remain valid through all reads of
+    /// this export and its clones. Borrowed storage must live for `'a`; owned
+    /// storage may instead be attached with [`Self::with_retained_owner`]
+    /// before the export is exposed to a consumer. Graph validation checks
+    /// sizes and topology, not allocation liveness or buffer contents.
+    /// Producer writes must precede reads through readiness; storage must not
+    /// be mutated or reallocated while consumer reads are pending.
+    ///
+    /// ```compile_fail,E0133
+    /// use rapids_interop::{ColumnId, PreparedAccess, PreparedColumnExport};
+    /// let _ = PreparedColumnExport::try_new(ColumnId::new(0), vec![], vec![], PreparedAccess::Host);
+    /// ```
+    pub unsafe fn try_new(
         root: ColumnId,
         semantic_columns: Vec<SemanticColumn>,
         bindings: Vec<BufferBinding<'a>>,
@@ -105,11 +129,19 @@ impl<'a> PreparedColumnExport<'a> {
         &self.root.semantic_columns
     }
 
-    pub fn bindings(&self) -> &[BufferBinding<'a>] {
+    /// Borrows descriptors for as long as this export keeps storage alive.
+    ///
+    /// ```compile_fail
+    /// use rapids_interop::{BufferBinding, PreparedColumnExport};
+    /// fn escape(export: &PreparedColumnExport<'static>) -> Vec<BufferBinding<'static>> {
+    ///     export.bindings().to_vec()
+    /// }
+    /// ```
+    pub fn bindings(&self) -> &[BufferBinding<'_>] {
         &self.root.bindings
     }
 
-    pub fn access(&self) -> &PreparedAccess<'a> {
+    pub fn access(&self) -> &PreparedAccess<'_> {
         &self.root.access
     }
 
@@ -117,11 +149,24 @@ impl<'a> PreparedColumnExport<'a> {
         self.root.access.profile()
     }
 
-    /// Attaches the value that keeps this export's storage alive, replacing
-    /// any earlier one. Clones of the export share it, and a completed lease
-    /// holds it while its witness is pending (see [`LeaseCompletion`](crate::LeaseCompletion)).
-    pub fn with_retained_owner(mut self, retained_owner: Arc<dyn Any + Send + Sync>) -> Self {
-        self.root.retained_owner = Some(retained_owner);
+    /// Retains an owner in addition to all previously attached owners.
+    /// Clones, active leases and pending completions share these owners.
+    ///
+    /// # Safety
+    ///
+    /// The combined owners must keep all bound storage and producer readiness
+    /// handles valid until consumer reads finish, including after the original
+    /// producer borrow ends. An unrelated value cannot establish this guarantee.
+    ///
+    /// ```compile_fail,E0133
+    /// use std::sync::Arc;
+    /// use rapids_interop::PreparedColumnExport;
+    /// fn attach(export: PreparedColumnExport<'_>) {
+    ///     let _ = export.with_retained_owner(Arc::new(()));
+    /// }
+    /// ```
+    pub unsafe fn with_retained_owner(mut self, retained_owner: Arc<dyn Any + Send + Sync>) -> Self {
+        self.root.retain_owner(retained_owner);
         self
     }
 
@@ -150,7 +195,17 @@ impl<'a> PreparedTableExport<'a> {
     /// Validates the table schema and the graph reachable from its columns.
     /// `semantic_columns` must contain every schema column and every column
     /// reachable from them, and nothing else.
-    pub fn try_new(
+    ///
+    /// # Safety
+    ///
+    /// Bindings, contents and readiness must satisfy the storage and lifetime
+    /// requirements of [`PreparedColumnExport::try_new`].
+    ///
+    /// ```compile_fail,E0133
+    /// use rapids_interop::{PreparedAccess, PreparedTableExport, SemanticTable};
+    /// let _ = PreparedTableExport::try_new(SemanticTable::new(0, vec![], None), vec![], vec![], PreparedAccess::Host);
+    /// ```
+    pub unsafe fn try_new(
         table: SemanticTable,
         semantic_columns: Vec<SemanticColumn>,
         bindings: Vec<BufferBinding<'a>>,
@@ -195,16 +250,16 @@ impl<'a> PreparedTableExport<'a> {
         &self.root.semantic_columns
     }
 
-    pub fn bindings(&self) -> &[BufferBinding<'a>] {
+    pub fn bindings(&self) -> &[BufferBinding<'_>] {
         &self.root.bindings
     }
 
     /// Return one bound buffer by its symbolic buffer id.
-    pub fn binding(&self, buffer_id: BufferId) -> Option<&BufferBinding<'a>> {
+    pub fn binding(&self, buffer_id: BufferId) -> Option<&BufferBinding<'_>> {
         self.root.bindings.iter().find(|binding| binding.id() == buffer_id)
     }
 
-    pub fn access(&self) -> &PreparedAccess<'a> {
+    pub fn access(&self) -> &PreparedAccess<'_> {
         &self.root.access
     }
 
@@ -212,11 +267,15 @@ impl<'a> PreparedTableExport<'a> {
         self.root.access.profile()
     }
 
-    /// Attaches the value that keeps this export's storage alive, replacing
-    /// any earlier one. Clones of the export share it, and a completed lease
-    /// holds it while its witness is pending (see [`LeaseCompletion`](crate::LeaseCompletion)).
-    pub fn with_retained_owner(mut self, retained_owner: Arc<dyn Any + Send + Sync>) -> Self {
-        self.root.retained_owner = Some(retained_owner);
+    /// Retains an owner in addition to all previously attached owners.
+    /// Clones, active leases and pending completions share these owners.
+    ///
+    /// # Safety
+    ///
+    /// The combined owners must satisfy the storage and readiness lifetime
+    /// requirements of [`PreparedColumnExport::with_retained_owner`].
+    pub unsafe fn with_retained_owner(mut self, retained_owner: Arc<dyn Any + Send + Sync>) -> Self {
+        self.root.retain_owner(retained_owner);
         self
     }
 

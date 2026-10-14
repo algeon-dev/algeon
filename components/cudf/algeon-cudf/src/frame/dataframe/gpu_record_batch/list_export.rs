@@ -478,11 +478,11 @@ fn pack_validated_list_child_into_runtime(
             operation,
         )
     }?;
-    // The runtime's resolved execution domain has already installed the
+    // SAFETY: the runtime's resolved execution domain has already installed the
     // reverse consumer-completion fence on the producer domain, so releasing
     // the producer owner is stream-ordered after the pack and needs no host
     // wait before returning the independently owned packed allocation.
-    lease.complete().map_err(|error| error::from_interop_in(error, operation))?.release_stream_ordered();
+    unsafe { lease.complete().map_err(|error| error::from_interop_in(error, operation))?.release_stream_ordered() };
     Ok(packed)
 }
 

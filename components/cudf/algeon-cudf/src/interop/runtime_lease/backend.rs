@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     interop::map_cudf_error,
-    runtime::{CudaEvent, DeviceId},
+    runtime::{self, CudaEvent, DeviceId},
 };
 
 struct SharedCudaLeaseActivation {
@@ -27,7 +27,9 @@ impl ActiveLeaseActivation for SharedCudaLeaseActivation {}
 #[derive(Clone)]
 struct SharedCudaLeaseBackend;
 
-impl ActiveLeaseBackend for SharedCudaLeaseBackend {
+// SAFETY: activation installs readiness waits on the consumer stream. Complete
+// records a fence after its reads; fallback synchronizes that stream directly.
+unsafe impl ActiveLeaseBackend for SharedCudaLeaseBackend {
     fn activate(
         &self,
         readiness: ProducerReadiness<'_>,
@@ -99,6 +101,7 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
                     map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
                 })?;
                 synchronize_same_device_stream_raw(stream.as_raw(), device, SHARED_DROP_LEASE_OP).map_err(|error| {
+                    runtime::quarantine_device_resource(device, SHARED_DROP_LEASE_OP, &error);
                     map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
                 })
             },

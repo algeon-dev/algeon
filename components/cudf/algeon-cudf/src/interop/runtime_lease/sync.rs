@@ -41,15 +41,14 @@ pub(in crate::interop) fn synchronize_same_device_stream_raw(
     stream_device: DeviceId,
     operation: &'static str,
 ) -> Result<()> {
-    let event = create_producer_owned_event(stream_device).map_err(|error| error.reanchor(operation))?;
-    let event_raw = event.interop_raw_handle().map_err(|error| error.reanchor(operation))?;
-    let _guard = DeviceGuard::new(stream_device)?;
+    // A failed completion setup may already have marked the device unhealthy.
+    // Cleanup must still attempt entry and retire pending reads before release.
+    let _guard = DeviceGuard::enter_for_teardown(stream_device, operation)?;
     error::check_status_in_with_details(
-        unsafe { cudf_sys::cudf_raw_cuda_event_record(event_raw, stream_raw) },
+        unsafe { cudf_sys::cudf_raw_cuda_stream_synchronize(stream_raw) },
         operation,
         [("completion", "same_device_stream".to_string()), ("consumer_device", stream_device.ordinal().to_string())],
-    )?;
-    event.synchronize().map_err(|error| error.reanchor(operation).with_detail("completion", "same_device_stream"))
+    )
 }
 
 pub(super) fn order_consumer_stream_after_producer_event_raw(

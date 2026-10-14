@@ -84,7 +84,7 @@ impl core::default::Default for cuvs::CagraSearchParams
 pub fn cuvs::CagraSearchParams::default() -> Self
 pub struct cuvs::CuvsResources
 impl cuvs::CuvsResources
-pub fn cuvs::CuvsResources::activate_prepared_tensor<'export, 'producer, 'consumer, T: cuvs::DeviceElement>(&'consumer self, &'export rapids_interop::prepared::PreparedColumnExport<'producer>, &[usize], core::option::Option<&[usize]>) -> cuvs::Result<cuvs::PreparedTensorLease<'export, 'producer, 'consumer, T>>
+pub unsafe fn cuvs::CuvsResources::activate_prepared_tensor<'export, 'producer, 'consumer, T: cuvs::DeviceElement>(&'consumer self, &'export rapids_interop::prepared::PreparedColumnExport<'producer>, &[usize], core::option::Option<&[usize]>) -> cuvs::Result<cuvs::PreparedTensorLease<'export, 'producer, 'consumer, T>>
 pub fn cuvs::CuvsResources::activate_validated_fixed_size_list_tensor<'witness, 'producer, 'consumer, T: cuvs::DeviceElement>(&'consumer self, &'witness cudf::frame::dataframe::gpu_record_batch::list_export::ValidatedFixedSizeListExport<'producer>) -> cuvs::Result<cuvs::PreparedValidatedTensorLease<'witness, 'witness, 'consumer, T>>
 pub fn cuvs::CuvsResources::activate_validated_uniform_list_tensor<'witness, 'producer, 'consumer, T: cuvs::DeviceElement>(&'consumer self, &'witness cudf::frame::dataframe::gpu_record_batch::list_export::ValidatedUniformListExport<'producer>) -> cuvs::Result<cuvs::PreparedValidatedTensorLease<'witness, 'witness, 'consumer, T>>
 pub fn cuvs::CuvsResources::pack_prepared_table<T: cuvs::DeviceElement>(&self, &rapids_interop::prepared::PreparedTableExport<'_>, cuvs::MatrixLayout) -> cuvs::Result<cuvs::OwnedMatrix<T>>

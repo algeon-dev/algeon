@@ -81,7 +81,25 @@ impl<T: DeviceElement> std::fmt::Debug for PreparedValidatedTensorLease<'_, '_, 
 }
 
 impl CuvsResources {
-    pub fn activate_prepared_tensor<'export, 'producer, 'consumer, T: DeviceElement>(
+    /// Activates a fixed-width prepared column as a tensor on this runtime.
+    ///
+    /// # Safety
+    ///
+    /// For an export without a retained storage owner, the caller must finish
+    /// all queued tensor reads before the producer borrow ends, including when
+    /// the lease is forgotten. Call `complete` after the last submission and
+    /// keep storage alive through any subsequent error cleanup. A destructor
+    /// alone cannot guarantee this for borrowed asynchronous input. Exports
+    /// with retained owners keep those owners in the active lease.
+    ///
+    /// ```compile_fail,E0133
+    /// use cudf::interop::contract::PreparedColumnExport;
+    /// use cuvs::CuvsResources;
+    /// fn activate(resources: &CuvsResources, export: &PreparedColumnExport<'_>) {
+    ///     let _ = resources.activate_prepared_tensor::<f32>(export, &[3], None);
+    /// }
+    /// ```
+    pub unsafe fn activate_prepared_tensor<'export, 'producer, 'consumer, T: DeviceElement>(
         &'consumer self,
         export: &'export PreparedColumnExport<'producer>,
         shape: &[usize],
@@ -155,9 +173,8 @@ impl CuvsResources {
     /// child as a row-major tensor under the retained root export's single
     /// read lease.
     ///
-    /// The cudf witness proves every active list-offset delta equals the
-    /// dimension; a caller-supplied dimension or equal total child length is
-    /// never accepted as a substitute for that structural proof.
+    /// Tensor dimensions are verified against the cuDF witness proving uniform
+    /// list-offset deltas across active rows.
     pub fn activate_validated_fixed_size_list_tensor<'witness, 'producer, 'consumer, T: DeviceElement>(
         &'consumer self,
         validated: &'witness ValidatedFixedSizeListExport<'producer>,
@@ -204,9 +221,8 @@ impl CuvsResources {
     /// numeric `List` child as a row-major tensor under the retained root
     /// export's single read lease.
     ///
-    /// The cuDF witness derives the positive dimension from device-reduced
-    /// active list-offset widths. A caller cannot substitute a declared
-    /// dimension or total child length for that proof.
+    /// Tensor dimensions are derived directly from the cuDF witness of active
+    /// list-offset widths.
     pub fn activate_validated_uniform_list_tensor<'witness, 'producer, 'consumer, T: DeviceElement>(
         &'consumer self,
         validated: &'witness ValidatedUniformListExport<'producer>,

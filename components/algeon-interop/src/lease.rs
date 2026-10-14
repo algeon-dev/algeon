@@ -1,4 +1,4 @@
-use std::{any::Any, fmt, mem, sync::Arc};
+use std::{any::Any, fmt, mem, process, sync::Arc};
 
 use crate::{
     CompletionAuthority, CompletionWitness, LeaseActivation, LeaseBackend, PreparedColumnExport, PreparedTableExport,
@@ -31,6 +31,7 @@ pub(crate) struct LeaseCore<'producer, 'consumer> {
     read_start: ReadStartAuthority<'consumer>,
     completion: CompletionAuthority<'consumer>,
     device: Option<DeviceLease<'producer>>,
+    retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     completed: bool,
 }
 
@@ -39,19 +40,21 @@ impl<'producer, 'consumer> LeaseCore<'producer, 'consumer> {
         read_start: ReadStartAuthority<'consumer>,
         completion: CompletionAuthority<'consumer>,
         device: Option<DeviceLease<'producer>>,
+        retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     ) -> Self {
-        Self { read_start, completion, device, completed: false }
+        Self { read_start, completion, device, retained_owner, completed: false }
     }
 
-    fn complete(mut self, retained_owner: Option<&Arc<dyn Any + Send + Sync>>) -> Result<LeaseCompletion> {
+    fn complete(mut self) -> Result<LeaseCompletion> {
         // Host leases read host memory before returning, so they complete
         // without backend work.
         let witness = match &self.device {
             Some(device) => device.backend.complete(device.readiness, self.completion)?,
             None => None,
         };
+        let completion = LeaseCompletion::new(witness, self.retained_owner.as_ref())?;
         self.completed = true;
-        LeaseCompletion::new(witness, retained_owner)
+        Ok(completion)
     }
 }
 
@@ -59,8 +62,16 @@ impl Drop for LeaseCore<'_, '_> {
     fn drop(&mut self) {
         if !self.completed
             && let Some(device) = &self.device
+            && device.backend.drop_incomplete(device.readiness, self.completion).is_err()
         {
-            let _ = device.backend.drop_incomplete(device.readiness, self.completion);
+            let Some(owner) = self.retained_owner.take() else {
+                // Returning or unwinding would end the borrow while native
+                // work may still read storage we cannot retain.
+                process::abort();
+            };
+            mem::forget(owner);
+            // Backend activation resources may still be referenced by CUDA.
+            mem::forget(self.device.take());
         }
     }
 }
@@ -75,7 +86,7 @@ impl Drop for LeaseCore<'_, '_> {
 ///
 /// Dropping a pending completion waits on its witness. If that wait fails, the
 /// retained owner is leaked: queued consumer work may still read producer
-/// storage, and `Drop` cannot report the failure.
+/// storage. The backend observes and quarantines the failed final wait.
 #[must_use = "dropping a pending completion blocks until consumer reads of producer storage finish"]
 pub struct LeaseCompletion {
     witness: Option<CompletionWitness>,
@@ -120,10 +131,20 @@ impl LeaseCompletion {
 
     /// Releases the witness and retained owner without waiting.
     ///
-    /// Sound only when every release of producer storage is already ordered
-    /// after the consumer's reads on the device, for example because the
-    /// producer's stream waits on the consumer's stream.
-    pub fn release_stream_ordered(mut self) {
+    /// # Safety
+    ///
+    /// Every release of producer storage must already be ordered after the
+    /// consumer's reads on the device, for example by a producer stream wait
+    /// on the consumer's completion event. Merely holding a witness does not
+    /// establish that order.
+    ///
+    /// ```compile_fail,E0133
+    /// use rapids_interop::LeaseCompletion;
+    /// fn skip_wait(completion: LeaseCompletion) {
+    ///     completion.release_stream_ordered();
+    /// }
+    /// ```
+    pub unsafe fn release_stream_ordered(mut self) {
         self.witness = None;
         self.retained_owner = None;
     }
@@ -131,10 +152,14 @@ impl LeaseCompletion {
 
 impl Drop for LeaseCompletion {
     fn drop(&mut self) {
-        if self.synchronize().is_err()
-            && let Some(owner) = self.retained_owner.take()
-        {
-            mem::forget(owner);
+        if let Err(error) = self.synchronize() {
+            if let Some(witness) = &self.witness {
+                witness.quarantine(&error);
+            }
+            if let Some(owner) = self.retained_owner.take() {
+                mem::forget(owner);
+            }
+            mem::forget(self.witness.take());
         }
     }
 }
@@ -172,7 +197,7 @@ impl<'export, 'producer, 'consumer> ActiveColumnReadLease<'export, 'producer, 'c
     /// Completes the lease. See [`LeaseCompletion`] for when the returned
     /// value keeps the export's retained owner alive.
     pub fn complete(self) -> Result<LeaseCompletion> {
-        self.core.complete(self.export.retained_owner())
+        self.core.complete()
     }
 }
 
@@ -200,6 +225,6 @@ impl<'export, 'producer, 'consumer> ActiveTableReadLease<'export, 'producer, 'co
     /// Completes the lease. See [`LeaseCompletion`] for when the returned
     /// value keeps the export's retained owner alive.
     pub fn complete(self) -> Result<LeaseCompletion> {
-        self.core.complete(self.export.retained_owner())
+        self.core.complete()
     }
 }

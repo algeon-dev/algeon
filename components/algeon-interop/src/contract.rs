@@ -1,7 +1,7 @@
 use core::fmt;
 use std::sync::Arc;
 
-use crate::{CompletionAuthority, ProducerReadiness, ReadStartAuthority, types::Result};
+use crate::{CompletionAuthority, InteropError, ProducerReadiness, ReadStartAuthority, types::Result};
 
 /// Backend operations supported by a producer-owned completion witness.
 ///
@@ -11,7 +11,13 @@ use crate::{CompletionAuthority, ProducerReadiness, ReadStartAuthority, types::R
 /// its native handle requires and does not rely on the caller's current
 /// device. This does not make an active lease or a consumer wrapper that holds
 /// a witness usable across threads.
-pub trait CompletionWitnessBackend: Send + Sync {
+///
+/// # Safety
+///
+/// Successful readiness and synchronization results must prove that consumer
+/// reads have finished. Calls must use valid device context and native handles.
+/// `synchronize` and `quarantine` must not panic, including during unwinding.
+pub unsafe trait CompletionWitnessBackend: Send + Sync {
     /// Queries, without waiting, whether the recorded completion point has
     /// been reached.
     ///
@@ -25,6 +31,11 @@ pub trait CompletionWitnessBackend: Send + Sync {
     /// `Ok(())` establishes completion. `Err` means completion was not
     /// established, so it does not authorize releasing producer storage.
     fn synchronize(&self) -> Result<()>;
+
+    /// Observes a failed final cleanup wait whose producer owner will be
+    /// retained for process lifetime. Runtime backends record the failure and
+    /// isolate the affected device through their existing health mechanism.
+    fn quarantine(&self, _error: &InteropError) {}
 }
 
 /// Producer-owned completion witness returned by a completed lease.
@@ -45,6 +56,10 @@ impl CompletionWitness {
     pub fn synchronize(&self) -> Result<()> {
         self.backend.synchronize()
     }
+
+    pub(crate) fn quarantine(&self, error: &InteropError) {
+        self.backend.quarantine(error);
+    }
 }
 
 impl fmt::Debug for CompletionWitness {
@@ -57,10 +72,10 @@ impl fmt::Debug for CompletionWitness {
 /// lease.
 ///
 /// The lease never inspects this state. It keeps the state alive until the
-/// lease itself is dropped: after a successful `complete` returns, or after
-/// the incomplete-drop fallback of a lease that was not completed. A backend
-/// uses it for state that must outlive activation, such as a readiness barrier
-/// that orders consumer reads after the producer.
+/// lease itself is dropped after successful completion or incomplete cleanup.
+/// Failed incomplete cleanup retains this state for process lifetime. A
+/// backend uses it for state that must outlive activation, such as a readiness
+/// barrier that orders consumer reads after the producer.
 pub trait ActiveLeaseActivation: Send + Sync {}
 
 /// Backend activation result retained by an active lease.
@@ -101,13 +116,26 @@ impl fmt::Debug for LeaseActivation {
 ///    [`drop_incomplete`](Self::drop_incomplete) runs for that attempt; the
 ///    backend must clean up any partial activation before returning.
 /// 2. [`complete`](Self::complete) runs when the consumer completes the lease.
-///    The lease is marked completed only when it returns `Ok`.
+///    The lease is marked completed after synchronous completion, or after a
+///    witness is retained with its storage owner or synchronized for a borrowed
+///    export.
 /// 3. A lease dropped without being marked completed, including one whose
 ///    `complete` returned `Err`, calls
 ///    [`drop_incomplete`](Self::drop_incomplete) from `Drop`. The backend must
 ///    therefore handle a fallback after `complete` has done part of its work
 ///    and failed.
-pub trait ActiveLeaseBackend: Send + Sync {
+///
+/// # Safety
+///
+/// Activation must establish producer readiness before consumer reads.
+/// `Ok(None)` from `complete` and `Ok(())` from `drop_incomplete` must prove
+/// completion; witnesses must cover all submitted reads. Methods must bind
+/// valid native handles to their device context. `drop_incomplete` must not
+/// panic and must observe and isolate final cleanup failures at its runtime.
+/// Safe consumers must retain storage independently of a forgotten lease or
+/// finish their reads inside the call that submits them. A borrowed lease's
+/// destructor cannot be the sole protection for queued native reads.
+pub unsafe trait ActiveLeaseBackend: Send + Sync {
     /// Starts consumer access for one lease.
     ///
     /// `read_start` orders consumer reads after `readiness`, and `completion`
@@ -138,10 +166,11 @@ pub trait ActiveLeaseBackend: Send + Sync {
     /// Drop-time fallback for a lease that was not completed.
     ///
     /// Called from the lease's `Drop`, which may run during unwinding; it must
-    /// not panic. The lease discards the returned `Result`. Completion is
-    /// established only when this returns `Ok`: after `Err`, consumer reads may
-    /// still be pending even though the lease, and with it the borrow of the
-    /// prepared export, has ended.
+    /// not panic. Completion is established only when this returns `Ok`.
+    /// After `Err`, the shared lease retains its owner and activation state for
+    /// process lifetime. Without an owner it aborts before releasing borrowed
+    /// storage. Backends record and quarantine the failed cleanup before
+    /// returning `Err`.
     fn drop_incomplete(&self, readiness: ProducerReadiness<'_>, completion: CompletionAuthority<'_>) -> Result<()>;
 }
 

@@ -33,7 +33,8 @@ impl Series {
     /// of `self`'s runtime domain is unavailable.
     pub fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
         prepare_from_owned_column(self.as_column(), "interop::Series::try_prepare_device_column_export")
-            .map(|export| export.with_retained_owner(self.arc()))
+            // SAFETY: the Arc owns the projected storage and readiness domain.
+            .map(|export| unsafe { export.with_retained_owner(self.arc()) })
     }
 
     /// Convenience producer that projects this high-level `Series` into the
@@ -58,7 +59,8 @@ impl Series {
     ) -> Result<PreparedColumnExport<'a>, InteropError> {
         self.as_column()
             .try_prepare_device_column_export_with_event(event)
-            .map(|export| export.with_retained_owner(self.arc()))
+            // SAFETY: retain the column storage and the supplied readiness event.
+            .map(|export| unsafe { export.with_retained_owner(Arc::new((self.arc(), event.clone()))) })
     }
 }
 
@@ -97,7 +99,8 @@ impl DataFrame {
             self.execution_domain(),
             "interop::DataFrame::try_prepare_device_table_export",
         )
-        .map(|export| export.with_retained_owner(Arc::new(self.clone())))
+        // SAFETY: the clone retains each column and its readiness domain.
+        .map(|export| unsafe { export.with_retained_owner(Arc::new(self.clone())) })
     }
 
     /// Convenience producer that projects this high-level `DataFrame` into the
@@ -134,6 +137,7 @@ impl DataFrame {
             Some(self.column_names_owned()),
             context,
         )
-        .map(|export| export.with_retained_owner(Arc::new(self.clone())))
+        // SAFETY: retain all frame columns and the supplied readiness event.
+        .map(|export| unsafe { export.with_retained_owner(Arc::new((self.clone(), event.clone()))) })
     }
 }

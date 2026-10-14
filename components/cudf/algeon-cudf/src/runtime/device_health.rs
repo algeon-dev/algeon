@@ -10,6 +10,8 @@ use std::{
     collections::HashMap,
     fmt,
     io::Write,
+    mem,
+    panic::{self, AssertUnwindSafe},
     ptr,
     sync::{
         Arc, Mutex, OnceLock, PoisonError, Weak,
@@ -260,7 +262,8 @@ impl Drop for DeviceFaultObservation {
 /// for `device`, until the returned registration drops. The observer runs on
 /// the reporting thread after the fault is recorded, outside every health
 /// lock. A fault reported before registration is not replayed; read
-/// [`device_health_snapshot`] after registering to cover it.
+/// [`device_health_snapshot`] after registering to cover it. Observer panics
+/// are caught and logged so cleanup retains its storage guarantees.
 pub fn observe_device_faults(
     device: DeviceId,
     observer: impl Fn(DeviceHealthSnapshot) + Send + Sync + 'static,
@@ -341,8 +344,19 @@ pub fn report_device_fault(
         }
         (state.snapshot(device), state.fault_observers())
     });
+    notify_fault_observers(snapshot, observers);
+}
+
+fn notify_fault_observers(snapshot: DeviceHealthSnapshot, observers: Vec<DeviceFaultObserver>) {
     for observer in observers {
-        observer(snapshot);
+        if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| observer(snapshot))) {
+            // A panic payload's destructor can panic again during lease cleanup.
+            mem::forget(payload);
+            write_diagnostic(format_args!(
+                "[cudf] device_fault_observer_panicked device={}",
+                snapshot.device().ordinal_raw()
+            ));
+        }
     }
 }
 
@@ -384,7 +398,7 @@ pub fn drop_device_resource<T>(
 /// Record a native resource intentionally leaked because its device-bound
 /// teardown could not be made safe.
 pub fn quarantine_device_resource(device: DeviceId, operation: &'static str, reason: &dyn fmt::Display) {
-    with_registry(|registry| {
+    let (snapshot, observers) = with_registry(|registry| {
         let state = registry.state(device);
         let count = saturating_increment(&state.quarantined_teardown_count);
         let quarantine_is_first_fault = if state.first_fault.get().is_none() {
@@ -405,7 +419,9 @@ pub fn quarantine_device_resource(device: DeviceId, operation: &'static str, rea
                 device.ordinal_raw()
             ));
         }
+        (state.snapshot(device), state.fault_observers())
     });
+    notify_fault_observers(snapshot, observers);
 }
 
 pub(crate) fn record_teardown_failure(device: DeviceId, operation: &'static str, reason: &dyn fmt::Display) {
@@ -475,6 +491,12 @@ mod tests {
     fn first_fault_is_stable_and_later_work_is_rejected() {
         let scope = DeviceSafetyTestScope::install([]);
         let device = DeviceId::DEFAULT;
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observer_values = Arc::clone(&observed);
+        let _observer = observe_device_faults(device, move |health| {
+            assert_eq!(device_health_snapshot(device).status(), health.status());
+            observer_values.lock().unwrap().push(health);
+        });
         record_fault(
             device,
             DeviceFaultKind::OwnerDeviceEntryFailed,
@@ -495,6 +517,11 @@ mod tests {
         let error = ensure_healthy(device, "new_work").expect_err("unhealthy device must reject new work");
         assert_eq!(error.code(), ErrorCode::FatalCuda);
         assert_eq!(scope.health_snapshot(device).rejected_operation_count(), 1);
+        quarantine_device_resource(device, "failed_interop_cleanup", &"completion unavailable");
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 3, "quarantine must notify the same admission observers as native faults");
+        assert_eq!(observed[2].quarantined_teardown_count(), 1);
+        assert_eq!(observed[2].first_fault().unwrap().operation(), "first_fault");
     }
 
     #[test]

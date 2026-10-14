@@ -107,6 +107,21 @@ void cudf_test_stream_fail_synchronize(void);
 void cudf_test_stream_allow_synchronize(void);
 cudf_status_t cudf_test_stream_synchronize_call_count(int32_t* out);
 
+/// Queue a host callback on a borrowed CUDA stream. The callback and argument
+/// must outlive execution; the callback must not call CUDA or unwind.
+cudf_status_t cudf_test_cuda_launch_host_function(void* raw_stream,
+                                                void (*callback)(void*),
+                                                void* argument);
+/// Queue a device read. Both ranges must remain valid through stream completion.
+cudf_status_t cudf_test_cuda_copy_device_async(void* raw_stream,
+                                             void* destination,
+                                             void const* source,
+                                             size_t byte_len);
+/// Copy a completed device range to writable host memory before return.
+cudf_status_t cudf_test_cuda_copy_to_host(void* destination,
+                                        void const* source,
+                                        size_t byte_len);
+
 cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle* out);
 cudf_status_t cudf_test_memory_resource_create_fail_first_allocation(
   cudf_memory_resource_handle upstream, cudf_memory_resource_handle* out);
