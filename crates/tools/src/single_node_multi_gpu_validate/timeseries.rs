@@ -49,10 +49,10 @@ pub(super) struct DeviceSeriesRow {
     pub(super) gpu_utilization_pct: Option<u32>,
     pub(super) memory_utilization_pct: Option<u32>,
     pub(super) cuda_free_bytes: Option<u64>,
-    /// NVML physical framebuffer usage. CUDA free bytes remain the primary
-    /// allocation-capacity signal. Retaining independent device-wide telemetry
-    /// exposes scope differences between the two APIs without assuming
-    /// identical allocator state.
+    /// Optional NVML physical framebuffer usage. CUDA free bytes remain the
+    /// allocation-capacity signal that qualification requires. When NVML is
+    /// available, this independent device-wide value exposes scope differences
+    /// between the two APIs without assuming identical allocator state.
     pub(super) nvml_used_bytes: Option<u64>,
     pub(super) active_attempts: usize,
     pub(super) managed_capacity_bytes: u64,
@@ -70,7 +70,7 @@ pub(super) struct DeviceSeriesRow {
     /// Ledger observation sequence, for cadence/staleness auditing.
     pub(super) ledger_sequence: u64,
     /// Sequence returned by a second ledger read taken immediately after the
-    /// CUDA/NVML telemetry pull. A calibration reducer may use this row's
+    /// device telemetry pull. A calibration reducer may use this row's
     /// claim only when it matches `ledger_sequence` and the claim fields did
     /// not change across that bracket. Retaining both sides allows consumers
     /// to verify simultaneity without relying on runner-side assertions.
@@ -130,21 +130,21 @@ pub(super) struct FleetUtilizationInterval {
     pub(super) maximum_sample_gap: SampleGap,
 }
 
-pub(super) fn maximum_physical_sample_gap(rows: &[DeviceSeriesRow]) -> Option<SampleGap> {
+/// Largest per-ordinal interval without a CUDA memory sample, including the
+/// leading and trailing outages. NVML samples are optional diagnostics and do
+/// not affect the gap.
+pub(super) fn maximum_cuda_sample_gap(rows: &[DeviceSeriesRow]) -> Option<SampleGap> {
     per_ordinal(rows)
         .filter_map(|(_, rows)| {
             let start = rows.iter().map(|row| row.offset_ns).min()?;
             let end = rows.iter().map(|row| row.offset_ns).max()?;
-            let mut physical = rows
-                .iter()
-                .filter(|row| row.cuda_free_bytes.is_some() && row.nvml_used_bytes.is_some())
-                .map(|row| row.offset_ns)
-                .collect::<Vec<_>>();
-            physical.sort_unstable();
-            let first = *physical.first()?;
-            let last = *physical.last()?;
+            let mut sampled =
+                rows.iter().filter(|row| row.cuda_free_bytes.is_some()).map(|row| row.offset_ns).collect::<Vec<_>>();
+            sampled.sort_unstable();
+            let first = *sampled.first()?;
+            let last = *sampled.last()?;
             Some(
-                physical
+                sampled
                     .windows(2)
                     .map(|pair| pair[1].saturating_sub(pair[0]))
                     .max()
@@ -183,7 +183,7 @@ pub(super) fn fleet_utilization_interval(
         let selected = policy.device_ordinals.iter().map(|ordinal| {
             let mut matches = rows.iter().filter(|row| row.device_ordinal == *ordinal);
             let row = matches.next().copied()?;
-            (matches.next().is_none() && row.cuda_free_bytes.is_some() && row.nvml_used_bytes.is_some()).then_some(row)
+            (matches.next().is_none() && row.cuda_free_bytes.is_some()).then_some(row)
         });
         let selected = selected.collect::<Option<Vec<_>>>();
         let Some(selected) = selected else {
@@ -334,8 +334,8 @@ pub(super) struct DriftSummary {
 }
 
 /// Per-profile verdict for load-induced claim-versus-VRAM calibration.
-/// Evaluates independently of Nsight traces; CUDA/NVML snapshots provide
-/// auditable run evidence while targeted traces cross-check allocations,
+/// Evaluates independently of Nsight traces; CUDA snapshots and query-domain
+/// pool claims provide auditable run evidence while targeted traces cross-check allocations,
 /// lifetimes, and memory copies at smaller scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -361,7 +361,7 @@ pub(super) struct OrdinalVramCalibration {
     /// sample. The reducer never substitutes a lower stable peak for it.
     pub(super) cuda_peak_claim_snapshot_stable: Option<bool>,
     /// Count of post-baseline rows whose ledger claim was stable across the
-    /// CUDA/NVML telemetry bracket.
+    /// device telemetry bracket.
     pub(super) post_baseline_stable_claim_samples: u64,
     /// The calibration must see a nonzero load and nonzero contemporaneous
     /// claim after its baseline.  Without this witness a quiescent baseline
@@ -499,10 +499,11 @@ pub(super) fn drift_summary(rows: &[DeviceSeriesRow], process_rows: &[ProcessSer
 ///
 /// A baseline row is synchronously sampled before work submission to establish
 /// a pre-load state without racing the drive loop. Subsequent candidates bracket
-/// CUDA/NVML reads between two ledger reads, qualifying only when the ledger
-/// claim remains unchanged across the sample. Because samples do not form a
-/// globally atomic snapshot, NVML functions as an independent cross-check
-/// while targeted Nsight captures provide allocation-lifetime authority.
+/// CUDA reads between two ledger reads, qualifying only when the ledger claim
+/// remains unchanged across the sample. Because samples do not form a globally
+/// atomic snapshot, targeted Nsight captures provide allocation-lifetime
+/// authority. NVML deltas, when sampled, are reported as an optional
+/// cross-check and never change the verdict.
 pub(super) fn vram_calibration_evidence(
     rows: &[DeviceSeriesRow],
     query_domain_pool_claims: &[QueryDomainPoolClaim],
@@ -955,8 +956,9 @@ mod tests {
         peak.cache_evictable_resident_bytes = 50;
         peak.cache_physical_current_bytes = Some(150);
 
+        let claims = [pool_claim(1, 1_900, 50)];
         let evidence =
-            vram_calibration_evidence(&[baseline, peak], &[pool_claim(1, 1_900, 50)], &[0], exact_calibration_policy());
+            vram_calibration_evidence(&[baseline.clone(), peak.clone()], &claims, &[0], exact_calibration_policy());
         assert_eq!(evidence.status, VramCalibrationStatus::Evidenced);
         assert!(evidence.passes());
         let ordinal = evidence.ordinals[0];
@@ -973,6 +975,19 @@ mod tests {
         assert_eq!(ordinal.cuda_peak_claim_snapshot_stable, Some(true));
         assert_eq!(ordinal.underclaim_bytes, Some(0));
         assert_eq!(ordinal.within_profile_band, Some(true));
+
+        baseline.nvml_used_bytes = None;
+        peak.nvml_used_bytes = None;
+        let without_nvml = vram_calibration_evidence(&[baseline, peak], &claims, &[0], exact_calibration_policy());
+        assert_eq!(without_nvml.status, VramCalibrationStatus::Evidenced);
+        let without = without_nvml.ordinals[0];
+        assert_eq!(without.nvml_used_bytes_baseline, None);
+        assert_eq!(without.nvml_used_bytes_max, None);
+        assert_eq!(without.nvml_used_delta_bytes, None);
+        assert_eq!(without.cuda_nvml_delta_abs_bytes, None);
+        assert_eq!(without.physical_observed_bytes_at_cuda_peak, ordinal.physical_observed_bytes_at_cuda_peak);
+        assert_eq!(without.accounted_claim_bytes_at_cuda_peak, ordinal.accounted_claim_bytes_at_cuda_peak);
+        assert_eq!(without.within_profile_band, ordinal.within_profile_band);
     }
 
     #[test]
@@ -1279,9 +1294,18 @@ mod tests {
         });
         assert!(fleet_utilization_interval(&devices, &process, &policy).unwrap().is_none());
 
-        devices.iter_mut().filter(|row| row.offset_ns == 30_000_000_000).for_each(|row| {
+        devices.iter_mut().for_each(|row| {
             row.live_grants_bytes = 80;
             row.nvml_used_bytes = None;
+        });
+        assert_eq!(
+            fleet_utilization_interval(&devices, &process, &policy).unwrap(),
+            Some(interval),
+            "NVML samples do not affect the CUDA and ledger interval"
+        );
+
+        devices.iter_mut().filter(|row| row.offset_ns == 30_000_000_000).for_each(|row| {
+            row.cuda_free_bytes = None;
         });
         assert!(fleet_utilization_interval(&devices, &process, &policy).unwrap().is_none());
 
@@ -1294,12 +1318,16 @@ mod tests {
     }
 
     #[test]
-    fn maximum_physical_gap_includes_leading_and_trailing_outages() {
+    fn maximum_cuda_gap_includes_leading_and_trailing_outages_and_ignores_nvml() {
         let mut rows = (0..=4).map(|offset| row(0, offset)).collect::<Vec<_>>();
         for sample in &mut rows[1..=2] {
             sample.cuda_free_bytes = Some(1);
-            sample.nvml_used_bytes = Some(1);
         }
-        assert_eq!(maximum_physical_sample_gap(&rows), Some(SampleGap { nanoseconds: 2 }));
+        assert_eq!(maximum_cuda_sample_gap(&rows), Some(SampleGap { nanoseconds: 2 }));
+        rows[0].nvml_used_bytes = Some(1);
+        rows[4].nvml_used_bytes = Some(1);
+        assert_eq!(maximum_cuda_sample_gap(&rows), Some(SampleGap { nanoseconds: 2 }));
+        rows.iter_mut().for_each(|sample| sample.cuda_free_bytes = None);
+        assert_eq!(maximum_cuda_sample_gap(&rows), None);
     }
 }

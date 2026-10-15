@@ -57,6 +57,11 @@ failures. Both fresh application resolution and the source lockfile lane
 run by default. Its isolated suite is
 `python3 scripts/ci/tests/check_registry_consumer_tests.py`.
 
+`ci/check_nvml_opt_in.py` runs in the full gate's feature-isolation phase. It
+resolves each workspace package selection on its own and fails when NVML
+enters a selection that does not name `nvml`. Its isolated suite is
+`python3 scripts/ci/tests/check_nvml_opt_in_tests.py`.
+
 `ci/nextest_gpu_lock.sh` is the nextest run-wrapper that every test runs
 through (configured in `.config/nextest.toml`): it takes `/tmp/cudf-gpu.lock`
 shared for the `gpu` test group and exclusive for `gpu-exclusive`, and takes

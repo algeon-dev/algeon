@@ -332,12 +332,12 @@ fn verify_artifact(cell: &CellManifest, artifact: &Value, failures: &mut Vec<Str
     }
     let maximum_gap_ns = cell.maximum_sample_gap_ms.checked_mul(1_000_000);
     let observed_gap_ns = artifact
-        .pointer("/execution/measurement/time_series/maximum_cuda_nvml_sample_gap/nanoseconds")
+        .pointer("/execution/measurement/time_series/maximum_cuda_sample_gap/nanoseconds")
         .and_then(Value::as_u64);
     if maximum_gap_ns.is_none()
         || observed_gap_ns.zip(maximum_gap_ns).is_none_or(|(observed, maximum)| observed > maximum)
     {
-        failures.push(format!("{} exceeds or omits its physical sample-gap bound", path.display()));
+        failures.push(format!("{} exceeds or omits its CUDA sample-gap bound", path.display()));
     }
     for repository in ["root", "cudf", "cugraph", "cuvs", "cuml"] {
         let pointer = format!("/provenance/repositories/{repository}/dirty_manifest/entries");

@@ -199,4 +199,4 @@ if (( ${#cudart_realpaths[@]} > 1 )); then
     exit 1
 fi
 
-echo "OK: loader closure of $BIN with $LIB_DIR passed (features: $FEATURES)."
+echo "OK: loader closure of $BIN with $LIB_DIR passed (features: ${FEATURES:-none})."

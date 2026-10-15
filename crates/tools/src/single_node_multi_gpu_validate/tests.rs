@@ -1951,6 +1951,8 @@ fn composed_qualification_evidence_is_fail_closed_and_overload_is_profile_declar
             false,
             &["missing_physical_memory_sample"][..],
         ),
+        ("cuda_sample_without_nvml", None, true, true, true, None, false, &[][..]),
+        ("nvml_sample_without_cuda", None, true, true, true, None, false, &["missing_physical_memory_sample"][..]),
         (
             "missing_device_witness",
             None,
@@ -2015,12 +2017,26 @@ fn composed_qualification_evidence_is_fail_closed_and_overload_is_profile_declar
             provenance.runner.executable.sha256.clear();
         }
 
+        let mut measurement =
+            composed_qualification_measurement(name != "missing_schedule", physical_sample, device_witness, overload);
+        for row in &mut measurement.time_series.device_rows {
+            match name {
+                "cuda_sample_without_nvml" => {
+                    row.gpu_utilization_pct = None;
+                    row.memory_utilization_pct = None;
+                    row.nvml_used_bytes = None;
+                },
+                "nvml_sample_without_cuda" => row.cuda_free_bytes = None,
+                _ => {},
+            }
+        }
+
         let artifact = RunArtifact::measured_run(
             composed_qualification_profile(require_overload),
             "a".repeat(64),
             Vec::new(),
             provenance,
-            composed_qualification_measurement(name != "missing_schedule", physical_sample, device_witness, overload),
+            measurement,
         );
         let value = serde_json::to_value(artifact).unwrap();
         let actual = value["execution"]["qualification_failures"]

@@ -57,7 +57,9 @@
 //! `cugraph` feature, cuGraph UDTFs fail closed with a typed
 //! capability error. Without `cuvs` or `cuml`, the corresponding SQL family
 //! remains discoverable but execution fails before input staging. Without
-//! `nvml`, NVML telemetry reads report unavailable. The `bench-support`
+//! `nvml`, device telemetry reports `FeatureDisabled` for NVML and leaves the
+//! NVML values `None`; CUDA telemetry, admission and memory accounting are
+//! unchanged. The `bench-support`
 //! and `qualification` features serve as internal harnesses; `bench-support`
 //! provides application and test support facilities outside the embedded and
 //! server report contract, whereas `qualification` closes admission on one live

@@ -221,8 +221,11 @@ and continue with the
 [Flight SQL server](../integration/flight-sql-server.mdx#build-and-start) page:
 
 ```bash
-cargo build --release -p algeon-server --features cugraph,cuvs,cuml,nvml
+cargo build --release -p algeon-server --features cugraph,cuvs,cuml
 ```
+
+Append `,nvml` for NVML device diagnostics
+([NVML diagnostics](./rust-dependency.md#nvml-diagnostics)).
 
 For development, after all four native layers exist, build the unified
 workspace with one feature selection:

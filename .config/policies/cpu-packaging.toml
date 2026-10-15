@@ -50,6 +50,7 @@ deployment_requirement = "The host CPU must implement the full x86-64-v3 ISA; a 
 # Cargo features of the shipped `algeon_server` binary. Packaging
 # (docker/build-image.sh) and the shipped-clippy phase of
 # scripts/check_all.sh both read this list through
-# `scripts/build/cpu_packaging_policy.py shipped-features`.
+# `scripts/build/cpu_packaging_policy.py shipped-features`. NVML device
+# diagnostics are opt-in through FEATURES and are not part of this list.
 [server]
-features = ["cugraph", "cuml", "cuvs", "nvml"]
+features = ["cugraph", "cuml", "cuvs"]

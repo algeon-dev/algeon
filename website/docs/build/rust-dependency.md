@@ -98,10 +98,31 @@ The [source-build reference](./from-source.md#3-build-the-native-stack) lists
 installation checks for each component.
 
 `server` adds the embedded Flight SQL API and `nvml` adds optional live device
-diagnostics. Neither adds a RAPIDS install directory. `nvml` needs the NVIDIA
-driver's NVML runtime. Algorithm features select their own native directories
-as listed above. Select application features explicitly. `--all-features` on
-Algeon's implementation crates can include developer-only `test-hooks`.
+diagnostics. Neither adds a RAPIDS install directory. Algorithm features select
+their own native directories as listed above. Select application features
+explicitly. `--all-features` on Algeon's implementation crates can include
+developer-only `test-hooks`.
+
+### NVML diagnostics
+
+`nvml` is off by default for the adapter, the `algeon-server` package and the
+shipped server image. Selecting it links `nvml-wrapper`, which loads the
+NVIDIA driver's `libnvidia-ml.so.1` at run time. It adds these values to
+`device_telemetry_snapshots()` and the backend startup records:
+
+| Value | Without `nvml` | `nvml` built, NVML unavailable |
+| --- | --- | --- |
+| `gpu_utilization_pct`, `memory_utilization_pct` | `None` | `None` |
+| NVML framebuffer total, reserved, used and free bytes | `None` | `None` |
+| Startup `model_name`, `uuid`, `physical_total_bytes` | `None` | `None` |
+| `nvml_status` | `FeatureDisabled` | `Unavailable` |
+
+A missing value stays `None`, or `null` in JSON. It is never reported as zero.
+`cuda_status` and `cuda_free_bytes` come from CUDA and are sampled whether or
+not `nvml` is selected. NVML initialization or sampling failures leave query
+execution unchanged. Query allocation and pool statistics, admission and the
+device ledger use CUDA and RMM data only; see
+[Memory and query lifetime](../design/admission.mdx#device-observations).
 
 ## 3. Create an external application
 
@@ -281,8 +302,7 @@ async fn run_session(backend: &AlgeonGpuBackend, directory: &Path) -> Result<()>
     check_cuml(backend, &ctx).await?;
     #[cfg(feature = "server")]
     check_server(backend, &orders).await?;
-    #[cfg(feature = "nvml")]
-    check_nvml(backend)?;
+    check_telemetry(backend)?;
     Ok(())
 }
 
@@ -386,15 +406,19 @@ async fn check_server(backend: &AlgeonGpuBackend, orders: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "nvml")]
-fn check_nvml(backend: &AlgeonGpuBackend) -> Result<()> {
+fn check_telemetry(backend: &AlgeonGpuBackend) -> Result<()> {
     use algeon_datafusion::observability::DeviceTelemetryStatus;
 
     let snapshots = backend.device_telemetry_snapshots()?;
     require(snapshots.len() == 1 && snapshots[0].device_ordinal == 0, "telemetry did not sample CUDA device 0")?;
     let snapshot = &snapshots[0];
     require(snapshot.cuda_status == DeviceTelemetryStatus::Available, "CUDA telemetry is unavailable")?;
-    require(snapshot.nvml_status != DeviceTelemetryStatus::FeatureDisabled, "NVML feature was not forwarded")?;
+    if cfg!(feature = "nvml") {
+        require(snapshot.nvml_status != DeviceTelemetryStatus::FeatureDisabled, "NVML feature was not forwarded")?;
+    } else {
+        require(snapshot.nvml_status == DeviceTelemetryStatus::FeatureDisabled, "NVML is enabled without the feature")?;
+        require(snapshot.nvml_used_bytes.is_none(), "NVML memory was reported without the feature")?;
+    }
     // NVML availability is optional, independently of CUDA execution support.
     println!("nvml initialization status: {}", snapshot.nvml_status.as_str());
     Ok(())

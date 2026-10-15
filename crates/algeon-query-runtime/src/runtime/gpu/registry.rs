@@ -880,7 +880,6 @@ mod tests {
                     total_bytes: 1_000,
                     free_bytes: 500,
                     sm_count: Some(1),
-                    utilization_pct: None,
                 },
                 DeviceFacts {
                     device: 1,
@@ -890,7 +889,6 @@ mod tests {
                     total_bytes: 2_000,
                     free_bytes: 500,
                     sm_count: Some(1),
-                    utilization_pct: None,
                 },
             ],
         };
@@ -948,7 +946,6 @@ mod tests {
                     total_bytes: 1_000,
                     free_bytes: 1_000,
                     sm_count: Some(1),
-                    utilization_pct: None,
                 },
                 DeviceFacts {
                     device: 1,
@@ -958,7 +955,6 @@ mod tests {
                     total_bytes: 2_000,
                     free_bytes: 2_000,
                     sm_count: Some(1),
-                    utilization_pct: None,
                 },
             ],
         };
@@ -1073,7 +1069,6 @@ mod tests {
             total_bytes: 1_000,
             free_bytes: 100,
             sm_count: Some(1),
-            utilization_pct: None,
         };
         let whole = DeviceRegistryInstallProfile {
             stream_pool_size: 2,
@@ -1164,7 +1159,6 @@ mod tests {
             total_bytes: 100,
             free_bytes: 50,
             sm_count: Some(1),
-            utilization_pct: None,
         };
         let automatic = DeviceRegistryInstallProfile {
             stream_pool_size: 1,
@@ -1214,7 +1208,6 @@ mod tests {
             total_bytes: 101_973_819_392,
             free_bytes: 101_000_000_000,
             sm_count: Some(1),
-            utilization_pct: None,
         };
         let profile = DeviceRegistryInstallProfile {
             stream_pool_size: 1,

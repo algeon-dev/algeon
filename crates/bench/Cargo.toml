@@ -24,9 +24,12 @@ cuvs = [
   "dep:cuvs-sys",
 ]
 cuml = ["algeon-datafusion/cuml", "dep:cuml-sys"]
+# Optional NVML device diagnostics: model, UUID and physical framebuffer
+# provenance. Without it those provenance fields are recorded as missing.
+nvml = ["algeon-datafusion/nvml"]
 
 [dependencies]
-algeon-datafusion = { workspace = true, features = ["bench-support", "nvml"] }
+algeon-datafusion = { workspace = true, features = ["bench-support"] }
 workloads = { workspace = true }
 query-engine = { workspace = true }
 query-planning = { workspace = true }

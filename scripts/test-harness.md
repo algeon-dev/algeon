@@ -227,6 +227,14 @@ cargo hack check --workspace --each-feature --exclude-features default --all-tar
 fails closed unless the union of commands the shards ran matches the
 canonical command's own `--print-command-list` output.
 
+The same phase runs `scripts/ci/check_nvml_opt_in.py`. For each workspace
+member's no-feature and single-feature selection, it resolves the normal and
+build graph with `cargo tree` and fails when `nvml-wrapper` appears outside an
+`nvml` selection. It also requires the adapter, server, bench and tools NVML
+selections to resolve the dependency. The facade consumer fixture enables
+every capability feature and is exempt. Its fault-injection suite is
+`scripts/ci/tests/check_nvml_opt_in_tests.py`.
+
 The shipped-server clippy lane is the second exception. `--all-features`
 unifies dev-dependency features such as `test-hooks` into every build, and
 for that reason it does not lint the server as packaged. The lane selects only the
@@ -286,7 +294,9 @@ invokes `scripts/ci/registry_consumer.py`. It copies the documented application
 fixture outside the checkout and patches only the extracted archives. Its
 default matrix covers the adapter's default, each algorithm family, the
 combined algorithm stack, `server`, `nvml` and all release features in both
-fresh-resolution and source-lockfile lanes. Builds run offline after fetch;
+fresh-resolution and source-lockfile lanes. Each row's resolved graph contains
+`nvml-wrapper` only when the row selects `nvml`, and the application checks
+that `nvml_status` is `FeatureDisabled` without it. Builds run offline after fetch;
 runtime checks use the executable's ELF interpreter to verify selected
 library identities and execute queries with
 result assertions from another cwd. Native discovery cases use temporary

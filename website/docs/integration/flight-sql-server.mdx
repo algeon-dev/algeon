@@ -20,8 +20,12 @@ After the native libraries are built (see
 `algeon-server` package and its `algeon_server` binary:
 
 ```bash
-cargo build --release -p algeon-server --features cugraph,cuvs,cuml,nvml
+cargo build --release -p algeon-server --features cugraph,cuvs,cuml
 ```
+
+Add `nvml` to the feature list for GPU utilization, NVML framebuffer and
+device identity diagnostics. Query execution and memory admission do not
+depend on it; see [NVML diagnostics](../build/rust-dependency.md#nvml-diagnostics).
 
 Start it with no configuration file:
 

@@ -680,7 +680,7 @@ async fn run_measured(
         time_series: TimeSeriesEvidence {
             sample_interval_ns: sampler.sample_interval.as_nanos().min(u128::from(u64::MAX)) as u64,
             retention_downsampled: sampler.sample_interval > SAMPLE_INTERVAL,
-            maximum_cuda_nvml_sample_gap: timeseries::maximum_physical_sample_gap(&sampler.device_series),
+            maximum_cuda_sample_gap: timeseries::maximum_cuda_sample_gap(&sampler.device_series),
             utilization: timeseries::utilization_summary(&sampler.device_series),
             drift: timeseries::drift_summary(&sampler.device_series, &sampler.process_series),
             vram_calibration,

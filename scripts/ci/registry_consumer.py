@@ -19,6 +19,7 @@ from release_archives import ROOT, clean_environment, validate_archives
 
 FEATURES = ("", "cuvs", "cugraph", "cuml", "cugraph,cuvs,cuml", "server", "nvml", "cugraph,cuvs,cuml,server,nvml")
 FIXTURE = ROOT / "scripts/ci/fixtures/registry-consumer"
+NVML_PACKAGES = ("nvml-wrapper", "nvml-wrapper-sys")
 
 
 def check_quickstart() -> None:
@@ -93,6 +94,18 @@ def verify_resolution(metadata: dict, packages: list[dict], app: Path, release_l
                    (p["name"], p["version"], p.get("source"), p.get("checksum")) not in expected]
         if changed:
             raise RuntimeError(f"release lock resolution changed third-party packages: {changed}")
+
+
+def verify_nvml_selection(metadata: dict, features: str) -> None:
+    """NVML enters the resolved graph only when the row selects `nvml`."""
+    names = {package["id"]: package["name"] for package in metadata["packages"]}
+    resolved = {names.get(node["id"]) for node in metadata["resolve"]["nodes"]}
+    present = sorted(resolved & set(NVML_PACKAGES))
+    selected = "nvml" in features.split(",")
+    if selected and present != sorted(NVML_PACKAGES):
+        raise RuntimeError(f"the nvml row resolved {present}; expected {list(NVML_PACKAGES)}")
+    if not selected and present:
+        raise RuntimeError(f"feature row {features or 'default'!r} resolved {present} without selecting nvml")
 
 
 def discovery_regressions(output: Path, archives: Path, env: dict[str, str], native: Path, version: str) -> None:
@@ -256,6 +269,7 @@ def main() -> None:
                                app, env, logs / f"{label}-metadata.log")
             metadata = json.loads(next(line for line in metadata_log.splitlines() if line.startswith('{"packages":')))
             verify_resolution(metadata, packages, app, release_lock)
+            verify_nvml_selection(metadata, features)
             run(["cargo", "build", "--locked", "--offline", *selection], app, env, logs / f"{label}-build.log")
             binary = target / "debug/registry-consumer"
             elf = run(["readelf", "--wide", "--program-headers", "--dynamic", str(binary)],

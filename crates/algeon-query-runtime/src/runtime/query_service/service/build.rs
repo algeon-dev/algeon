@@ -315,7 +315,6 @@ mod construction_tests {
                 total_bytes: 100,
                 free_bytes: 100,
                 sm_count: Some(1),
-                utilization_pct: None,
             },
             DeviceFacts {
                 device: 1,
@@ -325,7 +324,6 @@ mod construction_tests {
                 total_bytes: 10,
                 free_bytes: 10,
                 sm_count: Some(1),
-                utilization_pct: None,
             },
         ]);
         let whole_device_profile = |limit_bytes, default_query_limit_bytes| DeviceRegistryInstallProfile {

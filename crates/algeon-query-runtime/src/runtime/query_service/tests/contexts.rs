@@ -1,6 +1,7 @@
 use query_planning::error::QueryErrorCode;
 
 use super::*;
+#[cfg(feature = "cugraph")]
 use crate::runtime::{GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership};
 
 #[test]

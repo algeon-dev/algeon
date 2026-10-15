@@ -141,7 +141,8 @@ RUN --mount=type=bind,from=cuda-harvest,source=/payload/validate-loader-closure.
 # LD_LIBRARY_PATH covers a payload staged without patchelf, whose RUNPATHs
 # still name host paths. The nvidia/cuda base sets
 # NVIDIA_DRIVER_CAPABILITIES=compute,utility, and `utility` makes the container
-# toolkit mount libnvidia-ml.so.1, which the nvml feature loads.
+# toolkit mount libnvidia-ml.so.1, which the optional nvml diagnostics
+# feature loads at run time.
 ENV LD_LIBRARY_PATH=/app/lib \
     RUST_BACKTRACE=1 \
     ALGEON_SERVER_BIND=0.0.0.0:50051

@@ -68,6 +68,12 @@ cargo build --release -p bench --all-features --bin query_service_goodput
 mkdir -p target/stress
 ```
 
+The tools build above leaves NVML off. Run artifacts then record the device
+model, UUID and physical total as `null`, and NVML utilization and framebuffer
+samples stay empty. Qualification uses the CUDA, pool and ledger samples in
+either build. Append `,nvml` to the tools feature list to record the NVML
+diagnostics.
+
 `--dry-run` accepts an empty `workloads` list and records configuration; it
 cannot validate these workload profiles. `--fixture-preflight` retains its
 exact contract of one TPC-H fixture plus one canonical DBLP V12 fixture.

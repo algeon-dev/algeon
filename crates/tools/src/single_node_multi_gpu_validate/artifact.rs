@@ -517,7 +517,7 @@ fn qualification_failures(
             .time_series
             .device_rows
             .iter()
-            .any(|row| row.device_ordinal == ordinal && row.cuda_free_bytes.is_some() && row.nvml_used_bytes.is_some())
+            .any(|row| row.device_ordinal == ordinal && row.cuda_free_bytes.is_some())
         {
             failures.push(QualificationFailure { code: "missing_physical_memory_sample", attempt_id: None });
         }
@@ -816,7 +816,7 @@ pub(super) struct TimeSeriesEvidence {
     /// interval to stay inside bounded retention.
     pub(super) retention_downsampled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) maximum_cuda_nvml_sample_gap: Option<SampleGap>,
+    pub(super) maximum_cuda_sample_gap: Option<SampleGap>,
     pub(super) device_rows: Vec<DeviceSeriesRow>,
     pub(super) process_rows: Vec<ProcessSeriesRow>,
     pub(super) utilization: Vec<OrdinalUtilizationSummary>,
@@ -1164,7 +1164,7 @@ impl TimeSeriesEvidence {
         Self {
             sample_interval_ns: 0,
             retention_downsampled: false,
-            maximum_cuda_nvml_sample_gap: None,
+            maximum_cuda_sample_gap: None,
             device_rows: Vec::new(),
             process_rows: Vec::new(),
             utilization: Vec::new(),

@@ -236,7 +236,6 @@ fn fake_device_facts(device: usize, total_bytes: u64, sm_count: Option<u32>) -> 
         total_bytes,
         free_bytes: total_bytes / 2,
         sm_count,
-        utilization_pct: None,
     }
 }
 

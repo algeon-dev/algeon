@@ -169,6 +169,28 @@ no retained owner requires a successful fallback before its borrow ends.
 
 ## Runtime observations
 
+### Device observations
+
+Three sources describe device memory, and their scopes differ. The query
+domain reports its current and peak allocation, allocation count and
+failures for one grant. Each CUDA async pool reports reserved and used bytes
+with their high-water marks. `rmm::available_device_memory()` reports the
+CUDA-visible free and total bytes of the device. These sources, the device
+profile and the ledger supply every admission input, independent of the `nvml`
+feature.
+
+The optional `nvml` feature adds GPU and memory-controller utilization, the
+NVML framebuffer total, reserved, used and free bytes, and the startup model,
+UUID and physical total. These values are diagnostics. Admission, grants and
+resident accounting do not read them, and CUDA totals are not copied into NVML
+fields. An unsampled NVML value is `None`. `nvml_status` reports
+`FeatureDisabled` when the feature was not compiled and `Unavailable` when
+initialization, device lookup or sampling failed. The CUDA sample keeps its own
+`cuda_status`. `install_telemetry` controls both CUDA and NVML sampling for a
+device.
+
+### Reports and metrics
+
 Reports, TSV, DataFusion metrics and `QueryMetrics` are projections of one
 runtime observation snapshot, in which allocation failures retain their typed
 source and cleanup disposition. Metric names in

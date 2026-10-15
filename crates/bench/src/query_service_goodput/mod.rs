@@ -142,9 +142,9 @@ fn build_backend(config: &GoodputConfig) -> Result<AlgeonGpuBackend, Box<dyn Err
 }
 
 fn live_identity(config: &GoodputConfig, backend: &AlgeonGpuBackend) -> Result<CalibrationIdentity, Box<dyn Error>> {
-    // NVML product names need the optional `nvml` feature, which this package
-    // does not enable; the CUDA capacity fact is always present and is enough
-    // to catch a calibration carried over from different hardware.
+    // NVML product names need this package's optional `nvml` feature. The
+    // CUDA capacity fact is always present and is enough to catch a
+    // calibration carried over from different hardware.
     let gpu_model = backend
         .device_startup_records()
         .iter()

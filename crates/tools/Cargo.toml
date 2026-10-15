@@ -88,10 +88,11 @@ single-node-multi-gpu-validate-run = [
   "dep:query-planning",
   "dep:query-runtime",
   "algeon-datafusion/qualification",
-  # Device identity (model name, UUID, physical framebuffer) comes from NVML,
-  # and the artifact contract requires recording it.
-  "algeon-datafusion/nvml",
 ]
+# Optional NVML device diagnostics (model, UUID, physical framebuffer and
+# utilization samples). Weak forwarding enables NVML only on backends another
+# selected feature already pulls in.
+nvml = ["algeon-datafusion?/nvml", "bench?/nvml"]
 # The base run feature intentionally keeps `cugraph` off. It is the required
 # feature-off service cell, where graph UDTFs must reject structurally while the
 # relational load continues. Graph qualification opts in explicitly.

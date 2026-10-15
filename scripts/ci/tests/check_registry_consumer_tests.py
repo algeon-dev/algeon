@@ -78,6 +78,21 @@ class RegistryConsumerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "non-release feature enabled"):
             consumer.verify_resolution(self.metadata, self.packages, self.app, None)
 
+    def test_nvml_packages_resolve_only_for_rows_that_select_nvml(self):
+        for package in self.metadata["packages"]:
+            package["id"] = f"path+file:///{package['name']}#0.1.0"
+        nvml = [{"id": f"registry#{name}@1", "name": name} for name in consumer.NVML_PACKAGES]
+        consumer.verify_nvml_selection(self.metadata, "")
+        consumer.verify_nvml_selection(self.metadata, "cugraph,cuvs,cuml,server")
+        with self.assertRaisesRegex(RuntimeError, "the nvml row resolved"):
+            consumer.verify_nvml_selection(self.metadata, "nvml")
+        self.metadata["packages"].extend(nvml)
+        self.metadata["resolve"]["nodes"].extend({"id": package["id"], "features": []} for package in nvml)
+        consumer.verify_nvml_selection(self.metadata, "nvml")
+        consumer.verify_nvml_selection(self.metadata, "cugraph,cuvs,cuml,server,nvml")
+        with self.assertRaisesRegex(RuntimeError, "without selecting nvml"):
+            consumer.verify_nvml_selection(self.metadata, "server")
+
     def test_loader_accepts_soname_symlinks_and_rejects_other_native_install(self):
         native = self.output / "native"
         library = native / "cudf-install/lib"
