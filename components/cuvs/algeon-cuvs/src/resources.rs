@@ -74,12 +74,10 @@ impl Drop for NativeResources {
 
 /// One serialized cuVS resource generation for an exact cudf runtime binding.
 ///
-/// cuVS 26.08 exposes stream selection but no memory-resource setter. This
-/// bridge therefore accepts only runtimes whose memory resource is cudf's
-/// process-lifetime current [`cudf::DeviceMemoryManager`] resource. Stream
-/// reservations remain supported because they route allocations by stream
-/// through that same resource. Arbitrary output-only/custom runtime memory
-/// resources are rejected before a native handle is created.
+/// cuVS 26.08 supports stream selection but no memory-resource setter. The bridge
+/// requires runtimes configured with the process-lifetime current
+/// [`cudf::DeviceMemoryManager`] resource. Stream reservations remain supported by
+/// routing allocations by stream through that manager resource.
 pub struct CuvsResources {
     runtime: Arc<Runtime>,
     native: BindingExtensionLease<NativeResources>,
@@ -145,8 +143,7 @@ impl CuvsResources {
 
     /// Cover every RAFT pool stream with siblings of the runtime stream's reservation.
     ///
-    /// Pass `None` only when no query-domain reservation applies to this runtime;
-    /// allocations then route to the device manager's backend resource.
+    /// When `reservation` is `None`, allocations route to the device manager's backend resource.
     pub fn stream_pool_coverage(&self, reservation: Option<&StreamReservationLease>) -> Result<StreamPoolCoverage> {
         let operation = "CuvsResources::stream_pool_coverage";
         self.validate_exact_binding(operation)?;

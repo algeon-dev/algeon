@@ -8,7 +8,7 @@
 //! - Parquet scans that expose executable DataFusion plans
 //! - the frozen fact that native runtime failures do not replay through DataFusion
 //!
-//! This is an explicit developer tool (`cargo run`); it is not a Cargo test target.
+//! Executed as an explicit developer tool (`cargo run`) rather than a Cargo test target.
 
 use std::{
     collections::BTreeMap,

@@ -31,14 +31,14 @@ pub enum StatisticalAggregateExecutionMode {
     ///
     /// Aggregates in the same spec keep DataFusion's integer and NaN
     /// semantics. Planning rejects group-key and aggregate types that this
-    /// host kernel does not cover, and ungrouped floating `SUM` and `AVG`,
-    /// which DataFusion adds batch by batch, so those plans stay on
+    /// host kernel does not cover, as well as ungrouped floating `SUM` and `AVG`,
+    /// which DataFusion accumulates batch by batch. Those plans remain on
     /// DataFusion. A NaN result matches as a NaN, with no bit-for-bit equality.
     /// An add of two NaN operands keeps the sign of the operand the compiler
     /// places first, in DataFusion and in this kernel alike.
     DataFusionExactHostWelford,
-    /// Use libcudf's native grouped/scalar statistical kernels with each
-    /// aggregate's declared degrees of freedom. This is the default.
+    /// Uses libcudf native grouped and scalar statistical kernels with each
+    /// aggregate's declared degrees of freedom. This mode is the default.
     ///
     /// Variance is derived from sum and sum-of-squares moments, while
     /// DataFusion uses Welford updates. Floating-point results can differ from

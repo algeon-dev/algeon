@@ -131,11 +131,9 @@ fn selected_local_parquet_source_bytes(source: &LocalParquetSource) -> Option<u6
 /// Returns the sum of selected local-Parquet source bytes reachable from the
 /// plan sink when every reachable source has a known local-Parquet estimate.
 ///
-/// This is a plan-level working-set signal. It does not estimate output size:
-/// an aggregate can reduce its output to one row while still retaining a large
-/// input during execution. It refuses mixed or unknown source plans and does
-/// not build a partial total from only the sources that happened to retain
-/// byte metadata.
+/// Computes a plan-level working-set metric rather than output size. Plans with
+/// mixed or unknown source representations return `None` rather than partial
+/// totals.
 #[doc(hidden)]
 #[cfg(test)]
 pub fn estimated_reachable_local_parquet_source_bytes(plan: &QueryPlan) -> Option<u64> {

@@ -1,8 +1,8 @@
 //! Native error projection.
 //!
-//! The cuDF projection is owned by the runtime's native boundary so the
-//! runtime and the engine classify a `cudf::Error` identically. cuVS is used
-//! by the engine alone, so its projection lives here.
+//! The runtime owns the cuDF projection boundary to ensure identical classification
+//! of `cudf::Error` across the runtime and query engine. Because cuVS is scoped
+//! exclusively to the engine, its error projection is defined in this module.
 
 #[cfg(feature = "cuvs")]
 use std::collections::BTreeMap;
@@ -30,13 +30,12 @@ const ATTEMPT_DOMAIN_BOUNDARY: &str = "attempt_allocation_domain";
 /// Records the attempt allocation domain's counters on an allocation failure
 /// that ran outside every budget scope.
 ///
-/// Only operations that execute under a budget token annotate their errors
-/// with allocator counters, so a failure in any other operation reaches the
-/// plan boundary with the requested size alone. The domain's limit is the
-/// attempt's grant. Its peak includes the failing operation's working set;
-/// its current usage does not, because the operation has released that set by
-/// the time the error is sampled here. A scope an operation already recorded
-/// is kept, and a sample that fails leaves the error as it is.
+/// Operations executing under a budget token annotate errors with allocator counters.
+/// When an unbudgeted operation fails, it reaches the plan boundary containing only
+/// the requested allocation size. The domain limit reflects the attempt grant.
+/// Peak usage accounts for the failing operation's working set, whereas current usage
+/// excludes it because the working set is released prior to sampling here.
+/// Previously recorded scopes are preserved, and sampling errors leave the error unchanged.
 pub(crate) fn with_attempt_domain_memory(context: &ExecutionContext, error: QueryError) -> QueryError {
     if !matches!(
         error.code(),

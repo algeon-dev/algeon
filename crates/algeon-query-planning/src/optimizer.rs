@@ -5,14 +5,14 @@
 //! report rows.
 //!
 //! Every rule receives a plan that passed [`QueryPlan`] construction and
-//! returns one through `QueryPlan::rewrite`, so a rule may assume node ids
-//! equal positions, inputs precede consumers, and output schemas are derived.
-//! It may not assume any earlier rule ran, because options can disable any
-//! step. A rule that finds nothing to rewrite returns its input and
-//! `Unchanged`; `STEPS` runs several rules more than once and relies on that.
-//! Diagnostics are per rule and are merged into the rule's slot of
-//! [`NativeOptimizerDiagnostics`] on every run, so a rule that runs twice
-//! reports both runs. The design contract is
+//! returns one through `QueryPlan::rewrite`. Consequently, rules can safely assume
+//! that node IDs match positions, inputs precede consumers, and output schemas
+//! are fully derived. Rules cannot rely on the execution of prior rules because
+//! optimization steps may be independently disabled. When a rule identifies no
+//! rewrite opportunities, it returns the input unmodified alongside `Unchanged`.
+//! Rule diagnostics merge into their respective entries within
+//! [`NativeOptimizerDiagnostics`] on each invocation, accurately recording multiple
+//! executions. The design contract is documented in
 //! `website/docs/design/native-lowering.mdx`.
 
 mod semijoin_reduction;

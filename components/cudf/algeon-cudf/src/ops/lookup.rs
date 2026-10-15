@@ -1,10 +1,11 @@
 //! Dedicated lookup operators and reusable lookup-table mappings.
 //!
-//! Lookup is a row-aligned probe operation:
-//! - input row order is preserved;
-//! - missing keys become nulls;
-//! - duplicate lookup keys are rejected;
-//! - the output dtype comes from the lookup values.
+//! Lookup is a row-aligned probe operation with the following invariants:
+//!
+//! - Input row order is preserved.
+//! - Missing keys become nulls.
+//! - Duplicate lookup keys are rejected.
+//! - Output data type matches the lookup values.
 //!
 //! The current backend uses a distinct-hash build/probe/gather pipeline
 //! internally. The public contract does not cover that internal structure.

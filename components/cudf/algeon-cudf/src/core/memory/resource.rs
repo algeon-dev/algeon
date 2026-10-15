@@ -28,11 +28,9 @@ use crate::{
 /// used by [`crate::Runtime`] builder validation to reject cross-device
 /// handle combinations.
 ///
-/// `DeviceMemoryResource` does not execute work by itself. Install it into
-/// [`crate::Runtime::builder`] when you want it to become a runtime's owned
-/// default allocator, or borrow it with
-/// [`crate::Exec::with_memory_resource`] when you want a
-/// same-device override for one supported operation.
+/// `DeviceMemoryResource` does not submit GPU work directly. It configures a
+/// runtime default allocator via [`crate::Runtime::builder`] or provides a
+/// same-device operation override via [`crate::Exec::with_memory_resource`].
 #[derive(Clone)]
 pub struct DeviceMemoryResource {
     pub(super) handle: Arc<DeviceMemoryResourceHandle>,

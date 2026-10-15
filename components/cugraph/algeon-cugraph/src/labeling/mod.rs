@@ -1,9 +1,8 @@
 //! Vertex labeling algorithms.
 //!
 //! Connected-components algorithms return per-vertex integer labels. Each
-//! label is the minimum vertex id of its component, so labels are run-stable
-//! and expressed in the caller-visible vertex space, independent of cuGraph's
-//! internal hook-race assignment.
+//! label is canonicalized to the minimum vertex ID of its component, ensuring
+//! deterministic output in the caller-visible vertex space.
 
 pub mod connected_components;
 mod result;

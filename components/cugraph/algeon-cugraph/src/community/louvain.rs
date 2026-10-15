@@ -15,12 +15,7 @@ use crate::{
 
 /// Parameters for the Louvain community-detection algorithm.
 ///
-/// All numeric fields use strongly-typed wrappers that enforce invariants at
-/// construction time:
-///
-/// - `max_level` ([`IterationCount`]): must be at least 1
-/// - `threshold` ([`NonNegativeF64`]): must be finite and `>= 0.0`
-/// - `resolution` ([`PositiveF64`]): must be finite and `> 0.0`
+/// Baseline configuration is provided by [`Default`].
 ///
 /// # Example
 ///

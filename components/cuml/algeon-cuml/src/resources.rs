@@ -142,8 +142,7 @@ impl CumlResources {
     }
 
     /// Creates RF pool streams covered by the runtime stream's query-domain grant.
-    /// Pass `None` only when no query-domain reservation applies to this runtime:
-    /// pool allocations then use the device manager's backend resource.
+    /// When `reservation` is `None`, pool allocations route to the device manager's backend resource.
     pub fn training_streams(
         &self,
         count: NonZeroUsize,

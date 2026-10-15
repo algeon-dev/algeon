@@ -1,14 +1,11 @@
-//! Typed device and host array wrappers.
-//!
-//! These types wrap the cuGraph C API's type-erased arrays and provide a safe
-//! Rust interface with proper ownership semantics:
+//! Typed device and host array views over cuGraph allocations.
 //!
 //! - [`DeviceArray<T>`]: owning device array, freed on drop
-//! - [`DeviceArrayView<'a, T>`]: non-owning view into device memory, lifetime-tied
-//! - internal `HostArrayView`: non-owning view into host memory, lifetime-tied
+//! - [`DeviceArrayView<'a, T>`]: non-owning device memory view bound to `'a`
+//! - `HostArrayView<'a>`: non-owning host memory view bound to `'a`
 //!
-//! The type parameter `T: CugraphElement` carries the element type at compile
-//! time, eliminating the need for runtime type checks.
+//! The element type `T: CugraphElement` is verified against the native array
+//! data type on creation.
 
 use std::{fmt, marker::PhantomData, ptr};
 

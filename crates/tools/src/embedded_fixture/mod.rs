@@ -1,7 +1,7 @@
-//! Shared state for the REST/Flight acceptance fixture.
+//! Shared state for the REST and Flight acceptance fixture.
 //!
-//! This library holds the state passed between the fixture's HTTP API frontend,
-//! Flight SQL frontend, pipeline registry, and shared GPU backend.
+//! Holds state passed between the fixture HTTP API frontend, Flight SQL
+//! frontend, pipeline registry, and shared GPU backend.
 
 use std::{net::SocketAddr, sync::Arc};
 

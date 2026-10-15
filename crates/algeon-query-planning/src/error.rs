@@ -42,7 +42,7 @@ pub enum QueryErrorCode {
     Cancelled,
     /// A compiled pipeline contract refuses a plan that must execute natively.
     ///
-    /// This is a capability rejection. A malformed plan is reported as `InvalidPlan`.
+    /// Identifies a capability rejection. Malformed plans report as `InvalidPlan`.
     UnsupportedPipelineContract,
     /// A specific operator within an otherwise recognizable plan is unsupported.
     UnsupportedOperator,
@@ -101,8 +101,8 @@ pub enum QueryErrorCode {
     CudfInvariantViolation,
     /// The native admission controller could not reserve requested memory.
     ///
-    /// This is a temporary resource condition, separate from a cuDF allocator
-    /// failure, and is intended to drive retry/backoff decisions.
+    /// Represents a temporary resource condition driving retry or backoff
+    /// decisions, separate from cuDF allocator failures.
     MemoryReservationFailed,
     /// The service admission layer rejected the query because shared bounded
     /// capacity is saturated.
@@ -270,7 +270,7 @@ impl fmt::Display for QueryErrorKind {
 
 /// Retry and remediation status for native-engine errors.
 ///
-/// This is a coarse source classification. Attempt retry advice is derived
+/// Provides coarse source classification. Attempt retry advice is derived
 /// only after terminal evidence is sealed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryErrorStatus {

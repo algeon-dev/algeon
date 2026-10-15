@@ -1,26 +1,23 @@
 //! Explicit execution-attempt adapter boundary.
 //!
-//! One [`AlgeonAttempt`] crosses exactly these terminal states: it begins
-//! admitted or rejected, plans at most once into one result stream, then
-//! seals with one immutable [`QueryAttemptReport`]. Disposition is
-//! runtime-owned: the report records whether the attempt obtained a plan and
-//! how it terminated, and the engine owns every attempt number behind it.
-//! [`AttemptDisposition`] never shares an enum with plan-time coverage because
-//! the runtime must not depend on DataFusion adapter types. `Unplanned`
-//! describes the attempt lifecycle and says nothing about physical-plan shape.
-//! The adapter maps a completed [`crate::planner::FinalPlanDisposition`] to
-//! [`AttemptDisposition`] exactly once (`DataFusion` to `CpuFallback`,
-//! `Mixed` to `PartialNative`, `Native` to `Native`). A planning failure
-//! seals as `Unplanned` with the disposition left unset, and no plan
-//! classification sets it.
+//! An [`AlgeonAttempt`] transitions across defined lifecycle phases: beginning in
+//! an admitted or rejected state, planning at most once into a result stream, and
+//! sealing with an immutable [`QueryAttemptReport`]. Disposition tracking is
+//! owned by the runtime, recording whether planning succeeded and how execution
+//! terminated. [`AttemptDisposition`] remains distinct from plan-time coverage
+//! to prevent runtime dependency on DataFusion adapter types. `Unplanned`
+//! identifies lifecycle termination prior to plan completion rather than
+//! physical plan structure. The adapter translates completed [`crate::planner::FinalPlanDisposition`]
+//! values directly into [`AttemptDisposition`] (`DataFusion` to `CpuFallback`,
+//! `Mixed` to `PartialNative`, `Native` to `Native`). When planning fails, the attempt
+//! seals as `Unplanned` without an assigned plan disposition.
 //!
-//! The runtime owns the attempt: numbering, admission, the grant, the terminal
-//! state machine and the sealed report
+//! Attempt numbering, admission grants, lifecycle transitions, and report sealing
+//! are governed by the query runtime
 //! (`website/docs/design/admission.mdx#from-capability-validation-to-admission`).
-//! This module maps DataFusion planning and stream events onto `AttemptOwner`
-//! commits. The owner accepts one terminal commit and refuses every later one,
-//! so the paths below never need to agree on who was first; each commits the
-//! most specific outcome it can observe.
+//! This module projects DataFusion planning and stream events onto `AttemptOwner`
+//! commits. The owner records the first terminal commit and ignores subsequent
+//! attempts; individual execution paths commit the specific outcome observed.
 
 use std::{
     any::Any,
@@ -102,8 +99,9 @@ pub struct AttemptOptions {
     /// Invocation-owner deadline in the current process's monotonic
     /// [`Instant`] clock domain.
     ///
-    /// This is not a wall-clock or wire timestamp. A remote deadline must be
-    /// converted by the invocation owner before beginning the attempt.
+    /// Represents local process monotonic time rather than wall-clock or wire
+    /// timestamps. Invocations originating remotely must convert incoming
+    /// deadlines prior to beginning the attempt.
     pub deadline: Option<Instant>,
     /// Query-local runtime observation retention policy.
     pub observation: RuntimeObservationConfig,
@@ -140,9 +138,9 @@ pub struct SealedAttemptNativeExecutionSnapshot {
 
 /// Per-invocation state propagated through DataFusion configuration.
 ///
-/// This is deliberately private: the extension carries an invocation binding
-/// through DataFusion planning, but it must not give custom optimizer rules
-/// terminalization or observation-sealing authority.
+/// Kept private to carry invocation bindings through DataFusion planning
+/// without granting custom optimizer rules terminalization or observation-sealing
+/// authority.
 ///
 /// Shared by [`AlgeonAttempt`], the [`InvocationAttempt`] inside the
 /// invocation's config extension, the [`AttemptStream`] that executes the
@@ -161,11 +159,11 @@ struct AttemptExecutionState {
     /// request. `None` leaves the service's configured cap in force.
     query_cap_bytes: Option<u64>,
     cancellation: AttemptCancellation,
-    /// The one elected native root that may receive the fixed-cardinality
+    /// The elected native root that may receive the fixed-cardinality
     /// attempt metric after this attempt's report has sealed. The target is
-    /// consumed at seal, so no wrapper can publish a second row.
+    /// consumed at seal, preventing subsequent wrappers from publishing duplicate rows.
     sealed_metrics_target: Mutex<Option<(SealedAttemptMetricsTarget, FinalPlanCoverage)>>,
-    /// Set once the terminal authority moved into the attempt's one result
+    /// Set once terminal authority moves into the attempt's result
     /// stream; planning after that cannot replace the executing target.
     result_stream_started: AtomicBool,
     /// Typed graph claim/peak rows frozen by the elected target at the same
@@ -228,8 +226,7 @@ impl InvocationAttempt {
         self.state.query_id.as_ref()
     }
 
-    /// The attempt's cancellation, the one token native work of this
-    /// invocation observes.
+    /// The attempt's cancellation token observed by native work of this invocation.
     pub(crate) fn cancellation(&self) -> &AttemptCancellation {
         &self.state.cancellation
     }
@@ -283,7 +280,7 @@ impl InvocationAttempt {
 /// authority left and returns an error without executing again.
 pub struct AlgeonAttempt {
     /// `Some` while this object still holds the terminalization authority.
-    /// `take_owner` moves it into the one result stream; afterwards every
+    /// `take_owner` moves it into the result stream; afterwards every
     /// `commit*` method here is a no-op.
     owner: Mutex<Option<AttemptOwner>>,
     state: Arc<AttemptExecutionState>,
@@ -291,9 +288,9 @@ pub struct AlgeonAttempt {
     /// under. Its config extension is how planner rules and execution nodes
     /// reach the attempt without a reference to this object.
     invocation: Invocation,
-    /// Mints counted completion receivers. The attempt holds the factory and
-    /// no receiver, so a caller that never asks for one leaves the report to
-    /// the abandoned-report queue.
+    /// Creates counted completion receivers. Because the attempt holds only
+    /// the factory without an active receiver, uncollected reports are routed
+    /// to the abandoned-report queue.
     completion_factory: AttemptCompletionFactory,
     /// Read by the backend close check. Holding it keeps no GPU resource
     /// alive.
@@ -312,11 +309,11 @@ impl AlgeonGpuBackend {
         self.begin_attempt_with_cap(options, None)
     }
 
-    /// Begins an attempt that requests an exact immutable query memory cap.
+    /// Begins an attempt that requests an explicit immutable query memory cap.
     ///
-    /// The cap is carried through the attempt-bound admission ticket into the
-    /// attempt's one query-service admission. When a cap cannot fit, admission
-    /// rejects it and does not resize it.
+    /// The specified cap passes via the attempt-bound admission ticket into
+    /// query-service admission. If available memory cannot accommodate the cap,
+    /// admission rejects the request without downsizing.
     pub fn begin_attempt_with_query_cap_bytes(
         &self,
         options: AttemptOptions,
@@ -329,14 +326,14 @@ impl AlgeonGpuBackend {
         AlgeonAttempt::begin(self.session_capability(), options, query_cap_bytes)
     }
 
-    /// Drains up to `max` reports whose completion receivers were all
-    /// dropped before publication. Drained reports leave the queue; the
+    /// Removes and returns up to `max` reports whose completion receivers were
+    /// dropped before publication. Removed reports are cleared from the queue; the
     /// backend retains no copy.
     pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
         self.session_capability().take_abandoned_attempt_reports(max)
     }
 
-    /// Reads backend-wide attempt lifecycle counters without draining retained reports.
+    /// Reads backend-wide attempt lifecycle counters without removing retained reports.
     pub fn attempt_counters_snapshot(&self) -> AttemptBackendCountersSnapshot {
         self.session_capability().attempt_counters_snapshot()
     }
@@ -403,9 +400,9 @@ impl AlgeonAttempt {
     /// callers should obtain a receiver before planning starts and retain it until publication.
     ///
     /// When terminal publication occurs with zero active counted receivers, the sealed
-    /// report is best-effort routed to the backend's configured abandoned-report queue.
+    /// report is routed best-effort to the backend's configured abandoned-report queue.
     /// Receivers created after publication can still read the immutable report, but
-    /// will not undo an already-routed abandoned report.
+    /// do not retrieve an already-routed abandoned report.
     pub fn completion(&self) -> AttemptCompletion {
         self.completion_factory.completion()
     }
@@ -413,9 +410,9 @@ impl AlgeonAttempt {
     /// Returns the immutable graph claim-versus-peak snapshot after this
     /// attempt has sealed a native execution root.
     ///
-    /// `None` means either the attempt has not sealed yet or no native root
-    /// was elected. The snapshot is diagnostic only and cannot mutate the
-    /// engine's admission, ledger, or allocator state.
+    /// Returns `None` if the attempt has not sealed or if no native root
+    /// was elected. The snapshot is diagnostic only and cannot mutate
+    /// engine admission, ledger, or allocator state.
     pub fn sealed_graph_claim_calibration_snapshot(&self) -> Option<SealedAttemptGraphClaimCalibrationSnapshot> {
         self.state.sealed_graph_claim_calibration_snapshot()
     }
@@ -540,9 +537,9 @@ impl AlgeonAttempt {
         DataFusionError::from(Error::from_native(operation, "execution attempt was cancelled", error))
     }
 
-    /// Rejects planning when the backend started closing after this attempt
-    /// won the begin gate. The attempt terminalizes `unplanned` with bounded
-    /// `backend_closing` evidence and produces no plan.
+    /// Rejects planning when the backend began closing after attempt creation.
+    /// The attempt records an `unplanned` terminal outcome with `backend_closing`
+    /// failure evidence and produces no plan.
     fn fail_if_backend_closing(&self, operation: &'static str) -> DataFusionResult<()> {
         if !self.session.is_closing() {
             return Ok(());
@@ -830,10 +827,9 @@ fn commit_adapter_error(owner: &AttemptOwner, error: &Error) {
 
 /// Result stream that commits the attempt at EOF, error, cancellation, drop, or panic.
 ///
-/// The stream owns the attempt's terminalization authority: success is
-/// terminal only at EOF, every other path is exactly-once, and dropping the
-/// stream initiates cooperative cancellation without blocking the runtime
-/// worker it is dropped on.
+/// The stream owns the attempt's terminalization authority: success is terminal
+/// at EOF, while errors, drop, or panic commit terminal failure. Dropping the
+/// stream requests cooperative cancellation without blocking the executor thread.
 pub struct AttemptStream {
     /// Kept only until the wrapper commits its terminal outcome. Dropping it
     /// releases no grant: the attempt's terminal commit does that.
@@ -1000,9 +996,9 @@ impl std::fmt::Debug for AttemptStream {
 /// An attempt commits one terminal outcome. While [`AlgeonAttempt`] still
 /// holds its terminalization authority, the committing hooks below commit
 /// through it; once that authority has moved into a result stream they
-/// commit nothing and the stream is the only committer. The attempt owner
-/// rejects a later terminal commit with `DoubleTerminalization`, which these
-/// hooks ignore, so the first committed outcome stands.
+/// commit nothing and the stream acts as committer. The attempt owner
+/// rejects subsequent terminal commits with `DoubleTerminalization`, which these
+/// hooks ignore to preserve the initial outcome.
 #[cfg(feature = "server")]
 impl AlgeonAttempt {
     /// Records that planning started and returns a session context bound to

@@ -1,15 +1,14 @@
-//! Compact utilization/drift time series.
+//! Compact utilization and drift time series.
 //!
 //! The GPU-side sampler (`measure.rs`) projects each public snapshot pull
-//! into the compact rows defined here; everything below the row structs is a
-//! pure reduction over them, so utilization balance and drift evidence are
-//! unit-testable without CUDA. The rows deliberately mirror fields the
-//! artifact already retains in the raw snapshot samples; this is a compact
-//! queryable projection of the same observation and does not form a second
-//! event store.
+//! into the compact rows defined here. Reductions over these row structures
+//! are pure functions, allowing utilization balance and drift evaluations to
+//! be verified without CUDA hardware. The rows mirror fields retained in raw
+//! snapshot samples, providing a compact queryable projection rather than a
+//! parallel event store.
 //!
-//! Only the measured run samples, so the CPU-only feature reaches these
-//! values from tests alone.
+//! Sampling occurs during measured execution runs; CPU-only feature builds
+//! exercise these structures strictly via tests.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,10 +49,10 @@ pub(super) struct DeviceSeriesRow {
     pub(super) gpu_utilization_pct: Option<u32>,
     pub(super) memory_utilization_pct: Option<u32>,
     pub(super) cuda_free_bytes: Option<u64>,
-    /// NVML's physical framebuffer usage. CUDA free bytes remain the primary
-    /// allocation-capacity signal. This independent device-wide measurement is
-    /// retained to expose scope differences. The two APIs do not measure the
-    /// same allocator state.
+    /// NVML physical framebuffer usage. CUDA free bytes remain the primary
+    /// allocation-capacity signal. Retaining independent device-wide telemetry
+    /// exposes scope differences between the two APIs without assuming
+    /// identical allocator state.
     pub(super) nvml_used_bytes: Option<u64>,
     pub(super) active_attempts: usize,
     pub(super) managed_capacity_bytes: u64,
@@ -71,14 +70,14 @@ pub(super) struct DeviceSeriesRow {
     /// Ledger observation sequence, for cadence/staleness auditing.
     pub(super) ledger_sequence: u64,
     /// Sequence returned by a second ledger read taken immediately after the
-    /// CUDA/NVML telemetry pull.  A calibration reducer may use this row's
+    /// CUDA/NVML telemetry pull. A calibration reducer may use this row's
     /// claim only when it matches `ledger_sequence` and the claim fields did
-    /// not change across that bracket.  The compact row retains both sides so
-    /// a consumer need not trust a runner-side assertion of simultaneity.
+    /// not change across that bracket. Retaining both sides allows consumers
+    /// to verify simultaneity without relying on runner-side assertions.
     pub(super) claim_snapshot_end_sequence: Option<u64>,
     /// Whether the admission-plus-cache claim was stable across the telemetry
-    /// bracket.  Unstable rows remain useful for utilization/drift reporting,
-    /// but are deliberately excluded from graph-model calibration.
+    /// bracket. Unstable rows remain useful for utilization/drift reporting,
+    /// but are excluded from graph-model calibration.
     pub(super) claim_snapshot_stable: bool,
     pub(super) active_query_jobs: usize,
     pub(super) queued_jobs: usize,
@@ -90,8 +89,8 @@ pub(super) struct ProcessSeriesRow {
     pub(super) offset_ns: u64,
     pub(super) active_queries: usize,
     pub(super) queued_queries: usize,
-    /// Backend observation generations, recorded so the audit can prove metric
-    /// cardinality/identity stayed fixed across the window.
+    /// Backend observation generations, recorded to enable auditing that metric
+    /// cardinality and identity remained fixed across the window.
     pub(super) backend_generation: u64,
     pub(super) metric_generation: u64,
     /// Wall-clock duration of the complete public observation pull that
@@ -296,10 +295,9 @@ pub(super) struct OrdinalUtilizationSummary {
     pub(super) peak_live_grants_bytes: u64,
 }
 
-/// Baseline-vs-end comparison per ordinal. The sampler starts before load
-/// and finishes after the drain, so first/last rows approximate quiescence;
-/// the gap between the final submission and terminal sample makes that
-/// approximation a contract.
+/// Baseline-versus-end comparison per ordinal. Because sampling starts before
+/// load and completes after drain, the initial and terminal rows capture
+/// quiescent state.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct OrdinalDriftSummary {
     pub(super) device_ordinal: usize,
@@ -335,10 +333,10 @@ pub(super) struct DriftSummary {
     pub(super) ledger_sequences_monotonic: bool,
 }
 
-/// The per-profile verdict for a load-induced claim-versus-VRAM calibration.
-/// It is intentionally independent of an Nsight trace: CUDA/NVML snapshots
-/// make every qualifying run auditable, while a targeted trace cross-checks
-/// allocations, lifetimes, and hidden copies at a smaller scale.
+/// Per-profile verdict for load-induced claim-versus-VRAM calibration.
+/// Evaluates independently of Nsight traces; CUDA/NVML snapshots provide
+/// auditable run evidence while targeted traces cross-check allocations,
+/// lifetimes, and memory copies at smaller scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum VramCalibrationStatus {
@@ -391,8 +389,8 @@ pub(super) struct OrdinalVramCalibration {
     pub(super) overclaim_bytes: Option<u64>,
     pub(super) observed_to_claim_ratio_milli: Option<u64>,
     pub(super) claim_to_observed_ratio_milli: Option<u64>,
-    /// `None` identifies an unavailable CUDA baseline/peak, which is a
-    /// fail-closed gap for an explicitly calibrated profile.
+    /// `None` indicates an unavailable CUDA baseline or peak, treating missing
+    /// data as a fail-closed gap during explicit profile calibration.
     pub(super) within_profile_band: Option<bool>,
 }
 
@@ -497,15 +495,14 @@ pub(super) fn drift_summary(rows: &[DeviceSeriesRow], process_rows: &[ProcessSer
     DriftSummary { ordinals, generations_monotonic, ledger_sequences_monotonic }
 }
 
-/// Compares admission/cache accounting against the device-level CUDA delta.
+/// Compares admission and cache accounting against device-level CUDA deltas.
 ///
-/// A baseline row is synchronously sampled before work submission, so each
-/// ordinal's first row is a before-load observation that does not race the
-/// drive loop. Each later candidate brackets its CUDA/NVML pull
-/// with two ledger reads and is eligible only when the claim stayed unchanged;
-/// the samples form no global atomic snapshot, so NVML remains an independent
-/// cross-check and targeted Nsight runs remain the allocation-lifetime
-/// authority.
+/// A baseline row is synchronously sampled before work submission to establish
+/// a pre-load state without racing the drive loop. Subsequent candidates bracket
+/// CUDA/NVML reads between two ledger reads, qualifying only when the ledger
+/// claim remains unchanged across the sample. Because samples do not form a
+/// globally atomic snapshot, NVML functions as an independent cross-check
+/// while targeted Nsight captures provide allocation-lifetime authority.
 pub(super) fn vram_calibration_evidence(
     rows: &[DeviceSeriesRow],
     query_domain_pool_claims: &[QueryDomainPoolClaim],
@@ -727,10 +724,9 @@ fn cache_ledger_bytes(row: &DeviceSeriesRow) -> u64 {
     row.cache_evictable_resident_bytes.saturating_add(row.cache_pinned_in_use_bytes)
 }
 
-/// Returns whether the sampler proved a stable logical claim across its
-/// telemetry bracket. The boolean is retained for readers, but the reducer
-/// re-checks both recorded sequences so a malformed row cannot regain
-/// calibration eligibility.
+/// Returns whether the sampler observed a stable logical claim across its
+/// telemetry bracket. While the boolean is preserved for inspection, the reducer
+/// re-evaluates both recorded sequences to prevent malformed rows from qualifying.
 fn stable_claim_snapshot(row: &DeviceSeriesRow) -> bool {
     row.claim_snapshot_stable && row.claim_snapshot_end_sequence == Some(row.ledger_sequence)
 }

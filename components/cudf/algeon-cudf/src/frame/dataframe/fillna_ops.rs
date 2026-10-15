@@ -37,7 +37,7 @@ pub enum DropNaHow {
 ///
 /// # Defaults
 ///
-/// - `how` = any (drop if **any** subset column is null)
+/// - `how` = any (drop if any subset column is null)
 /// - `subset` = all columns
 /// - `thresh` = `None` (when set, overrides `how`)
 #[derive(Debug, Clone, TypedBuilder)]

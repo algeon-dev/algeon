@@ -21,12 +21,10 @@ pub(super) fn widen_values<T: Into<U>, U>(values: Vec<T>) -> Vec<U> {
 
 /// Runtime-typed vertex IDs from algorithm results.
 ///
-/// The cuGraph C API may return vertex id arrays as either `i32` or `i64`
-/// depending on the graph's vertex type. This enum wraps the two
-/// possibilities so callers can handle both without raw byte manipulation.
+/// The cuGraph C API returns vertex ID arrays as either `i32` or `i64`
+/// depending on graph index type. This enum wraps either variant.
 ///
-/// For convenience, [`to_vec_i64`](VertexIds::to_vec_i64) widens `i32`
-/// values to `i64` automatically.
+/// [`to_vec_i64`](VertexIds::to_vec_i64) widens `i32` values to `i64`.
 #[derive(Debug)]
 pub enum VertexIds<'a> {
     /// Vertex IDs stored as 32-bit integers.
@@ -224,12 +222,10 @@ impl<'a> SizeValues<'a> {
 
 /// Runtime-typed score/weight values from algorithm results.
 ///
-/// The cuGraph C API may return score arrays as either `f32` or `f64`
-/// depending on the graph's weight type. This enum wraps the two
-/// possibilities so callers can handle both without raw byte manipulation.
+/// The cuGraph C API returns score arrays as either `f32` or `f64`
+/// depending on graph weight type. This enum wraps either variant.
 ///
-/// For convenience, [`to_vec_f64`](ScoreValues::to_vec_f64) widens `f32`
-/// values to `f64` automatically.
+/// [`to_vec_f64`](ScoreValues::to_vec_f64) widens `f32` values to `f64`.
 #[derive(Debug)]
 pub enum ScoreValues<'a> {
     /// Score values stored as 32-bit floats.
@@ -307,13 +303,13 @@ impl<'a> ScoreValues<'a> {
 
 /// Runtime-typed distance values from traversal algorithm results.
 ///
-/// BFS returns integer hop-count distances (`I32`/`I64`), while SSSP returns
-/// floating-point weighted distances (`F32`/`F64`). Both share the same
-/// `cugraph_paths_result_t` C API result type, so this enum unifies them.
+/// Traversal algorithms return `cugraph_paths_result_t` containing either
+/// integer hop counts (`I32`/`I64` from BFS) or floating-point weighted
+/// distances (`F32`/`F64` from SSSP).
 ///
-/// For convenience:
-/// - [`to_vec_i64`](Distances::to_vec_i64) widens `i32` values (errors on float variants)
-/// - [`to_vec_f64`](Distances::to_vec_f64) widens all variants to `f64`
+/// Conversion methods:
+/// - [`to_vec_i64`](Distances::to_vec_i64) widens `i32` values (returns an error for float variants)
+/// - [`to_vec_f64`](Distances::to_vec_f64) converts all variants to `f64`
 #[derive(Debug)]
 pub enum Distances<'a> {
     /// Integer distances stored as 32-bit integers (BFS hop counts).

@@ -131,7 +131,7 @@ error_codes! {
     HostStagingLimitExceeded => "host_staging_limit_exceeded", ResourceExhausted, Permanent;
     /// DataFusion's host memory pool rejected a reservation.
     ///
-    /// This is a temporary resource condition of the host-side pool only.
+    /// Represents a temporary resource exhaustion in the host-side pool.
     /// Device memory is governed by the query domain allocator and reports
     /// through [`Self::QueryMemoryLimitExceeded`], [`Self::DeviceOutOfMemory`],
     /// and [`Self::DeviceAllocationFailed`].
@@ -151,7 +151,7 @@ error_codes! {
     CudfInvariantViolation => "cudf_invariant_violation", InvariantViolation, Permanent;
     /// The native admission controller could not reserve requested memory.
     ///
-    /// This is a temporary resource condition copied through from native
+    /// Represents a temporary resource condition propagated from native
     /// execution, separate from a cuDF allocator failure.
     MemoryReservationFailed => "memory_reservation_failed", ResourceExhausted, Temporary;
     /// The native query service rejected work because admission capacity was exhausted.
@@ -251,7 +251,7 @@ impl fmt::Display for ErrorKind {
 
 /// Retry and remediation status for adapter errors.
 ///
-/// This is a coarse source classification. Attempt retry advice is derived only
+/// Provides coarse source classification. Attempt retry advice is derived only
 /// after terminal evidence is sealed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorStatus {

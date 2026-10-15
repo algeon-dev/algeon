@@ -1,6 +1,6 @@
-//! GPU column types.
+//! Owned GPU column implementation.
 //!
-//! This is advanced core API. Most users should use [`Series`](crate::Series).
+//! High-level column operations use [`Series`](crate::Series).
 
 use std::{
     any::Any,
@@ -867,8 +867,8 @@ impl Column {
 
     /// Create a column by repeating a scalar value `size` times.
     ///
-    /// Uses `cudf::make_column_from_scalar` under the hood. For `size == 0`,
-    /// an empty column of the scalar's type is returned.
+    /// Calls `cudf_column_from_scalar_ex`. For `size == 0`, returns an empty
+    /// column matching the scalar type.
     ///
     /// # Errors
     ///
@@ -944,9 +944,8 @@ fn require_runtime_matches_buffer_device(
 impl Column {
     /// Create a column by adopting (moving) an existing [`DeviceBuffer`].
     ///
-    /// This is zero-copy. No device-to-device memcpy occurs. The buffer's device
-    /// memory becomes the column's data buffer directly. The `DeviceBuffer` is
-    /// consumed and must not be used after this call.
+    /// Adopts the buffer memory directly without a device copy. The
+    /// `DeviceBuffer` is consumed and must not be used after this call.
     ///
     /// Only fixed-width types are supported. The buffer's byte size must equal
     /// `row_count * type_id.size_in_bytes()`.
@@ -1023,8 +1022,8 @@ impl Column {
     /// Create a nullable column by adopting data and null-mask
     /// [`DeviceBuffer`]s.
     ///
-    /// This is zero-copy. No device-to-device memcpy occurs. Both buffers'
-    /// device memory becomes the column's data and null-mask directly.
+    /// Adopts data and null-mask buffer memory directly without a device copy.
+    /// Both buffers are consumed.
     ///
     /// The `null_mask_buffer` must contain at least
     /// `cudf::bitmask_allocation_size_bytes(row_count)` bytes of bitmask data.

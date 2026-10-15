@@ -5,14 +5,14 @@
 //! cuGraph is optional per row. Exit code 77 is reported as "oracle unavailable".
 //! Generated JSON lives under `fixture/graph/cugraph/oracle/`.
 //!
-//! Recommended invocation:
+//! Standard invocation:
 //!
 //! ```bash
 //! flock /tmp/cudf-gpu.lock \
 //!     cargo run --release -p tools --features cugraph-oracle --bin refresh_cugraph_oracle -- --all
 //! ```
 //!
-//! Common flags:
+//! Execution flags:
 //!
 //! - `--all`: refresh every parity row's oracle JSON slot.
 //! - `--algorithm <name>` / `--dataset <name>`: restrict the run to
@@ -111,8 +111,8 @@ enum RefreshOutcome {
         preview_written: bool,
     },
     /// `--check` was requested but the local oracle JSON does not
-    /// exist yet. Distinct from `DriftDetected` so check mode can fail
-    /// loud when the on-disk artifact is missing entirely.
+    /// exist yet. Kept distinct from `DriftDetected` to produce an explicit
+    /// failure when the on-disk artifact is entirely absent.
     MissingInCheckMode {
         path: PathBuf,
     },

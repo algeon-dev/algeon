@@ -2,13 +2,13 @@
 //!
 //! A device memory resource is an RMM allocator handle.
 //!
-//! In `cudf`, these handles participate in execution in two distinct ways:
+//! # Roles in Execution
 //!
-//! - [`crate::Runtime`] carries one default memory-resource handle as part of
-//!   its retained-provenance bundle. By default this is the process-local
+//! - [`crate::Runtime`] carries a default memory-resource handle in its
+//!   retained-provenance bundle, defaulting to the process-local
 //!   [`DeviceMemoryManager`] resource for the runtime's CUDA device.
 //! - [`crate::Exec`] can borrow `&DeviceMemoryResource` to
-//!   override allocator selection for one supported operation without mutating
+//!   override allocator selection for an operation without mutating
 //!   the runtime's default.
 //!
 //! The low-level `_ex` FFI shims in `cudf-sys` accept explicit
@@ -23,14 +23,12 @@
 //! through the device manager route to the attached member; execution overrides
 //! use its direct resource. Both paths charge the same query domain.
 //!
-//! Explicit CUDA and pool resources remain available for advanced library use,
-//! diagnostics, tests, and non-query workflows. Use
-//! [`crate::RuntimeBuilder::with_pool_memory_resource`] when you specifically
-//! want one fresh pool owned by a runtime, or [`DeviceMemoryResource::pool_on`]
-//! / [`DeviceMemoryResource::cuda_on`] when you need an explicit handle first
-//! so you can install it into one or more runtimes, or borrow it for a one-off
-//! override. In all cases, the runtime, stream, and memory resource must be on
-//! the same CUDA device.
+//! Explicit CUDA and pool resources support library integration, diagnostics,
+//! tests, and unbudgeted workflows.
+//! [`crate::RuntimeBuilder::with_pool_memory_resource`] configures a runtime-owned
+//! pool, while [`DeviceMemoryResource::pool_on`] and [`DeviceMemoryResource::cuda_on`]
+//! create standalone resource handles for installation or execution overrides.
+//! Associated runtimes, streams, and memory resources must share the same CUDA device.
 //!
 //! # Examples
 //!

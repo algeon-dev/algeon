@@ -1,10 +1,10 @@
 //! Runtime, memory, boundary, and reservation contracts for native execution.
 //!
-//! This module is intentionally close to the public API because these values
-//! control more than local execution choices. Policy enum string values,
-//! reservation fact keys, and retry fact keys flow into tests, reports, and
-//! adapter diagnostics. Treat those strings as stable diagnostic contracts:
-//! change them only with the same care as a report schema change.
+//! Values defined in this module govern observable execution behavior across crates.
+//! Policy enum string representations, reservation fact keys, and retry fact keys
+//! are exposed to tests, telemetry reports, and adapter diagnostics.
+//! These identifiers constitute stable diagnostic contracts and are updated
+//! in coordination with reporting schemas.
 
 mod allocator_correlation;
 mod attempt_domain;

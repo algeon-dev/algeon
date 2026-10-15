@@ -1,4 +1,4 @@
-//! Typed canonical facts for the truthful error contract.
+//! Typed diagnostic facts for `cudf::Error`.
 //!
 //! Facts are machine-readable values that downstreams match on for policy.
 //!

@@ -12,24 +12,22 @@ use super::{
 use crate::observability::{RuntimeTaskId, RuntimeWorkerId};
 
 impl ExecutionContext {
-    /// Acquires one attempt work lease (an attempt auxiliary permit, a
-    /// service stream lease, and the derived context that owns them) only if
-    /// this attempt's auxiliary envelope has a free slot right now.
+    /// Acquires an attempt work lease (an attempt auxiliary permit, a service
+    /// stream lease, and the derived context owning them) when an auxiliary slot
+    /// is available.
     ///
-    /// This is the single bundle behind every piece of auxiliary attempt work
-    /// (execution lanes and scheduled source reads alike). The derived
-    /// context's alias holds one auxiliary fork of the attempt pool alone for
-    /// the lease's lifetime, so its native forks never reach a stream another
-    /// live holder is launching on. The permit it takes is what bounds those
-    /// claims to the pool's width.
+    /// Combines the resources required for auxiliary attempt work across execution
+    /// lanes and scheduled source reads. The derived context's alias holds an
+    /// auxiliary fork of the attempt pool for the lease lifetime, preventing
+    /// concurrent work from sharing stream dispatches. The acquired permit enforces
+    /// pool width bounds.
     ///
-    /// Work inside an attempt never waits for one of these permits: the root
-    /// execution job may already hold every permit through its own lanes, and
-    /// any other holder may be waiting on that job. Returns `Ok(None)` when
-    /// the envelope is fully claimed, so the caller narrows its own width or
-    /// runs the work on its own context. `source_worker` runs only once the
-    /// permit is held and names the source-read worker the lease runs for, so
-    /// a caller registers that worker only for a lease it actually gets.
+    /// Work within an attempt avoids blocking on auxiliary permits, preventing
+    /// deadlocks when root execution jobs hold permits across multiple lanes.
+    /// Returns `Ok(None)` when the envelope is fully claimed; callers either
+    /// narrow concurrency or execute work directly on their existing context.
+    /// `source_worker` executes after permit acquisition to name the source-read
+    /// worker, ensuring worker registration occurs only for granted leases.
     #[doc(hidden)]
     pub fn try_acquire_attempt_work_lease(
         &self,

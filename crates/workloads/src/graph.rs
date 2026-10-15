@@ -1,8 +1,7 @@
 //! Read-only discovery for the canonical DBLP / AMiner graph fixture.
 //!
-//! The generator owns conversion. This module deliberately never invokes it:
-//! a production-validation preflight must only verify the already prepared
-//! Parquet layout and its generator-written provenance documents.
+//! Preflight validates the existing Parquet layout and its generator-produced
+//! provenance files without executing external graph generators.
 
 use std::{
     fs::{self, File},
@@ -115,11 +114,11 @@ pub struct DblpDatasetMetadata {
 }
 
 impl DblpDatasetMetadata {
-    /// Projects graph-specific metadata into the shared serde artifact surface.
+    /// Projects graph-specific metadata into the shared artifact representation.
     ///
-    /// `content_fingerprint` is the generator-attested SHA-256 of the raw
-    /// DBLP source. Relational fixtures use a separately named FNV-1a64
-    /// fingerprint, so callers must preserve the algorithm-qualified values.
+    /// `content_fingerprint` contains the generator-attested SHA-256 of the raw
+    /// DBLP source. Relational fixtures use an FNV-1a64 hash over table contents;
+    /// consumers inspect the scheme tag to determine the hashing algorithm.
     pub fn to_neutral_metadata(&self) -> WorkloadDatasetMetadata {
         WorkloadDatasetMetadata {
             workload: "dblp_aminer_citation_network",
@@ -188,10 +187,11 @@ pub fn discover_dblp_fixture_layout(root: &Path) -> WorkloadResult<DblpFixtureLa
     Ok(DblpFixtureLayout { dataset_root, parquet_root, manifest_path, source_path })
 }
 
-/// Registers the five [`DBLP_TABLES`] Parquet files under their fixture names.
+/// Registers [`DBLP_TABLES`] Parquet files under their fixture table names.
 ///
-/// Each table is exactly one file, so this needs no listing-table fan-in. The
-/// returned layout lets a caller record the resolved roots it registered from.
+/// Because each table consists of a single file, registration requires no
+/// listing-table fan-in. The returned layout allows recording the resolved
+/// paths used for registration.
 pub async fn register_dblp_tables(ctx: &SessionContext, root: &Path) -> WorkloadResult<DblpFixtureLayout> {
     let layout = discover_dblp_fixture_layout(root)?;
     for table in DBLP_TABLES {
@@ -202,12 +202,9 @@ pub async fn register_dblp_tables(ctx: &SessionContext, root: &Path) -> Workload
     Ok(layout)
 }
 
-/// Describes a prepared DBLP fixture without invoking the fixture generator.
-///
-/// This general discovery contract accepts samples as well as the production
-/// fixture. It verifies the complete layout and generator metadata against the
-/// actual Parquet file metadata. Use [`describe_canonical_dblp_dataset`] for
-/// production preflight, which additionally requires the complete V12 corpus.
+/// Validates both sample layouts and the full production fixture against
+/// generator metadata and Parquet file footers. For production preflight
+/// requiring the complete V12 corpus, use [`describe_canonical_dblp_dataset`].
 pub fn describe_dblp_dataset(
     root: &Path,
     scale_factor: impl Into<String>,
@@ -218,9 +215,8 @@ pub fn describe_dblp_dataset(
 
 /// Describes the full canonical DBLP / AMiner Citation Network V12 fixture.
 ///
-/// In addition to [`describe_dblp_dataset`]'s read-only Parquet validation,
-/// this rejects generated samples and requires the canonical paper, edge,
-/// author, and field-of-study row counts.
+/// Rejects generated samples and requires canonical paper, edge, author,
+/// and field-of-study row counts in addition to Parquet layout validation.
 pub fn describe_canonical_dblp_dataset(
     root: &Path,
     scale_factor: impl Into<String>,

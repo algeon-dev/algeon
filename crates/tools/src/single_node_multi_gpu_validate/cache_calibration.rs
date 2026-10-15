@@ -224,7 +224,7 @@ impl CacheCalibrationEvidence {
     }
 
     /// Paired calibration requires direct residency evidence in both halves of the paired
-    /// run, so unlike ordinary runner gaps a `not_evidenced` cache clause keeps
+    /// run; unlike ordinary runner gaps, a `not_evidenced` cache clause keeps
     /// the calibration non-qualifying.
     pub(super) fn qualifies(&self) -> bool {
         self.clauses.iter().all(|clause| clause.status == ClauseStatus::Evidenced)
@@ -804,8 +804,8 @@ fn attempt_has_accounted_cache_residency(attempt: &AttemptRow) -> bool {
 }
 
 /// Finds the largest total resident cache charge observed in the canonical
-/// ledger reports. They are public snapshot DTOs retained verbatim
-/// in the artifact, so this does not manufacture a parallel cache counter.
+/// ledger reports. Retained verbatim as public snapshot DTOs
+/// in the artifact, avoiding a manufactured parallel cache counter.
 fn peak_cache_residency(run: &MeasuredRunArtifact) -> Option<u64> {
     let mut peak = None;
     for sample in &run.snapshots {

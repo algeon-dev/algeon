@@ -4,8 +4,8 @@
 //! low-level execution, synchronization, and allocation behavior without
 //! forcing those hooks onto the primary public API surface.
 //!
-//! Items in this module are intentionally **not** part of the stable,
-//! user-facing API contract. They may change or disappear at any time.
+//! Items in this module are not part of the stable public API contract. They
+//! may change or disappear at any time.
 
 pub mod arrow;
 pub mod column;

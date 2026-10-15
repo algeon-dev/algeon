@@ -11,12 +11,12 @@
 //!
 //! The native physical optimizer uses two insertion points. A count-only probe
 //! precedes DataFusion aggregate statistics, and the final native rewrite runs
-//! after every other rule already in the pipeline and immediately before
-//! DataFusion's final sanity check, so the DataFusion CPU policy it enforces
-//! and the sanity check both see the completed plan. Rules added to a builder
-//! after installation run after that check. Embedded applications should use a
-//! backend entry point; the raw extension methods are for planning, coverage,
-//! and controlled composition.
+//! after existing optimizer rules and immediately before DataFusion final
+//! validation. This ordering ensures both the native CPU policy and the
+//! final validation check evaluate the completed physical plan. Rules added
+//! to a builder after installation run after that check. Embedded applications
+//! should use a backend entry point; the raw extension methods are for
+//! planning, coverage, and controlled composition.
 
 use std::sync::Arc;
 
@@ -72,8 +72,8 @@ pub trait AlgeonSessionStateBuilderExt {
     ///
     /// Unless the execution mode is `FunctionsOnly`, it also sets
     /// `datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery` to
-    /// `false` in the builder's config, so DataFusion plans an uncorrelated
-    /// scalar subquery as a join. A later `with_config` replaces that config.
+    /// `false` in the builder configuration to rewrite uncorrelated scalar
+    /// subqueries as joins. A later `with_config` replaces that configuration.
     fn with_algeon_native(self, config: AlgeonNativeOptimizerConfig) -> Self;
 
     /// Install relation-aware cuVS SQL, metadata, and typed physical planning.
@@ -174,10 +174,9 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
 
 /// Sets the DataFusion options an Algeon session overrides for `mode`.
 ///
-/// [`AlgeonSessionStateBuilderExt::with_algeon_native`] applies it to the
-/// session config, and a plain DataFusion context that models the plans an
-/// Algeon session lowers applies it to its own options, so both plan the same
-/// physical shapes.
+/// [`AlgeonSessionStateBuilderExt::with_algeon_native`] applies these settings
+/// to the session configuration. Standalone DataFusion contexts that model
+/// plans lowered by Algeon apply them to ensure matching physical shapes.
 #[doc(hidden)]
 pub fn apply_algeon_option_overrides(options: &mut ConfigOptions, mode: AlgeonGpuExecutionMode) {
     // DataFusion plans an uncorrelated scalar subquery as a
@@ -351,10 +350,10 @@ fn take_physical_optimizer_rules(builder: &mut SessionStateBuilder) -> PhysicalO
     rules
 }
 
-/// The one place that orders Algeon's rules in an optimizer pipeline. The
-/// count-only probe runs before DataFusion's aggregate statistics; the final
-/// rewrite, whose last step enforces the DataFusion CPU policy, runs after every
-/// other rule in `rules` and immediately before DataFusion's sanity check.
+/// Orders Algeon physical optimizer rules in the pipeline. The count-only probe
+/// runs before DataFusion aggregate statistics; the final rewrite, whose last
+/// step enforces the DataFusion CPU policy, runs after existing rules in `rules`
+/// and immediately before DataFusion final validation.
 fn install_algeon_native_rules(
     rules: &mut PhysicalOptimizerRules,
     native_rule: Arc<AlgeonNativePhysicalOptimizerRule>,

@@ -41,10 +41,10 @@ pub(super) struct AttemptOutcome {
     pub(super) output_fingerprint: Option<String>,
 }
 
-/// Runs one query as one attempt and drains its result stream.
+/// Runs one query as an attempt and consumes its result stream.
 ///
-/// The completion receiver is taken before planning, so a rejection during
-/// admission yields the immutable report in addition to any client-side error.
+/// Acquiring the completion receiver before planning ensures admission
+/// rejections yield an immutable attempt report alongside any client error.
 pub(super) async fn run_attempt(
     backend: &AlgeonGpuBackend,
     ctx: &SessionContext,
@@ -203,14 +203,13 @@ fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<St
     Ok(format!("output-fnv1a64:{:016x}", hasher.finish()))
 }
 
-/// Renders one value for the output fingerprint.
+/// Renders a column value for output fingerprinting.
 ///
-/// Floating-point columns are rendered at a fixed significant-digit precision.
-/// A reduction over millions of rows is not required to keep its summation
-/// order between runs, so two correct executions can differ in the last bits;
-/// comparing at full precision would report those as wrong results. The
-/// retained precision is far above the reordering noise, which for a sum of N
-/// terms grows like sqrt(N) machine epsilons.
+/// Floating-point values format at fixed significant-digit precision.
+/// Because reductions across millions of rows do not guarantee identical
+/// summation order across runs, valid executions may differ in low-order bits.
+/// Rounding to fixed precision prevents reordering noise (proportional to
+/// sqrt(N) epsilons for N terms) from triggering false discrepancy errors.
 fn render_value(column: &dyn Array, row: usize) -> Result<String, ArrowError> {
     match column.data_type() {
         DataType::Float64 => {

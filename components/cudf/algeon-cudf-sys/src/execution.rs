@@ -7,12 +7,12 @@ use crate::{
 
 /// Borrowed CUDA stream owner-handle token.
 ///
-/// This wrapper is a typed, lifetime-bound view over a raw `cudf_stream_handle`.
-/// It does not own the underlying runtime resource and does not destroy it.
+/// Wraps a raw `cudf_stream_handle` bound to lifetime `'a` without taking
+/// resource ownership or destroying the underlying stream on drop.
 ///
-/// This type intentionally implements `Send` but not `Sync`: CUDA stream
-/// handles may be moved across threads, but concurrent shared-reference use
-/// still requires external synchronization by the owning layer.
+/// Implements `Send` but not `Sync`. CUDA stream handles may transfer between
+/// threads, while concurrent shared-reference access requires external
+/// synchronization in the owning layer.
 #[derive(Debug)]
 pub struct BorrowedStream<'a> {
     raw: cudf_stream_handle,
@@ -44,8 +44,8 @@ impl BorrowedStream<'_> {
 
 /// Borrowed CUDA event owner-handle token.
 ///
-/// This wrapper is a typed, lifetime-bound view over a raw `cudf_event_handle`.
-/// It does not own the underlying runtime resource and does not destroy it.
+/// Wraps a raw `cudf_event_handle` bound to lifetime `'a` without taking
+/// resource ownership or destroying the underlying event on drop.
 #[derive(Debug)]
 pub struct BorrowedEvent<'a> {
     raw: cudf_event_handle,
@@ -77,9 +77,8 @@ impl BorrowedEvent<'_> {
 
 /// Borrowed device-memory-resource owner-handle token.
 ///
-/// This wrapper is a typed, lifetime-bound view over a raw
-/// `cudf_memory_resource_handle`. It does not own the underlying runtime
-/// resource and does not destroy it.
+/// Wraps a raw `cudf_memory_resource_handle` bound to lifetime `'a` without
+/// taking resource ownership or destroying the underlying allocator on drop.
 #[derive(Debug)]
 pub struct BorrowedMemoryResource<'a> {
     raw: cudf_memory_resource_handle,

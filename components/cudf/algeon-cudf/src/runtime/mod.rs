@@ -1,14 +1,14 @@
 //! Runtime utilities for device-pinned execution resources and retained provenance.
 //!
-//! This module exposes the public runtime control surface:
+//! # Control Surface
 //!
 //! - [`Runtime`] owns one CUDA device binding plus default [`CudaStream`] and
-//!   [`crate::core::memory::DeviceMemoryResource`] handles
+//!   [`crate::core::memory::DeviceMemoryResource`] handles.
 //! - [`crate::core::memory::DeviceMemoryManager`] provides one reservation-aware
-//!   allocator adaptor per CUDA device for query backends
-//! - [`Exec`] selects the stream and memory resource of one operation
-//! - [`CudaStream`] and [`CudaEvent`] expose low-level CUDA ordering handles
-//! - [`DeviceId`] is a validated CUDA device ordinal
+//!   allocator adaptor per CUDA device for query backends.
+//! - [`Exec`] selects the stream and memory resource of one operation.
+//! - [`CudaStream`] and [`CudaEvent`] expose low-level CUDA ordering handles.
+//! - [`DeviceId`] is a validated CUDA device ordinal.
 
 mod binding_extension;
 mod binding_id;

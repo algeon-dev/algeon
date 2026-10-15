@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use super::{arrival::Phase, workload::WorkloadFamily};
 
-/// Closed outcome taxonomy for one arrival.
+/// Closed outcome taxonomy for a query arrival.
 ///
-/// Every arrival inside the observation window lands in exactly one class, so
-/// the goodput numerator and every failure ratio share one denominator.
+/// Each arrival in the observation window maps to a single category, providing
+/// a common denominator for goodput and failure ratio calculations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum OutcomeClass {
     /// Correct result delivered. SLO compliance is tracked separately.
@@ -56,11 +56,11 @@ impl OutcomeClass {
     }
 }
 
-/// Classifies one arrival from its stable labels.
+/// Classifies an arrival from reported execution labels.
 ///
-/// Inputs are plain labels and booleans, so the taxonomy is verifiable without a
-/// device. `fingerprint_match` is `None` when no frozen output was
-/// available to compare against.
+/// Because inputs consist of labels and boolean flags, taxonomy evaluation
+/// executes without device access. `fingerprint_match` is `None` when no
+/// frozen output reference exists.
 pub(super) fn classify(
     terminal_outcome: Option<&str>,
     failure_code: Option<&str>,
@@ -168,10 +168,10 @@ pub(super) struct WindowSummary {
 }
 
 impl WindowSummary {
-    /// Builds the summary from the window's arrivals.
+    /// Builds summary metrics from observation window arrivals.
     ///
-    /// `offered` counts every arrival scheduled inside the window regardless
-    /// of outcome, so shed and failed arrivals stay in the denominator.
+    /// `offered` includes all scheduled arrivals regardless of outcome,
+    /// retaining rejected and failed attempts in the denominator.
     pub(super) fn from_records(records: &[AttemptRecord]) -> Self {
         let mut summary = Self::default();
         for record in records {

@@ -1,9 +1,9 @@
 //! Owned GPU device buffer backed by `rmm::device_buffer`.
 //!
-//! This is advanced core API. It is a low-level building block for zero-copy
-//! ownership transfer into [`Column`](super::Column). Most users should
-//! construct columns via [`Runtime::column_from_slice`](crate::Runtime::column_from_slice)
-//! or [`Runtime::series`](crate::Runtime::series) instead.
+//! Device buffer primitives for ownership transfer into
+//! [`Column`](super::Column). Column creation from host data uses
+//! [`Runtime::column_from_slice`](crate::Runtime::column_from_slice) or
+//! [`Runtime::series`](crate::Runtime::series).
 
 use std::{
     fmt, mem,
@@ -31,11 +31,10 @@ use crate::{
 /// adoption into a [`Column`](super::Column) can reject cross-device misuse
 /// before ownership passes to libcudf.
 ///
-/// The primary use case is to prepare device memory externally (e.g., from
-/// another CUDA library) and then transfer ownership into a
-/// [`Column`](super::Column) via
+/// External device allocations (such as buffers from external CUDA libraries)
+/// transfer into [`Column`](super::Column) via
 /// [`Runtime::column_from_device_buffer`](crate::Runtime::column_from_device_buffer)
-/// **without** any device-to-device copy.
+/// without a device copy.
 ///
 /// # Example
 ///
@@ -360,7 +359,7 @@ impl DeviceBuffer {
             .map_err(|error| error.reanchor("device_buffer::validate_finite_float32_unless_int64_equals"))
     }
 
-    /// Consume this buffer and return the raw FFI handle **without** running
+    /// Consume this buffer and return the raw FFI handle without running
     /// `Drop`.
     ///
     /// The caller is responsible for either passing the handle to an FFI

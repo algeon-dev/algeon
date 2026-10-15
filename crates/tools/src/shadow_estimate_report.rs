@@ -1,12 +1,10 @@
-//! Explicit estimate-vs-observation shadow report (not a Cargo test target).
+//! Estimate-versus-observation shadow report.
 //!
-//! For each selected TPC-H/TPC-DS query this tool plans through the normal
-//! native optimizer, computes a pre-execution shadow memory estimate over the
-//! compiled bounded pipeline, and then (unless `--no-execute`) runs the same
-//! query for real through the public backend + attempt API. It joins the two
-//! views into one comparison record per query. This tool never feeds its
-//! estimate back into planning, admission, grants, or execution: it only
-//! reads already-public planning/admission/shadow/attempt surfaces.
+//! For each selected TPC-H or TPC-DS query, plans using the native optimizer,
+//! computes a pre-execution shadow memory estimate over the compiled pipeline,
+//! and (unless `--no-execute` is supplied) executes the query through the public
+//! backend attempt API. Joins both views into one comparison record per query
+//! without feeding estimates back into planning, admission, grants, or execution.
 
 use std::{
     collections::HashMap,
@@ -335,10 +333,9 @@ async fn plan_workload_physical(
     Ok(df.create_physical_plan().await?)
 }
 
-/// Plans through the given backend's own installed native rule so the
-/// resulting physical plan's admission ticket donor is bound to that
-/// backend's device ledger, matching whatever backend begins the executing
-/// attempt (mirrors `clickbench_stage_probe::plan_native_physical_for_attempt`).
+/// Plans using the backend's installed native rule to bind the resulting
+/// physical plan admission ticket donor to that backend's device ledger,
+/// matching the executing attempt backend.
 async fn plan_workload_physical_for_attempt(
     workload: Workload,
     query_id: &str,
@@ -572,9 +569,9 @@ impl From<&NativePlanTaskMappingMetricRow> for ObservedPlanTaskMappingRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum DeltaClassification {
-    /// The estimate under-predicted: observed bytes exceeded the estimate.
+    /// Observed bytes exceeded the estimate.
     Under,
-    /// The estimate over-predicted: observed bytes fell short of the estimate.
+    /// Observed bytes fell short of the estimate.
     Over,
     Exact,
     /// Either side lacked a known value; never coerced to zero.
@@ -793,10 +790,9 @@ fn git_revision_json() -> Value {
     serde_json::json!({ "sha": sha, "dirty": dirty })
 }
 
-/// Best-effort GPU/driver identity via `nvidia-smi`. This tool intentionally
-/// does not depend on the `nvml` feature (unlike
-/// `single-node-multi-gpu-validate-run`), so identity here is opportunistic
-/// and degrades to `"unavailable"`; the run continues.
+/// Best-effort GPU and driver identification via `nvidia-smi`. Because this
+/// tool does not depend on the `nvml` feature, device identification is
+/// opportunistic, defaulting to `"unavailable"` without aborting the run.
 fn gpu_driver_identity_json() -> Value {
     match command_output("nvidia-smi", &["--query-gpu=name,driver_version,uuid", "--format=csv,noheader"]) {
         Some(text) if !text.is_empty() => {

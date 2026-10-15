@@ -1,5 +1,5 @@
-//! The element of a plan that blocked a native candidate, and the one
-//! description every report projection reads.
+//! Plan element blocking a native candidate, and the shared description
+//! rendered across report projections.
 
 use datafusion::logical_expr::WindowFrame;
 use query_planning::datatypes::diagnostic_arrow_type;
@@ -107,10 +107,9 @@ impl WindowDefect {
 /// What blocked one native candidate: a stable machine kind and a one-line
 /// human text, in the form every report projection carries.
 ///
-/// The text and the type names it contains can quote the caller's own
-/// identifiers and SQL, so error boundaries treat it as client detail and
-/// keep it out of operational logs. The kind is a fixed vocabulary and is
-/// log-safe.
+/// The text and type names can quote caller identifiers and SQL; error
+/// boundaries treat this text as client detail and exclude it from operational
+/// logs. The kind uses a fixed vocabulary and is log-safe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Blocking {
     kind: &'static str,
@@ -150,13 +149,13 @@ impl Blocking {
 }
 
 impl NotSupportedDetail {
-    /// The element that blocked this candidate, when the producing site knew
-    /// it. This is the one description every report projection reads.
+    /// Element that blocked this candidate, when reported by the planning site.
+    /// Report projections read this description directly.
     ///
-    /// A subject the expression contract named (a cast, function, or operator)
-    /// is the most specific cause. An unsupported column type comes next, then
-    /// the plan element, then an expression the contract rejected without
-    /// naming a part of it, then the admission rejection.
+    /// A subject named by the expression contract (a cast, function, or operator)
+    /// is the most specific cause. An unsupported column type follows, then
+    /// the plan element, then an unsegmented expression rejection, then
+    /// admission rejection.
     pub fn blocking(&self) -> Option<Blocking> {
         if let Some(rejection) = self.named_expression() {
             return Some(expression_blocking(rejection));

@@ -24,11 +24,9 @@ use crate::{
 /// Provides a fluent by-value API for setting optional arrays and
 /// configuration flags. All setters consume `self` and return `Self`.
 ///
-/// Most applications should prefer the higher-level constructors in
-/// [`crate::cudf_interop`] so the primary data model stays in cudf
-/// [`Series`](cudf::Series) or [`DataFrame`](cudf::DataFrame). Use
-/// `GraphBuilder` when you already have typed [`DeviceArrayView`] edge columns
-/// and want direct control over graph-construction options.
+/// Constructs a [`Graph`] from device edge lists represented as
+/// [`DeviceArrayView`] columns. High-level cuDF table ingress is provided by
+/// [`crate::cudf_interop`].
 ///
 /// # Required parameters
 ///
@@ -197,7 +195,7 @@ impl<'a> GraphBuilder<'a> {
 
     /// Enable vertex renumbering (default: disabled).
     ///
-    /// Strongly recommended when vertex IDs are not sequential from 0.
+    /// Compresses non-contiguous or sparse vertex IDs into a contiguous zero-based index range.
     pub fn renumber(mut self) -> Self {
         self.renumber = true;
         self
@@ -405,13 +403,9 @@ impl<'a> GraphBuilder<'a> {
         Ok(())
     }
 
-    /// Validate that array dtypes are compatible with the cuGraph C API.
+    /// Validate that array data types are compatible with the cuGraph C API.
     ///
-    /// For the typed public API (`GraphBuilder::new`), the compiler already
-    /// guarantees type safety through `DeviceArrayView<T>`. This validation
-    /// acts as a safety net for the `from_raw_views()` internal path, which
-    /// takes type-erased `RawDeviceArrayView` and bypasses compile-time type
-    /// checking.
+    /// Ensures type compatibility for type-erased `RawDeviceArrayView` inputs.
     fn validate_dtypes(&self) -> Result<()> {
         let src_dtype = Self::view_dtype(self.src)?;
         let dst_dtype = Self::view_dtype(self.dst)?;

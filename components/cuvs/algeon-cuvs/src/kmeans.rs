@@ -137,9 +137,8 @@ impl<T: KMeansElement> KMeansModel<T> {
 
     /// Fit KMeans with an optional owned row-major centroid relation.
     ///
-    /// Consuming the relation provides the exclusive mutable ownership cuVS
-    /// requires for `KMeansInit::Array`, including when the centroids came from
-    /// a cudf packed table.
+    /// Consumed centroids satisfy the exclusive mutable ownership required
+    /// by `KMeansInit::Array`.
     pub fn fit_with_initial_centroids(
         resources: &CuvsResources,
         data: &ValidatedDeviceTensor<'_, T>,

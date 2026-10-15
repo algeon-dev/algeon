@@ -218,7 +218,7 @@ pub(crate) fn sealed_attempt_metrics_target(plan: &dyn ExecutionPlan) -> Option<
 /// Returns the live metric set of every native execution wrapper in `plan`,
 /// including GPU-resident producers, relation functions, and graph nodes below
 /// a composed root. Execution clones share these sets and wrappers register
-/// their metrics only while executing, so readers take them after execution.
+/// their metrics only while executing; callers inspect them after completion.
 /// Readers do not use an `ExecutionPlan::metrics` snapshot.
 pub(crate) fn native_execution_metrics(plan: &dyn ExecutionPlan) -> Vec<ExecutionPlanMetricsSet> {
     fn visit(plan: &dyn ExecutionPlan, seen: &mut HashSet<*const ()>, sets: &mut Vec<ExecutionPlanMetricsSet>) {

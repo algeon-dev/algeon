@@ -1,11 +1,11 @@
 //! CPU/GPU candidate-outcome capability reason codes.
 //!
-//! [`CapabilityReason::facts`] is the one table every projection of a reason
-//! reads: the report code, triage code, coverage reason kind and remedy, the
-//! default TSV category, the data-layout property, and the Flight log class.
-//! A changed value changes every report that carries it, in place.
-//! `CapabilityReason::remedy` refines the table's remedy with what a
-//! candidate's detail says about one partition.
+//! [`CapabilityReason::facts`] defines common attributes for reason projections,
+//! including the report code, triage code, coverage reason kind, remedy, default
+//! TSV category, data-layout property, and Flight log class.
+//! Updates to these attributes propagate atomically across all reports containing them.
+//! `CapabilityReason::remedy` refines standard remedies using partition-specific
+//! candidate details.
 
 pub use query_planning::triage::TriageCode;
 
@@ -40,14 +40,13 @@ pub enum CapabilityReason {
     /// DataFusion produced a local limit over several partitions; it keeps
     /// rows per partition, which one native output partition cannot express.
     NativeLocalLimitPartitionUnsupported,
-    /// A native fragment would break a contract a DataFusion operator above
-    /// it relies on: the input schema, boundedness, ordering, distribution, or
-    /// the partition layout of inputs the operator co-partitions.
+    /// A native fragment would violate contracts required by an upstream DataFusion operator,
+    /// such as input schema, boundedness, ordering, distribution, or co-partitioning layout.
     NativeFragmentParentContractUnsupported,
     /// The exact statistical aggregate mode needs DataFusion to read the
     /// aggregate input as one partition; an exchange that merges partitions
-    /// interleaves rows in arrival order, so DataFusion's floating-point result
-    /// varies between runs.
+    /// interleaves rows in arrival order, causing variation in DataFusion
+    /// floating-point results across runs.
     NativeExactStatisticalInputPartitioned,
     /// Bounded native join capability admission rejected the shape.
     NativeBoundedJoinUnsupported,
@@ -125,7 +124,7 @@ impl CapabilityReason {
     /// A reason whose table remedy is to plan for one partition keeps it only
     /// when that lowers the candidate. When the rejected shape remains at one
     /// partition, the candidate carries the engine gap of an unsupported
-    /// operator instead, so the remedy never names an action that cannot help.
+    /// operator instead, avoiding remedies that cannot resolve the rejection.
     pub(crate) fn remedy(self, detail: &NotSupportedDetail) -> QueryGpuRemedy {
         let remedy = self.facts().remedy;
         if detail.single_partition == SinglePartitionOutcome::StillRejected && remedy == SINGLE_PARTITION_REMEDY {
@@ -301,9 +300,9 @@ pub enum FlightSqlNativeNotSupportedClass {
 impl FlightSqlNativeNotSupportedClass {
     /// Stable snake-case label used by log lines and tests.
     ///
-    /// The named label matches the corresponding [`CapabilityReason::code`]
-    /// value so one keyword search across server logs covers both the
-    /// capability-miss code and the class label.
+    /// The named label matches [`CapabilityReason::code`], allowing keyword
+    /// searches across server logs to cover both the capability-miss code and
+    /// the class label.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NativeSortPreservingMerge => CapabilityReason::NativeSortPreservingMergeUnsupported.code(),

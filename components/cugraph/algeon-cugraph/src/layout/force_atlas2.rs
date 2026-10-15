@@ -4,9 +4,7 @@
 //! simulating physical forces (attraction along edges, repulsion between all
 //! vertex pairs, gravity toward center).
 //!
-//! The algorithm supports an optional initial position for refinement passes
-//! (the Python workload calls FA2 twice: first with random positions, then
-//! with the previous result as `pos_list`).
+//! The algorithm supports optional initial positions for refinement passes.
 
 use std::{marker::PhantomData, ptr};
 
@@ -33,18 +31,8 @@ use crate::{
 
 /// Parameters for the Force Atlas 2 layout algorithm.
 ///
-/// All boolean and floating-point parameters map directly to the C API.
-/// Numeric parameters use strongly-typed wrappers that enforce invariants:
-///
-/// - `max_iter` ([`IterationCount`]): must be `>= 1`
-/// - `overlap_scaling_ratio`, `scaling_ratio` ([`PositiveF64`]):
-///   must be `> 0.0`
-/// - `gravity`, `edge_weight_influence`, `jitter_tolerance`
-///   ([`NonNegativeF64`]): must be `>= 0.0`
-/// - `barnes_hut_theta` ([`ClosedUnitF64`]): must be in `[0.0, 1.0]`
-///
-/// See the [Force Atlas 2 paper](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0098679)
-/// for detailed descriptions.
+/// Descriptions and mathematical definitions follow the
+/// [Force Atlas 2 paper](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0098679).
 #[derive(Debug, Clone, Copy)]
 #[must_use]
 pub struct ForceAtlas2Params {

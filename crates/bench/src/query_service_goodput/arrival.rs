@@ -86,8 +86,8 @@ pub(super) fn build_trace(config: &GoodputConfig, weights: &[u32], rate_qps: f64
     arrivals
 }
 
-/// SplitMix64. Inlined with no external crate dependency, so a recorded seed
-/// reproduces the exact trace regardless of the dependency graph.
+/// SplitMix64 pseudorandom generator inlined without external crate dependencies,
+/// ensuring a recorded seed reproduces the same trace across build configurations.
 #[derive(Debug)]
 pub(super) struct SplitMix64 {
     state: u64,

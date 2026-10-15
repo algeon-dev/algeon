@@ -139,8 +139,8 @@ impl DataFrame {
     ///
     /// # Duplicate name handling
     ///
-    /// If the same output name appears more than once in `pairs`, the **last
-    /// value wins** and earlier entries for that name are overwritten without
+    /// If the same output name appears more than once in `pairs`, the last
+    /// value wins and earlier entries for that name are overwritten without
     /// an error. This matches the semantics of Python's `DataFrame.assign(**kwargs)`.
     /// The behavior is intentional because `assign` is a batch "set these columns"
     /// operation. Methods that define schema shape

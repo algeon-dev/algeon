@@ -18,15 +18,15 @@
 //!
 //! - Streams: `clients` streams each run `passes` passes over their order.
 //!   Attempts in the first `warmup_passes` passes are warm-up. Every stream
-//!   then waits at a barrier, so measurement starts once all warm-up attempts
+//!   then waits at a barrier; measurement starts once all warm-up attempts
 //!   have ended. The run ends when every stream finishes its passes.
 //! - Concurrency: `clients` streams walk their order repeatedly until the
 //!   shared deadline. The deadline stops new submissions; an in-flight
-//!   attempt always runs to its terminal state, so the run can overrun the
+//!   attempt always runs to its terminal state, allowing the run to overrun the
 //!   configured duration slightly.
 //! - Rate (open-loop): uniformly spaced submit instants (period 1/R from run
 //!   start). Each submit spawns a task bounded by a semaphore of `clients`
-//!   permits, so at most `clients` attempts are in flight; under saturation
+//!   permits, limiting in-flight attempts to at most `clients`; under saturation
 //!   submit instants slip and missed schedule slots are not replayed in
 //!   bursts. The summary reports scheduled slots, submissions, permit waits
 //!   and the largest lag behind slot `k / R`; any permit wait marks the run
@@ -39,8 +39,8 @@
 //! and outcome counts reduce measurement attempts. `completed_qps` counts
 //! successes that end inside the throughput window and divides by its length.
 //! For time-based modes the window is the configured measurement span
-//! `[warmup_seconds, warmup_seconds + measurement_seconds]`, so attempts that
-//! finish after the deadline are recorded but excluded from the rate, as in
+//! `[warmup_seconds, warmup_seconds + measurement_seconds]`. Attempts that
+//! finish after the deadline are recorded but excluded from the rate, matching
 //! the in-process runner's `application_qps`. For streams the window runs from
 //! the warm-up barrier to the last measurement completion. `offered_qps`
 //! divides measurement submissions by the same length.
@@ -853,7 +853,7 @@ fn read_results_config(
     }
 }
 
-/// Loads every statement's reference before the run, so a missing or
+/// Loads every statement's reference before the run; a missing or
 /// unreadable reference fails the run before any load is offered.
 #[cfg(feature = "flight-sql-stress-check")]
 fn read_check_config(
@@ -1352,10 +1352,10 @@ struct ThroughputWindow {
 }
 
 impl ThroughputWindow {
-    /// Time-based modes use the configured measurement span, so an attempt
-    /// that completes after the deadline is excluded, as the in-process
-    /// runner's `application_qps` excludes it. Streams start at the barrier
-    /// every stream reaches after its warm-up passes (`measurement_start_ns`)
+    /// Time-based modes use the configured measurement span; an attempt
+    /// that completes after the deadline is excluded, matching the in-process
+    /// runner's `application_qps` calculation. Streams start at the barrier
+    /// reached by every stream after its warm-up passes (`measurement_start_ns`)
     /// and end at the last measurement completion.
     fn select(shape: LoadShape, measured: &[&AttemptRecord], measurement_start_ns: Option<u64>) -> Option<Self> {
         match shape {
@@ -1441,8 +1441,8 @@ struct RecordedReference {
     rows: u64,
 }
 
-/// Open-loop schedule accounting. A permit wait means `clients` bounded the
-/// submissions, so the offered rate fell below the configured rate.
+/// Open-loop schedule accounting. A permit wait indicates that `clients` bounded the
+/// submissions, reducing the offered rate below the configured rate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct OpenLoopStats {
     /// Schedule slots that fired before the deadline.
@@ -2366,8 +2366,7 @@ mod tests {
         *,
     };
 
-    /// The workloads TPC-H catalog includes these files, so a statement whose
-    /// SQL equals its file equals the catalog query of the same id.
+    /// Reads SQL from the workloads TPC-H catalog files by query identifier.
     fn tpch_catalog_sql(query_id: &str) -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../workloads/src/tpch/queries/{query_id}.sql"));
         fs::read_to_string(path).expect("TPC-H catalog query file")

@@ -130,12 +130,10 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
 
 /// Runtime-typed degree values returned by cuGraph.
 ///
-/// The cuGraph C API may return degree arrays as either `i32` or `i64`
-/// depending on the graph's edge count width. This enum wraps the two
-/// possibilities so callers can handle both without raw byte manipulation.
+/// The cuGraph C API returns degree arrays as either `i32` or `i64`
+/// depending on graph edge count width. This enum wraps either variant.
 ///
-/// For convenience, [`to_vec_i64`](DegreeValues::to_vec_i64) widens `i32`
-/// values to `i64` automatically.
+/// [`to_vec_i64`](DegreeValues::to_vec_i64) widens `i32` values to `i64`.
 #[derive(Debug)]
 pub enum DegreeValues<'a> {
     /// Degree values stored as 32-bit integers.

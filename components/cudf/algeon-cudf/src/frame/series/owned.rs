@@ -28,14 +28,14 @@ pub(super) fn unsupported_numeric_target_error(operation: &'static str, target: 
         .with_fact(FACT_TYPE_ID, target)
 }
 
-/// A reference-counted GPU column vector.
+/// Reference-counted GPU column vector.
 ///
-/// `Series` is the cuDF-like user-facing column type. Internally it holds an
-/// `Arc<Column>`, so cloning and passing Series between DataFrames is
-/// zero-copy on the GPU side.
+/// `Series` wraps an `Arc<Column>`. Cloning and transferring columns across
+/// `DataFrame` structures increments reference counts without copying buffer
+/// memory.
 ///
-/// Metadata queries (`len()`, `is_empty()`, `null_count()`) are infallible and
-/// free; the values are cached at construction time.
+/// Metadata attributes (`len()`, `is_empty()`, `null_count()`) are cached at
+/// construction.
 ///
 /// [`std::fmt::Display`] for `Series` is metadata-only. It reports the dtype,
 /// length, and nullability summary, but it never materializes values to host
@@ -611,14 +611,11 @@ impl SeriesOps<'_> {
         self.series.is_not_null_with_context(self.ctx, "series::is_not_null")
     }
 
-    /// Cast this series to the given type.
+    /// Cast this series to the target type.
     ///
-    /// Accepts either a [`DataType`] (canonical, supports decimal scale) or a
-    /// [`crate::TypeId`] (convenience shorthand, scale defaults to 0).
+    /// Accepts a [`DataType`] or [`crate::TypeId`]. Raw `TypeId` values default
+    /// to scale 0.
     ///
-    /// Equivalent to cuDF Python's `Series.astype()`.
-    ///
-    /// # Cost
     /// Allocates a new column with the target dtype.
     pub fn astype(&self, target: impl Into<DataType>) -> Result<Series> {
         self.series.cast_in_context(target, self.ctx, "series::astype")
@@ -726,7 +723,7 @@ impl SeriesOps<'_> {
 
     /// Return a Series with duplicate values removed.
     ///
-    /// The order of elements in the result is **not** specified.
+    /// The order of elements in the result is not specified.
     ///
     /// Equivalent to cuDF Python's `Series.unique()`.
     ///

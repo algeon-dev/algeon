@@ -1,9 +1,8 @@
 //! Fixture-scale SQL e2e coverage for relation-backed cuGraph BFS predicates.
 //!
-//! This is an explicit tools acceptance command because it needs CUDA and
-//! Python cuGraph.
-//! It writes a deterministic numeric graph fixture under `fixture/data/cugraph/`, which
-//! is gitignored, then compares nullable vertex
+//! Acceptance command requiring CUDA and Python cuGraph. Writes a
+//! deterministic numeric graph fixture under the gitignored path
+//! `fixture/data/cugraph/`, then compares nullable vertex
 //! `cugraph_bfs(... include_edges ...)` output against a Python cuGraph
 //! oracle built from the same allowed-edge relation.
 

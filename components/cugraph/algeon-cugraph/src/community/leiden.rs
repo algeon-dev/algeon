@@ -14,9 +14,8 @@ use crate::{
     types::to_bool_t,
 };
 
-/// `cugraph_leiden` accepts a refinement `theta` and drops it (`c_api/leiden.cpp`),
-/// so the wrapper passes a fixed value and does not expose the ignored
-/// parameter.
+/// Upstream `cugraph_leiden` accepts a refinement `theta` without reading it (`c_api/leiden.cpp`).
+/// A constant value is passed.
 const LIBCUGRAPH_IGNORED_THETA: f64 = 1.0;
 
 /// Parameters for the Leiden community-detection algorithm.

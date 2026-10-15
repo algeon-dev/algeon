@@ -18,8 +18,8 @@ use crate::types::GraphProperties;
 pub enum GraphConstructionPolicy {
     /// Preserve the raw libcugraph graph-construction contract.
     ///
-    /// Use this when you need the high-level cudf interop entry points to
-    /// behave like the lower-level [`GraphBuilder`](crate::GraphBuilder) flags you specify.
+    /// Applies lower-level [`GraphBuilder`](crate::GraphBuilder) configuration
+    /// directly without pre-normalizing ingress edge tables.
     RawLibcugraph,
     /// Match Python `cugraph.Graph.from_cudf_edgelist(...)` semantics for
     /// high-level cudf ingress workloads.
@@ -49,8 +49,7 @@ pub struct TableGraphOptions {
     pub edge_id_col: Option<usize>,
     /// Graph properties (directed/undirected, multigraph).
     pub properties: GraphProperties,
-    /// Whether to renumber vertices (recommended when vertex IDs are not
-    /// sequential from 0).
+    /// Whether to renumber vertices into a contiguous zero-based index range.
     pub renumber: bool,
     /// High-level graph-construction semantics to apply before crossing into
     /// libcugraph.

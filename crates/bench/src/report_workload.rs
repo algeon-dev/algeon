@@ -64,9 +64,9 @@ async fn datafusion_planning_workload_item(
 
 /// Session-level selection for relational benchmark execution.
 ///
-/// A CPU baseline deliberately does not install the relational native rule.
-/// Native selections install the rule under an execution mode; the strict one
-/// rejects any DataFusion CPU operator in the completed physical plan.
+/// A CPU baseline does not install the relational native rule.
+/// Native selections install the rule with a configured execution mode;
+/// `NativeRequired` rejects any DataFusion CPU operator in the completed physical plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelationalExecutionSelection {
     CpuBaseline,
@@ -95,8 +95,8 @@ impl RelationalExecutionSelection {
 
     /// Applies this selection to a native optimizer configuration.
     ///
-    /// `None` is intentional for CPU baselines. Callers must construct a
-    /// DataFusion session without a relational native rule in that case.
+    /// Returns `None` for CPU baselines. Callers construct a DataFusion
+    /// session without a relational native rule in that case.
     pub fn configure_native_optimizer(
         self,
         config: AlgeonNativeOptimizerConfig,

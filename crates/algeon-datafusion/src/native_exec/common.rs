@@ -46,8 +46,8 @@ pub(super) const NATIVE_ALGEON_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str =
 /// Pool reservation for one device-to-host chunk.
 ///
 /// Acquired for the cursor's size estimate before the copy and reconciled to
-/// the materialized size after it. The pool can refuse growth, so the only
-/// fallible step runs before host memory is allocated.
+/// the materialized size after it. Pool reservation checks run before host
+/// memory allocation.
 struct HostOutputReservation {
     reservation: Option<MemoryReservation>,
     estimated_bytes: usize,

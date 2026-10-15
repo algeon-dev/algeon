@@ -49,8 +49,8 @@ pub use code::{ErrorCode, ErrorKind, ErrorStatus};
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
 const NATIVE_FACT_COLLISION_KEYS: &str = "native_fact_collision_keys";
-/// Byte counts of a native memory failure. A numeric value carries no caller
-/// text, so it joins the retained query diagnostics.
+/// Byte counts of a native memory failure. Numeric values contain no caller
+/// text and are included in retained query diagnostics.
 const NATIVE_MEMORY_FACT_KEYS: [&str; 4] =
     ["requested_allocation_bytes", "budget_bytes", "budget_peak_bytes", "budget_current_bytes"];
 const FACT_COLLISION_KEYS: &str = "fact_collision_keys";
@@ -75,9 +75,9 @@ pub(crate) const ERROR_FACTS_TRUNCATED_KEY: &str = "error_facts_truncated";
 
 /// Caller schema detail an error names.
 ///
-/// The values name the query caller's own columns and Arrow types (nested
-/// types print field names), so they never enter operational logs,
-/// [`fmt::Debug`], or [`Error::message`]. The Flight status text, the Flight
+/// Because these values contain caller column identifiers and schema types
+/// (nested types print field names), they are excluded from operational logs,
+/// [`fmt::Debug`], and [`Error::message`]. The Flight status text, the Flight
 /// metadata allowlist, and query-stats capture read them from here.
 #[derive(Clone, PartialEq, Eq)]
 pub enum ClientDetail {
@@ -235,12 +235,11 @@ impl FailedStatement {
 
 /// Classifies a DataFusion error into the adapter code the Flight server reports.
 ///
-/// An Algeon error anywhere in the tree decides first. Otherwise a typed
+/// An Algeon error anywhere in the tree takes precedence. Otherwise a typed
 /// object-store error in the source chain maps to its source code, and the
-/// deepest DataFusion error reached decides the rest, together with the
-/// statement that failed. The walk visits at most `MAX_SOURCE_CHAIN_DEPTH + 1`
-/// layers and classifies the deepest DataFusion error seen, so an arbitrarily
-/// deep wrapper tree still yields a defined code.
+/// deepest DataFusion error reached decides classification alongside the failing
+/// statement. Traversal visits at most `MAX_SOURCE_CHAIN_DEPTH + 1` layers,
+/// ensuring deep wrapper trees yield a defined code.
 pub(crate) fn classify(error: &DataFusionError, statement: FailedStatement) -> ErrorCode {
     if let Some(adapter) = error.find_algeon_error() {
         return adapter.code();
@@ -524,9 +523,8 @@ fn truncate_with_marker(value: &str, max_bytes: usize) -> (String, bool) {
 /// [`fmt::Display`] renders only the human-facing [`Self::message`].
 /// Machine policy must use the typed accessors (`code`, `kind`, `status`,
 /// `operation`, fact lookups, `find_algeon_error`), never parsed text.
-/// [`fmt::Debug`] is a human diagnostic: it carries only the bounded
-/// log-safe fact projection and omits the source chain, so it is not a
-/// machine-readable contract either.
+/// [`fmt::Debug`] renders diagnostic text containing only log-safe facts and
+/// omits the underlying causal chain.
 pub struct Error {
     code: ErrorCode,
     operation: &'static str,
@@ -572,11 +570,10 @@ pub struct ErrorLogDiagnostics {
 impl ErrorLogDiagnostics {
     /// Builds log diagnostics from `error` and all of its sources.
     ///
-    /// Each layer's text is truncated to the log cause budget before it is
-    /// retained, so one extreme foreign `Display` cannot force every
-    /// projection to render it in full. A foreign implementation can still
-    /// spend memory producing its own message; that cost cannot be bounded
-    /// from the outside.
+    /// Each layer's text is truncated to the log cause budget before retention,
+    /// bounding rendered message sizes across arbitrary foreign `Display`
+    /// implementations. A foreign implementation can still spend memory
+    /// producing its own message; that cost cannot be bounded externally.
     pub fn from_error(error: &(dyn StdError + 'static)) -> Self {
         let mut current = Some(error);
         let mut cause = None;
@@ -731,14 +728,13 @@ impl Error {
 
     /// Adds a fact that may be projected into logs and retained diagnostics.
     ///
-    /// This is an explicit disclosure contract. It is not a convenience alias for
-    /// [`Self::with_fact`]. Use it only for bounded operational classification
-    /// values that contain no credentials, identifiers, paths, query literals,
-    /// backend details, or other sensitive/user-provided data. The projection
-    /// still redacts URI and credential-like tokens and enforces size caps as
-    /// defense in depth, but sanitization does not make an unsafe value safe to
-    /// opt in. Ordinary and externally supplied facts must use
-    /// [`Self::with_fact`] and remain hidden by default.
+    /// Opts a fact into log and diagnostic projection under the disclosure policy.
+    /// This method differs from [`Self::with_fact`] by permitting external visibility,
+    /// and callers must restrict usage to bounded operational classifications that omit
+    /// credentials, identifiers, paths, query literals, and sensitive payloads.
+    /// Projections apply defensive redaction for URI and credential-like tokens
+    /// alongside size limits, but sanitization does not replace careful classification.
+    /// External or arbitrary facts must use [`Self::with_fact`] to remain hidden by default.
     ///
     /// Caller schema details (for example strict-rejection column names) are
     /// a [`ClientDetail`], never log-safe facts. The reserved
@@ -866,11 +862,9 @@ impl Error {
     /// message and the allowlisted facts below.
     ///
     /// Used at boundaries whose consumers print only the outermost message
-    /// (backend construction, device probing, composed admission), so the
-    /// cause and the byte counts needed to act on it stay visible there. The
-    /// allowlist holds code identifiers and numbers; `column` and `field` name
-    /// the caller's schema, so they become [`ClientDetail`] and stay out of
-    /// the message.
+    /// (backend construction, device probing, composed admission), preserving
+    /// the cause and actionable capacity numbers. Schema identifiers such as
+    /// column and field names are isolated into [`ClientDetail`].
     pub(crate) fn from_native_with_blocking_diagnostics(
         operation: &'static str,
         message: impl Into<String>,

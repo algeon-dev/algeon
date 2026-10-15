@@ -1,10 +1,10 @@
-//! The only way execution code reports query metrics.
+//! Typed query metrics recorder for native plan execution.
 //!
-//! A `MetricsRecorder` holds no metrics. Each method is one typed fact sent to
-//! the plan execution's observation owner, which is the single store; a
-//! `QueryMetrics` value is only ever a projection of that store. Method names
-//! match the `QueryMetrics` reductions they drive, so a call site reads the same
-//! as before while no longer owning the value it reports into.
+//! A `MetricsRecorder` acts as a dispatch handle rather than an accumulator.
+//! Each method emits a typed metric fact directly to the plan execution's
+//! observation session, which serves as the canonical record. Materialized
+//! [`QueryMetrics`] structures represent projections derived from that session.
+//! Recorder methods correspond directly to downstream metric reductions.
 
 use std::{collections::BTreeMap, time::Duration};
 

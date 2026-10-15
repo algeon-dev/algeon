@@ -1,8 +1,7 @@
 //! Similarity algorithms and the owned vertex-pair collection (`VertexPairs`).
 //!
-//! cuGraph similarity algorithms require symmetric graphs. This module leaves
-//! graph-property validation to the native library so callers get the same
-//! detailed diagnostics as the C API.
+//! cuGraph similarity algorithms require symmetric graphs. Graph property
+//! validation is performed by the native library to preserve C API diagnostics.
 
 use std::num::NonZeroUsize;
 

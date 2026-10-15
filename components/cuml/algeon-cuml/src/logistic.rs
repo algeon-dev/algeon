@@ -219,10 +219,9 @@ impl LogisticRegressionModel {
         ))
     }
 
-    /// Most probable class of each input row and its probability, from cuML's
-    /// decision function. Binary models apply the logistic sigmoid to the
-    /// score of class 1; softmax models normalize the per-class scores, as
-    /// cuML's `predict_proba` does.
+    /// Computes the predicted class and probability for each input row from decision scores.
+    /// Binary models evaluate the logistic sigmoid of the class-1 score; multiclass
+    /// models normalize scores across classes via softmax.
     pub fn predict(&self, resources: &CumlResources, input: &DeviceMatrix<'_>) -> Result<ClassPrediction> {
         const OP: &str = "LogisticRegressionModel::predict";
         let rows = i32::try_from(input.rows()).map_err(|_| size_error(OP, "row count exceeds i32"))?;

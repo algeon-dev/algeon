@@ -28,9 +28,8 @@ pub(super) struct DrivenRun {
     pub(super) physical_allocator_pressure: Option<PhysicalAllocatorPressureBarrier>,
     pub(super) observed_peak_queued_attempts: usize,
     /// Service-owned queue high-water marks captured at each sequential step
-    /// boundary.  They are cumulative from backend construction, so each one
-    /// proves the configured bound through that phase without resetting or
-    /// synthesizing a controller counter in the runner.
+    /// boundary. Marks are cumulative from backend construction, proving the
+    /// configured bound through each phase without synthetic runner counters.
     pub(super) queue_high_watermarks: Vec<(usize, u64)>,
     /// Deadline/cancellation storm actions the driver armed and confirmed fired.
     pub(super) storm_cancellations_requested: u64,
@@ -566,15 +565,14 @@ pub(super) async fn observe_queue_peak(
     }
 }
 
-/// Drives a two-cohort controlled-quarantine scenario through the ordinary
-/// public attempt API. The first closed-loop round is intentionally kept live
-/// until the target ledger exposes a grant or query job. Only after the
-/// synchronous controller acknowledgement are the remaining rounds released.
+/// Drives a two-cohort controlled-quarantine scenario using the public
+/// attempt API. The first closed-loop round remains live until the target
+/// ledger exposes a grant or query job. Remaining rounds release only after
+/// synchronous controller acknowledgement.
 ///
-/// This is not a second scheduler or a backend mode. The sole state change is
-/// `GpuBackendFaultInjector::quarantine_device`, which owns the same fleet
-/// admission gate as normal placement. The runner merely orders public calls
-/// and records the barrier they establish.
+/// Execution relies exclusively on `GpuBackendFaultInjector::quarantine_device`
+/// to operate the standard fleet admission gate without parallel scheduling paths.
+/// The runner sequences public calls and records the resulting barrier.
 pub(super) async fn drive_concurrent_quarantine(
     backend: &AlgeonGpuBackend,
     sessions: &SessionPool,
@@ -734,17 +732,16 @@ pub(super) async fn drive_concurrent_quarantine(
     })
 }
 
-/// Drives the repeated-quarantine scenario. Each cycle applies one controlled
-/// quarantine to a rotation of configured ordinals while sustained closed-loop
-/// load runs. Each cycle reuses the single-quarantine barrier semantics: a
-/// live-work witness, a synchronous injector acknowledgement, zero post-ack
-/// placements on the target, and healthy progress on the remaining ordinals.
-/// A cycle is as falsifiable as the single-quarantine probe.
+/// Drives the repeated-quarantine scenario. Each cycle applies a controlled
+/// quarantine across rotating configured ordinals during sustained closed-loop
+/// load, verifying live-work witnessing, synchronous injector acknowledgement,
+/// zero post-acknowledgement placements on the target, and continued progress
+/// on remaining healthy ordinals.
 ///
-/// Quarantine is a terminal per-device transition, so the rotation targets a
-/// distinct ordinal per cycle; each target's own health-generation increment
-/// is recorded on its cycle row. Profile preflight keeps one ordinal open, so
-/// stabilization between cycles is fleet progress. The fleet is not drained.
+/// Because quarantine is a terminal per-device state transition, rotation
+/// targets a distinct ordinal per cycle and records the target's health-generation
+/// increment on the cycle row. Profile preflight preserves at least one open
+/// ordinal to sustain fleet execution without draining active work between cycles.
 pub(super) async fn drive_quarantine_cycles(
     backend: &AlgeonGpuBackend,
     sessions: &SessionPool,
@@ -1121,11 +1118,10 @@ impl CloseUnderLoadCohort {
     }
 }
 
-/// Drives ordinary closed-loop rounds until the measurement-window midpoint,
-/// then submits a fresh cohort, snapshots public admission state and initiates the
-/// public close path. Queued waiters must seal `backend_closing`, in-flight
-/// attempts must finish, and every submitted attempt must be accounted for
-/// exactly once. The runner never aborts a task to force the shape.
+/// Drives closed-loop rounds until the measurement-window midpoint, then
+/// submits a cohort, snapshots public admission state, and initiates the
+/// public close path. Queued waiters seal `backend_closing`, in-flight
+/// attempts drain to completion, and all submitted attempts are accounted for.
 pub(super) async fn drive_close_under_load(
     backend: &AlgeonGpuBackend,
     sessions: &SessionPool,

@@ -1,26 +1,25 @@
 //! Ownership-enforcing GPU backend construction and lifecycle facade.
 //!
-//! The configuration values (`GpuBackendDeviceProfile`,
+//! Configuration specifications (`GpuBackendDeviceProfile`,
 //! `GpuBackendDeviceConfig`, `GpuBackendConfig`) are validated into a
-//! `ValidatedGpuBackendConfig` before any process-wide state is touched.
-//! `GpuBackendCore::construct` then claims the one live-backend lease for the
-//! configured devices, installs the query service and its GPU resources behind
-//! a resource generation, and publishes the core only after every device's
-//! startup record agrees with its validated profile. Two facades enforce
-//! ownership afterwards. `GpuBackendCore` is a counted public handle. Its
-//! handles keep the generation live, and the last drop closes it.
-//! `GpuBackendSession` holds only a `Weak` to the resource core and can never
-//! keep device ownership alive past close.
+//! `ValidatedGpuBackendConfig` before process-wide resources are acquired.
+//! `GpuBackendCore::construct` claims the exclusive live-backend lease for the
+//! configured devices, installs the query service and associated GPU resources within
+//! a resource generation, and publishes the core once each device startup record
+//! matches its validated profile. Downstream ownership is partitioned across
+//! distinct handle types: `GpuBackendCore` acts as a reference-counted owning handle
+//! that sustains the resource generation until the final instance drops, whereas
+//! `GpuBackendSession` maintains a `Weak` reference to prevent extending device
+//! ownership beyond backend close.
 //!
-//! The lifetime invariant the facades enforce is that no admission, service
-//! read, or attempt begin can hold the resource generation unless it won the
-//! `BackendLifecycle` gate before close, and that close releases the live
-//! owner lease only after the service has drained and every such holder is
-//! gone. The gate itself lives in `backend_lifecycle`; the close worker that
-//! consumes the generation lives in `backend_close`. The admission contract
-//! these facades implement is
-//! `website/docs/design/admission.mdx#from-capability-validation-to-admission`; the thread
-//! and runtime ownership is `website/docs/design/index.mdx#runtimes-and-threads`.
+//! The lifetime invariant ensures that admission, service reads, and attempt
+//! initiations can hold the resource generation only when granted by the
+//! `BackendLifecycle` gate prior to close. Backend closure releases the live
+//! owner lease after the query service achieves quiescence and all active holders
+//! terminate. The lifecycle gate resides in `backend_lifecycle`, while generation
+//! cleanup executes in `backend_close`. The governing admission contract is defined in
+//! `website/docs/design/admission.mdx#from-capability-validation-to-admission`, and thread
+//! and runtime ownership rules are described in `website/docs/design/index.mdx#runtimes-and-threads`.
 
 use std::{
     fmt,
@@ -98,9 +97,9 @@ impl GpuMemoryOwnership {
 /// owner lease or installing any allocator: the CUDA-visible totals, the NVML
 /// physical total when reported, the owned capacity for the requested
 /// ownership, and the managed capacity left after the backend reserve.
-/// Build-time resolution stays the enforcement authority; this probe only
-/// predicts its ownership-vs-facts inputs so callers need not binary-search
-/// the limit through repeated `build()` failures.
+/// Build-time resolution stays the enforcement authority; this probe
+/// predicts ownership-vs-facts inputs without requiring callers to resolve
+/// limits through repeated `build()` failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GpuDeviceCapacityProbe {
@@ -126,10 +125,10 @@ pub struct GpuDeviceCapacityProbe {
 
 /// Queries declarable capacity for one device without building a backend.
 ///
-/// This never claims the live-backend lease and never installs a memory
-/// manager. Declare at most `max_declarable_limit_bytes` as the explicit
-/// limit (or use it whole) and the build will not refuse on capacity grounds.
-/// Refusals carry the same `reason` facts the build would report.
+/// This probe acquires no live-backend lease and installs no memory
+/// manager. Setting the explicit limit to at most `max_declarable_limit_bytes`
+/// ensures the build will not fail on capacity limits. Refusals carry the same
+/// `reason` facts reported by backend initialization.
 pub fn probe_device_capacity(
     device_ordinal: usize,
     memory_ownership: GpuMemoryOwnership,
@@ -293,11 +292,11 @@ impl GpuBackendDeviceInstallationBounds {
 
 /// Pure per-device construction profile validated before owner acquisition.
 ///
-/// This is the sole owner of device-local resource policy and defaults:
-/// capacity, reserve, query limit, active-attempt count, source work,
-/// installation bounds, capabilities, and telemetry. It takes no memory ownership; the
-/// deployment owner binds one profile with an explicit [`GpuMemoryOwnership`]
-/// through [`GpuBackendDeviceConfig::new`].
+/// Encapsulates device-local resource policies and configuration defaults,
+/// including capacity, reserve, query limit, active-attempt count, source work,
+/// installation bounds, capabilities, and telemetry. Retains no memory ownership;
+/// the deployment owner binds a profile with explicit [`GpuMemoryOwnership`]
+/// via [`GpuBackendDeviceConfig::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuBackendDeviceProfile {
     device_ordinal: usize,
@@ -602,9 +601,9 @@ impl GpuBackendDeviceConfig {
 /// Backend construction input for the device set, the execution and queue
 /// policy, and the optional attempt completion queue.
 ///
-/// [`Self::validate`] is the only way to obtain the
-/// [`ValidatedGpuBackendConfig`] that [`GpuBackendCore::new`] accepts, so
-/// every declaration rule runs once, before the process owner is claimed.
+/// [`Self::validate`] produces the [`ValidatedGpuBackendConfig`] required by
+/// [`GpuBackendCore::new`], ensuring declaration rules execute prior to claiming
+/// the process owner.
 #[derive(Debug, Clone)]
 pub struct GpuBackendConfig {
     devices: Vec<GpuBackendDeviceConfig>,
@@ -660,9 +659,8 @@ impl GpuBackendConfig {
     }
 }
 
-/// A [`GpuBackendConfig`] whose rules have all passed, with installation
-/// bounds resolved and devices ordered by ordinal. It is the only input
-/// [`GpuBackendCore::new`] accepts.
+/// Configuration for [`GpuBackendCore::new`] with verified rules, resolved
+/// installation bounds, and devices ordered by ordinal.
 #[derive(Debug, Clone)]
 pub struct ValidatedGpuBackendConfig {
     devices: Vec<ValidatedGpuBackendDevice>,

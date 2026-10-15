@@ -159,11 +159,7 @@ impl<'data> BruteForceIndex<'data> {
         self.columns
     }
 
-    /// Destroys the native index and returns a destroy failure to the caller.
-    ///
-    /// `Drop` performs the same destroy but discards its result. When this
-    /// method fails, the handle is retained, so the drop of `self` on the way
-    /// out retries the destroy once and discards that second result.
+    /// Reports native destruction errors; failed destruction is retried on drop.
     pub fn close(mut self) -> Result<()> {
         self.close_inner("BruteForceIndex::close")
     }

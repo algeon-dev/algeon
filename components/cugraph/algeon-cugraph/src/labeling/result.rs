@@ -18,8 +18,8 @@ use crate::{
 
 /// Result of weakly or strongly connected components.
 ///
-/// Both algorithms return a `cugraph_labeling_result_t` from the C API with
-/// the same field layout, so they share this result type.
+/// Weakly and strongly connected components return `cugraph_labeling_result_t`
+/// with identical field layout, represented by this result type.
 pub struct LabelingResult {
     raw: *mut cugraph_labeling_result_t,
     device: i32,
@@ -88,8 +88,8 @@ impl LabelingResult {
 
     /// Convert this result to a cudf DataFrame with `"vertex"` and `"label"` columns.
     ///
-    /// Each `"label"` is the minimum vertex id of its component, so labels are
-    /// stable across runs.
+    /// Each `"label"` is mapped to the minimum vertex id of its component to
+    /// guarantee deterministic output across runs.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
         labeling_result_to_dataframe(self, runtime).map_err(|e: Error| e.with_operation("LabelingResult::to_dataframe"))
     }

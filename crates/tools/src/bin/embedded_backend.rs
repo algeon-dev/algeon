@@ -1,7 +1,7 @@
-//! REST/Flight server fixture for `embedded-backend-e2e`.
+//! REST and Flight server fixture for `embedded-backend-e2e`.
 //!
-//! This process creates one shared `AlgeonGpuBackend`, serves the example HTTP
-//! API on `EXAMPLE_REST_BIND`, and serves Flight SQL on `ALGEON_SERVER_BIND`.
+//! Creates one shared `AlgeonGpuBackend`, serves the example HTTP API on
+//! `EXAMPLE_REST_BIND`, and serves Flight SQL on `ALGEON_SERVER_BIND`.
 
 use std::{env, io, net::SocketAddr, process::ExitCode, sync::Arc};
 

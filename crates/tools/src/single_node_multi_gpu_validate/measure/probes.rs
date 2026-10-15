@@ -472,10 +472,9 @@ pub(super) fn spawn_attempt_task_with_query_id(
     }))
 }
 
-/// Reduces the public adapter error by its typed code, operation, and
-/// log-safe facts. The artifact receives only equality bits for the stable
-/// contract, so neither display text nor an arbitrary source chain can leak
-/// into a measured-run artifact.
+/// Reduces public adapter errors to typed codes, operations, and log-safe
+/// facts. The artifact captures boolean equality flags for the contract
+/// without embedding display text or unconstrained source chains.
 pub(super) fn feature_off_cugraph_source_error(error: &DataFusionError) -> FeatureOffCugraphSourceError {
     let Some(error) = error.find_algeon_error() else {
         return FeatureOffCugraphSourceError { source_error_observed: true, ..FeatureOffCugraphSourceError::default() };
@@ -538,9 +537,9 @@ pub(super) async fn drain(
     }
 }
 
-/// Ordinary stress cells use [`drain`]. The feature-off driver retains one
-/// extra bounded source-error projection for its runner-owned UDTF so the
-/// artifact can pair exact adapter facts with the same sealed report row.
+/// Drains in-flight attempts, retaining a bounded source-error projection for
+/// runner-owned feature-off UDTF requests to pair adapter facts directly with
+/// sealed report rows.
 pub(super) async fn drain_with_feature_off_cugraph_capture(
     tasks: &mut Vec<AttemptTask>,
     observations: &mut Vec<AttemptObservation>,

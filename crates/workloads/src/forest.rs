@@ -1,11 +1,10 @@
-//! Read-only discovery for the forest-inference workloads.
+//! Read-only discovery for forest-inference workloads.
 //!
-//! Two workloads score pretrained tree ensembles over Parquet: the EMBER2024
-//! malware feature splits with the upstream LightGBM models, both written by
-//! `fixture/demo/ember2024/scripts/prepare.py`, and TPC-H `lineitem` with a 500-tree
-//! XGBoost JSON regression model over seven numeric columns. Like
-//! [`crate::graph`], this module never invokes a generator; it validates the
-//! prepared files against their Parquet footers.
+//! Tree ensembles scored over Parquet include EMBER2024 malware feature splits
+//! with LightGBM models (produced by `fixture/demo/ember2024/scripts/prepare.py`)
+//! and TPC-H `lineitem` with an XGBoost JSON regression model over seven numeric
+//! columns. Validation inspects prepared files against their Parquet footers
+//! without invoking dataset generators.
 
 use std::{
     fs::{self, File},
@@ -233,16 +232,14 @@ pub struct LineitemForestWorkload {
 }
 
 impl LineitemForestWorkload {
-    /// `cuml_forest_predict` input over `table`: an Int64 `id` unique per
-    /// lineitem row (`l_linenumber` is at most 7) and the model features cast
-    /// to Float32 in model order.
+    /// Generates `cuml_forest_predict` input SQL over `table`, producing an Int64
+    /// `id` unique per lineitem row and model features cast to Float32 in
+    /// model order.
     ///
-    /// TPC-H Parquet writers declare every column nullable although TPC-H
-    /// data has no nulls, and cuML inputs require non-nullable fields. The
-    /// `COALESCE` fallbacks only change the declared nullability: a null
-    /// feature becomes NaN, which the finite-input check rejects at
-    /// execution, and a null `id` implies a null `l_orderkey` or
-    /// `l_linenumber` feature on the same row.
+    /// Although TPC-H records contain no nulls, Parquet writers declare columns
+    /// as nullable. The `COALESCE` expressions adjust schema nullability to meet
+    /// cuML non-nullable input requirements, mapping missing values to NaN for
+    /// rejection by downstream validation.
     pub fn input_sql(&self, table: &str) -> String {
         let features = LINEITEM_FOREST_FEATURES
             .iter()

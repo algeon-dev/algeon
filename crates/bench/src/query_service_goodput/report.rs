@@ -205,10 +205,9 @@ pub(super) struct RunReport<'a> {
     /// Per-device admission health after the run. A group that ends with a
     /// device closed did not measure the configuration it claims to measure.
     pub(super) device_health: &'a str,
-    /// Exact backend attempt counters read after every attempt's report wait
-    /// returned. `attempts_begun - reports_ready` is then the number of
-    /// attempts whose report never published, so an incomplete observation
-    /// is recorded as a run fact in `summary.tsv`.
+    /// Backend attempt counters sampled after all attempt report waits complete.
+    /// The difference `attempts_begun - reports_ready` reflects unpublished
+    /// reports, captured as an incomplete observation record in `summary.tsv`.
     pub(super) attempt_counters: AttemptBackendCountersSnapshot,
 }
 

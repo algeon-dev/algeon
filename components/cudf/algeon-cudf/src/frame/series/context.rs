@@ -133,7 +133,7 @@ pub(crate) fn trigger_series_row_range_overflow_error_for_test() -> Result<Serie
     range_testing_series()?.__debug_gather_range_for_test(i32::MAX as usize, usize::MAX, "series::slice")
 }
 
-/// The GPU operations of one `Series`, run where an [`Exec`] selects.
+/// Execution scope for `Series` GPU operations bound to an [`Exec`] context.
 #[must_use]
 pub struct SeriesOps<'a> {
     pub(super) series: &'a Series,

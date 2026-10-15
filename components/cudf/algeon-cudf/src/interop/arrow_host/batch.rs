@@ -41,8 +41,8 @@ impl DataFrame {
     /// corresponding Arrow array type. The schema (column names and types)
     /// is preserved.
     ///
-    /// If you need a device-resident handoff, use
-    /// [`crate::DataFrame::try_prepare_device_table_export`]. This method always
+    /// For device-resident interchange without host copies, use
+    /// [`crate::DataFrame::try_prepare_device_table_export`]. This method
     /// copies columns to host memory.
     ///
     /// # Supported types
@@ -254,16 +254,13 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
 /// This is the many-batch counterpart of [`dataframe_from_record_batch`],
 /// built for streamed producers (one batch per upstream morsel). Importing
 /// batch-by-batch issues one device allocation, one small host-to-device
-/// copy, and one stream synchronization **per column per batch**; under
+/// copy, and one stream synchronization per column per batch; under
 /// concurrent queries those small pageable copies serialize process-wide in
-/// the CUDA driver. This entry point instead:
-///
-/// - allocates **one** device buffer per column sized for all batches,
-/// - stages source bytes through reusable pinned slabs
-///   (`crate::runtime::host_staging`) so the host-to-device copies are true
-///   asynchronous DMA, and
-/// - waits on the staging copies' completion events. It does not issue a
-///   full stream synchronization per batch.
+/// the CUDA driver. This entry point instead allocates a single device buffer
+/// per column sized for all batches, stages source bytes through reusable
+/// pinned slabs (`crate::runtime::host_staging`) for asynchronous DMA, and
+/// waits on the staging copies' completion events without full stream
+/// synchronization per batch.
 ///
 /// Columns whose type or nullability is outside the staged fast path
 /// (non-primitive layouts such as strings and booleans, decimals, or any

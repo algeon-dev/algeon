@@ -49,12 +49,10 @@ fn unique_temp_column_name(df: &DataFrame, base: &str) -> String {
 /// Retained DataFrame-level sorted-order plan.
 ///
 /// This type owns the input [`DataFrame`] and retains a device-side INT32
-/// sorted-order column. It is intended for bounded query engines that need to
-/// split final sort into explicit phases:
-///
-/// - reserve and then retain the sorted-order row-index column,
-/// - reserve exact materialized output bytes through the gather sizing path,
-/// - materialize the sorted DataFrame by gathering the retained input.
+/// sorted-order column. It enables query engines to split sorting into explicit
+/// phases: reserving and retaining the sorted-order row-index column, reserving
+/// exact materialized output bytes through the gather sizing path, and gathering
+/// the retained input into the sorted DataFrame.
 ///
 /// This contract covers the retained sorted-order column and the materialized
 /// gather output.

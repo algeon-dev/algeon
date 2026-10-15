@@ -5,20 +5,16 @@
 //! uses this crate for its component contracts. See the
 //! [API documentation boundary](https://algeon.dev/design#api-documentation).
 //!
-//! This crate provides raw `extern "C"` function declarations matching the
-//! C shim layer that wraps cuDF's C++ API, plus borrowed runtime-handle
-//! adapters and typed `_ex` option builders. It is not intended to be used
-//! directly as the owning API; use the `cudf` crate for safe owner types and
-//! higher-level semantics.
+//! Raw `extern "C"` declarations matching `libcudf_rust`, with borrowed
+//! runtime-handle adapters and typed `_ex` option builders. Safe owner types
+//! and query-engine contracts belong in the `cudf` crate.
 //!
 //! # Safety
 //!
-//! Every raw function call in this crate is unsafe. Callers must uphold the
-//! handle ownership, device, stream, memory-resource, completion, and callback
-//! lifetime requirements documented by the C headers. See the concise
-//! [README](https://github.com/algeon-dev/algeon/blob/main/components/cudf/algeon-cudf-sys/README.md)
-//! and [SAFETY.md](https://github.com/algeon-dev/algeon/blob/main/components/cudf/algeon-cudf-sys/SAFETY.md)
-//! before adding or changing raw-handle code.
+//! Raw functions in this crate are unsafe. Callers uphold handle ownership,
+//! device, stream, memory-resource, completion, and callback lifetime
+//! requirements documented in the C headers, [README](https://github.com/algeon-dev/algeon/blob/main/components/cudf/algeon-cudf-sys/README.md),
+//! and [SAFETY.md](https://github.com/algeon-dev/algeon/blob/main/components/cudf/algeon-cudf-sys/SAFETY.md).
 //!
 //! Borrowed stream and memory-resource owner-handle tokens, plus an explicit
 //! CUDA device ordinal, are attached to a size-tagged execution contract

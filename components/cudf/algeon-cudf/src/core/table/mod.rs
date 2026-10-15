@@ -1,6 +1,6 @@
-//! GPU table types.
+//! Core table definitions for collections of equal-length GPU columns.
 //!
-//! **Advanced/Core.** Most users should use [`DataFrame`](crate::DataFrame).
+//! Named-column tabular workflows use [`DataFrame`](crate::DataFrame).
 
 mod errors;
 mod owned;

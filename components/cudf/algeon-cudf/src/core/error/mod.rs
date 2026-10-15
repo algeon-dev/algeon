@@ -1,4 +1,4 @@
-//! The truthful error contract for `cudf`.
+//! Error contract and diagnostic structures for `cudf`.
 //!
 //! `Error` stores one authoritative failure identity: [`ErrorCode`]. Both
 //! [`ErrorKind`] and [`ErrorStatus`] are pure projections of `code`; they are

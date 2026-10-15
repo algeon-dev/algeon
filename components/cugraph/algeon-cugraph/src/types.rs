@@ -116,14 +116,10 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// Trait mapping Rust element types to their exact [`DataType`] equivalent.
+/// Sealed trait binding Rust element types to native [`DataType`] representations.
 ///
-/// This trait is sealed; it cannot be implemented outside this crate. Only the
-/// standard numeric types that have a direct cuGraph representation are supported.
-///
-/// Use this trait as a bound on generic functions that need to convert between
-/// typed Rust data and cuGraph's type-erased arrays, ensuring that the Rust type
-/// and `DataType` are always in agreement.
+/// Binds generic functions to validated cuGraph numeric types. Only standard
+/// numeric types with direct cuGraph support implement this trait.
 pub trait CugraphElement: Copy + sealed::Sealed {
     /// The cuGraph data type that this Rust type maps to.
     fn data_type() -> DataType;

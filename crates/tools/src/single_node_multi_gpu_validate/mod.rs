@@ -141,8 +141,8 @@ struct CliOptions {
     /// `backend_closing`, in-flight attempts must finish, and every submitted
     /// attempt must be accounted for exactly once.
     close_under_load: bool,
-    /// Hold one public completion receiver at a time behind this delay.
-    /// This is a dedicated rate-mode probe. The backend has no behavior mode for it.
+    /// Delays consuming each public completion receiver by this duration
+    /// during dedicated rate-mode probing.
     slow_report_sink: Option<std::time::Duration>,
 }
 
@@ -399,9 +399,8 @@ fn run_fixture_preflight(
     write_artifact(out_dir, &artifact)
 }
 
-/// Validates the measured-run profile and its fixtures before anything else, so
-/// a misconfigured run cannot reach a backend build or publish a partial
-/// artifact.
+/// Validates the measured-run profile and fixtures prior to backend construction,
+/// preventing execution and partial artifact publication on configuration errors.
 #[cfg(any(test, not(feature = "single-node-multi-gpu-validate-run")))]
 #[expect(clippy::too_many_arguments, reason = "validation harness parameters are independent measurement axes")]
 fn measured_run_preflight(

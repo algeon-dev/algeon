@@ -1,3 +1,5 @@
+//! Standalone Arrow Flight SQL server binary for `algeon-datafusion`.
+
 use std::{
     env,
     error::Error as StdError,
@@ -214,8 +216,8 @@ async fn serve(mut loaded: LoadedServerConfig) -> Result<(), ServerError> {
     FlightSqlServer::builder().loaded_config(loaded).build().await?.serve().await
 }
 
-/// The three facts every configuration error may carry get their own field;
-/// the rest are rendered together, since tracing field names are static.
+/// Configuration error fields emitted as dedicated tracing attributes rather
+/// than concatenated into `error_facts`.
 const DEDICATED_FACTS: [&str; 3] = ["config_field", "config_env", "reason"];
 
 const SERVER_FAILED: &str = "Algeon Flight SQL server failed";
@@ -248,9 +250,9 @@ fn log_server_error(error: &ServerError, message: &'static str) {
     );
 }
 
-/// Whether `cause` only repeats text already in `message`. Log diagnostics
-/// rewrite line breaks in the cause, so the comparison ignores everything but
-/// letters and digits.
+/// Returns true when `cause` repeats text in `message`. Because log
+/// diagnostics rewrite line breaks in the cause, the comparison ignores
+/// non-alphanumeric characters.
 fn repeats_message(message: &str, cause: &str) -> bool {
     let squash = |text: &str| text.chars().filter(|ch| ch.is_alphanumeric()).collect::<String>();
     squash(message).contains(&squash(cause))

@@ -1,8 +1,8 @@
 //! `Series` convenience methods for reduction, scan, and unary operations.
 //!
-//! Prefer the `*_value` helpers when you want an ordinary host result from a
-//! high-level workflow. They preserve cuDF/libcudf reduction semantics while
-//! avoiding an explicit drop into [`Scalar`](crate::core::Scalar).
+//! Scalar reduction helpers ending in `*_value` evaluate reductions and
+//! materialize the host scalar result directly without retaining intermediate
+//! [`Scalar`](crate::core::Scalar) handles.
 
 use super::{context::SeriesOps, owned::Series};
 #[cfg(any(test, feature = "test-hooks"))]

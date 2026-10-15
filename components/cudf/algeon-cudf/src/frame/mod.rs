@@ -1,6 +1,6 @@
 //! High-level user-facing table and column APIs.
 //!
-//! `frame` is the main high-level namespace below the crate root:
+//! # Module Organization
 //!
 //! - [`DataFrame`] and [`Series`] are the primary entry points.
 //! - [`dataframe`] contains DataFrame-specific configuration and result types.

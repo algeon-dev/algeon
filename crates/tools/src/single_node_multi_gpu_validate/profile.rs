@@ -163,9 +163,9 @@ pub(super) struct VramCalibrationProfile {
 #[serde(deny_unknown_fields)]
 pub(super) struct GraphClaimCalibrationProfile {}
 
-/// The bounded feature-off cuGraph UDTF contract exercised by the base runner. The graph
-/// request itself is owned by the runner so this profile never needs a DBLP
-/// fixture merely to prove that disabled execution does not stage graph data.
+/// The bounded feature-off cuGraph UDTF contract exercised by the base runner.
+/// Because the graph request is owned by the runner, this profile does not
+/// require a DBLP fixture to verify that disabled execution avoids staging graph data.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FeatureOffCugraphProbeProfile {
@@ -253,8 +253,7 @@ pub(super) struct BackendProfile {
     pub(super) device_profiles: Vec<DeviceProfile>,
     #[serde(default)]
     pub(super) queue: QueueProfile,
-    /// Per-attempt native execution envelope. Admission requires a bounded
-    /// policy, so the runner never offers an unbounded variant.
+    /// Per-attempt native execution envelope requiring a bounded admission policy.
     #[serde(default)]
     pub(super) native_execution: NativeExecutionProfile,
 }
@@ -392,9 +391,8 @@ pub(super) struct SchedulingProfile {
     pub(super) concurrency: usize,
     #[serde(default)]
     pub(super) arrival_rate_per_second: Option<u64>,
-    /// Optional exact bound on closed-loop rounds. This is an explicit
-    /// scenario shape that leaves the remaining declared window for cooperative
-    /// finalization.
+    /// Optional bound on closed-loop rounds, reserving the remaining
+    /// declared window for cooperative finalization.
     #[serde(default)]
     pub(super) max_rounds: Option<usize>,
     #[serde(default)]
@@ -403,15 +401,13 @@ pub(super) struct SchedulingProfile {
     pub(super) warmup_seconds: u64,
     #[serde(default)]
     pub(super) measurement_seconds: u64,
-    /// How a rate-mode arrival that the queue cannot accept is treated. The
-    /// setting separates offered from achieved arrival rate, so the artifact must
-    /// record it.
+    /// Treatment of rate-mode arrivals rejected by the queue, recorded in the
+    /// artifact to separate offered from achieved arrival rate.
     #[serde(default)]
     pub(super) rate_overrun: RateOverrunPolicy,
-    /// Multi-phase arrival. A non-empty list switches the run to steps
-    /// mode: steps execute sequentially inside one run, each with its own
-    /// window and its own concurrency/rate, so one artifact holds a whole
-    /// envelope curve. The scalar window/rate fields stay at their defaults.
+    /// Multi-phase arrival schedule. Non-empty steps execute sequentially
+    /// inside one run, each with an independent window and concurrency or
+    /// rate, capturing an entire envelope curve within one artifact.
     #[serde(default)]
     pub(super) steps: Vec<ScheduleStepProfile>,
     /// Every attempt in a deadline storm receives a caller deadline of
@@ -543,18 +539,17 @@ pub(super) struct CacheStressProfile {
     pub(super) require_explained_admission_delta: bool,
     /// Dedicated same-key cohorts run by the validation runner against one
     /// ordinal-local cache domain. Aggregate traffic counters cannot prove
-    /// this: equal keys placed on different devices are intentionally
-    /// independent caches.
+    /// hit rates because equal keys placed across devices populate
+    /// independent cache domains.
     #[serde(default)]
     pub(super) same_key_probe: Option<CacheSameKeyProbeProfile>,
 }
 
 /// Profile-owned exact-key cache probe.
 ///
-/// The runner creates a fresh single-ordinal backend for this bounded probe,
-/// then drives source and BFS cohorts separately. That makes cold-cache,
-/// cohort width, and allocation-domain ownership explicit. None of them is
-/// inferred from an unrelated QPS window.
+/// The runner creates a dedicated single-ordinal backend for this bounded probe,
+/// then drives source and BFS cohorts separately to make cold-cache,
+/// cohort width, and allocation-domain ownership explicit.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CacheSameKeyProbeProfile {
@@ -598,10 +593,10 @@ impl RunProfile {
 
     /// Returns the cache-disabled half of an opt-in paired calibration.
     ///
-    /// This preserves every workload, scheduling, admission, and device field
-    /// except the cache controls: `cache.mode`, `cache.stress`, and each
-    /// ordinal-local `cache_cap_bytes`. The companion is derived from this
-    /// profile, so a cache calibration cannot compare two unrelated runs.
+    /// Preserves workload, scheduling, admission, and device settings while
+    /// clearing cache controls (`cache.mode`, `cache.stress`, and ordinal-local
+    /// `cache_cap_bytes`). Deriving the companion directly from this profile
+    /// prevents comparisons across mismatched run configurations.
     pub(super) fn cache_disabled_companion(&self) -> ToolResult<Self> {
         if self.cache.mode != CacheMode::Enabled {
             return Err("--cache-calibration requires cache.mode enabled in --config".into());
@@ -618,10 +613,9 @@ impl RunProfile {
 
     /// Validates the finite cohort used by the explicit overload probe.
     ///
-    /// This is deliberately a profile shape and adds no second admission
-    /// policy: the backend still owns queueing, FIFO placement, and report
-    /// sealing. The runner only requires enough bounded offered
-    /// work for those public facts to be falsifiable.
+    /// Asserts profile requirements without adding parallel admission policies.
+    /// The backend retains ownership of queueing, FIFO placement, and report
+    /// sealing.
     pub(super) fn validate_overload_fairness_scenario(&self) -> ToolResult<()> {
         if self.backend.device_profiles.len() < 2 {
             return Err(
@@ -871,9 +865,9 @@ impl RunProfile {
         self.validate_storm_knobs()
     }
 
-    /// Steps mode replaces the scalar window/rate fields with an explicit
-    /// sequential phase list. The shape rules reject leftover single-phase fields,
-    /// so a steps profile cannot also describe a single-phase run.
+    /// Steps mode replaces scalar window and rate fields with an explicit
+    /// sequential phase list. Validation rejects leftover single-phase fields
+    /// to prevent ambiguous schedule descriptions.
     fn validate_steps_scheduling(&self) -> ToolResult<()> {
         let scheduling = &self.scheduling;
         if scheduling.measurement_seconds != 0 {

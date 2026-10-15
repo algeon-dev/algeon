@@ -7,21 +7,21 @@
 //!
 //! # Reduction Shape
 //!
-//! Expr reductions accessed through [`Expr::agg`] are **broadcast
-//! aggregates**. They reduce their input to a single scalar internally, then
-//! broadcast that scalar back to the DataFrame row count so the result remains
-//! row-aligned and can participate in larger expressions.
+//! Expr reductions accessed through [`Expr::agg`] are broadcast aggregates.
+//! They reduce their input to a single scalar internally, then broadcast that
+//! scalar to the DataFrame row count so the result remains row-aligned and can
+//! participate in larger expressions.
 //!
-//! That means `col("x").agg().sum()` is appropriate in expressions like
-//! `col("x") / col("x").agg().sum()`, but broadcast reductions do not
-//! inherit an output name for
+//! For example, `col("x").agg().sum()` can participate in expressions like
+//! `col("x") / col("x").agg().sum()`, but broadcast reductions do not inherit
+//! an output name for
 //! [`DataFrame::with_columns`](crate::frame::dataframe::FrameOps::with_columns).
-//! Use [`.alias()`](Expr::alias) or an explicit `(name, expr)` pair when you
-//! want to materialize the broadcast result as a named column.
+//! Use [`.alias()`](Expr::alias) or an explicit `(name, expr)` pair to
+//! materialize the broadcast result as a named column.
 //!
-//! If you want a scalar reduction, use the [`Series`] reduction APIs
-//! such as [`SeriesOps::sum`](crate::SeriesOps::sum) or
-//! [`SeriesOps::sum_value`](crate::SeriesOps::sum_value) instead.
+//! For scalar reductions, use the [`Series`] reduction APIs such as
+//! [`SeriesOps::sum`](crate::SeriesOps::sum) or
+//! [`SeriesOps::sum_value`](crate::SeriesOps::sum_value).
 //!
 //! # Literal Evaluation and Memory Behavior
 //!

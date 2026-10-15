@@ -17,8 +17,8 @@ use crate::core::error::Result;
 ///
 /// Besides the output domain and FFI exec options, this carries the
 /// [`ConsumerCompletionFence`] for every ordered cross-stream input. Keep the
-/// `ResolvedExecution` alive across the FFI call that enqueues the operation:
-/// when it drops, the fence records a completion event on the output stream
+/// `ResolvedExecution` alive across the FFI call that enqueues the operation.
+/// When it drops, the fence records a completion event on the output stream
 /// and makes each cross-stream input's retained stream wait on it, so
 /// stream-ordered deallocation of an input can never race the consumer.
 pub(crate) struct ResolvedExecution {

@@ -1,12 +1,11 @@
 //! Execution-attempt lifecycle contracts.
 //!
-//! One attempt is one execution lifecycle; the contract is in
+//! An attempt represents an isolated execution lifecycle, with contracts documented in
 //! `website/docs/design/admission.mdx#from-capability-validation-to-admission`.
-//! `lifecycle` is the pure state machine, `owner` wraps it in the capabilities
-//! allowed to drive it, `queue` holds reports that no receiver collected, and
-//! `execution` tracks occurrence claims within one invocation round. What the
-//! query service needs to finish an admitted attempt is `pub(crate)`; adapters
-//! see only the owner, handle, binding, and completion types.
+//! `lifecycle` contains the underlying state machine, `owner` supplies drive capabilities,
+//! `queue` buffers uncollected reports, and `execution` tracks occurrence claims within
+//! an invocation round. Query service completion interfaces remain `pub(crate)`, exposing
+//! only owner, handle, binding, and completion types to external adapters.
 mod cancellation;
 mod execution;
 mod lifecycle;

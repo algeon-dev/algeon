@@ -1,17 +1,17 @@
 //! Revocable service and query resource epochs.
 //!
-//! A `QueryServiceEpoch` spans one query service. `QueryService::close` and
-//! the drain path invalidate it, then wait for its users to drain. A
-//! `QueryResourceEpoch` spans one admitted query handle; the handle lifetime
-//! invalidates it when release is requested and releases the envelope from
-//! its idle callback. Each epoch closes once and never reopens.
+//! A `QueryServiceEpoch` spans a single query service. `QueryService::close` and
+//! cleanup procedures invalidate the epoch, awaiting user completion. A
+//! `QueryResourceEpoch` spans an admitted query handle; handle release
+//! invalidates the epoch and dispatches resource cleanup via an idle callback.
+//! Epochs close irreversibly and do not reopen.
 //!
-//! Neither epoch holds a lock around `open` and its user count. Acquisition
-//! therefore re-checks `open` after incrementing, and a user created inside
-//! that window is dropped again, so a closer that observes a zero count after
-//! its close store is never followed by a surviving user. Idle completion is
-//! the transition to zero users after the close; it runs the one-shot callback
-//! and, for the service epoch, wakes `wait_for_idle_until`.
+//! Neither epoch holds a lock protecting `open` state and active user counts.
+//! Acquisition increments the count and re-verifies `open`; users created within
+//! a closing window are dropped immediately. Consequently, an observer noting a
+//! zero count following a close store cannot be preceded by surviving users.
+//! Idle completion marks the transition to zero active users following closure,
+//! triggering the registered one-shot callback and waking `wait_for_idle_until`.
 
 use std::{
     fmt, sync,

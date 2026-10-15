@@ -28,9 +28,9 @@ mod e2e;
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
-/// Identifier of the single-node multi-GPU validator's run artifact.
-/// flight-sql-stress reads that artifact as its matched in-process baseline
-/// and builds without the validator's feature, so the identifier lives here.
+/// Schema identifier for the single-node multi-GPU validator run artifact.
+/// `flight-sql-stress` consumes this artifact as an in-process baseline while
+/// building without the validator feature flag.
 const SINGLE_NODE_RUN_ARTIFACT_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.run_artifact";
 
 #[cfg(all(feature = "clickbench-stage-probe", not(test)))]

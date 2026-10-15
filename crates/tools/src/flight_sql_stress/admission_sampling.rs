@@ -258,10 +258,10 @@ pub(super) async fn sample_admission(
 
 /// Calls `fetch` every `period` from run start until `stop` fires, then every
 /// `period` until every device is idle or `idle_timeout` has passed since
-/// `stop`. `stop` abandons an in-flight call without recording it. A call
-/// unanswered after `idle_timeout`, or after the time left of the after-run
-/// budget, is one failed sample, so a server that never answers still lets the
-/// sampler return within `idle_timeout` of `stop`.
+/// `stop`. The `stop` signal abandons an in-flight call without recording it.
+/// A call unanswered after `idle_timeout`, or after remaining post-run
+/// budget, is recorded as a failed sample, ensuring the sampler returns
+/// within `idle_timeout` of `stop` even if the server is unresponsive.
 pub(super) async fn sample_admission_from<F, Fut>(
     mut fetch: F,
     started: Instant,

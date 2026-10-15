@@ -58,11 +58,10 @@ pub(crate) const GPU_COVERAGE_REJECTION_REASON_FACT: &str = "gpu_coverage_reject
 
 /// Validate a single SQL query against the native GPU planning path.
 ///
-/// The validation clones the caller's planning state and plans under its own
-/// invocation, detached from any attempt the caller's state belongs to, so it
-/// never binds that attempt's admission or disposition. The caller must have
-/// an installed native optimizer rule; validation plans with that rule and its
-/// completed-plan requirements.
+/// Validation clones caller planning state and plans under an isolated
+/// invocation, without binding attempt admission or execution disposition.
+/// The caller must have an installed native optimizer rule; validation plans
+/// with that rule and its completed-plan requirements.
 ///
 /// Candidate outcomes are retained as optimizer diagnostics. They do not form
 /// an alternative verdict. One report can hold several decision kinds at once;

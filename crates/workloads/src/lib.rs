@@ -1,15 +1,14 @@
 //! Adapter-neutral TPC-H, TPC-DS, and ClickBench workload contracts.
 //!
-//! This crate owns canonical query ordering, Parquet dataset discovery and
-//! metadata, tiny fixture writers, and DataFusion table registration. It must
-//! not depend on the `algeon-datafusion` adapter or its report types.
+//! Scope includes canonical query ordering, Parquet dataset discovery and
+//! metadata, test fixture generation, and DataFusion table registration,
+//! with no dependency on the `algeon-datafusion` adapter or its report types.
 
-/// Explicit Parquet fixture root for the workload being run by this process.
+/// Explicit Parquet fixture root for the active workload.
 ///
-/// A process runs one workload at a time, so TPC-H, TPC-DS, and ClickBench do
-/// not need workload-specific environment-variable names. The supplied root
-/// is strict: the selected workload validates that it has the layout it
-/// requires.
+/// Because a process executes a single workload at a time, TPC-H, TPC-DS,
+/// and ClickBench share this environment variable. The selected workload
+/// verifies the required directory layout and tables on startup.
 pub const ALGEON_PARQUET_DIR_ENV: &str = "ALGEON_PARQUET_DIR";
 
 pub mod clickbench;

@@ -1,13 +1,9 @@
 //! Stable backend observability contracts for application exporters.
 //!
-//! This module is a type namespace: it re-exports the engine-owned snapshot
-//! and metric types that application exporters need, and it owns no data
-//! source. The only read path is the [`crate::backend::AlgeonGpuBackend`]
-//! snapshot methods, which project the engine-owned observation snapshot.
-//! Admission truth lives in the device ledger; cache owners contribute
-//! correlation observations and telemetry stays diagnostic-only. TSV,
-//! DataFusion metrics, and `QueryMetrics` are projections of the same
-//! runtime observation snapshot. No second event store exists.
+//! Re-exports engine snapshot and metric types for application telemetry
+//! exporters. Observation snapshots are queried through [`crate::backend::AlgeonGpuBackend`].
+//! Device ledgers record admission grants, while TSV reports and DataFusion
+//! execution metrics project from runtime observation snapshots.
 
 pub use query_runtime::{
     metrics::{

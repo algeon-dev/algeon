@@ -9,11 +9,10 @@ use query_runtime::runtime::KvikioProcessConfig;
 
 use super::{NativeTpchBenchmarkConfig, NativeTpchDeviceBudget, NativeTpchRuntimeResources};
 
-/// Facts recorded once per benchmark run so an artifact can be attributed to
-/// the source revision, native build, GPU, driver, and process limits that
-/// produced it. A fact the process cannot observe renders as `unknown`; the
-/// line never substitutes a default for a missing fact, because a wrong
-/// default (fd limit, cap, GPU) is what makes runs incomparable.
+/// Facts recorded once per benchmark run to attribute an artifact to the
+/// source revision, native build, GPU, driver, and process limits that
+/// produced it. Unobserved facts render as `unknown`; defaults are never
+/// substituted for missing facts to avoid invalid comparisons across runs.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct RunProvenance {
     pub(super) revision: Option<String>,
@@ -140,8 +139,8 @@ fn unknown_or(value: Option<&str>) -> &str {
     value.filter(|value| !value.is_empty()).unwrap_or("unknown")
 }
 
-/// Whitespace inside a value would break the `key=value` line grammar that
-/// the stderr log consumers split on.
+/// Normalizes whitespace into underscores to preserve the `key=value` token
+/// format consumed by stderr parsers.
 fn stable_token(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join("_")
 }

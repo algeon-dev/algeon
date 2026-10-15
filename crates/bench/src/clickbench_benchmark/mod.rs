@@ -63,20 +63,19 @@ const TSV_COLUMNS: &[&str] = &[
 
 /// ClickBench queries where byte-for-byte fingerprint parity is waived.
 ///
-/// These compare row counts only and emit
+/// Waived queries compare row counts only and emit
 /// `parity_status=row_count_matched_nondeterministic`; measured-iteration
 /// consistency is also disabled for nondeterministic row selection.
 ///
-/// Reason categories:
-/// - `float_accumulation_variance`: deterministic result set, but different
-///   valid Float64 accumulation orders produce last-bit AVG differences.
-///   q04 is `AVG("UserID")` over large-magnitude int64 values.
-/// - `result_set_nondeterministic`: selected rows are engine-defined because
-///   the SQL has `LIMIT`/`OFFSET` without a deterministic total ordering and
-///   the ClickBench fixture has ties at the boundary.
+/// Categories:
+/// - `float_accumulation_variance`: deterministic result set where different
+///   Float64 accumulation orders produce last-bit AVG differences.
+///   q04 evaluates `AVG("UserID")` across large int64 values.
+/// - `result_set_nondeterministic`: row selection is engine-defined because
+///   the SQL specifies `LIMIT`/`OFFSET` without a deterministic total ordering
+///   and ties occur at the boundary.
 ///
-/// q23 and q10 are intentionally excluded because their prior DISTINCT-count
-/// bugs are fixed and they must report `matched`.
+/// q23 and q10 require strict parity and report `matched`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ParityWaiverReason {
     FloatAccumulationVariance,
@@ -354,19 +353,19 @@ async fn measure_query(
     aggregate_measurement(runs, samples_ms, check_iteration_consistency)
 }
 
-/// Collapse N per-iteration runs into a single `EngineMeasurement`. Policy:
+/// Collapses per-iteration runs into a single `EngineMeasurement`.
 ///
-/// 1. Any failed measured iteration → outcome `Failed`, first failure wins
-///    for the message.
-/// 2. If all iterations succeeded but their canonical fingerprints disagree,
-///    outcome is forced to `Failed` with `inconsistent_iterations`. This
-///    catches flaky correctness bugs that would otherwise be hidden when a
-///    later iteration happens to match CPU.
-/// 3. If all iterations succeeded and agree, the last iteration's
-///    rows/fingerprint represent the canonical output.
+/// Evaluation rules:
+/// 1. Any failed measured iteration yields outcome `Failed`; the first failure
+///    message is preserved.
+/// 2. If all iterations succeed but their canonical fingerprints disagree, the
+///    outcome is set to `Failed` with `inconsistent_iterations`, rejecting runs
+///    with inter-iteration non-determinism.
+/// 3. If all iterations succeed and agree, the final iteration's
+///    rows and fingerprint represent the canonical output.
 ///
-/// All elapsed_ms samples are retained so consumers can still see jitter;
-/// speedup/parity gates on the aggregated outcome.
+/// All `elapsed_ms` samples are retained for jitter analysis; speedup and
+/// parity evaluations gate on the aggregated outcome.
 fn aggregate_measurement(
     runs: Vec<RunResult>,
     samples_ms: Vec<u128>,
@@ -586,10 +585,10 @@ fn dump_record_batches_to_tsv(batches: &[RecordBatch], path: PathBuf) -> Result<
 
 /// Order-insensitive row fingerprint for parity comparisons.
 ///
-/// Rows are serialized, sorted, then hashed so untied `GROUP BY ... LIMIT`
-/// results may differ in row order. Column indexes remain encoded.
+/// Rows are serialized, sorted, and hashed, allowing untied `GROUP BY ... LIMIT`
+/// results to differ in row order. Column indexes remain encoded.
 ///
-/// Values are tagged so `NULL` and `""` do not collide in Arrow string output.
+/// Value tagging prevents collisions between `NULL` and `""` in Arrow string output.
 fn fingerprint_batches(batches: &[RecordBatch]) -> Result<String, ArrowError> {
     let mut rows: Vec<String> = Vec::new();
     for batch in batches {
@@ -627,17 +626,16 @@ struct EngineMeasurement {
     output_rows: Option<usize>,
     output_bytes: Option<usize>,
     output_fingerprint: Option<String>,
-    /// `None` on the CPU side. On the native side, `Some(true)` when the
-    /// optimizer rule replaced a sub-plan with a native node, else
-    /// `Some(false)`. In that case the recorded wall time is the retained
-    /// DataFusion baseline, which does not measure GPU execution. Used to gate
-    /// `speedup_vs_cpu` so the report cannot publish DataFusion-baseline time as
-    /// native time.
+    /// `None` for CPU runs. For native runs, `Some(true)` indicates that the
+    /// optimizer rule replaced a sub-plan with a native node, and `Some(false)`
+    /// indicates fallback to the retained DataFusion baseline without GPU
+    /// execution. Gates `speedup_vs_cpu` to prevent publishing baseline CPU
+    /// times as native execution times.
     native_rewritten: Option<bool>,
     samples_ms: Vec<u128>,
-    /// Count of measured iterations that did not produce a successful result.
-    /// `> 0` forces the aggregated outcome to `Failed` even when other
-    /// iterations succeeded, so flaky runs aren't laundered into "succeeded".
+    /// Number of measured iterations that failed. A positive count sets the
+    /// aggregated outcome to `Failed` even when other iterations succeed,
+    /// preventing non-deterministic failures from being recorded as successful.
     iteration_failure_count: usize,
 }
 
@@ -680,11 +678,11 @@ enum ParityStatus {
     RowCountMismatch,
     /// Row counts agree but order-insensitive fingerprints differ.
     ContentMismatch,
-    /// Both engines succeeded but the native rule did not rewrite this plan,
-    /// so the recorded native timing is the retained DataFusion baseline. That
-    /// timing does not measure native execution.
-    /// Parity is trivially equal here; the row is flagged so consumers do not
-    /// conflate it with a native run.
+    /// Both engines succeeded, but the native rule did not rewrite this plan.
+    /// Because the recorded native timing reflects the retained DataFusion
+    /// baseline rather than native execution, the row is flagged to prevent
+    /// conflating baseline timing with native execution. Parity is trivially
+    /// equal.
     NativeNotRewritten,
     CpuOnlyFailed,
     NativeOnlyFailed,
@@ -750,9 +748,9 @@ impl BenchmarkRow {
         Self { query_id: query_id.to_string(), cpu, native, parity_status }
     }
 
-    /// `speedup_vs_cpu` is only meaningful when both sides succeeded **and**
-    /// the native rule rewrote the plan; otherwise the "native" wall time is a
-    /// retained DataFusion baseline and a 1.0× ratio would be misleading.
+    /// Computes speedup when both sides succeed and the native rule rewrote
+    /// the plan. If the plan was not rewritten, native wall time represents
+    /// the retained DataFusion baseline.
     fn speedup_vs_cpu(&self) -> Option<f64> {
         let cpu = self.cpu.as_ref()?;
         let native = self.native.as_ref()?;

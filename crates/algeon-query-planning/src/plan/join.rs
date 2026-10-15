@@ -34,9 +34,8 @@ pub struct JoinSpec {
     pub keys: Vec<JoinKey>,
     /// Optional predicate evaluated after equality matching.
     ///
-    /// This is the place for non-equality join conditions. Keeping it separate
-    /// lets the planner reason about hash keys and post-join filters
-    /// independently.
+    /// Carries non-equality join conditions, separating hash-join equality keys
+    /// from post-join filter predicates during planning and optimization.
     pub residual_predicate: Option<Expr>,
     /// Explicit output projection in result schema order.
     ///
@@ -51,8 +50,8 @@ pub struct JoinSpec {
     pub null_equality: JoinNullEquality,
     /// Input chosen to build reusable/hash state.
     ///
-    /// This is a physical execution choice. It does not redefine which input is
-    /// semantic left or right; those remain [`JoinNode::inputs`].
+    /// Governs physical execution strategy without altering semantic left and
+    /// right inputs in [`JoinNode::inputs`].
     pub build_side: JoinSide,
     /// Input side whose order DataFusion preserves for exact statistical replay.
     ///

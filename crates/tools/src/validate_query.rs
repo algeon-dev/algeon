@@ -113,9 +113,9 @@ fn path_str(path: &PathBuf) -> ValidateResult<&str> {
     path.to_str().ok_or_else(|| format!("path is not valid UTF-8: {path:?}").into())
 }
 
-/// The coverage JSON with the trusted diagnostic of a rejection added. This
-/// tool plans in the process that prints, so it shows the text a server
-/// withholds from its clients.
+/// Formats coverage JSON including rejection trusted diagnostics. Because this
+/// CLI tool executes in-process, it renders diagnostics that a network server
+/// withholds from remote clients.
 fn coverage_json(coverage: &QueryGpuCoverage) -> Value {
     let mut json = coverage.to_json();
     if let Some(rejection) = coverage.rejection() {
@@ -203,8 +203,8 @@ mod tests {
         assert_eq!(coverage.validated_under.optimizer_config_source, "installed_session_rule");
     }
 
-    /// This tool has no server query id and no `GetQueryStats`, so a failure
-    /// the server masks for its clients prints its source-chain text.
+    /// Verifies that in-process execution prints the full diagnostic source-chain
+    /// text for rejections that would otherwise be masked across network boundaries.
     #[tokio::test]
     async fn masked_rejection_prints_the_trusted_diagnostic() {
         let sql = "SELECT arrow_cast(1, 'no_such_type')";

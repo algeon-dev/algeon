@@ -27,7 +27,7 @@ impl ConnectionRetryConfig {
     }
 
     /// Retries until `budget` has elapsed since the first attempt. Each TCP
-    /// connect is capped by the remaining budget, so an unreachable host
+    /// connect is capped by the remaining budget; an unreachable host
     /// cannot hold one attempt past the deadline.
     pub(crate) fn time_budget(budget: Duration, backoff: Duration) -> Self {
         assert!(!budget.is_zero(), "connection retry budget must be positive");

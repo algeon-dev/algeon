@@ -1,11 +1,9 @@
 //! Arrow type and cast semantics for plan validation.
 //!
-//! These helpers answer what the query language admits: which Arrow types a
-//! plan may carry, which casts it may insert or preserve, and how a type reads
-//! in a diagnostic. Whether an execution backend can represent a type is a
-//! separate question, asked through
-//! [`crate::backend::BackendCapabilities::supports_type`], which is why the
-//! cast policy takes the backend for the one branch that needs it.
+//! These helpers define query language type admission, including plan Arrow
+//! types, cast rules, and diagnostic formatting. Representation support for
+//! execution backends is resolved separately through
+//! [`crate::backend::BackendCapabilities::supports_type`].
 
 use std::collections::HashMap;
 
@@ -48,9 +46,8 @@ pub fn is_narrow_decimal_carry_type(data_type: &ArrowDataType) -> bool {
 /// Returns the physical byte width for Arrow scalar fixed-width values used by
 /// native sizing heuristics.
 ///
-/// This is not a general Arrow memory-layout classifier. It intentionally
-/// preserves the native execution paths that do not size `Float16` or
-/// fixed-size binary values as fixed-width inputs.
+/// Native execution sizing paths omit `Float16` and fixed-size binary values
+/// from fixed-width inputs.
 pub fn arrow_fixed_width_byte_size(data_type: &ArrowDataType) -> Option<u64> {
     match data_type {
         ArrowDataType::Boolean | ArrowDataType::Int8 | ArrowDataType::UInt8 => Some(1),

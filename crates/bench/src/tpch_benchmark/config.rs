@@ -265,15 +265,15 @@ impl NativeTpchScaleFactor {
     }
 }
 
-/// Managed device capacity the benchmark asks the runtime backend for. The
-/// per-query cap is always the resolved managed capacity: the benchmark never
-/// installs a separate default query limit.
+/// Managed device capacity requested by the benchmark runtime backend.
+/// The per-query cap matches the resolved managed capacity, without an
+/// independent default query limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeTpchDeviceBudget {
-    /// Resolve capacity from the installed device through the runtime's
-    /// automatic policy (physical memory minus its headroom).
+    /// Resolves capacity from the installed device via the runtime automatic
+    /// policy (physical memory minus device reserve threshold).
     Automatic,
-    /// Explicit managed capacity; the runtime rejects values above the owned
+    /// Explicit managed capacity; the runtime rejects values above owned
     /// device memory with a structured error and does not clamp them.
     Explicit { bytes: u64 },
 }

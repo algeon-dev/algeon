@@ -1,9 +1,9 @@
 //! Arrow `RecordBatch` interop: GPU `DataFrame` ↔ Arrow `RecordBatch`
 //! conversion.
 //!
-//! This module is specifically the Rust `arrow` crate / `RecordBatch` path.
-//! It provides a **host-copy** conversion: data is transferred GPU → CPU →
-//! Arrow (or Arrow → CPU → GPU).
+//! This module converts between GPU [`crate::DataFrame`]s and host Arrow
+//! [`arrow::record_batch::RecordBatch`]es by copying data between GPU device
+//! memory and host memory.
 //!
 //! Device-resident handoff to other RAPIDS libraries uses the prepared exports
 //! in [`crate::interop::contract`]. This module performs host copies only.

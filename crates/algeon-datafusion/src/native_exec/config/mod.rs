@@ -163,7 +163,7 @@ impl AlgeonNativeExecutionConfig {
         self
     }
 
-    /// Attaches the server-generation gate used by file-backed native I/O.
+    /// Attaches the server generation coordinator used by file-backed native I/O.
     #[cfg(feature = "server")]
     pub(crate) fn with_io_lifecycle(mut self, lifecycle: IoLifecycle) -> Self {
         self.io_lifecycle = Some(lifecycle);

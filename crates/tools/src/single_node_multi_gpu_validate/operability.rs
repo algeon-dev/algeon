@@ -1,9 +1,9 @@
 //! Pure operability reductions over sealed public attempt reports.
 //!
-//! The stress program must say whether an embedding application can diagnose
-//! a non-success outcome from the report it already owns.  This module reduces
-//! the bounded projection retained in [`AttemptObservation`] into per-attempt
-//! and run-wide evidence without inspecting engine state or error text.
+//! Evaluates whether an embedding application can diagnose a non-success
+//! outcome using owned attempt reports. Reduces the bounded projection retained
+//! in [`AttemptObservation`] into per-attempt and run-wide evidence without
+//! inspecting engine state or error text.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
 use std::collections::BTreeMap;
@@ -83,11 +83,11 @@ pub(super) struct FeatureOffCugraphEvidence {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) max_observed_measurement_rejection_latency_ns: Option<u64>,
     pub(super) native_fault_evidence_count: u64,
-    /// A failure before an attempt task starts leaves the selected query
-    /// unknown, so it could otherwise hide an unissued runner-owned UDTF.
+    /// Failures before an attempt task starts, leaving the selected query
+    /// unobserved and unable to prove runner-owned UDTF issuance.
     pub(super) begin_failures: u64,
-    /// A task join failure loses both its sealed report and its typed source
-    /// projection, so it cannot be compatible with an every-request claim.
+    /// Task join failures that drop both the sealed report and the typed source
+    /// projection, invalidating comprehensive request accounting.
     pub(super) join_failures: u64,
     pub(super) relational_measurement_attempts: u64,
     pub(super) relational_gpu_reaching_successes: u64,
@@ -221,9 +221,8 @@ impl FeatureOffCugraphEvidence {
 /// attribute a non-success without reading engine internals or error prose.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct AttemptAttribution {
-    /// Successful attempts are outside the completeness denominator.  Their
-    /// empty `missing_fields` is still emitted so every attempt row has the
-    /// same auditable shape.
+    /// Successful attempts remain outside the completeness denominator. Empty
+    /// `missing_fields` entries are retained to keep a uniform auditable row shape.
     pub(super) applicable: bool,
     pub(super) complete: bool,
     pub(super) device_ordinal_required: bool,
@@ -397,8 +396,8 @@ impl AttributionCompleteness {
         }
     }
 
-    /// An observed missing field is a qualification failure. A run with no
-    /// non-success attempt stays `not_evidenced`, which passes.
+    /// An observed missing field constitutes a qualification failure. A run
+    /// without non-success attempts reports `not_evidenced`, which satisfies qualification.
     pub(super) fn passes(&self) -> bool {
         self.status != ClauseStatus::Failed
     }

@@ -496,15 +496,13 @@ impl AttemptLifecycle {
         }
     }
 
-    /// Fixes the attempt's outcome. This is the only transition into
-    /// `Terminal`; the admission-rejection path and the owner's release paths
-    /// all pass through it.
+    /// Fixes the attempt outcome and transitions the lifecycle to `Terminal`.
     ///
-    /// A missing disposition defaults to `Unplanned` and is then checked
-    /// against the recorded boundaries like an explicit one. When no primary
-    /// failure was captured, one is derived from `outcome`, which is how a
-    /// control outcome (`Cancelled`, `Dropped`, `Panicked`) still publishes a
-    /// text-free summary.
+    /// Admission rejections and owner release paths transition through this
+    /// method. A missing disposition defaults to `Unplanned` and is checked
+    /// against recorded boundaries. When no primary failure was captured,
+    /// a failure summary is derived from `outcome` for control outcomes
+    /// (`Cancelled`, `Dropped`, `Panicked`).
     pub(crate) fn terminalize(
         &mut self,
         outcome: RuntimeTerminalOutcome,

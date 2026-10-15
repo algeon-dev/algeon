@@ -10,7 +10,7 @@ use std::fmt;
 
 /// Stable, machine-readable failure identity.
 ///
-/// Every variant is a leaf code. Use [`ErrorKind`] if you need coarse policy.
+/// Leaf error code variants. Coarse classification uses [`ErrorKind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {

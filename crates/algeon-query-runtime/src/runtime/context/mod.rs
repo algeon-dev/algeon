@@ -1,20 +1,19 @@
 //! Native execution context state and query-local runtime controls.
 //!
-//! An `ExecutionContext` is the handle every native operator receives. It is
-//! assembled from the four scopes in `scope`: the device runtime shared by
-//! one device, the query scope (an admitted attempt or a standalone query),
-//! the stream binding the work runs on, and the per-plan overlay. Clones are
-//! cheap and share those scopes; derivation replaces one scope at a time.
+//! An `ExecutionContext` serves as the runtime environment passed to each native operator.
+//! It composes scopes defined in `scope`, including the per-device runtime, the query scope
+//! (admitted attempt or standalone execution), the stream binding, and per-plan overlays.
+//! Context cloning is lightweight and shares these scopes, while derivation selectively
+//! substitutes individual scopes.
 //!
-//! For an admitted context, every acquisition of a runtime, pool, grant, or
-//! stream first checks a `QueryServiceResourceEpoch`. Pool clones, grant
-//! clones, and stream leases retain that epoch, so the service cannot reach
-//! idle while they live and their work fails once the service or the query
-//! handle closes; the cudf runtime only validates it (see `runtime`). A host
-//! fence on the context's own stream acquires nothing and is not gated (see
-//! `synchronize_stream`). Standalone contexts skip that layer. The admission
-//! contract is in `website/docs/design/admission.mdx#from-capability-validation-to-admission`;
-//! the cancellation and release contracts are in
+//! In an admitted context, resource acquisitions (runtime, pool, grant, stream)
+//! validate against a `QueryServiceResourceEpoch`. Cloned pools, grants, and stream
+//! leases hold this epoch, preventing the service from reaching idle while active
+//! and failing remaining work once the service or query handle closes.
+//! Host synchronization fences on the context stream acquire no resources and proceed
+//! without gating (see `synchronize_stream`), while standalone contexts bypass epoch tracking.
+//! Governing admission and lifecycle contracts reside in
+//! `website/docs/design/admission.mdx#from-capability-validation-to-admission` and
 //! `website/docs/design/admission.mdx#resident-handoff-and-release`.
 
 use std::sync::Arc;

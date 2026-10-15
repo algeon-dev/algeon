@@ -1,11 +1,11 @@
 //! Deterministic arrival planning.
 //!
-//! The plan is a pure value. Its offsets are measured from an unspecified
-//! `t0`, and planning reads no clock. That keeps the seed-to-schedule mapping
-//! reproducible and lets the whole schedule be asserted without a GPU.
+//! Arrival schedules are pure values whose offsets are relative to an
+//! unspecified `t0`, requiring no clock reads during planning. Schedule
+//! generation is reproducible from seed and testable without GPU hardware.
 //!
-//! Only the measured run drives a plan, so the CPU-only feature reaches these
-//! values from tests alone.
+//! Plans are driven exclusively during measured execution runs; CPU-only
+//! feature builds access schedule values strictly through unit tests.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
 use serde::Serialize;
@@ -36,18 +36,16 @@ pub(super) struct ScheduledArrival {
     pub(super) step_index: usize,
     pub(super) offset_ns: u64,
     pub(super) phase: SchedulePhase,
-    /// The overrun policy this arrival was planned under. Rate steps may mix
-    /// `delay` and `drop` phases inside one run, so the driver reads the
-    /// policy from each arrival, because the plan-level value cannot describe
-    /// every step.
+    /// The overrun policy this arrival was planned under. Because rate steps may
+    /// mix `delay` and `drop` phases inside one run, the driver reads the
+    /// policy from each arrival rather than the plan-level default.
     pub(super) rate_overrun: RateOverrunPolicy,
     pub(super) query_index: usize,
     pub(super) session_index: usize,
 }
 
 /// One sequential phase of the plan. A single-phase profile produces one step
-/// spanning the whole measurement window, which keeps the driver on
-/// one code path.
+/// spanning the entire measurement window to maintain a single execution path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(super) struct StepPlan {
     pub(super) step_index: usize,
@@ -59,8 +57,8 @@ pub(super) struct StepPlan {
     /// Offset of the step's start from the run's t0 (after warmup).
     pub(super) start_ns: u64,
     pub(super) measurement_ns: u64,
-    /// Arrivals this step planned. Concurrency mode over-plans rounds and is
-    /// paced by the step window, so its count is an upper bound there.
+    /// Arrivals this step planned. Concurrency mode over-plans rounds paced
+    /// by the step window, making this count an upper bound.
     pub(super) planned_arrivals: usize,
 }
 
@@ -84,13 +82,13 @@ pub(super) struct ArrivalPlan {
     pub(super) measurement_ns: u64,
     pub(super) warmup_arrivals: usize,
     pub(super) measurement_arrivals: usize,
-    /// True when [`MAX_PLANNED_ATTEMPTS`] cut a rate-mode plan short, which
-    /// means the artifact does not describe the offered process the profile
-    /// asked for. Concurrency mode over-plans rounds on purpose and is paced by
-    /// the measurement window, so the cap is never a truncation there.
+    /// True when [`MAX_PLANNED_ATTEMPTS`] cut a rate-mode plan short, indicating
+    /// that the artifact reflects a truncated offered process rather than the
+    /// requested arrival profile. Concurrency mode intentionally over-plans
+    /// rounds paced by the measurement window, where the cap does not truncate.
     pub(super) truncated_by_attempt_cap: bool,
-    /// Sequential phases of this plan. Always non-empty; a single-phase
-    /// profile contributes exactly one step.
+    /// Sequential phases of this plan. Non-empty list where a single-phase
+    /// profile contributes one step.
     pub(super) steps: Vec<StepPlan>,
     /// Deadline and cancellation storm settings, echoed from the profile so the
     /// driver can arm them per attempt.
@@ -105,11 +103,11 @@ impl ArrivalPlan {
     /// `session_count` shared sessions.
     ///
     /// Concurrency mode issues `concurrency` simultaneous arrivals per round
-    /// and needs no seed. Rate mode draws exponential interarrival gaps, so
-    /// the offered process is Poisson at the configured rate. In steps mode
-    /// the steps are planned sequentially against their own windows; one
-    /// seeded stream spans every rate step so the recorded seed still maps to
-    /// exactly one schedule.
+    /// without consuming RNG state. Rate mode draws exponential interarrival
+    /// gaps to produce a Poisson arrival process at the configured rate. In
+    /// steps mode, steps are planned sequentially against their own windows;
+    /// a continuous PRNG stream spans rate steps to maintain deterministic
+    /// seed-to-schedule correspondence.
     pub(super) fn plan(scheduling: &SchedulingProfile, query_count: usize, session_count: usize) -> ToolResult<Self> {
         if query_count == 0 {
             return Err("a measured run requires at least one selected workload query".into());
@@ -359,8 +357,8 @@ fn seconds_to_ns(seconds: u64) -> ToolResult<u64> {
     seconds.checked_mul(1_000_000_000).ok_or_else(|| "scheduling window overflows nanoseconds".into())
 }
 
-/// A SplitMix64 draw in (0, 1]; zero is excluded so the exponential transform
-/// stays finite.
+/// A SplitMix64 draw in (0, 1]; zero is excluded to ensure the exponential
+/// transform remains finite.
 fn next_unit_interval(rng: &mut SplitMix64) -> f64 {
     let value = rng.next_u64() >> 11;
     (value as f64 + 1.0) / (1_u64 << 53) as f64
@@ -388,9 +386,8 @@ mod tests {
         }
     }
 
-    /// Duration-paced concurrency profiles stay compact. The runner creates
-    /// their closed-loop rounds at the step boundary, so the static planning cap
-    /// cannot drop later rounds or steps.
+    /// Duration-paced concurrency profiles generate closed-loop rounds at step
+    /// boundaries dynamically, preventing static planning caps from truncating rounds.
     #[test]
     fn concurrency_mode_defers_duration_paced_rounds_to_the_driver() {
         let plan = ArrivalPlan::plan(&scheduling(ArrivalMode::Concurrency, None, 0), 3, 2).unwrap();
@@ -424,9 +421,8 @@ mod tests {
         assert!(plan.arrivals.iter().skip(4).all(|arrival| arrival.round == 1));
     }
 
-    /// Rate mode attributes phases from planned offsets. Concurrency mode has
-    /// no offsets, so the driver assigns its phases against the observed
-    /// warmup deadline instead.
+    /// Rate mode attributes phases from planned offsets. In contrast, concurrency
+    /// mode assigns phases dynamically against the observed warmup deadline.
     #[test]
     fn rate_mode_phases_partition_every_arrival_at_the_warmup_boundary() {
         let plan = ArrivalPlan::plan(&scheduling(ArrivalMode::Rate, Some(200), 7), 2, 1).unwrap();

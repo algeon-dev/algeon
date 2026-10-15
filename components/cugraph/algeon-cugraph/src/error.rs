@@ -115,11 +115,10 @@ impl fmt::Display for ErrorKind {
 
 /// Which allocation-failure exception type produced a cuGraph allocation error.
 ///
-/// These variants record the C++ exception type that cuGraph caught, nothing
-/// more. Note that `rmm::out_of_memory` derives from `rmm::bad_alloc`, which in
-/// turn derives from `std::bad_alloc`, so the most-derived matching variant is
-/// reported. `Unknown` is fail-closed: it covers non-allocation errors, missing
-/// error objects, and unrecognized native values.
+/// Records the C++ exception type caught by cuGraph. Because `rmm::out_of_memory`
+/// derives from `rmm::bad_alloc` and `std::bad_alloc`, the most-derived matching
+/// variant is reported. `Unknown` covers non-allocation errors, missing error
+/// objects, and unrecognized native values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AllocationSource {
     /// The C error object did not explicitly report a known allocation path.
@@ -217,9 +216,8 @@ impl fmt::Display for AllocationFailureSource {
 
 /// Source condition recorded on an error.
 ///
-/// The status describes the condition observed at the source; it is not
-/// permission to retry. A caller must still complete its own cleanup and
-/// device-health checks before deciding anything:
+/// Callers evaluate retry viability after verifying device health and
+/// completing cleanup:
 ///
 /// - [`Permanent`](ErrorStatus::Permanent): will never succeed without
 ///   external changes (e.g. invalid input, unsupported operation). Do not

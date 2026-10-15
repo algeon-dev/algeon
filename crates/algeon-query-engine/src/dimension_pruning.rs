@@ -1,10 +1,9 @@
 //! Local-filesystem implementation of the planning dimension-pruning resolver contract.
 //!
-//! `query-planning` proves candidates, admission limits, and row-group
-//! selections without ever opening a file; this module supplies the local
-//! Parquet footer and row-batch reads those proofs ask for. The equivalent
-//! object-store reads live in the DataFusion adapter behind
-//! [`query_planning::optimizer::LakehouseFooterPruningResolver`].
+//! While `query_planning` operates on abstract metadata and schema proofs,
+//! this module supplies the local Parquet footer and row-batch readers required
+//! by those pruning passes. Corresponding object-store readers reside in the
+//! DataFusion adapter under [`query_planning::optimizer::LakehouseFooterPruningResolver`].
 
 use std::fs::File;
 

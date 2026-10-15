@@ -31,11 +31,10 @@ impl std::fmt::Display for RuntimeVersionError {
 
 impl std::error::Error for RuntimeVersionError {}
 
-/// Validate the cuML version compiled into `libcuml_rust.so` from `CUML_VERSION_*` headers.
+/// Validates the build-time cuML version compiled into `libcuml_rust.so` against [`EXPECTED_CUML_VERSION`].
 ///
-/// This reports the version the shim was built against. It does not query the
-/// loaded `libcuml.so`. Build-support pins that library to the same cuML install
-/// through rpath and direct NEEDED entries.
+/// Queries version headers compiled into the shim. Dynamic `libcuml.so` linkage is verified
+/// by build support through rpath and direct NEEDED entries.
 pub fn validate_runtime_version() -> Result<(u16, u16, u16), RuntimeVersionError> {
     let mut major = 0;
     let mut minor = 0;
