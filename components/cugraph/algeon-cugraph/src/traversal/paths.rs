@@ -10,7 +10,7 @@ use cugraph_sys::{
 };
 
 use crate::{
-    array::{DeviceArray, RawDeviceArrayView},
+    array::RawDeviceArrayView,
     cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
@@ -117,16 +117,11 @@ impl Drop for PathsResult {
 
 /// Result of extracting concrete paths from a BFS or SSSP paths result.
 pub struct ExtractPathsResult {
-    storage: ExtractPathsStorage,
+    raw: *mut cugraph_extract_paths_result_t,
+    device: i32,
     // Keeps a runtime-bound cuGraph handle alive until after Drop frees native storage.
     _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
-}
-
-enum ExtractPathsStorage {
-    Native { raw: *mut cugraph_extract_paths_result_t, device: i32 },
-    I32 { paths: DeviceArray<i32>, max_path_length: usize },
-    I64 { paths: DeviceArray<i64>, max_path_length: usize },
 }
 
 impl std::fmt::Debug for ExtractPathsResult {
@@ -143,77 +138,41 @@ impl ExtractPathsResult {
         resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, "extract_paths_result")?;
-        Ok(Self {
-            storage: ExtractPathsStorage::Native { raw, device },
-            _resource_handle_lease: resource_handle_lease,
-            _nosend_nosync: PhantomData,
-        })
-    }
-
-    pub(crate) fn from_i32_paths(paths: DeviceArray<i32>, max_path_length: usize) -> Self {
-        Self {
-            storage: ExtractPathsStorage::I32 { paths, max_path_length },
-            _resource_handle_lease: None,
-            _nosend_nosync: PhantomData,
-        }
-    }
-
-    pub(crate) fn from_i64_paths(paths: DeviceArray<i64>, max_path_length: usize) -> Self {
-        Self {
-            storage: ExtractPathsStorage::I64 { paths, max_path_length },
-            _resource_handle_lease: None,
-            _nosend_nosync: PhantomData,
-        }
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     /// Maximum row length in the extracted row-major path matrix.
     pub fn max_path_length(&self) -> usize {
-        match &self.storage {
-            ExtractPathsStorage::Native { raw, .. } => {
-                // SAFETY: `raw` is a live extract-paths result owned by this
-                // wrapper for the duration of the call.
-                unsafe { cugraph_extract_paths_result_get_max_path_length(*raw) }
-            },
-            ExtractPathsStorage::I32 { max_path_length, .. } | ExtractPathsStorage::I64 { max_path_length, .. } => {
-                *max_path_length
-            },
-        }
+        // SAFETY: `self.raw` is a live extract-paths result owned by this wrapper.
+        unsafe { cugraph_extract_paths_result_get_max_path_length(self.raw) }
     }
 
     /// Row-major path matrix as vertex ids.
     ///
     /// The array contains `destination_count * max_path_length()` elements.
     pub fn paths(&self) -> Result<VertexIds<'_>> {
-        match &self.storage {
-            ExtractPathsStorage::Native { raw, device } => {
-                let view_ptr = require_non_null(
-                    // SAFETY: `raw` is a live extract-paths result owned by
-                    // this wrapper for the duration of the call.
-                    unsafe { cugraph_extract_paths_result_get_paths(*raw) },
-                    "ExtractPathsResult::paths",
-                    "paths",
-                )?;
-                // SAFETY: cuGraph transfers ownership of the view metadata
-                // returned by the result accessor. The backing allocation
-                // remains owned by `raw`, which outlives the returned view.
-                let raw = unsafe {
-                    RawDeviceArrayView::from_owned_view(view_ptr, Some(*device), "ExtractPathsResult::paths", "paths")
-                }?;
-                VertexIds::from_raw(raw)
-            },
-            ExtractPathsStorage::I32 { paths, .. } => Ok(VertexIds::I32(paths.view()?)),
-            ExtractPathsStorage::I64 { paths, .. } => Ok(VertexIds::I64(paths.view()?)),
-        }
+        let view_ptr = require_non_null(
+            // SAFETY: `self.raw` is a live extract-paths result owned by this wrapper.
+            unsafe { cugraph_extract_paths_result_get_paths(self.raw) },
+            "ExtractPathsResult::paths",
+            "paths",
+        )?;
+        // SAFETY: cuGraph transfers the view metadata. This owner retains its backing array.
+        let raw = unsafe {
+            RawDeviceArrayView::from_owned_view(view_ptr, Some(self.device), "ExtractPathsResult::paths", "paths")
+        }?;
+        VertexIds::from_raw(raw)
     }
 }
 
 impl Drop for ExtractPathsResult {
     fn drop(&mut self) {
-        if let ExtractPathsStorage::Native { raw, device } = &mut self.storage
-            && !raw.is_null()
-        {
-            drop_device_resource(raw, *device, "ExtractPathsResult::drop", DeviceResourceKind::ExtractPathsResult);
-        }
+        drop_device_resource(
+            &mut self.raw,
+            self.device,
+            "ExtractPathsResult::drop",
+            DeviceResourceKind::ExtractPathsResult,
+        );
     }
 }
 
@@ -231,11 +190,27 @@ pub(crate) fn extract_paths<'a, V: CugraphElement + 'a>(
     graph.validate_vertex_selection(&sources, operation, "sources", false)?;
     let sources = sources.resolve(handle)?;
     let sources_view = graph.resolved_vertex_view(&sources, operation, "sources")?;
+    let weighted_paths = matches!(paths.distances(operation)?, Distances::F32(_) | Distances::F64(_));
+    if weighted_paths && sources_view.len() != 1 {
+        return Err(Error::new(ErrorKind::InvalidInput, operation)
+            .with_message("SSSP path extraction requires exactly one source vertex")
+            .with_context("source_count", sources_view.len().to_string()));
+    }
 
     let destinations = destinations.into();
     graph.validate_vertex_selection(&destinations, operation, "destinations", false)?;
     let destinations = destinations.resolve(handle)?;
     let destinations_view = graph.resolved_vertex_view(&destinations, operation, "destinations")?;
+    if weighted_paths {
+        let vertex_count = paths.vertex_ids(operation)?.len();
+        let predecessor_count = paths.predecessors(operation)?.map_or(0, |predecessors| predecessors.len());
+        if vertex_count != predecessor_count {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("SSSP result returned mismatched vertex and predecessor lengths")
+                .with_context("vertex_count", vertex_count.to_string())
+                .with_context("predecessor_count", predecessor_count.to_string()));
+        }
+    }
 
     let mut result: *mut cugraph_extract_paths_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();

@@ -8,11 +8,12 @@ use cudf::{
         prelude::*,
     },
 };
+use cudf_sys::test_support;
 
 use crate::common::{
     column_from_device_ptr, column_from_slice, column_from_slice_nullable, column_from_strs, empty_column,
-    error_context_value, fail_next_column_view_metadata_read, last_exec_mr_value, last_exec_stream_value, null_column,
-    reset_exec_observation,
+    error_context_value, fail_next_column_view_metadata_read, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, null_column, reset_exec_observation,
 };
 
 fn test_create_empty_column() {
@@ -713,7 +714,9 @@ fn test_nulls_int32_empty() {
 }
 
 fn test_nulls_int64() {
+    reset_exec_observation();
     let col = null_column(TypeId::Int64, 100).unwrap();
+    assert_eq!(last_sync_stream_value(), usize::MAX, "all-null construction must not wait for a host column upload");
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 100);
     assert_eq!(view.null_count().unwrap(), 100);
@@ -738,7 +741,11 @@ fn test_nulls_bool8() {
 }
 
 fn test_nulls_string() {
-    let col = null_column(TypeId::String, 25).unwrap();
+    unsafe { test_support::cudf_test_fail_next_strings_host_import_after_offsets_copy() };
+    let result = null_column(TypeId::String, 25);
+    let upload = column_from_strs(&["probe"]);
+    assert!(upload.is_err(), "null construction must leave the host string upload fault unconsumed");
+    let col = result.unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 25);
     assert_eq!(view.null_count().unwrap(), 25);
@@ -746,12 +753,18 @@ fn test_nulls_string() {
 }
 
 fn test_nulls_decimal64_preserve_scale() {
-    let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
-    let col = null_column(dtype, 5).unwrap();
-    let view = col.testing_view().unwrap();
-    assert_eq!(view.len().unwrap(), 5);
-    assert_eq!(view.null_count().unwrap(), 5);
-    assert_eq!(view.data_type().unwrap(), dtype);
+    for type_id in [TypeId::Decimal32, TypeId::Decimal64, TypeId::Decimal128] {
+        for scale in [-2, 0, 3] {
+            let dtype = DataType::fixed_point(type_id, scale).unwrap();
+            for len in [0, 5] {
+                let col = null_column(dtype, len).unwrap();
+                let view = col.testing_view().unwrap();
+                assert_eq!(view.len().unwrap(), len);
+                assert_eq!(view.null_count().unwrap(), len);
+                assert_eq!(view.data_type().unwrap(), dtype);
+            }
+        }
+    }
 }
 
 fn test_nulls_preserves_type() {
@@ -760,6 +773,20 @@ fn test_nulls_preserves_type() {
         TypeId::Int16,
         TypeId::Int32,
         TypeId::Int64,
+        TypeId::UInt8,
+        TypeId::UInt16,
+        TypeId::UInt32,
+        TypeId::UInt64,
+        TypeId::TimestampDays,
+        TypeId::TimestampSeconds,
+        TypeId::TimestampMilliseconds,
+        TypeId::TimestampMicroseconds,
+        TypeId::TimestampNanoseconds,
+        TypeId::DurationDays,
+        TypeId::DurationSeconds,
+        TypeId::DurationMilliseconds,
+        TypeId::DurationMicroseconds,
+        TypeId::DurationNanoseconds,
         TypeId::Float32,
         TypeId::Float64,
         TypeId::Bool8,

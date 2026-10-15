@@ -15,9 +15,10 @@
 //! at decode time and the retry contract in `stream` says what each consumer
 //! must discard on error.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use cudf::Series;
 use query_planning::{
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumerLowering, DynamicFilterExecutionOptions, DynamicFilterId,
@@ -25,6 +26,7 @@ use query_planning::{
         apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter,
         dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
     },
+    error::QueryErrorCode,
     plan::AggregateNode,
     source::{ParquetReadStrategy, SourceFooterFacts},
 };
@@ -35,15 +37,16 @@ use super::{
     Instant, LocalParquetSource, MemoryControlPolicy, NodeId, ProjectionNode, QueryError, ResidentGpuFrame, Result,
     SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
     annotate_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts,
-    cudf_query_error, execute_filter_with_budget, execute_projection_with_budget, is_retryable_chunk_error,
-    join_leaf_prefetch_admitted, observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context,
-    plan_source_chunk_batches, record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
+    cudf_query_error, execute_projection_with_budget, is_retryable_chunk_error, join_leaf_prefetch_admitted,
+    observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches,
+    record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
     validate_local_parquet_source,
 };
 use crate::{
     chunk::{plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata},
     exec::{
         bounded::BoundedPlan,
+        operators::PreparedDynamicFilter,
         source::{
             ScheduledLocalParquetRead, attach_row_group_facts_if_absent, parquet_chunk_path_fact,
             read_local_parquet_chunk_batch, read_local_parquet_chunk_with_reader_dynamic_filter_count,
@@ -118,7 +121,7 @@ fn attach_join_source_read_resource_facts(
 
 /// Deferred Parquet leaf work that compiled join tasks can materialize in chunks.
 ///
-/// The value describes work and holds no device memory, so it is cloned
+/// The value retains device keys for post-decode dynamic filters and is cloned
 /// into each compiled task that reads it. `chunks` is the planned chunk
 /// list after any dynamic-filter replan, `stages` run in order on each decoded
 /// chunk, and `reader_dynamic_filters` are the routes already merged into the
@@ -154,7 +157,7 @@ pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourcePrefetch {
 enum BoundedJoinLeafSourceStreamStage {
     Filter {
         node_id: NodeId,
-        node: FilterNode,
+        node: PreparedDynamicFilter,
         dynamic_filter: Option<Box<BoundedJoinLeafSourceStreamDynamicFilterStage>>,
     },
     Projection {
@@ -190,7 +193,11 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         let mut filter = None;
         for stage in &self.stages {
             match stage {
-                BoundedJoinLeafSourceStreamStage::Filter { node, dynamic_filter: None, .. } if filter.is_none() => {
+                BoundedJoinLeafSourceStreamStage::Filter {
+                    node: PreparedDynamicFilter::Expression(node),
+                    dynamic_filter: None,
+                    ..
+                } if filter.is_none() => {
                     filter = Some(node);
                 },
                 BoundedJoinLeafSourceStreamStage::Filter { .. } => return None,
@@ -281,7 +288,11 @@ impl BoundedJoinLeafLocalParquetSourceStream {
     }
 
     pub(in crate::exec::bounded) fn with_filter_stage(mut self, node_id: NodeId, node: FilterNode) -> Self {
-        self.stages.push(BoundedJoinLeafSourceStreamStage::Filter { node_id, node, dynamic_filter: None });
+        self.stages.push(BoundedJoinLeafSourceStreamStage::Filter {
+            node_id,
+            node: PreparedDynamicFilter::Expression(node),
+            dynamic_filter: None,
+        });
         self
     }
 
@@ -290,7 +301,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
     pub(in crate::exec::bounded) fn with_filter_dynamic_filter_stage(
         mut self,
         node_id: NodeId,
-        node: FilterNode,
+        node: PreparedDynamicFilter,
         route: DynamicFilterRoute,
         filter: DynamicFilter,
     ) -> Self {
@@ -330,6 +341,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         context: &ExecutionContext,
         routes: &[&DynamicFilterRoute],
         filter_set: &DynamicFilterSet,
+        keysets: &BTreeMap<DynamicFilterId, Series>,
         deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
         options: DynamicFilterExecutionOptions,
     ) -> Result<Self> {
@@ -404,15 +416,32 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         if !post_decode_filters.is_empty() {
             let mut stages = post_decode_filters
                 .iter()
-                .map(|(route, filter, node)| BoundedJoinLeafSourceStreamStage::Filter {
-                    node_id: route.consumer.node_id(),
-                    node: node.clone(),
-                    dynamic_filter: Some(Box::new(BoundedJoinLeafSourceStreamDynamicFilterStage {
-                        route: route.clone(),
-                        filter: filter.clone(),
-                    })),
+                .map(|(route, filter, node)| {
+                    let column = route.consumer_columns.first().expect("post-decode route has a consumer column");
+                    let prepared = PreparedDynamicFilter::bind(
+                        self.source.schema.as_ref(),
+                        column,
+                        node.input,
+                        filter,
+                        keysets.get(&route.id),
+                    )?
+                    .ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::InvalidPlan,
+                            "query_engine.dynamic_filter.consumer_keyset",
+                            "validated source dynamic filter has an incompatible resident key domain",
+                        )
+                    })?;
+                    Ok(BoundedJoinLeafSourceStreamStage::Filter {
+                        node_id: route.consumer.node_id(),
+                        node: prepared,
+                        dynamic_filter: Some(Box::new(BoundedJoinLeafSourceStreamDynamicFilterStage {
+                            route: route.clone(),
+                            filter: filter.clone(),
+                        })),
+                    })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             stages.extend(self.stages);
             self.stages = stages;
         }

@@ -91,16 +91,22 @@ impl<'a> ColumnView<'a> {
 
     pub(crate) fn slice_with_operation(&self, offset: i32, length: i32, operation: &'static str) -> Result<Self> {
         let exec_options = self.domain.enter_execution()?;
+        self.slice_with_exec_options(offset, length, exec_options.options(), operation)
+    }
+
+    pub(crate) fn slice_with_exec_options(
+        &self,
+        offset: i32,
+        length: i32,
+        exec_options: &cudf_sys::cudf_exec_options_t,
+        operation: &'static str,
+    ) -> Result<Self> {
         let mut sliced = ptr::null_mut();
+        // SAFETY: the view borrows live source storage. Callers resolve source
+        // readiness and keep the execution context alive through submission.
         error::check_status_in(
             unsafe {
-                cudf_sys::cudf_column_view_slice_ex(
-                    self.handle.as_ptr(),
-                    offset,
-                    length,
-                    exec_options.options(),
-                    &mut sliced,
-                )
+                cudf_sys::cudf_column_view_slice_ex(self.handle.as_ptr(), offset, length, exec_options, &mut sliced)
             },
             operation,
         )?;

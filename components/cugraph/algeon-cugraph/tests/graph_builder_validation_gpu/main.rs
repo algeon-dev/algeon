@@ -301,6 +301,17 @@ fn edge_count_matches_directed_input_rows() {
     let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&handle).expect("graph");
 
     assert_eq!(graph.edge_count(&handle).expect("edge_count"), TRIANGLE_TAIL_SRC_I32.len());
+
+    // SAFETY: the entered runtime retains this native handle and its exact stream/MR binding
+    // throughout the borrowed wrapper's use on the current thread.
+    let borrowed =
+        unsafe { ResourceHandle::from_raw_resource_handle(handle.handle_ptr()) }.expect("borrow external handle");
+    let entered = borrowed.enter("external_edge_count").expect("entered external handle");
+    let src = DeviceArray::from_slice(&entered, &[0i64, 0, 1, 1]).expect("external sources");
+    let dst = DeviceArray::from_slice(&entered, &[1i64, 1, 0, 1]).expect("external destinations");
+    let (src_view, dst_view) = (src.view().expect("sources view"), dst.view().expect("destinations view"));
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("external graph");
+    assert_eq!(graph.edge_count(&entered).expect("external logical edge count"), 3);
 }
 
 fn edge_count_respects_drop_self_loops() {
@@ -371,4 +382,25 @@ fn edge_count_counts_undirected_self_loops_once() {
         .expect("graph");
 
     assert_eq!(graph.edge_count(&handle).expect("edge_count"), 2);
+
+    let src = DeviceArray::from_slice(&handle, &[0i64, 0, 0, 1, 0, 1]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[0i64, 0, 1, 0, 1, 0]).expect("dst");
+    let (src_view, dst_view) = (src.view().expect("src_view"), dst.view().expect("dst_view"));
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties { is_symmetric: true, is_multigraph: true })
+        .build::<Forward>(&handle)
+        .expect("symmetric multigraph");
+    assert_eq!(graph.edge_count(&handle).expect("multigraph edge count"), 4);
+
+    let src = DeviceArray::from_slice(&handle, &[0i64, 0, 1]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i64, 1, 0]).expect("dst");
+    let (src_view, dst_view) = (src.view().expect("src_view"), dst.view().expect("dst_view"));
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties { is_symmetric: true, is_multigraph: true })
+        .build::<Forward>(&handle)
+        .expect("unchecked odd-multiplicity graph");
+    let error = graph.edge_count(&handle).expect_err("odd normalized multiplicity");
+    assert_eq!(error.kind(), ErrorKind::InvalidState);
+    assert_eq!(error.context_value("edge"), Some("(0, 1)"));
+    assert_eq!(error.context_value("run_len"), Some("3"));
 }

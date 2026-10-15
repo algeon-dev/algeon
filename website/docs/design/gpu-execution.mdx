@@ -44,6 +44,26 @@ Cross-stream dependencies use completion fences such as CUDA events. Buffer
 ownership lasts through final consumption, and all lanes allocate within
 [one query memory cap](./admission.mdx).
 
+## Runtime dynamic filters
+
+The compiled executor derives dynamic filters from the producer's complete
+join build or aggregate group-key state. `max_build_rows` bounds the producer
+rows admitted to this work. Exact membership payloads retain distinct non-null
+keys in the attempt's query memory domain and share them across consumers and
+chunks. Empty and dense range payloads retain no key column. cuDF orders
+membership reads against the retained producer stream and retains completion
+dependencies until consumption ends.
+
+Integer bounds and distinct counts classify empty, dense range, small-IN-list
+and larger exact keysets without copying the key column to the host. Resident
+exact payload metadata carries the existing kind, count and range diagnostics;
+host predicate helpers cannot apply that payload. A source route requiring
+reader or row-group pruning downloads the distinct keys, retains the device
+keyset for post-decode membership, and preserves the source pruning policy.
+The large reader-only producer policy continues to derive a scalar range.
+Keys above `i64::MAX` in a UInt64 producer remain unsupported. Consumer bounds
+must fit their declared integer or Date32 type before membership is bound.
+
 ## Relational data into GPU algorithms {/* #gpu-algorithms */}
 
 SQL table functions integrate cuGraph, cuVS, and cuML within queries. cuDF

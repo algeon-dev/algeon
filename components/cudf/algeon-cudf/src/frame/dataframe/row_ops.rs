@@ -4,7 +4,11 @@ use super::owned::DataFrame;
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::runtime::Runtime;
 use crate::{
-    core::{column::ColumnView, error::Result, row_range},
+    core::{
+        column::{ColumnView, copy_view_in},
+        error::Result,
+        row_range,
+    },
     frame::series::Series,
     internal::resolve::missing_column_error,
     ops::{self, copying, filter},
@@ -232,27 +236,21 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        let map = row_range::gather_map_in_domain(start, len, &output_domain, operation)?;
-        let map_view = map.view()?;
-        let execution = ResolvedExecution::with_output_domain(
-            Arc::clone(&output_domain),
-            [&self.domain, map_view.execution_domain()],
-            operation,
-        )?;
+        let (start, end) = row_range::checked_bounds_i32(start, len, operation)?;
+        let execution = ResolvedExecution::with_output_domain(output_domain, [&self.domain], operation)?;
         let output_domain = Arc::clone(execution.output_domain());
-
-        let tv = self.build_table_view()?;
-        let result_table = copying::gather_impl(
-            &tv,
-            &map_view,
-            cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
-            "dont_check",
-            &output_domain,
-            execution.exec_options(),
-            operation,
-        )?;
-
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        let columns = self
+            .columns
+            .iter()
+            .map(|(name, column)| {
+                let view =
+                    column.view()?.slice_with_exec_options(start, end - start, execution.exec_options(), operation)?;
+                let copy = copy_view_in(&view, &output_domain, execution.exec_options())
+                    .map_err(|error| error.reanchor(operation).with_column(name.clone()))?;
+                Ok((name.clone(), Arc::new(copy)))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { columns, row_count: len, domain: output_domain })
     }
 
     pub(crate) fn empty_with_same_schema_in_domain(&self, domain: Arc<ExecutionDomain>) -> Result<Self> {

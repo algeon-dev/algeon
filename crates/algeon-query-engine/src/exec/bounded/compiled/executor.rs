@@ -15,6 +15,7 @@ use std::{
 };
 
 use arrow::record_batch::RecordBatch;
+use cudf::Series;
 use query_planning::{
     dynamic_filter::{DynamicFilterId, DynamicFilterSet},
     error::{QueryError, QueryErrorCode, Result},
@@ -95,6 +96,9 @@ pub struct CompiledGpuTaskExecutor<'a> {
     /// Produced and skipped filters by route. Consumers check readiness
     /// before reading; compiled control edges order producers ahead of them.
     pub(super) dynamic_filters: DynamicFilterSet,
+    /// Exact non-null keys shared by all post-decode consumers of each route.
+    /// Series retain query-domain ownership and cuDF completion dependencies.
+    pub(super) dynamic_filter_keysets: BTreeMap<DynamicFilterId, Series>,
     /// Routes already applied to a shared source frame, so a later consumer
     /// of the same resource does not filter it again.
     pub(super) source_post_decode_applied_routes: BTreeMap<ResidentResourceId, BTreeSet<DynamicFilterId>>,
@@ -150,6 +154,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             gpu_inputs,
             remaining_gpu_input_reads,
             dynamic_filters: DynamicFilterSet::new(),
+            dynamic_filter_keysets: BTreeMap::new(),
             source_post_decode_applied_routes: BTreeMap::new(),
             join_builds: BTreeMap::new(),
             join_probes: BTreeMap::new(),
@@ -368,6 +373,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             release_bounded_compiled_join_probe_state(&mut self.execution, probe);
         }
         self.join_builds.clear();
+        self.dynamic_filter_keysets.clear();
         self.gpu_inputs.clear();
         self.remaining_gpu_input_reads.clear();
         Ok(())

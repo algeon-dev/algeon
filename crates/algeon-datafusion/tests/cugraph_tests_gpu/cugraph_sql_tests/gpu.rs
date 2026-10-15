@@ -8,6 +8,7 @@ use std::{
 use algeon_datafusion::{
     attempt::AttemptOptions,
     backend::{AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit},
+    cugraph_sql::GpuIslandHostBoundaryConfig,
     gpu_coverage::validate_query,
     native_exec::below_native_admission,
     planner::{AlgeonGpuExecutionMode, AlgeonNativePhysicalOptimizerRule, FinalPlanDisposition, classify_final_plan},
@@ -1150,17 +1151,28 @@ async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
         .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(8, 8, 2));
     let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = AlgeonGpuBackend::builder().devices([device]).build().unwrap();
+    let cugraph = CugraphSqlConfig {
+        host_boundary_config: GpuIslandHostBoundaryConfig::try_new(1024 * 1024, 1).unwrap(),
+        ..CugraphSqlConfig::default()
+    };
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features())
         .unwrap()
-        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(cugraph)
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("overlap_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
 
-    // Sequential baseline fixes the expected aggregate.
+    // The BFS result exceeds the graph island's host-output limit. Native
+    // aggregation consumes it on device, including a follower's independent copy.
+    reset_arrow_host_interop_observation_for_test();
     let baseline = ctx.sql(BFS_SQL).await.unwrap().collect().await.expect("sequential BFS baseline succeeds");
+    let baseline_exports = arrow_host_export_call_count_for_test();
+    let baseline_imports = arrow_host_import_call_count_for_test();
+    reset_arrow_host_interop_observation_for_test();
+
+    let device_copies_before = testing::device_copy::device_to_device_copy_count_for_test();
 
     // Release both queries at the same barrier instant so the second joins
     // the first's singleflight generation instead of leading its own. Each
@@ -1203,6 +1215,20 @@ async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
     assert_eq!(snapshot.physical_traversals, 4, "each round shares one traversal");
     assert_eq!(snapshot.follower_copies, 3, "each round produces one follower copy");
     assert!(snapshot.peak_width >= 2, "barrier-released queries join one generation");
+    assert!(
+        testing::device_copy::device_to_device_copy_count_for_test() >= device_copies_before + 3,
+        "each GPU follower must copy the publication into its own runtime",
+    );
+    assert_eq!(
+        arrow_host_export_call_count_for_test(),
+        6 * baseline_exports,
+        "GPU follower copies must add no host Arrow exports",
+    );
+    assert_eq!(
+        arrow_host_import_call_count_for_test(),
+        6 * baseline_imports,
+        "GPU follower copies must add no host Arrow imports",
+    );
 
     drop_session_context_on_blocking_thread(ctx).await;
     fs::remove_dir_all(dir).unwrap();

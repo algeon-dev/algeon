@@ -11,6 +11,7 @@ impl cugraph_error_code_ {
     pub const CUGRAPH_INVALID_INPUT: cugraph_error_code_ = cugraph_error_code_(4);
     pub const CUGRAPH_NOT_IMPLEMENTED: cugraph_error_code_ = cugraph_error_code_(5);
     pub const CUGRAPH_UNSUPPORTED_TYPE_COMBINATION: cugraph_error_code_ = cugraph_error_code_(6);
+    pub const CUGRAPH_INVALID_STATE: cugraph_error_code_ = cugraph_error_code_(7);
 }
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]

@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-
-use cudf::{AggSpec, Exec, GroupByAgg, Runtime, core::Column};
+use cudf::{AggSpec, Exec, GroupByAgg, Runtime, TypeId, core::Column, frame::factorization::Codebook};
 
 use super::errors::map_cudf_error_with;
 use crate::{
@@ -23,6 +21,9 @@ use crate::{
     traversal::{bfs::BfsResult, sssp::SsspResult},
     tree::MinimumSpanningTreeResult,
 };
+
+#[cfg(test)]
+mod tests;
 
 fn series_from_column(column: Column, operation: &'static str) -> Result<cudf::Series> {
     cudf::Series::from_column(column).map_err(|error| {
@@ -307,7 +308,7 @@ pub(crate) fn labeling_result_to_dataframe(result: &LabelingResult, runtime: &Ru
         [("vertex", result.vertex_ids()?.to_series(runtime)?), ("label", result.labels()?.to_series(runtime)?)],
         operation,
     )?;
-    canonicalize_component_labels(frame, runtime, operation)
+    canonicalize_component_labels(frame, operation)
 }
 
 /// Canonicalize a `("vertex", "label")` component frame by mapping each label
@@ -317,20 +318,19 @@ pub(crate) fn labeling_result_to_dataframe(result: &LabelingResult, runtime: &Ru
 /// and weakly-connected components report labels in the internal renumbered space.
 /// Mapping each label to `MIN(vertex)` over its component produces deterministic,
 /// run-stable labels expressed in external vertex IDs while preserving row order.
-///
-/// The mapping is computed via GPU groupby-min and broadcast back through a host lookup
-/// without allocating a join handle.
-fn canonicalize_component_labels(
-    frame: cudf::DataFrame,
-    runtime: &Runtime,
-    operation: &'static str,
-) -> Result<cudf::DataFrame> {
+fn canonicalize_component_labels(frame: cudf::DataFrame, operation: &'static str) -> Result<cudf::DataFrame> {
     if frame.num_rows() == 0 {
         return Ok(frame);
     }
-    let vertex = frame.series("vertex").map_err(|error| {
-        map_cudf_error_with(error, operation, "failed to read component vertex column", std::iter::empty())
-    })?;
+    for role in ["vertex", "label"] {
+        let dtype = frame.series(role).and_then(|series| series.dtype()).map_err(|error| {
+            map_cudf_error_with(error, operation, "failed to inspect component integer dtype", std::iter::empty())
+        })?;
+        if !matches!(dtype.id(), TypeId::Int32 | TypeId::Int64) {
+            return Err(Error::new(ErrorKind::UnsupportedType, operation)
+                .with_message(format!("unexpected component {role} dtype: {:?}", dtype.id())));
+        }
+    }
     let mapping = frame
         .groupby(["label"])
         .on(Exec::RETAINED)
@@ -338,86 +338,31 @@ fn canonicalize_component_labels(
         .map_err(|error| {
             map_cudf_error_with(error, operation, "failed to compute component minimum vertex ids", std::iter::empty())
         })?;
-    let mapping_key = mapping.series("label").map_err(|error| {
+    let mapping_keys = mapping.series("label").map_err(|error| {
         map_cudf_error_with(error, operation, "failed to read component label mapping", std::iter::empty())
     })?;
-    let mapping_value = mapping.series("canonical").map_err(|error| {
-        map_cudf_error_with(error, operation, "failed to read component minimum vertex mapping", std::iter::empty())
+    let codebook = Codebook::from_keys(mapping_keys).map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to index component labels", std::iter::empty())
     })?;
-    let mut canonical_of: HashMap<i64, i64> = HashMap::with_capacity(mapping.num_rows());
-    for (label, canonical) in int_series_to_i64(&mapping_key, "label", operation)?.into_iter().zip(int_series_to_i64(
-        &mapping_value,
-        "canonical",
-        operation,
-    )?) {
-        if let (Some(label), Some(canonical)) = (label, canonical) {
-            canonical_of.insert(label, canonical);
-        }
-    }
     let label = frame.series("label").map_err(|error| {
         map_cudf_error_with(error, operation, "failed to read component label column", std::iter::empty())
     })?;
-    let remapped: Vec<Option<i64>> = int_series_to_i64(&label, "label", operation)?
-        .into_iter()
-        .map(|label| label.map(|label| canonical_of.get(&label).copied().unwrap_or(label)))
-        .collect();
-    // Canonical values are vertex ids, so they take the vertex column's width.
-    // A missing mapping is impossible (the groupby covers every non-null key);
-    // falling back to the raw label keeps the row and does not fail the query.
-    let canonical = match vertex
-        .dtype()
-        .map_err(|error| {
-            map_cudf_error_with(error, operation, "failed to inspect component vertex dtype", std::iter::empty())
-        })?
-        .id()
-    {
-        cudf::TypeId::Int32 => {
-            let narrowed: Vec<Option<i32>> = remapped
-                .into_iter()
-                .map(|value| {
-                    value
-                        .map(i32::try_from)
-                        .transpose()
-                        .map_err(|_| format!("canonical component label {value:?} exceeds Int32 vertex range"))
-                })
-                .collect::<std::result::Result<Vec<Option<i32>>, String>>()
-                .map_err(|message| Error::new(ErrorKind::InvalidState, operation).with_message(message))?;
-            runtime.series_opt(&narrowed).map_err(|error| {
-                map_cudf_error_with(error, operation, "failed to build canonical label column", std::iter::empty())
-            })?
-        },
-        cudf::TypeId::Int64 => runtime.series_opt(&remapped).map_err(|error| {
-            map_cudf_error_with(error, operation, "failed to build canonical label column", std::iter::empty())
-        })?,
-        other => {
-            return Err(Error::new(ErrorKind::UnsupportedType, operation)
-                .with_message(format!("unexpected component vertex dtype: {other:?}")));
-        },
-    };
+    let codes = codebook.encode(&label, Exec::RETAINED).map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to locate component minimum vertex ids", std::iter::empty())
+    })?;
+    // Gather requires non-null indices. i32::MAX exceeds the largest valid
+    // cuDF row index and preserves absent or null labels as null output rows.
+    let indices = codes.on(Exec::RETAINED).fillna(i32::MAX).map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to preserve null component labels", std::iter::empty())
+    })?;
+    let canonical =
+        mapping.series("canonical").and_then(|values| values.on(Exec::RETAINED).gather(&indices)).map_err(|error| {
+            map_cudf_error_with(error, operation, "failed to gather canonical component labels", std::iter::empty())
+        })?;
+    let vertex = frame.series("vertex").map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to read component vertex column", std::iter::empty())
+    })?;
     dataframe_from_named_series([("vertex", vertex), ("label", canonical)], operation)
-}
-
-/// Copy an integer `Series` to host as `Vec<Option<i64>>`, widening `i32`.
-fn int_series_to_i64(series: &cudf::Series, role: &'static str, operation: &'static str) -> Result<Vec<Option<i64>>> {
-    let values = match series
-        .dtype()
-        .map_err(|error| {
-            map_cudf_error_with(error, operation, "failed to inspect component integer dtype", std::iter::empty())
-        })?
-        .id()
-    {
-        cudf::TypeId::Int32 => {
-            series.to_optional_vec::<i32>().map(|values| values.into_iter().map(|value| value.map(i64::from)).collect())
-        },
-        cudf::TypeId::Int64 => series.to_optional_vec::<i64>(),
-        other => {
-            return Err(Error::new(ErrorKind::UnsupportedType, operation)
-                .with_message(format!("unexpected component {role} dtype: {other:?}")));
-        },
-    };
-    values.map_err(|error| {
-        map_cudf_error_with(error, operation, "failed to copy component integers to host", std::iter::empty())
-    })
 }
 
 pub(crate) fn core_number_result_to_dataframe(result: &CoreNumberResult, runtime: &Runtime) -> Result<cudf::DataFrame> {

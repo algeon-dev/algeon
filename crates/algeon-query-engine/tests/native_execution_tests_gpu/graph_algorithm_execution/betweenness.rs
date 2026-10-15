@@ -228,87 +228,102 @@ pub(super) fn bounded_exact_betweenness_above_threshold_is_refused_before_graph_
 /// `k` resolves to the first `k` distinct vertices in stable sorted order,
 /// independent of the order edges arrive in.
 pub(super) fn betweenness_k_resolves_to_sorted_first_vertices() {
-    // Chain A (0->..->19, 19 edges) and chain B (1000->..->1009, 9 edges),
-    // with B's edges listed first so first-seen order differs from sorted
-    // order. k=2 must resolve to sorted seeds {0,1}, giving nonzero scores
-    // only on chain-A interior vertices {1..=18} (18 vertices). First-seen
-    // seeds {1000,1001} would instead score 8 chain-B vertices.
-    let mut src_values: Vec<i32> = Vec::new();
-    let mut dst_values: Vec<i32> = Vec::new();
-    for vertex in 1000..1009 {
-        src_values.push(vertex);
-        dst_values.push(vertex + 1);
-    }
-    for vertex in 0..19 {
-        src_values.push(vertex);
-        dst_values.push(vertex + 1);
-    }
-    let edge_schema = Arc::new(Schema::new(vec![
-        Field::new("src", DataType::Int32, false),
-        Field::new("dst", DataType::Int32, false),
-    ]));
-    let edge_batch = RecordBatch::try_new(
-        Arc::clone(&edge_schema),
-        vec![Arc::new(Int32Array::from(src_values)), Arc::new(Int32Array::from(dst_values))],
-    )
-    .unwrap();
-
-    let dir = unique_temp_dir("query-engine-betweenness-grant-invariant");
-    let path = dir.join("edges.parquet");
-    write_record_batch_with_row_group_rows(&path, Arc::clone(&edge_schema), edge_batch, 4);
-
-    let run_with_grant = |grant: Option<u64>| {
-        let context = backend_context_with_grant(grant);
-        let mut builder = QueryPlanBuilder::new();
-        let edges = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source::from_path(
-            &path,
-            Arc::clone(&edge_schema),
-            vec!["src".to_string(), "dst".to_string()],
-        )));
-        let spec = int32_graph_spec(
-            GraphAlgorithm::BetweennessCentrality,
-            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
-            GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
-                k: Some(2),
-                ..Default::default()
-            }),
-        );
-        let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
-        let plan = builder
-            .finish_with_host_sink_schema(
-                graph,
-                int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality),
-            )
-            .unwrap();
-        let admitted = context.admit_plan(&plan).unwrap();
-        let gpu_inputs = GpuResidentInputMap::new();
-        let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
-        let QueryOutput::HostArrow(batch) = result.output() else {
-            panic!("host sink should materialize betweenness output");
-        };
-        let vertices = graph_vertex_values(batch, 0);
-        let values = batch.column(1);
-        let mut scored: Vec<i64> = Vec::new();
-        for row in 0..batch.num_rows() {
-            let positive = match values.data_type() {
-                DataType::Float32 => values.as_primitive::<Float32Type>().value(row) > 0.0,
-                DataType::Float64 => values.as_primitive::<Float64Type>().value(row) > 0.0,
-                data_type => panic!("expected betweenness score column, got {data_type}"),
-            };
-            if positive {
-                scored.push(vertices.value(row));
-            }
+    // Chain B arrives before chain A. Both signed vertex types must select
+    // chain A's first two vertices, including Int64 values outside Int32 range.
+    for (vertex_type, offset) in [(DataType::Int32, -100i64), (DataType::Int64, -(1i64 << 40))] {
+        let mut src_values = Vec::new();
+        let mut dst_values = Vec::new();
+        for vertex in 1000..1009 {
+            src_values.push(vertex + offset);
+            dst_values.push(vertex + offset + 1);
         }
-        scored.sort_unstable();
-        admitted.finish();
-        scored
-    };
+        for vertex in 0..19 {
+            src_values.push(vertex + offset);
+            dst_values.push(vertex + offset + 1);
+        }
+        let edge_schema = Arc::new(Schema::new(vec![
+            Field::new("src", vertex_type.clone(), false),
+            Field::new("dst", vertex_type.clone(), false),
+        ]));
+        let columns: Vec<ArrayRef> = match vertex_type {
+            DataType::Int32 => vec![
+                Arc::new(Int32Array::from(
+                    src_values.into_iter().map(|value| i32::try_from(value).unwrap()).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int32Array::from(
+                    dst_values.into_iter().map(|value| i32::try_from(value).unwrap()).collect::<Vec<_>>(),
+                )),
+            ],
+            DataType::Int64 => vec![Arc::new(Int64Array::from(src_values)), Arc::new(Int64Array::from(dst_values))],
+            _ => unreachable!(),
+        };
+        let edge_batch = RecordBatch::try_new(Arc::clone(&edge_schema), columns).unwrap();
 
-    let expected: Vec<i64> = (1..=18).collect();
-    for grant in [Some(16 * 1024 * 1024), Some(128 * 1024 * 1024), Some(1024 * 1024 * 1024), None] {
-        let scored = run_with_grant(grant);
-        assert_eq!(scored, expected, "betweenness k=2 seeds must be the sorted-first vertices for grant {grant:?}");
+        let dir = unique_temp_dir("query-engine-betweenness-grant-invariant");
+        let path = dir.join("edges.parquet");
+        write_record_batch_with_row_group_rows(&path, Arc::clone(&edge_schema), edge_batch, 4);
+
+        let run_with_grant = |grant: Option<u64>| {
+            let context = backend_context_with_grant(grant);
+            let mut builder = QueryPlanBuilder::new();
+            let edges = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source::from_path(
+                &path,
+                Arc::clone(&edge_schema),
+                vec!["src".to_string(), "dst".to_string()],
+            )));
+            let spec = graph_spec_for_vertex_type(
+                GraphAlgorithm::BetweennessCentrality,
+                GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+                GraphConstructionOptions {
+                    directed: true,
+                    renumber: true,
+                    policy: GraphConstructionPolicy::RawLibcugraph,
+                },
+                GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+                    k: Some(2),
+                    ..Default::default()
+                }),
+                &vertex_type,
+            );
+            let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
+            let plan = builder
+                .finish_with_host_sink_schema(
+                    graph,
+                    stable_graph_result_schema_for_vertex_type(GraphAlgorithm::BetweennessCentrality, &vertex_type),
+                )
+                .unwrap();
+            let admitted = context.admit_plan(&plan).unwrap();
+            let gpu_inputs = GpuResidentInputMap::new();
+            let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+            let QueryOutput::HostArrow(batch) = result.output() else {
+                panic!("host sink should materialize betweenness output");
+            };
+            let vertices = graph_vertex_values(batch, 0);
+            let values = batch.column(1);
+            let mut scored: Vec<i64> = Vec::new();
+            for row in 0..batch.num_rows() {
+                let positive = match values.data_type() {
+                    DataType::Float32 => values.as_primitive::<Float32Type>().value(row) > 0.0,
+                    DataType::Float64 => values.as_primitive::<Float64Type>().value(row) > 0.0,
+                    data_type => panic!("expected betweenness score column, got {data_type}"),
+                };
+                if positive {
+                    scored.push(vertices.value(row));
+                }
+            }
+            scored.sort_unstable();
+            admitted.finish();
+            scored
+        };
+
+        let expected: Vec<i64> = (1..=18).map(|vertex| vertex + offset).collect();
+        for grant in [Some(16 * 1024 * 1024), Some(128 * 1024 * 1024), Some(1024 * 1024 * 1024), None] {
+            let scored = run_with_grant(grant);
+            assert_eq!(
+                scored, expected,
+                "betweenness k=2 seeds must be the sorted-first vertices for {vertex_type:?} grant {grant:?}"
+            );
+        }
     }
 }
 

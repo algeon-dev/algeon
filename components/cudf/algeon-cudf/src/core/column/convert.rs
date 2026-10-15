@@ -38,11 +38,9 @@ pub(crate) fn copy_view_in(
     output_domain: &Arc<ExecutionDomain>,
     exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<Column> {
-    let len = cv.len()?;
-    if len == 0 {
-        return Column::empty_with_dtype_in_domain(cv.data_type()?, Arc::clone(output_domain), "column::copy_view_in");
-    }
     let mut handle = ptr::null_mut();
+    // SAFETY: cv retains its source storage borrow. The caller orders source reads
+    // on the output stream and keeps both domains alive through copy submission.
     error::check_status_in(
         unsafe { cudf_sys::cudf_column_copy_from_view_ex(cv.raw_handle(), exec_options, &mut handle) },
         "column::copy_view_in",

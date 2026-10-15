@@ -709,6 +709,17 @@ pub(crate) fn parse_listed_cubin_architectures(listing: &str) -> BTreeSet<String
         .collect()
 }
 
+pub(crate) fn shim_cuda_architectures(library: &Path, requested: &str) -> Result<String, String> {
+    if requested != "NATIVE" {
+        return Ok(requested.to_string());
+    }
+    Ok(inspect_real_cuda_architectures(library)?
+        .into_iter()
+        .map(|architecture| format!("{architecture}-real"))
+        .collect::<Vec<_>>()
+        .join(";"))
+}
+
 fn inspect_real_cuda_architectures(library: &Path) -> Result<BTreeSet<String>, String> {
     let toolkit_root = env::var_os("CUDAToolkit_ROOT")
         .or_else(|| env::var_os("CUDA_HOME"))

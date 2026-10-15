@@ -21,7 +21,7 @@ use query_runtime::runtime::resident::GpuDataFrame;
 use crate::exec::{
     ExecutionMetrics,
     bounded::{BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_projection, run_budgeted},
-    operators::execute_filter_with_budget,
+    operators::{PreparedDynamicFilter, execute_filter_with_budget},
 };
 
 /// Frames a compiled consumer pulls in order.
@@ -275,7 +275,7 @@ enum UnaryMappedResidentFrameStreamOperator {
     /// like `Filter` and additionally reports post-decode row counts for the
     /// route.
     DynamicFilter {
-        filter: FilterNode,
+        filter: PreparedDynamicFilter,
         route: DynamicFilterRoute,
         dynamic_filter: DynamicFilter,
     },
@@ -301,7 +301,7 @@ impl UnaryMappedResidentFrameStreamSource {
     fn from_dynamic_filter(
         node_id: NodeId,
         input: ResidentFrameStreamPayload,
-        filter: FilterNode,
+        filter: PreparedDynamicFilter,
         route: DynamicFilterRoute,
         dynamic_filter: DynamicFilter,
     ) -> Self {
@@ -322,8 +322,14 @@ impl UnaryMappedResidentFrameStreamSource {
         input: ResidentGpuFrame,
     ) -> Result<ResidentGpuFrame> {
         match &self.operator {
-            UnaryMappedResidentFrameStreamOperator::Filter(filter)
-            | UnaryMappedResidentFrameStreamOperator::DynamicFilter { filter, .. } => run_budgeted(
+            UnaryMappedResidentFrameStreamOperator::DynamicFilter { filter, .. } => run_budgeted(
+                execution,
+                self.node_id,
+                "compiled_filter",
+                input.frame,
+                |context, input, token, metrics| filter.execute(context, input, token, metrics),
+            ),
+            UnaryMappedResidentFrameStreamOperator::Filter(filter) => run_budgeted(
                 execution,
                 self.node_id,
                 "compiled_filter",
@@ -407,7 +413,7 @@ pub(super) fn map_filter_resident_frame_stream(
 pub(super) fn map_dynamic_filter_resident_frame_stream(
     node_id: NodeId,
     stream: ResidentFrameStreamPayload,
-    filter: FilterNode,
+    filter: PreparedDynamicFilter,
     route: DynamicFilterRoute,
     dynamic_filter: DynamicFilter,
 ) -> ResidentFrameStreamPayload {

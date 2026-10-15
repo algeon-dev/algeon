@@ -275,7 +275,7 @@ fn map_binding_extension_init_error(error: BindingExtensionInitError<Error>, ope
     }
 }
 
-fn map_runtime_execution_binding_error(error: InteropError, operation: &'static str) -> Error {
+pub(crate) fn map_runtime_execution_binding_error(error: InteropError, operation: &'static str) -> Error {
     let mut mapped = match error.kind() {
         InteropErrorKind::ExecutionBindingUnavailable => Error::new(ErrorKind::Unexpected, operation),
         _ => Error::new(ErrorKind::InvalidState, operation),

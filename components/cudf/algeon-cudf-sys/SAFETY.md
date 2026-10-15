@@ -24,6 +24,13 @@ are valid for its input table. The safe prepared-sort API owns that permutation.
 The operation returns owning indices into the original table; its boundary
 predicate compares adjacent positions through the borrowed permutation.
 
+`cudf_column_view_slice_ex` returns an owning view handle that borrows the
+source column storage, including its children. Retain the source storage until
+reads through the sliced view complete. `cudf_column_copy_from_view_ex` returns
+independent owning storage and copies the active view range and nested shape,
+including empty ranges. Cross-stream copies require source readiness before
+submission and source-stream ordering after the copy before storage release.
+
 ## Execution and memory provenance
 
 Execution-sensitive production `_ex` calls require an explicit device, stream,

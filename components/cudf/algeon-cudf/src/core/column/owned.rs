@@ -272,6 +272,7 @@ impl Column {
         Self::from_slice_impl(data, None, Arc::clone(runtime.execution_domain()), "column::from_slice_with_runtime")
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn from_slice_in_domain<T: CudfType>(data: &[T], domain: &Arc<ExecutionDomain>) -> Result<Self> {
         Self::from_slice_impl(data, None, Arc::clone(domain), "column::from_slice_in_domain")
     }
@@ -711,65 +712,22 @@ impl Column {
         domain: &Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        let size = usize_to_i32_len(len, "row_count", operation)?;
+        usize_to_i32_len(len, "row_count", operation)?;
         if len == 0 {
             return Self::create_empty_with_dtype_in_domain(dtype, Arc::clone(domain), operation);
         }
 
         let type_id = dtype.id();
-        let raw = match type_id {
-            TypeId::String => {
-                let dummy: Vec<&str> = vec![""; len];
-                let validity = vec![false; len];
-                Self::from_strs_impl(&dummy, Some(&validity), Arc::clone(domain), operation)
-            },
-            _ => {
-                let elem_size = type_id.size_in_bytes().map_err(|e| e.reanchor(operation))?.ok_or_else(|| {
-                    fixed_width_type_required_error(
-                        operation,
-                        "null-column construction requires a fixed-width type or STRING",
-                        type_id,
-                        "use a fixed-width type or STRING when constructing an all-null column",
-                    )
-                })?;
-
-                let data_len_bytes =
-                    checked_required_buffer_bytes(operation, "data_buffer_size", len, elem_size, type_id)?;
-
-                let data = vec![0u8; data_len_bytes];
-                let validity = vec![false; len];
-                let null_mask = validity_to_ffi_bitmask(&validity);
-                let null_count = size;
-                let exec_options = domain.enter_execution()?;
-
-                let mut handle = ptr::null_mut();
-                // SAFETY: data is zeroed bytes of the correct size, null_mask marks
-                // all elements null. type_id.to_raw() is valid for fixed-width types.
-                error::check_status_in_with_details(
-                    unsafe {
-                        cudf_sys::cudf_column_create_numeric_ex(
-                            type_id.to_raw(),
-                            data.as_ptr() as *const c_void,
-                            size,
-                            null_mask.as_ptr(),
-                            null_count,
-                            exec_options.options(),
-                            &mut handle,
-                        )
-                    },
-                    operation,
-                    [("type_id_label", type_id_label(type_id)), ("row_count", len.to_string())],
-                )?;
-                Self::from_handle_with_domain(handle, Arc::clone(domain))
-            },
-        }?;
-
-        if !dtype.id().is_decimal() || dtype.scale() == 0 {
-            return Ok(raw);
+        if type_id != TypeId::String && type_id.size_in_bytes().map_err(|error| error.reanchor(operation))?.is_none() {
+            return Err(fixed_width_type_required_error(
+                operation,
+                "null-column construction requires a fixed-width type or STRING",
+                type_id,
+                "use a fixed-width type or STRING when constructing an all-null column",
+            ));
         }
-
-        let raw_view = raw.view()?;
-        unary::cast(&raw_view, &dtype).map_err(|error| error.reanchor(operation))
+        let scalar = Scalar::null_in_domain(dtype, domain).map_err(|error| error.reanchor(operation))?;
+        Self::from_scalar(&scalar, len).map_err(|error| error.reanchor(operation))
     }
 
     /// Create an all-null column of the given type and length inside the given
