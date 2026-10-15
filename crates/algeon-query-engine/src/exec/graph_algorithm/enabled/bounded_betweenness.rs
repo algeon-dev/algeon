@@ -81,7 +81,7 @@ fn graph_spec_with_runtime_betweenness_seeds(
         return Ok(None);
     }
 
-    let vertices = sorted_graph_vertices_i64(input, spec, operation)?;
+    let vertices = sorted_graph_vertices(input, spec, operation)?;
     let vertex_count = vertices.len() as u64;
     validate_betweenness_seed_policy_for_vertex_count(spec, vertex_count)?;
     if let Some(k) = k {
@@ -90,11 +90,21 @@ fn graph_spec_with_runtime_betweenness_seeds(
                 .with_fact("algorithm", spec.algorithm.as_str())
                 .with_fact("k", k)
         })?;
-        return graph_spec_with_betweenness_seeds(
-            spec,
-            GraphBetweennessSeeds::I64(vertices.into_iter().take(k_usize).collect()),
-        )
-        .map(Some);
+        let seeds = vertices
+            .on(Exec::RETAINED)
+            .head(k_usize)
+            .map_err(|error| cudf_query_error(operation, "failed to select betweenness seed vertices", error))?;
+        let seeds = match seeds
+            .dtype()
+            .map_err(|error| cudf_query_error(operation, "failed to inspect graph seed dtype", error))?
+            .id()
+        {
+            TypeId::Int32 => seeds.to_vec_strict::<i32>().map(|values| values.into_iter().map(i64::from).collect()),
+            TypeId::Int64 => seeds.to_vec_strict::<i64>(),
+            _ => unreachable!("sorted graph vertices have a validated signed integer dtype"),
+        }
+        .map_err(|error| cudf_query_error(operation, "failed to copy betweenness seeds to host", error))?;
+        return graph_spec_with_betweenness_seeds(spec, GraphBetweennessSeeds::I64(seeds)).map(Some);
     }
 
     Ok(None)
@@ -238,11 +248,7 @@ fn bounded_betweenness_runtime_resolution(
 }
 
 #[cfg(feature = "cugraph")]
-fn sorted_graph_vertices_i64(
-    input: &DataFrame,
-    spec: &GraphAlgorithmSpec,
-    operation: &'static str,
-) -> Result<Vec<i64>> {
+fn sorted_graph_vertices(input: &DataFrame, spec: &GraphAlgorithmSpec, operation: &'static str) -> Result<Series> {
     let ctx = Exec::RETAINED;
     let (source, destination) = distinct_graph_endpoints(input, spec, ctx, operation)?;
     let source_dtype =
@@ -257,13 +263,7 @@ fn sorted_graph_vertices_i64(
         .and_then(|series| series.on(ctx).sort_values(CudfSortOptions::new()))
         .map_err(|error| cudf_query_error(operation, "failed to collect graph vertices", error))?;
     match source_dtype.id() {
-        TypeId::Int32 => vertices
-            .to_vec_strict::<i32>()
-            .map(|values| values.into_iter().map(i64::from).collect())
-            .map_err(|error| cudf_query_error(operation, "failed to copy graph Int32 vertices to host", error)),
-        TypeId::Int64 => vertices
-            .to_vec_strict::<i64>()
-            .map_err(|error| cudf_query_error(operation, "failed to copy graph Int64 vertices to host", error)),
+        TypeId::Int32 | TypeId::Int64 => Ok(vertices),
         dtype => Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             operation,

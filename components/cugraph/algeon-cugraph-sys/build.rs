@@ -183,6 +183,11 @@ fn main() {
         build_support::validate_cugraph_cuvs_loader(&contract.native_link_dirs, &contract.runtime_lib_dirs, &cuvs)
             .unwrap_or_else(|err| panic!("{err}"));
     build_support::check_libcugraph_staleness(&manifest_dir, &contract.native_link_dirs);
+    let requested = build_support::resolved_cuda_architectures(env::var_os("CMAKE_CUDA_ARCHITECTURES").as_deref());
+    let shim_architectures =
+        build_support::shim_cuda_architectures(&validated_loader.cugraph_library_path, &requested.to_string_lossy())
+            .unwrap_or_else(|error| panic!("{error}"));
+    println!("cargo::metadata=cuda-architectures={shim_architectures}");
     if !contract.runtime_lib_dirs.iter().any(|path| path == &cuvs.runtime_lib_dir) {
         contract.runtime_lib_dirs.push(cuvs.runtime_lib_dir.clone());
     }

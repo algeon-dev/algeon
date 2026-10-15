@@ -1007,6 +1007,7 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
 #[test]
 fn dynamic_filter_cases_policy_1_2() {
     run_named_cases(&[
+        ("bounded_joins::root_joins::hash::dynamic_filter::resident_dynamic_filter_preserves_null_and_integer_domains", resident_dynamic_filter_preserves_null_and_integer_domains),
         ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parquet_keyset", bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parquet_keyset),
         ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_sources", bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_sources),
         ("bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_predicate_after_probe_source_decode", bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_predicate_after_probe_source_decode),
@@ -1409,7 +1410,8 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
     ]));
-    let right_schema = write_join_right_keys_parquet(&fixture_runtime, &right_path, &[2]);
+    let build_keys = (1..=1025).map(|key| key * 2).collect::<Vec<i32>>();
+    let right_schema = write_join_right_keys_parquet(&fixture_runtime, &right_path, &build_keys);
     let left_batch = RecordBatch::try_new(
         Arc::clone(&left_schema),
         vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(Int32Array::from(vec![10, 20, 30, 40]))],
@@ -1473,16 +1475,21 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
     let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
     let output = result.output().as_host_arrow().unwrap();
     let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 1);
-    assert_eq!(int32_array(output, 0).values().as_ref(), &[2]);
-    assert_eq!(int32_array(output, 1).values().as_ref(), &[20]);
+    assert_eq!(output.num_rows(), 2);
+    assert_eq!(int32_array(output, 0).values().as_ref(), &[2, 4]);
+    assert_eq!(int32_array(output, 1).values().as_ref(), &[20, 40]);
     assert_eq!(metrics.dynamic_filter_produced_count, 1);
     assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    assert_eq!(metrics.dynamic_filter_join_probe_post_decode_rows_filtered, 3);
+    assert_eq!(metrics.dynamic_filter_join_probe_post_decode_rows_filtered, 2);
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "applied_post_decode"
             && row.consumer_kind == "hash_join_probe"
             && row.consumer_lowering == "post_decode_only"
+    }));
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(metrics.boundary.device_to_host_materialized_rows, output.num_rows() as u64);
+    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+        row.event == "produced" && row.filter_kind == "hash_set_contains" && row.payload_value_count == Some(1025)
     }));
     admitted.finish();
 
@@ -1497,7 +1504,8 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
     ]));
-    let right_schema = write_join_right_keys_parquet(&fixture_runtime, &right_path, &[2]);
+    let build_keys = (1..=129).map(|key| key * 2).collect::<Vec<i32>>();
+    let right_schema = write_join_right_keys_parquet(&fixture_runtime, &right_path, &build_keys);
     let left_batch = RecordBatch::try_new(
         Arc::clone(&left_schema),
         vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(Int32Array::from(vec![10, 20, 30, 40]))],
@@ -1564,18 +1572,23 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
     let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &gpu_inputs).unwrap();
     let output = result.output().as_host_arrow().unwrap();
     let metrics = result.metrics();
-    assert_eq!(output.num_rows(), 1);
-    assert_eq!(int32_array(output, 0).values().as_ref(), &[2]);
-    assert_eq!(int32_array(output, 1).values().as_ref(), &[20]);
+    assert_eq!(output.num_rows(), 2);
+    assert_eq!(int32_array(output, 0).values().as_ref(), &[2, 4]);
+    assert_eq!(int32_array(output, 1).values().as_ref(), &[20, 40]);
     assert_eq!(metrics.dynamic_filter_produced_count, 1);
     assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    assert_eq!(metrics.dynamic_filter_filter_post_decode_rows_filtered, 3);
+    assert_eq!(metrics.dynamic_filter_filter_post_decode_rows_filtered, 2);
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "applied_post_decode"
             && row.consumer_kind == "filter"
             && row.consumer_lowering == "post_decode_only"
             && row.post_decode_rows_before == Some(4)
-            && row.post_decode_rows_after == Some(1)
+            && row.post_decode_rows_after == Some(2)
+    }));
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(metrics.boundary.device_to_host_materialized_rows, output.num_rows() as u64);
+    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+        row.event == "produced" && row.filter_kind == "small_in_list" && row.payload_value_count == Some(129)
     }));
     admitted.finish();
 
@@ -1863,4 +1876,116 @@ fn bounded_native_query_executes_build_dynamic_filter_below_aggregate_probe() {
     assert_eq!(rows, vec![2]);
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn resident_dynamic_filter_preserves_null_and_integer_domains() {
+    for (probe, build, expected_skipped) in [
+        (
+            Arc::new(Int32Array::from(vec![None, Some(1), Some(2), Some(3)])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![None, Some(1), Some(3), Some(3)])) as ArrayRef,
+            false,
+        ),
+        (
+            Arc::new(Int32Array::from(vec![None, Some(1), Some(2), Some(3)])),
+            Arc::new(Int32Array::from(vec![None, None, None, None])),
+            false,
+        ),
+        (
+            Arc::new(Int64Array::from(vec![None, Some(i64::MIN), Some(0), Some(i64::MAX)])),
+            Arc::new(Int64Array::from(vec![None, Some(i64::MIN), Some(i64::MAX), Some(i64::MAX)])),
+            false,
+        ),
+        (
+            Arc::new(UInt32Array::from(vec![None, Some(1), Some(2), Some(3)])),
+            Arc::new(UInt32Array::from(vec![None, Some(1), Some(3), Some(3)])),
+            false,
+        ),
+        (
+            Arc::new(UInt64Array::from(vec![None, Some(1), Some(2), Some(3)])),
+            Arc::new(UInt64Array::from(vec![None, Some(1), Some(3), Some(3)])),
+            false,
+        ),
+        (
+            Arc::new(Date32Array::from(vec![None, Some(-1), Some(0), Some(1)])),
+            Arc::new(Date32Array::from(vec![None, Some(-1), Some(1), Some(1)])),
+            false,
+        ),
+        (
+            Arc::new(UInt64Array::from(vec![None, Some(1), Some(2), Some(u64::MAX)])),
+            Arc::new(UInt64Array::from(vec![None, Some(1), Some(u64::MAX), Some(u64::MAX)])),
+            true,
+        ),
+    ] {
+        let empty = build.null_count() == build.len();
+        let expected_rows = if empty { 0 } else { 3 };
+        let schema = Arc::new(Schema::new(vec![Field::new("key", probe.data_type().clone(), true)]));
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("probe", Arc::clone(&schema))));
+        let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("build", Arc::clone(&schema))));
+        let join = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+                )
+                .with_build_side(JoinSide::Right)
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]),
+                Arc::clone(&schema),
+            )
+            .unwrap();
+        let optimized = optimize_query_plan(
+            builder.finish_with_host_sink(join).unwrap(),
+            &NativeOptimizerOptions {
+                join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+                ..NativeOptimizerOptions::default()
+            },
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap();
+        assert_eq!(optimized.plan.dynamic_filter_routes().len(), 1, "{:?}", schema);
+        let context = backend_context_with_grant(8 * 1024 * 1024);
+        let admitted = context.admit_plan(&optimized.plan).unwrap();
+        let runtime = Arc::new(admitted.runtime().unwrap());
+        let mut inputs = GpuResidentInputMap::new();
+        for (name, array) in [("probe", probe), ("build", build)] {
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array]).unwrap();
+            inputs.insert(
+                name.to_string(),
+                GpuResultHandle::new(
+                    &admitted,
+                    GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+                    Arc::clone(&schema),
+                )
+                .unwrap(),
+            );
+        }
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &optimized.plan, &inputs).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let metrics = result.metrics();
+        assert_eq!(output.num_rows(), expected_rows, "{:?}", schema);
+        assert_eq!(output.column(0).null_count(), 0);
+        assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+        assert_eq!(metrics.boundary.device_to_host_materialized_rows, expected_rows as u64);
+        if expected_skipped {
+            assert_eq!(metrics.dynamic_filter_produced_count, 0);
+            assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+                row.event == "skipped" && row.skipped_reason.as_deref() == Some("unsupported_producer_key_type")
+            }));
+        } else {
+            assert_eq!(metrics.dynamic_filter_produced_count, 1);
+            assert_eq!(metrics.dynamic_filter_join_probe_post_decode_rows_filtered, if empty { 4 } else { 2 });
+            assert!(
+                metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+                    row.event == "produced" && row.payload_value_count == Some(if empty { 0 } else { 2 })
+                })
+            );
+        }
+        drop(result);
+        drop(inputs);
+        drop(runtime);
+        admitted.finish();
+    }
 }

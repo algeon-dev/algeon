@@ -9,7 +9,8 @@
 use std::{
     backtrace::{Backtrace, BacktraceStatus},
     error::Error as StdError,
-    fmt,
+    ffi::{CStr, c_char},
+    fmt, ptr,
 };
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -24,6 +25,35 @@ use cugraph_sys::{
     cugraph_error_free, cugraph_error_generation, cugraph_error_member_id, cugraph_error_message,
     cugraph_error_requested_bytes, cugraph_error_t,
 };
+
+#[repr(C)]
+pub(crate) struct EdgeCountErrorDetail {
+    allocation_source: cugraph_allocation_source_t,
+    failure_source: cugraph_error_failure_source_t,
+    domain_id: u64,
+    member_id: u64,
+    generation: u64,
+    requested_bytes: u64,
+    alignment: u64,
+    cuda_error: i32,
+    message: [c_char; 512],
+}
+
+impl EdgeCountErrorDetail {
+    pub(crate) fn new() -> Self {
+        Self {
+            allocation_source: cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_UNKNOWN,
+            failure_source: cugraph_error_failure_source_t::CUGRAPH_ERROR_FAILURE_SOURCE_UNKNOWN,
+            domain_id: 0,
+            member_id: 0,
+            generation: 0,
+            requested_bytes: 0,
+            alignment: 0,
+            cuda_error: -1,
+            message: [0; 512],
+        }
+    }
+}
 
 const CUGRAPH_RS_CUDA_FAILURE_NONE: i32 = 0;
 const CUGRAPH_RS_CUDA_FAILURE_RECOVERABLE: i32 = 1;
@@ -59,7 +89,7 @@ pub enum ErrorKind {
     InvalidInput,
     /// An external I/O operation failed.
     IoError,
-    /// A library-level precondition, lifecycle contract, or state transition failed.
+    /// A result invariant, lifecycle contract, or state transition failed (`CUGRAPH_INVALID_STATE`).
     InvalidState,
     /// The requested operation is not implemented (`CUGRAPH_NOT_IMPLEMENTED`).
     NotImplemented,
@@ -76,6 +106,7 @@ impl ErrorKind {
             cugraph_error_code_t::CUGRAPH_INVALID_HANDLE => ErrorKind::InvalidHandle,
             cugraph_error_code_t::CUGRAPH_ALLOC_ERROR => ErrorKind::OutOfMemory,
             cugraph_error_code_t::CUGRAPH_INVALID_INPUT => ErrorKind::InvalidInput,
+            cugraph_error_code_t::CUGRAPH_INVALID_STATE => ErrorKind::InvalidState,
             cugraph_error_code_t::CUGRAPH_NOT_IMPLEMENTED => ErrorKind::NotImplemented,
             cugraph_error_code_t::CUGRAPH_UNSUPPORTED_TYPE_COMBINATION => ErrorKind::UnsupportedType,
             _ => ErrorKind::Unexpected,
@@ -627,6 +658,40 @@ pub(crate) unsafe fn check_error(
     unsafe { check_error_with_payload(code, error_ptr, payload, Some((device, cuda_failure)), operation) }
 }
 
+/// Convert the crate-owned edge-count boundary without constructing an upstream error owner.
+///
+/// # Safety
+///
+/// `detail` must be filled by the local shim, with a NUL-terminated message. The
+/// caller must retain owner-device entry until CUDA classification completes.
+pub(crate) unsafe fn check_edge_count_error(
+    code: cugraph_error_code_t,
+    detail: &EdgeCountErrorDetail,
+    device: i32,
+    operation: &'static str,
+) -> Result<()> {
+    if code == cugraph_error_code_t::CUGRAPH_SUCCESS {
+        return Ok(());
+    }
+    let payload = NativeErrorPayload {
+        allocation_source: AllocationSource::from_native(detail.allocation_source),
+        allocation_failure_source: AllocationFailureSource::from_native(detail.failure_source),
+        domain_id: detail.domain_id,
+        member_id: detail.member_id,
+        generation: detail.generation,
+        requested_bytes: detail.requested_bytes,
+        alignment: detail.alignment,
+        cuda_error: detail.cuda_error,
+        // SAFETY: the shim owns and NUL-terminates the fixed message buffer.
+        message: unsafe { CStr::from_ptr(detail.message.as_ptr()) }.to_string_lossy().into_owned(),
+    };
+    // SAFETY: owner-device entry is retained for the native CUDA probe and no upstream error owner exists.
+    unsafe {
+        let cuda_failure = native_cuda_failure_after_error();
+        check_error_with_payload(code, ptr::null_mut(), payload, Some((device, cuda_failure)), operation)
+    }
+}
+
 /// Check a host-only cuGraph C API call that cannot execute CUDA work.
 ///
 /// # Safety
@@ -702,7 +767,7 @@ unsafe fn copy_native_error_payload(error: *const cugraph_error_t) -> NativeErro
         String::new()
     } else {
         // SAFETY: cuGraph returns a NUL-terminated string owned by `error`.
-        unsafe { std::ffi::CStr::from_ptr(message) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
     };
 
     // SAFETY: `error` is non-null and live for these accessors. Each call
@@ -864,6 +929,7 @@ mod tests {
         assert_eq!(ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_INVALID_HANDLE), ErrorKind::InvalidHandle);
         assert_eq!(ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR), ErrorKind::OutOfMemory);
         assert_eq!(ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_INVALID_INPUT), ErrorKind::InvalidInput);
+        assert_eq!(ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_INVALID_STATE), ErrorKind::InvalidState);
         assert_eq!(
             ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_NOT_IMPLEMENTED),
             ErrorKind::NotImplemented

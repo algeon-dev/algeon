@@ -295,6 +295,18 @@ pub enum DynamicFilter {
         /// Inclusive maximum producer key.
         max: i64,
     },
+    /// Exact non-null integer-like keyset retained by the execution owner on
+    /// the GPU. Host predicate and row-group helpers cannot apply its values.
+    ResidentKeysetI64 {
+        /// Inclusive minimum producer key.
+        min: i64,
+        /// Inclusive maximum producer key.
+        max: i64,
+        /// Number of distinct non-null producer keys.
+        value_count: usize,
+        /// Whether the count satisfies the configured small-IN-list limit.
+        small_in_list: bool,
+    },
     /// Exact small integer-like keyset plus its range.
     SmallInListI64 {
         /// Sorted unique values in the producer keyset.
@@ -350,6 +362,8 @@ impl DynamicFilter {
             Self::Empty | Self::RangeI64 { .. } => DynamicFilterKind::Range,
             Self::SmallInListI64 { .. } => DynamicFilterKind::SmallInList,
             Self::HashSetContainsI64 { .. } => DynamicFilterKind::HashSetContains,
+            Self::ResidentKeysetI64 { small_in_list: true, .. } => DynamicFilterKind::SmallInList,
+            Self::ResidentKeysetI64 { small_in_list: false, .. } => DynamicFilterKind::HashSetContains,
         }
     }
 
@@ -358,6 +372,7 @@ impl DynamicFilter {
         match self {
             Self::Empty => None,
             Self::RangeI64 { min, max }
+            | Self::ResidentKeysetI64 { min, max, .. }
             | Self::SmallInListI64 { min, max, .. }
             | Self::HashSetContainsI64 { min, max, .. } => Some((*min, *max)),
         }
@@ -367,6 +382,7 @@ impl DynamicFilter {
     pub fn value_count(&self) -> Option<usize> {
         match self {
             Self::Empty => Some(0),
+            Self::ResidentKeysetI64 { value_count, .. } => Some(*value_count),
             Self::RangeI64 { .. } => None,
             Self::SmallInListI64 { values, .. } | Self::HashSetContainsI64 { values, .. } => Some(values.len()),
         }
@@ -846,7 +862,7 @@ fn apply_dynamic_filter_to_source(
 /// payload carries nothing prunable.
 fn dynamic_filter_row_group_key_filter(filter: &DynamicFilter) -> Option<DimensionKeyFilter> {
     match filter {
-        DynamicFilter::Empty => None,
+        DynamicFilter::Empty | DynamicFilter::ResidentKeysetI64 { .. } => None,
         DynamicFilter::RangeI64 { min, max } => {
             Some(DimensionKeyFilter::from_bounds(KeyRange { min: *min, max: *max }))
         },
@@ -1044,6 +1060,7 @@ pub fn dynamic_filter_predicate_for_schema(schema: &Schema, column: &str, filter
     let data_type = schema.field_with_name(column).ok()?.data_type();
     let column_expr = Expr::column(column);
     match filter {
+        DynamicFilter::ResidentKeysetI64 { .. } => None,
         // False for every row, built from literals so it binds without
         // reading a column.
         DynamicFilter::Empty => {

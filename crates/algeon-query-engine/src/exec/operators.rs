@@ -41,6 +41,7 @@ use super::{
 };
 
 mod aggregate;
+mod dynamic_filter;
 mod global_aggregate;
 mod projection;
 pub(super) use aggregate::{
@@ -54,6 +55,7 @@ pub(super) use aggregate::{
     record_grouped_aggregate_strategy_decision, should_execute_datafusion_exact_floating_statistical_aggregate,
     should_execute_gpu_native_statistical_partial_aggregate, upload_datafusion_exact_host_aggregate_output,
 };
+pub(in crate::exec) use dynamic_filter::PreparedDynamicFilter;
 pub(super) use global_aggregate::{
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
     cast_reduction_output_columns_with_budget, execute_global_aggregate, execute_global_aggregate_with_budget,

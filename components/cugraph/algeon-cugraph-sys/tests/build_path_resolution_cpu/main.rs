@@ -141,6 +141,11 @@ fn cuda_architecture_contracts_require_matching_requested_and_real_targets() {
     let err = build_support::validate_cuda_architecture_contracts(&components, "NATIVE").unwrap_err();
     assert!(err.contains("cuVS was built for CMAKE_CUDA_ARCHITECTURES='90'"), "unexpected error: {err}");
     assert!(err.contains("bash scripts/build/build_libcuvs.sh"), "unexpected error: {err}");
+
+    let requested = build_support::resolved_cuda_architectures(Some("80-real;90-virtual".as_ref()));
+    let shim = build_support::shim_cuda_architectures(&cugraph.join("libcugraph.so"), &requested.to_string_lossy())
+        .expect("explicit real/PTX selectors must not require inspecting a native cubin");
+    assert_eq!(shim, requested.to_string_lossy());
 }
 
 #[test]

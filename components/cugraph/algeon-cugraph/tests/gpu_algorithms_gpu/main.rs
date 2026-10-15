@@ -10,11 +10,16 @@ mod result_decoding_gpu;
 mod typed_vec_gpu;
 
 use cudf::testing::run_named_cases;
+use cugraph_sys::{
+    cugraph_data_type_id_t, cugraph_error_code_t, cugraph_error_free,
+    cugraph_type_erased_device_array_view_copy_from_host, cugraph_type_erased_device_array_view_create,
+    cugraph_type_erased_device_array_view_free,
+};
 
 #[path = "../support/common/mod.rs"]
 mod common;
 
-use std::{collections::HashMap, num::NonZeroUsize};
+use std::{collections::HashMap, num::NonZeroUsize, ptr};
 
 use common::{
     cudf::explicit_runtime,
@@ -1087,6 +1092,97 @@ fn extract_paths_from_bfs_and_sssp_results() {
     assert_eq!(sssp_paths.max_path_length(), 4);
     let sssp_path_values = sssp_paths.paths().expect("paths").to_vec_i32(&entered).expect("paths");
     assert_eq!(sssp_path_values, vec![0, 1, 4, 5]);
+
+    let destinations = DeviceArray::from_slice(&entered, &[5i32, 1, 0, 4, 5]).expect("destinations");
+    let destinations_view = destinations.view().expect("destinations_view");
+    let paths =
+        sssp_result.extract_paths(&entered, &mut graph, &sources_view, &destinations_view).expect("ordered SSSP paths");
+    assert_eq!(paths.max_path_length(), 4);
+    assert_eq!(
+        paths.paths().expect("paths").to_vec_i32(&entered).expect("paths"),
+        vec![0, 1, 4, 5, -1, -1, 0, 1, -1, -1, -1, 0, -1, 0, 1, 4, 0, 1, 4, 5]
+    );
+
+    let src = DeviceArray::from_slice(&entered, &[10i64, 20, 10, 40]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[20i64, 30, 30, 50]).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, &[0.25f64, 0.5, 2.5, 1.0]).expect("weights");
+    let (src_view, dst_view, weights_view) =
+        (src.view().expect("src_view"), dst.view().expect("dst_view"), weights.view().expect("weights_view"));
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("i64/f64 graph");
+    let sssp = graph.sssp(&entered, 10i64, &SsspParams::default().with_predecessors()).expect("sssp");
+    let paths =
+        sssp.extract_paths(&entered, &mut graph, &[10i64][..], &[30i64, 10, 20, 30][..]).expect("i64/f64 paths");
+    assert_eq!(paths.max_path_length(), 3);
+    assert_eq!(
+        paths.paths().expect("paths").to_vec_i64(&entered).expect("paths"),
+        vec![10, 20, 30, -1, -1, 10, -1, 10, 20, 10, 20, 30]
+    );
+    for (sources, destinations) in [
+        (&[10i64, 20][..], &[30i64][..]),
+        (&[10i64][..], &[50i64][..]),
+        (&[10i64][..], &[99i64][..]),
+        (&[20i64][..], &[10i64][..]),
+    ] {
+        let error = sssp.extract_paths(&entered, &mut graph, sources, destinations).expect_err("invalid extraction");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.operation(), "SsspResult::extract_paths");
+    }
+
+    let vertices = sssp.vertex_ids().expect("vertices").to_vec_i64(&entered).expect("vertices");
+    let predecessors = sssp.predecessors().expect("predecessors").expect("computed predecessors");
+    let VertexIds::I64(predecessors) = predecessors else { panic!("expected i64 predecessors") };
+    let cycle: Vec<i64> = vertices
+        .iter()
+        .map(|vertex| match vertex {
+            20 => 30,
+            30 => 20,
+            50 => 40,
+            _ => -1,
+        })
+        .collect();
+    // SAFETY: the result retains writable i64 predecessor storage, and `cycle` has one value
+    // for every vertex. The entered handle orders the copy before extraction on the same
+    // stream; `cycle` stays live through that extraction. Only temporary view metadata is freed.
+    let (code, error) = unsafe {
+        let view = cugraph_type_erased_device_array_view_create(
+            predecessors.device_ptr(),
+            predecessors.len(),
+            cugraph_data_type_id_t::INT64,
+        );
+        assert!(!view.is_null());
+        let mut error = ptr::null_mut();
+        let code = cugraph_type_erased_device_array_view_copy_from_host(
+            entered.handle_ptr(),
+            view,
+            cycle.as_ptr().cast(),
+            &mut error,
+        );
+        cugraph_type_erased_device_array_view_free(view);
+        (code, error)
+    };
+    if !error.is_null() {
+        // SAFETY: the failed copy transfers ownership of this native error to the caller.
+        unsafe { cugraph_error_free(error) };
+    }
+    assert_eq!(code, cugraph_error_code_t::CUGRAPH_SUCCESS);
+    let error = sssp.extract_paths(&entered, &mut graph, &[10i64][..], &[30i64][..]).expect_err("predecessor cycle");
+    assert_eq!(error.kind(), ErrorKind::InvalidState);
+    assert_eq!(error.operation(), "SsspResult::extract_paths");
+    for (destinations, expected_kind) in [
+        (&[50i64, 30][..], ErrorKind::InvalidInput),
+        (&[30i64, 50][..], ErrorKind::InvalidState),
+        (&[30i64, 99][..], ErrorKind::InvalidState),
+        (&[99i64, 30][..], ErrorKind::InvalidInput),
+    ] {
+        let error = sssp
+            .extract_paths(&entered, &mut graph, &[10i64][..], destinations)
+            .expect_err("first failing destination defines the error");
+        assert_eq!(error.kind(), expected_kind);
+    }
 }
 
 fn extract_paths_rejects_results_without_predecessors() {
@@ -1111,6 +1207,13 @@ fn extract_paths_rejects_results_without_predecessors() {
 
     assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "BfsResult::extract_paths");
+
+    let result = graph.sssp(&entered, 0i32, &SsspParams::default()).expect("sssp");
+    let error = result
+        .extract_paths(&entered, &mut graph, &sources_view, &destinations_view)
+        .expect_err("SSSP extraction requires predecessors");
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error.operation(), "SsspResult::extract_paths");
 }
 
 fn sssp_rejects_source_dtype_mismatch() {

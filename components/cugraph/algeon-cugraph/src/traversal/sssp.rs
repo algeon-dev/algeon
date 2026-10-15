@@ -1,11 +1,10 @@
 //! Single-Source Shortest Path (SSSP) traversal algorithm.
 
-use std::{collections::HashMap, fmt::Debug, ptr};
+use std::{fmt::Debug, ptr};
 
 use cugraph_sys::{cugraph_error_t, cugraph_paths_result_t, cugraph_sssp};
 
 use crate::{
-    array::DeviceArray,
     cudf_interop::sssp_result_to_dataframe,
     error::{Error, ErrorKind, Result, check_error},
     graph::{Forward, Graph},
@@ -15,8 +14,8 @@ use crate::{
         VertexSelection,
         typed_results::{Distances, VertexIds},
     },
-    traversal::paths::{ExtractPathsResult, PathsResult},
-    types::{CugraphElement, DataType, to_bool_t},
+    traversal::paths::{ExtractPathsResult, PathsResult, extract_paths},
+    types::{CugraphElement, to_bool_t},
 };
 
 /// Parameters for the SSSP traversal algorithm.
@@ -156,11 +155,7 @@ impl SsspResult {
         V: CugraphElement + TryInto<i64> + Copy + Debug + 'a,
         <V as TryInto<i64>>::Error: Debug,
     {
-        // The native C extract_paths implementation currently feeds the
-        // paths_result distance column into extract_bfs_paths as `vertex_t`.
-        // That is correct for BFS hop counts but not for SSSP float weights,
-        // so SSSP reconstructs from predecessors instead.
-        extract_sssp_paths_from_predecessors(handle, graph, &self.paths, sources, destinations)
+        extract_paths(handle, graph, &self.paths, sources, destinations, "SsspResult::extract_paths")
     }
 
     /// Convert this SSSP result to a cudf DataFrame.
@@ -170,155 +165,4 @@ impl SsspResult {
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
         sssp_result_to_dataframe(self, runtime).map_err(|e: Error| e.with_operation("SsspResult::to_dataframe"))
     }
-}
-
-fn extract_sssp_paths_from_predecessors<'a, V>(
-    handle: &EnteredContext<'_>,
-    graph: &mut Graph<Forward>,
-    paths: &PathsResult,
-    sources: impl Into<VertexSelection<'a, V>>,
-    destinations: impl Into<VertexSelection<'a, V>>,
-) -> Result<ExtractPathsResult>
-where
-    V: CugraphElement + TryInto<i64> + Copy + Debug + 'a,
-    <V as TryInto<i64>>::Error: Debug,
-{
-    let operation = "SsspResult::extract_paths";
-    let predecessors = paths.predecessors(operation)?.ok_or_else(|| {
-        Error::new(ErrorKind::InvalidInput, operation).with_message(
-            "paths result has no predecessor column; enable predecessor computation before extracting paths",
-        )
-    })?;
-
-    let sources = sources.into();
-    graph.validate_vertex_selection(&sources, operation, "sources", false)?;
-    let sources = sources.resolve(handle)?;
-    let sources_view = graph.resolved_vertex_view(&sources, operation, "sources")?;
-    let source_values = source_values_to_i64(sources_view.to_vec(handle)?, operation)?;
-    if source_values.len() != 1 {
-        return Err(Error::new(ErrorKind::InvalidInput, operation)
-            .with_message("SSSP path extraction requires exactly one source vertex")
-            .with_context("source_count", source_values.len().to_string()));
-    }
-    let source = source_values[0];
-
-    let destinations = destinations.into();
-    graph.validate_vertex_selection(&destinations, operation, "destinations", false)?;
-    let destinations = destinations.resolve(handle)?;
-    let destinations_view = graph.resolved_vertex_view(&destinations, operation, "destinations")?;
-    let destination_values = source_values_to_i64(destinations_view.to_vec(handle)?, operation)?;
-
-    let vertices = paths.vertex_ids(operation)?.to_vec_i64(handle)?;
-    let predecessors = predecessors.to_vec_i64(handle)?;
-    if vertices.len() != predecessors.len() {
-        return Err(Error::new(ErrorKind::InvalidState, operation)
-            .with_message("SSSP result returned mismatched vertex and predecessor lengths")
-            .with_context("vertex_count", vertices.len().to_string())
-            .with_context("predecessor_count", predecessors.len().to_string()));
-    }
-
-    let predecessor_by_vertex: HashMap<i64, i64> = vertices.into_iter().zip(predecessors).collect();
-    let mut rows = Vec::with_capacity(destination_values.len());
-    let mut max_path_length = 0usize;
-
-    for destination in destination_values {
-        let path = reconstruct_path(source, destination, &predecessor_by_vertex, operation)?;
-        max_path_length = max_path_length.max(path.len());
-        rows.push(path);
-    }
-
-    let max_path_length = max_path_length.max(1);
-    match graph.vertex_dtype() {
-        DataType::Int32 => {
-            let flattened = flatten_paths_i32(&rows, max_path_length, operation)?;
-            let paths = DeviceArray::from_slice(handle, &flattened)?;
-            Ok(ExtractPathsResult::from_i32_paths(paths, max_path_length))
-        },
-        DataType::Int64 => {
-            let flattened = flatten_paths_i64(&rows, max_path_length);
-            let paths = DeviceArray::from_slice(handle, &flattened)?;
-            Ok(ExtractPathsResult::from_i64_paths(paths, max_path_length))
-        },
-        other => Err(Error::new(ErrorKind::UnsupportedType, operation)
-            .with_message(format!("graph vertex dtype {other} is not supported for SSSP path extraction"))),
-    }
-}
-
-fn source_values_to_i64<V>(values: Vec<V>, operation: &'static str) -> Result<Vec<i64>>
-where
-    V: TryInto<i64> + Copy + Debug,
-    <V as TryInto<i64>>::Error: Debug,
-{
-    values
-        .into_iter()
-        .map(|value| {
-            value.try_into().map_err(|error| {
-                Error::new(ErrorKind::InvalidInput, operation)
-                    .with_message("vertex value must be representable as i64")
-                    .with_context("value", format!("{value:?}"))
-                    .with_context("error", format!("{error:?}"))
-            })
-        })
-        .collect()
-}
-
-fn reconstruct_path(
-    source: i64,
-    destination: i64,
-    predecessor_by_vertex: &HashMap<i64, i64>,
-    operation: &'static str,
-) -> Result<Vec<i64>> {
-    let mut reversed = vec![destination];
-    let mut current = destination;
-
-    for _ in 0..=predecessor_by_vertex.len() {
-        if current == source {
-            reversed.reverse();
-            return Ok(reversed);
-        }
-
-        let predecessor = predecessor_by_vertex.get(&current).copied().ok_or_else(|| {
-            Error::new(ErrorKind::InvalidInput, operation)
-                .with_message("destination vertex is not present in the SSSP predecessor result")
-                .with_context("destination", destination.to_string())
-                .with_context("current", current.to_string())
-        })?;
-
-        if predecessor < 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, operation)
-                .with_message("destination vertex is unreachable from the SSSP source")
-                .with_context("source", source.to_string())
-                .with_context("destination", destination.to_string()));
-        }
-
-        current = predecessor;
-        reversed.push(current);
-    }
-
-    Err(Error::new(ErrorKind::InvalidState, operation)
-        .with_message("cycle detected while reconstructing SSSP predecessor path")
-        .with_context("source", source.to_string())
-        .with_context("destination", destination.to_string()))
-}
-
-fn flatten_paths_i64(rows: &[Vec<i64>], max_path_length: usize) -> Vec<i64> {
-    let mut flattened = vec![-1_i64; rows.len() * max_path_length];
-    for (row_index, path) in rows.iter().enumerate() {
-        let start = row_index * max_path_length + (max_path_length - path.len());
-        flattened[start..start + path.len()].copy_from_slice(path);
-    }
-    flattened
-}
-
-fn flatten_paths_i32(rows: &[Vec<i64>], max_path_length: usize, operation: &'static str) -> Result<Vec<i32>> {
-    flatten_paths_i64(rows, max_path_length)
-        .into_iter()
-        .map(|value| {
-            i32::try_from(value).map_err(|_| {
-                Error::new(ErrorKind::InvalidState, operation)
-                    .with_message("SSSP path vertex exceeded i32 range for an i32 graph")
-                    .with_context("value", value.to_string())
-            })
-        })
-        .collect()
 }

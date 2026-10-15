@@ -2,7 +2,7 @@ use query_planning::dynamic_filter::DynamicFilterConsumer;
 
 use super::{
     BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, BoundedJoinLeafSourceStreamStage, NodeId,
-    ProjectionNode, ResidentGpuFrame, Result, execute_filter_with_budget, execute_projection_with_budget,
+    ProjectionNode, ResidentGpuFrame, Result, execute_projection_with_budget,
 };
 use crate::exec::bounded::run_budgeted;
 
@@ -26,7 +26,7 @@ pub(super) fn apply_join_leaf_source_stream_stages(
                     *node_id,
                     "join_source_filter",
                     input.frame,
-                    |context, input, token, metrics| execute_filter_with_budget(context, node, input, token, metrics),
+                    |context, input, token, metrics| node.execute(context, input, token, metrics),
                 )?;
                 // Both route kinds were counted as applied when the stage was
                 // installed; each chunk adds only its row evidence.

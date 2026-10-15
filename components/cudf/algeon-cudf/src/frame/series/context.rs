@@ -8,7 +8,7 @@ use super::{
 use crate::runtime::Runtime;
 use crate::{
     core::{
-        column::{Column, ColumnView},
+        column::{Column, ColumnView, copy_view_in},
         error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         row_range,
         scalar::{Scalar, ScalarValue},
@@ -369,24 +369,14 @@ impl Series {
         ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<Series> {
+        let (start, end) = row_range::checked_bounds_i32(start, len, operation)?;
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
-        let map = row_range::gather_map_in_domain(start, len, &output_domain, operation)?;
-        let map_view = map.view()?;
-
-        let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-        let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;
         let exec_options = output_domain.enter_execution()?;
-        let result = gather_impl(
-            &ttv,
-            &map_view,
-            cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
-            "dont_check",
-            &output_domain,
-            exec_options.options(),
-            operation,
-        )?;
-        let mut cols = result.into_columns()?;
-        Series::from_column(cols.remove(0))
+        let view =
+            self.column.view()?.slice_with_exec_options(start, end - start, exec_options.options(), operation)?;
+        let column =
+            copy_view_in(&view, &output_domain, exec_options.options()).map_err(|error| error.reanchor(operation))?;
+        Series::from_column(column)
     }
 
     pub(super) fn gather_with_context(

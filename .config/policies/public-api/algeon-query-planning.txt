@@ -591,6 +591,11 @@ pub query_planning::dynamic_filter::DynamicFilter::HashSetContainsI64::values: a
 pub query_planning::dynamic_filter::DynamicFilter::RangeI64
 pub query_planning::dynamic_filter::DynamicFilter::RangeI64::max: i64
 pub query_planning::dynamic_filter::DynamicFilter::RangeI64::min: i64
+pub query_planning::dynamic_filter::DynamicFilter::ResidentKeysetI64
+pub query_planning::dynamic_filter::DynamicFilter::ResidentKeysetI64::max: i64
+pub query_planning::dynamic_filter::DynamicFilter::ResidentKeysetI64::min: i64
+pub query_planning::dynamic_filter::DynamicFilter::ResidentKeysetI64::small_in_list: bool
+pub query_planning::dynamic_filter::DynamicFilter::ResidentKeysetI64::value_count: usize
 pub query_planning::dynamic_filter::DynamicFilter::SmallInListI64
 pub query_planning::dynamic_filter::DynamicFilter::SmallInListI64::max: i64
 pub query_planning::dynamic_filter::DynamicFilter::SmallInListI64::min: i64

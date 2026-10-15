@@ -1,20 +1,40 @@
 //! Transient decompressed-edgelist views for structural queries.
 
-use std::marker::PhantomData;
+use std::{ffi::c_void, marker::PhantomData};
 
 use cugraph_sys::{
-    cugraph_edgelist_get_destinations, cugraph_edgelist_get_sources, cugraph_edgelist_t,
-    cugraph_type_erased_device_array_view_t,
+    cugraph_edgelist_get_destinations, cugraph_edgelist_get_sources, cugraph_edgelist_t, cugraph_error_code_t,
+    cugraph_graph_properties_t, cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::RawDeviceArrayView,
     cuda::{DeviceResourceKind, drop_device_resource},
-    error::{Error, ErrorKind, Result, require_non_null},
-    handle::{EnteredContext, ResourceHandleLease},
+    error::{EdgeCountErrorDetail, Error, ErrorKind, Result, check_edge_count_error, require_non_null},
+    handle::{EnteredContext, ResourceHandleLease, map_runtime_execution_binding_error},
     structure::VertexIds,
     types::GraphProperties,
 };
+
+#[repr(C)]
+struct EdgeCountResult {
+    count: usize,
+    source: i64,
+    destination: i64,
+    multiplicity: usize,
+}
+
+unsafe extern "C" {
+    fn cugraph_rs_count_logical_edges(
+        cuda_stream: *mut c_void,
+        device_memory_resource: *mut c_void,
+        sources: *const cugraph_type_erased_device_array_view_t,
+        destinations: *const cugraph_type_erased_device_array_view_t,
+        properties: cugraph_graph_properties_t,
+        result: *mut EdgeCountResult,
+        error: *mut EdgeCountErrorDetail,
+    ) -> cugraph_error_code_t;
+}
 
 pub(crate) struct DecompressedEdgelist {
     raw: *mut cugraph_edgelist_t,
@@ -76,22 +96,61 @@ impl DecompressedEdgelist {
         let destinations =
             VertexIds::from_raw(self.raw_view(cugraph_edgelist_get_destinations, operation, "destinations")?)?;
 
-        match (sources, destinations) {
-            (VertexIds::I32(src), VertexIds::I32(dst)) => {
-                let src = src.to_vec(handle)?;
-                let dst = dst.to_vec(handle)?;
-                logical_edge_count_from_host(src, dst, properties, operation)
-            },
-            (VertexIds::I64(src), VertexIds::I64(dst)) => {
-                let src = src.to_vec(handle)?;
-                let dst = dst.to_vec(handle)?;
-                logical_edge_count_from_host(src, dst, properties, operation)
-            },
-            (VertexIds::I32(_), VertexIds::I64(_)) | (VertexIds::I64(_), VertexIds::I32(_)) => {
-                Err(Error::new(ErrorKind::InvalidState, operation)
-                    .with_message("decompressed edgelist source/destination vertex dtypes differ"))
-            },
+        if matches!(
+            (&sources, &destinations),
+            (VertexIds::I32(_), VertexIds::I64(_)) | (VertexIds::I64(_), VertexIds::I32(_))
+        ) {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("decompressed edgelist source/destination vertex dtypes differ"));
         }
+        let Some(runtime) = handle.runtime() else {
+            // External cuGraph handles do not expose their stream or memory resource through the public C API.
+            return match (sources, destinations) {
+                (VertexIds::I32(sources), VertexIds::I32(destinations)) => logical_edge_count_from_host(
+                    sources.to_vec(handle)?,
+                    destinations.to_vec(handle)?,
+                    properties,
+                    operation,
+                ),
+                (VertexIds::I64(sources), VertexIds::I64(destinations)) => logical_edge_count_from_host(
+                    sources.to_vec(handle)?,
+                    destinations.to_vec(handle)?,
+                    properties,
+                    operation,
+                ),
+                _ => unreachable!("endpoint dtypes were validated above"),
+            };
+        };
+        let binding =
+            runtime.execution_binding().map_err(|error| map_runtime_execution_binding_error(error, operation))?;
+        let sources = self.raw_view(cugraph_edgelist_get_sources, operation, "sources")?;
+        let destinations = self.raw_view(cugraph_edgelist_get_destinations, operation, "destinations")?;
+        let mut result = EdgeCountResult { count: 0, source: 0, destination: 0, multiplicity: 0 };
+        let mut error = EdgeCountErrorDetail::new();
+        // SAFETY: the entered runtime retains the explicit stream/MR and endpoint backing arrays;
+        // both stack outputs stay writable until the shim returns.
+        let code = unsafe {
+            cugraph_rs_count_logical_edges(
+                binding.cuda_stream().as_raw(),
+                binding.memory_resource().as_raw(),
+                sources.as_ptr(),
+                destinations.as_ptr(),
+                properties.into(),
+                &mut result,
+                &mut error,
+            )
+        };
+        // SAFETY: the local shim filled this stack payload while owner-device entry remained live.
+        if let Err(error) = unsafe { check_edge_count_error(code, &error, handle.device(), operation) } {
+            return Err(if code == cugraph_error_code_t::CUGRAPH_INVALID_STATE && result.multiplicity != 0 {
+                error
+                    .with_context("edge", format!("({}, {})", result.source, result.destination))
+                    .with_context("run_len", result.multiplicity.to_string())
+            } else {
+                error
+            });
+        }
+        Ok(result.count)
     }
 }
 

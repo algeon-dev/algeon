@@ -3,7 +3,7 @@ mod build_support;
 use std::{collections::BTreeSet, env, path::PathBuf};
 
 use build_support::{
-    cuda_toolkit_include_dirs, cuda_toolkit_lib_dirs, resolve_shim_compile_layout, system_include_args,
+    build_cuda_shim, cuda_toolkit_include_dirs, cuda_toolkit_lib_dirs, resolve_shim_compile_layout, system_include_args,
 };
 
 fn emit_link_search_path(path: &str) {
@@ -93,6 +93,9 @@ fn main() {
         "DEP_CUGRAPH_RUNTIME_LIB_DIRS",
         "DEP_CUGRAPH_NATIVE_INCLUDE_DIRS",
         "DEP_CUGRAPH_NATIVE_LINK_DIRS",
+        "DEP_CUGRAPH_CUDA_ARCHITECTURES",
+        "CUDACXX",
+        "CUDAHOSTCXX",
         "DEP_CUDF_RUST_ROOT",
         "DEP_CUDF_RUST_RUNTIME_LIB_DIR",
         "DEP_CUDF_RUST_RMM_RUNTIME_LIB",
@@ -105,6 +108,9 @@ fn main() {
     }
 
     for path in [
+        manifest_dir.join("shim").join("CMakeLists.txt"),
+        manifest_dir.join("shim").join("edge_count.cu"),
+        manifest_dir.join("shim").join("edge_count.h"),
         manifest_dir.join("shim").join("runtime_resource_handle.cpp"),
         manifest_dir.join("shim").join("runtime_resource_handle.h"),
         manifest_dir.join("shim").join("memory_resource_compat.hpp"),
@@ -125,6 +131,13 @@ fn main() {
 
     let compile_layout =
         resolve_shim_compile_layout(&manifest_dir, native_include_dirs).unwrap_or_else(|message| panic!("{message}"));
+
+    let output_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let architectures = env::var("DEP_CUGRAPH_CUDA_ARCHITECTURES")
+        .expect("cugraph-sys must publish the resolved real CUDA architectures");
+    build_cuda_shim(&compile_layout, &output_dir, &architectures).unwrap_or_else(|error| panic!("{error}"));
+    emit_link_search_path(&output_dir.display().to_string());
+    println!("cargo:rustc-link-lib=static=cugraph_rs_edge_count");
 
     let mut build = cc::Build::new();
     build.cpp(true);

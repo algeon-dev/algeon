@@ -118,9 +118,12 @@ An application using `algeon-datafusion` from crates.io still needs the
 a CUDA toolkit and a compatible host toolchain. The `cuvs` dependency, also
 required by `cugraph` and `cuml`, uses CMake package discovery and compiles a C
 ABI probe. cuGraph discovery uses `readelf` and `ldd`. Install binutils and the
-Linux loader tools. The safe cuGraph crate compiles a C++20 shim through `cc`,
-using `CXX` and the installed cuGraph, cuDF/RMM and CUDA headers. Preserve the
-`include/` trees when staging native install prefixes.
+Linux loader tools. The safe cuGraph crate compiles its C++20 runtime shim
+through `cc` and its CUDA edge-count shim through CMake and Ninja. These builds
+use `CXX`, `CUDACXX` and `CUDAHOSTCXX` with the installed cuGraph, cuDF/RMM and
+CUDA headers. The CUDA shim preserves explicit `CMAKE_CUDA_ARCHITECTURES`
+selections; `NATIVE` uses the real architectures in the selected cuGraph library.
+Preserve the `include/` trees when staging native install prefixes.
 
 Registry consumers use the installed cuDF, cuGraph and cuML shims and checked-in
 FFI bindings. They do not rebuild those RAPIDS libraries or run bindgen. Stable

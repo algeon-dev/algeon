@@ -17,7 +17,7 @@ use super::{
     CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphEdgeCanonicalFacts, CugraphInputRowBounds,
     CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionError, DataFusionResult, DisplayAs, DisplayFormatType,
     EagerCugraphHostOutput, EmissionType, EquivalenceProperties, Error, ErrorCode, ExecutionContext, ExecutionPlan,
-    ExecutionPlanMetricsSet, GpuIslandHostBoundaryConfig, GpuResidentProducer, GpuResultHandle,
+    ExecutionPlanMetricsSet, GpuDataFrame, GpuIslandHostBoundaryConfig, GpuResidentProducer, GpuResultHandle,
     GraphAlgorithmRuntimeMetrics, GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader,
     GraphBfsPublishedResult, GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionMetrics,
     GraphExecutionPlan, GraphResidencyDescriptor, MetricsSet, NEXT_CUGRAPH_GPU_RESULT_INPUT_ID,
@@ -525,27 +525,7 @@ impl CugraphAlgoExec {
                                     GraphBfsFollowerRoute::HandoffGpu => {
                                         let published =
                                             result.gpu_handle().expect("GPU route requires a GPU publication");
-                                        // The published handle is retained by the leader's grant: returning it
-                                        // directly would fail bound refinement with another attempt's lease.
-                                        // Materialize through host staging and re-upload so the follower retains
-                                        // its own grant owner, mirroring the host-follower materialization route.
-                                        // The download completes the leader's device work before the follower
-                                        // re-uploads. The scope claim travels with the copy; the follower's
-                                        // own admission evidence re-verifies it before use.
-                                        let producer_execution_identity = published.producer_execution_identity();
-                                        let output = materialize_gpu_output_eagerly(
-                                            published,
-                                            task_context.as_ref(),
-                                            native_context.cancellation().clone(),
-                                            self.host_boundary_config.max_output_staging_bytes(),
-                                            None,
-                                            &graph_metrics,
-                                        )?;
-                                        let (batches, _) = output.shared_parts();
-                                        let (handle, _) =
-                                            self.upload_follower_output(native_context, batches.as_slice())?;
-                                        let handle =
-                                            handle.with_producer_execution_identity(producer_execution_identity);
+                                        let (handle, _) = self.copy_follower_gpu_output(native_context, published)?;
                                         follower.record_copy();
                                         self.record_bfs_singleflight_gpu_result_follower_metrics(
                                             &graph_metrics,
@@ -587,15 +567,40 @@ impl CugraphAlgoExec {
         }
     }
 
-    /// Uploads one joined follower's copy of the published BFS result into
-    /// its own admitted grant.
-    ///
-    /// Every follower route pays for its own device memory: the publication
-    /// belongs to the leader's attempt, so returning it directly would fail
-    /// bound refinement with another attempt's lease. Retaining the upload
-    /// under this attempt's resident owner is what makes it an ordinary
-    /// executor-published output; without that owner bound refinement sees an
-    /// ownerless handle and drops the attempt.
+    /// Copies a publication into the follower's admitted allocation domain.
+    fn copy_follower_gpu_output(
+        &self,
+        native_context: &ExecutionContext,
+        published: GpuResultHandle,
+    ) -> DataFusionResult<(GpuResultHandle, Option<u64>)> {
+        native_context.cancellation().check("algeon_datafusion.cugraph_sql.bfs_singleflight_follower").map_err(
+            |error| {
+                Error::from_native(
+                    "algeon_datafusion.cugraph_sql.bfs_singleflight_follower",
+                    "cancelled before copying the BFS publication",
+                    error,
+                )
+            },
+        )?;
+        let runtime = counted_cudf_runtime(
+            native_context,
+            "algeon_datafusion.cugraph_sql.bfs_singleflight_follower",
+            "query service closed before the BFS follower acquired its runtime",
+        )?;
+        // cuDF orders both streams around the copy. The publication and its
+        // drain guard remain live until the follower owner records completion.
+        let frame = published.frame().copy_into_runtime(&runtime).map_err(|error| {
+            Error::from_cudf(
+                "algeon_datafusion.cugraph_sql.bfs_singleflight_follower",
+                "failed to copy the BFS publication into the follower runtime",
+                error,
+            )
+        })?;
+        let (handle, bytes) = self.bind_follower_output(native_context, GpuDataFrame::new(frame))?;
+        Ok((handle.with_producer_execution_identity(published.producer_execution_identity()), bytes))
+    }
+
+    /// Uploads a host publication into the follower's admitted allocation domain.
     fn upload_follower_output(
         &self,
         native_context: &ExecutionContext,
@@ -603,6 +608,15 @@ impl CugraphAlgoExec {
     ) -> DataFusionResult<(GpuResultHandle, Option<u64>)> {
         let schema = self.schema();
         let frame = record_batches_to_gpu(native_context, Arc::clone(&schema), batches)?;
+        self.bind_follower_output(native_context, frame)
+    }
+
+    fn bind_follower_output(
+        &self,
+        native_context: &ExecutionContext,
+        frame: GpuDataFrame,
+    ) -> DataFusionResult<(GpuResultHandle, Option<u64>)> {
+        let schema = self.schema();
         let output_device_bytes = frame.device_allocated_size_bytes().ok();
         let resident_owner =
             native_context.retain_resident_output_owner(output_device_bytes.unwrap_or(0)).map_err(|error| {

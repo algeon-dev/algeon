@@ -270,6 +270,10 @@ fn pagerank_bfs_betweenness_and_path_decode_failures_are_typed_and_recoverable()
     let raw_csr_indices = RawArrayView::int32(&csr_indices_view);
     sweep_operation("graph_build_csr", &runtime, &domain, || build_csr(&entered, &raw_csr_offsets, &raw_csr_indices));
 
+    let mut count_graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("count graph");
+    assert_eq!(count_graph.edge_count(&entered).expect("edge count warmup"), src_view.len());
+    sweep_operation("edge_count", &runtime, &domain, || count_graph.edge_count(&entered));
+
     let mut pagerank_graph =
         GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("PageRank graph");
     let warmup = pagerank_graph.pagerank(&entered, &PageRankParams::default()).expect("PageRank warmup");

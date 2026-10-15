@@ -1,13 +1,25 @@
+use std::sync::Arc;
+
+use arrow::{
+    array::{ArrayRef, ListArray, StringArray},
+    datatypes::Int32Type,
+    record_batch::RecordBatch,
+};
 use cudf::{
     DataFrame, ErrorCode, ErrorKind, Exec, ExecutionBudgetRequest,
-    testing::dataframe::{
-        trigger_dataframe_row_range_end_limit_error_for_test, trigger_dataframe_row_range_overflow_error_for_test,
-        trigger_dataframe_row_range_start_limit_error_for_test,
+    frame::dataframe::GpuRecordBatch,
+    testing::{
+        dataframe::{
+            trigger_dataframe_row_range_end_limit_error_for_test, trigger_dataframe_row_range_overflow_error_for_test,
+            trigger_dataframe_row_range_start_limit_error_for_test,
+        },
+        prelude::*,
     },
 };
 
 use crate::common::{
-    column_from_slice, dataframe_from_columns, error_context_value, execution_budget_token, with_test_runtime,
+    column_from_slice, dataframe_from_columns, error_context_value, execution_budget_token, int64_array,
+    nested_dataframe, struct_array, utf8_array, with_test_runtime,
 };
 
 fn sample_df() -> DataFrame {
@@ -33,6 +45,55 @@ fn test_head_zero_rows() {
     assert_eq!(h.num_rows(), 0);
     assert_eq!(h.num_columns(), 2);
     assert_eq!(h.column_names(), vec!["id", "val"]);
+
+    let text: ArrayRef = Arc::new(StringArray::from(vec![Some("prefix"), None, Some("value"), Some("")]));
+    let lists: ArrayRef = Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>([
+        Some(vec![Some(10)]),
+        None,
+        Some(vec![Some(20), None]),
+        Some(vec![]),
+    ]));
+    let batch = RecordBatch::try_from_iter([("text", text), ("nested", lists)]).unwrap();
+    let frame = with_test_runtime(|runtime| DataFrame::from_record_batch(runtime, &batch)).unwrap();
+    for (offset, length) in [(1, 2), (0, 0), (4, 0)] {
+        let sliced = frame.on(Exec::RETAINED).slice(offset, length).unwrap();
+        let actual = GpuRecordBatch::new(sliced, batch.schema()).unwrap().to_host_record_batch().unwrap();
+        assert_eq!(actual, batch.slice(offset, length));
+        let columns = frame
+            .column_names()
+            .into_iter()
+            .map(|name| {
+                let values = frame.series(name).unwrap().on(Exec::RETAINED).slice(offset, length).unwrap();
+                (name, values)
+            })
+            .collect::<Vec<_>>();
+        let sliced = DataFrame::from_series(columns).unwrap();
+        let actual = GpuRecordBatch::new(sliced, batch.schema()).unwrap().to_host_record_batch().unwrap();
+        assert_eq!(actual, batch.slice(offset, length));
+    }
+    let frame = with_test_runtime(|runtime| {
+        nested_dataframe(
+            runtime,
+            vec![(
+                "record",
+                struct_array(vec![
+                    ("value", int64_array(&[10, 20, 30, 40])),
+                    ("text", utf8_array(&["prefix", "one", "two", ""])),
+                ]),
+            )],
+        )
+    });
+    for length in [0, 2] {
+        let sliced = frame.on(Exec::RETAINED).slice(1, length).unwrap();
+        let value = frame.series("record").unwrap();
+        for record in [sliced.series("record").unwrap(), value.on(Exec::RETAINED).slice(1, length).unwrap()] {
+            let view = record.testing_view().unwrap();
+            assert_eq!(view.len().unwrap(), length);
+            assert_eq!(view.num_children().unwrap(), 2);
+            assert_eq!(view.child(0).unwrap().to_vec::<i64>().unwrap(), [20, 30][..length]);
+            assert_eq!(view.child(1).unwrap().to_strings_lossy().unwrap(), ["one", "two"][..length]);
+        }
+    }
 }
 
 fn test_head_clamps_to_num_rows() {
@@ -140,7 +201,7 @@ fn test_slice_with_budget_reports_member_accounting_on_rejection() {
 
     let err = token
         .run("dataframe::slice", |exec| df.on(exec).slice(0, 5))
-        .expect_err("one-byte budget should not cover the gathered slice copy");
+        .expect_err("one-byte budget should not cover the slice copy");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "partition_slice");
@@ -151,6 +212,36 @@ fn test_slice_with_budget_reports_member_accounting_on_rejection() {
         err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").failed_allocation_count,
         1
     );
+    drop(err);
+    drop(token);
+    with_test_runtime(|runtime| runtime.synchronize()).unwrap();
+
+    let values = with_test_runtime(|runtime| runtime.sequence(0i64, 1i64, 8192)).unwrap();
+    let frame = DataFrame::from_series([("value", values.clone())]).unwrap();
+    let output_rows = 4096;
+    for series_slice in [false, true] {
+        let token = with_test_runtime(|runtime| {
+            execution_budget_token(
+                runtime,
+                ExecutionBudgetRequest::new(output_rows * 8 + 1024).with_boundary("contiguous_slice"),
+            )
+            .unwrap()
+        });
+        let outcome = token
+            .run("slice", |exec| {
+                if series_slice {
+                    values.on(exec).slice(1, output_rows)
+                } else {
+                    frame.on(exec).slice(1, output_rows)?.series("value")
+                }
+            })
+            .expect("the output budget covers a contiguous copy without an additional row map");
+        assert_eq!(outcome.value().len(), output_rows);
+        assert_eq!(outcome.value().to_vec_strict::<i64>().unwrap(), (1..=output_rows as i64).collect::<Vec<_>>());
+        drop(outcome);
+        drop(token);
+        with_test_runtime(|runtime| runtime.synchronize()).unwrap();
+    }
 }
 
 fn test_testing_hook_locks_dataframe_row_range_start_limit_contract() {
