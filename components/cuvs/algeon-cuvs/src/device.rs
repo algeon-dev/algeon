@@ -14,10 +14,8 @@ use crate::{
 
 /// Element type of a cuVS device buffer or tensor.
 ///
-/// Implemented for `f32`, `f64`, `i8`, `u8`, `i32`, and `i64`. The set is closed: the supertrait
-/// [`CudfType`] is sealed, so downstream crates cannot implement it for their
-/// own types, and the orphan rule prevents them from implementing this trait
-/// for other foreign types.
+/// Implemented for `f32`, `f64`, `i8`, `u8`, `i32`, and `i64`. The sealed supertrait
+/// [`CudfType`] restricts implementations to this crate.
 pub trait DeviceElement: CudfType + Copy + 'static {
     /// DLPack type code used, with [`DLPACK_BITS`](Self::DLPACK_BITS) and one
     /// lane, to describe tensors of this element to cuVS.
@@ -360,10 +358,8 @@ enum MatrixStorage<T: DeviceElement> {
 
 /// An owned contiguous numeric matrix on one exact cudf execution binding.
 ///
-/// The packed variant consumes a cudf-owned packed matrix. Because the owner
-/// is exclusive, `as_tensor_mut` can safely expose the
-/// allocation to native algorithms that update their input without mutating
-/// any source cudf columns used to create the pack.
+/// Packed storage provides exclusive ownership, allowing in-place native
+/// updates without mutating source columns.
 pub struct OwnedMatrix<T: DeviceElement> {
     storage: MatrixStorage<T>,
     rows: usize,

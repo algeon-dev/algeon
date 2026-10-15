@@ -5,8 +5,8 @@
 //! uses this crate for its component contracts. See the
 //! [API documentation boundary](https://algeon.dev/design#api-documentation).
 //!
-//! This crate provides checked-in bindings generated with `bindgen`. Users should
-//! prefer the safe `cugraph` crate and avoid calling these bindings directly.
+//! This crate provides checked-in bindings generated with `bindgen`. Safe
+//! APIs are exposed by the [`cugraph`](https://docs.rs/algeon-cugraph) crate.
 
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]

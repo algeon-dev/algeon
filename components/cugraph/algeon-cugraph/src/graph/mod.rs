@@ -2,18 +2,15 @@
 //!
 //! A [`Graph`] is the central data structure for cuGraph algorithms.
 //!
-//! Most callers should construct graphs through
-//! [`crate::cudf_interop`] from cudf
-//! [`Series`](cudf::Series)/[`DataFrame`](cudf::DataFrame) inputs. This module
-//! documents the lower-level graph object itself plus [`GraphBuilder`], which
-//! is useful when edge lists are already materialized as typed device arrays.
+//! Graph ingress from cuDF tables is provided by [`crate::cudf_interop`]. This
+//! module provides the underlying [`Graph`] container and [`GraphBuilder`] for
+//! edge lists materialized as typed device arrays.
 //!
 //! # Type-state encoding
 //!
 //! The `Graph<T>` type parameter encodes whether the graph is stored in
 //! transposed form ([`Transposed`]) or forward form ([`Forward`]). Algorithms
-//! that require a specific layout accept only the correct variant, so
-//! mismatches are caught at compile time:
+//! enforce their required layout at compile time:
 //!
 //! - **[`Forward`]**: required by [`Graph::bfs`] and [`Graph::louvain`]
 //! - **[`Transposed`]**: required by [`Graph::pagerank`],
@@ -307,10 +304,9 @@ impl<T> Graph<T> {
     /// Park this graph under the ordered execution binding without requiring
     /// it to match the construction binding (storage/execution split).
     ///
-    /// The entering binding must be the ordered binding: every tracked use
-    /// ran on its stream, so the park event recorded below stays ordered
-    /// after all of them. Teardown still runs under the retained creation
-    /// leases. Use this after [`resume_under`](ParkedGraph::resume_under);
+    /// The entering binding must be the ordered binding that executed all tracked
+    /// work, ensuring the recorded park event orders after preceding graph operations.
+    /// Teardown still runs under the retained creation leases. Use this after [`resume_under`](ParkedGraph::resume_under);
     /// parking a graph that ran only under its construction binding must keep
     /// using [`park`](Graph::park).
     ///
@@ -483,8 +479,7 @@ impl<T> Graph<T> {
 
     /// Return the number of edges currently stored in this graph.
     ///
-    /// This materializes a transient edgelist view via the cuGraph C API, so
-    /// it should be treated as a structural query whose cost is not constant-time.
+    /// Materializes a transient edgelist view via the cuGraph C API with O(|E|) cost.
     ///
     /// The returned count follows the graph's declared
     /// [`GraphProperties`]:

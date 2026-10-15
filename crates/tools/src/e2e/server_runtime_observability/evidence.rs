@@ -22,8 +22,7 @@ use super::{
 use crate::diagnostics_tsv::tsv_section;
 
 pub(super) const CONTROL_SCHEMA: &str = "algeon_datafusion.query_runtime_artifact.control";
-/// Every runtime artifact control carries exactly these fields, whatever its
-/// state.
+/// Required fields present on runtime artifact controls across all states.
 const CONTROL_FIELDS: [&str; 8] =
     ["schema", "query_id", "state", "retryable", "reason", "incomplete", "runtime_jsonl_follows", "attempt"];
 pub(super) const QUERY_ID_METADATA: &str = "x-algeon-query-id";

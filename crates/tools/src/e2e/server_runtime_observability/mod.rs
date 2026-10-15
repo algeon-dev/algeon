@@ -1,9 +1,9 @@
 //! Black-box runtime-observability acceptance for the `algeon_server` binary.
 //!
-//! This is an explicit tool; it is not a Cargo test. It starts the server as a child
-//! process over local Parquet files, drives Flight SQL statements and the
-//! query-stats and runtime-artifact actions, restarts the server, and writes one
-//! evidence JSON. See `--help` for the options.
+//! Acceptance tool executed outside Cargo test targets. Launches the server
+//! as a child process over local Parquet tables, executes Flight SQL
+//! statements and query-stats or runtime-artifact actions, validates retention
+//! across server restarts, and records structured evidence JSON.
 
 mod datafusion_baseline_phase;
 mod evidence;

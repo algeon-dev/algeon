@@ -145,20 +145,16 @@ const GRAPH_ITEMS: &[(&str, u64)] = &[
     ("betweenness_k256", 256),
 ];
 
-/// Builds one graph item's SQL.
+/// Generates SQL for a graph benchmark item.
 ///
-/// Each item aggregates the algorithm's output, so a wrong result cannot pass
-/// the harness fingerprint: a plain row count is the vertex count for every
-/// vertex-keyed algorithm and would be identical whether the scores were
-/// computed or not.
+/// Each query aggregates algorithm outputs into deterministic summary values.
+/// Row counts alone equal the vertex count across all vertex-keyed algorithms,
+/// making value aggregation necessary for fingerprint verification.
 ///
-/// Which aggregate is usable depends on the algorithm's reproducibility.
-/// Component labels are canonicalized to the minimum vertex id of each
-/// component and betweenness scores accumulate in fixed source order, so both
-/// are run-stable and summed directly like the other integer and score
-/// outputs. A wrong result still cannot pass the fingerprint: a plain row
-/// count is the vertex count for every vertex-keyed algorithm and would be
-/// identical whether the scores were computed or not.
+/// Aggregation functions account for algorithm properties. Component labels
+/// normalize to the minimum vertex identifier of each component, while
+/// betweenness centrality scores accumulate in deterministic source order,
+/// allowing direct summation for fingerprint comparison.
 #[cfg(feature = "cugraph")]
 fn graph_sql(name: &str, seed: i64) -> Option<String> {
     let sql = match name {
@@ -278,10 +274,10 @@ pub(super) fn mix_families(mix: &[MixEntry]) -> Result<Vec<WorkloadFamily>, Box<
     Ok(families)
 }
 
-/// One session context per workload family, all backed by the same backend.
+/// Session contexts partitioned by workload family and sharing a common backend.
 ///
-/// TPC-H and TPC-DS both define a `customer` table, so a single context cannot
-/// hold both datasets.
+/// Separate contexts avoid catalog collisions between datasets with overlapping
+/// table names, such as the `customer` table in TPC-H and TPC-DS.
 pub(super) type FamilySessions = BTreeMap<WorkloadFamily, Arc<SessionContext>>;
 
 pub(super) async fn build_sessions(

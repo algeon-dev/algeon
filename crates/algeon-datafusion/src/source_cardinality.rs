@@ -1,9 +1,9 @@
 //! Source cardinality proofs from Arrow schema metadata.
 //!
-//! The only trusted unique-key input is the Arrow schema/field metadata that
-//! travels with the scan being lowered. A unique-key predicate can bound a
-//! reader to `max_rows = 1`. Evidence that does not flow with the scan, such as
-//! a process-global path registry, risks truncating data.
+//! Arrow schema/field metadata traveling with the scan provides unique-key
+//! inputs for lowering. A unique-key predicate can bound a reader to
+//! `max_rows = 1`. Evidence that does not flow with the scan, such as a
+//! process-global path registry, risks truncating data.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -17,13 +17,12 @@ pub const SOURCE_UNIQUE_KEYS_METADATA_KEY: &str = "algeon_datafusion.source_uniq
 /// Returns a copy of `schema` with the declared source unique-key groups
 /// recorded on the key columns' fields.
 ///
-/// Unique-key evidence is source-scoped, so it is carried only on fields. A
-/// schema-level entry would share one key across every source in a plan:
-/// `build_join_schema` concatenates both sides' schema metadata and keeps the
-/// last writer, so a join between two keyed sources replaces one
-/// source's evidence with the other's. That also breaks physical optimizer
-/// rules that declare `schema_check()`, which reject any schema metadata
-/// change across the rule.
+/// Unique-key evidence is source-scoped and carried directly on fields. A
+/// schema-level entry would share one key across all sources in a plan:
+/// `build_join_schema` concatenates schema metadata from both sides and keeps the
+/// last writer, causing joins between keyed sources to overwrite evidence.
+/// Schema-level modifications also conflict with physical optimizer rules that
+/// declare `schema_check()` to reject schema metadata changes across transformations.
 ///
 /// Column names are preserved, including whitespace and punctuation.
 /// Empty key groups are omitted because they cannot prove a row bound.

@@ -21,17 +21,15 @@ use crate::{
     runtime::{DeviceId, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain},
 };
 
-/// A GPU DataFrame: a named, ordered collection of GPU columns.
+/// Named, ordered collection of GPU columns.
 ///
-/// `DataFrame` is an immutable value. Every mutating operation returns a
-/// **new** `DataFrame` and leaves the receiver unchanged.
+/// `DataFrame` has immutable value semantics. Mutating operations return a
+/// newly constructed `DataFrame` without modifying the receiver.
 ///
-/// Columns are stored as `Arc<Column>`, so operations that don't change
-/// column data (rename, select, without_columns, clone, with_column for
-/// unchanged columns) share GPU memory via reference counting.
-///
-/// Cloning a `DataFrame` is cheap: it clones the `IndexMap` and bumps
-/// `Arc` reference counts; no GPU data is copied.
+/// Columns are stored as `Arc<Column>`. Metadata operations (rename, column
+/// selection, projection, cloning, and unchanged columns in `with_column`)
+/// share underlying column buffers through reference counts without copying
+/// GPU memory.
 ///
 /// # Display
 ///
@@ -39,10 +37,9 @@ use crate::{
 /// column counts plus per-column schema details, but it does not materialize
 /// cell values to host memory.
 ///
-/// This keeps `Display` distinct from row-selection APIs such as
-/// [`head`](crate::FrameOps::head), [`tail`](crate::FrameOps::tail), and [`slice`](crate::FrameOps::slice).
-/// Use those APIs to select row subsets, then inspect the resulting columns
-/// explicitly when you need host-visible values.
+/// Row subset selection is performed via [`head`](crate::FrameOps::head),
+/// [`tail`](crate::FrameOps::tail), or [`slice`](crate::FrameOps::slice)
+/// before inspecting column values on the host.
 ///
 /// # Interop
 ///
@@ -379,12 +376,8 @@ impl DataFrame {
     /// without copying. Shared columns (strong count > 1) are deep-copied
     /// so the returned `Table` owns independent device memory.
     ///
-    /// # Cost
-    ///
-    /// The cost depends on column sharing. Uniquely owned columns move without
-    /// a copy. Shared columns are deep-copied, which allocates GPU memory. If you
-    /// know all columns are unique (e.g. the `DataFrame` was just constructed),
-    /// this is effectively free.
+    /// Uniquely owned columns transfer without copying. Columns with shared
+    /// references are deep-copied into the target table domain.
     pub fn try_into_table(self) -> Result<(Table, Vec<String>)> {
         let mut names: Vec<String> = Vec::with_capacity(self.columns.len());
         let mut cols: Vec<Column> = Vec::with_capacity(self.columns.len());

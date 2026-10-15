@@ -1,9 +1,9 @@
 //! Black-box E2E for the embedded dual-frontend backend fixture.
 //!
-//! This runner intentionally lives outside Cargo test targets. It starts the
-//! fixture binary as a child process, registers the citation-network Parquet
-//! files through Flight SQL, talks to REST with HTTP and to Flight SQL with
-//! gRPC, and keeps all GPU use behind the caller's `flock`.
+//! Runner maintained outside Cargo test targets. Launches the fixture binary
+//! as a child process, registers citation-network Parquet tables via Flight
+//! SQL, queries REST via HTTP and Flight SQL via gRPC, and executes GPU
+//! workloads within the caller's `flock`.
 
 use std::{
     env,
@@ -181,8 +181,8 @@ async fn build_fixture_binary(repo_root: &Path) -> E2eResult<()> {
     Ok(())
 }
 
-/// The backend requires one explicit device profile. A single active attempt makes one held
-/// stream saturate admission, and the queue bound is the one the overload check fills.
+/// Server configuration with a single active attempt per device profile,
+/// allowing a single unread stream to saturate admission.
 fn server_config() -> String {
     format!(
         "[admission]\nmax_queued_attempts = {QUEUE_FILL_REQUESTS}\nmax_queue_wait_ms = {QUEUE_WAIT_MS}\n\n\

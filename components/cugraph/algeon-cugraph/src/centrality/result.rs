@@ -1,10 +1,10 @@
 //! Result types for centrality algorithms.
 //!
 //! PageRank, eigenvector centrality, Katz centrality, and betweenness
-//! centrality all return a `cugraph_centrality_result_t` from the C API with
-//! the same field layout, so they share one result type ([`CentralityResult`]).
-//! [`BetweennessCentralityResult`] wraps it separately because betweenness
-//! never populates `num_iterations`/`converged`.
+//! centrality return `cugraph_centrality_result_t` with identical field layout,
+//! represented by [`CentralityResult`]. [`BetweennessCentralityResult`] wraps
+//! it separately because betweenness does not populate `num_iterations` or
+//! `converged`.
 
 use std::marker::PhantomData;
 
@@ -161,12 +161,10 @@ impl Drop for CentralityResult {
 
 /// Result of a betweenness centrality computation.
 ///
-/// Wraps [`CentralityResult`] and hides its `num_iterations` and `converged`
-/// fields. cuGraph's C API builds the betweenness result through the same
-/// constructor as the iterative algorithms, which defaults `num_iterations` to
-/// 0 and `converged` to false. Betweenness centrality is not iterative and
-/// never overwrites those fields, so they would read as "did not converge" if
-/// exposed. Freed on drop.
+/// Wraps [`CentralityResult`] while omitting `num_iterations` and `converged`.
+/// Upstream cuGraph builds betweenness results through the shared iterative
+/// constructor defaulting `num_iterations` to 0 and `converged` to false
+/// without populating convergence state. Freed on drop.
 pub struct BetweennessCentralityResult(CentralityResult);
 
 impl std::fmt::Debug for BetweennessCentralityResult {

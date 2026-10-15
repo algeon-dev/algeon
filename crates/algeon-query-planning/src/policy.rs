@@ -2,14 +2,14 @@
 
 use crate::{capability::KeyedHashJoinStrategyOptions, dynamic_filter::DynamicFilterExecutionOptions, error::Result};
 
-/// Thresholds one plan is optimized, admitted, and executed under.
+/// Thresholds applied during plan optimization, admission, and execution.
 ///
-/// The policy travels with the [`AnalysisContext`](crate::backend::AnalysisContext)
-/// of each pass and is recorded by the admission artifact; the plan IR does
-/// not carry it. Keeping it out of the IR means two plans that differ only in
-/// policy share one fingerprint, and the admitted artifact, which stores both,
-/// is the only place the pairing is fixed. `Copy` because every pass takes it
-/// by value and nothing in it is shared state.
+/// The policy accompanies the [`AnalysisContext`](crate::backend::AnalysisContext)
+/// across planning passes and is captured in the resulting admission artifact
+/// rather than embedded directly in plan IR. This separation allows plan IR
+/// fingerprints to remain invariant to policy adjustments while recording the
+/// active policy in the admitted artifact. The type implements `Copy` because
+/// passes receive it by value without shared state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PlanningPolicy {
     /// Keyed-hash join strategy thresholds.

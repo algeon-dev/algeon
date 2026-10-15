@@ -12,10 +12,10 @@ use crate::{
     parquet_metadata,
 };
 
-/// The single logical table exposed by the ClickBench fixture. Upstream uses
-/// `hits` as the canonical view name. The raw Parquet is registered under
-/// [`CLICKBENCH_RAW_TABLE`], and the `hits` view surfaces the cast `EventDate`
-/// projection so the upstream queries.sql works verbatim.
+/// Logical table exposed by the ClickBench fixture. Upstream uses `hits` as
+/// the canonical view name. Raw Parquet data is registered under
+/// [`CLICKBENCH_RAW_TABLE`]; the `hits` view provides the cast `EventDate`
+/// projection required by the upstream query set.
 pub const CLICKBENCH_TABLE: &str = "hits";
 
 /// Raw table name used for the Parquet listing before the `hits` view applies
@@ -45,8 +45,8 @@ pub const DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR: &str = "./fixture/clickbench
 
 /// Discovered ClickBench fixture layout.
 ///
-/// Mixed single-file and shard layouts are rejected, so reports cannot benchmark
-/// a fixture other than the one the caller intended.
+/// Mixed single-file and shard layouts are rejected to prevent running
+/// benchmarks against an unintended dataset combination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClickbenchLayout {
     /// One canonical Parquet file, usually `hits.parquet`.
@@ -164,16 +164,16 @@ impl ClickbenchDatasetMetadata {
     }
 }
 
-/// Discover a ClickBench layout under `root`. Accepts:
+/// Discovers a ClickBench layout under `root`.
 ///
-/// 1. A file path ending in `.parquet` (e.g. `fixture/clickbench/data/hits.parquet`).
-/// 2. A directory containing `hits.parquet` (single layout).
-/// 3. A directory containing `hits_*.parquet` (partitioned at this level).
-/// 4. A directory containing a `partitioned/` subdir with `hits_*.parquet`.
+/// Supported layout shapes include:
+/// 1. A file path ending in `.parquet`.
+/// 2. A directory containing `hits.parquet` (single-file layout).
+/// 3. A directory containing `hits_*.parquet` shards.
+/// 4. A directory containing a `partitioned/` subdirectory with `hits_*.parquet`.
 ///
-/// Mixed layouts (both a `hits.parquet` and `hits_*.parquet` shards at the
-/// same level) error out; that combination has no upstream meaning and is
-/// almost always a stale-fixture bug.
+/// A directory containing both `hits.parquet` and `hits_*.parquet` shards is
+/// rejected as invalid.
 pub fn discover_clickbench_layout(root: &Path) -> WorkloadResult<ClickbenchLayout> {
     if root.is_file() {
         ensure_parquet_extension(root)?;
@@ -227,12 +227,10 @@ fn ensure_parquet_extension(path: &Path) -> WorkloadResult<()> {
     }
 }
 
-/// Collect canonical partitioned shards. The upstream
-/// `download-hits-parquet-partitioned` script always names shards
-/// `hits_<u32>.parquet`. Only that pattern is admitted. Other files in the
-/// directory, such as user samples, user-managed exports, or `.parquet.tmp`
-/// half-writes, are ignored without an error, since `partitioned/` directories
-/// are routinely shared with unrelated data on staging volumes.
+/// Collects canonical partitioned shards matching `hits_<u32>.parquet`.
+///
+/// Unrelated files in the directory, such as temporary files or exports with
+/// differing patterns, are skipped during discovery.
 fn collect_hits_shards(dir: &Path) -> WorkloadResult<Vec<PathBuf>> {
     let mut shards = Vec::new();
     for entry in fs::read_dir(dir)? {
@@ -256,9 +254,9 @@ fn shard_index(path: &Path) -> Option<u32> {
     rest.parse::<u32>().ok()
 }
 
-/// Build a [`ClickbenchDatasetMetadata`] for the layout rooted at `root`,
-/// labelling it with the supplied provenance and generation command but
-/// **without** scanning the underlying file bytes.
+/// Builds a [`ClickbenchDatasetMetadata`] for the layout rooted at `root`
+/// using the supplied provenance and generation command, without reading
+/// file contents.
 pub fn describe_clickbench_dataset(
     root: &Path,
     provenance: impl Into<String>,
@@ -334,18 +332,16 @@ pub fn external_clickbench_dataset_metadata(
     describe_clickbench_dataset(root, "external_parquet_root", generation_command)
 }
 
-/// Discover the ClickBench fixture path for reports/benchmarks. Resolution
-/// order:
+/// Discovers the ClickBench fixture path for reports and benchmarks.
 ///
-/// 1. `ALGEON_PARQUET_DIR` env var (file or directory).
+/// Precedence order:
+/// 1. `ALGEON_PARQUET_DIR` environment variable (file or directory).
 /// 2. Local partitioned default (`./fixture/clickbench/data/partitioned`).
 /// 3. Local single-file default (`./fixture/clickbench/data/hits.parquet`).
 ///
-/// The env-var fixture is strict: if set, it must describe a valid complete
-/// ClickBench layout, and its generation command defaults to
-/// `unknown_external`. Invalid implicit local candidates are skipped
-/// during fallback. A truthy `ALGEON_CLICKBENCH_CONTENT_FINGERPRINT` requests the
-/// expensive content hash. Returns `Ok(None)` when no implicit fixture exists.
+/// When `ALGEON_PARQUET_DIR` is set, the path must point to a valid ClickBench
+/// layout. A truthy `ALGEON_CLICKBENCH_CONTENT_FINGERPRINT` enables the
+/// content hash pass. Returns `Ok(None)` when no implicit fixture exists.
 pub fn prepare_clickbench_report_dataset() -> WorkloadResult<Option<(PathBuf, ClickbenchDatasetMetadata)>> {
     if let Ok(root) = std::env::var(ALGEON_PARQUET_DIR_ENV) {
         let root_path = PathBuf::from(&root);

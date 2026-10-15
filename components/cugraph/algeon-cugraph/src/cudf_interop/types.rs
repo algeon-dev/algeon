@@ -35,8 +35,7 @@ pub(super) fn borrowed_type_to_cugraph(type_id: InteropTypeId) -> Option<DataTyp
 
 /// Convert a cugraph [`DataType`] to a cudf [`cudf::TypeId`].
 ///
-/// Returns `None` for cugraph types that have no direct cudf equivalent
-/// (i.e. [`DataType::SizeT`], which is an internal cugraph sizing type).
+/// Returns `None` for cuGraph types without a direct cuDF equivalent, including [`DataType::SizeT`].
 pub fn cugraph_type_to_cudf(dtype: DataType) -> Option<CudfTypeId> {
     match dtype {
         DataType::Int8 => Some(CudfTypeId::Int8),

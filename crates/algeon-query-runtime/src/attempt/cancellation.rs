@@ -11,8 +11,8 @@ use crate::runtime::ExecutionCancellation;
 /// All clones, and the `ExecutionCancellation` that native execution receives
 /// through `execution_cancellation`, share one token. `cancel` is
 /// irreversible: it stops the next native boundary from starting work and
-/// leaves already submitted GPU work to settle, so cleanup and the terminal
-/// report still complete.
+/// leaves already submitted GPU work to settle, preserving cleanup and terminal
+/// report completion.
 #[derive(Debug, Clone)]
 pub struct AttemptCancellation {
     execution: ExecutionCancellation,

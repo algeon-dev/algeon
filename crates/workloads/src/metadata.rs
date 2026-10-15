@@ -26,11 +26,9 @@ impl DatasetFingerprint {
 
 /// Adapter-neutral dataset metadata shared by workload consumers.
 ///
-/// Field meanings and ordering mirror the stable report header shape; the
-/// bench/report layer owns conversion into adapter report types.
-/// This is the intentionally small, serde-stable projection used by external
-/// evidence artifacts. Workload-specific discovery types retain their richer
-/// table-level details and project here at the public reporting boundary.
+/// Field names and order follow the report header schema. Workload-specific
+/// discovery structures retain per-table details and serialize into this
+/// projection when producing external evidence artifacts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkloadDatasetMetadata {
     pub workload: &'static str,

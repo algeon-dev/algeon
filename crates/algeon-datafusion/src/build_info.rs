@@ -1,10 +1,9 @@
-//! Build identity of this library: version, commit, optional engines, and
-//! the DataFusion release it links.
+//! Build identity metadata including version, commit, optional engines, and
+//! the linked DataFusion release.
 //!
-//! [`build_info`] is the one source for `algeon_server --version`, the
-//! server startup log, and the `algeon_version()` SQL table function that
-//! every session installed through [`crate::backend::AlgeonGpuBackend::install_on`]
-//! carries.
+//! [`build_info`] provides version metadata for `algeon_server --version`, the
+//! server startup log, and the `algeon_version()` SQL table function installed
+//! on sessions through [`crate::backend::AlgeonGpuBackend::install_on`].
 
 #[cfg(feature = "server")]
 use std::any::TypeId;

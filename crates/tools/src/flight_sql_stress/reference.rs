@@ -1,12 +1,11 @@
-//! Reference results for `flight-sql-stress` result checking.
+//! Reference results for `flight-sql-stress` validation.
 //!
-//! A reference is one statement's result stored as an Arrow IPC file named
-//! `<statement>.arrow`. Checking compares a later result against it with the
-//! TPC-DS parity comparator, so the order and float rules match
-//! `native_tpcds_parity_report`: rows compare in order only when the
-//! statement's top-level `ORDER BY` names every output column, otherwise as a
-//! sorted multiset, and float columns accept the configured absolute or
-//! relative error.
+//! A reference stores a statement result as an Arrow IPC file named
+//! `<statement>.arrow`. Validation compares subsequent results against it using
+//! the TPC-DS parity comparator to match `native_tpcds_parity_report` semantics.
+//! Rows are evaluated in order only when the statement's top-level `ORDER BY`
+//! covers every output column, falling back to a sorted multiset comparison.
+//! Floating-point columns allow configured absolute or relative tolerance.
 
 #[cfg(any(test, feature = "flight-sql-stress-check"))]
 use std::io::Cursor;

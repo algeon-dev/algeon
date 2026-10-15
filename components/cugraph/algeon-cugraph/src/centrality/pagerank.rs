@@ -20,16 +20,7 @@ use crate::{
 
 /// Parameters for the PageRank algorithm.
 ///
-/// All fields use strongly-typed wrappers that enforce invariants at
-/// construction time:
-///
-/// - `alpha` ([`ClosedUnitF64`]): damping factor, must be in `[0.0, 1.0]`
-/// - `epsilon` ([`NonNegativeF64`]): convergence tolerance, must be `>= 0.0`
-///   (zero means "never converge early")
-/// - `max_iterations` ([`IterationCount`]): must be `>= 1`
-///
-/// Use the [`Default`] implementation for standard values, or construct
-/// individual fields using `TryFrom`/`.new()`.
+/// Baseline configuration is provided by [`Default`].
 ///
 /// # Example
 ///

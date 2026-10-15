@@ -1,7 +1,5 @@
-//! Accounted lifecycle for one GPU-resident cache entry.
-//!
-//! A cache implementation owns its concrete GPU object. It does not keep an
-//! independent byte counter. The only legal lifecycle is:
+//! A cache implementation owns its concrete GPU object without maintaining an
+//! independent byte counter. Entries transition across the following lifecycle:
 //!
 //! ```text
 //! AttemptOwned -> Evictable <-> Pinned -> Destroyed

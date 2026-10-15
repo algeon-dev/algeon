@@ -103,8 +103,7 @@ impl RewrittenNodes {
 }
 
 impl QueryPlan {
-    /// The only constructor: checks the plan invariants and derives each
-    /// node's output schema.
+    /// Validates plan invariants and derives output schemas for all nodes.
     pub(crate) fn from_parts(nodes: Vec<QueryNode>, sink: ResultSink, annotations: Annotations) -> Result<Self> {
         let nodes = validated_plan_parts(nodes, &sink)?;
         Ok(Self { nodes, sink, annotations })
@@ -143,9 +142,9 @@ impl QueryPlan {
         self.with_dynamic_filter_routes(routes)
     }
 
-    /// The only way an optimizer rule produces a new plan from this one.
+    /// Produces a rewritten plan rooted at `new_root` with unreachable nodes pruned.
     ///
-    /// Nodes the new root cannot reach are dropped and the rest renumbered.
+    /// Nodes unreachable from `new_root` are pruned and remaining nodes renumbered.
     /// Side state follows the composed source-to-result node mapping: a
     /// dynamic-filter route survives only when every endpoint maps to an
     /// unchanged node (route discovery runs late and finds rewritten ones

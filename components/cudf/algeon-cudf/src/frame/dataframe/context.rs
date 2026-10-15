@@ -43,7 +43,7 @@ macro_rules! dataframe_scope_forward {
     };
 }
 
-/// The GPU operations of one `DataFrame`, run where an [`Exec`] selects.
+/// Execution scope for `DataFrame` GPU operations bound to an [`Exec`] context.
 #[must_use]
 pub struct FrameOps<'a> {
     pub(super) df: &'a DataFrame,
@@ -132,23 +132,21 @@ impl FrameOps<'_> {
     /// use [`with_column`](Self::with_column) (single) or
     /// [`DataFrame::assign`] (batch).
     ///
-    /// All expressions are evaluated against the **original** state of `self`.
-    /// This ensures that expressions can reference columns that other expressions
-    /// in the same call overwrite, and the order of evaluation does not matter.
+    /// Expressions evaluate against the input state of `self` regardless of
+    /// order, allowing expressions to reference columns overwritten in the same
+    /// call.
     ///
-    /// Each item must resolve to an output name. You can provide either:
+    /// Each item must resolve to an output name, supplied as:
     ///
-    /// - a bare expression, which uses [`Expr::output_name()`](crate::ops::expr::Expr::output_name)
-    /// - an explicit `(name, expr)` pair, which always uses the provided name
+    /// - A bare expression with an inferable [`Expr::output_name()`](crate::ops::expr::Expr::output_name).
+    /// - An explicit `(name, expr)` tuple.
     ///
-    /// Bare expressions can still get their names via
-    /// [`.alias()`](crate::ops::expr::Expr::alias), by being a bare
-    /// [`col()`](crate::ops::expr::col) reference, or by being a single-input
-    /// transform that inherits its input name (for example `cast`, `is_null`,
-    /// `fillna`, cumulative scans, and string unary operations). Broadcast
-    /// reductions do **not** inherit an output name; give them an alias or an
-    /// explicit `(name, expr)` pair. Items without a resolvable name produce
-    /// an error **before** any GPU work.
+    /// Bare expressions infer names from aliases ([`.alias()`](crate::ops::expr::Expr::alias)),
+    /// column references ([`col()`](crate::ops::expr::col)), or single-input
+    /// transforms that inherit column identity (`cast`, `is_null`, `fillna`,
+    /// cumulative scans, and string unary operations). Broadcast reductions do
+    /// not inherit output names; they require an alias or explicit tuple name.
+    /// Items without resolvable names fail validation before GPU kernels launch.
     ///
     /// # Execution and Cost
     ///

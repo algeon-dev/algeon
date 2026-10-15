@@ -26,15 +26,14 @@
 //! - **[`GraphBuilder`]**: low-level builder for constructing a [`Graph`] from
 //!   pre-materialized device edge lists. Validates inputs before crossing the
 //!   FFI boundary.
-//! - **[`Graph<T>`]**: the central graph data structure, parameterized by
-//!   transposition state ([`Forward`] or [`Transposed`]). Algorithms are methods
-//!   on `Graph`, constrained by the required layout.
+//! - **[`Graph<T>`]**: graph container parameterized by transposition state
+//!   ([`Forward`] or [`Transposed`]). Algorithm methods are constrained by the
+//!   required layout.
 //!
 //! # Type-state encoding
 //!
-//! The [`Graph<T>`] type parameter encodes whether the graph is stored in
-//! forward or transposed form. Algorithms that require a specific layout
-//! accept only the correct variant, catching mismatches at compile time:
+//! The [`Graph<T>`] type parameter encodes whether storage is in forward or
+//! transposed layout. Algorithms enforce their required layout at compile time:
 //!
 //! - **[`Forward`]**: required by [`Graph::bfs`] and [`Graph::louvain`]
 //! - **[`Transposed`]**: required by [`Graph::pagerank`],

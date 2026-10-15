@@ -217,9 +217,8 @@ pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> WorkloadResult<(PathBuf
     Ok((tiny_root.to_path_buf(), metadata))
 }
 
-/// Returns the in-repo default SF1 fixture when it is complete. A `None`
-/// return means "no implicit external fixture available, fall back to the tiny
-/// dataset".
+/// Returns the in-repo default SF1 fixture when all tables are present, or
+/// `None` if the directory is missing or incomplete.
 fn try_default_local_tpcds_sf1_dataset() -> Option<(PathBuf, TpcdsDatasetMetadata)> {
     let root_str = default_tpcds_sf1_parquet_root();
     let root = PathBuf::from(root_str);

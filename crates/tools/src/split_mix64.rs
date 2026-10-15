@@ -1,5 +1,5 @@
-//! SplitMix64, implemented here so a recorded seed maps to the same sequence
-//! across toolchain and crate-version changes.
+//! Deterministic SplitMix64 PRNG implementation ensuring identical pseudorandom
+//! sequences from a given seed across compiler and dependency versions.
 
 pub(crate) struct SplitMix64 {
     state: u64,

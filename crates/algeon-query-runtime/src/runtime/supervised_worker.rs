@@ -1,21 +1,19 @@
 //! Runtime-owned supervision for bounded blocking workers.
 //!
-//! The runtime owns worker submission, cancellation, and process-exit drain
-//! for attempt-scoped blocking work such as source reads; calling layers only
-//! produce the work closure. There is a single worker lifecycle here no
-//! matter which operator submits the work.
+//! The runtime owns worker submission, cancellation, and process-exit shutdown
+//! for attempt-scoped blocking work such as source reads; calling layers produce
+//! the work closure. Worker execution follows a uniform lifecycle across all
+//! submitting operators.
 //!
-//! The pool's own process-exit drain waits for every accepted blocking job,
-//! but it never signals the work's cancellation token, so a worker that polls
-//! that token would block the drain indefinitely. This supervisor closes that
-//! gap: it cancels first, then joins, so a worker that has not yet entered
-//! device-bound work exits before starting CUDA during process exit.
+//! Pool process-exit shutdown waits for accepted blocking jobs without signaling
+//! cancellation tokens. The supervisor signals cancellation prior to joining,
+//! allowing workers that poll the token to terminate before starting CUDA work
+//! during process exit.
 //!
-//! Workers run on the device executor's bounded blocking lane, never on the
-//! fixed-width async workers and never on a second private thread pool:
-//! admission rides the pool's execution-class permit, completion returns
-//! through a permit-free channel, and pool shutdown resolves every
-//! outstanding join with a typed cancellation. No outstanding join is left waiting.
+//! Workers execute on the device executor's bounded blocking lane rather than
+//! async workers or private thread pools. Admission uses the pool's execution-class
+//! permit, completion returns through a permit-free channel, and pool shutdown
+//! resolves outstanding joins with typed cancellation. No outstanding join is left waiting.
 
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -46,15 +44,14 @@ pub enum SupervisedWorkerJoin<T> {
 
 /// Owns one pool-carried blocking worker until it has been joined.
 ///
-/// The normal consumer owns this wrapper, but process exit also retains the
-/// same supervisor through the process-exit registry. That closes the gap
-/// where `std::process::exit` skips the consumer's finish or abandon call
-/// while the worker is still synchronizing a leased CUDA stream.
+/// The consumer owns this wrapper, while process-exit infrastructure retains the
+/// supervisor through the process-exit registry. This handles scenarios where
+/// `std::process::exit` bypasses finish or abandon handlers while workers
+/// synchronize leased CUDA streams.
 ///
-/// The supervisor never escapes this module: [`SupervisedWorker::submit`] is
-/// the only submission entry, and it atomically performs registration, spawn,
-/// and handle ownership for exactly one worker, so a second submission can
-/// never overwrite a not-yet-joined handle.
+/// Supervisor instances do not escape this module. [`SupervisedWorker::submit`]
+/// atomically performs registration, spawn, and handle ownership for one worker,
+/// preventing concurrent submissions from overwriting active handles.
 pub struct SupervisedWorker<T> {
     supervisor: Arc<SupervisedWorkerSupervisor<T>>,
 }

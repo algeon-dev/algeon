@@ -6,8 +6,8 @@
 //!
 //! The returned indices are row-aligned with the encoded input. They are not,
 //! by themselves, a reusable key-to-code dictionary for some separately
-//! deduplicated key set. If you need a stable lookup mapping for later
-//! lookup/gather calls, pair the codebook keys with an explicit positional
+//! deduplicated key set. To construct a stable lookup mapping for later
+//! lookup or gather calls, pair the codebook keys with an explicit positional
 //! code column `0..keys.len()`.
 //!
 //! # Example

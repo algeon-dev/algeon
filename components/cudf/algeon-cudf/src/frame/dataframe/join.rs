@@ -534,8 +534,8 @@ impl DataFrameFilteredJoinOptions {
 /// only when the indices are passed to
 /// [`DataFrame::materialize_join_indices`](super::FrameOps::materialize_join_indices).
 ///
-/// Cloning this wrapper is cheap: it clones the wrapped [`Series`] handle and
-/// shares the same device-side index buffer.
+/// Cloning duplicates the wrapped [`Series`] handle without copying the
+/// device-side index buffer.
 #[derive(Debug, Clone)]
 pub struct DataFrameJoinIndices {
     indices: Series,
@@ -621,8 +621,8 @@ impl DataFrameJoinIndices {
 /// so the gather path nullifies unmatched payload rows without copying unused
 /// columns.
 ///
-/// Cloning this wrapper is cheap: it clones the wrapped [`Series`] handles and
-/// shares the same device-side index buffers.
+/// Cloning duplicates the wrapped [`Series`] handles without copying the
+/// device-side index buffers.
 #[derive(Debug, Clone)]
 pub struct DataFrameJoinPairIndices {
     left: DataFrameJoinIndices,

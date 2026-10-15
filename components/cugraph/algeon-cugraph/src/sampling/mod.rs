@@ -293,8 +293,8 @@ impl RandomWalkResult {
 
     /// Dense row-major edge-weight matrix, if the input graph had weights.
     ///
-    /// Each row contains `max_path_length()` edge weights. For unweighted
-    /// graphs the native result has no weight column, so this returns `None`.
+    /// Each row contains `max_path_length()` edge weights. Unweighted graphs
+    /// produce no native weight column and return `None`.
     pub fn weights(&self) -> Result<Option<ScoreValues<'_>>> {
         if !self.has_weights {
             return Ok(None);

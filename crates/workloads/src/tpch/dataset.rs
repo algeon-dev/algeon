@@ -211,17 +211,15 @@ pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> WorkloadResult<(PathBuf,
     Ok((tiny_root.to_path_buf(), metadata))
 }
 
-/// Returns the in-repo default SF1 fixture when it is complete. A `None`
-/// return means "no implicit external fixture available, fall back to the tiny
-/// dataset".
+/// Returns the in-repo default SF1 fixture when all tables are present, or
+/// `None` if the directory is missing or incomplete.
 fn try_default_local_tpch_sf1_dataset() -> Option<(PathBuf, TpchDatasetMetadata)> {
     default_tpch_dataset(default_tpch_parquet_root(TpchDefaultScale::Sf1), "sf1")
 }
 
-/// This lower-level helper probes an arbitrary local Parquet root for the
-/// fixed TPC-H table set and, if all tables are discoverable, describes it as
-/// an external fixture with a synthetic `generation_command`. It returns `None`
-/// when the directory is missing or the fixture is incomplete.
+/// Probes a local Parquet root for the fixed TPC-H table set and describes it
+/// as an external fixture with a synthetic `generation_command`. Returns `None`
+/// when the directory is missing or any table cannot be discovered.
 pub fn default_tpch_dataset(root: &str, scale_factor: &str) -> Option<(PathBuf, TpchDatasetMetadata)> {
     let root_path = PathBuf::from(root);
     if !root_path.is_dir() {
@@ -237,8 +235,8 @@ pub fn default_tpch_dataset(root: &str, scale_factor: &str) -> Option<(PathBuf, 
     Some((root_path, metadata))
 }
 
-/// Same as `default_tpch_dataset` but includes a content fingerprint;
-/// needed by the benchmark binary's strict-validation gate.
+/// Probes a local Parquet root like [`default_tpch_dataset`], adding a content
+/// fingerprint required by benchmark validation gates.
 pub fn default_tpch_dataset_with_fingerprint(root: &str, scale_factor: &str) -> Option<(PathBuf, TpchDatasetMetadata)> {
     let root_path = PathBuf::from(root);
     if !root_path.is_dir() {

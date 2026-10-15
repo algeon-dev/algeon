@@ -82,13 +82,12 @@ fn rapids_source_read_sizing() -> SourceReadSizing<'static> {
 }
 
 /// Plans chunks for a local Parquet source using a caller-owned footer cache
-/// and, optionally, an execution context for object-store footer loads.
+/// and optional execution context for object-store footer loads.
 ///
-/// This is the shared entry point behind
-/// [`plan_local_parquet_source_chunks`], [`plan_local_parquet_source_chunks_with_execution_context`],
-/// and [`plan_local_parquet_source_chunks_with_metadata_cache`]; a caller that
-/// already owns both a cache and a context (for example, to plan with footers
-/// it already loaded) can call it directly. Such a caller does not need to duplicate one of those.
+/// Underlies [`plan_local_parquet_source_chunks`],
+/// [`plan_local_parquet_source_chunks_with_execution_context`], and
+/// [`plan_local_parquet_source_chunks_with_metadata_cache`] for callers
+/// providing pre-existing cache and context instances.
 pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     source_node_id: NodeId,
     source: &LocalParquetSource,

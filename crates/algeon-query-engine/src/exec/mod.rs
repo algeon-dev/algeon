@@ -1,18 +1,17 @@
 //! Native query execution.
 //!
-//! Entrypoints validate local source contracts, derive output mode from the
+//! Entry points validate local source contracts, derive output mode from the
 //! plan sink, and dispatch according to the bounded execution contract in the
 //! [`ExecutionContext`].
-//! GPU-resident input lookup is by plan-local names supplied in
-//! [`GpuResidentInputMap`]. Metrics are owned by the returned
-//! [`output::QueryExecutionOutcome`] so callers can record them after choosing host or
-//! GPU-resident output handling.
+//! GPU-resident input lookup resolves via plan-local names supplied in
+//! [`GpuResidentInputMap`]. Metrics are returned in [`output::QueryExecutionOutcome`],
+//! allowing callers to record telemetry after selecting host or GPU-resident output handling.
 //!
-//! [`execute_query_plan`] is synchronous and runs GPU work on the calling
-//! thread. The query service calls it from inside the attempt's root
-//! `QueryExecution` job on the device's GPU execution pool
-//! (`website/docs/design/index.mdx#runtimes-and-threads`); a standalone
-//! context calls it from wherever the caller chooses to block.
+//! [`execute_query_plan`] is synchronous and executes GPU work on the calling
+//! thread. The query service invokes it from the attempt's root `QueryExecution`
+//! job on the device's GPU execution pool
+//! (`website/docs/design/index.mdx#runtimes-and-threads`), while standalone
+//! contexts execute it directly on the caller thread.
 
 use std::{
     sync::{
@@ -195,14 +194,12 @@ pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
     validate_query_plan(plan, rapids_analysis_context(PlanningPolicy::default()))
 }
 
-/// Admits the executable plan once and returns the artifact to the caller.
+/// Admits an executable plan and returns the admission artifact.
 ///
-/// Callers that build a plan where it executes (graph, vector and ML relation
-/// plans, tools, tests) admit it here; execution takes only the artifact. A
-/// malformed plan, or one using a construct the backend does not support, is
-/// the validator's error; a plan no compiled contract covers is a typed error
-/// carrying the first contract it misses and the caller-visible sink as a
-/// diagnostic fact.
+/// Frontends building plans at execution boundaries (graph, vector, and ML relation
+/// plans, tools, tests) admit plans through this function. Malformed plans or
+/// unsupported constructs produce validation errors, whereas plans lacking compiled
+/// pipeline contracts return typed errors naming the missing contract and caller-visible sink.
 pub fn admit_query_plan(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,

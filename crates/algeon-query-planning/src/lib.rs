@@ -4,23 +4,21 @@
 //! [`algeon-datafusion`](https://docs.rs/algeon-datafusion) and its re-exports.
 //! See the [API documentation boundary](https://algeon.dev/design#api-documentation).
 //!
-//! This crate depends on neither DataFusion nor any RAPIDS component: its
-//! resolved dependency closure under the union of every feature contains
-//! neither, which `scripts/ci/check_dependency_direction.py` enforces.
-//! Questions it cannot answer from Arrow and IR semantics alone; whether a
-//! backend can represent a type, bind an expression, or infer a kernel's
-//! output type; are asked through [`backend::BackendCapabilities`], which the
-//! execution engine implements and passes in explicitly as a
-//! [`backend::AnalysisContext`].
+//! This crate contains no dependency on DataFusion or RAPIDS components.
+//! The resolved dependency closure across all feature combinations excludes both,
+//! as validated by `scripts/ci/check_dependency_direction.py`.
+//! Capabilities that depend on backend execution semantics, such as type
+//! representation, expression binding, or kernel output type inference, are
+//! mediated through the [`backend::BackendCapabilities`] trait and supplied
+//! via [`backend::AnalysisContext`].
 //!
-//! It also performs no file or network I/O. Footers and decoded rows reach it
-//! from whoever read them, through [`source::SourceFooterFacts`] and the
+//! The crate performs no file or network I/O. File metadata and decoded statistics
+//! are provided externally through [`source::SourceFooterFacts`] and the
 //! pruning resolvers in [`optimizer`].
 //!
-//! The native-free dependency closure is a structural property checked by that
-//! script. It is the only check: this workspace has no build or test lane that
-//! runs without a CUDA toolchain installed, and whether the crate builds on a
-//! host without RAPIDS remains unverified here.
+//! While dependency direction is structurally enforced by CI scripts, build
+//! behavior on hosts lacking RAPIDS or CUDA toolchains is not validated by the
+//! workspace test harness.
 
 pub mod admission;
 pub mod backend;

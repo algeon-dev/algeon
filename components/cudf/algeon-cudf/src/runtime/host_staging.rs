@@ -1,14 +1,14 @@
 //! Reusable page-locked (pinned) host staging slabs for batched
 //! host-to-device uploads.
 //!
-//! Pinned host memory makes `cudaMemcpyAsync` a true asynchronous DMA:
-//! pageable sources are staged through a driver-internal locked ring that
-//! serializes concurrent copies process-wide, which measurably collapses
-//! multi-query throughput. Pinning is expensive (page-table work scales with
-//! bytes), so slabs are allocated lazily, retained for the process lifetime,
-//! and recycled through a bounded pool that uploads lease from.
+//! Pinned host memory enables asynchronous DMA via `cudaMemcpyAsync`.
+//! Pageable sources are staged through a driver-internal locked ring that
+//! serializes concurrent copies process-wide, which reduces multi-query
+//! throughput. Pinning incurs page-table overhead scaling with bytes, so
+//! slabs are allocated lazily, retained for the process lifetime, and recycled
+//! through a bounded pool that uploads lease from.
 //!
-//! Sizing settings (read once at first use):
+//! Sizing settings read once at first use:
 //! - `CUDF_HOST_STAGING_SLAB_BYTES`: bytes per slab (default 16 MiB).
 //! - `CUDF_HOST_STAGING_SLAB_COUNT`: maximum retained slabs (default 8).
 

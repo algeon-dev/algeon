@@ -12,9 +12,8 @@
 //! The finalizer slot is taken before the attempt lock, in
 //! `AttemptFinalizerSlot::claim`, and no path takes them the other way round.
 //! The attempt lock covers the lifecycle and the completion state together.
-//! `AttemptShared::changed` is the one condition variable for both the
-//! publication wait in `finish_with_footer` and the blocking wait of
-//! completion receivers.
+//! `AttemptShared::changed` coordinates both the publication wait in
+//! `finish_with_footer` and the blocking wait of completion receivers.
 use std::{
     fmt,
     future::Future,
@@ -117,9 +116,9 @@ pub struct AttemptHandle(Arc<AttemptCore>);
 /// Opaque authority for rejecting an admission request before it receives a
 /// grant.
 ///
-/// This is intentionally narrower than [`AttemptOwner`]: it can only commit
-/// a structured pre-admission rejection or cancellation, and it cannot
-/// terminalize an admitted attempt or record arbitrary lifecycle boundaries.
+/// Narrowed authority compared to [`AttemptOwner`], restricted to committing
+/// structured pre-admission rejections or cancellations without terminalizing
+/// admitted attempts or recording arbitrary boundaries.
 pub struct AttemptAdmissionRejection {
     core: Arc<AttemptCore>,
     finalizer_slot: AttemptFinalizerSlot,
@@ -137,20 +136,18 @@ pub struct AttemptAdmissionBinding {
     finalizer_slot: AttemptFinalizerSlot,
 }
 
-/// The one non-cloneable post-cleanup authority minted for an attempt.
+/// Non-cloneable post-cleanup authority minted for an attempt.
 ///
-/// It may record the canonical terminal outcome before cleanup, but consuming
-/// it is the only way to establish finalization and therefore report-ready for
-/// an admitted attempt.
+/// Records canonical terminal outcomes before cleanup, and establishes
+/// finalization and report readiness upon consumption.
 pub(crate) struct AttemptFinalizer(Arc<AttemptCore>);
 
-/// The attempt's one admission right, taken by
-/// [`AttemptAdmissionBinding::claim`] before the admission request touches a
-/// queue, ledger, stream, or the attempt lifecycle.
+/// Admission token claimed by [`AttemptAdmissionBinding::claim`] before an
+/// admission request accesses queues, ledgers, streams, or the lifecycle.
 ///
-/// It owns the attempt's finalizer, so while it exists the attempt owner only
-/// records a terminal outcome; the admission finishes the attempt, either as
-/// not admitted or after GPU cleanup.
+/// Encloses the attempt finalizer. While held, the attempt owner records
+/// terminal outcomes, and the admission token finalizes the attempt either
+/// upon rejection or after GPU cleanup.
 pub(crate) struct AttemptAdmission(AttemptFinalizer);
 
 /// Builds the attempt report when the attempt's observation seals. The
@@ -201,15 +198,15 @@ impl Clone for AttemptAdmissionRejection {
     }
 }
 
-/// Independent receiver for the one bounded terminal attempt report.
+/// Independent receiver for the bounded terminal attempt report.
 ///
 /// Cloning or dropping receivers never cancels cleanup, report production, or
 /// exact metric updates, and holding a receiver retains no device lease.
 ///
-/// Every receiver is counted so publication can route never-received reports
-/// to the optional abandoned-report queue. Adapter internals hold an
-/// [`AttemptCompletionFactory`] instead, so an attempt object or result
-/// stream never masks caller abandonment.
+/// Receiver counts allow publication to route unreceived reports to the
+/// optional abandoned-report queue. Adapter internals hold an
+/// [`AttemptCompletionFactory`] instead, preventing an attempt object or result
+/// stream from masking caller abandonment.
 pub struct AttemptCompletion {
     shared: Arc<AttemptShared>,
 }

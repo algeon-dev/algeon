@@ -1,6 +1,6 @@
 //! GPU-accelerated join operations.
 //!
-//! **Advanced/Core.** Most users should prefer
+//! For table-level joins on DataFrames, use
 //! [`DataFrame::merge`](crate::FrameOps::merge) with
 //! [`MergeOptions`].
 //!

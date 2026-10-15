@@ -1,10 +1,8 @@
-//! The GPU-touching measured run.
+//! GPU-touching execution measurement.
 //!
-//! This module is deliberately thin: it builds the backend from an already
-//! validated profile, drives the already planned arrivals, samples the public
-//! snapshot accessors, and projects reports into the pure reduction in
-//! [`super::aggregate`]. Every decision that can be made without a GPU is made
-//! elsewhere.
+//! Builds the backend from a validated profile, executes planned arrivals,
+//! samples public snapshot accessors, and projects attempt reports into pure
+//! aggregation reductions in [`super::aggregate`].
 
 #[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -113,11 +111,11 @@ use sampler::{Sampler, cugraph_bfs_singleflight_snapshot};
 
 /// How often the sampler polls the backend snapshot accessors at minimum.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
-/// Bound on retained raw snapshot samples. Each carries the full per-device
-/// report vectors, so this caps artifact size and peak memory; the per-device
-/// peaks the scenario clauses use keep folding past the cap. A final sample
-/// always displaces the retained tail when this bound is reached, so terminal
-/// backend-metric counters are never audited against a pre-drain snapshot.
+/// Bound on retained raw snapshot samples. Because samples carry full
+/// per-device report vectors, this limit constrains artifact size and peak memory.
+/// Per-device peaks used by scenario clauses continue folding past the cap.
+/// A final sample displaces the retained tail when this bound is reached,
+/// ensuring terminal backend-metric counters reflect post-drain state.
 const MAX_SNAPSHOT_SAMPLES: usize = 1024;
 
 /// The sampler cadence for a configured run window. Windows short enough to
@@ -144,11 +142,10 @@ fn feature_off_cugraph_sql() -> String {
     format!("SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM {FEATURE_OFF_CUGRAPH_EDGE_TABLE}))")
 }
 
-/// The runner's two bounded phases. Submission stops at the configured
-/// warmup-plus-measurement boundary; already-admitted work may use only the
-/// profile-owned completion grace to reach a native safe boundary and seal.
-/// This keeps sustained-service measurement duration distinct from bounded
-/// cooperative finalization; the post-submission drain grace is optional.
+/// Execution timing phases. Submission ceases at the configured
+/// warmup-plus-measurement boundary; admitted work consumes profile-owned
+/// completion grace to reach safe completion and seal reports. Separates
+/// active measurement duration from bounded cooperative finalization.
 #[derive(Clone, Copy)]
 struct RunTiming {
     started: Instant,
@@ -215,13 +212,11 @@ fn unix_epoch_ns() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
-/// Runs the measurement on a dedicated multi-thread runtime.
+/// Runs the measurement on a dedicated multi-threaded runtime.
 ///
-/// The tool entrypoint pins a current-thread runtime, which would interleave
-/// attempts without overlapping them. A scoped thread owns a multi-thread
-/// runtime so the measured attempts can overlap, without building a nested
-/// runtime inside the caller's and without changing every other subcommand's
-/// entrypoint.
+/// Because the tool entrypoint pins a single-threaded runtime, a scoped thread
+/// hosts a multi-threaded runtime to allow concurrent attempts to overlap
+/// without constructing nested runtimes or modifying other subcommand entrypoints.
 pub(super) fn run_on_owned_runtime(
     profile: &RunProfile,
     trace: TraceSelection,
@@ -698,11 +693,10 @@ async fn run_measured(
     })
 }
 
-/// A completed warmup cohort is useful for cache conditioning but cannot
-/// satisfy a measured-run contract. In particular, duration-paced closed-loop
-/// work may spend the entire configured window draining a long warmup round;
-/// retain that artifact as non-qualifying, so zero-QPS data never appears as
-/// a passing service measurement.
+/// Asserts that the run recorded attempts during the measurement phase.
+/// Warmup cohorts condition caches but do not fulfill measurement contracts;
+/// runs that exhaust their window draining warmup rounds are retained as
+/// non-qualifying to avoid reporting zero-throughput runs as passing.
 fn has_measurement_attempts(aggregate: &MeasuredAggregate) -> bool {
     aggregate.window.measurement_attempts != 0
 }
@@ -724,11 +718,10 @@ fn every_configured_step_has_measurement_attempts(plan: &ArrivalPlan, aggregate:
     })
 }
 
-/// Runs the explicit cold-cache coalescing cohorts. The throughput run may
-/// span several ordinal-local domains, so it cannot prove that equal keys
-/// joined one cache. This probe isolates one configured ordinal on a
-/// fresh backend and retains only public observations before and after each
-/// cohort.
+/// Runs cold-cache coalescing cohorts. Because throughput runs span multiple
+/// ordinal-local domains, they cannot isolate same-key coalescing within a
+/// single cache domain. This probe isolates a configured ordinal on a fresh
+/// backend, capturing public observations before and after each cohort.
 async fn run_cache_same_key_probe(
     profile: &RunProfile,
     probe: &CacheSameKeyProbeProfile,
@@ -1057,10 +1050,10 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<AlgeonGpuBackend
     Ok(backend)
 }
 
-/// The shared session pool, keyed by profile workload position. TPC-H and
-/// TPC-DS share table names (`customer`), and several DBLP graph
-/// fixtures with those same registration names, so one context pool per
-/// fixture workload is the only correct routing boundary.
+/// Shared session pool keyed by profile workload position. Because TPC-H and
+/// TPC-DS share common table names (`customer`), and DBLP graph fixtures
+/// share registration names, isolating context pools per fixture workload
+/// maintains distinct catalog boundaries.
 pub(super) type SessionPool = BTreeMap<usize, Vec<SessionContext>>;
 
 /// `shared_session_count` contexts per selected fixture workload. Sessions are

@@ -1,6 +1,6 @@
 //! Axum HTTP API frontend for the embedded backend fixture.
 //!
-//! This module exposes health, pipeline execution, planning-report, and GPU
+//! Exposes health, pipeline execution, planning-report, and GPU
 //! admission/memory status endpoints for the shared backend.
 
 use algeon_datafusion::{

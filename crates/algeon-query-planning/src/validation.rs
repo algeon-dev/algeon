@@ -1,22 +1,22 @@
 //! Structural and backend-support validation of a [`QueryPlan`].
 //!
-//! [`validate_query_plan`] is the first step of admission (`admission::admit`)
-//! and runs ahead of capability analysis, which assumes a plan that passed
-//! here. Two outcomes are told apart by error code. A malformed plan, such as
-//! a column its input does not produce, a schema that disagrees with the node
-//! payload, or a visible alias that collides with a reserved state column, is
-//! `InvalidPlan` (kind `Planning`) and has no correct fallback. A well-formed
-//! plan that uses a type, operator or expression the backend cannot run is
-//! `UnsupportedType`, `UnsupportedOperator` or `UnsupportedExpression` (kind
-//! `Unsupported`); admission turns that into a rejection a frontend may fall
-//! back from, and `UnsupportedPart::from_code` maps the code to the blocked
-//! element the planning report names. Error codes, `operation` strings and
-//! `reason` facts are contracts read by tests and reports.
+//! [`validate_query_plan`] is the initial phase of admission (`admission::admit`),
+//! executed prior to capability analysis. Validation separates structural plan errors
+//! from backend capability limits via typed error codes. A malformed plan, such as
+//! an unresolved input column, an incompatible node schema, or an alias collision with
+//! reserved internal state, results in `InvalidPlan` (kind `Planning`), which permits
+//! no fallback. A syntactically valid plan that requires an unsupported type, operator,
+//! or expression yields `UnsupportedType`, `UnsupportedOperator`, or `UnsupportedExpression`
+//! (kind `Unsupported`). Admission translates these errors into rejections from which
+//! a frontend may fall back to CPU execution, while `UnsupportedPart::from_code`
+//! identifies the blocking element for diagnostic planning reports. Error codes,
+//! `operation` identifiers, and `reason` metadata form stable observable contracts.
 //!
-//! Questions only a backend can answer, whether it represents a type, binds an
-//! expression, or infers a decimal result, go through the [`AnalysisContext`];
-//! everything else is decided from Arrow and IR semantics. `check_node` holds
-//! every node rule once so validation and capability analysis cannot disagree.
+//! Operations requiring backend-specific verification (physical type representation,
+//! expression binding, decimal scale inference) are delegated through [`AnalysisContext`];
+//! standard structural invariants are resolved from Arrow and IR semantics directly.
+//! `check_node` consolidates node-level rules to ensure consistent verdicts across
+//! validation and capability analysis.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

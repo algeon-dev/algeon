@@ -21,7 +21,7 @@ use crate::{
 
 /// Options for writing a Parquet file.
 ///
-/// This is an advanced options type. Most users should prefer
+/// For DataFrame writes, use
 /// [`DataFrame::write_parquet`](crate::DataFrame::write_parquet).
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ParquetTableWriteOptions {

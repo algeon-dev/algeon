@@ -93,11 +93,10 @@ impl<T> ParkedGraph<T> {
     /// Resume this parked graph under a different runtime-bound execution
     /// binding on the same device (storage/execution split).
     ///
-    /// The resume stream waits on the park event, so every storage write that
-    /// produced the parked state happens before any borrower kernel reads it.
-    /// Algorithm temporaries allocate through the entering handle, so
-    /// workspace, auxiliary streams, and outputs charge to the borrower's
-    /// domain; never to the parking domain. cuGraph algorithms observe the
+    /// The resume stream waits on the park event, ordering preceding storage
+    /// writes before borrower kernels read the graph. Algorithm temporaries
+    /// allocate through the entering handle, charging workspace, auxiliary
+    /// streams, and outputs to the borrower domain. cuGraph algorithms observe the
     /// graph through a const view: the borrower must not mutate shared
     /// storage, and the exclusive checkout guard that owns this parked graph
     /// must outlive every kernel launched under the borrower binding.

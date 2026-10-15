@@ -1,10 +1,8 @@
-//! Shared coarse classification for `cudf::Error`.
+//! Coarse classification and allocation attribution policy for `cudf::Error`.
 //!
-//! This module owns the single canonical policy that maps a `cudf::Error`
-//! into a coarse discriminant and into an allocation-failure attribution.
-//! Downstream crates (`algeon-datafusion` and `query-engine`) keep only
-//! a local-enum projection of these owner decisions and must not reimplement
-//! the precedence.
+//! Downstream crates (`algeon-datafusion` and `query-engine`) project these
+//! classifications into local error structures rather than duplicating the
+//! mapping precedence.
 
 use std::fmt;
 
@@ -49,12 +47,9 @@ impl fmt::Display for CudfErrorClassification {
     }
 }
 
-/// Allocation-failure attribution owned by `cudf`.
-///
-/// This is the single canonical policy that separates a proven query-cap
-/// rejection from physical exhaustion and from unattributed failures.
-/// Downstream crates map each variant to their own limit/OOM/unknown codes
-/// without reimplementing the precedence.
+/// Allocation failure classification separating query-cap rejection from
+/// physical exhaustion and unattributed failures. Downstream crates map these
+/// variants directly.
 ///
 /// Only the typed FFI failure source proves the allocation origin. A budget
 /// scope annotates every error that passes through it while its own status

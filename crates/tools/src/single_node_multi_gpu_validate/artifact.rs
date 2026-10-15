@@ -1,6 +1,6 @@
 //! The run artifact and its atomic, redaction-checked writer.
 //!
-//! The measured-run sections are only constructed by the measured run, so the
+//! The measured-run sections are constructed only by the measured run; the
 //! CPU-only feature reaches them from tests alone.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
@@ -61,8 +61,8 @@ impl RunArtifact {
     }
 
     /// A completed measured run. `status` distinguishes a run whose scenario
-    /// clauses all held from one that recorded a failure, so a non-qualifying
-    /// result can never read as a pass.
+    /// clauses all held from one that recorded a failure, preventing a
+    /// non-qualifying result from reading as a pass.
     pub(super) fn measured_run(
         profile: RunProfile,
         config_sha256: String,
@@ -90,7 +90,7 @@ impl RunArtifact {
 
     /// Publishes the two directly comparable halves of a paired cache
     /// calibration. The caller derives the disabled half from the opt-in
-    /// profile, so the artifact's single profile remains the complete
+    /// profile; the artifact's single profile remains the complete
     /// description of their shared workload and controller contract.
     pub(super) fn cache_calibration(
         profile: RunProfile,
@@ -207,7 +207,7 @@ pub(super) struct MeasuredRunArtifact {
     pub(super) arrival_plan: ArrivalPlanEvidence,
     pub(super) cache_state: &'static str,
     /// Engine-owned composed schedules collected from sealed reports. The outer
-    /// artifact renders them once, so this field is skipped during serialization.
+    /// artifact renders them once; this field is skipped during serialization.
     #[serde(skip)]
     pub(super) composed_schedules: Vec<ComposedScheduleArtifact>,
     /// Dedicated exact-key source/BFS cohorts, when the opt-in profile
@@ -228,12 +228,12 @@ pub(super) struct MeasuredRunArtifact {
     pub(super) aggregate: MeasuredAggregate,
     /// The shared measured-window deadline and the observed time required to
     /// seal every submitted report. A cooperative deadline cannot preempt a
-    /// CUDA call already in flight, so an overrun is retained as explicit
+    /// CUDA call already in flight; an overrun is retained as explicit
     /// non-qualifying evidence, and no task abort is used to hide it.
     pub(super) deadline: RunDeadlineEvidence,
     /// Present only when the caller explicitly requested the public attempt
     /// cancellation barrier. Its result is retained independently from a
-    /// deadline, so a timeout is never recorded as caller cancellation.
+    /// deadline; a timeout is never recorded as caller cancellation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) cancellation_barrier: Option<CancellationBarrierEvidence>,
     /// Present only for the controlled after-admission deadline probe.
@@ -964,7 +964,7 @@ pub(super) struct CloseUnderLoadEvidence {
     /// are the queued waiters that close had to account for.
     pub(super) backend_closing_sealed: u64,
     /// In-flight attempts that sealed any terminal report after close began.
-    /// Closing is allowed to cancel active work, so the probe requires the
+    /// Closing is allowed to cancel active work; the probe requires the
     /// in-flight cohort to finish and does not demand successful execution.
     pub(super) in_flight_terminal_after_close: u64,
     /// Successful subset of the terminal in-flight cohort, retained as a
@@ -1061,8 +1061,8 @@ pub(super) struct ArrivalPlanEvidence {
     /// is auditable against the profile's intended offered process.
     pub(super) max_planned_attempts: usize,
     /// Planned phase split, present only for rate mode. Concurrency mode paces
-    /// closed-loop rounds and assigns phases at submission, so a planned split
-    /// would be meaningless; the observed split is in the measurement window.
+    /// closed-loop rounds and assigns phases at submission, rendering a planned split
+    /// meaningless; the observed split is in the measurement window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) planned_warmup_arrivals: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]

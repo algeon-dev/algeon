@@ -310,20 +310,16 @@ pub(crate) fn labeling_result_to_dataframe(result: &LabelingResult, runtime: &Ru
     canonicalize_component_labels(frame, runtime, operation)
 }
 
-/// Rewrite a `("vertex", "label")` component frame so each label is the minimum
-/// vertex id of its component.
+/// Canonicalize a `("vertex", "label")` component frame by mapping each label
+/// to the minimum vertex id of its component.
 ///
-/// cuGraph assigns component labels in hook-race order, so raw labels vary run
-/// to run, and WCC additionally reports labels in the internal renumbered id
-/// space, which the caller does not see. Mapping every label to
-/// `MIN(vertex)` over its component fixes both at once: the mapping is a pure
-/// function of the partition (which cuGraph computes correctly), so the output
-/// is run-stable and expressed in vertex ids. Row order is preserved.
+/// Raw cuGraph component labels reflect non-deterministic kernel execution order,
+/// and weakly-connected components report labels in the internal renumbered space.
+/// Mapping each label to `MIN(vertex)` over its component produces deterministic,
+/// run-stable labels expressed in external vertex IDs while preserving row order.
 ///
-/// The mapping itself comes from a GPU groupby-min, which is order-independent
-/// and therefore deterministic. It is broadcast back with a host lookup because
-/// this crate has no join handle; the mapping has one row per component while
-/// the broadcast touches one label column each way.
+/// The mapping is computed via GPU groupby-min and broadcast back through a host lookup
+/// without allocating a join handle.
 fn canonicalize_component_labels(
     frame: cudf::DataFrame,
     runtime: &Runtime,

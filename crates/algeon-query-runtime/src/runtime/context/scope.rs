@@ -1,9 +1,8 @@
-//! The four lifetimes an execution context is assembled from.
+//! Lifetimes and scopes composing an execution context.
 //!
-//! A context clone is four reference-count increments. Deriving a context for
-//! another stream replaces only its [`StreamBinding`], and a per-plan or
-//! per-caller overlay replaces only its [`PlanScope`], so neither can drop a
-//! field of the other scopes.
+//! A context clone increments reference counts across shared scopes. Deriving a
+//! context for another stream replaces only its [`StreamBinding`], while a per-plan
+//! or per-caller overlay updates [`PlanScope`] without modifying underlying scopes.
 
 use std::sync::{
     Arc,
@@ -48,9 +47,9 @@ use crate::{
     },
 };
 
-/// Backend and device scope shared by every context on one device: worker and
-/// stream pools, resident caches, lakehouse cache-fill services, object-store
-/// clients, and the execution policies copied from the service config.
+/// Backend and device scope shared by all contexts on a device, including worker
+/// and stream pools, resident caches, lakehouse cache-fill services, object-store
+/// clients, and execution policies inherited from service configuration.
 ///
 /// A query service builds one per installed device; a standalone context
 /// builds its own.
@@ -77,8 +76,8 @@ pub(in crate::runtime) struct DeviceRuntime {
     pub(in crate::runtime) planning_policy: PlanningPolicy,
 }
 
-/// Query scope: a standalone query, or the admitted attempt that owns the
-/// grant and its allocation domain.
+/// Query scope representing either a standalone query or an admitted attempt
+/// with an assigned grant and allocation domain.
 #[derive(Debug, Clone)]
 pub(super) enum QueryScope {
     /// No service admitted this query; its cap is its own allocation domain

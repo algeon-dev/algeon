@@ -13,8 +13,8 @@
 //! - queue/execution/cleanup and end-to-end latency percentiles,
 //! - the attempt's own aligned allocator peak from its sealed report, kept
 //!   separate from device-scope pool telemetry and host memory,
-//! - the backend's exact begun/published report counters, so a run whose
-//!   evidence is incomplete says so in its own summary row.
+//! - the backend's exact begun/published report counters; a run with
+//!   incomplete evidence records that condition in its summary row.
 //!
 //! Correctness is not assumed: every completed query is compared against an
 //! output fingerprint frozen by a single-flight calibration run, and the SLO
@@ -428,10 +428,10 @@ async fn measure(
     Ok(())
 }
 
-/// Mean single-flight completion rate of the mix, from the frozen calibration.
+/// Mean single-flight completion rate of the mix, from frozen calibration.
 ///
-/// This is the reference the rate ladder multiplies. It never reads the
-/// configuration under test.
+/// Multiplied by the rate ladder to scale arrival rates, independent of
+/// the configuration under test.
 fn single_flight_rate(
     config: &GoodputConfig,
     items: &[WorkloadItem],
@@ -627,12 +627,11 @@ fn build_record(
     record
 }
 
-/// Renders an engine enum through its own `serde` snake_case rename.
+/// Renders an engine enum variant using its `serde` snake_case attribute.
 ///
-/// This is used only for the closed enums that have no entry in
-/// `SealedAttemptLabels` (evidence provenance, failure status and operation,
-/// failure fact values). It reads the declared rename and does not restate a
-/// mapping, so no second label source exists.
+/// Applied to closed enums lacking entries in `SealedAttemptLabels` (evidence
+/// provenance, failure status and operation, failure fact values). Deriving the
+/// string directly from serde declarations avoids duplicate mapping tables.
 fn label<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(text)) => text,

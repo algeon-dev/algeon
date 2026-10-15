@@ -26,7 +26,7 @@ use crate::{
 /// call. The returned table owns device-resident decoded columns and does not
 /// retain a pointer into the host buffer.
 ///
-/// This is an advanced options type. Most users should prefer
+/// For DataFrame reads, use
 /// [`DataFrame::read_parquet`](crate::DataFrame::read_parquet).
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ParquetTableReadOptions<'a> {

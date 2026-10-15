@@ -18,12 +18,11 @@ const COLUMNS: &[&str] = &[
     "output_fingerprint",
 ];
 
-/// Environment facts a measurement run must match before it may reuse a
-/// frozen calibration.
+/// Environment facts a measurement run must match before reusing a frozen
+/// calibration.
 ///
-/// The gate is deliberately limited to facts this process can observe. Source
-/// and native-library identity is recorded by the driver and carried through
-/// `source_identity`, which is reported but never compared.
+/// Validation checks observable process facts. Driver and native library
+/// identities are recorded in `source_identity` for reporting purposes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct CalibrationIdentity {
     pub(super) gpu_model: String,
@@ -59,10 +58,10 @@ impl CalibrationStore {
         self.rows.iter().find(|row| row.item_id == item_id)
     }
 
-    /// Fails closed when the live environment differs from the frozen one.
+    /// Fails closed when the live environment differs from the frozen calibration.
     ///
-    /// An empty recorded fingerprint means the calibration did not exercise
-    /// that family, so a measurement mix that needs it must be recalibrated.
+    /// An empty recorded fingerprint indicates the calibration did not exercise
+    /// that family. Workload mixes requiring that family require recalibration.
     pub(super) fn assert_identity(
         &self,
         live: &CalibrationIdentity,

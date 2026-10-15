@@ -1,34 +1,30 @@
 //! Dedicated asynchronous executors for synchronous GPU work.
 //!
-//! GPU calls are commonly synchronous from Rust's point of view. Running them
-//! on a serving runtime therefore pins serving workers until the GPU call
-//! returns. A `GpuExecutionPool` gives each device a separately sized Tokio
-//! runtime and keeps that blocking work away from the serving runtime.
+//! Because many GPU runtime invocations block the calling CPU thread, executing
+//! them directly on a general serving runtime would pin worker threads for the
+//! duration of the device call. `GpuExecutionPool` isolates blocking GPU operations
+//! onto a per-device Tokio runtime with independently configured worker concurrency.
 //!
-//! Work reaches the device along two paths that share one admission layer.
-//! A job-class permit is taken at submission and bounds how many accepted
-//! jobs exist; a saturated class fails with `ServiceOverloaded` without
-//! queueing, except for the admission envelope of a placed attempt, which is
-//! the one bounded waiter. The capacities derive from the device profile
-//! (`A_d` active attempts, `S_d` auxiliary slots per attempt); the design
-//! contract lives in `website/docs/design/admission.mdx#device-profiles-and-grants`.
+//! Work reaches the device through two execution paths under shared admission limits.
+//! A job-class permit is acquired upon submission, bounding the count of accepted
+//! jobs; a saturated class returns `ServiceOverloaded` immediately, except for the
+//! admission envelope of a placed attempt, which serves as a bounded waiter.
+//! Capacities derive from the device profile (`A_d` active attempts, `S_d` auxiliary
+//! slots per attempt); the design contract is documented in
+//! `website/docs/design/admission.mdx#device-profiles-and-grants`.
 //!
-//! An async job (`run*`, `spawn*`) is an `async` block whose body is
-//! synchronous GPU work. The runtime serves as a fixed-width thread pool for
-//! it: the spawned task awaits one of `worker_count` seats and holds it until
-//! the body returns, so at most `worker_count` async job bodies run at once
-//! and the number of seat waiters is bounded by the class capacities.
-//! Blocking work (`submit_blocking*`) runs on the runtime's blocking threads
-//! instead and takes no seat; its concurrency is bounded only by its class
-//! capacity. Chunk lanes and source reads use this path so a decode never
-//! occupies an async worker. Concurrent GPU calls per device are therefore
-//! bounded by `worker_count` plus the class capacities, with the class
-//! permits as the shared limit.
+//! An async job (`run*`, `spawn*`) wraps synchronous GPU execution within an asynchronous task.
+//! The runtime functions as a fixed-width worker pool; tasks await one of `worker_count`
+//! worker permits and hold it until execution completes. Consequently, at most `worker_count`
+//! async job bodies execute simultaneously, with waiting tasks bounded by class capacities.
+//! Blocking operations (`submit_blocking*`) dispatch to dedicated blocking threads without
+//! consuming worker permits, bounded solely by class capacity. Chunk lanes and source reads
+//! utilize this path to prevent scan decodes from occupying async workers.
 //!
-//! Shutdown closes submissions, asks the supervisor to drop the runtime,
-//! waits for the job census to drain, and joins the supervisor thread, each
-//! under the caller's deadline. The process-exit hook runs the same sequence
-//! without a deadline so no CUDA-owning task outlives libcudart.
+//! Shutdown halts new submissions, instructs the supervisor to drop the runtime,
+//! waits for active tasks to complete, and joins the supervisor thread under
+//! the caller deadline. The process-exit handler mirrors this sequence without a deadline
+//! to guarantee no CUDA-dependent task outlives `libcudart`.
 
 use std::{
     cell::Cell,

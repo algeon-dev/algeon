@@ -1,15 +1,14 @@
 //! cuDF error projection at the native boundary.
 //!
-//! This is the single place a `cudf::Error` becomes a [`QueryError`]. The
-//! runtime and the engine both call it, so one classification, one fact set,
-//! and one redaction policy cover every native failure.
+//! Provides the canonical translation of `cudf::Error` into [`QueryError`]. Both
+//! the runtime and query engine invoke this projection to ensure unified classification,
+//! consistent fact metadata, and uniform redaction across native failures.
 //!
-//! Allocation attribution is owned by `cudf`: the typed FFI failure
-//! source proves a query-limit rejection or physical exhaustion, while a
-//! budget-scope annotation is only a usage snapshot of the scope the error
-//! passed through. See `cudf::allocation_attribution`. Sealed attempt advice,
-//! not this status alone, governs retry; `Persistent` requires escalation or
-//! intervention.
+//! Allocation attribution derives from `cudf`. The typed FFI failure source
+//! establishes whether physical exhaustion or query-limit rejection occurred,
+//! whereas budget-scope annotations record usage snapshots of traversed scopes
+//! (see `cudf::allocation_attribution`). Attempt retry decisions follow sealed attempt
+//! advice in coordination with error status.
 
 use std::borrow::Cow;
 

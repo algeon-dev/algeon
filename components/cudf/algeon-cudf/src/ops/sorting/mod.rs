@@ -1,8 +1,7 @@
-//! GPU-accelerated sorting operations.
+//! Low-level GPU sorting operations on [`Table`] and [`Column`].
 //!
-//! **Advanced/Core.** Most users should prefer
-//! [`DataFrame::sort_values`](crate::FrameOps::sort_values) with
-//! [`SortOptions`].
+//! High-level tabular sorting uses [`DataFrame::sort_values`](crate::FrameOps::sort_values)
+//! with [`SortOptions`].
 //!
 //! # Example
 //!
@@ -362,9 +361,8 @@ pub fn sorted_order_reservation_size_bytes_for_len(output_rows: usize) -> Result
 ///
 /// # Length rules
 ///
-/// `descending` and `nulls_first` vectors must be either:
-/// - **empty**: meaning "use defaults for all sort keys", or
-/// - **equal** in length to the number of sort-key columns.
+/// `descending` and `nulls_first` vectors must be either empty (using defaults
+/// for all sort keys) or equal in length to the number of sort-key columns.
 ///
 /// Any other length is rejected at sort time with
 /// `ErrorKind::Unsupported` plus `ErrorCode::UnsupportedOperation`.

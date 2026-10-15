@@ -1,10 +1,10 @@
-//! Shared pool state, submission gate, and drain coordination.
+//! Shared pool state, submission gate, and completion coordination.
 //!
-//! Every clone of a `GpuExecutionPool` shares one `GpuExecutionPoolInner`.
-//! Shutdown correctness rests on two orderings this module enforces: no task
-//! is spawned after `submissions_closed` is observed set, and the supervisor
-//! is asked to drop the runtime only after submissions are closed. The first
-//! is what makes the drain counters a complete census of outstanding work.
+//! Clones of a `GpuExecutionPool` share an underlying `GpuExecutionPoolInner`.
+//! Shutdown invariants guarantee that no tasks are spawned after `submissions_closed`
+//! is set, and the supervisor drops the runtime only following submission closure.
+//! Enforcing this sequence ensures outstanding task counters accurately reflect
+//! remaining in-flight operations.
 
 use std::{
     sync::{

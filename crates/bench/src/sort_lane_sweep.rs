@@ -1,23 +1,21 @@
 //! Sort-lane sweep for plan F: single-query width comparison and a mixed-load
-//! service check for lane-parallel top-k, on a self-generated dataset.
+//! service check for lane-parallel top-k on a self-generated dataset.
 //!
 //! The sweep builds one backend per profile width (`source_work_per_attempt`
-//! sets the attempt's auxiliary fork pool, hence its execution width) and
-//! runs a two-branch union sort/top-k through the public SQL attempt path,
-//! so every cell exercises DataFusion lowering, compiled admission, and the
-//! lane dispatcher as production does. A backend cannot change its frozen
-//! profile mid-process, so widths run as separate backends in the configured
-//! order; the report carries per-width variance and does not claim an
-//! interleaved comparison.
+//! sets the attempt's auxiliary fork pool and execution width) and runs a
+//! two-branch union sort/top-k through the public SQL attempt path. Each
+//! cell exercises DataFusion lowering, compiled admission, and the lane
+//! dispatcher. Because backends cannot change profile settings at runtime,
+//! widths execute across separate backends in configured order; the report
+//! records per-width variance rather than an interleaved run.
 //!
-//! The union branches read distinct files, so the fused top-k consumes a
-//! two-frame stream and expands one candidate per frame onto lanes. union
-//! reads finish before the sort merge begins, which keeps the width
-//! comparison on the sort phase even though the profile width also sizes
-//! source concurrency.
+//! Because union branches read distinct files, the fused top-k consumes a
+//! two-frame stream and expands one candidate per frame onto lanes. Union
+//! reads complete before sort merging begins to isolate width comparisons to
+//! the sort phase.
 //!
-//! Everything is environment-variable driven. GPU runs must be wrapped in
-//! `flock /tmp/cudf-gpu.lock`.
+//! Configuration is controlled through environment variables. GPU execution
+//! requires serialization through `flock /tmp/cudf-gpu.lock`.
 
 use std::{
     error::Error,
@@ -130,9 +128,9 @@ fn write_branch(path: &Path, rows: usize, seed: u64) -> Result<String, Box<dyn E
     Ok(format!("rows={rows} bytes={bytes} seed={seed}"))
 }
 
-/// Writes a small deterministic directed graph: a ring plus fixed-offset
-/// shortcuts, so PageRank has one weakly connected component with stable
-/// aggregates.
+/// Writes a deterministic directed graph comprising a ring with fixed-offset
+/// shortcuts, providing a single weakly connected component with stable
+/// aggregates for PageRank.
 fn write_edges(path: &Path, vertices: usize) -> Result<String, Box<dyn Error>> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
@@ -161,8 +159,8 @@ fn write_edges(path: &Path, vertices: usize) -> Result<String, Box<dyn Error>> {
     Ok(format!("vertices={vertices} edges={} bytes={}", batch.num_rows(), std::fs::metadata(path)?.len()))
 }
 
-/// Writes deterministic 2-D vectors on a grid plus queries near grid
-/// points, so brute-force KNN neighbor sets are stable.
+/// Writes deterministic 2-D vectors on a grid alongside queries near grid
+/// vertices to maintain reproducible brute-force KNN neighbor rankings.
 fn write_vectors(path: &Path, items: usize, queries: usize, is_queries: bool) -> Result<String, Box<dyn Error>> {
     let id_name = if is_queries { "query_id" } else { "item_id" };
     let count = if is_queries { queries } else { items };

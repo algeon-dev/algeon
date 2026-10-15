@@ -8,8 +8,7 @@ use arrow::error::ArrowError;
 use datafusion::error::DataFusionError;
 use parquet::errors::ParquetError;
 
-/// Single shared workload error for all dataset discovery and registration
-/// paths. Hand-rolled Display/Error/From per house style.
+/// Dataset discovery and registration error across workload fixtures.
 #[derive(Debug)]
 pub enum WorkloadError {
     Io(std::io::Error),

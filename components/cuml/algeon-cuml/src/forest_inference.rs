@@ -404,8 +404,8 @@ impl ForestPrediction {
         self.kind
     }
 
-    /// Validates and splits the output into `output_kind().width()` series:
-    /// finite Float32 scores, or Int32 class indices in `0..classes`.
+    /// Validates and splits the output into `output_kind().width()` series containing
+    /// either finite Float32 scores or Int32 class indices in `0..classes`.
     pub fn into_series(self) -> Result<Vec<Series>> {
         match self.kind {
             ForestOutputKind::Score | ForestOutputKind::Vector(_) => self.into_scores(),
@@ -414,10 +414,8 @@ impl ForestPrediction {
     }
 
     /// Reduces per-class probabilities to each row's most probable class and
-    /// that probability, from the output of a single inference pass. The
-    /// model must return at least two Float32 scores per row, as a fitted
-    /// random forest classifier imported with [`ForestOutput::Scores`] does;
-    /// scores outside `[0, 1]` fail validation.
+    /// probability from a single inference pass. Requires at least two Float32
+    /// scores per row. Scores outside `[0, 1]` fail validation.
     pub fn into_class_prediction(self) -> Result<ClassPrediction> {
         if !matches!(self.kind, ForestOutputKind::Vector(_)) {
             return Err(invalid_input(

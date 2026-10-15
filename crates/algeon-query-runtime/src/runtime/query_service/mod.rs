@@ -1,19 +1,18 @@
 //! Bounded native query-service admission harness.
 //!
-//! The query service is the process-scoped admission authority for native
-//! attempts: one bounded queue, one admission controller over the per-device
-//! ledgers, and the GPU resources (device contexts, stream pools, execution
-//! pools, resident caches) those ledgers account for. `backend_core` installs
-//! it behind a resource generation and closes it through the phased drain
-//! defined here. The contract is
+//! The query service serves as the process-scoped admission authority for native
+//! attempts, coordinating a bounded admission queue, an admission controller managing
+//! per-device ledgers, and underlying GPU resources (device contexts, stream pools,
+//! execution pools, resident caches). `backend_core` initializes the service within
+//! a resource generation and executes shutdown through the coordinated quiescence
+//! sequence defined in this module. The design contract is documented in
 //! `website/docs/design/admission.mdx#from-capability-validation-to-admission`.
 //!
-//! Submodules split along ownership lines. `controller` owns scheduling state
-//! and never a CUDA object; `admission` owns the queued request, its placement
-//! step, and the terminal completion payload; `service` builds the admission
-//! envelope and publishes handles; `handle` owns an admitted attempt's
-//! resources until its one release; `resources` owns the installed GPU
-//! resources and their teardown order.
+//! Submodules partition operational responsibilities: `controller` coordinates
+//! scheduling state without directly manipulating CUDA objects; `admission` manages
+//! queued requests, device placement, and terminal completions; `service` constructs
+//! admission envelopes and dispenses handles; `handle` manages resources allocated
+//! to admitted attempts; and `resources` governs GPU resource allocation and teardown ordering.
 
 use std::sync::Mutex;
 

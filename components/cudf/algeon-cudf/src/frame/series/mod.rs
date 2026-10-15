@@ -1,10 +1,8 @@
-//! An `Arc`-shared GPU column vector; the primary user-facing 1D type.
+//! Reference-counted GPU column vector.
 //!
-//! `Series` wraps an `Arc<Column>` without schema metadata. It is the
-//! high-level counterpart to the low-level owned [`Column`](crate::core::Column)
-//! type.
-//!
-//! Cloning is cheap. It bumps the `Arc` reference count and copies no GPU data.
+//! `Series` wraps an `Arc<Column>` without schema metadata, providing the
+//! high-level interface over low-level [`Column`](crate::core::Column) handles.
+//! Cloning increments the reference count without copying GPU buffer memory.
 
 mod constructors;
 mod context;

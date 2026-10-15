@@ -27,9 +27,9 @@ use query_runtime::runtime::{
 /// Canonical device profile bound to an explicit process-scoped GPU memory
 /// ownership promise.
 ///
-/// These are the runtime-owned device construction types under application
-/// facing Algeon names: one shared type identity, no second defaults or
-/// validation source in this adapter.
+/// Re-exports runtime-owned device construction types under application-facing
+/// names. They share type identity with runtime definitions without introducing
+/// adapter-specific defaults or separate validation.
 pub use query_runtime::{
     runtime::GpuBackendDeviceConfig as AlgeonGpuDeviceConfig,
     runtime::GpuBackendDeviceInstallationBounds as AlgeonGpuDeviceInstallationBounds,
@@ -54,15 +54,15 @@ use crate::{
 /// Process-scoped native GPU backend shared by one or more DataFusion sessions.
 ///
 /// Cloning a backend yields another shared handle to the same backend generation.
-/// When any clone signals close, all clones and installed sessions observe the
-/// same closing gate immediately.
+/// When any clone signals close, all clones and installed sessions observe backend
+/// closure immediately.
 ///
 /// Installed [`SessionState`] instances retain only a session capability that
 /// cannot extend GPU resource ownership. An idle [`datafusion::prelude::SessionContext`]
 /// does not hold an active lease and does not need to be dropped before closing the backend.
 /// Once closing begins, new attempts and admissions are rejected fail-closed, while
-/// in-flight work drains according to contract. Published attempt reports and observation
-/// snapshots remain readable after GPU resources have achieved quiescence.
+/// active attempts complete or terminate according to contract. Published attempt reports
+/// and observation snapshots remain readable after GPU resources have achieved quiescence.
 ///
 /// Dropping the last owning backend handle signals close without waiting for
 /// quiescence and cannot report a timeout or cleanup failure. The process
@@ -85,9 +85,9 @@ pub struct AlgeonGpuBackend {
 
 /// Queue-only policy for the shared admission queue.
 ///
-/// Device-local capacity, query-limit, concurrency, and source-work settings belong
-/// exclusively to [`AlgeonGpuDeviceProfile`]. Keeping this policy queue-only
-/// prevents a scalar from being implicitly broadcast to heterogeneous devices.
+/// Device capacity, query limits, concurrency, and source settings are configured
+/// per device in [`AlgeonGpuDeviceProfile`]. Keeping this policy queue-only
+/// prevents uniform scalar bounds from being applied across heterogeneous devices.
 ///
 /// Values are constructed from [`Default`] and adjusted through the `with_*`
 /// builders; zero bounds are rejected when the backend is built.
@@ -152,15 +152,14 @@ impl AlgeonGpuBackend {
 
     /// Installs the backend-managed DataFusion integration on `builder`.
     ///
-    /// The installation binds the native optimizer to this backend's admission
-    /// authority, and installs the GPU coverage UDTF and `algeon_version()`,
-    /// which returns [`crate::build_info::build_info`] and this backend's
-    /// execution mode as one row. The resulting session
-    /// plans and admits native execution through this backend's ledger. With
-    /// [`AlgeonNativeExecutionConfig::with_s3_storage`], the session also
-    /// resolves `s3://` URLs that have no registered object store from that
-    /// storage, so DataFusion scans read with the native reader's endpoint,
-    /// region, and credentials.
+    /// Binds the native optimizer to this backend's admission authority,
+    /// installs the GPU coverage UDTF, and registers `algeon_version()`, which
+    /// returns [`crate::build_info::build_info`] and this backend's execution mode
+    /// as one row. The resulting session plans and admits native execution through
+    /// this backend's ledger. With [`AlgeonNativeExecutionConfig::with_s3_storage`],
+    /// the session also resolves unregistered `s3://` URLs from that storage,
+    /// configuring DataFusion scans with the native reader endpoint, region,
+    /// and credentials.
     ///
     /// This method does not install optional SQL families such as cuVS or
     /// cuGraph. Call [`AlgeonSessionStateBuilderExt::try_with_cuvs_sql`] or
@@ -170,11 +169,10 @@ impl AlgeonGpuBackend {
         install_backend_optimizer_config(builder, &self.optimizer_config)
     }
 
-    /// Performs the one controlled device-quarantine transition the operator
-    /// qualification tool is allowed to drive. It closes admission on exactly
-    /// one live device ledger through the same fleet admission gate placement
-    /// uses; it neither fabricates a CUDA fault nor mutates cuDF global
-    /// health, and it is not a production backend mode.
+    /// Performs controlled device quarantine for qualification tooling by
+    /// closing admission on the specified device ledger. This operation does not
+    /// simulate CUDA faults or alter cuDF global health, and is not a production
+    /// backend mode.
     #[cfg(feature = "qualification")]
     pub fn quarantine_device_for_qualification(&self, device_ordinal: usize) -> Result<DeviceQuarantineInjection> {
         self.core.fault_injector().quarantine_device(device_ordinal).map_err(|error| {
@@ -192,23 +190,22 @@ impl AlgeonGpuBackend {
         self.core.device_startup_records()
     }
 
-    /// KvikIO's process settings as applied when this backend was built:
-    /// compatibility mode, thread count and task size shared by every source
-    /// read in the process. `None` for a cuDF build without KvikIO support.
+    /// Returns KvikIO process settings applied when this backend was built,
+    /// including compatibility mode, thread count, and task size shared by
+    /// every source read in the process. Returns `None` for builds without
+    /// KvikIO support.
     pub fn kvikio_process_config(&self) -> Option<KvikioProcessConfig> {
         self.core.kvikio_process_config()
     }
 
     /// Probes declarable capacity for one CUDA device without building a backend.
     ///
-    /// This never claims the process owner lease and never installs a memory
-    /// manager, so callers can pick an explicit limit from the probe result before
-    /// `build()`, which avoids a search through repeated build failures.
-    /// Declare at most the probe's `max_declarable_limit_bytes` and the
-    /// build will not refuse on capacity grounds. The probe reports both the
-    /// CUDA-visible total (the comparison basis for ownership and limits)
-    /// and the NVML physical total when available, so a near-whole-device
-    /// declaration is no longer a guess.
+    /// Probes declarable memory capacity without acquiring the process owner lease
+    /// or initializing a memory manager. Callers can use the probe result to select
+    /// an explicit limit before calling [`AlgeonGpuBackendBuilder::build`].
+    /// Declarations up to `max_declarable_limit_bytes` satisfy backend capacity checks.
+    /// The probe reports both the CUDA-visible total used for ownership limits and,
+    /// when NVML is available, the physical device total.
     pub fn probe_device_capacity(
         device_ordinal: usize,
         memory_ownership: GpuMemoryOwnership,
@@ -225,7 +222,7 @@ impl AlgeonGpuBackend {
 
     /// Non-blockingly signals backend shutdown.
     ///
-    /// New attempt admissions are rejected immediately, while active attempts drain
+    /// New attempt admissions are rejected immediately, while active attempts complete
     /// cooperatively. Returns `true` if this call initiated the close, or `false`
     /// if the backend was already closing or closed.
     pub fn close(&self) -> bool {
@@ -235,8 +232,8 @@ impl AlgeonGpuBackend {
     /// Returns the current two-scope backend close state without altering state or
     /// initiating a close.
     ///
-    /// Callers that track shutdown progression can inspect whether GPU resources
-    /// and observation records have quiesced without mutating the closing gate.
+    /// Callers tracking shutdown progression can inspect whether GPU resources
+    /// and observation records have quiesced without altering closing state.
     pub fn close_snapshot(&self) -> GpuBackendCloseSnapshot {
         self.core.close_snapshot()
     }
@@ -321,7 +318,7 @@ impl AlgeonGpuBackend {
     }
 
     /// Whether the session's installed native optimizer is bound to this
-    /// backend, so execution planned through it is admitted by this backend.
+    /// backend for query admission.
     ///
     /// Returns false when the session has no native optimizer installed, the
     /// installed optimizer is bound to another backend, or its execution
@@ -332,7 +329,7 @@ impl AlgeonGpuBackend {
     }
 
     /// Whether the config's query admission source is bound to this backend's
-    /// session, so execution through it is admitted by this backend.
+    /// session for query admission.
     pub(crate) fn is_execution_config_bound(&self, config: &AlgeonNativeExecutionConfig) -> bool {
         config.query_admission_source_matches(&self.session)
     }
@@ -417,10 +414,10 @@ pub(crate) fn install_backend_optimizer_config(
 /// Validated backend-builder input shared by production construction and root
 /// unit tests.
 ///
-/// This is the first construction segment: normalize and validate profiles,
-/// ownership, queue, and execution config without acquiring the owner lease or
-/// creating CUDA resources. Only production `build()` enters the second
-/// segment (lease acquisition and `GpuBackendCore` construction).
+/// Normalizes and validates profiles, ownership, queue parameters, and
+/// execution configuration prior to lease acquisition or CUDA resource creation.
+/// Production `build()` performs the subsequent stage of lease acquisition and
+/// `GpuBackendCore` construction.
 #[derive(Debug)]
 struct ValidatedBackendConstruction {
     optimizer_config: AlgeonNativeOptimizerConfig,
@@ -468,7 +465,7 @@ impl InstalledTestGpuBackend {
         )
     }
 
-    /// Builds a serialized real backend with test-selected immutable resource
+    /// Builds a serialized backend instance with test-selected immutable resource
     /// and queue envelopes. Tests retain this fixture for the full lifetime of
     /// every config or ticket cloned from its backend.
     pub(crate) fn with_config(
@@ -484,7 +481,7 @@ impl InstalledTestGpuBackend {
         )
     }
 
-    /// Builds a serialized real backend with an explicit execution mode. This
+    /// Builds a serialized backend instance with an explicit execution mode. This
     /// keeps integration tests on the same frozen backend-installation path as
     /// production cells that require native execution.
     pub(crate) fn with_config_and_execution_mode(
@@ -610,12 +607,13 @@ impl AlgeonGpuBackendBuilder {
 
     /// Dry-runs builder validation without acquiring GPU resources.
     ///
-    /// Runs the same pre-discovery normalization and validation `build()`
-    /// performs before claiming the process owner lease or touching CUDA:
-    /// device declarations, installation bounds, memory-manager options, and
-    /// queue policy. Capacity-vs-facts checks still require discovery at
-    /// `build()` time; combine with [`AlgeonGpuBackend::probe_device_capacity`]
-    /// to cover those before building.
+    /// Runs the pre-discovery normalization and validation performed by
+    /// `build()` prior to claiming the process owner lease or touching CUDA.
+    /// Validated configuration includes device declarations, installation
+    /// bounds, memory-manager options, and queue policy. Capacity-vs-facts
+    /// checks still require discovery at `build()` time; combine with
+    /// [`AlgeonGpuBackend::probe_device_capacity`] to cover those before
+    /// building.
     pub fn validate(self) -> Result<()> {
         validated_backend_construction(
             self.optimizer_config,

@@ -4,8 +4,8 @@
 //! because it names `algeon-datafusion` table functions, which the neutral
 //! workload crate cannot reference.
 //!
-//! Only the measured run executes a selected query, so the CPU-only feature
-//! reaches these values from tests alone.
+//! Only the measured run executes a selected query; CPU-only feature builds
+//! reach these values strictly through unit tests.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
 use std::{
@@ -26,9 +26,9 @@ use crate::ToolResult;
 /// A resolved query the runner will submit through an attempt.
 #[derive(Debug, Clone)]
 pub(super) struct SelectedQuery {
-    /// Position of the owning fixture workload in the recorded profile. The
-    /// same fixture kind may name multiple independent DBLP graph slices, so
-    /// kind alone is not a session-routing key.
+    /// Position of the owning fixture workload in the recorded profile. Because
+    /// the same fixture kind may name multiple independent DBLP graph slices,
+    /// kind alone cannot serve as a session-routing key.
     pub(super) fixture_index: usize,
     pub(super) kind: FixtureKind,
     pub(super) label: String,
@@ -40,9 +40,9 @@ pub(super) struct SelectedQuery {
     /// runner-owned feature-disabled capability probe is deliberately
     /// non-executing, and its separate operability clause owns that contract.
     pub(super) placement_required: bool,
-    /// The deliberately serialized public completion receiver. This is
-    /// attached only by the dedicated slow-report-sink probe, so ordinary
-    /// workload selection remains free of collector backpressure.
+    /// Serialized public completion receiver attached exclusively by the
+    /// dedicated slow-report-sink probe, keeping ordinary workload selection
+    /// free of collector backpressure.
     completion_sink: Option<CompletionSink>,
 }
 
@@ -131,16 +131,16 @@ pub(super) struct SelectedQueryDescriptor {
 /// The DBLP edge table the cuGraph table functions read. `edges_by_src` is the
 /// source-sorted layout used by the algorithm paths.
 const DBLP_EDGE_TABLE: &str = "edges_by_src";
-/// A traversal source that exists in the canonical V12 vertex space. DBLP paper
-/// ids do not start at zero, so a synthetic source is rejected as invalid input.
-/// Without that rejection, the traversal would visit no vertices.
+/// Traversal source vertex present in the canonical V12 vertex space.
+/// Because DBLP paper IDs do not start at zero, arbitrary synthetic sources
+/// fail validation.
 const DBLP_TRAVERSAL_SOURCE: i64 = 1091;
 
 /// cuGraph SQL table-function names.
 ///
-/// The base runner feature is CPU-only and cannot link the adapter, so these
-/// are literals here and pinned against the adapter's public constants by
-/// `cugraph_function_names_match_the_adapter_constants` under the run feature.
+/// Because the base runner feature builds without adapter dependencies,
+/// function names are declared as literals here and verified against adapter
+/// constants in `cugraph_function_names_match_the_adapter_constants`.
 const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
 const CUGRAPH_BFS_FUNCTION: &str = "cugraph_bfs";
 const CUGRAPH_SSSP_FUNCTION: &str = "cugraph_sssp";
@@ -278,9 +278,9 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
     ]
 }
 
-/// Resolves the profile's query labels into executable statements.
+/// Resolves profile query labels into executable statements.
 ///
-/// Selection order is profile order, so a recorded plan replays identically.
+/// Preserves profile selection order for deterministic schedule replays.
 pub(super) fn select_queries(workloads: &[FixtureWorkloadProfile]) -> ToolResult<Vec<SelectedQuery>> {
     let mut selected = Vec::new();
     for (fixture_index, workload) in workloads.iter().enumerate() {
@@ -411,8 +411,8 @@ mod tests {
         }
     }
 
-    /// The literals above must equal the adapter's exported names, or the graph
-    /// workload would silently plan as an unknown table function.
+    /// Asserts that declared function literals match adapter exported names,
+    /// ensuring graph queries resolve to known table functions.
     #[cfg(feature = "single-node-multi-gpu-validate-run")]
     #[test]
     fn cugraph_function_names_match_the_adapter_constants() {

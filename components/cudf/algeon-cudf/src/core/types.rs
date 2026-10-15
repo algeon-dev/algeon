@@ -141,7 +141,7 @@ impl TypeId {
 
     /// Returns `true` if this is a fixed-width numeric type (integers and floats).
     ///
-    /// `Bool8` is **not** considered numeric; use [`is_boolean`](Self::is_boolean)
+    /// `Bool8` is not considered numeric; use [`is_boolean`](Self::is_boolean)
     /// instead, or combine with `|| is_boolean()` when both are acceptable.
     pub fn is_numeric(self) -> bool {
         matches!(
@@ -209,7 +209,7 @@ impl TypeId {
 
     /// Returns a numeric rank used for type promotion ordering.
     ///
-    /// Integers get sequential ranks by width, floats get higher ranks:
+    /// Integers have sequential ranks by width, and floats have higher ranks:
     /// - `Int8=0, UInt8=1, Int16=2, UInt16=3, Int32=4, UInt32=5, Int64=6, UInt64=7`
     /// - `Float32=8, Float64=10`
     /// - Non-numeric types → `None`
@@ -395,7 +395,7 @@ impl<T: CudfType> From<T> for ScalarValue {
 
 /// Trait for Rust types that map to a cudf `TypeId`.
 ///
-/// This enables generic runtime-backed column construction:
+/// Enables generic column construction, such as
 /// `runtime.column_from_slice::<i32>(&data)`.
 pub trait CudfType: private::Sealed + Copy + 'static {
     /// The corresponding cudf type identifier.

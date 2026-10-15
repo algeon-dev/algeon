@@ -252,7 +252,7 @@ fn data_type_sort_key(dtype: DataType) -> (i32, i32) {
 }
 
 impl DataFrame {
-    /// Return a cheap programmatic metadata snapshot of this DataFrame.
+    /// Return a programmatic metadata snapshot of this DataFrame.
     ///
     /// This is a convenience wrapper over [`info_with`](Self::info_with)
     /// with no detail flags. The default snapshot includes only row count,
@@ -270,7 +270,7 @@ impl DataFrame {
     /// This method reports schema and optional memory-accounting metadata
     /// without materializing column values to host memory.
     ///
-    /// The memory-accounting views have different semantics:
+    /// # Memory Accounting Semantics
     ///
     /// - [`InfoDetail::PAYLOAD_BYTES`] reports bytes required to represent
     ///   the column payload, including nested child payloads and payload-sized

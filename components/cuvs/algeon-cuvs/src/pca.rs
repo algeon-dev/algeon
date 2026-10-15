@@ -321,8 +321,7 @@ fn validate_input_dimensions(rows: usize, columns: usize, n_components: usize, o
 
 /// Run PCA against an exclusively owned packed matrix.
 ///
-/// This is the executor-facing ingress for cudf-packed inputs: no caller needs
-/// to cast a shared const device pointer into a mutable pointer.
+/// Accepts exclusively owned packed inputs for in-place native execution.
 pub fn fit_transform_owned(
     resources: &CuvsResources,
     input: &mut OwnedMatrix<f32>,

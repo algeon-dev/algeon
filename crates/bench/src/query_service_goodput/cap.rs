@@ -146,13 +146,13 @@ impl CapAssignment {
             .unwrap_or(fallback)
     }
 
-    /// Resolves caps for the single-flight calibration rows.
+    /// Resolves caps for single-flight calibration rows.
     ///
-    /// Sequence-only assignments cannot identify a cap for calibration, so a
-    /// manifest must provide an item, family or default rule whenever it also
-    /// contains sequence overrides. This keeps the frozen latency baseline tied
-    /// to an explicit cap. With sequence overrides present, an item lacking such
-    /// a rule makes this function return an error.
+    /// Because sequence-only assignments cannot determine a cap for calibration,
+    /// a manifest containing sequence overrides must provide an item, family,
+    /// or default rule. Tying latency baselines to explicit caps ensures
+    /// reproducible calibration. When sequence overrides are present, any item
+    /// lacking a matching rule results in an error.
     pub(super) fn calibration_caps(&self, items: &[WorkloadItem], fallback: u64) -> Result<Vec<u64>, Box<dyn Error>> {
         items
             .iter()

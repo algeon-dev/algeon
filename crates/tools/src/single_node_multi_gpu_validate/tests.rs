@@ -1495,8 +1495,8 @@ fn same_key_probe_rejects_ambiguous_dblp_slice_queries() {
     assert!(error.contains("same_key_probe.bfs matches 2 selected dblp query bfs entries"), "{error}");
 }
 
-/// The fixture paths in `measured_run_profile` do not exist, so preflight must
-/// stop with the structured fixture reason.
+/// Verifies that nonexistent fixture paths cause preflight to fail with a
+/// structured `missing_fixture` error.
 #[test]
 fn measured_run_preflight_reports_a_missing_fixture_with_a_structured_reason() {
     let error = measured_run_preflight(&measured_run_profile(), None, None, false, false, false, false, None, false)
@@ -1522,8 +1522,8 @@ fn overload_fairness_preflight_validates_the_finite_cohort_before_fixture_access
     assert!(error.contains("reason=missing_fixture"), "{error}");
 }
 
-/// A measured run only needs the fixtures it will execute, unlike the
-/// fixture-preflight contract which requires exactly one of each kind.
+/// A measured run requires only the fixtures it executes, unlike the
+/// fixture-preflight contract which requires one of each kind.
 #[test]
 fn a_measured_run_may_execute_one_fixture_kind_while_preflight_requires_both() {
     let root = test_root("measured-single-kind");
@@ -1570,8 +1570,8 @@ fn profile_accepts_explicit_repeated_workload_queries_and_rejects_unknown_labels
     assert!(select_queries(&profile.workloads).unwrap_err().to_string().contains("unknown tpch query label"));
 }
 
-/// `measured_run_profile` uses whole-device ownership. This test covers the
-/// `static_partition` ownership variant's parse and validation path.
+/// Covers parsing and validation for the `static_partition` ownership
+/// variant, complementing the whole-device profile defaults.
 #[test]
 fn profile_accepts_static_partition_ownership_and_rejects_a_zero_allocation_limit() {
     let mut profile = measured_run_profile();
@@ -1604,9 +1604,8 @@ fn profile_rejects_a_stream_pool_below_the_engine_slot_formula() {
     profile.validate().unwrap();
 }
 
-/// One worker per device is reserved for lifecycle jobs, so a worker pool
-/// that only covers the active attempts leaves context setup and release
-/// cleanup with no worker.
+/// Asserts that profile validation enforces the reserved lifecycle worker,
+/// requiring `worker_count > max_active_attempts`.
 #[test]
 fn profile_rejects_a_worker_count_without_the_lifecycle_reserve() {
     let mut profile = measured_run_profile();
@@ -1689,8 +1688,8 @@ fn profile_scopes_finite_round_bounds_to_closed_loop_scheduling() {
     assert!(profile.validate().unwrap_err().to_string().contains("max_rounds"));
 }
 
-/// Writes the measured-run artifact of `profile` through the runner's
-/// writer, assembled from the pure reduction so it needs no GPU.
+/// Writes the measured-run artifact of `profile` via the runner's
+/// serialization logic, verified through pure reductions without GPU hardware.
 fn write_measured_run_artifact(profile: RunProfile, out_dir: &Path) -> PathBuf {
     let queries = select_queries(&profile.workloads).unwrap();
     let plan = ArrivalPlan::plan(&profile.scheduling, queries.len(), profile.session.shared_session_count).unwrap();
@@ -1771,7 +1770,7 @@ fn write_measured_run_artifact(profile: RunProfile, out_dir: &Path) -> PathBuf {
     write_artifact(out_dir, &artifact).unwrap()
 }
 
-/// The end-to-end artifact shape for a measured run. This is the schema
+/// The end-to-end artifact shape for a measured run, verifying the schema
 /// contract published by the measured runner.
 #[test]
 fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gaps() {
@@ -1836,8 +1835,8 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
     fs::remove_dir_all(root).unwrap();
 }
 
-/// flight-sql-stress compares a Flight run with the in-process cell its
-/// profile names, so its reader must accept the artifact this runner writes.
+/// Asserts that `flight-sql-stress` can parse the in-process baseline artifact
+/// written by this runner.
 #[test]
 fn flight_sql_stress_reads_the_measured_run_artifact_this_runner_writes() {
     let root = TestDirectory::new("flight-stress-baseline");
@@ -1862,8 +1861,8 @@ fn flight_sql_stress_reads_the_measured_run_artifact_this_runner_writes() {
     }
 }
 
-/// A failed clause must flip the artifact status so a non-qualifying run can
-/// never be read as a pass.
+/// Verifies that a failed qualification clause sets artifact status to failed,
+/// preventing non-qualifying runs from reporting success.
 #[test]
 fn a_failed_scenario_clause_marks_the_artifact_non_qualifying() {
     let devices = vec![measured_device(0, 1 << 30, 2), measured_device(1, 2 << 30, 4)];

@@ -457,9 +457,8 @@ impl ResourceHandle {
     /// - the handle remains valid for the lifetime of this `ResourceHandle`
     /// - the handle is not freed externally while this wrapper exists
     /// - the calling thread obeys the external runtime's thread-affinity rules
-    /// - graph operations run through this handle are not ordered by
-    ///   [`Graph::park`](crate::graph::Graph::park), so the graph becomes
-    ///   ineligible for parked transfer
+    /// - graph operations run through this handle bypass [`Graph::park`](crate::graph::Graph::park)
+    ///   ordering, making the graph ineligible for parked transfer
     pub unsafe fn from_raw_resource_handle(raw: *mut cugraph_resource_handle_t) -> Result<Self> {
         if raw.is_null() {
             return Err(Error::new(ErrorKind::InvalidInput, "ResourceHandle::from_raw_resource_handle")
@@ -488,9 +487,8 @@ impl ResourceHandle {
     /// - the calling thread's current CUDA device is the device that `raw` is
     ///   bound to
     /// - the calling thread obeys the external runtime's thread-affinity rules
-    /// - graph operations run through this handle are not ordered by
-    ///   [`Graph::park`](crate::graph::Graph::park), so the graph becomes
-    ///   ineligible for parked transfer
+    /// - graph operations run through this handle bypass [`Graph::park`](crate::graph::Graph::park)
+    ///   ordering, making the graph ineligible for parked transfer
     ///
     /// For a borrowed/non-owning wrapper, use
     /// [`from_raw_resource_handle`](Self::from_raw_resource_handle) instead.
@@ -512,8 +510,8 @@ impl ResourceHandle {
 
     /// Consume this wrapper and return the underlying raw handle pointer.
     ///
-    /// This suppresses Rust-side `Drop`, so no automatic
-    /// `cugraph_free_resource_handle` call will occur after this returns.
+    /// Suppresses Rust-side `Drop`. Automatic `cugraph_free_resource_handle`
+    /// teardown does not occur.
     ///
     /// Ownership semantics are preserved from the source wrapper:
     /// - if `self` owned the handle, the caller becomes responsible for freeing
@@ -599,8 +597,8 @@ impl ResourceHandle {
 
     /// Enter the owner device on the current thread and create an execution
     /// session for GPU-capable work. Runtime-bound handles serialize entry for
-    /// the shared native owner; nested same-owner entry on one thread is
-    /// rejected without waiting, so it cannot deadlock.
+    /// the shared native owner; nested same-owner entry on one thread returns
+    /// an error immediately without deadlocking.
     pub fn enter(&self, operation: &'static str) -> Result<EnteredContext<'_>> {
         let runtime_extension = match &self.state {
             ResourceHandleState::RuntimeBound { lease } => Some(lease.enter(operation)?),

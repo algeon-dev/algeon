@@ -414,9 +414,9 @@ fn graph_items_carry_their_seed_count_as_work_units() {
     assert!(bfs.sql.contains("source_vertex => 7"), "the discovered seed must reach the traversal item: {}", bfs.sql);
 }
 
-/// Every vertex-keyed algorithm returns one row per vertex, so a fingerprint
-/// taken over the row count alone is the same number whether the algorithm
-/// computed anything or not, and goodput would count wrong results as correct.
+/// Validates that graph item fingerprint queries aggregate result values.
+/// Because vertex-keyed algorithms return one row per vertex regardless of
+/// calculation correctness, row counts alone cannot detect output discrepancies.
 #[cfg(feature = "cugraph")]
 #[test]
 fn graph_items_fingerprint_computed_values_and_not_only_row_counts() {

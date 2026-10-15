@@ -1,8 +1,6 @@
 //! Strongly-typed parameter wrappers for cuGraph algorithm configuration.
 //!
-//! These new types enforce invariants at construction time, making it impossible
-//! to pass invalid values (e.g., zero iteration counts, negative scaling
-//! ratios) to algorithm functions.
+//! Enforces range, non-zero, and finiteness invariants at construction time.
 //!
 //! # Overview
 //!
@@ -623,8 +621,7 @@ impl TryFrom<f64> for HalfOpenUnitF64 {
 
 /// A cluster count of at least two.
 ///
-/// libcugraph's spectral clustering rejects a single cluster, so the smallest
-/// valid partition count is two.
+/// Upstream libcugraph spectral clustering requires at least two clusters.
 ///
 /// # Construction
 ///

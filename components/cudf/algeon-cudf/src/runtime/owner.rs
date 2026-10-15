@@ -56,13 +56,12 @@ fn map_stream_dependency_error(kind: InteropErrorKind, operation: &'static str, 
 /// the runtime retain those defaults unless a supported operation resolves
 /// same-device borrowed overrides for that call.
 ///
-/// `Runtime` is therefore the canonical place to express a workflow's default
-/// execution placement. For query-style budgets, prefer a shared
-/// [`crate::QueryMemoryDomain`] member lease. An owned memory resource receives
-/// only output allocations; libcudf temporaries resolve through the device's
-/// long-lived memory domain. Create an explicit [`DeviceMemoryResource`] first
-/// only when you need an advanced allocator handle to reuse across runtimes or
-/// borrow through [`crate::Exec`] for one operation.
+/// `Runtime` establishes the default execution placement for a workflow.
+/// Query execution budgets attach through a shared [`crate::QueryMemoryDomain`]
+/// member lease. An assigned memory resource receives output allocations, while
+/// intermediate libcudf buffers allocate from the device domain. Standalone
+/// [`DeviceMemoryResource`] handles configure shared allocators across
+/// runtimes or supply temporary overrides via [`crate::Exec`].
 ///
 /// When an operation is invoked through this runtime, the runtime's device is
 /// re-entered at the FFI boundary before any GPU work is enqueued. This ensures

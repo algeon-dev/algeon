@@ -22,7 +22,7 @@ pub fn when(condition: Expr) -> WhenBuilder {
 
 /// First stage of a `when(...).then(...).otherwise(...)` chain.
 ///
-/// Holds the condition until you provide the `true` branch with [`Self::then`].
+/// Holds the condition before configuring the `true` branch with [`Self::then`].
 pub struct WhenBuilder(Expr);
 
 impl WhenBuilder {
@@ -34,8 +34,8 @@ impl WhenBuilder {
 
 /// Second stage of a `when(...).then(...).otherwise(...)` chain.
 ///
-/// Holds the condition and `true` branch until you complete the expression
-/// with [`Self::otherwise`].
+/// Holds the condition and `true` branch before completing the expression with
+/// [`Self::otherwise`].
 pub struct ThenBuilder {
     condition: Expr,
     true_val: Expr,

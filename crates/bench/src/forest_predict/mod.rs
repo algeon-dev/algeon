@@ -1,18 +1,16 @@
-//! `forest_predict`: times `cuml_forest_predict` over the EMBER2024 and TPC-H
+//! Benchmarks `cuml_forest_predict` execution over EMBER2024 and TPC-H
 //! `lineitem` forest workloads discovered by `workloads::forest`.
 //!
-//! Each case runs one SQL statement with a fixed model and Float32 input.
-//! Parse/bind time covers `SessionContext::sql` plus physical planning, which
-//! reads and inspects the model. Import, pack, predict, and assemble times come
-//! from the runtime observation snapshot's operator stages; the execute wall
-//! additionally covers the input read and the result download. A lowered
-//! input reads Parquet on the device; an input that stays a DataFusion plan
-//! adds host decode, host staging, and upload. Device memory is the `nvidia-smi memory.used` high water sampled
-//! during execution minus the idle reading taken before the backend starts.
-//! The query domain's pool keeps device memory after a statement finishes, so
-//! the value is the process high water up to that case; run one case per
-//! process to attribute it to that case. The admitted query grant comes from
-//! the observation snapshot's admission events.
+//! Each test case executes a SQL statement with a designated model and Float32
+//! feature inputs. Parse and bind timings measure `SessionContext::sql` and
+//! physical planning with model metadata inspection. Operator stages
+//! (import, pack, predict, assemble) derive from runtime observation snapshots;
+//! total wall-clock time additionally covers input scans and result downloads.
+//! Native scans read Parquet directly on device, whereas unlowered plans require
+//! host decode, staging, and upload. Device memory metrics reflect peak
+//! `nvidia-smi memory.used` during execution minus the pre-run baseline.
+//! Because query domain memory pools retain allocations post-execution, running
+//! individual test cases in dedicated processes ensures isolated memory metrics.
 //!
 //! The process holds `/tmp/cudf-gpu.lock` exclusively for its whole run. Each
 //! case appends one row to `<output-dir>/forest_predict.tsv` and writes
@@ -575,8 +573,8 @@ fn median_measurement(runs: &[RunMeasurement]) -> RunMeasurement {
     }
 }
 
-/// Writes `id,prediction` for every `stride`-th `row_ordinal`, so the sample
-/// spans all prediction batches.
+/// Writes `id,prediction` for every `stride`-th `row_ordinal` to sample across
+/// all prediction batches.
 fn write_sample(path: &Path, batches: &[RecordBatch], sample_rows: usize) -> BenchResult<usize> {
     let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
     let stride = (total / sample_rows.max(1)).max(1) as u64;

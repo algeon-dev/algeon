@@ -4,23 +4,17 @@ use crate::core::types::TypeId;
 
 /// A typed descriptor of a contiguous region of GPU device memory.
 ///
-/// `DeviceSlice` carries a device pointer, element count, and type information.
-/// It does not copy or dereference the pointer. Any number of descriptors may
-/// describe the same allocation: [`device_slice()`](crate::core::Column::device_slice)
-/// issues a new one on every call from a shared `&Column`, and
-/// [`split_at()`](Self::split_at) issues two more without consuming its input.
-/// Holding a descriptor, even by `&mut`, proves nothing about exclusive access
-/// to the underlying bytes.
+/// `DeviceSlice` bundles a device pointer, element count, and type descriptor.
+/// It does not copy or dereference the pointer. Descriptors borrow their source
+/// column immutably; obtaining `&mut` access to the slice does not guarantee
+/// exclusive access to the underlying device allocation.
 ///
-/// The lifetime `'a` ties this slice to the [`Column`](crate::core::Column)
-/// that produced it, so the descriptor cannot outlive the allocation it points
-/// to.
+/// The lifetime `'a` ties this slice to the source [`Column`](crate::core::Column),
+/// preventing access after the allocation is freed.
 ///
-/// This is a low-level raw-pointer helper. For interop across crates, prefer
-/// [`rapids_interop::PreparedColumnExport`] via
-/// [`Column::try_prepare_device_column_export`](crate::core::Column::try_prepare_device_column_export),
-/// which also carries null-mask semantics, base-pointer-plus-offset behavior,
-/// and execution provenance.
+/// For interop across crates, [`rapids_interop::PreparedColumnExport`] via
+/// [`Column::try_prepare_device_column_export`](crate::core::Column::try_prepare_device_column_export)
+/// provides null-mask, offset, and execution provenance semantics.
 #[derive(Debug)]
 pub struct DeviceSlice<'a> {
     pub(crate) ptr: *mut c_void,

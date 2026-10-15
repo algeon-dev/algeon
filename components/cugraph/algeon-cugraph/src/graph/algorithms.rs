@@ -75,20 +75,16 @@ impl Graph<Transposed> {
     /// Returns a [`CentralityResult`]
     /// containing vertex ids, scores, iteration count, and convergence status.
     ///
-    /// This convenience method does not expose any typed auxiliary arrays, so
-    /// it can be used regardless of the graph's runtime vertex-id or weight
-    /// dtype. For advanced features (precomputed weights, initial guess), use
-    /// [`pagerank_with`](Self::pagerank_with) and ensure those typed inputs
-    /// match the graph's runtime dtypes.
+    /// Runs PageRank without auxiliary input arrays. For precomputed weights
+    /// or initial scores, see [`pagerank_with`](Self::pagerank_with).
     pub fn pagerank(&mut self, handle: &EnteredContext<'_>, params: &PageRankParams) -> Result<CentralityResult> {
         pagerank::<i32, f32>(handle, self, params, None, None)
     }
 
     /// Compute PageRank with optional precomputed weights and/or initial guess.
     ///
-    /// This is the advanced variant of [`pagerank`](Self::pagerank). Use it
-    /// when you have precomputed out-weight sums or want to supply an initial
-    /// guess for iterative refinement.
+    /// Accepts precomputed out-weight sums and initial score guesses for
+    /// iterative refinement.
     pub fn pagerank_with<V: CugraphElement, W: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
@@ -791,9 +787,8 @@ impl<T: Transposition> Graph<T> {
     /// Compute a Force Atlas 2 layout with optional per-vertex attributes
     /// and/or initial positions.
     ///
-    /// This is the advanced variant of [`force_atlas2`](Self::force_atlas2).
-    /// Use it when you need refinement passes (supplying a previous layout as
-    /// initial positions) or per-vertex radius/mobility/mass.
+    /// Accepts initial positions for refinement passes or per-vertex
+    /// radius, mobility, and mass attributes.
     pub fn force_atlas2_with<V: CugraphElement, W: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,

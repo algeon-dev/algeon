@@ -1,8 +1,6 @@
 //! Random number generator state for cuGraph algorithms.
 //!
-//! Some cuGraph algorithms (e.g., Force Atlas 2, Leiden, random walks) require
-//! a random number generator state. This module provides a safe RAII wrapper
-//! around `cugraph_rng_state_t`.
+//! Safe owner for `cugraph_rng_state_t` on the bound CUDA device.
 //!
 //! # Example
 //!

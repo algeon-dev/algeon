@@ -1,6 +1,6 @@
 //! Private retained-provenance substrate for owned GPU objects.
 //!
-//! In `cudf`, every owned GPU object carries **retained provenance**:
+//! In `cudf`, every owned GPU object carries retained provenance:
 //!
 //! - the CUDA device the object is pinned to
 //! - the CUDA stream that most recently produced or ordered work for it
@@ -17,11 +17,11 @@
 //!
 //! Terms used here:
 //!
-//! - **stream**: a CUDA work queue (`CudaStream`) on which libcudf kernels and
+//! - `stream`: a CUDA work queue (`CudaStream`) on which libcudf kernels and
 //!   copies are enqueued
-//! - **memory resource / MR**: an RMM allocator handle
+//! - `memory resource / MR`: an RMM allocator handle
 //!   (`DeviceMemoryResource`) used for device allocations
-//! - **retained provenance**: execution metadata kept on the owned result so
+//! - `retained provenance`: execution metadata kept on the owned result so
 //!   later operations know which stream and allocator the object is associated
 //!   with
 //!
@@ -95,7 +95,7 @@ impl EnteredExecution {
     }
 }
 
-/// Flat, clone-cheap retained owner set.
+/// Flat, Arc-backed retained owner set.
 ///
 /// Tokens are deduplicated by allocation identity. Keeping one flat Arc-backed
 /// slice avoids recursive provenance chains and bounds repeated inheritance to
@@ -270,7 +270,7 @@ impl ExecutionDomain {
     /// Synchronize this domain's stream so that the host can read device memory
     /// produced on it.
     ///
-    /// This is a **host fence** (`cudaStreamSynchronize`). The calling CPU
+    /// This is a host fence (`cudaStreamSynchronize`). The calling CPU
     /// thread blocks until all GPU work enqueued on the stream completes.
     ///
     /// Use this before copying device data to the host (e.g. `to_host()`,
@@ -481,8 +481,8 @@ impl ExecutionDomain {
 /// reuse the block for new work on that stream while the consuming kernel is
 /// still reading it (device use-after-free).
 ///
-/// Hold the fence across the FFI call that enqueues the consuming operation:
-/// the reverse fence must be recorded *after* that work is on the output
+/// Hold the fence across the FFI call that enqueues the consuming operation;
+/// the reverse fence must be recorded after that work is on the output
 /// stream. Dropping it earlier (or on an error path before the FFI call) is
 /// safe but provides no protection for work enqueued afterwards.
 ///

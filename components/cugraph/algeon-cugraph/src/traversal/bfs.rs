@@ -26,9 +26,8 @@ use crate::{
 
 /// Parameters for the BFS traversal algorithm.
 ///
-/// Like the other algorithm parameter types in this crate, this struct uses
-/// public fields plus [`Default`] for the baseline configuration. The builder
-/// methods remain available as shorthand for the common optional toggles.
+/// Baseline configuration is provided by [`Default`]. Builder methods provide
+/// chained setters for optional configuration.
 ///
 /// # Example
 ///
@@ -124,9 +123,8 @@ impl<V: CugraphElement, E: CugraphElement> Default for BfsPredicateParams<'_, V,
 
 /// Target-discovery metadata returned by predicate-aware BFS when target vertices are provided.
 ///
-/// The current cuGraph predicate C API exposes a stable `target_found` flag and
-/// minimum target distance. It deliberately does not expose a target vertex
-/// because multiple targets can be discovered at the same BFS depth.
+/// Exposes the target discovery flag and minimum target distance. Target vertex
+/// IDs are omitted because multiple targets can be discovered at the same depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BfsTargetInfo {
     /// Whether any target vertex was discovered.

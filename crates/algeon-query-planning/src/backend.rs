@@ -1,14 +1,13 @@
 //! Backend capability contract.
 //!
-//! Plan validation answers column binding, schema, null and ordering
-//! semantics, and DAG invariants on its own. What it cannot answer is whether
-//! an execution backend can *implement* the result with a correct kernel.
-//! Those questions live here, and the engine supplies the RAPIDS answers.
+//! Plan validation resolves column binding, schemas, nullability, ordering semantics,
+//! and DAG invariants independently. Backend capability checks evaluate whether an
+//! execution backend provides physical kernel support for specific types, operations,
+//! and aggregate bindings.
 //!
-//! The contract is deliberately small: it exists to cut this crate's
-//! dependency on a component. It does not anticipate a second backend. Inputs and
-//! outputs are query IR, Arrow types, and [`QueryError`], never a component
-//! handle, expression, runtime context, or allocator.
+//! The interface decouples the planning crate from concrete engine components.
+//! Inputs and outputs operate entirely on query IR, Arrow types, and [`QueryError`];
+//! component handles, expressions, runtime contexts, and allocators are excluded.
 //!
 //! [`QueryError`]: crate::error::QueryError
 
@@ -43,22 +42,22 @@ pub enum AggregateBinding {
     FinalMerge,
 }
 
-/// Execution-owner questions plan validation cannot answer from Arrow and IR
-/// semantics alone.
+/// Execution capabilities verified through backend-specific rules rather than
+/// generic Arrow or IR semantics.
 ///
-/// An implementation must answer with the same component rules execution
-/// binds with. A query that this contract accepts and a kernel then rejects is
-/// a defect in the implementation. It is not a tolerated outcome.
+/// Implementations must align capability validation with runtime kernel constraints.
+/// An operation admitted by this contract and subsequently rejected by execution
+/// constitutes a contract violation.
 ///
-/// `Send + Sync` because [`AnalysisContext`] crosses `async fn` boundaries in
-/// engine and adapter pipeline stages, and those futures must stay `Send`.
+/// Requires `Send + Sync` so [`AnalysisContext`] can traverse asynchronous boundaries
+/// in query planning and execution pipelines.
 pub trait BackendCapabilities: fmt::Debug + Send + Sync {
-    /// Whether the backend has a physical representation for this Arrow type.
+    /// Indicates whether the backend supports a physical representation for the Arrow type.
     ///
-    /// Representable is not the same as usable everywhere: a timezone-carrying
-    /// timestamp or a list column is representable but is not a group or
-    /// comparison key. That restriction is semantic and stays with plan
-    /// validation.
+    /// Physical support does not imply unrestricted semantic validity. For example,
+    /// a timestamp with timezone or a list type may have a physical representation
+    /// while remaining invalid as a grouping or comparison key. Semantic constraints
+    /// are enforced during plan validation.
     fn supports_type(&self, data_type: &ArrowDataType) -> bool;
 
     /// The Arrow output type of the backend's binary kernel for these operands.
@@ -89,13 +88,13 @@ pub trait BackendCapabilities: fmt::Debug + Send + Sync {
     fn aggregate_output_names(&self, spec: &AggregateSpec, binding: AggregateBinding) -> Result<Vec<String>>;
 }
 
-/// Carries the backend capability through one analysis or validation pass.
+/// Carries backend capabilities through one analysis or validation pass.
 ///
-/// This is a short-lived borrow. Neither [`QueryPlan`] nor the capability
-/// analysis nor a compiled artifact holds it, so plan IR and proof never take
-/// on an implementation's lifetime. The one value that does outlive the pass is
-/// `policy`, which the admission artifact records so execution runs under the
-/// thresholds the plan was admitted with.
+/// Analysis context represents a short-lived borrow. Neither [`QueryPlan`] nor
+/// the capability analysis nor a compiled artifact retains it, ensuring plan IR
+/// and proofs remain independent of backend lifetimes. The `policy` value
+/// is recorded into the admission artifact so execution runs under the thresholds
+/// established during plan admission.
 ///
 /// [`QueryPlan`]: crate::plan::QueryPlan
 #[derive(Debug, Clone, Copy)]

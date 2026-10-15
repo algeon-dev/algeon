@@ -1,19 +1,20 @@
 //! Analysis-owned bounded-pipeline admission.
 //!
-//! Admission composes capability analysis with compiled-pipeline structural
-//! support. It does not execute GPU work.
+//! Admission evaluates capability analysis against compiled-pipeline structural
+//! support without executing GPU work.
 //!
-//! [`admit`] decides once, from the plan alone, whether a native plan runs as
-//! a compiled pipeline. Validation, capability analysis, pipeline compilation
-//! and the compiled task, resource and join contracts run in that order, and
-//! the first unmet contract becomes the rejection. The result is an
-//! [`AdmittedPlan`]; execution and reporting read it and do not decide again.
-//! Admission claims no device memory and no attempt capacity, and a
-//! missing size estimate cannot reject a plan; the query domain's allocator
-//! enforces allocation limits during execution
-//! (`website/docs/design/admission.mdx#allocation-enforcement`). The `scope`
-//! module carries the plan and schema identity that lets execution check it
-//! is running the plan that was admitted.
+//! [`admit`] determines from the plan alone whether a native plan can execute
+//! as a compiled pipeline. The verification pipeline runs validation, capability
+//! analysis, pipeline compilation, and compiled task/resource/join contract
+//! checks in sequence, terminating with a rejection at the first unmet contract.
+//! The resulting [`AdmittedPlan`] is consumed by downstream execution and reporting
+//! without repeating admission checks.
+//! Admission allocates neither device memory nor attempt capacity, and missing
+//! size estimates do not trigger plan rejections; memory limits are enforced
+//! by the query domain allocator during execution
+//! (`website/docs/design/admission.mdx#allocation-enforcement`).
+//! The `scope` module provides the plan and schema identities required by execution
+//! to verify conformity with the admitted plan.
 
 mod bounded;
 mod diagnostics;

@@ -290,7 +290,7 @@ impl<'a> ColumnView<'a> {
     ///
     /// # Note
     ///
-    /// For sliced column views the pointer is to the **base** of the device
+    /// For sliced column views the pointer is to the base of the device
     /// buffer. Use [`offset()`](Self::offset) to compute the start of the
     /// active region.
     pub fn device_data_ptr(&self) -> Result<*const c_void> {
@@ -754,9 +754,9 @@ impl<'a> ColumnView<'a> {
     ///
     /// The returned slice borrows `self`, so it cannot outlive this view.
     ///
-    /// This is the safe, typed alternative to [`device_data_ptr()`](Self::device_data_ptr)
-    /// and [`offset()`](Self::offset). The returned `DeviceSlice` already accounts
-    /// for the column's offset; no manual pointer arithmetic needed.
+    /// Typed descriptor alternative to [`device_data_ptr()`](Self::device_data_ptr)
+    /// and [`offset()`](Self::offset). The returned `DeviceSlice` incorporates the
+    /// column offset into the base pointer.
     ///
     /// This is an advanced raw-pointer helper for callers that already consume a
     /// device pointer + length pair. For external cross-crate

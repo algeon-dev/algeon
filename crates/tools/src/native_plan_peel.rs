@@ -2,8 +2,8 @@
 //! DataFusion physical plan tree.
 //!
 //! Both the ClickBench operator-stage probe and the shadow-estimate report
-//! read the artifact a host-materializing `AlgeonNativeExec` executes, so this
-//! lookup lives in one place.
+//! read the artifact a host-materializing `AlgeonNativeExec` executes; this
+//! module provides the shared lookup.
 
 use std::sync::Arc;
 

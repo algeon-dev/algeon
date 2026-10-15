@@ -1,9 +1,8 @@
 //! RAPIDS implementation of the planning backend capability contract.
 //!
-//! Every answer here comes from the same component rules execution binds with:
-//! the expression checks *are* the lowering, with the lowered result dropped.
-//! That keeps a plan from reaching a kernel and only then discovering an
-//! unsupported binding that was decidable during planning.
+//! Planning decisions apply the same component rules used during execution.
+//! Expression checks lower the candidate expression and discard the result,
+//! verifying bindings during planning rather than deferring failures to kernel execution.
 
 use arrow::datatypes::DataType as ArrowDataType;
 use cudf::{

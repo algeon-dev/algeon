@@ -74,10 +74,9 @@ impl FinalPlanCoverage {
     }
 }
 
-/// What an attempt reads from one immutable final physical plan: its
-/// coverage, and the native root that receives the sealed attempt metrics
-/// with every native metric set below the plan. A rewritten plan is a new
-/// plan with its own index.
+/// Index of immutable physical-plan properties inspected by an attempt,
+/// comprising plan coverage and the target native root for sealed metrics collection.
+/// Rewritten plans construct distinct index instances.
 pub(crate) struct NativePlanIndex {
     coverage: FinalPlanCoverage,
     sealed_metrics_target: Option<SealedAttemptMetricsTarget>,

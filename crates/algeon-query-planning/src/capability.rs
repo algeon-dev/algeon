@@ -1,19 +1,20 @@
 //! Capability-first admission for native query plans.
 //!
-//! `analyze_query_capabilities` walks a `QueryPlan` and returns a
-//! `CapabilityAnalysis` that classifies every node, expression, edge, and
-//! subgraph invariant. Rejections are local and structured (missing operator,
-//! expression, Arrow type, edge contract, or invariant). They use canonical
-//! capability report keys, and they do not use execution-family labels.
+//! `analyze_query_capabilities` traverses a `QueryPlan` and produces a
+//! `CapabilityAnalysis` that classifies each node, expression, edge, and
+//! subgraph invariant. Rejections are localized and structured, identifying the
+//! specific missing operator, expression, Arrow type, edge contract, or invariant.
+//! They use canonical capability report keys rather than execution-family labels.
 //!
-//! "Capable" is a structural claim. A node, expression, Arrow type, edge
-//! contract, or subgraph invariant has a native executor whose semantics match
-//! the SQL contract. It says nothing about memory. A missing size estimate
-//! cannot reject a candidate; the query domain's allocator enforces limits
-//! during execution (`website/docs/design/admission.mdx#allocation-enforcement`).
-//! The analysis itself cannot fail: every node receives a classification, and a
-//! rejection carries the first unmet contract with the facts that identify the
-//! blocking element; planning reports name that element.
+//! Capability analysis verifies structural execution support, confirming that a
+//! native executor implements the required SQL semantics. Memory allocation and
+//! sizing boundaries are excluded from capability admission; missing size estimates
+//! do not trigger candidate rejections, as query limits are enforced by the
+//! query domain allocator during execution
+//! (`website/docs/design/admission.mdx#allocation-enforcement`).
+//! The analysis pass is exhaustive. Every node receives a classification, and
+//! rejections preserve diagnostic facts identifying the first blocking contract
+//! for inclusion in planning reports.
 
 use crate::{
     error::QueryError,

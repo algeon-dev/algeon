@@ -1,8 +1,8 @@
 //! Low-level I/O entry points and format-specific modules.
 //!
-//! Most users should start with the high-level [`crate::DataFrame`] helpers
-//! such as `DataFrame::read_parquet` or `DataFrame::write_parquet`. `cudf::io` is the
-//! lower-level table-oriented layer that those conveniences build on.
+//! This module provides the table-oriented layer underlying high-level
+//! [`crate::DataFrame`] helpers such as `DataFrame::read_parquet` and
+//! `DataFrame::write_parquet`.
 //!
 //! # Module Shape
 //!

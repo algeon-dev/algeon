@@ -98,8 +98,7 @@ async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Run two native cuDF attempts concurrently on the same explicitly owned
-/// device. This public-API profiling probe is not the production-validation runner.
+/// Executes two concurrent native cuDF attempts on the same explicitly owned device.
 async fn run_same_device_native_attempts(
     backend: &AlgeonGpuBackend,
     ctx_a: &SessionContext,

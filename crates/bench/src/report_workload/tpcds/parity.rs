@@ -65,7 +65,7 @@ pub enum TpcdsParityProgressEvent<'a> {
         /// Stable TPC-DS query id.
         query_id: &'a str,
     },
-    /// A selected query has been reduced to its report row. Heavy CPU/native
+    /// A selected query has been reduced to its report row. CPU and native
     /// Arrow batches have already been consumed by row construction.
     RowReady {
         /// One-based index among selected queries.
@@ -79,9 +79,9 @@ pub enum TpcdsParityProgressEvent<'a> {
     },
 }
 
-/// Build parity workload items for the TPC-DS workload. For each selected query
-/// the runner executes both CPU DataFusion and native-rule DataFusion and
-/// captures schema/batches/diagnostics/metrics needed by the parity report.
+/// Builds parity workload items for the TPC-DS workload. For each selected
+/// query, the runner executes both CPU DataFusion and native-rule DataFusion
+/// and captures schema, batches, diagnostics, and metrics for the parity report.
 pub async fn tpcds_parity_workload_items(
     root: &Path,
     session_config: SessionConfig,
@@ -100,11 +100,10 @@ pub async fn tpcds_parity_workload_items(
     .await
 }
 
-/// Build parity workload items using distinct CPU and native session configs.
+/// Builds parity workload items using distinct CPU and native session configs.
 ///
-/// Separate CPU and native configs let a test run a more parallel CPU oracle
-/// while native physical-plan coverage stays pinned to the report surface's
-/// shape contract.
+/// Separate CPU and native configs allow running a more parallel CPU oracle
+/// while native physical-plan coverage stays pinned to the report surface shape contract.
 pub async fn tpcds_parity_workload_items_with_session_configs(
     root: &Path,
     cpu_session_config: SessionConfig,
@@ -124,7 +123,7 @@ pub async fn tpcds_parity_workload_items_with_session_configs(
     .await
 }
 
-/// Build TPC-DS parity items and optionally run external oracles.
+/// Builds TPC-DS parity items and optionally runs external oracles.
 ///
 /// `query_filter` matches exact query ids and skips unknown ids.
 /// External engines write one SQL file and one Parquet result per selected
@@ -149,12 +148,12 @@ pub async fn tpcds_parity_workload_items_with_external_oracles(
     .await
 }
 
-/// Build TPC-DS parity report rows using distinct CPU and native session
-/// configs, and optionally run external oracles.
+/// Builds TPC-DS parity report rows using distinct CPU and native session
+/// configs, with optional external oracles.
 ///
-/// Unlike [`tpcds_parity_workload_items_with_external_oracles`], this converts
-/// each query into a stable report row before starting the next query so CPU and
-/// native output batches do not stay retained for the full selected workload.
+/// Converts each query into a stable report row before starting the next query,
+/// releasing CPU and native output batches instead of retaining them for the
+/// full selected workload.
 #[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 pub async fn tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit(
     root: &Path,

@@ -1,7 +1,7 @@
 //! Predefined citation-network pipelines exposed by the fixture HTTP API.
 //!
-//! This module validates request parameters and renders them into SQL or
-//! cuGraph SQL calls that run through the shared DataFusion session.
+//! Validates request parameters and renders them into SQL or cuGraph SQL
+//! queries executed through the shared DataFusion session.
 
 use std::collections::BTreeMap;
 

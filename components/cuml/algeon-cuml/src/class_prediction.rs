@@ -24,9 +24,9 @@ impl ClassPrediction {
         Self::validated(class, probability, op)
     }
 
-    /// Binary logistic loss: `z` is the decision score of class 1, so the
-    /// predicted class has probability `sigmoid(|z|)`. A score of zero predicts
-    /// class 0, as cuML's `predict` does.
+    /// Computes binary class predictions and probabilities from a class-1 decision score.
+    /// Non-positive scores predict class 0 with probability `sigmoid(-z)`; positive
+    /// scores predict class 1 with probability `sigmoid(z)`.
     pub(crate) fn from_logistic_score(runtime: &Runtime, score: Series, op: &'static str) -> Result<Self> {
         let frame = class_frame(runtime, vec![score], op)?;
         let class = when(col("c0").gt(0.0_f32)).then(1_i32).otherwise(0_i32);
@@ -34,9 +34,8 @@ impl ClassPrediction {
         Self::validated(eval(&class, &frame, op)?, eval(&probability, &frame, op)?, op)
     }
 
-    /// Softmax loss: one decision score per class. Shifting every score by the
-    /// row maximum keeps `exp` from overflowing and makes the predicted class
-    /// contribute exactly 1 to the denominator.
+    /// Computes multiclass predictions and normalized probabilities from per-class decision scores.
+    /// Subtracts row maxima before exponentiation to prevent floating-point overflow.
     pub(crate) fn from_softmax_scores(runtime: &Runtime, scores: Vec<Series>, op: &'static str) -> Result<Self> {
         let classes = scores.len();
         let frame = with_row_max(class_frame(runtime, scores, op)?, classes, op)?;
@@ -81,10 +80,8 @@ fn class_frame(runtime: &Runtime, columns: Vec<Series>, op: &'static str) -> Res
         .map_err(|e| from_cudf(op, e))
 }
 
-/// Adds `best`, the largest value in each row of the class columns, and
-/// `class`, the lowest index holding it. `with_columns` evaluates both
-/// expressions against the previous step, so each pass compares the next class
-/// against the maximum of the earlier ones.
+/// Appends `best` (row maximum across class columns) and `class` (lowest index containing `best`).
+/// Each pass compares the candidate column against the running maximum.
 fn with_row_max(frame: DataFrame, classes: usize, op: &'static str) -> Result<DataFrame> {
     let mut frame = frame
         .on(Exec::RETAINED)

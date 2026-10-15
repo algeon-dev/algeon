@@ -300,10 +300,8 @@ impl<'a> TableView<'a> {
         Self::from_borrowed_column_views_in_domain(retained_views, authoritative_domain, operation)
     }
 
-    /// Construct a `TableView` from a slice of `ColumnView`s.
-    ///
-    /// This is useful when you have individually-owned columns and need to
-    /// present them as a table to libcudf operations.
+    /// Construct a `TableView` from a slice of borrowed `ColumnView` instances
+    /// sharing an execution domain.
     pub fn from_column_views(views: &[&ColumnView<'a>]) -> Result<Self> {
         Self::from_column_views_in_domain(views, None, "table_view::from_column_views")
     }

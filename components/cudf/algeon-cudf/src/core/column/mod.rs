@@ -1,9 +1,8 @@
-//! GPU column types and raw device-memory helpers.
+//! Low-level GPU column types and device memory handles.
 //!
-//! This is advanced core API. Most users should use [`Series`](crate::Series).
-//! [`DeviceSlice`] is an even lower-level raw helper and is not the preferred
-//! cross-crate interop contract; see [`crate::interop`] for borrowed GPU-view
-//! interop.
+//! Higher-level workflows use [`Series`](crate::Series) and
+//! [`DataFrame`](crate::DataFrame). For cross-crate GPU interchange, use
+//! [`crate::interop`] rather than [`DeviceSlice`].
 
 mod convert;
 mod device_buffer;

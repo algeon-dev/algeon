@@ -1,9 +1,9 @@
 //! Native query source contracts and source diagnostics.
 //!
-//! This module contains frontend-neutral source metadata. File locations,
+//! This module defines frontend-neutral source metadata. File locations,
 //! schema mapping, partition values, missing columns, row-group metadata, and
-//! reader predicate support are represented explicitly so native execution does
-//! not depend on any query-engine adapter's scan internals.
+//! reader predicate support are represented explicitly, decoupling native
+//! execution from query-engine adapter scan internals.
 
 use std::{
     collections::{BTreeSet, HashSet},

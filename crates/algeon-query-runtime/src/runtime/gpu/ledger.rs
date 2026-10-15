@@ -1,14 +1,14 @@
 //! Versioned per-device immutable-grant ledger.
 //!
-//! One [`DeviceLedger`] owns admission accounting for exactly one CUDA device:
-//! an immutable [`DeviceResourceProfile`] plus a mutable, versioned state of
-//! active or cleaning attempt grants, frozen resident charges, device
-//! admission health, and cache-internal accounting.
+//! A [`DeviceLedger`] maintains admission accounting for a single CUDA device,
+//! combining an immutable [`DeviceResourceProfile`] with versioned mutable state
+//! for active or cleaning attempt grants, frozen resident charges, device
+//! admission health, and cache-internal allocations.
 //!
-//! The capacity contract splits the frozen managed capacity `M` into a cache
+//! The capacity model partitions frozen managed capacity `M` into a cache
 //! share `K` (`cache_cap_bytes`) and a query share `Q = M - K`. Query
-//! admission and cache eviction each own one share, so no admission order can
-//! promise the same bytes twice. The admission equation is:
+//! admission and cache eviction govern separate shares, preventing conflicting
+//! commitments. Admission invariants evaluate:
 //!
 //! ```text
 //! R + Σ Gᵢ <= Q            (frozen residents + live grants fit the query share)
@@ -17,26 +17,24 @@
 //! new admission: R + Σ Gᵢ + Gnew <= Q
 //! ```
 //!
-//! The query cap is explicit or is resolved inside the admission transaction
+//! The query cap is specified explicitly or computed during the admission transaction
 //! as `min(default_query_limit, query_share - resident_bytes)`. It is
-//! never inferred from a planner estimate and never clamped to transient free
-//! capacity left by other live grants.
+//! not derived from planner estimates or clamped to transient free capacity
+//! left by concurrent live grants.
 //!
-//! "Versioned" refers to two counters that only move forward. The observation
-//! `sequence` advances on every state mutation; a `LedgerSnapshot` carries the
-//! sequence it was taken at, and in-lock transition observers receive the
-//! snapshot of the mutation that produced it; metrics can therefore order
-//! ledger events without a second event store. The grant `generation` is
-//! minted per committed grant, doubles as the grant id and the key in the
-//! grant map, and is never reused within one ledger, so a stale
-//! `GrantIdentity` cannot alias a later grant.
+//! Versioning relies on monotonic state counters. The observation `sequence`
+//! increments on every state transition. A `LedgerSnapshot` records this sequence,
+//! providing in-lock observers with atomic mutation records that allow telemetry
+//! systems to order ledger events without secondary storage. The grant `generation`
+//! is allocated per committed grant, serving as the grant identifier and map key,
+//! and is never reused within a ledger to prevent aliasing with subsequent grants.
 //!
-//! Admission failure is two-valued. `try_admit_for_attempt` returns `Ok(None)`
-//! when the device cannot admit right now (closed health, no active-attempt slot,
-//! or the equation above does not hold); that is a wait condition for the
-//! admission queue. `Err` means a caller or ledger invariant was violated and is
-//! never a capacity shortfall; its `reason` fact names the violation. The
-//! capacity contract is owned by
+//! Admission outcomes distinguish queue wait conditions from invariant violations.
+//! `try_admit_for_attempt` returns `Ok(None)` when the device cannot currently admit
+//! the request (unhealthy status, exhausted active attempt slots, or capacity limits),
+//! signalling that the request should await admission. `Err` indicates an invariant
+//! violation rather than a transient capacity constraint, with the `reason` fact
+//! identifying the specific failure. The capacity contract is defined in
 //! `website/docs/design/admission.mdx#device-profiles-and-grants`.
 
 use std::{

@@ -1,11 +1,11 @@
 //! Pure reduction over collected attempt reports and sampled snapshots.
 //!
-//! Nothing here touches a GPU or a clock, so every scenario assertion is
+//! Nothing here touches a GPU or a clock; every scenario assertion is
 //! unit-testable. The observation inputs are deliberately narrow structs. The
 //! engine snapshots are not used directly. The binary projects each snapshot
 //! once, and the reduction stays testable without CUDA.
 //!
-//! Only the measured run constructs these values, so the CPU-only feature
+//! Only the measured run constructs these values; the CPU-only feature
 //! reaches them from tests alone.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
@@ -29,8 +29,8 @@ pub(super) struct AttemptObservation {
     /// Multi-phase step this attempt was submitted under. Single-phase runs are all
     /// step zero.
     pub(super) step_index: usize,
-    /// The fixture kind the query came from. Labels collide across kinds
-    /// (`q01` exists in TPC-H and TPC-DS), so this remains artifact identity.
+    /// The fixture kind the query came from. Because labels collide across kinds
+    /// (`q01` exists in TPC-H and TPC-DS), this remains artifact identity.
     pub(super) query_kind: FixtureKind,
     pub(super) query_label: String,
     pub(super) graph_workload: bool,
@@ -72,7 +72,7 @@ pub(super) struct AttemptObservation {
     /// controller, never inferred from runner ordering.
     pub(super) admission_wait: Option<AdmissionWaitEvidence>,
     /// Ledger grant identity, when the report carried available resource
-    /// evidence. `None` means the evidence field was unavailable, which is a
+    /// evidence. `None` indicates an unavailable evidence field and yields a
     /// non-qualifying result. The assertion is not skipped.
     pub(super) grant_id: Option<u64>,
     pub(super) domain_id: Option<u64>,
@@ -81,7 +81,7 @@ pub(super) struct AttemptObservation {
     pub(super) queue_wait_ns: Option<u64>,
     pub(super) physical_execution_ns: Option<u64>,
     /// Submit and terminal instants on the engine's shared observation clock.
-    /// Both come from the sealed report, so intervals from different attempts
+    /// Because both come from the sealed report, intervals from different attempts
     /// are comparable and the overlap witness can fail.
     pub(super) submitted_ns: u64,
     pub(super) outcome_terminal_ns: u64,
@@ -121,11 +121,11 @@ pub(super) struct GraphClaimCalibrationSnapshot {
 
 /// Typed execution semantics sealed with one graph calibration snapshot.
 ///
-/// This is the artifact serde projection. The closed vocabulary
+/// Artifact serde projection. The closed vocabulary
 /// itself is owned by the adapter
 /// (`algeon_datafusion::attempt::GraphClaimCalibrationExecution`); this
-/// wrapper stays `snake_case`-serialized so the stress artifact JSON is
-/// byte-identical while the measured run converts via `From`.
+/// wrapper stays `snake_case`-serialized, maintaining byte-identical stress
+/// artifact JSON while the measured run converts via `From`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum GraphClaimCalibrationExecution {
@@ -280,8 +280,8 @@ pub(super) struct MeasuredAggregate {
     /// validation capability was invoked for this run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) quarantine_fallback: Option<QuarantineFallbackEvidence>,
-    /// Per-step envelope aggregates. Empty for single-phase profiles, so
-    /// their artifacts carry no per-step section.
+    /// Per-step envelope aggregates; empty for single-phase profiles, whose
+    /// artifacts carry no per-step section.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) steps: Vec<StepAggregate>,
     pub(super) report_aggregate_equality: ReportAggregateEquality,
@@ -546,8 +546,8 @@ pub(super) struct ScenarioEvidence {
     /// ordering is reconstructed from runner scheduling.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) overload_fairness: Option<OverloadFairnessEvidence>,
-    /// Logical slot occupancy is recorded and never asserted. The ledger derives
-    /// these counts from the immutable profile, so they cannot witness CUDA
+    /// Logical slot occupancy is recorded and never asserted. Because the ledger derives
+    /// these counts from the immutable profile, they cannot witness CUDA
     /// stream identity. Nsight owns stream-level overlap.
     pub(super) logical_slot_occupancy: LogicalSlotOccupancyEvidence,
 }
@@ -598,8 +598,8 @@ pub(super) struct QuarantineFallbackEvidence {
     pub(super) pre_ack_ledger_sequence: u64,
     pub(super) pre_ack_live_grants: usize,
     pub(super) pre_ack_active_query_jobs: usize,
-    /// Offset at which `quarantine_device` returned successfully. The engine
-    /// takes the same fleet-admission gate as placement, so this is the
+    /// Offset at which `quarantine_device` returned successfully. Because the engine
+    /// takes the same fleet-admission gate as placement, this is the
     /// post-ack admission boundary for the released cohort.
     pub(super) acknowledgement_offset_ns: u64,
     pub(super) device_health_generation: u64,
@@ -1280,8 +1280,8 @@ impl QuarantineCyclesEvidence {
 pub(super) struct QuarantineCycleRow {
     pub(super) cycle_index: usize,
     pub(super) target_ordinal: usize,
-    /// The target's health generation after its quarantine landed. Each
-    /// cycle's target is distinct, so the per-cycle generation increment is
+    /// The target's health generation after its quarantine landed. Because each
+    /// cycle's target is distinct, the per-cycle generation increment is
     /// recorded on its own ordinal.
     pub(super) device_health_generation: u64,
     pub(super) status: ClauseStatus,
@@ -1395,8 +1395,8 @@ impl MeasuredAggregate {
 }
 
 /// Per-step throughput/latency over the attempts the step measured.
-/// Warmup arrivals belong to no step's measurement; step windows are
-/// disjoint measurement phases, so their union is the run's measurement set.
+/// Warmup arrivals belong to no step's measurement; step windows form
+/// disjoint measurement phases whose union is the run's measurement set.
 fn step_aggregate(window: &StepWindow, observations: &[AttemptObservation]) -> StepAggregate {
     let measured = observations
         .iter()
@@ -1467,8 +1467,8 @@ fn latency(measured: &[&AttemptObservation]) -> LatencyAggregate {
     }
 }
 
-/// Nearest-rank percentile over a sorted slice. Raw samples are retained, so
-/// this needs no bucket calibration; bucket suitability is checked by the metrics audit.
+/// Nearest-rank percentile over a sorted slice. Because raw samples are retained,
+/// bucket calibration is unnecessary; bucket suitability is checked by the metrics audit.
 fn percentile(sorted: &[u64], percentile: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -1628,10 +1628,10 @@ fn distinctness_clause(
 }
 
 /// Lifetime overlap between two attempts on the same ordinal, measured on the
-/// engine's shared observation clock. This is a witness of concurrent admission
-/// and residency. It is not proof of GPU kernel overlap.
+/// engine's shared observation clock. Serves as a witness of concurrent admission
+/// and residency without asserting GPU kernel overlap.
 ///
-/// Overlap requires strictly positive intersection, so two attempts that merely
+/// Overlap requires strictly positive intersection; two attempts that merely
 /// share a submit instant and then run back to back do not qualify.
 fn overlap_clause(on_device: &[&AttemptObservation], ordinal: usize) -> ScenarioClause {
     let overlapping = on_device
@@ -1659,7 +1659,7 @@ fn overlap_clause(on_device: &[&AttemptObservation], ordinal: usize) -> Scenario
     }
 }
 
-/// `peak_active_query_jobs` only increments when a job starts, so it is
+/// `peak_active_query_jobs` increments only when a job starts, providing
 /// falsifiable evidence of device-local concurrency.
 fn occupancy_witness_clause(device: &DevicePlacement, ordinal: usize) -> ScenarioClause {
     let peak = device.occupancy.peak_active_query_jobs;

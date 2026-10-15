@@ -1,12 +1,12 @@
-//! Where one GPU operation runs.
+//! Execution target and resource selection for GPU operations.
 
 use std::sync::Arc;
 
 use super::{execution_domain::ExecutionDomain, stream::CudaStream};
 use crate::core::{error::Result, memory::DeviceMemoryResource};
 
-/// Where one GPU operation runs: the stream and memory resource its outputs
-/// use.
+/// Execution scope selecting the CUDA stream and output memory resource for
+/// an operation.
 ///
 /// [`Exec::RETAINED`] keeps the primary input's retained stream and memory
 /// resource. [`crate::Runtime::exec`] selects a runtime's handles, and

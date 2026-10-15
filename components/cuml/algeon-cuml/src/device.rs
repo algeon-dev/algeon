@@ -207,7 +207,7 @@ enum MatrixStorage {
 }
 
 /// An owned Float32 matrix bound to one exact cuDF execution binding.
-/// The packed allocation is exclusively owned, so native writers cannot mutate source columns.
+/// Exclusive ownership of the packed allocation prevents native mutations from affecting source columns.
 pub struct OwnedFloat32Matrix {
     storage: MatrixStorage,
     rows: usize,

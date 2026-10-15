@@ -8,11 +8,11 @@
 //! drop) may be on either kind of thread, so they only request an exit and
 //! the supervisor performs the drop itself.
 //!
-//! Teardown is split into three observable steps so that cleanup coordinators
-//! can bound each one separately: request exit, wait for the published exit
-//! state, then join the supervisor thread. The supervisor publishes its exit
-//! state before the thread terminates, which lets a bounded wait see a
-//! runtime-drop panic without having to join first.
+//! Teardown proceeds through distinct observable stages so cleanup coordinators
+//! can bound each phase independently by requesting exit, waiting for the
+//! published exit state, and joining the supervisor thread. Because the supervisor
+//! publishes its exit state prior to thread termination, bounded waits can
+//! detect runtime-drop panics before thread join.
 
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;

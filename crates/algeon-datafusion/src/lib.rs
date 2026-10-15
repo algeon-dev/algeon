@@ -1,12 +1,12 @@
 //! Embedded adapter from DataFusion to native GPU execution.
 //!
-//! The canonical lifecycle is [`backend::AlgeonGpuBackend`], then session
-//! installation, then [`attempt::AlgeonAttempt`]: the builder assembles the
-//! immutable device envelope, [`session`] installs the native optimizer on a
-//! caller-owned session builder, and each attempt plans and executes one
-//! invocation before publishing one terminal report. Strict production policy
+//! The execution lifecycle progresses from [`backend::AlgeonGpuBackend`] through
+//! session installation to [`attempt::AlgeonAttempt`]. The backend builder
+//! assembles the immutable device envelope, [`session`] installs the native optimizer
+//! on a caller-owned session builder, and each attempt plans and executes one
+//! invocation before publishing a terminal report. Strict production policy
 //! can enforce that no DataFusion CPU execution remains in the final physical
-//! plan with [`planner::AlgeonGpuExecutionMode::NativeRequired`].
+//! plan via [`planner::AlgeonGpuExecutionMode::NativeRequired`].
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -33,8 +33,8 @@
 //! let ctx = SessionContext::new_with_state(state);
 //!
 //! let attempt = backend.begin_attempt(AttemptOptions::default())?;
-//! // Take the completion receiver before planning so the terminal report is
-//! // observable even when planning itself fails.
+//! // Taking the completion receiver prior to planning ensures the terminal report
+//! // remains observable even if planning fails.
 //! let completion = attempt.completion();
 //! let stream = attempt.sql(&ctx, "SELECT 1 AS value").await?;
 //! let _batches = stream.try_collect::<Vec<_>>().await?;
@@ -50,19 +50,19 @@
 //!
 //! Applications start from [`backend`], install sessions through [`session`],
 //! and execute through [`attempt`]. [`build_info`] reports the version,
-//! commit and enabled engines of this build. Planning-only diagnosis lives in
+//! commit, and enabled engines of this build. Planning-only diagnosis lives in
 //! [`gpu_coverage`]; runtime exporter projection lives in [`observability`].
 //!
-//! Optional engines change plan classification only while enabled: with the
-//! `cugraph` feature off, cuGraph UDTFs fail closed with a typed
-//! capability error; with `cuvs` or `cuml` off, the corresponding SQL family
-//! remains discoverable but execution fails before input staging; with
-//! `nvml` off, NVML telemetry reads report unavailable. The `bench-support`
-//! and `qualification` features are internal harnesses: `bench-support` gates
-//! the application and test support surface, which sits outside the normal
-//! embedded and server report contract, and `qualification` closes admission
-//! on one live device ledger for the multi-GPU validation tool. Enable `server`
-//! to embed the Algeon Flight SQL server alongside the adapter.
+//! Optional engines change plan classification when enabled. Without the
+//! `cugraph` feature, cuGraph UDTFs fail closed with a typed
+//! capability error. Without `cuvs` or `cuml`, the corresponding SQL family
+//! remains discoverable but execution fails before input staging. Without
+//! `nvml`, NVML telemetry reads report unavailable. The `bench-support`
+//! and `qualification` features serve as internal harnesses; `bench-support`
+//! provides application and test support facilities outside the embedded and
+//! server report contract, whereas `qualification` closes admission on one live
+//! device ledger for the multi-GPU validation tool. Enable `server` to embed
+//! the Algeon Flight SQL server alongside the adapter.
 
 #![deny(missing_docs)]
 

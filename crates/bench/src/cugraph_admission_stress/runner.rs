@@ -1,4 +1,4 @@
-//! cuGraph-heavy admission and memory-governance stress harness.
+//! cuGraph admission and memory-governance stress harness.
 //!
 //! The library-mode stress binary builds one process-scoped
 //! `AlgeonGpuBackend`, installs cuGraph SQL on per-worker `SessionContext`s,
@@ -10,8 +10,9 @@
 //!   memory-governor report, the device failure report, and the physical
 //!   CUDA async-pool counters (`DeviceMemoryManager::pool_usage`).
 //!
-//! Everything is env-var driven like the sibling `query_service_*_stress`
-//! binaries. GPU runs must be wrapped in `flock /tmp/cudf-gpu.lock`.
+//! Configuration is read from environment variables matching the sibling
+//! `query_service_*_stress` binaries. GPU runs must be wrapped in
+//! `flock /tmp/cudf-gpu.lock`.
 
 use std::{
     error::Error,

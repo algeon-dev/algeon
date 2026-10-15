@@ -20,12 +20,12 @@ use crate::{
     types::{CugraphElement, to_bool_t},
 };
 
-/// libcugraph's legacy spectral clustering accepts the eigensolver and k-means
-/// iteration limits but ignores both, so the wrapper passes fixed values.
+/// Upstream legacy spectral clustering ignores eigensolver and k-means iteration limits.
+/// The wrapper supplies constant values.
 const IGNORED_ITERATION_LIMIT: i32 = 100;
 
-/// libcugraph range-checks the k-means tolerance to `[0, 1)` and never reads it
-/// afterwards, so the wrapper passes a fixed value.
+/// Upstream legacy spectral clustering validates k-means tolerance against `[0.0, 1.0)`
+/// without subsequent reads. The wrapper supplies a constant value.
 const IGNORED_K_MEANS_TOLERANCE: f64 = 0.001;
 
 /// Parameters shared by legacy spectral clustering algorithms.
