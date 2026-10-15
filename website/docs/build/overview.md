@@ -106,9 +106,9 @@ Each step of the full-feature build is one command in
 4. **libcuml**: `scripts/build/build_libcuml.sh` installs cuML and its native dependencies into `target/native/cuml-install` against the shared cuVS and RMM installs.
 5. **Rust workspace**: `cargo build --workspace --all-features`, then the
    single full gate `bash scripts/check_all.sh`, run bare.
-6. **Docker image**: optional. `docker/stage-docker-payload.sh` stages the
-   release binary and the locally built RAPIDS libraries.
-   `docker/build-image.sh` produces the runnable image.
+6. **Docker image**: optional. `docker/build-image.sh` stages the release
+   binary and the locally built RAPIDS libraries, then builds the runnable
+   image from them.
 
 The native layers share one `CMAKE_CUDA_ARCHITECTURES` value. The build
 scripts record it in each library and reject a mismatched downstream build.

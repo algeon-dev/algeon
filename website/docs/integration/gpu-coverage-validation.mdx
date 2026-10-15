@@ -60,8 +60,8 @@ row mode. `FORMAT JSON` returns only the summary row, whose `coverage_json`
 contains all candidate evidence. Send `EXPLAIN GPU` as a Flight SQL statement
 query or as a prepared statement without parameters. A prepared `EXPLAIN GPU`
 returns the coverage schema when it is prepared and plans the explained query
-each time the handle executes, so the Python ADBC DB-API `cursor.execute()`
-works. The update endpoint rejects `EXPLAIN GPU`.
+each time the handle executes; this enables Python ADBC DB-API `cursor.execute()`
+to re-plan on each invocation. The update endpoint rejects `EXPLAIN GPU`.
 
 A recorded Flight SQL session over the [MerRec dataset](../guides/datasets/merrec.mdx)
 ran `EXPLAIN GPU` on a query with four cuGraph calls. Its summary and
@@ -112,7 +112,7 @@ one of four `remedy_kind` values:
 | `user_action` | Change the query or its input, for example `rewrite_expression`. |
 | `config_action` | Change a session setting, for example `set_target_partitions_one`. |
 | `engine_gap` | Native lowering lacks the capability. The remedy names the blocking shape. |
-| `cpu_preferred` | A preference rule or the cost model kept the DataFusion plan. |
+| `cpu_preferred` | A preference rule kept the DataFusion plan. |
 
 The [remedies for plan shapes](../reference/gpu-coverage-report.mdx#remedies-for-plan-shapes)
 table lists when a partition setting removes the blocker and when it does not.
@@ -128,9 +128,9 @@ planning recorded candidates before it failed:
 {"planning_outcome":"rejected","reason_code":"invalid_request","detail":"cuML training relation requires a 'label' column","confidence":"plan_time_only","planning_did_io":false,"runtime_caveat_count":0}
 ~~~
 
-`reason_code` and `detail` match the code and status message that executing
-the statement returns. [Handling Errors](./handling-errors.mdx#rejections-in-explain-gpu)
-gives the exact relationship. A few rejections exist only in the validator:
+`reason_code` and `detail` match the code and status message returned upon
+executing the statement. [Handling Errors](./handling-errors.mdx#rejections-in-explain-gpu)
+defines the correspondence between rejection fields and runtime errors. A few rejections exist only in the validator:
 empty input, multiple statements, a non-query statement, and a direct or
 view-indirect recursive call to `algeon_explain_coverage`. None of these
 validator rejections has an execution counterpart, and each carries its own

@@ -13,7 +13,7 @@
 //! by a Parquet reader.
 
 use crate::{
-    expr::Expr,
+    expr::{CaseWhen, Expr},
     plan::{AggregateNode, JoinSide, NodeId, PlanNode, QueryPlan},
     source::SourceNode,
 };
@@ -441,6 +441,101 @@ pub(super) fn simple_lineages_for_column(
     column_name: &str,
 ) -> Vec<SourceColumnLineage> {
     local_parquet_lineages_for_column(plan, parent_counts, node_id, column_name, LocalParquetSortLineage::Cross)
+}
+
+/// Replaces unqualified column references while preserving expression structure.
+pub(super) fn substitute_unqualified_columns(expr: Expr, map: &dyn Fn(&str) -> Option<Expr>) -> Expr {
+    match expr {
+        Expr::Column(column) => {
+            if column.qualifier().is_none()
+                && let Some(replacement) = map(column.name())
+            {
+                return replacement;
+            }
+            Expr::Column(column)
+        },
+        Expr::Literal(_) => expr,
+        Expr::Not(inner) => Expr::Not(Box::new(substitute_unqualified_columns(*inner, map))),
+        Expr::IsNull(inner) => Expr::IsNull(Box::new(substitute_unqualified_columns(*inner, map))),
+        Expr::IsNotNull(inner) => Expr::IsNotNull(Box::new(substitute_unqualified_columns(*inner, map))),
+        Expr::Cast { expr, target_type } => {
+            Expr::Cast { expr: Box::new(substitute_unqualified_columns(*expr, map)), target_type }
+        },
+        Expr::TryCast { expr, target_type } => {
+            Expr::TryCast { expr: Box::new(substitute_unqualified_columns(*expr, map)), target_type }
+        },
+        Expr::Binary { left, op, right, output_type } => Expr::Binary {
+            left: Box::new(substitute_unqualified_columns(*left, map)),
+            op,
+            right: Box::new(substitute_unqualified_columns(*right, map)),
+            output_type,
+        },
+        Expr::Like { expr, pattern, escape, negated } => {
+            Expr::Like { expr: Box::new(substitute_unqualified_columns(*expr, map)), pattern, escape, negated }
+        },
+        Expr::Substring { expr, start, length } => {
+            Expr::Substring { expr: Box::new(substitute_unqualified_columns(*expr, map)), start, length }
+        },
+        Expr::Lower(inner) => Expr::Lower(Box::new(substitute_unqualified_columns(*inner, map))),
+        Expr::Upper(inner) => Expr::Upper(Box::new(substitute_unqualified_columns(*inner, map))),
+        Expr::Trim { expr, trim_chars } => Expr::trim(substitute_unqualified_columns(*expr, map), trim_chars),
+        Expr::LTrim { expr, trim_chars } => Expr::ltrim(substitute_unqualified_columns(*expr, map), trim_chars),
+        Expr::RTrim { expr, trim_chars } => Expr::rtrim(substitute_unqualified_columns(*expr, map), trim_chars),
+        Expr::StringContains { expr, pattern } => {
+            Expr::string_contains(substitute_unqualified_columns(*expr, map), pattern)
+        },
+        Expr::StartsWith { expr, prefix } => Expr::starts_with(substitute_unqualified_columns(*expr, map), prefix),
+        Expr::EndsWith { expr, suffix } => Expr::ends_with(substitute_unqualified_columns(*expr, map), suffix),
+        Expr::StringLength { expr, unit, output_type } => {
+            Expr::StringLength { expr: Box::new(substitute_unqualified_columns(*expr, map)), unit, output_type }
+        },
+        Expr::RegexpReplace { expr, pattern, replacement, output_type } => Expr::RegexpReplace {
+            expr: Box::new(substitute_unqualified_columns(*expr, map)),
+            pattern,
+            replacement,
+            output_type,
+        },
+        Expr::Concat(parts) => {
+            Expr::Concat(parts.into_iter().map(|part| substitute_unqualified_columns(part, map)).collect())
+        },
+        Expr::Abs(inner) => Expr::Abs(Box::new(substitute_unqualified_columns(*inner, map))),
+        Expr::UnaryMath { op, expr, output_type } => {
+            Expr::UnaryMath { op, expr: Box::new(substitute_unqualified_columns(*expr, map)), output_type }
+        },
+        Expr::Round { expr, decimal_places, output_type } => {
+            Expr::Round { expr: Box::new(substitute_unqualified_columns(*expr, map)), decimal_places, output_type }
+        },
+        Expr::InList { expr, list, negated } => Expr::InList {
+            expr: Box::new(substitute_unqualified_columns(*expr, map)),
+            list: list.into_iter().map(|item| substitute_unqualified_columns(item, map)).collect(),
+            negated,
+        },
+        Expr::IsDistinctFrom { left, right } => Expr::IsDistinctFrom {
+            left: Box::new(substitute_unqualified_columns(*left, map)),
+            right: Box::new(substitute_unqualified_columns(*right, map)),
+        },
+        Expr::IsNotDistinctFrom { left, right } => Expr::IsNotDistinctFrom {
+            left: Box::new(substitute_unqualified_columns(*left, map)),
+            right: Box::new(substitute_unqualified_columns(*right, map)),
+        },
+        Expr::Case { branches, else_expr } => Expr::Case {
+            branches: branches
+                .into_iter()
+                .map(|branch| CaseWhen {
+                    when: substitute_unqualified_columns(branch.when, map),
+                    then: substitute_unqualified_columns(branch.then, map),
+                })
+                .collect(),
+            else_expr: Box::new(substitute_unqualified_columns(*else_expr, map)),
+        },
+        Expr::Extract { field, expr } => {
+            Expr::Extract { field, expr: Box::new(substitute_unqualified_columns(*expr, map)) }
+        },
+        Expr::DateTrunc { field, expr, output_type } => {
+            Expr::DateTrunc { field, expr: Box::new(substitute_unqualified_columns(*expr, map)), output_type }
+        },
+        Expr::Alias { expr, alias } => substitute_unqualified_columns(*expr, map).alias(alias),
+    }
 }
 
 #[cfg(test)]

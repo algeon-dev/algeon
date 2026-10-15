@@ -2,14 +2,14 @@
 //!
 //! # Supported types
 //!
-//! Binary operations work on both numeric and string columns:
+//! Binary operations support numeric and string columns:
 //!
-//! - **Numeric columns**: All arithmetic (`Add`, `Sub`, `Mul`, `Div`, …),
-//!   comparison (`Equal`, `Less`, …), bitwise, and logical operators.
-//! - **String columns**: Comparison operators only (`Equal`, `NotEqual`,
+//! - Numeric columns support arithmetic (`Add`, `Sub`, `Mul`, `Div`, etc.),
+//!   comparison (`Equal`, `Less`, etc.), bitwise, and logical operators.
+//! - String columns support comparison operators only (`Equal`, `NotEqual`,
 //!   `Less`, `Greater`, `LessEqual`, `GreaterEqual`). String comparisons
 //!   are lexicographic and case-sensitive. Arithmetic and bitwise operators
-//!   on strings will return an error.
+//!   on strings return an error.
 
 use std::{ptr, sync::Arc};
 
@@ -836,7 +836,9 @@ pub(crate) fn binary_operation_vs_impl(
     exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
-    if CheckedDivision::scalar_divisor_needs_row_checks(lhs, rhs, op)? {
+    if CheckedTemporalArithmetic::applies(&lhs.data_type()?, &rhs.data_type()?, op)
+        || CheckedDivision::scalar_divisor_needs_row_checks(lhs, rhs, op)?
+    {
         let divisor = Column::from_scalar(rhs, lhs.len()?)?;
         let divisor_view = divisor.view()?;
         return binary_operation_vv_impl(lhs, &divisor_view, op, output_type, output_domain, exec_options, operation);

@@ -5,11 +5,11 @@ description: Build and run the algeon-server Flight SQL endpoint, then connect w
 
 # Flight SQL Server
 
-Run the standalone server when clients need a remote Arrow Flight SQL
-endpoint instead of an embedded Rust API. It builds one shared GPU backend,
-installs the cuGraph, cuVS, and cuML UDTFs on every session (cuGraph can be
-[disabled in its configuration](./configuration.mdx#gpu-sql-udtfs)),
-and serves ordinary Arrow results to any ADBC or Flight SQL client. Its
+Run the standalone server when clients access Algeon over a remote Arrow Flight
+SQL endpoint. The server initializes a shared GPU backend, installs cuGraph,
+cuVS, and cuML UDTFs across all sessions (cuGraph can be
+[disabled in configuration](./configuration.mdx#gpu-sql-udtfs)),
+and returns Arrow record batches to ADBC and Flight SQL clients. Its
 embeddable implementation and public API live in
 `algeon_datafusion::server`; `crates/algeon-server` is the standalone launcher.
 
@@ -125,9 +125,9 @@ through the same sequence with descriptors and registered data, and
 The [citation investigation](../guides/datasets/citation-network.mdx) uses
 Parquet files produced by the
 [citation fixture](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/citation_network/README.md).
-cuGraph is enabled by default, so the server needs no extra setting. Paths in
-`LOCATION` resolve against the server's working directory. Start it from the
-repository root.
+Because cuGraph is enabled by default, the server requires no additional
+configuration. Paths in `LOCATION` resolve against the server's working
+directory. Start it from the repository root.
 
 To register the tables at every start, save these statements in a file such
 as `citation-init.sql`:
@@ -188,8 +188,8 @@ def sql_string(value: str) -> str:
 ```
 
 `EXPLAIN GPU` runs from statement queries and from prepared statements without
-parameters, so the Python DB-API `cursor.execute("EXPLAIN GPU ...")` works.
-See [GPU coverage validation](./gpu-coverage-validation.mdx).
+parameters; the Python DB-API `cursor.execute("EXPLAIN GPU ...")` executes
+successfully. See [GPU coverage validation](./gpu-coverage-validation.mdx).
 
 DML and `COPY` are rejected. A statement query returns
 `Flight SQL statement query does not support DML or COPY statements`, and a
@@ -233,8 +233,8 @@ The DB-API wrapper emits this warning when a connection opens:
 Warning: Cannot disable autocommit; conn will not be DB-API 2.0 compliant
 ```
 
-Flight SQL has no transactions, so the warning is expected and needs no
-action.
+Flight SQL does not implement transactions; this warning is expected and
+requires no action.
 
 The same endpoint works with other ADBC language bindings. Keep pooling,
 timeouts, authentication, and result conversion in the client service.
@@ -244,8 +244,8 @@ per-query statistics by query id or correlation id.
 ## Connection loss and result backpressure {/* #connection-loss */}
 
 The server sends an HTTP/2 keepalive ping after 30 seconds without inbound
-traffic. An acknowledgement must arrive within 10 seconds. Otherwise the
-connection closes. The same settings apply when the server binds its address
+traffic. If an acknowledgement does not arrive within 10 seconds, the server
+terminates the connection. The same settings apply when the server binds its address
 and when an embedded caller supplies a prebound listener. Connection loss
 drops the Flight result stream, cancels its attempt, and releases the GPU grant
 after native cleanup completes. Each statement registers a cancellation token

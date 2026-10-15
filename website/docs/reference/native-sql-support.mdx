@@ -25,8 +25,8 @@ rather than this page.
 | Joins | Equi joins and admitted residual or keyless forms for inner, outer, semi, anti, mark and cross joins. Build side, output projection, key types and residual expressions can narrow an otherwise supported join kind. |
 | Graph, vector, ML | UDTFs are separate GPU execution domains. See the [cuGraph](../cugraph/overview.mdx), [cuVS](../cuvs/overview.mdx) and [cuML](../cuml/overview.mdx) SQL APIs. |
 
-When a candidate is not supported, or an enabled cost rule does not select it,
-the DataFusion baseline remains in place.
+When a candidate is not supported, or a preference rule keeps it on
+DataFusion, the DataFusion baseline remains in place.
 
 ## Expressions
 

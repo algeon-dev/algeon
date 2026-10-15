@@ -26,7 +26,7 @@ The UDTF and Flight SQL return the same Arrow schema.
 | `reason_code`, `unsupported_category` | Stable candidate or terminal-rejection reason and its triage category. |
 | `remedy_code`, `remedy_kind`, `remedy` | Stable advice for a non-selected candidate. The kind is `user_action`, `config_action`, `engine_gap` or `cpu_preferred`. |
 | `blocking` | One line naming what blocked a `not_supported` candidate, or null when the producing site could not name it. |
-| `detail_json` | Summary metadata or candidate detail, its structured `blocking` subject, and cost evidence. |
+| `detail_json` | Summary metadata or candidate detail, and its structured `blocking` subject. |
 | `coverage_json` | The complete structured result on the summary row, or null on candidate rows. |
 
 - `physical_root` is the authoritative pre-native root captured by the retained
@@ -148,7 +148,7 @@ values:
 | --- | --- | --- |
 | `selected` | The candidate was selected for native execution. | Candidate shape (`detail`). `reason_code`, `reason_kind` and `category` are absent. |
 | `not_supported` | The candidate is outside the native capability contract, or its DataFusion parent could not keep it. | `reason_code`, `reason_kind`, candidate shape (`detail`) and category. |
-| `not_selected_by_cost` | The candidate is native-capable, but a preference rule or cost threshold retained the DataFusion plan. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
+| `not_selected_by_cost` | The candidate is native-capable, but a preference rule retained the DataFusion plan. | The same fields as `not_supported`. |
 
 - A fragment its parent could not keep has reason
   `native_fragment_parent_contract_unsupported`. The fragment would change the
@@ -161,8 +161,7 @@ values:
 - The second matches a plan whose every node is a literal source. Native
   execution would only copy host rows to the device and back (reason
   `native_host_literal_passthrough_not_selected_by_cost`).
-- Otherwise an enabled cost threshold matched. A subtree whose candidate the
-  cost model declines stays on DataFusion whole.
+- A subtree whose candidate either rule declines stays on DataFusion whole.
 
 Every candidate carries its stable `candidate_family`, and every non-selected
 candidate carries `remedy_code`, `remedy_kind` and `remedy` in both its table

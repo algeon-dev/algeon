@@ -37,7 +37,7 @@ use crate::{
         NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
         NativeCapabilityContractDiagnostics, NativePlanningDiagnostics,
     },
-    report::{GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
+    report::{GpuCandidate, PlanningReport},
 };
 
 #[test]
@@ -612,7 +612,7 @@ fn native_datafusion_execution_report_projects_runtime_for_mixed_plan_despite_ca
     }));
     assert!(report.rows.iter().any(|row| {
         row.planning_outcome == Some(CandidateOutcomeKind::NotSelectedByCost)
-            && row.reason_code.as_deref() == Some("native_small_selective_topk_not_selected_by_cost")
+            && row.reason_code.as_deref() == Some("native_host_literal_passthrough_not_selected_by_cost")
     }));
 
     for row in &report.rows {
@@ -671,24 +671,7 @@ fn capability_and_cost_declined_diagnostics() -> NativePlanningDiagnostics {
     report.push_not_supported(GpuCandidate::new("UnsupportedCandidate", 1), CapabilityReason::UnsupportedExpression);
     report.push_not_selected_by_cost(
         GpuCandidate::new("CostDeclinedCandidate", 1),
-        NativePlanCostReason::SmallSelectiveTopK,
-        NativeCandidateCostEvidence {
-            node_count: 1,
-            source_count: 1,
-            local_parquet_source_count: 1,
-            selected_row_groups_known: true,
-            selected_row_groups: Some(1),
-            estimated_source_rows: Some(4),
-            estimated_source_bytes: Some(256),
-            selected_source_bytes_known: true,
-            join_count: 0,
-            residual_join_count: 0,
-            aggregate_count: 0,
-            grouped_aggregate_count: 0,
-            sort_count: 0,
-            limit_count: 1,
-            min_topk_fetch: Some(1),
-        },
+        NativePlanCostReason::HostLiteralPassthrough,
     );
     NativePlanningDiagnostics {
         input_plan_root: "ProjectionExec".to_string(),

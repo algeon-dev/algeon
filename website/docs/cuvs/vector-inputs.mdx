@@ -96,6 +96,14 @@ Brute-force kNN and the three ANN UDTFs return `Float32` distance values.
 Pairwise `distance` follows the input float width (`Float32` or `Float64`).
 KMeans `cluster_id` remains `Int32`.
 
+Float32 expanded squared L2 evaluates `||x||² + ||y||² - 2 x·y`.
+Roundoff and cancellation near zero can produce a small positive distance
+even for identical vectors; negative roundoff is clamped to zero. Positive
+distances are retained. Equal rounded norms do not establish vector equality.
+Near-tied distances can change neighbor selection at the `k` boundary, and
+the returned IDs may differ between distance implementations. The API specifies
+no fixed numerical tolerance or bit-exact zero for arbitrary Float32 inputs.
+
 ## What validation can prove
 
 `gpu_validate_call` checks the JSON envelope, relation existence,
@@ -125,5 +133,5 @@ Scalar checks do not require evaluated rows: IVF search requires
 
 cuVS calls execute inside the admitted query memory domain. Allocation beyond
 the configured cap fails at the allocator. See
-[Integrating Algeon](../integration/overview.mdx) for embedded and Flight SQL
+[Integration](../integration/overview.mdx) for embedded and Flight SQL
 setup.

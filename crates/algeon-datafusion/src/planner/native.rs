@@ -63,8 +63,8 @@ mod invocation;
 mod shared_resident;
 
 use attempt::{
-    NativeCostSelection, NativeOptimizationAttempt, NativeReplacementSink, optimize_count_only_native_plan,
-    optimize_final_native_plan, peel_cooperative_native_exec,
+    NativeOptimizationAttempt, NativeReplacementSink, optimize_count_only_native_plan, optimize_final_native_plan,
+    peel_cooperative_native_exec,
 };
 pub use capability_envelope::{
     NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
@@ -426,10 +426,7 @@ impl AlgeonNativePhysicalOptimizerRule {
         let effective_config = self.config.clone().with_native_execution_config(native_execution_config);
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();
-        let cost_selection = NativeCostSelection {
-            options: *effective_config.native_plan_cost_options(),
-            datafusion_cpu_allowed: !self.config.execution_mode().rejects_datafusion_cpu(),
-        };
+        let datafusion_cpu_allowed = !self.config.execution_mode().rejects_datafusion_cpu();
 
         let optimized = match (already_selected, self.config.execution_mode().rewrites_relational_plans(), self.stage) {
             (Some(plan), _, _) => NativeOptimizationAttempt::retained(plan),
@@ -438,14 +435,14 @@ impl AlgeonNativePhysicalOptimizerRule {
                 Arc::clone(&plan),
                 native_execution_config,
                 native_optimizer_options,
-                cost_selection,
+                datafusion_cpu_allowed,
                 &self.root_sink,
             )?,
             (None, true, NativeOptimizerStage::Final) => optimize_final_native_plan(
                 Arc::clone(&plan),
                 native_execution_config,
                 native_optimizer_options,
-                cost_selection,
+                datafusion_cpu_allowed,
                 &self.root_sink,
                 optimizer_options,
             )?,

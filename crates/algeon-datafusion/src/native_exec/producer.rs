@@ -12,10 +12,13 @@ use datafusion::{
     physical_plan::{ExecutionPlan, coop::CooperativeExec, metrics::ExecutionPlanMetricsSet},
 };
 use futures::future::BoxFuture;
-use query_planning::{admission::AttemptCapabilityEvidence, plan::QueryPlan};
+use query_planning::{
+    admission::AttemptCapabilityEvidence,
+    plan::{PlanFingerprint, QueryPlan},
+};
 use query_runtime::runtime::{ExecutionContext, resident::GpuResultHandle};
 
-use super::{admission::QueryAdmissionTicket, native_node::native_node};
+use super::{admission::QueryAdmissionTicket, native_node::native_node, shared_resident::shared_resident_results};
 use crate::error::{Error, ErrorCode, Result};
 
 /// Crate-internal device-resident producer contract used by composed native execution.
@@ -29,6 +32,21 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
     /// Name that binds this output in the consumer's GPU-resident input map. It
     /// matches the consumer plan's GPU-resident source name.
     fn gpu_result_input_name(&self) -> &str;
+
+    /// Whether this producer's inputs and operation permit reuse of one
+    /// logical invocation's result. Host-staged inputs and GPU functions
+    /// without a repeatability contract keep the default.
+    fn gpu_result_is_repeatable(&self) -> bool {
+        false
+    }
+
+    /// Native output identities eligible for reuse within one composed island.
+    /// The invocation name remains part of the key, keeping independently
+    /// authored calls separate. Output pushdown must change this identity;
+    /// the result scope also binds the complete input producer subtree.
+    fn reusable_gpu_result_scope(&self) -> Result<Option<Vec<PlanFingerprint>>> {
+        Ok(None)
+    }
 
     /// Capability evidence for this producer's output.
     ///
@@ -214,7 +232,27 @@ pub(crate) async fn execute_gpu_resident_producer_with_context(
     task_context: Arc<TaskContext>,
 ) -> DataFusionResult<(String, GpuResultHandle)> {
     if let Some(producer) = gpu_resident_producer(plan) {
-        return producer.execute_gpu_result_with_context(native_context, partition, task_context).await;
+        let reuse = if partition == 0 {
+            shared_resident_results(&task_context)
+                .map(|results| {
+                    let identity = results.reusable_identity(plan)?;
+                    Ok::<_, Error>(identity.map(|identity| (results, identity)))
+                })
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        if let Some((results, identity)) = &reuse
+            && let Some(handle) = results.take_reusable(identity)
+        {
+            return Ok((producer.gpu_result_input_name().to_string(), handle));
+        }
+        let output = producer.execute_gpu_result_with_context(native_context, partition, task_context).await?;
+        if let Some((results, identity)) = reuse {
+            results.retain_reusable(identity, &output.1);
+        }
+        return Ok(output);
     }
     Err(Error::new(
         ErrorCode::InvalidExecutionPlan,

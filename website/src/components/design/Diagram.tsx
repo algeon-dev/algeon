@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
+import React, {useEffect, useId, useLayoutEffect, useRef, useState} from 'react';
 import {flushSync} from 'react-dom';
 import styles from './styles.module.css';
 import {
@@ -257,6 +257,7 @@ export function BackedLabel({x, y, text, fill = COLOR.muted}: {x: number; y: num
 }
 
 export interface FigureCanvas {
+  title?: string;
   svgW: number;
   svgH: number;
   /** Displayed width floor in CSS px; below it the figure scrolls horizontally. */
@@ -264,7 +265,7 @@ export interface FigureCanvas {
   children: React.ReactNode;
 }
 
-function Canvas({ref, svgW, svgH, minW, maxW, scale, interactive, ariaLabel, center, className, children}: {
+function Canvas({ref, svgW, svgH, minW, maxW, scale, interactive, ariaLabel, title, center, className, children}: {
   ref?: React.Ref<SVGSVGElement>;
   svgW: number;
   svgH: number;
@@ -274,10 +275,13 @@ function Canvas({ref, svgW, svgH, minW, maxW, scale, interactive, ariaLabel, cen
   scale?: number;
   interactive?: boolean;
   ariaLabel?: string;
+  title?: string;
   center?: boolean;
   className?: string;
   children: React.ReactNode;
 }) {
+  const titleId = useId();
+  const descriptionId = useId();
   // In the dialog's flex viewport, auto margins center a drawing smaller than
   // the viewport and resolve to zero once it overflows, so every edge stays
   // reachable by scrolling.
@@ -286,8 +290,11 @@ function Canvas({ref, svgW, svgH, minW, maxW, scale, interactive, ariaLabel, cen
     : {width: svgW * scale, height: svgH * scale, flex: 'none', margin: 'auto'};
   return (
     <svg ref={ref} className={clsx(styles.canvas, className)} viewBox={`0 0 ${svgW} ${svgH}`} width="100%"
-      role={interactive ? 'group' : 'img'} aria-label={ariaLabel}
+      role={interactive ? 'group' : 'img'} aria-label={title ? undefined : ariaLabel}
+      aria-labelledby={title ? `${titleId} ${descriptionId}` : undefined}
       style={{...size, fontFamily: SANS}}>
+      {title && <title id={titleId}>{title}</title>}
+      {title && <desc id={descriptionId}>{ariaLabel}</desc>}
       {children}
     </svg>
   );
@@ -489,7 +496,7 @@ function FigureDialog({drawing, narrow, interactive, ariaLabel, panel, canvasRef
       <div ref={viewportRef} className={clsx(styles.zoomViewport, zoom === 'fit' && styles.zoomFit)} tabIndex={0}>
         {room ? (
           <Canvas ref={canvasRef} svgW={shown.svgW} svgH={shown.svgH} minW={shown.minW} scale={scale}
-            interactive={interactive} ariaLabel={ariaLabel}>
+            interactive={interactive} ariaLabel={ariaLabel} title={shown.title ?? drawing.title}>
             {shown.children}
           </Canvas>
         ) : null}
@@ -524,7 +531,7 @@ function useOverflowEdges(ref: React.RefObject<HTMLDivElement | null>) {
   }, [ref]);
 }
 
-export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel, center, children, panel, narrow}: {
+export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel, title, center, children, panel, narrow}: {
   caption?: React.ReactNode;
   svgW: number;
   svgH: number;
@@ -533,6 +540,7 @@ export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel,
   maxW?: number;
   interactive?: boolean;
   ariaLabel?: string;
+  title?: string;
   center?: boolean;
   children: React.ReactNode;
   panel?: React.ReactNode;
@@ -558,12 +566,12 @@ export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel,
         <div className={clsx(styles.frame, enlarged && styles.frameEnlarged)}>
           <div ref={scrollRef} className={clsx(styles.scroll, 'thin-scrollbar')}>
             <Canvas className={narrow ? styles.wideCanvas : undefined} svgW={svgW} svgH={svgH} minW={minW}
-              maxW={maxW} interactive={interactive} ariaLabel={ariaLabel} center={center}>
+              maxW={maxW} interactive={interactive} ariaLabel={ariaLabel} title={title} center={center}>
               {children}
             </Canvas>
             {narrow ? (
               <Canvas className={styles.narrowCanvas} svgW={narrow.svgW} svgH={narrow.svgH} minW={narrow.minW}
-                interactive={interactive} ariaLabel={ariaLabel} center={center}>
+                interactive={interactive} ariaLabel={ariaLabel} title={narrow.title ?? title} center={center}>
                 {narrow.children}
               </Canvas>
             ) : null}
@@ -579,7 +587,7 @@ export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel,
       </figure>
       {panel}
       {enlarged ? (
-        <FigureDialog drawing={{svgW, svgH, minW, children}} narrow={narrow} interactive={interactive}
+        <FigureDialog drawing={{svgW, svgH, minW, children, title}} narrow={narrow} interactive={interactive}
           ariaLabel={ariaLabel} panel={panel} canvasRef={dialogCanvasRef} returnTo={pageCanvas}
           openedByKeyboard={enlarged === 'keyboard'} onClosed={() => setEnlarged(null)} />
       ) : null}

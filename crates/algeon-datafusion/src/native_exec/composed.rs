@@ -437,7 +437,8 @@ impl AlgeonNativeExec {
                         // nested units read shared results through it.
                         let execution_task_context = task_context_with_shared_resident_results(
                             context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context)),
-                        );
+                            &prepared_gpu_inputs,
+                        )?;
                         let mut input_map = GpuResidentInputMap::new();
                         for (input_index, child) in prepared_gpu_inputs.into_iter().enumerate() {
                             let (input_name, handle) = execute_gpu_resident_producer_with_context(

@@ -26,10 +26,7 @@ use query_planning::{
     capability::CapabilityRejectionCategory,
     error::QueryError,
     optimizer::{NativeOptimizerDiagnostics, NativeOptimizerOptions, optimize_query_plan},
-    plan::{
-        NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, PlanNode, QueryPlan, QueryPlanBuilder,
-        native_plan_cost_decision,
-    },
+    plan::{NativePlanCostReason, PlanNode, QueryPlan, QueryPlanBuilder, native_plan_cost_decision},
     source::{SourceDiagnostics, SourceNode},
 };
 
@@ -54,7 +51,7 @@ use crate::{
         AlgeonNativeExec, AlgeonNativeExecutionConfig, NativeOutput, gpu_resident_producer,
         gpu_resident_producer_input_name, rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
     },
-    report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, NotSupportedDetail, PlanningReport},
+    report::{CandidateOutcome, GpuCandidate, NotSupportedDetail, PlanningReport},
 };
 
 #[derive(Debug, Clone)]
@@ -84,19 +81,11 @@ impl NativeOptimizationAttempt {
     }
 }
 
-/// Plan-cost selection inputs: the configured thresholds, and whether the
-/// completed plan may keep a DataFusion operator in place of a native one.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct NativeCostSelection {
-    pub(super) options: NativePlanCostOptions,
-    pub(super) datafusion_cpu_allowed: bool,
-}
-
 pub(super) fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    cost_selection: NativeCostSelection,
+    datafusion_cpu_allowed: bool,
     root_sink: &NativeReplacementSink,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let _footers = FooterScope::enter();
@@ -108,7 +97,7 @@ pub(super) fn optimize_count_only_native_plan(
         lowering,
         native_execution_config,
         native_optimizer_options,
-        cost_selection,
+        datafusion_cpu_allowed,
         root_sink.clone(),
     )
 }
@@ -117,7 +106,7 @@ pub(super) fn optimize_final_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    cost_selection: NativeCostSelection,
+    datafusion_cpu_allowed: bool,
     root_sink: &NativeReplacementSink,
     optimizer_options: &OptimizerOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
@@ -127,14 +116,14 @@ pub(super) fn optimize_final_native_plan(
         plan,
         native_execution_config,
         native_optimizer_options,
-        cost_selection,
+        datafusion_cpu_allowed,
         &mut relation_inputs,
     )?;
     let mut attempt = optimize_final_native_root(
         plan,
         native_execution_config,
         native_optimizer_options,
-        cost_selection,
+        datafusion_cpu_allowed,
         root_sink,
         optimizer_options,
     )?;
@@ -179,7 +168,7 @@ fn lower_gpu_resident_producer_relation_inputs(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    cost_selection: NativeCostSelection,
+    datafusion_cpu_allowed: bool,
     lowered: &mut LoweredRelationInputs,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     let relation_input_names = match gpu_resident_producer(plan.as_ref()) {
@@ -197,7 +186,7 @@ fn lower_gpu_resident_producer_relation_inputs(
             Arc::clone(child),
             native_execution_config,
             native_optimizer_options,
-            cost_selection,
+            datafusion_cpu_allowed,
             lowered,
         )?;
         if let Some(input_name) = relation_input_names.as_ref().and_then(|names| names.get(index))
@@ -210,7 +199,7 @@ fn lower_gpu_resident_producer_relation_inputs(
                 lowering,
                 native_execution_config,
                 native_optimizer_options,
-                cost_selection,
+                datafusion_cpu_allowed,
                 NativeReplacementSink::GpuResidentProducer { input_name: input_name.clone() },
             )?;
             attempt.report.wrap_selected_candidates_with_outer_operator(plan.name());
@@ -233,7 +222,7 @@ fn optimize_final_native_root(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    cost_selection: NativeCostSelection,
+    datafusion_cpu_allowed: bool,
     root_sink: &NativeReplacementSink,
     optimizer_options: &OptimizerOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
@@ -243,16 +232,16 @@ fn optimize_final_native_root(
         lowering,
         native_execution_config,
         native_optimizer_options,
-        cost_selection,
+        datafusion_cpu_allowed,
         root_sink.clone(),
     )?;
     // Fragments are placed below query roots, whose admission this rule
     // binds; the outer run binds a cuGraph input subplan's admission. A plan
     // that must not run DataFusion operators gains nothing from them.
-    if !matches!(root_sink, NativeReplacementSink::HostArrow) || !cost_selection.datafusion_cpu_allowed {
+    if !matches!(root_sink, NativeReplacementSink::HostArrow) || !datafusion_cpu_allowed {
         return Ok(attempt);
     }
-    FragmentSearch { native_execution_config, native_optimizer_options, cost_selection, optimizer_options }
+    FragmentSearch { native_execution_config, native_optimizer_options, datafusion_cpu_allowed, optimizer_options }
         .below_root(attempt)
 }
 
@@ -277,7 +266,7 @@ pub(super) fn replace_lowered_root_or_keep_plan_for_sink(
     lowering: NativeLoweringResult,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    cost_selection: NativeCostSelection,
+    datafusion_cpu_allowed: bool,
     sink: NativeReplacementSink,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let mut lowering = lowering;
@@ -349,16 +338,10 @@ pub(super) fn replace_lowered_root_or_keep_plan_for_sink(
         NativeReplacementSink::GpuResidentProducer { .. } => native_plan.clone_with_gpu_resident_sink(),
     };
     lowering.report.anchor_selected_candidates_to_plan_node(native_plan.root_id());
-    if let NativePlanCostDecision::NotSelectedByCost { reason, facts } =
-        native_plan_cost_decision(&native_plan, &cost_selection.options, cost_selection.datafusion_cpu_allowed)
-    {
+    if let Some(reason) = native_plan_cost_decision(&native_plan, datafusion_cpu_allowed) {
         return Ok(NativeOptimizationAttempt {
             plan,
-            report: native_execution_cost_selection_report(
-                &lowering.report,
-                reason,
-                NativeCandidateCostEvidence::from_cost_facts(facts),
-            ),
+            report: native_execution_cost_selection_report(&lowering.report, reason),
             native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
             capability_contract: NativeCapabilityContractDiagnostics::default(),
@@ -667,25 +650,18 @@ fn collect_gpu_resident_producer_children(
 fn native_execution_cost_selection_report(
     report: &PlanningReport,
     cost_reason: NativePlanCostReason,
-    evidence: NativeCandidateCostEvidence,
 ) -> PlanningReport {
     PlanningReport::from_outcomes(report.outcomes().iter().map(|outcome| match outcome {
-        CandidateOutcome::Selected { candidate } => CandidateOutcome::NotSelectedByCost {
-            candidate: candidate.clone(),
-            cost_reason,
-            evidence: evidence.clone(),
+        CandidateOutcome::Selected { candidate } => {
+            CandidateOutcome::NotSelectedByCost { candidate: candidate.clone(), cost_reason }
         },
         CandidateOutcome::NotSupported { candidate, capability_reason, detail } => CandidateOutcome::NotSupported {
             candidate: candidate.clone(),
             capability_reason: *capability_reason,
             detail: detail.clone(),
         },
-        CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence } => {
-            CandidateOutcome::NotSelectedByCost {
-                candidate: candidate.clone(),
-                cost_reason: *cost_reason,
-                evidence: evidence.clone(),
-            }
+        CandidateOutcome::NotSelectedByCost { candidate, cost_reason } => {
+            CandidateOutcome::NotSelectedByCost { candidate: candidate.clone(), cost_reason: *cost_reason }
         },
     }))
     .with_correlation_from(report)
@@ -777,7 +753,7 @@ mod tests {
         dynamic_filter::DynamicFilterExecutionOptions,
         expr::{AggregateFunction, Expr, SortExpr},
         optimizer::SemijoinReductionOptions,
-        plan::{NativePlanCostFacts, WindowFunction, WindowSpec},
+        plan::{WindowFunction, WindowSpec},
         source::LiteralBatchSource,
     };
 
@@ -877,47 +853,20 @@ mod tests {
     }
 
     #[test]
-    fn cost_selection_preserves_full_cost_evidence() {
-        let facts = NativePlanCostFacts {
-            node_count: 7,
-            source_count: 1,
-            local_parquet_source_count: 1,
-            selected_row_groups_known: true,
-            selected_row_groups: Some(2),
-            estimated_source_rows: Some(128),
-            estimated_source_bytes: Some(4_096),
-            selected_source_bytes_known: true,
-            join_count: 1,
-            residual_join_count: 0,
-            aggregate_count: 1,
-            grouped_aggregate_count: 1,
-            sort_count: 1,
-            limit_count: 1,
-            min_topk_fetch: Some(10),
-        };
+    fn cost_selection_declines_the_selected_candidate_with_its_reason() {
         let report = PlanningReport::from_outcomes([CandidateOutcome::Selected {
-            candidate: GpuCandidate::new("SortExec(HashJoinExec)", 3),
+            candidate: GpuCandidate::new("ProjectionExec(PlaceholderRowExec)", 2),
         }]);
 
-        let report = native_execution_cost_selection_report(
-            &report,
-            NativePlanCostReason::SmallSelectiveTopK,
-            NativeCandidateCostEvidence::from_cost_facts(facts.clone()),
-        );
+        let report = native_execution_cost_selection_report(&report, NativePlanCostReason::NoColumnData);
 
         assert!(matches!(
             report.outcomes(),
-            [CandidateOutcome::NotSelectedByCost { cost_reason, evidence, .. }]
-                if *cost_reason == NativePlanCostReason::SmallSelectiveTopK
-                    && evidence.node_count == facts.node_count
-                    && evidence.selected_row_groups == facts.selected_row_groups
-                    && evidence.estimated_source_bytes == facts.estimated_source_bytes
-                    && evidence.min_topk_fetch == facts.min_topk_fetch
+            [CandidateOutcome::NotSelectedByCost { cost_reason: NativePlanCostReason::NoColumnData, .. }]
         ));
         let json = report.to_json();
         assert_eq!(json["outcomes"][0]["outcome"], "not_selected_by_cost");
-        assert_eq!(json["outcomes"][0]["cost_reason_code"], "native_small_selective_topk_not_selected_by_cost");
-        assert_eq!(json["outcomes"][0]["cost_evidence"]["estimated_source_bytes"], 4_096);
+        assert_eq!(json["outcomes"][0]["cost_reason_code"], "native_no_column_data_not_selected_by_cost");
     }
 
     #[test]

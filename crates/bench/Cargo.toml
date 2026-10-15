@@ -107,7 +107,7 @@ name = "query_service_goodput"
 test = false
 
 [[bin]]
-name = "tpcds_three_way_bench"
+name = "tpcds_gpu_cpu_bench"
 test = false
 
 [[bin]]

@@ -7,7 +7,7 @@ use std::{
 use futures::stream::once;
 use query_planning::{
     admission::AttemptCapabilityEvidence,
-    plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
+    plan::{PlanFingerprint, QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
 };
 use query_runtime::runtime::cache_observation_fingerprint;
 
@@ -37,7 +37,7 @@ use crate::{
     attempt::InvocationAttempt,
     native_exec::{
         GraphClaimCalibrationCapture, SealedAttemptMetricsTarget, admission::QueryAdmissionTicket,
-        gpu_function_occurrence_from_task_context,
+        gpu_function_occurrence_from_task_context, gpu_resident_producer,
     },
     planner::native::Invocation,
     report::PlanningReport,
@@ -948,6 +948,26 @@ impl CugraphAlgoExec {
 impl GpuResidentProducer for CugraphAlgoExec {
     fn gpu_result_input_name(&self) -> &str {
         &self.gpu_result_input_name
+    }
+
+    fn gpu_result_is_repeatable(&self) -> bool {
+        self.spec.algorithm.is_similarity()
+            && self.predicate_sources.iter().chain([&self.edge_source]).all(|input| {
+                gpu_resident_producer(input.as_ref()).is_some_and(GpuResidentProducer::gpu_result_is_repeatable)
+            })
+    }
+
+    fn reusable_gpu_result_scope(&self) -> Result<Option<Vec<PlanFingerprint>>> {
+        if !self.gpu_result_is_repeatable() {
+            return Ok(None);
+        }
+        let scopes = self
+            .gpu_result_capability_evidence()?
+            .execution_scopes()
+            .iter()
+            .map(|scope| scope.execution_scope_fingerprint())
+            .collect::<Vec<_>>();
+        Ok(Some(scopes))
     }
 
     fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {

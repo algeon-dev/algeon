@@ -24,7 +24,7 @@
 #   --warmups N                 warmup iterations (default: 0)
 #   --iterations N              measured iterations (default: 1)
 #   --engine E                  tpcds only: native_gpu (default) |
-#                               cpu_datafusion | cost_declined_datafusion
+#                               cpu_datafusion
 #   --width N                   tpch only: review table width (default: 0 =
 #                               auto-detect; the wide table prints only when it
 #                               fits, e.g. --width 80 forces the compact view)
@@ -159,8 +159,8 @@ if [[ "${SCALE}" != "1" && "${SCALE}" != "10" && "${SCALE}" != "100" ]]; then
 fi
 if [[ "${WORKLOAD}" == "tpcds" ]]; then
     case "${ENGINE}" in
-        native_gpu | cpu_datafusion | cost_declined_datafusion) ;;
-        *) echo "ERROR: --engine must be native_gpu, cpu_datafusion, or cost_declined_datafusion" >&2; exit 2 ;;
+        native_gpu | cpu_datafusion) ;;
+        *) echo "ERROR: --engine must be native_gpu or cpu_datafusion" >&2; exit 2 ;;
     esac
 fi
 
@@ -276,8 +276,8 @@ if [[ "${WORKLOAD}" == "tpch" ]]; then
     NEEDS_LOCK=1
 else
     case "${ENGINE}" in
-        native_gpu) BIN="tpcds_three_way_bench"; NEEDS_LOCK=1 ;;
-        cpu_datafusion | cost_declined_datafusion) BIN="tpcds_three_way_bench"; NEEDS_LOCK=0 ;;
+        native_gpu) BIN="tpcds_gpu_cpu_bench"; NEEDS_LOCK=1 ;;
+        cpu_datafusion) BIN="tpcds_gpu_cpu_bench"; NEEDS_LOCK=0 ;;
     esac
     export ALGEON_TPCDS_BENCH_ENGINE="${ENGINE}"
     export ALGEON_TPCDS_BENCH_QUERIES="${QUERIES}"

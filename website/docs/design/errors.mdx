@@ -34,9 +34,7 @@ only when crossing a layer boundary.
 - Ordinary DataFusion errors that carry no Algeon identity, and transport
   errors below the server, keep their own policies. Nothing in the adapter or
   server upgrades them to Algeon errors.
-- Protocol policy outside the built-in server belongs to the application. The
-  embedded REST example maps typed errors before applying its ordinary
-  DataFusion fallback, and it does not expose raw facts wholesale.
+- Protocol policy outside the built-in server belongs to the host application.
 
 Declining a native candidate during standard physical planning does not
 constitute an error. `NotSupported` and `NotSelectedByCost` are candidate
@@ -75,10 +73,10 @@ print as exact bytes followed by GiB truncated to two decimals, for example
 `102005473280 bytes (95.00 GiB)`. `invalid_plan` and `invalid_execution_plan`
 remain for malformed query plans and engine-internal consistency checks.
 
-Operations are stable dotted identifiers. Messages explain the failure to a
-human. Facts carry the machine-readable context that policy or diagnosis
-needs, and the source preserves the original cause. A feature module or
-transport adapter does not create a second error taxonomy.
+Operations are stable dotted identifiers. Error messages state the failed
+contract condition, facts provide machine-readable diagnostic context, and
+sources preserve root causes. Feature modules and transport adapters do not
+introduce secondary error taxonomies.
 
 Use the result type owned by the current layer: native `Result<T>` across
 planning, runtime and engine, adapter `Result<T>` before DataFusion, and

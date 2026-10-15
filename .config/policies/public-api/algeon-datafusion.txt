@@ -890,7 +890,6 @@ pub struct algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::blocking: core::option::Option<algeon_datafusion::report::Blocking>
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::candidate_family: alloc::string::String
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::category: core::option::Option<alloc::string::String>
-pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::cost_evidence: core::option::Option<algeon_datafusion::report::NativeCandidateCostEvidence>
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::detail: alloc::string::String
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::reason_code: core::option::Option<alloc::string::String>
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::reason_kind: core::option::Option<algeon_datafusion::gpu_coverage::QueryGpuCandidateReasonKind>
@@ -1782,7 +1781,6 @@ pub use algeon_datafusion::planner::CapabilityContractReport
 pub use algeon_datafusion::planner::CapabilityDecisionRow
 pub use algeon_datafusion::planner::NativeOptimizerDiagnostics
 pub use algeon_datafusion::planner::NativeOptimizerOptions
-pub use algeon_datafusion::planner::NativePlanCostOptions
 pub use algeon_datafusion::planner::SourceDiagnostics
 pub use algeon_datafusion::planner::StatisticalAggregateExecutionMode
 #[non_exhaustive] pub enum algeon_datafusion::planner::AlgeonGpuExecutionMode
@@ -1808,12 +1806,10 @@ impl algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::execution_mode(&self) -> algeon_datafusion::planner::AlgeonGpuExecutionMode
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::native_execution_config(&self) -> &algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::native_optimizer_options(&self) -> &query_planning::optimizer::NativeOptimizerOptions
-pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::native_plan_cost_options(&self) -> &query_planning::plan::preference::NativePlanCostOptions
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_execution_mode(self, algeon_datafusion::planner::AlgeonGpuExecutionMode) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_native_execution_config(self, algeon_datafusion::native_exec::AlgeonNativeExecutionConfig) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_native_optimizer_options(self, query_planning::optimizer::NativeOptimizerOptions) -> Self
-pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_native_plan_cost_options(self, query_planning::plan::preference::NativePlanCostOptions) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_statistical_aggregate_execution_mode(self, query_planning::mode::StatisticalAggregateExecutionMode) -> Self
 impl core::default::Default for algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::default() -> Self
@@ -1876,7 +1872,6 @@ pub enum algeon_datafusion::report::CandidateOutcome
 pub algeon_datafusion::report::CandidateOutcome::NotSelectedByCost
 pub algeon_datafusion::report::CandidateOutcome::NotSelectedByCost::candidate: algeon_datafusion::report::GpuCandidate
 pub algeon_datafusion::report::CandidateOutcome::NotSelectedByCost::cost_reason: query_planning::plan::preference::NativePlanCostReason
-pub algeon_datafusion::report::CandidateOutcome::NotSelectedByCost::evidence: algeon_datafusion::report::NativeCandidateCostEvidence
 pub algeon_datafusion::report::CandidateOutcome::NotSupported
 pub algeon_datafusion::report::CandidateOutcome::NotSupported::candidate: algeon_datafusion::report::GpuCandidate
 pub algeon_datafusion::report::CandidateOutcome::NotSupported::capability_reason: algeon_datafusion::capability::CapabilityReason
@@ -1929,22 +1924,6 @@ pub fn algeon_datafusion::report::GpuCandidate::operator_count(&self) -> usize
 pub fn algeon_datafusion::report::GpuCandidate::with_plan_node_id(self, impl core::convert::Into<query_planning::correlation::PlanNodeId>) -> Self
 impl algeon_datafusion::report::GpuCandidate
 pub fn algeon_datafusion::report::GpuCandidate::to_json(&self) -> serde_json::value::Value
-pub struct algeon_datafusion::report::NativeCandidateCostEvidence
-pub algeon_datafusion::report::NativeCandidateCostEvidence::aggregate_count: usize
-pub algeon_datafusion::report::NativeCandidateCostEvidence::estimated_source_bytes: core::option::Option<u64>
-pub algeon_datafusion::report::NativeCandidateCostEvidence::estimated_source_rows: core::option::Option<u64>
-pub algeon_datafusion::report::NativeCandidateCostEvidence::grouped_aggregate_count: usize
-pub algeon_datafusion::report::NativeCandidateCostEvidence::join_count: usize
-pub algeon_datafusion::report::NativeCandidateCostEvidence::limit_count: usize
-pub algeon_datafusion::report::NativeCandidateCostEvidence::local_parquet_source_count: usize
-pub algeon_datafusion::report::NativeCandidateCostEvidence::min_topk_fetch: core::option::Option<usize>
-pub algeon_datafusion::report::NativeCandidateCostEvidence::node_count: usize
-pub algeon_datafusion::report::NativeCandidateCostEvidence::residual_join_count: usize
-pub algeon_datafusion::report::NativeCandidateCostEvidence::selected_row_groups: core::option::Option<usize>
-pub algeon_datafusion::report::NativeCandidateCostEvidence::selected_row_groups_known: bool
-pub algeon_datafusion::report::NativeCandidateCostEvidence::selected_source_bytes_known: bool
-pub algeon_datafusion::report::NativeCandidateCostEvidence::sort_count: usize
-pub algeon_datafusion::report::NativeCandidateCostEvidence::source_count: usize
 pub struct algeon_datafusion::report::NotSupportedDetail
 impl algeon_datafusion::report::NotSupportedDetail
 pub fn algeon_datafusion::report::NotSupportedDetail::admission_rejection(&self) -> core::option::Option<&query_planning::capability::rejection::Rejection>
@@ -1959,7 +1938,7 @@ pub fn algeon_datafusion::report::PlanningReport::not_selected_by_cost_count(&se
 pub fn algeon_datafusion::report::PlanningReport::not_selected_count(&self) -> usize
 pub fn algeon_datafusion::report::PlanningReport::not_supported_count(&self) -> usize
 pub fn algeon_datafusion::report::PlanningReport::outcomes(&self) -> &[algeon_datafusion::report::CandidateOutcome]
-pub fn algeon_datafusion::report::PlanningReport::push_not_selected_by_cost(&mut self, algeon_datafusion::report::GpuCandidate, query_planning::plan::preference::NativePlanCostReason, algeon_datafusion::report::NativeCandidateCostEvidence)
+pub fn algeon_datafusion::report::PlanningReport::push_not_selected_by_cost(&mut self, algeon_datafusion::report::GpuCandidate, query_planning::plan::preference::NativePlanCostReason)
 pub fn algeon_datafusion::report::PlanningReport::push_not_supported(&mut self, algeon_datafusion::report::GpuCandidate, algeon_datafusion::capability::CapabilityReason)
 pub fn algeon_datafusion::report::PlanningReport::push_selected(&mut self, algeon_datafusion::report::GpuCandidate)
 pub fn algeon_datafusion::report::PlanningReport::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>

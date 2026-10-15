@@ -1,69 +1,174 @@
 ---
 sidebar_position: 1
 title: Benchmarks
-description: Where NVIDIA publishes the benchmarks of the GPU libraries behind the UDTFs, and Algeon's own TPC-H and TPC-DS SF100 runs, including concurrent TPC-H streams through algeon_server.
+description: MerRec queries against CPU pipelines, Algeon's TPC-H and TPC-DS SF100 runs, and concurrent TPC-H streams through algeon_server.
 ---
 
+import Link from '@docusaurus/Link';
 import TpchSf100Benchmark from '@site/src/components/benchmarks/TpchSf100Benchmark';
 import TpcdsSf100Benchmark from '@site/src/components/benchmarks/TpcdsSf100Benchmark';
 import ServerLoadBenchmark, {ServerLoadOverloadTable} from '@site/src/components/benchmarks/ServerLoadBenchmark';
 import {tpcdsSf100Benchmark} from '@site/src/data/tpcdsSf100Benchmark';
 import {serverLoadBenchmark} from '@site/src/data/serverLoadBenchmark';
+import {
+  merrecAlgorithmBenchmark,
+  gpuMedianSeconds,
+  cpuPipelineMedianSeconds,
+  cpuMedianSeconds,
+} from '@site/src/data/merrecAlgorithmBenchmark';
 
 export const gpuSeries = (active) =>
   serverLoadBenchmark.series.find((s) => s.executionMode === 'native_required' && s.maxActiveAttempts === active);
 export const cpuSeries = serverLoadBenchmark.series.find((s) => s.executionMode === 'functions_only');
 export const gib = (bytes) => (bytes / 1024 ** 3).toFixed(1);
+export const merrecSeconds = (seconds) => `${seconds.toFixed(2)} s`;
+export const speedup = (cpuSeconds, gpuSeconds) => {
+  const ratio = cpuSeconds / gpuSeconds;
+  return `${ratio.toFixed(ratio >= 10 ? 0 : 1)}×`;
+};
+export const itemPageRank = merrecAlgorithmBenchmark.itemPageRank;
 
 # Benchmarks
 
 ## GPU algorithms
 
-The GPU algorithms behind the `cugraph_*`, `cuvs_*` and `cuml_*` UDTFs are
-NVIDIA's libraries, and NVIDIA publishes their kernel-level benchmarks. Algeon executes
-them inside DataFusion physical plans alongside relational operators. Read the
-library benchmarks at the source:
+The GPU algorithms behind `cugraph_*`, `cuvs_*` and `cuml_*` UDTFs run NVIDIA's native
+libraries inside DataFusion physical plans alongside relational operators. NVIDIA
+publishes upstream kernel benchmarks for [cuGraph](https://docs.nvidia.com/cugraph/latest/nx_cugraph/benchmarks/#benchmarks),
+[cuVS](https://developer.nvidia.com/topics/ai/generative-ai/cuvs#section-performance),
+and [cuML](https://docs.nvidia.com/cuml/latest/cuml-accel/benchmarks/#inference-and-transforms).
 
-- [cuGraph](https://docs.nvidia.com/cugraph/latest/nx_cugraph/benchmarks/#benchmarks):
-  speedup of nx-cugraph over NetworkX per algorithm on four graphs up to
-  69 million edges. Centrality, community and counting algorithms gain two to
-  four orders of magnitude on the large graphs; BFS and shortest paths do
-  not.
-- [cuVS](https://developer.nvidia.com/topics/ai/generative-ai/cuvs#section-performance):
-  index build time and cost, query throughput and latency against CPU vector
-  search.
-- [cuML](https://docs.nvidia.com/cuml/latest/cuml-accel/benchmarks/#inference-and-transforms):
-  cuml.accel against scikit-learn, umap-learn and hdbscan per estimator,
-  for training, inference and transforms.
+### MerRec queries against CPU pipelines
 
-### End-to-end UDTF comparison (MerRec 1.27B events)
+Each query reads the full six-month [MerRec dataset](../../guides/datasets/merrec.mdx),
+1,268,092,738 events and 82,614,392 items on local NVMe, with the files in the
+page cache. Each CPU pipeline runs the relational steps in DuckDB 1.5.6 on 32
+threads and the algorithm in the named library. Both sides ran on one host: an
+Intel Xeon Platinum 8559C with 32 vCPUs, 256 GiB RAM and an NVIDIA RTX PRO 6000
+with 96 GB.
 
-End-to-end statement timings over the full six-month [MerRec dataset](../../guides/datasets/merrec.mdx)
-(1,268,092,738 events, 82,614,392 items on local NVMe, warm page cache) compare
-Algeon's GPU execution against CPU pipelines built from DuckDB on 32 threads
-and the matching library, on the same machine (Intel Xeon Platinum 8559C,
-32 vCPU, 256 GiB RAM, NVIDIA RTX PRO 6000 96 GB). GPU medians are from three
-runs on 2026-10-12 with one binary; the linked guide pages show earlier single
-captures.
+<table>
+  <thead>
+    <tr><th>Query</th><th>Algorithms</th><th>Algeon GPU</th><th>CPU pipeline</th><th>Speedup</th><th>Results</th></tr>
+  </thead>
+  <tbody>
+    {merrecAlgorithmBenchmark.queries.map((row) => (
+      <tr key={row.gpu.case}>
+        <td><Link to={`/guides/datasets/merrec#${row.guideAnchor}`}>{row.label}</Link></td>
+        <td>{row.algorithms}</td>
+        <td>{merrecSeconds(gpuMedianSeconds(row.gpu))}</td>
+        <td>{merrecSeconds(cpuPipelineMedianSeconds(row.cpu))} ({row.cpu.pipeline})</td>
+        <td>{speedup(cpuPipelineMedianSeconds(row.cpu), gpuMedianSeconds(row.gpu))}</td>
+        <td>{row.resultCheck}</td>
+      </tr>
+    ))}
+  </tbody>
+</table>
 
-| Query | Algorithm family | Algeon GPU (median) | CPU baseline | GPU speedup | Result rows |
-| :--- | :--- | ---: | :--- | ---: | :--- |
-| [Barbie tie-ins](../../guides/datasets/merrec.mdx#barbie) (`10`) | cuGraph (PPR ×2, PageRank ×2) | 3.34 s | 23.3 s (DuckDB 1.5.6 + igraph 1.0.0) | 7.0× | Top 25 identical |
-| [Session audit](../../guides/datasets/merrec.mdx#sessions) (`12`) | cuGraph (WCC) | 2.19 s | 12.3 s (DuckDB + scipy 1.18.1) | 5.6× | Identical components |
-| [Audience funnel](../../guides/datasets/merrec.mdx#audience-funnel) (`30`) | cuGraph + cuVS + cuML | 19.4 s | 40.3 s (DuckDB + igraph + faiss + xgboost) | 2.1× | Borderline ties (2 shoppers) |
-| [World bridges](../../guides/datasets/merrec.mdx#bridges) (`31`) | cuGraph (Jaccard, Leiden, betweenness) | 16.9 s | 11.8 s (DuckDB + networkit 11.2.2) | 0.7× | Top 15 identical |
+The table lists every algorithm query in the MerRec guide. Algeon times are
+medians of runs 2 to 4 over Flight SQL, measured on 2026-10-15 with one release
+binary. CPU times are medians of three runs measured on 2026-10-12.
 
-#### Measurement details
+<details>
+<summary>Where the time goes</summary>
 
-- **Barbie tie-ins (`10_barbie_tie_ins.sql`)**: Builds two undirected like graphs from 23 million distinct user-brand pairs (May–June and July–August), runs personalized PageRank from the Barbie vertex and global PageRank on each, and joins brand metadata.
-  - **Algeon (`native_required`)**: Median 3.34 s (first run 4.19 s). Relational extraction alone takes 1.04 s; four PageRank calls and joins take 2.3 s.
-  - **DuckDB 32 threads + igraph (PRPACK)**: Median 23.3 s. DuckDB DISTINCT join takes 2.3 s; `numpy.unique` renumbering and igraph C graph construction take 13.0 s; four PageRank calls take 7.7 s; final join takes 0.3 s.
-  - **DuckDB + scipy (power iteration)**: 32.1 s (single-threaded SpMV).
-  - **DuckDB + NetworkX 3.7**: 158 s. NetworkX defines tolerance as mean per-vertex error (`err < N * tol`). On 2.1 million vertices, the default `tol=1e-6` terminates after 1–2 iterations with incorrect rankings; matching cuGraph's absolute L1 tolerance requires `tol = 1e-5 / N`.
-  - **`functions_only` mode**: 15.1 s (first run 15.7 s). Ordinary SQL runs in DataFusion CPU while cuGraph stays on GPU. This is not a CPU baseline: the four UDTFs independently recompute the like graph and transfer data via host staging buffers. It measures the boundary-crossing overhead of mixed execution.
-- **Session audit (`12_session_audit.sql`)**: Weakly connected components over 39.8 million user-session edges. DuckDB string deduplication and renumbering takes 9.3 s, followed by 3.0 s in scipy `connected_components`.
-- **Audience funnel (`30_audience_funnel.sql`)**: Combines graph affinity (PPR), taste lookalikes (brute-force kNN), and purchase propensity (XGBoost inference) in one plan. The CPU pipeline requires passing intermediate tables through four separate libraries across host memory.
-- **World bridges (`31_world_bridges.sql`)**: Exact betweenness centrality is the bottleneck. cuGraph takes 11.3 s on it where networkit's Brandes implementation, parallel over sources on 32 threads, takes 1.7 s. The GPU wins the Jaccard stage (4.3 s against 6.1 s in DuckDB) and both Leiden runs finish within 1 s. Leiden partitions differ (70 worlds against 100), so only the betweenness ranking and neighbour counts were compared.
+- **Barbie tie-ins** builds two undirected like graphs from 23 million distinct
+  user-brand pairs and runs personalized and global PageRank on each. The CPU
+  pipeline spends 2.3 s in the DuckDB join, 13.0 s renumbering vertices and
+  building the igraph graphs, and 7.7 s in the four PageRank calls. NetworkX 3.7
+  needs 158 s once its tolerance matches cuGraph's absolute L1 tolerance
+  (`tol = 1e-5 / N`). Its default `tol=1e-6` is a mean per-vertex error and
+  stops after one or two iterations on 2.1 million vertices.
+- **Session audit** finds weakly connected components over 39.8 million
+  user-session edges. DuckDB deduplication and renumbering take 9.3 s, then
+  scipy `connected_components` takes 3.0 s.
+- **Audience funnel** combines graph affinity, taste lookalikes and purchase
+  propensity in one plan. The CPU pipeline hands intermediate tables through
+  igraph, FAISS and XGBoost in host memory; graph construction and personalized
+  PageRank alone take 14 s. Shoppers tied at the 20th-neighbour distance fall on
+  either side of the cutoff, so the lookalike count varies by up to four of
+  about 19,100.
+- **Propensity model** aggregates per-shopper features from the events before
+  September and scores 2.0 million shoppers with an existing XGBoost model. The
+  feature aggregation takes 14.7 s in DuckDB and most of the 6.6 s on the GPU;
+  forest inference takes 1.1 s in XGBoost and 0.03 s in cuML. Three shoppers
+  with tied scores sit at the shortlist cutoff, so one buyer count reads
+  16,087 on the GPU and 16,090 on the CPU.
+- **Brand twins** compares the fan sets of the 2,000 largest brands. The CPU
+  pipeline computes Jaccard as a DuckDB self-join: 2.9 s to collect fans and
+  3.4 s for the join.
+- **Pokemon lookalikes** builds a 64-dimensional taste vector for each of 2.1
+  million shoppers in SQL, then searches 20 neighbours of each seed buyer.
+  Building the vectors takes 19.5 s in DuckDB and most of the 13.8 s on the
+  GPU. The FAISS search takes 6.4 s and the cuVS search 0.03 s.
+- **Shopping worlds** groups the 5,000 largest brands into worlds with Leiden
+  over a Jaccard similarity graph. DuckDB spends 8.3 s on the fan sets and Jaccard and igraph
+  0.5 s on Leiden. The two Leiden implementations return different
+  partitions, so the result lists cannot be compared row by row.
+- **World bridges** scores 12.5 million brand pairs with Jaccard similarity,
+  splits the similarity graph into worlds with Leiden and ranks bridge brands
+  by exact betweenness. The DuckDB self-join for Jaccard takes 6.2 s and
+  networkit's parallel betweenness 1.7 s. cuGraph and igraph partition the
+  graph differently, so the comparison covers the betweenness ranking and
+  neighbour counts.
+
+</details>
+
+### Exact kNN over 2.1 million vectors
+
+Each search finds the 10 nearest of
+{merrecAlgorithmBenchmark.dataset.tasteRows.toLocaleString('en-US')}
+{merrecAlgorithmBenchmark.dataset.dimensions}-dimensional Float32 taste vectors
+for the first 100 to 100,000 shoppers. The Algeon time covers the whole SQL
+query, from the Parquet scan to the last result batch over Flight SQL. The CPU
+side is FAISS 1.15.1 `IndexFlatL2`, timed from Parquet load to the Arrow
+result, with the thread count and BLAS setting that ran fastest in tuning.
+
+<table>
+  <thead>
+    <tr><th>Queries</th><th>Algeon GPU</th><th>FAISS CPU</th><th>Speedup</th></tr>
+  </thead>
+  <tbody>
+    {merrecAlgorithmBenchmark.exactKnn.map((row) => (
+      <tr key={row.queryRows}>
+        <td>{row.queryRows.toLocaleString('en-US')}</td>
+        <td>{merrecSeconds(gpuMedianSeconds(row.gpu))}</td>
+        <td>{merrecSeconds(cpuMedianSeconds(row.cpu, 'elapsedSeconds'))}</td>
+        <td>{speedup(cpuMedianSeconds(row.cpu, 'elapsedSeconds'), gpuMedianSeconds(row.gpu))}</td>
+      </tr>
+    ))}
+  </tbody>
+</table>
+
+Every GPU result has the same neighbour distances as FAISS after both are
+recomputed in Float64. Neighbours at tied distances may differ by ID.
+
+### Item-user PageRank
+
+[`04_item_pagerank.sql`](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/04_item_pagerank.sql)
+builds a weighted, undirected graph from six months of item views, with
+{itemPageRank.vertices.toLocaleString('en-US')} vertices and
+{itemPageRank.normalizedDirectedEdges.toLocaleString('en-US')} directed edges,
+and runs PageRank to convergence in {itemPageRank.iterations} iterations. The
+whole query, edge preparation included, takes a median of
+{merrecSeconds(gpuMedianSeconds(itemPageRank.gpu))}.
+
+<details>
+<summary>Measurement details and reproduction</summary>
+
+The GPU server is a release build for
+<code>{merrecAlgorithmBenchmark.environment.cpuTarget}</code> on driver
+{merrecAlgorithmBenchmark.environment.gpuDriver} and CUDA
+{merrecAlgorithmBenchmark.environment.cudaToolkit}, configured by
+[`server.toml`](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml).
+GPU and FAISS medians exclude the first of four runs. FAISS used 8 threads,
+chosen in a tuning run against 16 and 32, with NumPy 2.5.3 and PyArrow 25.0.1. The
+[algorithm scale guide](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/benchmark.md)
+documents SQL generation, CPU tuning and result validation, and the
+[data file](https://github.com/algeon-dev/algeon/blob/main/website/src/data/merrecAlgorithmBenchmark.ts)
+keeps every run.
+
+</details>
 
 ## Relational path
 
@@ -98,10 +203,11 @@ All 99 queries ran on the GPU path in `NativeRequired` mode, and {tpcdsSf100Benc
 
 GPU execution was faster for {tpcdsSf100Benchmark.summary.gpuFasterCount} queries
 and CPU for {tpcdsSf100Benchmark.summary.gpuSlowerCount}, including Q74
-(1.60s CPU, 2.41s GPU). The CPU / GPU ratio sums the measured query times under
+(1.46s CPU, 2.09s GPU). The CPU / GPU ratio sums the measured query times under
 the tuned CPU configuration below.
 
-#### DataFusion CPU configuration
+<details>
+<summary>DataFusion CPU baseline configuration and tuning</summary>
 
 The TPC-DS CPU baseline ran DataFusion 55.1.0 with these
 [settings](https://datafusion.apache.org/user-guide/configs.html). Settings
@@ -117,8 +223,6 @@ not listed keep their defaults. The TPC-H run above used 8,192-row batches.
     ))}
   </tbody>
 </table>
-
-#### CPU tuning comparison
 
 Five CPU profiles were screened on Q03, Q04, Q07, Q23, Q64, Q74, Q75 and Q97,
 one iteration each without warm-up. The fastest became the baseline above.
@@ -140,17 +244,25 @@ Each figure is one iteration on one machine.
   </tbody>
 </table>
 
-#### Measurement and reproduction
+</details>
 
-Both paths use release builds with `target-cpu=x86-64-v4` and the same 24
+<details>
+<summary>TPC-DS reproduction and parity verification</summary>
+
+Both paths use release builds with `target-cpu=x86-64-v3` and the same 24
 Parquet files, totalling 41,372,641,702 bytes and 959,037,905 rows. No caches
 were flushed. Each query's warm-up precedes its measured execution. `wall_ms`
 measures execution through result collection, including reads and GPU result
 transfer. Successful-query SQL and physical planning time are excluded.
 
 GPU runs use the `sf100_gpu_throughput` profile with
-`local_parquet_throughput` source planning, a 32 GiB source chunk limit and
-at most 1,024 row groups per chunk. Statistical aggregates use
+`local_parquet_throughput` source planning, an explicit 32 GiB
+`max_source_chunk_bytes` target and at most 1,024 row groups per chunk.
+The byte target groups source data; the query's separate
+[memory grant](../../design/admission.mdx#device-profiles-and-grants) limits
+device allocations. This benchmark profile sets its row-group cap directly.
+The server's [default chunk policy](../../integration/configuration.mdx#native-settings)
+derives its byte target from the admitted grant. Statistical aggregates use
 [`gpu_native_tolerant`](../../integration/configuration.mdx#native-settings).
 
 The recorded source is commit
@@ -206,6 +318,8 @@ python3 website/scripts/generate_tpcds_sf100_benchmark_ts.py \
   --out website/src/data/tpcdsSf100Benchmark.ts
 ```
 
+</details>
+
 ### Concurrent TPC-H streams through algeon_server
 
 The runs above time one query at a time inside a benchmark process. In this
@@ -244,7 +358,8 @@ throughput for queries that fit the smaller cap and lowers the largest query
 the server can run. [Memory and query lifetime](../../design/admission.mdx)
 describes the queue, the caps and how the allocator enforces them.
 
-#### Load above capacity
+<details>
+<summary>Server overload behavior (load above capacity)</summary>
 
 In the overload runs, the client submitted queries to the default
 configuration at a fixed rate for five minutes after 30 seconds of warm-up. It
@@ -266,16 +381,17 @@ full queue before running, and their p95 latency rose to 32 s. Every accepted
 result matched the CPU reference. After each run the server reported no active
 queries and no granted memory.
 
-#### Server load measurement
+</details>
+
+<details>
+<summary>Server load measurement methodology and reproduction</summary>
 
 - Client and server ran on one machine over loopback. `taskset` pinned the
   client to {serverLoadBenchmark.environment.clientCpuThreads} vCPUs and the
   server to the other {serverLoadBenchmark.environment.serverCpuThreads}. The
   Parquet files were fully resident in the page cache before each run.
 - The server is a release build of commit
-  <code>{serverLoadBenchmark.environment.sourceRevision.slice(0, 12)}</code>
-  (`algeon_server` SHA-256
-  <code>{serverLoadBenchmark.environment.serverBinarySha256.slice(0, 16)}</code>…).
+  <code>{serverLoadBenchmark.environment.sourceRevision.slice(0, 12)}</code>.
   The default configuration is
   [`tpch-sf100-server.toml`](https://github.com/algeon-dev/algeon/blob/main/crates/tools/fixtures/stress/tpch-sf100-server.toml),
   which sets only `native_required` and the table registrations. A=1 and A=3
@@ -290,25 +406,12 @@ queries and no granted memory.
   {serverLoadBenchmark.summary.gpuResultsMatched.toLocaleString('en-US')} GPU
   results matched, warm-up passes included. Q11 returns no rows at SF100
   because the DuckDB query text fixes its `FRACTION` at 0.0001 where the
-  specification uses 0.0001 / SF. Its check compares only the schema.
+  specification uses 0.0001 / SF; its check compares only the schema.
 - This run is derived from TPC-H and is not a TPC-H Throughput Test. It runs
   no refresh functions, orders each stream from seed
   {serverLoadBenchmark.config.seed} and reports no TPC metric.
+- The [stress runbook](https://github.com/algeon-dev/algeon/blob/main/crates/tools/fixtures/stress/RUNBOOK.md#tpc-h-sf100-streams)
+  documents the server, reference, streams and overload commands for
+  `algeon_tools flight-sql-stress`.
 
-The
-[stress runbook](https://github.com/algeon-dev/algeon/blob/main/crates/tools/fixtures/stress/RUNBOOK.md#tpc-h-sf100-streams)
-lists the server, reference, streams and overload commands for
-`algeon_tools flight-sql-stress` and the directory layout the page generator
-reads. The generator refuses runs whose configuration, queries or references
-differ, a failed stream query, a result mismatch, and an overload run off its
-rate or limited by the client:
-
-```bash
-python3 website/scripts/generate_server_load_benchmark_ts.py \
-  --profile target/stress/server-load/gpu-a1.toml --profile target/stress/server-load/gpu-a2.toml \
-  --profile target/stress/server-load/gpu-a3.toml --profile target/stress/server-load/cpu.toml \
-  --streams-root target/stress/server-load/streams --overload-root target/stress/server-load/overload \
-  --reference target/stress/tpch-sf100-reference-run \
-  --environment target/stress/server-load/environment.json \
-  --out website/src/data/serverLoadBenchmark.ts
-```
+</details>

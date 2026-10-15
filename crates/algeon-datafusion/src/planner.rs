@@ -1,15 +1,15 @@
 //! DataFusion physical optimizer integration for native cuDF execution.
 //!
-//! The planner exposes one public optimizer rule, but session integration
-//! inserts it in two optimizer stages: a count-only probe before DataFusion aggregate
-//! statistics and the final native rewrite immediately before final plan
-//! validation. Native candidate misses preserve the DataFusion baseline plan.
-//! Under `AlgeonGpuExecutionMode::NativeRequired`, the last step of the final
-//! rewrite rejects a completed plan whose disposition is not `Native`, except a
-//! feature-disabled cuGraph plan, which runs no operator. That step inspects the
-//! plan the rewrite produced and never triggers a second plan.
+//! The planner exposes a public optimizer rule inserted across two optimizer stages.
+//! An initial count-only probe precedes DataFusion aggregate statistics, followed
+//! by the final native rewrite immediately prior to final plan validation.
+//! When native candidates are unavailable, the DataFusion baseline plan is preserved.
+//! Under `AlgeonGpuExecutionMode::NativeRequired`, the final rewrite stage rejects
+//! any completed plan with a disposition other than `Native` (excepting feature-disabled
+//! cuGraph plans executing no operators). This validation verifies the rewritten plan
+//! directly without additional planning passes.
 //!
-//! [`FinalPlanDisposition`] describes one completed executable plan only
+//! [`FinalPlanDisposition`] describes one completed executable plan
 //! (`DataFusion`, `Native`, or `Mixed`); planning failures have no disposition.
 //! [`FinalPlanCoverage`] carries the single physical-plan walk behind that
 //! verdict, and [`classify_final_plan`] reads the same coverage without
@@ -21,7 +21,6 @@ pub use query_planning::{
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     mode::StatisticalAggregateExecutionMode,
     optimizer::{NativeOptimizerDiagnostics, NativeOptimizerOptions},
-    plan::NativePlanCostOptions,
     source::SourceDiagnostics,
 };
 
@@ -97,8 +96,8 @@ impl AlgeonGpuExecutionMode {
         matches!(self, Self::NativeRequired)
     }
 
-    /// The configuration spelling: the value `native.execution_mode` accepts
-    /// and `algeon_version()` reports.
+    /// Returns the configuration string accepted by `native.execution_mode`
+    /// and reported by `algeon_version()`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::FunctionsOnly => "functions_only",
@@ -116,10 +115,9 @@ impl std::fmt::Display for AlgeonGpuExecutionMode {
 
 /// Classify the exact completed physical plan without invoking planning.
 ///
-/// The classifier intentionally recognizes only runtime nodes whose execution
-/// ownership is known at this adapter boundary. Unknown wrappers or operators
-/// around native fragments are classified conservatively as
-/// [`FinalPlanDisposition::Mixed`]; they are never reported as native-only.
+/// Evaluates execution ownership across physical plan nodes. Operators or
+/// wrappers without recognized native execution ownership are classified
+/// conservatively as [`FinalPlanDisposition::Mixed`].
 pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
     observe_final_plan(plan).disposition()
 }
@@ -127,16 +125,14 @@ pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
 /// DataFusion-facing native optimizer configuration.
 ///
 /// Defaults preserve the DataFusion baseline when native candidates are not
-/// accepted. Native execution uses a bounded planning template, query-engine
-/// optimizer options use their own defaults, and plan-cost selection is
-/// disabled unless a workload opts in. The native
+/// accepted. Native execution uses a bounded planning template and
+/// query-engine optimizer options use their own defaults. The native
 /// [`ExecutionContext`](query_runtime::runtime::ExecutionContext) is
 /// acquired lazily from backend admission through [`AlgeonNativeExecutionConfig`].
 #[derive(Debug, Clone)]
 pub struct AlgeonNativeOptimizerConfig {
     native_execution_config: AlgeonNativeExecutionConfig,
     native_optimizer_options: NativeOptimizerOptions,
-    native_plan_cost_options: NativePlanCostOptions,
     execution_mode: AlgeonGpuExecutionMode,
 }
 
@@ -145,7 +141,6 @@ impl Default for AlgeonNativeOptimizerConfig {
         Self {
             native_execution_config: AlgeonNativeExecutionConfig::default(),
             native_optimizer_options: NativeOptimizerOptions::default(),
-            native_plan_cost_options: NativePlanCostOptions::disabled(),
             execution_mode: AlgeonGpuExecutionMode::NativePreferred,
         }
     }
@@ -160,15 +155,6 @@ impl AlgeonNativeOptimizerConfig {
     /// Query-engine optimizer options applied after lowering.
     pub fn native_optimizer_options(&self) -> &NativeOptimizerOptions {
         &self.native_optimizer_options
-    }
-
-    /// Native plan cost-selection rules applied after native optimizer rewrites.
-    ///
-    /// The adapter default is disabled to preserve generic optimizer rewrite
-    /// behavior; workload configs can opt in when their benchmark evidence
-    /// shows native fixed overhead dominates small selective shapes.
-    pub fn native_plan_cost_options(&self) -> &NativePlanCostOptions {
-        &self.native_plan_cost_options
     }
 
     /// The execution mode native rewriting and the completed-plan check
@@ -197,12 +183,6 @@ impl AlgeonNativeOptimizerConfig {
     /// Replace DataFusion-free native optimizer options.
     pub fn with_native_optimizer_options(mut self, options: NativeOptimizerOptions) -> Self {
         self.native_optimizer_options = options;
-        self
-    }
-
-    /// Replace native plan cost-selection options.
-    pub fn with_native_plan_cost_options(mut self, options: NativePlanCostOptions) -> Self {
-        self.native_plan_cost_options = options;
         self
     }
 

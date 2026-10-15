@@ -12,7 +12,6 @@ use datafusion::{
 use query_planning::{
     error::{QueryError, QueryErrorCode},
     optimizer::NativeOptimizerOptions,
-    plan::NativePlanCostOptions,
 };
 use tokio::runtime::Builder as TestRuntimeBuilder;
 
@@ -112,15 +111,9 @@ fn backend_install_installs_optimizer_rule_matching_backend_config() {
     let native_execution_config =
         AlgeonNativeExecutionConfig::new(SourceChunking::try_new(1024, 2, 4, 2).expect("valid source chunking"));
     let optimizer_options = NativeOptimizerOptions::disabled();
-    let cost_options = NativePlanCostOptions {
-        enabled: true,
-        max_small_selective_row_groups: 42,
-        ..NativePlanCostOptions::disabled()
-    };
     let optimizer_config = AlgeonNativeOptimizerConfig::default()
         .with_native_execution_config(native_execution_config.clone())
         .with_native_optimizer_options(optimizer_options.clone())
-        .with_native_plan_cost_options(cost_options)
         .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
 
     let device = AlgeonGpuDeviceConfig::new(
@@ -135,10 +128,8 @@ fn backend_install_installs_optimizer_rule_matching_backend_config() {
     let installed = installed_algeon_native_optimizer_config(&state).unwrap();
     assert_eq!(installed.execution_mode(), AlgeonGpuExecutionMode::NativeRequired);
     assert_eq!(installed.native_optimizer_options(), &optimizer_options);
-    assert_eq!(installed.native_plan_cost_options(), &cost_options);
     assert_eq!(installed.native_execution_config().source_chunking(), native_execution_config.source_chunking());
     assert_eq!(installed.native_optimizer_options(), backend.optimizer_config.native_optimizer_options());
-    assert_eq!(installed.native_plan_cost_options(), backend.optimizer_config.native_plan_cost_options());
     assert_eq!(
         installed.native_execution_config().source_chunking().max_source_chunk_bytes.get(),
         backend.optimizer_config.native_execution_config().source_chunking().max_source_chunk_bytes.get()

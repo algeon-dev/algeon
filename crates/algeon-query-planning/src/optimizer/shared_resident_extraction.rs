@@ -1,7 +1,7 @@
 //! Shared-resident extraction: the stage after the optimizer pass table that
 //! moves a repeated closed subplan into one GPU-resident producer.
 //!
-//! The rule matches a subplan whose execution fingerprint has two or more
+//! The rule matches a subplan whose comparison fingerprint has two or more
 //! consumers, within one plan or across the native units of one composed island,
 //! whose root reduces rows (an aggregate, or a limit with a fetch), and which is
 //! closed: no node below the root is read from outside it. In the rewrite, every
@@ -24,9 +24,14 @@ use std::{
     sync::Arc,
 };
 
+use super::lineage::substitute_unqualified_columns;
 use crate::{
     error::Result,
-    plan::{NodeId, PlanFingerprint, PlanNode, QueryPlan, RewrittenNodes, row_bounds::query_plan_hard_row_upper_bound},
+    expr::Expr,
+    plan::{
+        NodeId, PlanFingerprint, PlanNode, ProjectionNode, ProjectionOutput, QueryPlan, RewrittenNodes,
+        row_bounds::query_plan_hard_row_upper_bound,
+    },
     source::{GpuResidentSource, SourceNode},
 };
 
@@ -77,7 +82,7 @@ pub struct SharedResidentExtractionCandidateDiagnostics {
     pub attempt_fragment: Option<usize>,
     /// Candidate root node.
     pub node_id: NodeId,
-    /// Execution fingerprint of the exact candidate subplan.
+    /// Execution fingerprint after normalizing private projection names for comparison.
     pub subplan_fingerprint: PlanFingerprint,
     /// Plan nodes that consume the candidate root.
     pub consumer_occurrences: Vec<NodeId>,
@@ -180,12 +185,13 @@ pub(crate) fn optimize_shared_resident_extraction(plan: QueryPlan) -> Result<Sha
 ///
 /// `fragments` are the native plans that run in one admitted context: GPU
 /// function input producers, the plans that read their results, and the
-/// root. A subplan qualifies when its execution fingerprint occurs in two or
+/// root. A subplan qualifies when its comparison fingerprint occurs in two or
 /// more fragments, or has two consumers in one, under the same rule as the
 /// single-plan stage. Each selected subplan becomes one producer, and every
 /// occurrence is replaced by a GPU-resident source with the producer's input
 /// name and output facts. A consumer that needs an ordering keeps its own
-/// sort above that source.
+/// sort above that source. Comparison normalizes intermediate projection names
+/// read only by projections; source bindings and root output names remain exact.
 pub fn extract_shared_resident_fragments(fragments: Vec<QueryPlan>) -> Result<SharedResidentFragments> {
     extract_shared_resident_subplans(fragments, FragmentLabels::AttemptFragments)
 }
@@ -238,7 +244,7 @@ struct Occurrence {
 /// Facts of one input plan that every candidate decision reads.
 struct FragmentAnalysis {
     parents: Vec<Vec<NodeId>>,
-    /// Execution fingerprint of the subplan rooted at each node, under a
+    /// Comparison fingerprint of the subplan rooted at each node, under a
     /// GPU-resident sink so sink kind and host schema do not separate
     /// otherwise equal subplans.
     fingerprints: Vec<PlanFingerprint>,
@@ -309,8 +315,8 @@ fn extract_shared_resident_subplans(
         .collect::<Vec<_>>();
     extracted.sort();
     for (first, fingerprint) in extracted {
-        // Every occurrence has the same fingerprint, so the first one's
-        // subplan stands for all of them and supplies the shared facts.
+        // Equal comparison fingerprints preserve the root schema and rows;
+        // the producer keeps the first occurrence's executable bindings.
         let producer = fragments[first.fragment].resident_subplan(first.node)?;
         let input_name = loop {
             let candidate = format!("__algeon_shared_resident_{next_input_index}");
@@ -391,10 +397,75 @@ fn analyze_fragment(plan: &QueryPlan) -> Result<FragmentAnalysis> {
     let mut subplan_sizes = Vec::with_capacity(plan.node_count());
     for node in plan.nodes() {
         let subplan = plan.resident_subplan(node.id)?;
-        fingerprints.push(subplan.execution_fingerprint());
         subplan_sizes.push(subplan.node_count());
+        fingerprints.push(comparison_subplan(subplan)?.execution_fingerprint());
     }
     Ok(FragmentAnalysis { parents: parents_by_node(plan), fingerprints, subplan_sizes })
+}
+
+/// Projection names read only by other projections are private bindings. Rename
+/// them by position in a comparison copy, retaining each evaluation boundary and
+/// expression. Executable producers and their root output names remain unchanged.
+fn comparison_subplan(plan: QueryPlan) -> Result<QueryPlan> {
+    let parents = parents_by_node(&plan);
+    let mut nodes = plan.nodes().to_vec();
+    let mut changed = false;
+    for index in 0..nodes.len() {
+        let readers = &parents[index];
+        if readers.is_empty()
+            || !readers.iter().all(|reader| match &nodes[reader.index()].kind {
+                PlanNode::Projection(projection) => {
+                    projection.expressions().all(|expr| expr.columns().all(|column| column.qualifier().is_none()))
+                },
+                _ => false,
+            })
+        {
+            continue;
+        }
+        let PlanNode::Projection(projection) = &nodes[index].kind else { continue };
+        let names = projection
+            .outputs
+            .iter()
+            .enumerate()
+            .map(|(position, output)| (output.field.name().clone(), format!("__algeon_shared_projection_{position}")))
+            .collect::<BTreeMap<_, _>>();
+        if names.len() != projection.outputs.len() {
+            continue;
+        }
+        let outputs = projection
+            .outputs
+            .iter()
+            .map(|output| {
+                let mut expr = output.expr.clone();
+                while let Expr::Alias { expr: inner, .. } = expr {
+                    expr = *inner;
+                }
+                ProjectionOutput::new(expr, output.field.clone().with_name(&names[output.field.name()]))
+            })
+            .collect();
+        nodes[index].kind = PlanNode::Projection(ProjectionNode::new(projection.input, outputs));
+        for ordering in &mut nodes[index].facts.output_ordering {
+            ordering.expr =
+                substitute_unqualified_columns(ordering.expr.clone(), &|name| names.get(name).map(Expr::column));
+        }
+        for reader in readers {
+            let PlanNode::Projection(projection) = &nodes[reader.index()].kind else {
+                unreachable!("only projection readers are normalized");
+            };
+            let outputs = projection
+                .outputs
+                .iter()
+                .map(|output| {
+                    let expr =
+                        substitute_unqualified_columns(output.expr.clone(), &|name| names.get(name).map(Expr::column));
+                    ProjectionOutput::new(expr, output.field.clone())
+                })
+                .collect();
+            nodes[reader.index()].kind = PlanNode::Projection(ProjectionNode::new(projection.input, outputs));
+        }
+        changed = true;
+    }
+    if changed { plan.rewrite(RewrittenNodes::in_place(nodes, plan.root_id())) } else { Ok(plan) }
 }
 
 /// Decides one group. The checks run from structural to cost-based, and the
@@ -540,17 +611,21 @@ mod tests {
         source::{LocalParquetFile, LocalParquetSource},
     };
 
-    /// Adds `SUM(v) GROUP BY k` over one Parquet scan.
-    fn add_grouped_sum(builder: &mut QueryPlanBuilder) -> NodeId {
+    fn add_parquet_source(builder: &mut QueryPlanBuilder) -> NodeId {
         let schema = Arc::new(Schema::new(vec![
             Field::new("k", DataType::Int64, false),
             Field::new("v", DataType::Int64, false),
         ]));
-        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
             vec![LocalParquetFile::new("/tmp/shared-resident-fragments-not-read.parquet")],
             Arc::clone(&schema),
             vec!["k".to_string(), "v".to_string()],
-        )));
+        )))
+    }
+
+    /// Adds `SUM(v) GROUP BY k` over one Parquet scan.
+    fn add_grouped_sum(builder: &mut QueryPlanBuilder) -> NodeId {
+        let source = add_parquet_source(builder);
         builder
             .add_aggregate(
                 source,
@@ -582,6 +657,70 @@ mod tests {
 
     fn resident_source_names(plan: &QueryPlan) -> BTreeSet<String> {
         gpu_resident_source_names(plan)
+    }
+
+    fn grouped_computed_sum(alias: &str, increment: i64) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = add_parquet_source(&mut builder);
+        let inner = builder
+            .add_projection(
+                source,
+                vec![
+                    ProjectionOutput::new(
+                        Expr::binary(Expr::column("v"), BinaryOp::Add, Expr::literal(LiteralValue::Int64(increment)))
+                            .alias(alias),
+                        Field::new(alias, DataType::Int64, false),
+                    ),
+                    ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int64, false)),
+                ],
+            )
+            .unwrap();
+        let outer = builder
+            .add_projection(
+                inner,
+                vec![
+                    ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int64, false)),
+                    ProjectionOutput::new(Expr::column(alias), Field::new("v", DataType::Int64, false)),
+                ],
+            )
+            .unwrap();
+        let aggregate = builder
+            .add_aggregate(
+                outer,
+                AggregateSpec::new(
+                    vec![Expr::column("k")],
+                    vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "v")],
+                ),
+                Arc::new(Schema::new(vec![
+                    Field::new("k", DataType::Int64, false),
+                    Field::new("v", DataType::Int64, true),
+                ])),
+            )
+            .unwrap();
+        builder.finish_gpu_resident(aggregate).unwrap()
+    }
+
+    #[test]
+    fn shares_private_projection_bindings_without_changing_executable_expressions() {
+        let first = grouped_computed_sum("__common_expr_3", 1);
+        let second = grouped_computed_sum("__common_expr_7", 1);
+        let collision = grouped_computed_sum("__algeon_shared_projection_1", 1);
+        let different = grouped_computed_sum("__common_expr_6", 2);
+        let fingerprint = first.execution_fingerprint();
+        let schema = Arc::clone(first.root_node().output_schema());
+        assert_ne!(fingerprint, second.execution_fingerprint());
+
+        let shared = extract_shared_resident_fragments(vec![first, second, collision, different]).unwrap();
+
+        let [producer] = shared.producers.as_slice() else { panic!("one shared aggregate producer") };
+        assert_eq!(producer.consumer_fragments, [0, 1, 2]);
+        assert_eq!(producer.plan.execution_fingerprint(), fingerprint);
+        for fragment in &shared.fragments[..3] {
+            assert!(matches!(fragment.root_node().kind, PlanNode::Source(_)));
+            assert_eq!(fragment.root_node().output_schema(), &schema);
+        }
+        assert!(matches!(shared.fragments[3].root_node().kind, PlanNode::Aggregate(_)));
+        assert!(resident_source_names(&shared.fragments[3]).is_empty());
     }
 
     #[test]

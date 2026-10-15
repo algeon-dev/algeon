@@ -90,9 +90,7 @@ pub use nodes::{
     AggregateNode, EdgeNormalizeNode, FilterNode, LimitNode, ProjectionNode, ProjectionOutput, ShiftDirection,
     SortNode, UnionNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
 };
-pub use preference::{
-    NativePlanCostDecision, NativePlanCostFacts, NativePlanCostOptions, NativePlanCostReason, native_plan_cost_decision,
-};
+pub use preference::{NativePlanCostReason, native_plan_cost_decision};
 #[cfg(test)]
 pub(crate) use remap::remap_plan_node_inputs;
 pub(crate) use remap::{NodeRemap, clone_plan_node_with_inputs, compact_reachable_nodes};

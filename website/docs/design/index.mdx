@@ -1,59 +1,44 @@
 ---
 sidebar_position: 1
 slug: /design
-description: "Follow a query from SQL to GPU columns and back, then explore the boundaries that make it work."
+description: "Architecture, component boundaries, and runtime threading model for native GPU execution."
 ---
 
 import {QueryArchitecture} from '@site/src/components/design/GuideDiagrams';
 
 # Design
 
-Algeon adds GPU execution to a DataFusion session. DataFusion provides SQL,
-catalogs and query planning; Algeon translates supported work into GPU
-operations and returns Arrow record batches through the original interface.
-These pages call that GPU path **native execution**.
+Algeon adds native GPU execution to DataFusion sessions. DataFusion provides SQL
+parsing, catalog management, and physical planning; Algeon lowers supported physical
+subtrees into GPU operations and emits Arrow record batches. These pages refer to
+that GPU path as **native execution**.
 
 ## A query through the system {/* #how-a-query-runs */}
 
 <QueryArchitecture />
 
-The diagram follows a query selected for native execution. Its filters, joins
-and aggregations operate on GPU columns. The CPU still plans the query,
-reads metadata and submits work. The host application's Tokio runtime carries
-that CPU work, while GPU jobs run on a separately sized runtime that Algeon
-creates for each device ([Runtimes and threads](#runtimes-and-threads)).
-Local files and object storage can supply the input. A query attempt uses one
-GPU.
-
-An embedded application and the Flight SQL server use the same execution
-stack. The server adds a remote interface, authentication and session
-management around it.
+A native query executes filter, join, and aggregation kernels on GPU columns
+while the CPU handles planning, metadata reads, and task submission. The host
+application's Tokio runtime drives CPU coordination, while GPU kernels run on
+dedicated per-device runtimes ([Runtimes and threads](#runtimes-and-threads)).
+Each query attempt executes on one GPU. Embedded applications and the Flight SQL
+server share this execution stack.
 
 ## Priorities {/* #priorities */}
 
-The design serves one workload: many ad-hoc OLAP queries from an agent or an
-analyst against a shared GPU, most of them revised after the first attempt.
-Three decisions follow from it and recur across these pages.
+The engine architecture follows three core constraints:
 
-- The engine owns the physical plan. The optimizer rule decides which
+- The engine owns physical plan selection. The optimizer rule decides which
   candidates [lower to native execution](./native-lowering.mdx#selection-fallback-and-mixed-execution)
-  and which fragments stay on DataFusion; a query author chooses algorithms
-  and their options and nothing about partitions, pushdown or kernels.
-- A failed attempt returns a structured error. Native failures stay typed
-  across the DataFusion and Flight boundaries, and each carries
-  [evidence for whether to retry](../integration/handling-errors.mdx#retry-and-recovery-are-evidence-based).
-  Once GPU execution starts, nothing replays on the CPU.
-- Admission protects the shared device. Each attempt is admitted against a
-  per-device ledger and runs inside an
-  [immutable grant](./admission.mdx#device-profiles-and-grants), and a
-  query that exceeds its grant fails without taking memory from another.
-
-Reducing the latency of a query that already answers in tens of
-milliseconds is not among those decisions. Algeon also integrates with one
-query engine. The adapter crate installs into a DataFusion session owned by
-the host application, there is no Substrait input, and the Flight SQL server
-is the same library behind a network interface. The module boundaries below
-are organized around DataFusion above and the RAPIDS libraries below.
+  and which fragments remain on DataFusion CPU execution.
+- Failed attempts return structured errors. Native failures retain typed codes
+  across DataFusion and Flight boundaries with
+  [evidence for retry decisions](../integration/handling-errors.mdx#retry-and-recovery-are-evidence-based).
+  GPU execution does not fall back to CPU replay once started.
+- Admission bounds device memory. Each attempt receives an
+  [immutable grant](./admission.mdx#device-profiles-and-grants) committed
+  against the per-device ledger. Allocations exceeding the grant fail without
+  reclaiming memory from concurrent attempts.
 
 ## Module boundaries {/* #crates-and-ownership */}
 
@@ -141,11 +126,3 @@ down.
 
 </details>
 
-## Follow the data
-
-The next six pages follow a query in sidebar order, from
-[SQL to a GPU plan](./native-lowering.mdx) through
-[Parquet to GPU memory](./data-path.mdx), [GPU execution](./gpu-execution.mdx),
-[GPU table functions](./gpu-table-functions.mdx) and
-[memory and query lifetime](./admission.mdx) to
-[error ownership](./errors.mdx). Each ends with a link to the next.

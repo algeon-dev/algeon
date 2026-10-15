@@ -6,9 +6,10 @@ description: Install one shared Algeon GPU backend into caller-owned DataFusion 
 
 # DataFusion Session
 
-Use this integration when your Rust service already owns request handling,
-authentication, catalogs, and `SessionContext` lifecycle. Algeon adds native
-planning and GPU execution without taking over those application concerns.
+Embed Algeon directly into DataFusion when the hosting Rust service owns
+request dispatch, authentication, catalog registration, and `SessionContext`
+lifecycles. Algeon adds native physical planning and GPU execution without
+altering host-level application concerns.
 
 ## Dependencies
 
@@ -61,10 +62,10 @@ let ctx = SessionContext::new_with_state(state);
 
 Every selected ordinal needs one profile and one matching ownership
 declaration. `AlgeonGpuDeviceProfile::new(0)` uses automatic capacity and one
-active attempt. Add explicit limits only when your deployment requires them.
+active attempt. Add explicit limits only when the target deployment requires custom bounds.
 
 Only one live backend may exist in a process. Clone and share this backend
-across every session and frontend instead of building another one.
+across sessions and frontends; do not construct multiple backend instances within one process.
 
 ## Add cuGraph, cuVS, and cuML SQL {/* #add-cugraph-and-cuvs-sql */}
 
@@ -145,14 +146,15 @@ let batches = result?;
 The attempt clones the session into invocation-local planning state. Its report
 records the final disposition, admission grant, timing, and terminal outcome.
 Completion seals on stream EOF, error, cancellation, or drop. Taking the
-receiver before planning and awaiting it after the result is what keeps the
-report available on the error path. Returning early with `?` on the stream
-would drop the attempt and route the report to the abandoned-report queue.
+receiver before planning and awaiting it after query completion guarantees
+the report remains accessible across both successful runs and error paths.
+Returning early with `?` on the stream would drop the attempt and route the
+report to the abandoned-report queue.
 
-Frameworks may own this boundary for you. The Algeon Flight SQL server, for
-example, begins the attempt while issuing a statement ticket and carries it
-through `DoGet`. Call `begin_attempt` directly when your application owns the
-query invocation.
+Higher-level frameworks can manage this boundary. The Algeon Flight SQL
+server, for example, begins the attempt while issuing a statement ticket and
+carries it through `DoGet`. Call `begin_attempt` directly when an application
+directly coordinates query invocations.
 
 ## Runtime requirements {/* #runtime-requirements */}
 
@@ -223,9 +225,9 @@ Set `AlgeonGpuExecutionMode` on the shared backend before installing sessions:
 
 | Rust mode | Behavior | Use it when |
 | --- | --- | --- |
-| `NativePreferred` (default) | Select supported relational SQL for native GPU execution. Retain DataFusion for unsupported or unselected candidates. Explicit GPU UDTFs still run on GPU. | You want GPU acceleration for ordinary SQL as well as graph, vector, and ML functions. |
-| `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU. Run explicit `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs on GPU. | You want DataFusion to scan, join, filter, and aggregate around GPU algorithms. |
-| `NativeRequired` | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | You need to enforce a plan with no DataFusion CPU operators. |
+| `NativePreferred` (default) | Select supported relational SQL for native GPU execution. Retain DataFusion for unsupported or unselected candidates. Explicit GPU UDTFs still run on GPU. | Accelerate relational SQL together with graph, vector, and machine learning functions on the GPU. |
+| `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU. Run explicit `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs on GPU. | Execute scans, joins, filters, and aggregations on DataFusion CPU while delegating GPU UDTFs to hardware. |
+| `NativeRequired` | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | Enforce plans containing zero DataFusion CPU execution operators. |
 
 This replaces the backend construction above, using the same `device`:
 
@@ -272,7 +274,7 @@ After GPU execution starts, Algeon never replays the query on CPU. See
 policy.
 
 Use [GPU Coverage Validation](./gpu-coverage-validation.mdx) to inspect the
-exact final disposition before execution. `validate_query(&ctx, sql)` is the
+final planning disposition before execution. `validate_query(&ctx, sql)` is the
 Rust entry point; `algeon_explain_coverage(...)` exposes the same planning
 evidence through SQL.
 
@@ -306,8 +308,8 @@ let state = SessionStateBuilder::new_with_default_features()
     .build();
 ```
 
-This path has no admission owner. Native execution fails locally with
-`gpu_backend_required`, so production GPU execution should always install an
+This path has no admission owner. Because native execution fails locally with
+`gpu_backend_required`, production GPU execution must always install an
 `AlgeonGpuBackend`.
 
 The public optimizer rule name is also its deduplication key. Use

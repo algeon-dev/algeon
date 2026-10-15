@@ -207,11 +207,37 @@ stays resident under the attempt's grant until the last reading unit has
 read it. A chain of scans, filters, projections and joins streams chunk by
 chunk and is computed again by each reader. Copies that read different
 columns of a CTE differ after pruning, as do copies whose filters DataFusion
-pushed below the reducing root, and each computes its own result. Two graph
-calls that read one shared edge relation still build one graph each. In
+pushed below the reducing root, and each computes its own result. For private
+intermediate projection bindings whose readers are all projections with
+unqualified columns, extraction compares output names by position. Generated
+aliases can differ while the expressions, field types, nullability and
+metadata match. This comparison preserves node boundaries and the root
+schema; the executable producer retains its original plan. Separate graph
+invocations that read one shared edge relation still build one graph each. In
 `EXPLAIN` output the producer reports `shared_consumers`, and the
 `shared_resident_extraction` planning diagnostics record the decision for
 each node of each unit.
+
+Within one composed island execution, repeated readers of one cuGraph
+similarity invocation can also share its GPU-resident result. Eligible
+invocations have native relational edge and side-input producers whose GPU
+dependencies are recursively repeatable. A native relational producer must
+contain only relational IR nodes; embedded graph, vector and ML algorithm
+nodes exclude reuse. Host input producers and nondeterministic GPU
+dependencies also exclude it. The identity combines the logical invocation
+with execution-scope fingerprints for its output and its edge and side-input
+producer subtrees, distinguishing input plans, output options and pushed-down
+predicates. Independently written SQL calls retain separate invocation
+identities.
+
+The island creates a fresh shared execution scope for each execution. The
+scope registers effective reading occurrences from the prepared producer tree
+and retains eligible results under the attempt's grant. A reused parent
+producer registers its child reads once, including reads of shared relational
+inputs. The last registered reader removes the retained
+result handle; cancellation or an error releases the scope's handles through
+the attempt's existing completion and cleanup contract. Cross-query graph
+caching follows the separate device-ledger contract described above.
 
 ## Reproducibility
 
@@ -222,12 +248,12 @@ Two runs of the same query on the same data, options and GPU return the same rel
 | `cugraph_force_atlas2` | `seed`: initial positions | Coordinates differ in every run, because force accumulation uses atomics. |
 | `cugraph_spectral_modularity_maximization` | `seed`: Lanczos start vector and k-means initialization | The partition can differ with the same seed, because k-means centroid sums use atomics. |
 | `cugraph_ecg` | `seed`: initial community labels of each Louvain pass | Identical communities are not guaranteed. |
-| `cugraph_leiden` | `seed`: random choices in the refinement step | Identical communities are not guaranteed. The MerRec shopping-worlds capture grouped the brands identically in three runs, under different community numbers. |
+| `cugraph_leiden` | `seed`: random choices in the refinement step | Identical communities are not guaranteed; community identifiers are arbitrary integers. |
 | `cugraph_bfs` | none | Distances repeat. The predecessor of a vertex with several shortest-path parents can differ. |
 | `cugraph_sssp` | none | Distances and predecessors repeat. Which of several equal-cost parents becomes the predecessor is unspecified. |
 | `cugraph_hits` | none | Scores differ in the last digits, because the hub update uses atomics. |
-| `cugraph_pagerank`, `cugraph_personalized_pagerank` | none | Identical without an edge `weight` column, as in the captured Barbie example. With one, scores differ in the last digits. |
-| `cuvs_kmeans` | none (the native seed is fixed at 0) | Cluster sizes differ slightly, because centroid sums use atomics. The shopper-persona capture differs between runs. |
+| `cugraph_pagerank`, `cugraph_personalized_pagerank` | none | Identical without an edge `weight` column. With edge weights, scores differ in the least significant digits due to floating-point atomic additions. |
+| `cuvs_kmeans` | none (the native seed is fixed at 0) | Cluster sizes differ slightly, because centroid sums use atomics. |
 | `cuvs_cagra`, `cuvs_ivf_flat`, `cuvs_ivf_pq` | none | Neighbors and distances differ slightly, because index construction uses atomics. |
 | `cuvs_brute_force_knn` | none | Distances repeat. Neighbors tied at the k-th distance can differ. |
 | `cuvs_top_k` | none | The positions chosen among values tied across rank k are unspecified. |
@@ -237,9 +263,9 @@ Two runs of the same query on the same data, options and GPU return the same rel
 | `cuml_umap` | `random_state`: spectral initialization, edge shuffle and negative sampling | Runs in cuML's deterministic mode and is expected to repeat. |
 | `cuml_forest_predict` | none | Identical for the same model file, input row order and GPU. Inference draws no random numbers. |
 
-Connected-component labels (the minimum vertex ID of each component), degrees, triangle counts and core numbers involve no floating-point accumulation and repeat. The similarity functions `cugraph_jaccard`, `cugraph_sorensen`, `cugraph_overlap` and `cugraph_cosine` contain no atomic accumulation, and Jaccard and overlap returned identical rows in the captured MerRec runs. None of the remaining functions has a `seed` option (the `seeds` argument of the betweenness functions lists source vertices and draws no random numbers).
+Connected-component labels (the minimum vertex ID of each component), degrees, triangle counts and core numbers involve no floating-point accumulation and repeat. The similarity functions `cugraph_jaccard`, `cugraph_sorensen`, `cugraph_overlap` and `cugraph_cosine` contain no atomic accumulation. None of the remaining functions has a `seed` option (the `seeds` argument of the betweenness functions lists source vertices and draws no random numbers).
 
-Compare results across runs with a tolerance for scores, set overlap for community membership and neighbor lists, and rank correlation for orderings. Bitwise equality is a valid check only for the functions that repeat. Community and cluster labels are arbitrary integers. Compare which rows share a label. Layout coordinates change in every run. Compare neighborhoods or pairwise distances after aligning the layouts. When later queries must read the values of one execution, store the result with `CREATE OR REPLACE TABLE ... AS`, as described in [Reuse algorithm results](../cugraph/graph-options.mdx#reuse-algorithm-results).
+Floating-point results from atomic reductions require tolerance comparisons rather than bitwise equality. Community and cluster identifiers are arbitrary integers; validation checks partition membership rather than label values. To preserve non-deterministic results across queries, materialize the relation using `CREATE TABLE ... AS` ([Reuse algorithm results](../cugraph/graph-options.mdx#reuse-algorithm-results)).
 
 A seed fixes random draws over one row order. Without a top-level `ORDER BY`, the row order of an input subquery can change between runs, thereby shifting seeded results as well. See [Input order](../cuml/ml-inputs.mdx#input-order) and [Relation identity](../cuvs/vector-inputs.mdx#relation-identity).
 
@@ -261,5 +287,9 @@ binding. The pack stage also records matrix layout and dimension. A pack
 stage can cover validation and a borrowed tensor view, so its output bytes
 alone do not establish the number of bytes copied.
 
-Next, follow [memory and query lifetime](./admission.mdx) through admission,
-cancellation and resource release.
+Elapsed counters measure host scopes around execution and library calls.
+CUDA work can complete after its submitting scope returns, and a task that
+consumes streamed input can include upstream execution in its elapsed time.
+Stage counters and graph runtime rows therefore do not establish exclusive
+kernel durations. Use the statement's elapsed time for end-to-end comparisons
+and a GPU profiler to attribute time to individual kernels.

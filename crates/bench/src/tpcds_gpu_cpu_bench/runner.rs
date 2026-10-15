@@ -1,10 +1,10 @@
 // Minimal benchmark runner for TPC-DS used to compare algeon-datafusion native
 // GPU execution against tuned CPU DataFusion.
 //
-// Run separate invocations per session: native_gpu, cpu_datafusion, and
-// cost_declined_datafusion for native plans declined by cost. Each invocation registers
-// the TPC-DS tables once, then runs every requested query through DataFusion
-// `(warmups + iterations)` times, printing one TSV row per measured iteration.
+// Run one invocation per engine: native_gpu or cpu_datafusion. Each invocation
+// registers the TPC-DS tables once, then runs every requested query through
+// DataFusion `(warmups + iterations)` times, printing one TSV row per measured
+// iteration.
 
 use std::{
     error::Error,
@@ -19,7 +19,6 @@ use algeon_datafusion::{
     native_report::{NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow},
     planner::{NativePlanningDiagnostics, plan_with_native_diagnostics},
     report::CandidateOutcome,
-    session::AlgeonSessionStateBuilderExt,
 };
 use arrow::record_batch::RecordBatch;
 use datafusion::{
@@ -39,9 +38,7 @@ use crate::report_workload::{
     RelationalExecutionSelection,
     tpcds::{
         ALGEON_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, TpcdsNativeProfileSettings,
-        register_tpcds_tables_with_native_metadata,
-        tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings,
-        tpcds_native_analytics_optimizer_config_with_profile_settings,
+        register_tpcds_tables_with_native_metadata, tpcds_native_analytics_optimizer_config_with_profile_settings,
         tpcds_native_profile_settings_and_device_memory_limit_from_env, tpcds_native_profile_settings_with_env,
         tpcds_native_report_session_config,
     },
@@ -55,7 +52,7 @@ use report::{NativeTimingMetrics, TSV_HEADER, print_metadata, print_progress, pr
 pub async fn run() -> Result<(), Box<dyn Error>> {
     let cfg = BenchConfig::from_env()?;
     eprintln!(
-        "[tpcds_three_way_bench] engine={} root={} queries={} warmups={} iterations={} native_profile={} native_device_budget_bytes={} native_max_source_chunk_bytes={} native_max_row_groups_per_chunk={} native_source_chunk_planning_mode={} relational_execution={}",
+        "[tpcds_gpu_cpu_bench] engine={} root={} queries={} warmups={} iterations={} native_profile={} native_device_budget_bytes={} native_max_source_chunk_bytes={} native_max_row_groups_per_chunk={} native_source_chunk_planning_mode={} relational_execution={}",
         cfg.engine.as_str(),
         cfg.root.display(),
         cfg.queries.iter().map(|q| q.id).collect::<Vec<_>>().join(","),
@@ -95,7 +92,6 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
 enum Engine {
     NativeGpu,
     CpuDataFusion,
-    CostDeclinedDataFusion,
 }
 
 impl Engine {
@@ -103,7 +99,6 @@ impl Engine {
         match self {
             Engine::NativeGpu => "native_gpu",
             Engine::CpuDataFusion => "cpu_datafusion",
-            Engine::CostDeclinedDataFusion => "cost_declined_datafusion",
         }
     }
 }
@@ -111,16 +106,14 @@ impl Engine {
 struct BenchRuntime {
     execution_ctx: SessionContext,
     native_rule_installed: bool,
-    native_planning_ctx: Option<SessionContext>,
-    skip_cost_declined: bool,
     backend: Option<AlgeonGpuBackend>,
 }
 
 impl BenchRuntime {
     fn close(self) -> Result<(), Box<dyn Error>> {
-        let Self { execution_ctx, native_rule_installed, native_planning_ctx, skip_cost_declined, backend } = self;
+        let Self { execution_ctx, native_rule_installed, backend } = self;
         let backend = {
-            let _contexts = (execution_ctx, native_rule_installed, native_planning_ctx, skip_cost_declined);
+            let _contexts = (execution_ctx, native_rule_installed);
             backend
         };
         if let Some(backend) = backend {
@@ -155,119 +148,9 @@ struct IterOutcome {
     failure: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PlanningSummary {
-    planning_outcome: String,
-    cost_reason: Option<String>,
-}
-
 async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
-    if let Some(native_planning_ctx) = runtime.native_planning_ctx.as_ref() {
-        return run_cost_declined_datafusion_once(&runtime.execution_ctx, native_planning_ctx, query).await;
-    }
-
-    run_query_collect(
-        &runtime.execution_ctx,
-        runtime.native_rule_installed,
-        query,
-        None,
-        None,
-        runtime.skip_cost_declined,
-    )
-    .await
-}
-
-async fn run_cost_declined_datafusion_once(
-    cpu_ctx: &SessionContext,
-    native_planning_ctx: &SessionContext,
-    query: &TpcdsQuery,
-) -> IterOutcome {
-    let native_planning_summary = match plan_native_cost(native_planning_ctx, query).await {
-        Ok(summary) => summary,
-        Err(outcome) => return *outcome,
-    };
-
-    let Some(reason) = native_planning_summary.cost_reason.as_ref() else {
-        return IterOutcome {
-            wall: None,
-            outcome: "skipped_continue_native",
-            planning_outcome: format!("continue_native native_planning={}", native_planning_summary.planning_outcome),
-            output_batches: None,
-            output_rows: None,
-            output_bytes: None,
-            retry_count: None,
-            native_runtime_started: false,
-            native_metrics: None,
-            timing_metrics: NativeTimingMetrics::default(),
-            failure: None,
-        };
-    };
-
-    run_query_collect(
-        cpu_ctx,
-        false,
-        query,
-        Some(format!(
-            "not_selected_by_cost cost_reason={reason} native_planning={}",
-            native_planning_summary.planning_outcome
-        )),
-        Some(false),
-        false,
-    )
-    .await
-}
-
-async fn plan_native_cost(ctx: &SessionContext, query: &TpcdsQuery) -> Result<PlanningSummary, Box<IterOutcome>> {
-    let started_plan = Instant::now();
-    let df = match ctx.sql(query.sql).await {
-        Ok(df) => df,
-        Err(err) => {
-            return Err(Box::new(IterOutcome {
-                wall: Some(started_plan.elapsed()),
-                outcome: "native_sql_planning_failed",
-                planning_outcome: String::from("native_sql_to_logical_plan_failed"),
-                output_batches: None,
-                output_rows: None,
-                output_bytes: None,
-                retry_count: None,
-                native_runtime_started: false,
-                native_metrics: None,
-                timing_metrics: NativeTimingMetrics::default(),
-                failure: Some(err.to_string()),
-            }));
-        },
-    };
-    let (state, logical) = df.into_parts();
-    let diagnostics = match plan_with_native_diagnostics(&state, &logical).await {
-        Ok((_, diagnostics)) => diagnostics,
-        Err(err) => {
-            return Err(Box::new(IterOutcome {
-                wall: Some(started_plan.elapsed()),
-                outcome: "native_physical_planning_failed",
-                planning_outcome: String::from("native_physical_planning_failed"),
-                output_batches: None,
-                output_rows: None,
-                output_bytes: None,
-                retry_count: None,
-                native_runtime_started: false,
-                native_metrics: None,
-                timing_metrics: NativeTimingMetrics::default(),
-                failure: Some(err.to_string()),
-            }));
-        },
-    };
-
-    Ok(planning_summary(Some(&diagnostics)))
-}
-
-async fn run_query_collect(
-    ctx: &SessionContext,
-    native_rule_installed: bool,
-    query: &TpcdsQuery,
-    planning_outcome_override: Option<String>,
-    native_runtime_started_override: Option<bool>,
-    skip_cost_declined: bool,
-) -> IterOutcome {
+    let ctx = &runtime.execution_ctx;
+    let native_rule_installed = runtime.native_rule_installed;
     let started_plan = Instant::now();
     let df = match ctx.sql(query.sql).await {
         Ok(df) => df,
@@ -311,26 +194,9 @@ async fn run_query_collect(
             };
         },
     };
-    let planning_summary = planning_summary(diagnostics.as_ref());
-    let planning_outcome = planning_outcome_override.unwrap_or(planning_summary.planning_outcome);
-    let physical_plan_contains_native_runtime = plan_contains_native_runtime(plan.as_ref());
-    let native_runtime_started = native_runtime_started_override.unwrap_or(physical_plan_contains_native_runtime);
-    if skip_cost_declined && let Some(reason) = planning_summary.cost_reason {
-        return IterOutcome {
-            wall: None,
-            outcome: "not_selected_by_cost",
-            planning_outcome: format!("{planning_outcome} cost_reason={reason}"),
-            output_batches: None,
-            output_rows: None,
-            output_bytes: None,
-            retry_count: None,
-            native_runtime_started: false,
-            native_metrics: None,
-            timing_metrics: NativeTimingMetrics::default(),
-            failure: None,
-        };
-    }
-    if skip_cost_declined && !physical_plan_contains_native_runtime {
+    let planning_outcome = planning_summary(diagnostics.as_ref());
+    let native_runtime_started = plan_contains_native_runtime(plan.as_ref());
+    if native_rule_installed && !native_runtime_started {
         return IterOutcome {
             wall: None,
             outcome: "native_rejected_not_run",
@@ -419,7 +285,7 @@ fn native_metrics_from_metrics(metrics: Option<&MetricsSet>) -> Option<Box<Nativ
         .then(|| Box::new(NativeDataFusionExecutionMetrics::from_metrics(metrics)))
 }
 
-fn planning_summary(diagnostics: Option<&NativePlanningDiagnostics>) -> PlanningSummary {
+fn planning_summary(diagnostics: Option<&NativePlanningDiagnostics>) -> String {
     diagnostics
         .map(|diag| {
             let selected = diag.report.selected_count();
@@ -435,26 +301,13 @@ fn planning_summary(diagnostics: Option<&NativePlanningDiagnostics>) -> Planning
                 })
                 .collect::<Vec<_>>();
             let reasons_text = reasons.join(",");
-            let planning_outcome = if reasons_text.is_empty() {
+            if reasons_text.is_empty() {
                 format!("selected={selected} not_selected={not_selected}")
             } else {
                 format!("selected={selected} not_selected={not_selected} reasons={reasons_text}")
-            };
-            PlanningSummary {
-                planning_outcome,
-                cost_reason: reasons.iter().copied().find(|reason| cost_reason_code(reason)).map(str::to_string),
             }
         })
-        .unwrap_or_else(|| PlanningSummary { planning_outcome: String::from("cpu_only"), cost_reason: None })
-}
-
-fn cost_reason_code(reason: &str) -> bool {
-    matches!(
-        reason,
-        "native_small_selective_topk_not_selected_by_cost"
-            | "native_small_selective_residual_join_not_selected_by_cost"
-            | "native_small_selective_full_sort_not_selected_by_cost"
-    )
+        .unwrap_or_else(|| String::from("cpu_only"))
 }
 
 fn metric_sum(metrics: Option<&MetricsSet>, name: &str) -> Option<u64> {
