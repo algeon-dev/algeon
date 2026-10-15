@@ -172,6 +172,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_mixed_left_join_state_device_allocated_size", "metadata-only cached join planning accessor"),
     ("cudf_mixed_left_join_state_output_size", "metadata-only cached join planning accessor"),
     ("cudf_raw_cuda_event_record", "runtime event operation with explicit raw event and stream handles"),
+    ("cudf_raw_cuda_stream_synchronize", "runtime synchronization with explicit raw stream handle"),
     ("cudf_raw_cuda_stream_wait_event", "runtime stream operation with explicit raw event and stream handles"),
     ("cudf_reduce_aggregation_create", "descriptor-only aggregation factory"),
     ("cudf_reduce_aggregation_create_nunique", "descriptor-only aggregation factory"),

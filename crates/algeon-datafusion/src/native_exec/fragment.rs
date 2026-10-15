@@ -22,9 +22,11 @@ use futures::future::BoxFuture;
 #[cfg(test)]
 use query_engine::exec::admit_query_plan;
 use query_engine::exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput};
+#[cfg(feature = "cugraph")]
+use query_planning::plan::PlanNode;
 use query_planning::{
     admission::{AdmittedPlan, AttemptCapabilityEvidence},
-    plan::{PlanNode, QueryPlan, ResultSink, row_bounds::query_plan_hard_row_upper_bound},
+    plan::{QueryPlan, ResultSink, row_bounds::query_plan_hard_row_upper_bound},
 };
 #[cfg(test)]
 use query_planning::{mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy};
@@ -677,6 +679,7 @@ fn validate_gpu_inputs(plan: &QueryPlan, gpu_inputs: &[Arc<dyn ExecutionPlan>], 
 }
 
 impl GpuResidentProducer for AlgeonNativeExec {
+    #[cfg(feature = "cugraph")]
     fn gpu_result_is_repeatable(&self) -> bool {
         self.native_plan().nodes().iter().all(|node| match &node.kind {
             PlanNode::Source(_)

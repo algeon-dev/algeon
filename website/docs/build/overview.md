@@ -50,8 +50,11 @@ Follow these steps and skip the rest of this guide:
 4. Build the server:
 
    ```bash
-   cargo build --release -p algeon-server --features cugraph,cuvs,cuml,nvml
+   cargo build --release -p algeon-server --features cugraph,cuvs,cuml
    ```
+
+   For device diagnostics, build with `--features cugraph,cuvs,cuml,nvml`
+   instead ([NVML diagnostics](./rust-dependency.md#nvml-diagnostics)).
 
 5. Start `target/release/algeon_server`. It needs no configuration file and
    listens on `127.0.0.1:50051`.

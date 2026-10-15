@@ -59,7 +59,7 @@ def load_policy(path: Path) -> dict[str, Any]:
     shipped = server["features"]
     if not isinstance(shipped, list) or not all(isinstance(feature, str) for feature in shipped):
         raise PolicyError("server.features must be a string list")
-    if shipped != canonical_features(",".join(shipped)):
+    if not shipped or shipped != canonical_features(",".join(shipped)):
         raise PolicyError("server.features must be non-empty, sorted, and free of duplicates")
     for list_name in ("pass_through", "explicit_inputs"):
         value = clean.get(list_name)
@@ -129,9 +129,8 @@ def artifact_affecting_fingerprint(policy: Mapping[str, Any]) -> str:
 
 
 def canonical_features(raw: str) -> list[str]:
+    """Sorted, deduplicated Cargo features; an empty list selects the cuDF-only server."""
     features = [feature.strip() for feature in raw.split(",") if feature.strip()]
-    if not features:
-        raise PolicyError("packaging features must not be empty")
     if "server" in features:
         raise PolicyError("the server package has no server feature")
     if any(not re.fullmatch(r"[A-Za-z0-9_-]+", feature) for feature in features):
@@ -447,8 +446,7 @@ def command_build(args: argparse.Namespace) -> None:
         "--target-dir",
         str(cargo_target_dir),
         "--no-default-features",
-        "--features",
-        ",".join(features),
+        *(["--features", ",".join(features)] if features else []),
         "--package",
         "algeon-server",
         "--bin",

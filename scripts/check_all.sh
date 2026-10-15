@@ -149,6 +149,7 @@ policy_scripts() {
   { python3 scripts/ci/tests/check_third_party_data_tests.py && python3 scripts/ci/check_third_party_data.py; } || status=1
   python3 scripts/ci/tests/check_release_archives_tests.py || status=1
   python3 scripts/ci/tests/check_registry_consumer_tests.py || status=1
+  python3 scripts/ci/tests/check_nvml_opt_in_tests.py || status=1
   test_layout_policy || status=1
   return "${status}"
 }
@@ -235,6 +236,8 @@ feature_isolation() {
     echo "FAIL: sharded feature-isolation checks differ from the canonical command list"
     status=1
   fi
+  # The same per-package selections must not resolve NVML unless they select nvml.
+  python3 scripts/ci/check_nvml_opt_in.py || status=1
   return "${status}"
 }
 

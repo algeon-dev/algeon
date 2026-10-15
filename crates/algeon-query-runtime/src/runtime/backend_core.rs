@@ -2810,7 +2810,6 @@ mod tests {
             total_bytes,
             free_bytes: 500,
             sm_count: None,
-            utilization_pct: None,
         }
     }
 

@@ -17,8 +17,9 @@ It cannot create their cuDF, cuVS, cuML, or cuGraph artifacts itself.
 
 :::
 
-The image build selects `cugraph`, `cuvs`, `cuml`, and `nvml` by default.
-A `FEATURES=cuml` payload also stages the canonical cuVS runtime dependency.
+The image build selects `cugraph`, `cuvs`, and `cuml` by default. NVML device
+diagnostics are opt-in through `FEATURES`. A `FEATURES=cuml` payload also
+stages the canonical cuVS runtime dependency.
 
 `docker/build-image.sh` is the single entry point. On the host it builds
 `algeon_server`, stages the binary and the locally built cuDF/RMM libraries
@@ -60,9 +61,10 @@ The cuDF script also installs `libcudf_rust_rmm_interop.so` beside the shim.
 `docker/build-image.sh` stages both automatically. It reads the
 matching install prefixes under `ALGEON_NATIVE_DIR`.
 
-The lean `FEATURES=nvml` image omits cuVS, cuML, and cuGraph, so it
-needs neither optional native artifact. Production examples keep `nvml` enabled so live
-device telemetry is available without affecting admission decisions.
+The cuDF-only `FEATURES=''` and `FEATURES=nvml` images omit cuVS, cuML, and
+cuGraph, so they need none of those native artifacts. `nvml` adds GPU
+utilization, NVML framebuffer and device identity diagnostics. It loads
+`libnvidia-ml.so.1` from the driver at run time, and admission never reads it.
 
 `readelf` and `ldd` are required for the loader-closure checks. `patchelf` and
 `strip` (binutils) are recommended. Without `patchelf` the image resolves its
@@ -99,18 +101,25 @@ cd "$ALGEON_ROOT"
 bash docker/build-image.sh
 ```
 
-The default image carries the Flight SQL server, cuVS, cuGraph and cuML SQL,
-and NVML diagnostics. For a smaller cuDF-only server image, omit `cugraph`,
-`cuvs`, and `cuml`:
+The default image carries the Flight SQL server with cuVS, cuGraph and cuML
+SQL. An unset `FEATURES` selects that list; `FEATURES=''` selects no optional
+feature and builds the cuDF-only server. Add `nvml` to any list for device
+diagnostics:
 
 ```bash
+FEATURES='' bash docker/build-image.sh
 FEATURES=nvml bash docker/build-image.sh
+FEATURES=cugraph,cuml,cuvs,nvml bash docker/build-image.sh
 ```
 
 The tag is `<version>-<cpu baseline>` for the default feature set, such as
-`algeon-server:0.1.0-x86-64-v3`. Any other feature set appends its sorted
-features joined by `-`, so the build above produces
-`algeon-server:0.1.0-x86-64-v3-nvml` and leaves the default image in place.
+`algeon-server:0.1.0-x86-64-v3`. The empty feature list appends `-cudf`, and
+any other feature set appends its sorted features joined by `-`. The builds
+above produce `algeon-server:0.1.0-x86-64-v3-cudf`,
+`algeon-server:0.1.0-x86-64-v3-nvml` and
+`algeon-server:0.1.0-x86-64-v3-cugraph-cuml-cuvs-nvml`, and leave the default
+image in place. The build record, payload manifest and `dev.algeon.features`
+label record the selected list, which is empty for `FEATURES=''`.
 `IMAGE_REPOSITORY` replaces `algeon-server`. The image labels record the
 version, source revision, whether the worktree had uncommitted changes,
 repository URL, creation time, features, CUDA toolkit release and CPU
@@ -132,9 +141,9 @@ triple and `target-cpu=x86-64-v3` from `.config/policies/cpu-packaging.toml`.
 It writes a build record (binary hash, policy fingerprint, features, target
 triple, codegen flags, version, source revision and CUDA toolkit release)
 beside the binary. An ordinary `target/release` build has no such record and
-is not reused. On 2026-10-14 the default build took 7 min 20 s end to end,
-5 min 21 s of it in Cargo with a warm native prefix and compiler cache. The
-`FEATURES=nvml` build took 3 min 03 s.
+is not reused. On 2026-10-14 the `FEATURES=cugraph,cuml,cuvs,nvml` build took
+7 min 20 s end to end, 5 min 21 s of it in Cargo with a warm native prefix and
+compiler cache. The `FEATURES=nvml` build took 3 min 03 s.
 
 `SKIP_CARGO_BUILD=1` re-stages a payload from a previous packaging build only:
 
@@ -161,8 +170,8 @@ What ends up in the image:
 | `libgomp1`, `libbrotli1`, `tini` | Ubuntu apt | installed in the runtime stage |
 
 On 2026-10-14 `docker images` reported 3.69 GB disk usage and 1.31 GB
-content size for the default image, and 1.32 GB and 361 MB for the
-`FEATURES=nvml` image.
+content size for the `FEATURES=cugraph,cuml,cuvs,nvml` image, and 1.32 GB and
+361 MB for the `FEATURES=nvml` image.
 
 :::warning[Build machine versus target host CPU]
 This image targets x86-64-v3. Both the build machine and every target host must

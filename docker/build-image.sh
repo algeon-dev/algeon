@@ -18,7 +18,8 @@
 #
 # Usage:
 #   bash docker/build-image.sh                     # server.features in .config/policies/cpu-packaging.toml
-#   FEATURES=nvml bash docker/build-image.sh       # lean cuDF-only image
+#   FEATURES='' bash docker/build-image.sh         # lean cuDF-only image, no optional Cargo features
+#   FEATURES=nvml bash docker/build-image.sh       # cuDF-only image with NVML device diagnostics
 #   NO_STRIP=1 bash docker/build-image.sh          # keep debug symbols
 #   SKIP_CARGO_BUILD=1 bash docker/build-image.sh  # reuse only a verified canonical artifact
 #
@@ -42,7 +43,8 @@ DIST_DIR="${CPU_PACKAGE_DIST_DIR:-$SCRIPT_DIR/dist}"
 POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
 SHIPPED_FEATURES="$(python3 "$POLICY_HELPER" shipped-features)"
-FEATURES="$(python3 "$POLICY_HELPER" normalize-features --features "${FEATURES:-$SHIPPED_FEATURES}")"
+# An unset FEATURES selects the shipped list; FEATURES='' selects no optional feature.
+FEATURES="$(python3 "$POLICY_HELPER" normalize-features --features "${FEATURES-$SHIPPED_FEATURES}")"
 
 eval "$(python3 "$POLICY_HELPER" describe)"
 
@@ -74,7 +76,7 @@ want_cuml=0
 want_cuvs_runtime=0
 [[ $want_cugraph -eq 1 || $want_cuvs -eq 1 || $want_cuml -eq 1 ]] && want_cuvs_runtime=1
 
-echo "==> FEATURES            : $FEATURES   (cugraph=$want_cugraph cuvs=$want_cuvs cuml=$want_cuml)"
+echo "==> FEATURES            : ${FEATURES:-(none)}   (cugraph=$want_cugraph cuvs=$want_cuvs cuml=$want_cuml)"
 echo "==> ALGEON_NATIVE_DIR    : $ALGEON_NATIVE_DIR"
 
 cd "$REPO_ROOT"
@@ -323,9 +325,14 @@ echo "==> Staged payload ($(du -sh "$DIST_DIR" | cut -f1) total):"
 echo ""
 
 # 5. Only the shipped feature set gets the plain <version>-<baseline> tag, so
-# a lean build never overwrites the shipped image.
+# a lean build never overwrites the shipped image. An empty feature list is
+# tagged -cudf.
 IMAGE_TAG_SUFFIX="$PAYLOAD_VERSION-$CPU_BASELINE"
-[[ "$PAYLOAD_FEATURES" == "$SHIPPED_FEATURES" ]] || IMAGE_TAG_SUFFIX="$IMAGE_TAG_SUFFIX-${PAYLOAD_FEATURES//,/-}"
+if [[ -z "$PAYLOAD_FEATURES" ]]; then
+    IMAGE_TAG_SUFFIX="$IMAGE_TAG_SUFFIX-cudf"
+elif [[ "$PAYLOAD_FEATURES" != "$SHIPPED_FEATURES" ]]; then
+    IMAGE_TAG_SUFFIX="$IMAGE_TAG_SUFFIX-${PAYLOAD_FEATURES//,/-}"
+fi
 IMAGE_TAG="${IMAGE_REPOSITORY:-algeon-server}:$IMAGE_TAG_SUFFIX"
 docker_args=(
     build

@@ -113,8 +113,7 @@ async fn run_session(backend: &AlgeonGpuBackend, directory: &Path) -> Result<()>
     check_cuml(backend, &ctx).await?;
     #[cfg(feature = "server")]
     check_server(backend, &orders).await?;
-    #[cfg(feature = "nvml")]
-    check_nvml(backend)?;
+    check_telemetry(backend)?;
     Ok(())
 }
 
@@ -218,15 +217,19 @@ async fn check_server(backend: &AlgeonGpuBackend, orders: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "nvml")]
-fn check_nvml(backend: &AlgeonGpuBackend) -> Result<()> {
+fn check_telemetry(backend: &AlgeonGpuBackend) -> Result<()> {
     use algeon_datafusion::observability::DeviceTelemetryStatus;
 
     let snapshots = backend.device_telemetry_snapshots()?;
     require(snapshots.len() == 1 && snapshots[0].device_ordinal == 0, "telemetry did not sample CUDA device 0")?;
     let snapshot = &snapshots[0];
     require(snapshot.cuda_status == DeviceTelemetryStatus::Available, "CUDA telemetry is unavailable")?;
-    require(snapshot.nvml_status != DeviceTelemetryStatus::FeatureDisabled, "NVML feature was not forwarded")?;
+    if cfg!(feature = "nvml") {
+        require(snapshot.nvml_status != DeviceTelemetryStatus::FeatureDisabled, "NVML feature was not forwarded")?;
+    } else {
+        require(snapshot.nvml_status == DeviceTelemetryStatus::FeatureDisabled, "NVML is enabled without the feature")?;
+        require(snapshot.nvml_used_bytes.is_none(), "NVML memory was reported without the feature")?;
+    }
     // NVML availability is optional, independently of CUDA execution support.
     println!("nvml initialization status: {}", snapshot.nvml_status.as_str());
     Ok(())

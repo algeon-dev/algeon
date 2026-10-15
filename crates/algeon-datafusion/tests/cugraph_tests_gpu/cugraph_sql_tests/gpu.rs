@@ -780,9 +780,9 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
         metrics.dynamic_filter_runtime_rows.iter().filter(|row| row.event == "produced").collect::<Vec<_>>();
     assert_eq!(
         metrics.dynamic_filter_produced_count, 1,
-        "the filter predicate must produce one bounded control payload"
+        "the filter predicate must produce one bounded dynamic-filter payload"
     );
-    assert_eq!(dynamic_filter_producers.len(), 1, "exactly one dynamic-filter producer may export a key payload");
+    assert_eq!(dynamic_filter_producers.len(), 1, "the composed join must produce one dynamic-filter payload");
     assert_eq!(dynamic_filter_producers[0].producer_kind, "hash_join_build");
     assert!(dynamic_filter_producers[0].producer_rows.is_some_and(|rows| rows > 0));
     assert_eq!(
@@ -791,9 +791,8 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
         "the composed consumer must retain one deferred host-output sink",
     );
     assert_eq!(
-        metrics.device_to_host_materializations,
-        dynamic_filter_producers.len() + 1,
-        "one dynamic-filter key export plus the deferred composed consumer output must be the only D2H boundaries",
+        metrics.device_to_host_materializations, 1,
+        "dynamic-filter keys stay on the GPU; only the deferred composed consumer output materializes host Arrow",
     );
     assert_eq!(
         arrow_host_export_call_count_for_test(),

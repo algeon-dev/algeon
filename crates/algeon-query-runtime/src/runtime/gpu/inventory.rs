@@ -33,6 +33,10 @@ impl DeviceTelemetryStatus {
 }
 
 /// Live CUDA and NVML telemetry for one device.
+///
+/// These values are diagnostics. Admission and memory accounting read the
+/// device ledger, query-domain counters and pool statistics instead. Each
+/// `Option` is `None` when its substrate produced no sample for this snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceTelemetrySnapshot {
     /// Wall-clock sample time for correlating diagnostics with external telemetry.
@@ -137,7 +141,6 @@ pub struct DeviceFacts {
     /// admission.
     pub(crate) free_bytes: u64,
     pub(crate) sm_count: Option<u32>,
-    pub(crate) utilization_pct: Option<u8>,
 }
 
 /// Query GPU facts behind a fakeable interface.
@@ -178,7 +181,6 @@ impl GpuInventory for AlgeonGpuInventory {
             total_bytes: memory.total_bytes,
             free_bytes: memory.free_bytes,
             sm_count,
-            utilization_pct: utilization_pct(device),
         })
     }
 }
@@ -206,19 +208,6 @@ fn nvml_device_identity(_device: cudf::DeviceId) -> (Option<String>, Option<Stri
 #[cfg(test)]
 pub(crate) fn device_budget_bytes_from_facts(facts: &DeviceFacts, headroom_bytes: u64, fallback_bytes: u64) -> u64 {
     facts.total_bytes.checked_sub(headroom_bytes).filter(|value| *value > 0).unwrap_or(fallback_bytes)
-}
-
-#[cfg(feature = "nvml")]
-fn utilization_pct(device: cudf::DeviceId) -> Option<u8> {
-    let nvml = shared_nvml()?;
-    let pci_bus_id = device.pci_bus_id().ok()?;
-    let rates = nvml.device_by_pci_bus_id(pci_bus_id).ok()?.utilization_rates().ok()?;
-    u8::try_from(rates.gpu).ok()
-}
-
-#[cfg(not(feature = "nvml"))]
-fn utilization_pct(_device: cudf::DeviceId) -> Option<u8> {
-    None
 }
 
 #[cfg(feature = "nvml")]

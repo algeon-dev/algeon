@@ -36,6 +36,7 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
     /// Whether this producer's inputs and operation permit reuse of one
     /// logical invocation's result. Host-staged inputs and GPU functions
     /// without a repeatability contract keep the default.
+    #[cfg(feature = "cugraph")]
     fn gpu_result_is_repeatable(&self) -> bool {
         false
     }

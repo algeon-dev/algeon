@@ -42,7 +42,12 @@ echo "PASS: CPU packaging has one fixed x86-64-v3 contract"
 shipped=$(python3 "${HELPER}" shipped-features)
 [[ "${shipped}" == "$(python3 "${HELPER}" normalize-features --features "${shipped}")" ]] \
   || fail "server.features is not in canonical form: ${shipped}"
-if grep -Eq 'FEATURES:-[A-Za-z]' docker/build-image.sh; then
+[[ ",${shipped}," != *",nvml,"* ]] || fail "server.features enables the opt-in nvml diagnostics feature"
+[[ -z "$(python3 "${HELPER}" normalize-features --features '')" ]] \
+  || fail "an explicit empty user feature list did not normalize to no features"
+grep -Fq '${FEATURES-$SHIPPED_FEATURES}' docker/build-image.sh \
+  || fail "docker staging does not distinguish an unset FEATURES from FEATURES=''"
+if grep -Eq 'FEATURES:?-[A-Za-z]' docker/build-image.sh; then
   fail "docker staging hard-codes a default feature list instead of reading server.features"
 fi
 grep -Fq 'cpu_packaging_policy.py shipped-features' scripts/check_all.sh \
@@ -61,6 +66,21 @@ status=0
 python3 "${HELPER}" --policy "${tmp_dir}/unsorted-features-policy.toml" shipped-features \
   >"${tmp_dir}/unsorted-features.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "an unsorted server.features list was accepted"
+cp "${POLICY}" "${tmp_dir}/empty-features-policy.toml"
+python3 - "${tmp_dir}/empty-features-policy.toml" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text, count = re.subn(r'\nfeatures = \[[^\]]*\]', '\nfeatures = []', path.read_text(), count=1)
+assert count == 1
+path.write_text(text)
+PY
+status=0
+python3 "${HELPER}" --policy "${tmp_dir}/empty-features-policy.toml" shipped-features \
+  >"${tmp_dir}/empty-features.output" 2>&1 || status=$?
+[[ "${status}" -eq 2 ]] || fail "an empty server.features default was accepted"
 echo "PASS: packaging and the shipped clippy lane read one canonical feature list"
 
 cat >"${tmp_dir}/bin/cargo" <<'SH'
@@ -580,7 +600,64 @@ PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/build-image.sh >"${tmp_dir}/shipped-stage.output"
 grep -Fxq -- "algeon-datafusion-test:${workspace_version}-x86-64-v3" "${tmp_dir}/docker-shipped.args" \
   || fail "the shipped feature set did not get the plain <version>-<baseline> tag"
+grep -Fxq -- "ALGEON_FEATURES=${shipped_features}" "${tmp_dir}/docker-shipped.args" \
+  || fail "the default image did not record the shipped feature list"
+python3 - "${tmp_dir}/docker-dist-shipped/payload-manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as manifest_file:
+    manifest = json.load(manifest_file)
+assert "nvml" not in manifest["features"], manifest["features"]
+PY
 echo "PASS: the shipped feature set keeps the plain tag and a lean set gets a feature suffix"
+
+# FEATURES='' selects the cuDF-only server: no --features argument, an empty
+# feature record, and a -cudf tag distinct from the default and nvml images.
+build_fake_variant ''
+python3 - "${build_record}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as record_file:
+    record = json.load(record_file)
+assert record["features"] == [], record["features"]
+assert record["feature_string"] == "", record["feature_string"]
+assert "--no-default-features" in record["cargo_command"]
+assert "--features" not in record["cargo_command"], record["cargo_command"]
+PY
+status=0
+python3 "${HELPER}" verify-build --features 'nvml' --binary "${binary}" --record "${build_record}" \
+  >"${tmp_dir}/empty-record-nvml.output" 2>&1 || status=$?
+[[ "${status}" -eq 2 ]] || fail "an empty-feature artifact was reused for an nvml selection"
+grep -Fq 'features mismatch' "${tmp_dir}/empty-record-nvml.output" || fail "missing feature mismatch diagnostic"
+FAKE_DOCKER_ARGS="${tmp_dir}/docker-cudf.args" IMAGE_REPOSITORY=algeon-datafusion-test \
+CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cudf" \
+FEATURES='' SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build-image.sh >"${tmp_dir}/cudf-stage.output"
+cudf_tag="algeon-datafusion-test:${workspace_version}-x86-64-v3-cudf"
+grep -Fxq -- "${cudf_tag}" "${tmp_dir}/docker-cudf.args" \
+  || fail "the empty feature list did not get the -cudf tag"
+grep -Fxq -- "ALGEON_FEATURES=" "${tmp_dir}/docker-cudf.args" \
+  || fail "the empty feature list did not reach the Docker build arguments"
+for tag in "algeon-datafusion-test:${workspace_version}-x86-64-v3" "${lean_tag}"; do
+  ! grep -Fxq -- "${tag}" "${tmp_dir}/docker-cudf.args" || fail "the cuDF-only image reused tag ${tag}"
+done
+for library in libcuvs.so libcugraph.so libcuml.so; do
+  [[ ! -e "${tmp_dir}/docker-dist-cudf/lib/${library}" ]] || fail "the cuDF-only package staged ${library}"
+done
+python3 - "${tmp_dir}/docker-dist-cudf/payload-manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as manifest_file:
+    manifest = json.load(manifest_file)
+assert manifest["features"] == [], manifest["features"]
+assert manifest["feature_string"] == "", manifest["feature_string"]
+PY
+echo "PASS: FEATURES='' builds a cuDF-only payload with an empty feature record and a separate -cudf tag"
 
 status=0
 bash docker/build-image.sh --config 'target.x86_64-unknown-linux-gnu.rustflags=[]' \

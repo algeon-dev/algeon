@@ -262,11 +262,23 @@ invocation fails that precondition instead of reporting a pass.
 | `cugraph` | cuGraph graph algorithms callable from SQL |
 | `cuvs` | cuVS UDTFs (exact kNN, KMeans, PCA) and their GPU execution |
 | `cuml` | cuML UDTFs (truncated SVD, HDBSCAN, UMAP, logistic regression, random forests) and their GPU execution, which requires the native cuML install from `scripts/build/build_libcuml.sh` |
-| `nvml` | Optional NVML device diagnostics |
+| `nvml` | Optional NVML device diagnostics; see [NVML diagnostics](./rust-dependency.md#nvml-diagnostics) |
 
 The Arrow Flight SQL server is launched by the separate `algeon-server`
 package. Its `cugraph`, `cuvs`, `cuml`, and `nvml` features forward the
-corresponding adapter and engine capabilities.
+corresponding adapter and engine capabilities. `bench` and `tools` also
+declare `nvml`. Their run features do not enable it, and `tools/nvml` forwards
+only to a backend that another selected feature already includes:
+
+```bash
+cargo build -p bench --features nvml
+cargo build -p tools --features single-node-multi-gpu-validate-run,nvml
+```
+
+Cargo merges the features of one invocation. `--workspace --all-features`
+therefore always includes NVML. The feature-isolation phase runs
+`scripts/ci/check_nvml_opt_in.py`, which resolves each package selection
+separately and rejects NVML outside an `nvml` selection.
 
 ```bash
 cargo run -p algeon-server --all-features --bin algeon_server
