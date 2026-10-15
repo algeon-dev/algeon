@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     ops::Deref,
     sync::{
         Arc,
@@ -82,6 +83,29 @@ const TEST_RESERVATION_LIMIT_BYTES: usize = 1 << 30;
 const NEAR_UNIT_ROW: [f32; 2] = [0.999_800_006_666_577_8_f64 as f32, 0.019_998_666_693_333_08_f64 as f32];
 const NEAR_UNIT_SQUARED_L2: f32 = 3.999_87e-4;
 static NEXT_RESERVATION_ID: AtomicUsize = AtomicUsize::new(0xC0_0000);
+
+fn near_unit_64_dataset() -> ([f32; 64], Vec<[f32; 64]>) {
+    let query = [0.125_f32; 64];
+    let mut first = query;
+    first[..2].copy_from_slice(&[0.123_882_561_922_073_36_f64 as f32, 0.126_107_528_805_732_73_f64 as f32]);
+    let mut second = query;
+    second[..2].copy_from_slice(&[0.122_283_816_337_585_45_f64 as f32, 0.127_658_396_959_304_8_f64 as f32]);
+    let mut far = query;
+    far[0] = 1.0;
+    let rows = (0..80)
+        .map(|row| match row {
+            0..10 if row % 2 == 0 => first,
+            0..10 => second,
+            10..20 => query,
+            _ => far,
+        })
+        .collect();
+    (query, rows)
+}
+
+fn squared_l2_oracle(query: &[f32], row: &[f32]) -> f64 {
+    query.iter().zip(row).map(|(&query, &value)| (f64::from(query) - f64::from(value)).powi(2)).sum()
+}
 
 struct CoveredCuvsResources {
     _coverage: StreamPoolCoverage,
@@ -481,6 +505,40 @@ fn brute_force_ranks_equal_norm_near_unit_rows_by_distance() {
     assert_eq!(i64_to_host(&runtime, neighbors), [1, 0], "distances {distances:?}");
     assert_eq!(distances[0], 0.0);
     assert!((distances[1] - NEAR_UNIT_SQUARED_L2).abs() < 1e-6, "distances {distances:?}");
+
+    let (query_values, rows) = near_unit_64_dataset();
+    let values = rows.iter().flatten().copied().collect::<Vec<_>>();
+    let dataset = DeviceBuffer::from_slice(&resources, &values).unwrap();
+    let dataset = dataset.as_validated_matrix(&resources, rows.len(), query_values.len()).unwrap();
+    let query = DeviceBuffer::from_slice(&resources, &query_values).unwrap();
+    let query = query.as_validated_matrix(&resources, 1, query_values.len()).unwrap();
+    let index = BruteForceIndex::build(&resources, &dataset, DistanceMetric::L2Expanded).unwrap();
+    // These distinct rows share the query's float32 norm. Their positive L2
+    // distances fall inside the former dimension-scaled self-rounding bound.
+    for k in [10, 65] {
+        let mut neighbors = DeviceBuffer::<i64>::new(&resources, k).unwrap();
+        let mut distances = DeviceBuffer::<f32>::new(&resources, k).unwrap();
+        index.search_into(&query, k, &mut neighbors, &mut distances).unwrap();
+        let neighbors = i64_to_host(&runtime, neighbors);
+        let distances = f32_to_host(&runtime, distances);
+        let ids = neighbors.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(ids.len(), k, "k={k}, neighbors {neighbors:?}");
+        assert!((10..20).all(|id| ids.contains(&id)), "k={k}, neighbors {neighbors:?}");
+        if k == 10 {
+            assert_eq!(ids, (10..20).collect::<BTreeSet<_>>(), "duplicates must precede distinct near rows");
+        } else {
+            assert!((0..10).all(|id| ids.contains(&id)), "k={k}, neighbors {neighbors:?}");
+        }
+        for (&id, &distance) in neighbors.iter().zip(&distances) {
+            assert!((0..rows.len() as i64).contains(&id), "k={k}, neighbor {id}");
+            let expected = squared_l2_oracle(&query_values, &rows[id as usize]);
+            assert!(
+                (f64::from(distance) - expected).abs() < 1e-6,
+                "k={k}, neighbor={id}, distance={distance}, expected={expected}"
+            );
+        }
+    }
+    index.close().unwrap();
 }
 
 fn offset_dataset_is_used_by_brute_force_and_select_k() {
@@ -881,6 +939,20 @@ fn pairwise_l2_expanded_keeps_equal_norm_near_unit_distance() {
     let out = f32_to_host(&runtime, out);
     assert!((out[0] - NEAR_UNIT_SQUARED_L2).abs() < 1e-6, "distances {out:?}");
     assert_eq!(out[1], 0.0, "distances {out:?}");
+
+    let (query_values, rows) = near_unit_64_dataset();
+    let rows = &rows[..20];
+    let values = rows.iter().flatten().copied().collect::<Vec<_>>();
+    let x = DeviceBuffer::from_slice(&resources, &values).unwrap();
+    let x = x.as_validated_matrix(&resources, rows.len(), query_values.len()).unwrap();
+    let y = DeviceBuffer::from_slice(&resources, &query_values).unwrap();
+    let y = y.as_validated_matrix(&resources, 1, query_values.len()).unwrap();
+    let mut out = DeviceBuffer::<f32>::new(&resources, rows.len()).unwrap();
+    pairwise_distance_into(&resources, &x, &y, DistanceMetric::L2Expanded, &mut out).unwrap();
+    for (row, distance) in rows.iter().zip(f32_to_host(&runtime, out)) {
+        let expected = squared_l2_oracle(&query_values, row);
+        assert!((f64::from(distance) - expected).abs() < 1e-6, "distance={distance}, expected={expected}");
+    }
 }
 
 fn batched_top_k_selects_min_and_max_and_validates_boundaries() {

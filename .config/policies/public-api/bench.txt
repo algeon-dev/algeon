@@ -102,12 +102,6 @@ pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::min_retry_chunk_r
 pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::profile_name: &'static str
 pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::profile_source: &'static str
 pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
-pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_ENV: &str
-pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str
-pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str
-pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str
-pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str
-pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV: &str
 pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str
 pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
 pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
@@ -116,7 +110,6 @@ pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW
 pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_PROFILE_ENV: &str
 pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str
 pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str
-pub const bench::report_workload::tpcds::TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS: usize
 pub const bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str
 pub const bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_CUSTOM: &str
 pub const bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str
@@ -131,10 +124,7 @@ pub async fn bench::report_workload::tpcds::tpcds_datafusion_planning_workload_i
 pub async fn bench::report_workload::tpcds::tpcds_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
 pub async fn bench::report_workload::tpcds::tpcds_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeFallbackPressureWorkloadItem>>
 pub fn bench::report_workload::tpcds::tpcds_native_analytics_optimizer_config() -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
-pub fn bench::report_workload::tpcds::tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings(&bench::report_workload::tpcds::TpcdsNativeProfileSettings) -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub fn bench::report_workload::tpcds::tpcds_native_analytics_optimizer_config_with_profile_settings(&bench::report_workload::tpcds::TpcdsNativeProfileSettings) -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
-pub fn bench::report_workload::tpcds::tpcds_native_cost_selection_options_from_env() -> query_planning::plan::preference::NativePlanCostOptions
-pub fn bench::report_workload::tpcds::tpcds_native_cost_selection_options_with_env(impl core::ops::function::FnMut(&'static str) -> core::option::Option<alloc::string::String>) -> query_planning::plan::preference::NativePlanCostOptions
 pub fn bench::report_workload::tpcds::tpcds_native_optimizer_config() -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub fn bench::report_workload::tpcds::tpcds_native_optimizer_config_with_profile_settings(&bench::report_workload::tpcds::TpcdsNativeProfileSettings) -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub fn bench::report_workload::tpcds::tpcds_native_profile_settings_and_device_memory_limit_from_env() -> (bench::report_workload::tpcds::TpcdsNativeProfileSettings, query_runtime::runtime::backend_core::GpuDeviceMemoryLimit)
@@ -195,7 +185,7 @@ pub const fn bench::report_workload::RelationalExecutionSelection::native() -> S
 pub const fn bench::report_workload::RelationalExecutionSelection::strict_native() -> Self
 pub mod bench::sort_lane_sweep
 pub async fn bench::sort_lane_sweep::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
-pub mod bench::tpcds_three_way_bench
-pub async fn bench::tpcds_three_way_bench::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub mod bench::tpcds_gpu_cpu_bench
+pub async fn bench::tpcds_gpu_cpu_bench::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
 pub mod bench::tpch_benchmark
 pub async fn bench::tpch_benchmark::run_main() -> datafusion_common::error::Result<()>

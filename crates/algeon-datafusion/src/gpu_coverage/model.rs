@@ -7,7 +7,7 @@ use super::preflight::QueryGpuRejection;
 use crate::{
     physical_plan::physical_plan_shape,
     planner::{FinalPlanCoverage, FinalPlanDisposition, NativePlanningDiagnostics},
-    report::{Blocking, CandidateOutcomeKind, NativeCandidateCostEvidence},
+    report::{Blocking, CandidateOutcomeKind},
 };
 
 /// Single sum type representing whether GPU planning produced an executable plan or was rejected.
@@ -303,8 +303,6 @@ pub struct QueryGpuCandidateOutcome {
     pub remedy: Option<QueryGpuRemedy>,
     /// What blocked a not-supported candidate, when the producing site knew it.
     pub blocking: Option<Blocking>,
-    /// Cost facts for a cost decline, or `None` for other candidate outcomes.
-    pub cost_evidence: Option<NativeCandidateCostEvidence>,
 }
 
 impl QueryGpuCandidateOutcome {
@@ -320,7 +318,6 @@ impl QueryGpuCandidateOutcome {
             "remedy_kind": self.remedy.map(|remedy| remedy.kind.as_str()),
             "remedy": self.remedy.map(|remedy| remedy.guidance),
             "blocking": self.blocking.as_ref().map(Blocking::to_json),
-            "cost_evidence": self.cost_evidence.as_ref().map(|evidence| evidence.to_json()),
         })
     }
 }

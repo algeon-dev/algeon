@@ -28,7 +28,7 @@ use super::{
 use crate::{
     datatypes::arrow_fixed_width_byte_size,
     error::Result,
-    expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, ColumnRef, Expr},
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, ColumnRef, Expr},
     optimizer::NativeOptimizerChange,
     plan::{
         AggregateNode, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode,

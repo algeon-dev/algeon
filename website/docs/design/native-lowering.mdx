@@ -9,9 +9,9 @@ import {PlanTranslation, PlanSelection} from '@site/src/components/design/GuideD
 
 # From SQL to a GPU plan
 
-DataFusion's standard physical operators run on the CPU and often split input
-across partitions. Algeon's adapter translates supported parts of the completed
-plan into native IR, then replaces them with a GPU execution wrapper.
+DataFusion physical operators run on the CPU and partition input streams.
+Algeon's adapter lowers supported physical subtrees into native IR, replacing
+them with GPU execution wrappers.
 
 ## Walk through a grouped aggregate {/* #translate-the-work */}
 
@@ -27,11 +27,8 @@ GROUP BY customer_id;
 
 <PlanTranslation />
 
-The example shows a distributed aggregate shape with a separate row filter.
-Select an operator to see its native representation and the observation fields
-that explain its execution. The view omits batching and scan-repartition
-wrappers. File layout, statistics and session options can also change the
-physical tree, including the placement of predicates.
+The plan represents a distributed aggregate with a separate row filter.
+Selecting an operator displays its native IR representation and observation fields.
 
 <details>
 <summary>Compare the physical tree, native IR and final DataFusion wrapper</summary>
@@ -94,22 +91,17 @@ show scan, filter, aggregate and projection nodes for related queries.
 ## What the GPU compiler produces
 
 The native optimizer rewrites the IR before capability validation and pipeline
-compilation. **Compiled** means a schedule over existing GPU operations. For
-the illustrated shape, the task kinds are `source_read`, `unary` for the
-filter, `aggregate`, and `unary` for the output projection. Identity
-projections can disappear during optimization. The alias to `total` is shown
-explicitly here. The schedule also records data dependencies, completion
-barriers and resident resource lifetimes.
+compilation. Pipeline compilation produces an execution schedule over GPU tasks
+(`source_read`, `unary`, `aggregate`, `join`). The schedule records data
+dependencies, completion barriers, and resident resource lifetimes.
 
 An aggregate barrier prevents consumers from reading incomplete group state.
-A resource between tasks names its producer and consumers. Its lifetime ends
-after those consumers finish. During chunk execution, one compiled aggregate
-task can accumulate many partial results.
+A resource between tasks tracks its producer and consumers, remaining live until
+all downstream consumers finish. During chunk execution, a compiled aggregate
+task accumulates multiple partial batches into its working state.
 
-At the deferred host sink, the root resource remains a GPU-resident output
-until `AlgeonNativeExec` materializes host Arrow batches. The wrapper owns
-that incremental transfer. This adapter schedule has no `sink_materialize`
-task. The boundary remains visible in transfer metrics.
+At deferred host sinks, output buffers remain GPU-resident until `AlgeonNativeExec`
+materializes host Arrow batches incrementally.
 
 A native join expands into build, probe and materialization tasks, with a
 build-before-probe barrier. The
@@ -118,15 +110,14 @@ owns these task and resource relationships.
 
 ## Partitions and result semantics
 
-Native execution replaces DataFusion partitions (the batch streams of the CPU
-plan) with its own chunk and concurrency controls. Supported repartition and
-coalescing wrappers can disappear during lowering.
-Their partition counts do not become CUDA stream counts.
+Native execution replaces DataFusion CPU partition streams with chunk-based
+execution and dedicated worker lanes. Upstream repartition and coalescing
+operators bypass into the native pipeline without mapping partition counts to
+CUDA streams.
 
-The required result still constrains the replacement. For example, partial
-`AVG` values require counts as well as sums. Averaging the partial averages
-would change the answer. A global `ORDER BY ... LIMIT` requires a final merge
-of chunk candidates. Independently sorted chunks cannot satisfy global order.
+Lowering reconstructs operations whose semantics span chunks, such as multi-pass
+aggregates (`AVG` retaining sums and counts for final division) and distributed
+sort and limit merges.
 
 A window with `ORDER BY` keys, or one that numbers rows by position inside
 partitions, reads its input ordered by its partition keys, then its `ORDER BY`
@@ -140,7 +131,7 @@ that does not read row order, such as a join input.
 The native host-output wrapper exposes one bounded output partition. When
 native fragments sit under CPU operators, the adapter verifies the parent's
 schema, ordering and distribution requirements, including co-partitioned join
-inputs. An incompatible replacement is left out.
+inputs. Incompatible replacements remain on CPU execution.
 
 ## Connect the plan to an execution
 
@@ -164,14 +155,14 @@ result, retrieve `GetQueryStats` with that execution's query ID. Its
 selection; `[execution]` contains the attempt's observed work. Available
 `[physical_plan]` and `[native_explain]` sections retain the textual plans.
 
-| Question | Fields to inspect | Interpretation |
+| Diagnostic focus | Fields to inspect | Interpretation |
 | --- | --- | --- |
-| Was the whole subtree replaced? | `physical_root`, `post_native_plan_root`, `native_plan_fragment_count`, `host_datafusion_boundary_count` | Candidate selection and final executable coverage are separate facts. |
-| Which native operator ran in which task? | `plan_task_mapping_rows`, `task_operator_rows`, `task_runtime_rows` | Correlate native plan nodes with compiled tasks and their observations. |
-| How much input survived? | `row_groups_selected`, `source_chunks_committed`, `partial_aggregate_input_rows`, `output_rows` | Row groups, chunks, aggregate input rows and result rows have different scopes. |
-| Did aggregation require merging? | `partial_aggregate_count`, `final_merge_attempts`, `final_merge_levels` | Explain the native chunk-and-merge path without inferring it from CPU partitions. |
-| What constrained device memory? | `query_grant_bytes`, `allocator_high_water_bytes`, `resident_dataframe_peak_bytes` | The grant is the allocation cap. Allocator and resident-dataframe peaks measure different memory scopes. The allocator peak covers the attempt's whole allocation domain and is present for failed attempts. |
-| Did execution and cleanup finish? | `attempt_outcome`, `attempt_cleanup_disposition`, `attempt_capacity_disposition` | Distinguish the query result from cleanup and the capacity's reuse state. |
+| Subtree replacement | `physical_root`, `post_native_plan_root`, `native_plan_fragment_count`, `host_datafusion_boundary_count` | Candidate selection and final executable coverage are separate facts. |
+| Operator task mapping | `plan_task_mapping_rows`, `task_operator_rows`, `task_runtime_rows` | Correlate native plan nodes with compiled tasks and their observations. |
+| Row reduction | `row_groups_selected`, `source_chunks_committed`, `partial_aggregate_input_rows`, `output_rows` | Row groups, chunks, aggregate input rows and result rows have different scopes. |
+| Aggregation merge execution | `partial_aggregate_count`, `final_merge_attempts`, `final_merge_levels` | Explain the native chunk-and-merge path without inferring it from CPU partitions. |
+| Memory limits | `query_grant_bytes`, `allocator_high_water_bytes`, `resident_dataframe_peak_bytes` | The grant is the allocation cap. Allocator and resident-dataframe peaks measure different memory scopes. The allocator peak covers the attempt's whole allocation domain and is present for failed attempts. |
+| Lifecycle and cleanup | `attempt_outcome`, `attempt_cleanup_disposition`, `attempt_capacity_disposition` | Distinguish the query result from cleanup and the capacity's reuse state. |
 
 For task edges, barriers and a timeline, `GetQueryRuntimeArtifact` returns a
 control frame followed by JSONL when the sealed artifact is available. The
@@ -244,7 +235,8 @@ by zero or scaling overflow. Outer, semi, anti and keyless joins retain their
 existing residual capability restrictions.
 
 `PlanningReport` records each candidate once as selected, unsupported with the first unmet
-contract, or supported but not selected by cost, with structured reasons.
+contract, or supported but kept on DataFusion by a
+[preference rule](../reference/gpu-coverage-report.mdx#candidate-outcomes), with structured reasons.
 An unsupported candidate also names the [element that blocked it](../reference/gpu-coverage-report.mdx#what-blocked-a-candidate),
 such as one cast between two types, a scalar or aggregate function, or an
 operator, at the site that rejected it.
@@ -293,4 +285,3 @@ Use [GPU coverage validation](../integration/gpu-coverage-validation.mdx) to
 inspect the completed plan without running it. `EXPLAIN` does not claim a GPU
 grant.
 
-Next, follow the selected scan [from Parquet to GPU memory](./data-path.mdx).

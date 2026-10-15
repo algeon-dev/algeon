@@ -55,10 +55,7 @@ use parquet::{
     file::{metadata::SortingColumn, properties::WriterProperties},
 };
 use proptest::prelude::*;
-use query_planning::{
-    mode::StatisticalAggregateExecutionMode,
-    plan::{NativePlanCostOptions, NativePlanCostReason},
-};
+use query_planning::mode::StatisticalAggregateExecutionMode;
 use tokio::runtime::Builder;
 
 mod bounded_join;
@@ -549,92 +546,6 @@ fn native_optimizer_rule_runs_the_filtered_scan_below_an_unsupported_projection_
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_enabled() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-cost-topk");
-    let left = dir.join("left.parquet");
-    let right = dir.join("right.parquet");
-    write_parquet_file(&left);
-    write_parquet_file(&right);
-    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
-    let config = native_optimizer_config().with_native_plan_cost_options(NativePlanCostOptions::default());
-    let rule = AlgeonNativePhysicalOptimizerRule::new(config);
-
-    let (optimized, diagnostics) =
-        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
-
-    assert!(
-        optimized.downcast_ref::<AlgeonNativeExec>().is_none(),
-        "cost-declined plan should not be replaced by a native execution boundary"
-    );
-    assert!(Arc::ptr_eq(&optimized, &plan), "a cost-rejected candidate must preserve the exact baseline plan");
-    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
-    let report = &diagnostics.report;
-    assert_eq!(report.not_selected_count(), 1);
-    assert!(matches!(
-        report.outcomes()[0],
-        CandidateOutcome::NotSelectedByCost { cost_reason: NativePlanCostReason::SmallSelectiveTopK, .. }
-    ));
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-fn native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_when_enabled() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-cost-full-sort");
-    let left = dir.join("left.parquet");
-    let right = dir.join("right.parquet");
-    write_parquet_file(&left);
-    write_parquet_file(&right);
-    let plan = join_aggregate_sort_sql_plan(&left, &right);
-    let config = native_optimizer_config().with_native_plan_cost_options(NativePlanCostOptions::default());
-    let rule = AlgeonNativePhysicalOptimizerRule::new(config);
-
-    let (optimized, diagnostics) =
-        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
-
-    assert!(
-        optimized.downcast_ref::<AlgeonNativeExec>().is_none(),
-        "cost-declined plan should not be replaced by a native execution boundary"
-    );
-    assert!(Arc::ptr_eq(&optimized, &plan), "a cost-rejected candidate must preserve the exact baseline plan");
-    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
-    let report = &diagnostics.report;
-    assert_eq!(report.selected_count(), 0);
-    assert_eq!(report.not_selected_count(), 1);
-    assert!(matches!(
-        report.outcomes()[0],
-        CandidateOutcome::NotSelectedByCost { cost_reason: NativePlanCostReason::SmallSelectiveFullSort, .. }
-    ));
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-fn native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-cost-no-datafusion-cpu");
-    let left = dir.join("left.parquet");
-    let right = dir.join("right.parquet");
-    write_parquet_file(&left);
-    write_parquet_file(&right);
-    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
-    let config = AlgeonNativeOptimizerConfig::default()
-        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
-        .with_native_execution_config(bounded_config())
-        .with_native_plan_cost_options(NativePlanCostOptions::default());
-    let rules = installed_physical_optimizer_rules(config);
-    let final_native = rules
-        .iter()
-        .find(|rule| rule.name() == "algeon_datafusion_native")
-        .expect("native optimizer rules should contain the final native rule");
-    let error = final_native
-        .optimize(plan, &ConfigOptions::default())
-        .expect_err("the final native rule must reject a cost-declined completed plan");
-    let adapter_error = adapter_error(&error);
-
-    assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
-    assert_eq!(adapter_error.fact_value("requirement"), Some("no_datafusion_cpu"));
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
 fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-no-datafusion-cpu-rejected");
     let path = dir.join("input.parquet");
@@ -1014,24 +925,12 @@ fn native_exec_cases_4() {
             "native_optimizer_rule_runs_the_filtered_scan_below_an_unsupported_projection_as_a_fragment",
             native_optimizer_rule_runs_the_filtered_scan_below_an_unsupported_projection_as_a_fragment,
         ),
-        (
-            "native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_enabled",
-            native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_enabled,
-        ),
     ]);
 }
 
 #[test]
 fn native_exec_cases_5() {
     testing::run_named_cases(&[
-        (
-            "native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_when_enabled",
-            native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_when_enabled,
-        ),
-        (
-            "native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy",
-            native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy,
-        ),
         (
             "native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan",
             native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan,

@@ -147,7 +147,7 @@ pub(super) fn print_metadata(cfg: &BenchConfig) {
 
 pub(super) fn print_progress(cfg: &BenchConfig, query: &TpcdsQuery, iteration: usize, warmup: bool, stage: &str) {
     eprintln!(
-        "[tpcds_three_way_bench] stage={} engine={} query_id={} iteration={} warmup={}",
+        "[tpcds_gpu_cpu_bench] stage={} engine={} query_id={} iteration={} warmup={}",
         stage,
         cfg.engine.as_str(),
         query.id,
@@ -259,16 +259,14 @@ fn row_fields(
 
 fn statistical_aggregate_execution_mode_for_row(engine: Engine) -> String {
     match engine {
-        Engine::NativeGpu | Engine::CostDeclinedDataFusion => {
-            native_statistical_aggregate_execution_mode_from_env().as_str().to_string()
-        },
+        Engine::NativeGpu => native_statistical_aggregate_execution_mode_from_env().as_str().to_string(),
         Engine::CpuDataFusion => "not_applicable".to_string(),
     }
 }
 
 fn statistical_aggregate_tolerance_contract_for_row(engine: Engine) -> String {
     match engine {
-        Engine::NativeGpu | Engine::CostDeclinedDataFusion => {
+        Engine::NativeGpu => {
             native_statistical_aggregate_execution_mode_from_env().tolerance_contract().as_str().to_string()
         },
         Engine::CpuDataFusion => "not_applicable".to_string(),
@@ -576,7 +574,7 @@ mod tests {
     use workloads::tpcds::TPCDS_QUERIES;
 
     use super::*;
-    use crate::tpcds_three_way_bench::runner::config::bench_queries_from_csv;
+    use crate::tpcds_gpu_cpu_bench::runner::config::bench_queries_from_csv;
 
     #[test]
     fn tsv_header_matches_row_field_count_for_cpu_rows() {
@@ -630,11 +628,9 @@ mod tests {
         let tolerance_index =
             header.iter().position(|field| *field == "statistical_aggregate_tolerance_contract").unwrap();
 
-        for engine in [Engine::NativeGpu, Engine::CostDeclinedDataFusion] {
-            let fields = row_fields(query, 0, false, &outcome, engine);
-            assert_eq!(fields[mode_index], "gpu_native_tolerant");
-            assert_eq!(fields[tolerance_index], "float_tolerant");
-        }
+        let native_fields = row_fields(query, 0, false, &outcome, Engine::NativeGpu);
+        assert_eq!(native_fields[mode_index], "gpu_native_tolerant");
+        assert_eq!(native_fields[tolerance_index], "float_tolerant");
 
         let cpu_fields = row_fields(query, 0, false, &outcome, Engine::CpuDataFusion);
         assert_eq!(cpu_fields[mode_index], "not_applicable");

@@ -20,7 +20,8 @@ functions and executes supported relational operations on
 ordinary subqueries as its relation arguments and returns rows that the same
 statement can join, filter, aggregate, or pipe into the next algorithm stage.
 Applications embed Algeon as a Rust library in a DataFusion session or connect
-through Arrow Flight SQL.
+through Arrow Flight SQL. It runs beside the query engines already reading
+the lakehouse and takes the questions they have no operator for.
 
 <p align="center">
   <picture>
@@ -125,7 +126,7 @@ columns and back.
   family, their contracts and examples.
 - [Build & Test](https://algeon.dev/build): prerequisites, the native builds,
   the checks and a Docker image.
-- [Integrating Algeon](https://algeon.dev/integration): an embedded
+- [Integration](https://algeon.dev/integration): an embedded
   DataFusion session or the Arrow Flight SQL server, configuration and error
   handling.
 - [Design](https://algeon.dev/design): module boundaries, native lowering,

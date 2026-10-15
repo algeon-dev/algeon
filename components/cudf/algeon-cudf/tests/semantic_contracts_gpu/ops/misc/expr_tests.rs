@@ -291,6 +291,10 @@ fn binary_expr_aligns_mixed_decimal_storage_before_arithmetic() {
 
     assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2).unwrap());
     assert_eq!(host_export_i128_values(&result), vec![-400, -2400]);
+
+    let result = eval(col("discount") - lit(ScalarValue::Decimal128 { raw: 1, scale: 0 }), &df);
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2).unwrap());
+    assert_eq!(host_export_i128_values(&result), vec![400, 2400]);
 }
 
 fn lit_timestamp_broadcasts_dtype_and_raw_values() {
@@ -401,6 +405,19 @@ fn div_col_col() {
     let df = xy_df();
     // cuDF integer division: 10/1=10, 20/2=10, 30/3=10
     assert_eq!(eval_i32((col("x") / col("y")).alias("quot"), &df), vec![10, 10, 10]);
+
+    let nullable = nullable_i32_df("x", &[10, i32::MIN], &[true, false]);
+    assert_eq!(eval(col("x") / lit(-1i32), &nullable).to_optional_vec::<i32>().unwrap(), vec![Some(-10), None]);
+    let error = (col("x") / lit(0i32)).eval(&nullable).unwrap_err();
+    assert_eq!(error.detail_value("operator"), Some("div"));
+    assert_eq!(error.code(), ErrorCode::DivisionByZero);
+    let all_null = nullable_i32_df("x", &[0, i32::MIN], &[false, false]);
+    assert_eq!(eval(col("x") / lit(0i32), &all_null).null_count(), 2);
+    assert_eq!(eval(col("x") / lit(0i32), &i32_df("x", &[])).len(), 0);
+    let minimum = i32_df("x", &[i32::MIN]);
+    let error = (col("x") / lit(-1i32)).eval(&minimum).unwrap_err();
+    assert_eq!(error.detail_value("reason"), Some("overflow"));
+    assert_eq!(eval_i32(col("x") % lit(-1i32), &minimum), vec![0]);
 }
 
 fn binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale() {
@@ -606,6 +623,47 @@ fn binary_expr_type_error_preserves_eval_operation_and_operator_detail() {
     assert_eq!(err.detail_value("operator"), Some("add"));
 }
 
+fn binary_string_literal_comparisons_fit_without_broadcast_storage() {
+    let rows = 32 * 1024;
+    let values = (0..rows).map(|index| if index % 2 == 0 { "item_view" } else { "buy_comp" }).collect::<Vec<_>>();
+    let validity = (0..rows).map(|index| index % 3 != 0).collect::<Vec<_>>();
+    let events = nullable_series("event_type", &values, &validity).unwrap();
+    let frame = df_with_series("event_type", events);
+    let runtime = Runtime::builder().build().unwrap();
+    let budget_bytes = 8 * 1024 * 1024;
+    let token = execution_budget_token(
+        &runtime,
+        ExecutionBudgetRequest::new(budget_bytes).with_boundary("string_literal_comparison"),
+    )
+    .unwrap();
+    // The scalar fits in the grant; a row-aligned copy of its characters alone exceeds it.
+    let long_literal = "x".repeat(1024);
+    assert!(long_literal.len() * rows > budget_bytes);
+    let outcome = token
+        .run("dataframe::with_columns", |exec| {
+            frame.on(exec).with_columns([
+                ("view", col("event_type").eq(lit("item_view").alias("event_name"))),
+                ("long", col("event_type").eq(lit(long_literal))),
+                ("null", col("event_type").eq(lit_null(TypeId::String))),
+            ])
+        })
+        .unwrap();
+    let output = outcome.value();
+    assert_eq!(
+        output.series("view").unwrap().to_optional_vec::<bool>().unwrap(),
+        (0..rows).map(|index| validity[index].then_some(index % 2 == 0)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        output.series("long").unwrap().to_optional_vec::<bool>().unwrap(),
+        validity.iter().map(|valid| valid.then_some(false)).collect::<Vec<_>>()
+    );
+    assert_eq!(output.series("null").unwrap().null_count(), rows);
+    assert!(outcome.report().allocator_high_water_bytes().unwrap() <= budget_bytes);
+
+    let empty = str_df("event_type", &[]);
+    assert_eq!(eval(col("event_type").eq("item_view"), &empty).len(), 0);
+}
+
 fn neg_expr() {
     let df = xy_df(); // x = [10, 20, 30]
     assert_eq!(eval_i32((-col("x")).alias("neg"), &df), vec![-10, -20, -30]);
@@ -618,6 +676,8 @@ fn bitand_bool() {
     let result = (col("a") & col("b")).alias("and").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false, false]);
+    assert_eq!(eval_bool(col("a") & lit(true), &df), vec![true, true, false, false]);
+    assert_eq!(eval(col("a") & lit_null(TypeId::Bool8), &df).null_count(), 4);
 }
 
 fn bitand_bool_scalar_lhs_without_lit() {
@@ -1517,6 +1577,10 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "expr_tests::binary_expr_type_error_preserves_eval_operation_and_operator_detail",
         binary_expr_type_error_preserves_eval_operation_and_operator_detail,
+    ),
+    (
+        "expr_tests::binary_string_literal_comparisons_fit_without_broadcast_storage",
+        binary_string_literal_comparisons_fit_without_broadcast_storage,
     ),
     ("expr_tests::neg_expr", neg_expr),
     ("expr_tests::bitand_bool", bitand_bool),

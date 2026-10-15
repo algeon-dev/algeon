@@ -1,7 +1,8 @@
 ---
 title: "Introducing Algeon: Interactive Graph, Vector, and ML Analytics for the Agent Era"
-description: "Algeon runs graph, vector and machine-learning algorithms on SQL subqueries and returns their output as rows, inside one SQL query. This post explains why that fits an agent that asks many questions through a backend service, how the engine is built, and what it cannot do yet."
+description: "Algeon runs graph, vector and machine-learning algorithms on SQL subqueries and returns their output as rows, inside one SQL query. This post explains why that fits an agent that asks many questions through a backend service, where Algeon sits beside the query engines already on the lake, how the engine is built, and what it cannot do yet."
 slug: introducing-algeon
+date: 2026-10-14
 tags: [announcement]
 authors: morris
 ---
@@ -14,6 +15,7 @@ import session from '@site/static/data/merrec-agent-session.json';
 import barbie from '@site/static/data/merrec-scale-barbie-tie-ins.json';
 import listingCheck from '@site/static/data/merrec-barbie-listing-check.json';
 import funnel from '@site/static/data/merrec-scale-audience-funnel.json';
+import controls from '@site/static/data/merrec-barbie-control-seeds.json';
 
 export const stepOf = id => session.steps.find(item => item.step === id);
 export const seconds = value => value.toFixed(2);
@@ -25,10 +27,11 @@ export const nyx = listingCheck.records.find(row => row.brand_name === 'NYX');
 
 An agent session over 1.27 billion marketplace events compared brand affinity
 to Barbie's audience between May-June and July-August 2023, around the film's release.
-It issued five queries to Algeon through Arrow Flight SQL. The first two read the catalog: which
-graph functions this build installs, and what personalized PageRank takes and
-returns. The third looked up Barbie's brand id to seed from, and the fourth
-used `EXPLAIN GPU` to check whether the whole query would stay on the GPU.
+It issued five queries to Algeon through Arrow Flight SQL. The first two read
+the catalog to check which graph functions this build installs and what
+personalized PageRank takes and returns. The third looked up Barbie's brand id
+to seed from, and the fourth used `EXPLAIN GPU` to check whether the whole query
+would stay on the GPU.
 The fifth ran four graph calls over the events and returned
 {stepOf(5).rows.length} brands in {seconds(stepOf(5).elapsed_s)} seconds.
 Personalized PageRank highlighted brands such as NYX whose affinity to Barbie rose
@@ -48,34 +51,33 @@ Release build on one NVIDIA RTX PRO 6000, a 90 GiB query grant, `native_required
 
 </div>
 
-This execution pattern reflects a shift in how humans interact with data
-through personal assistants. Users expect assistants that are responsive enough
-for interactive dialogue, capable of connecting non-obvious relationships
-across large datasets, and grounded in verifiable evidence rather than model
-guesses. To meet those expectations, an agent cannot rely on static dashboards
-or parametric recall. It operates as an iterative investigator, inspecting
-catalog metadata, resolving entity keys, formulating hypotheses, and validating
-evidence across multiple queries.
+Pre-aggregated rollups and reporting tables summarize metrics along predefined
+dimensions, such as regional revenue or endpoint latency. Investigating weak
+signals, such as unindexed supplier relationships or emerging brand affinities,
+instead requires ad hoc joins across unaggregated relations.
 
-That investigative loop concentrates latency pressure on the underlying engine.
-When a conversational turn has an interactive budget of five to ten seconds and
-the agent requires several consecutive attempts to verify its reasoning, each
-step must complete in seconds or milliseconds. If the middle step involves
-graph traversals, vector similarity, or model scoring, traditional lakehouse
-batch queues and multi-system host transfers exceed that conversational budget.
-In Algeon, an analyst or an AI agent applies a graph, vector, or
-machine-learning algorithm to a relation defined by SQL, and the output comes back
-as rows the same query can keep joining, filtering, and aggregating. Each
-attempt is one query and one physical plan, submitted by the application's
-backend service and answered in the same call.
+An investigative agent tests competing hypotheses through sequences of
+dependent queries. If each query takes minutes, interactive exploration becomes
+impractical. Within a five-to-ten-second interaction budget, multiple dependent
+queries require individual executions to complete in well under a second. Graph
+traversals, vector similarity search, and model scoring make this target harder
+to meet when each operation introduces separate scheduling, data movement, or
+execution overhead.
+
+Algeon operates alongside lakehouse engines, which handle scheduled batch ETL
+and produce base tables. Algeon executes ad hoc queries involving graph, vector,
+and machine learning operations. Rather than invoking these algorithms as
+separate processing stages, Algeon integrates them as relational operators
+within a single physical execution plan. Intermediate results flow between
+operators as Arrow record batches, allowing these operations to participate in
+the same query execution pipeline.
 
 ## A working set for each question
 
 A lakehouse holds terabytes, and almost no single question needs more than a
 sliver of it. A question is about one tenant, one quarter, one product line,
-one cohort. SQL does the narrowing: a filter on a date range, a join against
-a dimension table, an aggregation over a segment, and the domain rules that
-determine which records belong in the analysis at all. What survives is
+one cohort. SQL narrows the scan through date filters, dimension joins, and
+segment aggregations that isolate relevant records. The surviving rows form
 the question's working set. Fleet studies put numbers on how small it
 usually is. In the Amazon Redshift fleet
 the median query uses 0.6 GB of memory and the 99th-percentile query 21.4 GB;
@@ -122,7 +124,7 @@ all.
   working on, or that the next algorithm can take as input.</>}
 />
 
-Running the algorithm after the reduction also changes which algorithm fits.
+Executing the algorithm after the reduction also alters algorithm selection.
 NVIDIA's cuVS guide states the condition for exact search:
 ["Use brute-force for heavily filtered queries. If a filter excludes most
 vectors, brute-force can search only the remaining candidates while IVF and
@@ -194,15 +196,16 @@ time.
 
 ## Validating hypotheses on the same working set
 
-An initial graph query identifies records worth investigating, but a graph
-score does not establish why an affinity score moved. Exploring the finding
-requires follow-up queries that test competing explanations against the same
-working set.
+An initial graph query identifies candidate records across relations that no
+pre-existing dashboard tracks, but graph centrality alone does not explain
+affinity shifts. Confirmation of an observed correlation requires testing alternative
+hypotheses on the same working set.
 
-The initial query ranked brands by affinity change, defined as the ratio
-of personalized to ordinary PageRank, requiring at least 1,000 distinct fans in
-both periods. The four largest increases were retail and entertainment brands;
-Taylor Swift ranked fifth and provides a comparison record.
+The opening query ranked brands by affinity change, defined as the ratio of
+personalized to ordinary PageRank with at least 1,000 distinct fans in both
+periods. Retail and entertainment tie-ins were expected, but the ranking also
+highlighted cosmetics brand NYX alongside AMC and Primark; Taylor Swift ranked
+fifth and provided a comparison record.
 
 <Table>
 <thead><tr><th>Brand</th><th>May-June affinity</th><th>July-August affinity</th></tr></thead>
@@ -225,8 +228,16 @@ smaller increases for NYX, ALDO, and Primark. Each check ran as a single SQL
 query with one modified parameter, documented in the
 [full investigation](/guides/datasets/merrec#barbie) in the MerRec guide.
 
-The engine executes each follow-up check in seconds, allowing an agent
-or analyst to evaluate competing hypotheses in the same interactive session.
+Each follow-up check incurred overhead comparable to the primary query. The Hot
+Wheels and Nike control reruns completed over Flight SQL in
+{seconds(controls.hot_wheels.median_elapsed_s_after_first)} s and
+{seconds(controls.nike.median_elapsed_s_after_first)} s respectively, while the
+name check executed as a standard relational aggregation. Together, the four
+queries isolated the underlying effect. NYX, ALDO, and Primark expanded Barbie
+inventories and shifted toward the Hot Wheels audience, AMC shifted exclusively
+with Barbie, and Taylor Swift remained uncorrelated with title inventory.
+Because execution occurs in-process without manual data exports, verification
+queries execute in the same interactive session.
 
 ## Chaining multiple algorithms in one query
 
@@ -243,11 +254,11 @@ how many shoppers in each list bought a Pokemon listing in the following two
 months. The intermediate relations stay on the device, and the list size,
 `k` and the PageRank cutoff are parameters for the next run.
 
-The same query scores two controls with the same model and the same
-list size, which is the comparison the planner needs. After ranking, the
-combined graph-or-taste pool held
+The query also evaluates two baseline controls using identical model parameters
+and candidate pool sizes. After ranking, the combined graph-and-embedding pool
+identified
 {byStage[8].pokemon_buyers_sep_oct - byStage[7].pokemon_buyers_sep_oct} more
-later buyers than the rule a marketer would try first, previous Pokemon
+subsequent buyers than the baseline heuristic of targeting previous Pokemon
 viewers.
 
 <Table>
@@ -259,19 +270,21 @@ viewers.
 ].map(({stage, label}) => <tr key={stage}><td>{label}</td><td>{byStage[stage].shoppers.toLocaleString('en-US')}</td><td>{byStage[stage].pokemon_buyers_sep_oct}</td></tr>)}</tbody>
 </Table>
 
-The query evaluates composition across cuGraph, cuVS, and cuML inside one
-physical plan, retaining intermediate buffers in GPU memory and returning the
-ranked shortlist in about 20 seconds. The 93 to 72 buyer difference reflects
-observational correlation in historical records. An online experiment would be
-required to evaluate incremental marketing lift.
+Targeting previous viewers relies on direct historical purchase signals.
+Queries combining graph traversal with embedding similarity identify lookalike shoppers
+lacking explicit prior interactions. Inside a single physical plan across cuGraph,
+cuVS, and cuML, intermediate buffers remain in GPU memory, producing the ranked
+shortlist in approximately 20 seconds. The 93 to 72 buyer difference reflects
+observational correlation in historical records; evaluating incremental lift
+would require an online randomized trial.
 
 ## Built for the agent's loop
 
-An agent exploring data should not spend its context on partition pruning,
-projection pushdown, or GPU kernel selection. Its role is to formulate
-hypotheses in the application's domain vocabulary and present explainable evidence.
-A semantic ontology maps that vocabulary to SQL tables, keys, and joins, while
-DataFusion and Algeon manage physical planning, join ordering, and GPU execution.
+The client application manages domain vocabularies, query formulation, and
+result evaluation. An ontology maps application terms to SQL tables, keys, and
+predicates. DataFusion and Algeon handle physical planning, join ordering,
+and GPU memory allocation, allowing the client service to focus on hypothesis
+testing.
 
 <AgentLoopFigure
   caption={<>The application owns the agent, the ontology that maps its
@@ -280,99 +293,89 @@ DataFusion and Algeon manage physical planning, join ordering, and GPU execution
   and returns rows plus structured diagnostics the agent can act on.</>}
 />
 
-To power this loop, Algeon pairs Apache DataFusion with NVIDIA's RAPIDS libraries.
-DataFusion provides the relational spine: SQL parsing, logical optimization,
-and transparent CPU fallback for unsupported operators. RAPIDS executes
-specialized algorithms from [`cuGraph`](/cugraph), [`cuVS`](/cuvs), and
-[`cuML`](/cuml) directly as table functions in the physical plan. When the
-surrounding SQL lowers natively, intermediate relations remain on the GPU
-across stages, enabling single-query pipelines that
-combine graph traversals, vector lookups, and model scoring without host memory round-trips.
+Algeon pairs Apache DataFusion with NVIDIA's RAPIDS libraries. DataFusion parses
+SQL, optimizes the logical plan, and executes on the CPU when an operator lacks a
+GPU implementation. RAPIDS runs specialized algorithms from
+[`cuGraph`](/cugraph), [`cuVS`](/cuvs), and [`cuML`](/cuml) directly as table
+functions in the physical plan. When surrounding operators lower natively,
+intermediate relations stay in GPU memory across stages, avoiding host memory
+copies between graph traversals, vector lookups, and model scoring.
 
-Interactive exploration also requires that failures serve as structured interfaces.
-Queries return Arrow record batches in seconds, and invalid calls are rejected at
-planning time with machine-readable diagnostics, identifying missing columns or
-parameter boundaries before device work begins. For example, if a query references
-an assumed output column `score` instead of `value` on `cugraph_personalized_pagerank`,
-Flight returns a schema error in 3 milliseconds:
+Planning errors return as structured diagnostics. Queries return Arrow record
+batches in seconds, and invalid statements fail at planning time before device
+allocation starts. For example, if a query references an assumed output column
+`score` instead of `value` on `cugraph_personalized_pagerank`, Flight returns
+the schema mismatch in 3 milliseconds:
 
 ```text
 Flight returned invalid argument error, with message: No field named score. Valid fields are vertex, value.
 ```
 
-The calling service receives the expected schema contract immediately,
-without allocating device memory or waiting for a kernel launch. Each query runs under an immutable
-memory grant from the device ledger, ensuring bounded allocation for multi-query backends.
+The calling service receives the expected schema without launching a kernel or
+allocating device buffers. Each query executes under an immutable memory grant
+from the device ledger, bounding memory usage across concurrent clients.
 The [design guide](/design) and [integration guide](/integration) document the
 underlying physical lowering rules and memory contracts.
 
-## Serving the working sets that Spark prepares
+## Beside the engines already on the lake
 
-NVIDIA accelerates batch processing over the lake through its own Spark
-integrations. [cuDF for Spark](https://github.com/NVIDIA/cudf-spark) replaces
-Spark SQL operators with cuDF-backed ones, and
-[cuML for Spark](https://github.com/NVIDIA/cuml-spark) offers PySpark
-ML-compatible estimators backed by cuML. Both accelerate a Spark job, which a
-driver schedules over partitions of the lake. Algeon targets the moment after
-such a job has run, when one working set receives many small ad hoc
-questions from a service that waits for each answer. Latency per attempt
-matters more there than throughput per job. On the MerRec dataset, with the
-source files already in the page cache, the Barbie query completed over Flight
-SQL in a median of {seconds(barbie.median_elapsed_s_after_first)} s after its
-first run (an equivalent DuckDB and igraph pipeline took 23.3 s on the same host,
-producing identical top-25 rankings); the
-[MerRec guide](/guides/datasets/merrec) records the first run beside the
-median.
+Distributed query engines and batch schedulers manage large-scale lakehouse
+workloads. NVIDIA accelerates distributed batch execution through GPU-accelerated
+Spark packages: [cuDF for Spark](https://github.com/NVIDIA/cudf-spark) replaces
+Spark SQL operators with cuDF implementations, and
+[cuML for Spark](https://github.com/NVIDIA/cuml-spark) provides PySpark ML
+estimators backed by cuML. A Spark driver coordinates task execution across
+cluster partitions.
 
-The unit of composition differs too. In Spark, an ML estimator is an object in
-Python or Scala, and GraphX and GraphFrames require separate APIs outside Spark
-SQL. Combining relational filters, graph algorithms, and model inference places
-coordination and intermediate buffers in client application code. In Algeon,
-each algorithm executes as an in-plan relation, allowing an agent to express the
-workflow within SQL.
+Algeon targets the phase following batch preparation, when a filtered working set
+receives repeated ad hoc queries from an interactive service. Latency per attempt
+takes precedence over aggregate batch throughput. On the MerRec dataset, with
+files staged in the OS page cache, the Barbie query completed over Flight SQL in
+a median of {seconds(barbie.median_elapsed_s_after_first)} s after its first run
+(an equivalent DuckDB and igraph pipeline required 23.3 s on the same host for
+identical top-25 rankings); the [MerRec guide](/guides/datasets/merrec) documents
+initial and median timings.
 
-The two systems form a complementary lifecycle. Spark handles lakehouse-scale
-batch extraction, heavy data preparation, and cluster-wide model training;
-Algeon serves low-latency exploratory queries over the resulting working sets.
-When interactive exploration identifies a durable query pattern, such as the
-combined graph and taste candidate funnel, that logic can graduate into a
-scheduled Spark batch job or a dedicated service operating over the broader
-lake. Both read Parquet files directly and build upon the shared RAPIDS library
-ecosystem.
+The execution model also differs. In Spark, an ML estimator is an external object
+in Python or Scala, and graph operations require external GraphX or GraphFrames
+APIs. A pipeline combining relational filters, graph algorithms, and inference
+buffers intermediate results in driver or application memory. In Algeon, each
+algorithm is an in-plan table function within a single SQL statement.
+
+Spark and Algeon address distinct stages. Spark manages cluster extraction,
+large-scale transformation, and distributed model training. Algeon executes
+interactive analytical queries against the resulting Parquet files. When an
+exploratory pattern proves persistent, such as the candidate generation funnel,
+that logic can be deployed as a scheduled Spark job over the wider lake. Both
+read Parquet directly and build on RAPIDS libraries.
 
 ## Known gaps
 
-- Cloud object storage across major providers does not support GPU-direct
-  RDMA, and emerging specifications such as NVIDIA cuObject remain early in
-  adoption. The captured runs in this post stage working sets on local NVMe
-  drives attached to the GPU host.
-  The [storage transport design](/design/data-path#the-transport-depends-on-the-source)
-  details how file reads route through KvikIO in compatibility mode, using
-  pinned host bounce buffers to transfer data from NVMe into GPU memory. Local
-  NVMe staging achieves interactive query latencies, but maintaining local disk
-  copies is an operational compromise for lakehouse infrastructure. GPU-direct
-  reads from shared object storage depend on wider ecosystem adoption, with
-  GDS and cuObject tracked on the
+- Cloud object storage across major providers lacks GPU-direct RDMA support.
+  The runs in this post stage working sets on local NVMe drives attached to the
+  GPU host. File reads route through KvikIO in compatibility mode, using pinned
+  host bounce buffers to transfer data from NVMe into GPU memory. Local NVMe
+  staging delivers interactive query latencies, but maintaining local disk
+  copies remains an operational trade-off for lakehouse setups. Direct reads from
+  shared object storage via GDS and cuObject are tracked on the
   [roadmap](/reference/roadmap#longer-term).
 - Lakehouse table formats lack mature Rust integration. Upstream crates
   including `datafusion-iceberg` and `iceberg-rust` remain under active
-  development and have not reached the stability required for engine
-  integration. Algeon currently reads standalone Parquet files directly,
+  development. Algeon currently reads standalone Parquet files directly,
   without resolving Iceberg metadata, manifest lists, or snapshot histories.
-  While Iceberg sources are currently [unsupported](/integration#iceberg-support),
-  integrating managed lakehouse tables is planned as a
-  [mid-term roadmap item](/reference/roadmap#mid-term) as the open-source
-  DataFusion and Iceberg ecosystems mature.
-- A query runs on one GPU and does not spill. Independent queries can be
-  placed on different devices, but a query never spans two, and a working set
-  larger than its grant fails with an allocation error. Graph construction
-  and algorithm scratch space count toward that grant. Disk spilling through
+  Managed Iceberg table support is planned as a
+  [mid-term roadmap item](/reference/roadmap#mid-term).
+- A query runs on one GPU and does not spill. Independent queries can run on
+  different devices, but a single query cannot span multiple GPUs. A working set
+  larger than its grant fails with an allocation error. Graph construction and
+  algorithm scratch space count toward that grant. Disk spilling through
   cuCascade and multi-GPU execution are tracked on the
   [roadmap](/reference/roadmap#longer-term).
 - Vector indexes, graph topologies, and fitted models are built per execution.
   Forest inference reads its model file during planning for each statement.
   While a bounded server can retain constructed graphs across calls for a subset
-  of algorithms, persistent cross-query artifacts remain a roadmap goal.
+  of algorithms, persistent cross-query artifacts remain planned for future
+  releases.
 - GPU relational coverage is a subset of SQL and of Arrow types. Nested and
   binary types and most list shapes stay on the CPU path. The
   [native SQL reference](/reference/native-sql-support) lists supported operators
@@ -388,14 +391,15 @@ other than DataFusion are not planned.
 Until a packaged release exists, running Algeon means Linux, an NVIDIA GPU
 and a [source build](/build/from-source). The
 [MerRec setup](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/README.md)
-prepares the dataset behind this post. The next useful experiment is a
-complete investigation on a known dataset. Choose a question whose answer can
-be checked independently, define the working set, apply an algorithm and use
-its output in the next query. Measure the full query cost, including data
-preparation, and compare the result with a trusted reference. A
-[GitHub issue](https://github.com/algeon-dev/algeon/issues) with the SQL,
-the expected output and the timing tells us where an operator is missing, a
-result is wrong or a step costs more than it should.
+prepares the dataset behind this post.
+
+The next useful experiment is a complete investigation on a known dataset.
+Identify a query with a verifiable baseline, define the working set, and execute
+the algorithm in SQL. Measure total elapsed time, including scan and data
+preparation, and compare outputs against a trusted reference. A
+[GitHub issue](https://github.com/algeon-dev/algeon/issues) documenting the SQL,
+expected results, and execution timings highlights where an operator is missing
+or performance regresses.
 
 [^1]: Redshift figures are from van Renen et al.,
 [*Why TPC Is Not Enough: An Analysis of the Amazon Redshift

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate website/src/data/tpcdsSf100Benchmark.ts from TPC-DS benchmark artifacts.
 
-Timings come from the three-way bench TSVs. Result-value agreement comes from
+Timings come from the tpcds_gpu_cpu_bench TSVs. Result-value agreement comes from
 the native_tpcds_parity_report TSV, which must cover the same dataset root and
 query set as the timing runs.
 """

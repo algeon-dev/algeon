@@ -45,10 +45,7 @@ use query_planning::{
 
 use super::{
     NativeCapabilityContractDiagnostics,
-    attempt::{
-        NativeCostSelection, NativeOptimizationAttempt, NativeReplacementSink,
-        replace_lowered_root_or_keep_plan_for_sink,
-    },
+    attempt::{NativeOptimizationAttempt, NativeReplacementSink, replace_lowered_root_or_keep_plan_for_sink},
     plan_contains_gpu_execution,
 };
 use crate::{
@@ -63,7 +60,7 @@ use crate::{
 pub(super) struct FragmentSearch<'a> {
     pub(super) native_execution_config: &'a AlgeonNativeExecutionConfig,
     pub(super) native_optimizer_options: &'a NativeOptimizerOptions,
-    pub(super) cost_selection: NativeCostSelection,
+    pub(super) datafusion_cpu_allowed: bool,
     pub(super) optimizer_options: &'a OptimizerOptions,
 }
 
@@ -203,7 +200,7 @@ impl FragmentSearch<'_> {
             lowering,
             self.native_execution_config,
             self.native_optimizer_options,
-            self.cost_selection,
+            self.datafusion_cpu_allowed,
             NativeReplacementSink::HostArrow,
         )?;
         if attempt.rewritten {

@@ -1,159 +1,44 @@
 use std::sync::Arc;
 
 use arrow::array::Int64Array;
-use cudf::testing::run_named_cases;
 use query_planning::plan::{
-    NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, QueryPlan, native_plan_cost_decision,
+    GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionOptions, GraphEdgeColumnBindings,
+    NativePlanCostReason, native_plan_cost_decision,
 };
 
 use super::*;
 
-fn small_selective_topk_join_is_not_selected_by_cost() {
-    let plan = topk_join_plan(4, 10_000, 1024 * 1024);
-
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
-
-    let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
-        panic!("small top-k join should not be selected by cost");
-    };
-    assert_eq!(reason, NativePlanCostReason::SmallSelectiveTopK);
-    assert_eq!(facts.selected_row_groups, Some(8));
-    assert_eq!(facts.estimated_source_bytes, Some(2 * 1024 * 1024));
-    assert!(facts.selected_source_bytes_known);
-    assert_eq!(facts.join_count, 1);
-    assert_eq!(facts.min_topk_fetch, Some(100));
-    assert_eq!(facts.diagnostic_facts().get("selected_row_groups").map(String::as_str), Some("8"));
-}
-
 #[test]
-fn t_cost_decision_cases() {
-    run_named_cases(&[
-        (
-            "preference_contracts::small_selective_topk_join_is_not_selected_by_cost",
-            small_selective_topk_join_is_not_selected_by_cost,
-        ),
-        (
-            "preference_contracts::tiny_residual_join_is_not_selected_by_cost",
-            tiny_residual_join_is_not_selected_by_cost,
-        ),
-        (
-            "preference_contracts::residual_join_over_tight_threshold_continues_native",
-            residual_join_over_tight_threshold_continues_native,
-        ),
-        (
-            "preference_contracts::residual_join_can_use_profile_specific_row_group_threshold",
-            residual_join_can_use_profile_specific_row_group_threshold,
-        ),
-        ("preference_contracts::larger_topk_join_continues_native", larger_topk_join_continues_native),
-        ("preference_contracts::few_large_row_groups_continue_native", few_large_row_groups_continue_native),
-        (
-            "preference_contracts::missing_row_group_evidence_continues_native",
-            missing_row_group_evidence_continues_native,
-        ),
-        (
-            "preference_contracts::small_grouped_aggregate_without_topk_or_residual_continues_native",
-            small_grouped_aggregate_without_topk_or_residual_continues_native,
-        ),
-        (
-            "preference_contracts::small_selective_full_sort_join_aggregate_is_not_selected_by_cost",
-            small_selective_full_sort_join_aggregate_is_not_selected_by_cost,
-        ),
-        ("preference_contracts::disabled_cost_options_continue_native", disabled_cost_options_continue_native),
-    ]);
-}
-
-fn tiny_residual_join_is_not_selected_by_cost() {
-    let plan = residual_topk_join_plan(4);
-
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
-
-    let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
-        panic!("tiny residual join should not be selected by cost");
+fn plans_without_column_data_are_not_selected_by_cost_unless_native_is_required() {
+    let literal_plan = |schema: Arc<Schema>| {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(schema)));
+        builder.finish_with_host_sink(source).unwrap()
     };
-    assert_eq!(reason, NativePlanCostReason::SmallSelectiveResidualJoin);
-    assert_eq!(facts.selected_row_groups, Some(8));
-    assert_eq!(facts.residual_join_count, 1);
-}
+    let no_columns = literal_plan(Arc::new(Schema::empty()));
+    assert_eq!(native_plan_cost_decision(&no_columns, true), Some(NativePlanCostReason::NoColumnData));
+    assert_eq!(native_plan_cost_decision(&no_columns, false), None);
+    // A relation folded to zero rows carries no column values either, which
+    // takes precedence over the host-literal passthrough rule.
+    let no_rows = literal_plan(key_value_schema());
+    assert_eq!(native_plan_cost_decision(&no_rows, true), Some(NativePlanCostReason::NoColumnData));
 
-fn residual_join_over_tight_threshold_continues_native() {
-    let plan = residual_topk_join_plan(31);
-
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
-
-    assert!(!decision.is_not_selected_by_cost(), "residual joins use a tighter small-shape gate than ordinary top-k");
-    assert_eq!(decision.facts().selected_row_groups, Some(62));
-    assert_eq!(decision.facts().residual_join_count, 1);
-    assert_eq!(decision.facts().min_topk_fetch, Some(100));
-}
-
-fn residual_join_can_use_profile_specific_row_group_threshold() {
-    let plan = residual_topk_join_plan(12);
-    let options =
-        NativePlanCostOptions { max_small_selective_residual_join_row_groups: 24, ..NativePlanCostOptions::default() };
-
-    let decision = native_plan_cost_decision(&plan, &options, true);
-
-    let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
-        panic!("profile-specific residual threshold should decline a small low-byte residual join by cost");
-    };
-    assert_eq!(reason, NativePlanCostReason::SmallSelectiveResidualJoin);
-    assert_eq!(facts.selected_row_groups, Some(24));
-    assert_eq!(facts.estimated_source_bytes, Some(2 * 1024 * 1024));
-}
-
-fn larger_topk_join_continues_native() {
-    let plan = topk_join_plan(254, 5_000_000, 512 * 1024 * 1024);
-
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
-
-    assert!(!decision.is_not_selected_by_cost(), "larger top-k join must not be declined by the small-shape cost gate");
-    assert_eq!(decision.facts().selected_row_groups, Some(508));
-}
-
-fn few_large_row_groups_continue_native() {
-    let plan = topk_join_plan(4, 10_000, 2 << 30);
-
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
-
-    assert!(!decision.is_not_selected_by_cost(), "selected source bytes must gate small/selective cost selection");
-    assert_eq!(decision.facts().selected_row_groups, Some(8));
-    assert_eq!(decision.facts().estimated_source_bytes, Some(4 << 30));
-}
-
-fn missing_row_group_evidence_continues_native() {
-    let plan = topk_join_without_row_group_metadata();
-
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
-
-    assert!(!decision.is_not_selected_by_cost(), "missing scan evidence should continue native selection");
-    assert!(!decision.facts().selected_row_groups_known);
-    assert_eq!(decision.facts().selected_row_groups, None);
-}
-
-fn small_grouped_aggregate_without_topk_or_residual_continues_native() {
-    let plan = grouped_aggregate_plan(4);
-
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
-
-    assert!(!decision.is_not_selected_by_cost(), "small final output alone is not enough to decline by cost");
-    assert_eq!(decision.facts().grouped_aggregate_count, 1);
-    assert_eq!(decision.facts().min_topk_fetch, None);
-}
-
-fn small_selective_full_sort_join_aggregate_is_not_selected_by_cost() {
-    let plan = full_sort_join_aggregate_plan(4, 10_000, 1024 * 1024);
-
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
-
-    let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
-        panic!("small full-sort join/aggregate should not be selected by cost");
-    };
-    assert_eq!(reason, NativePlanCostReason::SmallSelectiveFullSort);
-    assert_eq!(facts.selected_row_groups, Some(8));
-    assert_eq!(facts.sort_count, 1);
-    assert_eq!(facts.join_count, 1);
-    assert_eq!(facts.grouped_aggregate_count, 1);
-    assert_eq!(facts.min_topk_fetch, None);
+    // A GPU algorithm over the same empty input is GPU work.
+    let edges = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(edges)));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::StronglyConnectedComponents,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::StronglyConnectedComponents(Default::default()),
+    );
+    let graph = builder.add_graph_algorithm(source, Vec::new(), spec).unwrap();
+    let graph_plan = builder.finish_with_host_sink(graph).unwrap();
+    assert_eq!(native_plan_cost_decision(&graph_plan, true), None);
 }
 
 #[test]
@@ -176,259 +61,15 @@ fn host_literal_passthrough_to_the_host_is_not_selected_by_cost_unless_native_is
     };
     let passthrough = literal_plan(None);
 
-    let decision = native_plan_cost_decision(&passthrough, &NativePlanCostOptions::default(), true);
-    assert!(
-        matches!(
-            decision,
-            NativePlanCostDecision::NotSelectedByCost { reason: NativePlanCostReason::HostLiteralPassthrough, .. }
-        ),
-        "{decision:?}"
-    );
-    assert!(
-        !native_plan_cost_decision(&passthrough, &NativePlanCostOptions::default(), false).is_not_selected_by_cost()
-    );
+    assert_eq!(native_plan_cost_decision(&passthrough, true), Some(NativePlanCostReason::HostLiteralPassthrough));
+    assert_eq!(native_plan_cost_decision(&passthrough, false), None);
     // A GPU-resident result stays on the device for its consumer.
     let resident = passthrough.clone_with_gpu_resident_sink();
-    assert!(!native_plan_cost_decision(&resident, &NativePlanCostOptions::default(), true).is_not_selected_by_cost());
+    assert_eq!(native_plan_cost_decision(&resident, true), None);
     let limited = literal_plan(Some(LimitSpec::fetch(1)));
-    assert!(!native_plan_cost_decision(&limited, &NativePlanCostOptions::default(), true).is_not_selected_by_cost());
-}
-
-fn disabled_cost_options_continue_native() {
-    let plan = topk_join_plan(4, 10_000, 1024 * 1024);
-
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::disabled(), true);
-
-    assert!(!decision.is_not_selected_by_cost());
-}
-
-fn topk_join_plan(row_groups_per_source: usize, rows_per_source: u64, bytes_per_source: u64) -> QueryPlan {
-    topk_join_plan_with_residual(row_groups_per_source, rows_per_source, bytes_per_source, false)
-}
-
-fn residual_topk_join_plan(row_groups_per_source: usize) -> QueryPlan {
-    topk_join_plan_with_residual(row_groups_per_source, 10_000, 1024 * 1024, true)
-}
-
-fn topk_join_plan_with_residual(
-    row_groups_per_source: usize,
-    rows_per_source: u64,
-    bytes_per_source: u64,
-    residual: bool,
-) -> QueryPlan {
-    let mut builder = QueryPlanBuilder::new();
-    let left_schema = key_value_schema();
-    let right_schema = key_label_schema();
-    let output_schema = Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int64, false),
-        Field::new("v", DataType::Int64, false),
-        Field::new("label", DataType::Utf8, true),
-    ]));
-    let left = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/cost-left.parquet",
-        Arc::clone(&left_schema),
-        vec!["k", "v"],
-        row_groups_per_source,
-        rows_per_source,
-        bytes_per_source,
-    )));
-    let right = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/cost-right.parquet",
-        Arc::clone(&right_schema),
-        vec!["k", "label"],
-        row_groups_per_source,
-        rows_per_source,
-        bytes_per_source,
-    )));
-    let mut join_spec = JoinSpec::new(
-        JoinType::Inner,
-        vec![JoinKey::new(ColumnRef::input(0, "k", "left_k"), ColumnRef::input(1, "k", "right_k"))],
-    )
-    .with_output_projection(vec![
-        JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-        JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        JoinOutputColumn::right(ColumnRef::input(1, "label", "label"), "label"),
-    ])
-    .with_build_side(JoinSide::Right);
-    if residual {
-        join_spec = join_spec.with_residual_predicate(Expr::literal(LiteralValue::Boolean(true)));
-    }
-    let join = builder.add_join(left, right, join_spec, Arc::clone(&output_schema)).unwrap();
-    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
-    builder.finish_with_host_sink(limit).unwrap()
-}
-
-fn topk_join_without_row_group_metadata() -> QueryPlan {
-    let mut builder = QueryPlanBuilder::new();
-    let left_schema = key_value_schema();
-    let right_schema = key_label_schema();
-    let output_schema = Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int64, false),
-        Field::new("v", DataType::Int64, false),
-        Field::new("label", DataType::Utf8, true),
-    ]));
-    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/cost-left-unknown.parquet")],
-        Arc::clone(&left_schema),
-        vec!["k".to_string(), "v".to_string()],
-    )));
-    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/cost-right-unknown.parquet")],
-        Arc::clone(&right_schema),
-        vec!["k".to_string(), "label".to_string()],
-    )));
-    let join = builder
-        .add_join(
-            left,
-            right,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "left_k"), ColumnRef::input(1, "k", "right_k"))],
-            )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-                JoinOutputColumn::right(ColumnRef::input(1, "label", "label"), "label"),
-            ])
-            .with_build_side(JoinSide::Right),
-            Arc::clone(&output_schema),
-        )
-        .unwrap();
-    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
-    builder.finish_with_host_sink(limit).unwrap()
-}
-
-fn grouped_aggregate_plan(row_groups: usize) -> QueryPlan {
-    let mut builder = QueryPlanBuilder::new();
-    let source_schema = key_value_schema();
-    let aggregate_schema = Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int64, false),
-        Field::new("sum_v", DataType::Int64, true),
-    ]));
-    let source = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/cost-aggregate.parquet",
-        Arc::clone(&source_schema),
-        vec!["k", "v"],
-        row_groups,
-        10_000,
-        1024 * 1024,
-    )));
-    let aggregate = builder
-        .add_aggregate(
-            source,
-            AggregateSpec {
-                group_exprs: vec![Expr::column("k")],
-                aggr_exprs: vec![AggregateExpr {
-                    function: AggregateFunction::Sum,
-                    expr: Expr::column("v"),
-                    alias: "sum_v".to_string(),
-                    distinct: false,
-                    filter: None,
-                }],
-                grouping_sets: None,
-            },
-            aggregate_schema,
-        )
-        .unwrap();
-    builder.finish_with_host_sink(aggregate).unwrap()
-}
-
-fn full_sort_join_aggregate_plan(
-    row_groups_per_source: usize,
-    rows_per_source: u64,
-    bytes_per_source: u64,
-) -> QueryPlan {
-    let mut builder = QueryPlanBuilder::new();
-    let left_schema = key_value_schema();
-    let right_schema = key_label_schema();
-    let join_schema =
-        Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false), Field::new("v", DataType::Int64, false)]));
-    let aggregate_schema = Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int64, false),
-        Field::new("sum_v", DataType::Int64, true),
-    ]));
-    let left = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/cost-full-sort-left.parquet",
-        Arc::clone(&left_schema),
-        vec!["k", "v"],
-        row_groups_per_source,
-        rows_per_source,
-        bytes_per_source,
-    )));
-    let right = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/cost-full-sort-right.parquet",
-        Arc::clone(&right_schema),
-        vec!["k", "label"],
-        row_groups_per_source,
-        rows_per_source,
-        bytes_per_source,
-    )));
-    let join = builder
-        .add_join(
-            left,
-            right,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "left_k"), ColumnRef::input(1, "k", "right_k"))],
-            )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-            join_schema,
-        )
-        .unwrap();
-    let aggregate = builder
-        .add_aggregate(
-            join,
-            AggregateSpec::new(
-                vec![Expr::column("k")],
-                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "sum_v")],
-            ),
-            Arc::clone(&aggregate_schema),
-        )
-        .unwrap();
-    let sort =
-        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("sum_v"), true, false)])).unwrap();
-    builder.finish_with_host_sink(sort).unwrap()
-}
-
-fn parquet_source(
-    path: &str,
-    schema: Arc<Schema>,
-    read_columns: Vec<&str>,
-    row_groups: usize,
-    rows: u64,
-    bytes: u64,
-) -> LocalParquetSource {
-    let row_group_rows = split_evenly(rows, row_groups);
-    let row_group_bytes = split_evenly(bytes, row_groups);
-    LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(path)
-                .with_row_groups((0..row_groups).collect())
-                .with_row_group_rows(row_group_rows)
-                .with_row_group_bytes(row_group_bytes),
-        ],
-        schema,
-        read_columns.into_iter().map(str::to_string).collect(),
-    )
-}
-
-fn split_evenly(total: u64, count: usize) -> Vec<u64> {
-    assert!(count > 0);
-    let base = total / count as u64;
-    let remainder = total % count as u64;
-    (0..count).map(|index| base + u64::from(index < remainder as usize)).collect()
+    assert_eq!(native_plan_cost_decision(&limited, true), None);
 }
 
 fn key_value_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false), Field::new("v", DataType::Int64, false)]))
-}
-
-fn key_label_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false), Field::new("label", DataType::Utf8, true)]))
 }

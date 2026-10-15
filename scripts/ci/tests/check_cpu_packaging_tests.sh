@@ -42,7 +42,7 @@ echo "PASS: CPU packaging has one fixed x86-64-v3 contract"
 shipped=$(python3 "${HELPER}" shipped-features)
 [[ "${shipped}" == "$(python3 "${HELPER}" normalize-features --features "${shipped}")" ]] \
   || fail "server.features is not in canonical form: ${shipped}"
-if grep -Eq 'FEATURES:-[A-Za-z]' docker/stage-docker-payload.sh; then
+if grep -Eq 'FEATURES:-[A-Za-z]' docker/build-image.sh; then
   fail "docker staging hard-codes a default feature list instead of reading server.features"
 fi
 grep -Fq 'cpu_packaging_policy.py shipped-features' scripts/check_all.sh \
@@ -98,6 +98,11 @@ mkdir -p "${target_dir}/${target}/${profile}"
 printf 'fake canonical server\n' >"${target_dir}/${target}/${profile}/algeon_server"
 SH
 
+cat >"${tmp_dir}/bin/nvcc" <<'SH'
+#!/usr/bin/bash
+echo "Cuda compilation tools, release 13.2, V13.2.86"
+SH
+
 cat >"${tmp_dir}/bin/rustc" <<'SH'
 #!/usr/bin/bash
 set -euo pipefail
@@ -119,7 +124,16 @@ VV
   *) exit 90 ;;
 esac
 SH
-chmod +x "${tmp_dir}/bin/cargo" "${tmp_dir}/bin/rustc"
+cat >"${tmp_dir}/bin/docker" <<'SH'
+#!/usr/bin/bash
+set -euo pipefail
+printf '%s\n' "$@" >"${FAKE_DOCKER_ARGS:-/dev/null}"
+SH
+chmod +x "${tmp_dir}/bin/cargo" "${tmp_dir}/bin/rustc" "${tmp_dir}/bin/nvcc" "${tmp_dir}/bin/docker"
+workspace_version=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["workspace"]["package"]["version"])' "${ROOT}/Cargo.toml")
+head_revision=$(git -C "${ROOT}" rev-parse HEAD)
+worktree_dirty=false
+[[ -z "$(git -C "${ROOT}" status --porcelain --untracked-files=no)" ]] || worktree_dirty=true
 
 target_root="${tmp_dir}/target"
 env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
@@ -139,7 +153,7 @@ binary="${target_root}/x86-64-v3/x86_64-unknown-linux-gnu/release/algeon_server"
 build_record="${binary}.build-record.json"
 [[ -f "${binary}" && -f "${build_record}" ]] || fail "fake canonical build did not create artifact/record"
 
-python3 - "${build_record}" <<'PY'
+python3 - "${build_record}" "${workspace_version}" "${head_revision}" "${worktree_dirty}" <<'PY'
 import json
 import sys
 
@@ -149,6 +163,11 @@ cpu = record["cpu"]
 command = record["cargo_command"]
 assert record["record_kind"] == "canonical-build-record"
 assert record["features"] == ["nvml"]
+assert record["version"] == sys.argv[2]
+assert record["revision"] == sys.argv[3]
+assert record["worktree_dirty"] is (sys.argv[4] == "true")
+assert record["source_repository"].startswith("https://")
+assert record["cuda_toolkit_version"] == "13.2"
 assert cpu["baseline"] == "x86-64-v3"
 assert cpu["target_triple"] == "x86_64-unknown-linux-gnu"
 assert cpu["effective_rustflags"] == ["-C", "target-cpu=x86-64-v3"]
@@ -228,25 +247,31 @@ staged_binary="${tmp_dir}/dist/bin/algeon_server"
 mkdir -p "$(dirname "${staged_binary}")"
 cp "${binary}" "${staged_binary}"
 printf 'post-stage-patchelf-fixture\n' >>"${staged_binary}"
-stage_manifest="${tmp_dir}/dist/payload-manifest.json"
 python3 "${HELPER}" create-manifest \
   --dist-dir "${tmp_dir}/dist" \
   --build-record "${build_record}" \
-  --output "${stage_manifest}" \
   >"${tmp_dir}/manifest.output"
 
-eval "$(python3 "${HELPER}" verify-manifest --manifest "${stage_manifest}" --dist-dir "${tmp_dir}/dist")"
+eval "$(python3 "${HELPER}" verify-manifest --dist-dir "${tmp_dir}/dist")"
 [[ "${CPU_BASELINE}" == "x86-64-v3" ]]
 [[ "${CPU_IMAGE_ARCH}" == "amd64" ]]
 [[ "${CPU_TARGET_TRIPLE}" == "x86_64-unknown-linux-gnu" ]]
 [[ -n "${CPU_BINARY_SHA256}" ]]
 [[ -n "${CPU_MANIFEST_SHA256}" ]]
-echo "PASS: payload manifest created and verified"
+[[ "${PAYLOAD_VERSION}" == "${workspace_version}" ]]
+[[ "${PAYLOAD_REVISION}" == "${head_revision}" ]]
+[[ "${PAYLOAD_WORKTREE_DIRTY}" == "${worktree_dirty}" ]]
+[[ "${CPU_CHECKSUMS_SHA256}" == "$(sha256sum "${tmp_dir}/dist/SHA256SUMS" | awk '{print $1}')" ]]
+[[ "${PAYLOAD_FEATURES}" == "nvml" ]]
+[[ "${PAYLOAD_CUDA_TOOLKIT}" == "13.2" ]]
+(cd "${tmp_dir}/dist" && sha256sum --quiet -c SHA256SUMS) || fail "SHA256SUMS does not verify with sha256sum -c"
+grep -Fq '  payload-manifest.json' "${tmp_dir}/dist/SHA256SUMS" || fail "SHA256SUMS omits the manifest"
+echo "PASS: payload manifest and SHA256SUMS created and verified"
 
 cp "${staged_binary}" "${tmp_dir}/staged_binary.backup"
 printf 'tamper-staged\n' >>"${staged_binary}"
 status=0
-python3 "${HELPER}" verify-manifest --manifest "${stage_manifest}" --dist-dir "${tmp_dir}/dist" \
+python3 "${HELPER}" verify-manifest --dist-dir "${tmp_dir}/dist" \
   >"${tmp_dir}/tampered-staged.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "tampered staged binary was accepted"
 grep -Fq 'hash mismatch' "${tmp_dir}/tampered-staged.output" || fail "missing staged file tamper diagnostic"
@@ -256,31 +281,50 @@ echo "PASS: tampered staged file fails manifest verification"
 mkdir -p "${tmp_dir}/dist/lib"
 printf 'untracked\n' >"${tmp_dir}/dist/lib/untracked.so"
 status=0
-python3 "${HELPER}" verify-manifest --manifest "${stage_manifest}" --dist-dir "${tmp_dir}/dist" \
+python3 "${HELPER}" verify-manifest --dist-dir "${tmp_dir}/dist" \
   >"${tmp_dir}/untracked.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "untracked staged file was accepted"
 grep -Fq 'inventory mismatch' "${tmp_dir}/untracked.output" || fail "missing inventory mismatch diagnostic"
 rm -f "${tmp_dir}/dist/lib/untracked.so"
 echo "PASS: unexpected staged file fails manifest verification"
 
+cp "${tmp_dir}/dist/SHA256SUMS" "${tmp_dir}/sha256sums.backup"
+sed -i '/  bin\/algeon_server$/d' "${tmp_dir}/dist/SHA256SUMS"
+status=0
+python3 "${HELPER}" verify-manifest --dist-dir "${tmp_dir}/dist" \
+  >"${tmp_dir}/tampered-sums.output" 2>&1 || status=$?
+[[ "${status}" -eq 2 ]] || fail "SHA256SUMS missing the binary was accepted"
+grep -Fq 'SHA256SUMS does not list exactly' "${tmp_dir}/tampered-sums.output" || fail "missing SHA256SUMS diagnostic"
+cp "${tmp_dir}/sha256sums.backup" "${tmp_dir}/dist/SHA256SUMS"
+echo "PASS: incomplete SHA256SUMS fails manifest verification"
+
 for needle in \
   'dev.algeon.cpu-baseline="${CPU_BASELINE}"' \
   'dev.algeon.cpu-arch="${CPU_ARCH}"' \
   'dev.algeon.cpu-target="${CPU_TARGET}"' \
   'dev.algeon.manifest-sha256="${CPU_MANIFEST_SHA256}"' \
-  'CPU_MANIFEST_SHA256' \
-  'sha256sum -c -'; do
-  grep -Fq "${needle}" docker/Dockerfile || fail "Dockerfile missing assertion: ${needle}"
+  'dev.algeon.checksums-sha256="${CPU_CHECKSUMS_SHA256}"' \
+  'dev.algeon.worktree-dirty="${ALGEON_WORKTREE_DIRTY}"' \
+  'test -n "$CPU_MANIFEST_SHA256" && test -n "$CPU_CHECKSUMS_SHA256"' \
+  '"$CPU_CHECKSUMS_SHA256" SHA256SUMS | sha256sum -c -' \
+  'org.opencontainers.image.revision="${ALGEON_REVISION}"' \
+  'dev.algeon.features="${ALGEON_FEATURES}"' \
+  '"$CPU_MANIFEST_SHA256" payload-manifest.json | sha256sum -c -' \
+  'sha256sum -c --quiet SHA256SUMS' \
+  'bash /payload/validate-loader-closure.sh' \
+  'bash /tmp/validate-loader-closure.sh'; do
+  grep -Fq -- "${needle}" docker/Dockerfile || fail "Dockerfile missing assertion: ${needle}"
 done
-grep -Fq 'verify-build' docker/stage-docker-payload.sh || fail "SKIP_CARGO_BUILD path does not verify record"
+grep -Fq 'verify-build' docker/build-image.sh || fail "SKIP_CARGO_BUILD path does not verify record"
 if rg -n 'CPU_PACKAGE_PROFILE|tuned-local-v3|cpu_profile_kind|cpu_profile' \
   docker .config/policies/cpu-packaging.toml website/docs/build/docker.md; then
   fail "Docker packaging still contains a profile branch"
 fi
 
 status=0
-CPU_PACKAGE_TARGET_ROOT="${tmp_dir}/missing-target" FEATURES=nvml SKIP_CARGO_BUILD=1 \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/skip-without-provenance.output" 2>&1 || status=$?
+CPU_PACKAGE_TARGET_ROOT="${tmp_dir}/missing-target" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-missing" \
+FEATURES=nvml SKIP_CARGO_BUILD=1 PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build-image.sh >"${tmp_dir}/skip-without-provenance.output" 2>&1 || status=$?
 [[ "${status}" -ne 0 ]] || fail "SKIP_CARGO_BUILD reused an artifact without canonical build record"
 grep -Fq 'build-record' "${tmp_dir}/skip-without-provenance.output" \
   || fail "missing build record reuse diagnostic"
@@ -325,7 +369,8 @@ cat >"${tmp_dir}/bin/ldd" <<'SH'
 #!/usr/bin/bash
 set -euo pipefail
 echo "librmm.so => ${CPU_PACKAGE_DIST_DIR}/lib/librmm.so (0x0001)"
-if [[ "$1" == */cugraph-install/lib/libcugraph.so && -n "${FAKE_GRAPH_CUVS_REALPATH:-}" ]]; then
+if [[ "$1" == */cugraph-install/lib/libcugraph.so || "$1" == */cuml-install/lib/libcuml.so ]] \
+  && [[ -n "${FAKE_GRAPH_CUVS_REALPATH:-}" ]]; then
   echo "libcuvs.so => ${FAKE_GRAPH_CUVS_REALPATH} (0x0002)"
 elif [[ "${FAKE_CLOSURE_HAS_CUVS:-0}" == 1 ]]; then
   echo "libcuvs.so => ${CPU_PACKAGE_DIST_DIR}/lib/libcuvs.so (0x0002)"
@@ -341,13 +386,9 @@ fi
 [[ "${FAKE_LDD_NOT_FOUND:-0}" != 1 ]] || echo 'libmissing.so => not found'
 SH
 chmod +x "${tmp_dir}/bin/patchelf" "${tmp_dir}/bin/readelf" "${tmp_dir}/bin/ldd"
-cat >"${tmp_dir}/bin/docker" <<'SH'
-#!/usr/bin/bash
-set -euo pipefail
-printf '%s\n' "$@" >"${FAKE_DOCKER_ARGS}"
-SH
-chmod +x "${tmp_dir}/bin/docker"
 
+FAKE_DOCKER_ARGS="${tmp_dir}/docker.args" \
+IMAGE_REPOSITORY=algeon-datafusion-test \
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
 FEATURES=nvml \
@@ -356,46 +397,41 @@ NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_LDD_AUXILIARY_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/full-skip-stage.output"
-[[ -f "${tmp_dir}/docker-dist/payload-manifest.json" ]] \
-  || fail "full fake staging path omitted payload manifest"
+  bash docker/build-image.sh >"${tmp_dir}/build-image.output"
+for staged in payload-manifest.json SHA256SUMS validate-loader-closure.sh; do
+  [[ -f "${tmp_dir}/docker-dist/${staged}" ]] || fail "full fake staging path omitted ${staged}"
+done
 [[ ! -e "${tmp_dir}/docker-dist/lib/librapids_logger.so" ]] \
   || fail "static/absorbed logger package staged an unneeded shared logger"
-grep -Fq '==> SUCCESS: staging and validation passed.' "${tmp_dir}/full-skip-stage.output" \
-  || fail "staging did not report success"
-grep -Fq '==> NEXT: bash docker/build-image.sh' "${tmp_dir}/full-skip-stage.output" \
-  || fail "staging did not point to the image build entry point"
-if grep -Fq 'Canonical Docker command' "${tmp_dir}/full-skip-stage.output" || \
-   grep -Fq -- '--build-arg' "${tmp_dir}/full-skip-stage.output"; then
-  fail "staging still exposes the internal Docker build command"
-fi
-echo "PASS: staging reports a concise image-build next step"
-
-FAKE_DOCKER_ARGS="${tmp_dir}/docker.args" \
-CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
-IMAGE_REPOSITORY=algeon-datafusion-test \
-PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/build-image.sh >"${tmp_dir}/build-image.output"
-grep -Fq '==> Building image: algeon-datafusion-test:x86-64-v3' "${tmp_dir}/build-image.output" \
-  || fail "image builder omitted its build status"
-grep -Fq '==> SUCCESS: Docker image built: algeon-datafusion-test:x86-64-v3' "${tmp_dir}/build-image.output" \
-  || fail "image builder omitted its success status"
+lean_tag="algeon-datafusion-test:${workspace_version}-x86-64-v3-nvml"
+grep -Fq "==> SUCCESS: Docker image built: ${lean_tag}" "${tmp_dir}/build-image.output" \
+  || fail "image builder omitted its success status for ${lean_tag}"
 manifest_sha=$(sha256sum "${tmp_dir}/docker-dist/payload-manifest.json" | awk '{print $1}')
 binary_sha=$(sha256sum "${tmp_dir}/docker-dist/bin/algeon_server" | awk '{print $1}')
+checksums_sha=$(sha256sum "${tmp_dir}/docker-dist/SHA256SUMS" | awk '{print $1}')
 for needle in \
   'build' \
-  '--build-arg' \
+  '-f' \
+  "${ROOT}/docker/Dockerfile" \
   'CPU_BASELINE=x86-64-v3' \
   'CPU_ARCH=amd64' \
   'CPU_TARGET=x86_64-unknown-linux-gnu' \
   "CPU_BINARY_SHA256=${binary_sha}" \
   "CPU_MANIFEST_SHA256=${manifest_sha}" \
+  "CPU_CHECKSUMS_SHA256=${checksums_sha}" \
+  "ALGEON_VERSION=${workspace_version}" \
+  "ALGEON_REVISION=${head_revision}" \
+  "ALGEON_WORKTREE_DIRTY=${worktree_dirty}" \
+  'ALGEON_FEATURES=nvml' \
+  'CUDA_TOOLKIT_VERSION=13.2' \
   '-t' \
-  'algeon-datafusion-test:x86-64-v3'; do
+  "${lean_tag}"; do
   grep -Fxq -- "${needle}" "${tmp_dir}/docker.args" \
     || fail "image builder omitted Docker input: ${needle}"
 done
-echo "PASS: image builder verifies manifest and supplies Docker build inputs"
+[[ "$(tail -n 1 "${tmp_dir}/docker.args")" == "${tmp_dir}/docker-dist" ]] \
+  || fail "image builder does not use the staged dist directory as the build context"
+echo "PASS: one entry point stages, verifies and supplies Docker build inputs for a lean feature tag"
 
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-shared-logger" \
@@ -406,7 +442,7 @@ ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_LOGGER_NEEDED=1 \
 FAKE_CLOSURE_HAS_LOGGER=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/shared-logger-stage.output"
+  bash docker/build-image.sh >"${tmp_dir}/shared-logger-stage.output"
 [[ -f "${tmp_dir}/docker-dist-shared-logger/lib/librapids_logger.so" ]] \
   || fail "shared logger DT_NEEDED edge did not stage the canonical logger"
 
@@ -420,7 +456,7 @@ ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_CLOSURE_HAS_LOGGER=1 \
 FAKE_LOGGER_REALPATH="${tmp_dir}/cudf/lib/librapids_logger.so" \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/static-external-logger.output" 2>&1 || status=$?
+  bash docker/build-image.sh >"${tmp_dir}/static-external-logger.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "static/absorbed logger package accepted an external shared logger"
 grep -Fq 'without one canonical staged identity' "${tmp_dir}/static-external-logger.output" \
   || fail "external shared logger diagnostic missing"
@@ -452,7 +488,7 @@ CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cuvs" \
 FEATURES=cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_CLOSURE_HAS_CUVS=1 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/cuvs-stage.output"
+  bash docker/build-image.sh >"${tmp_dir}/cuvs-stage.output"
 [[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs.so" ]] || fail "cuVS-only package omitted canonical libcuvs.so"
 [[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs_c.so" ]] || fail "cuVS-only package omitted libcuvs_c.so"
 
@@ -463,7 +499,7 @@ FEATURES=cugraph SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/cugraph-stage.output"
+  bash docker/build-image.sh >"${tmp_dir}/cugraph-stage.output"
 [[ -f "${tmp_dir}/docker-dist-cugraph/lib/libcuvs.so" ]] || fail "cuGraph-only package omitted canonical libcuvs.so"
 [[ ! -e "${tmp_dir}/docker-dist-cugraph/lib/libcuvs_c.so" ]] || fail "cuGraph-only package unexpectedly staged libcuvs_c.so"
 
@@ -474,7 +510,7 @@ FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/combined-stage.output"
+  bash docker/build-image.sh >"${tmp_dir}/combined-stage.output"
 [[ -f "${tmp_dir}/docker-dist-combined/lib/libcuvs.so" ]] || fail "combined package omitted canonical libcuvs.so"
 [[ -f "${tmp_dir}/docker-dist-combined/lib/libcuvs_c.so" ]] || fail "combined package omitted libcuvs_c.so"
 echo "PASS: cuVS-only, cuGraph-only, and combined packages stage the declared canonical cuVS libraries"
@@ -488,7 +524,7 @@ FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=
 FAKE_LOGGER_NEEDED=1 FAKE_CLOSURE_HAS_LOGGER=1 \
 FAKE_SECOND_LOGGER_REALPATH="${tmp_dir}/divergent-librapids_logger.so" \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/divergent-logger.output" 2>&1 || status=$?
+  bash docker/build-image.sh >"${tmp_dir}/divergent-logger.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "combined package accepted divergent librapids_logger.so identities"
 grep -Fq 'multiple librapids_logger.so identities' "${tmp_dir}/divergent-logger.output" \
   || fail "divergent librapids_logger.so diagnostic missing"
@@ -500,7 +536,7 @@ FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/divergent-libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/divergent-cuvs.output" 2>&1 || status=$?
+  bash docker/build-image.sh >"${tmp_dir}/divergent-cuvs.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "combined package accepted divergent libcuvs.so identity"
 grep -Fq 'different libcuvs.so identities' "${tmp_dir}/divergent-cuvs.output" \
   || fail "divergent libcuvs.so diagnostic missing"
@@ -511,7 +547,7 @@ FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 FAKE_LDD_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/loader-not-found.output" 2>&1 || status=$?
+  bash docker/build-image.sh >"${tmp_dir}/loader-not-found.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "loader closure accepted a not-found dependency"
 grep -Fq 'unresolved loader dependency' "${tmp_dir}/loader-not-found.output" \
   || fail "loader not-found diagnostic missing"
@@ -522,16 +558,34 @@ FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 FAKE_READELF_NEEDED=libraft.so PATH="${tmp_dir}/bin:${PATH}" \
-  bash docker/stage-docker-payload.sh >"${tmp_dir}/loader-raft.output" 2>&1 || status=$?
+  bash docker/build-image.sh >"${tmp_dir}/loader-raft.output" 2>&1 || status=$?
 [[ "${status}" -eq 1 ]] || fail "loader closure accepted a shared libraft.so"
 grep -Fq 'unexpected shared RAFT dependency' "${tmp_dir}/loader-raft.output" \
   || fail "shared RAFT diagnostic missing"
 echo "PASS: packaging rejects divergent cuVS/logger identities and incomplete/unexpected loader closure entries"
 
+mkdir -p "${tmp_dir}/cuml/lib"
+ln -s ../cuml "${tmp_dir}/native/cuml-install"
+for library in libcuml.so libcuml_rust.so libtreelite.so libnvforest.so; do
+  printf 'fake %s\n' "${library}" >"${tmp_dir}/cuml/lib/${library}"
+done
+shipped_features=$(python3 "${HELPER}" shipped-features)
+build_fake_variant "${shipped_features}"
+FAKE_DOCKER_ARGS="${tmp_dir}/docker-shipped.args" IMAGE_REPOSITORY=algeon-datafusion-test \
+CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-shipped" \
+SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
+FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build-image.sh >"${tmp_dir}/shipped-stage.output"
+grep -Fxq -- "algeon-datafusion-test:${workspace_version}-x86-64-v3" "${tmp_dir}/docker-shipped.args" \
+  || fail "the shipped feature set did not get the plain <version>-<baseline> tag"
+echo "PASS: the shipped feature set keeps the plain tag and a lean set gets a feature suffix"
+
 status=0
-bash docker/stage-docker-payload.sh --config 'target.x86_64-unknown-linux-gnu.rustflags=[]' \
+bash docker/build-image.sh --config 'target.x86_64-unknown-linux-gnu.rustflags=[]' \
   >"${tmp_dir}/cli-override.output" 2>&1 || status=$?
-[[ "${status}" -eq 2 ]] || fail "stage-docker-payload.sh accepted an undeclared Cargo CLI override"
+[[ "${status}" -eq 2 ]] || fail "build-image.sh accepted an undeclared Cargo CLI override"
 grep -Fq 'accepts no positional or Cargo arguments' "${tmp_dir}/cli-override.output" \
   || fail "missing CLI override diagnostic"
 echo "PASS: Dockerfile/build script bind image labels to provenance"

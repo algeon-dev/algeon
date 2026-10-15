@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use datafusion::prelude::{ParquetReadOptions, SessionConfig};
+use futures::executor::block_on;
 use query_engine::rapids_backend::rapids_analysis_context;
 use query_planning::{pipeline::CompiledPipeline, policy::PlanningPolicy};
 
@@ -52,4 +56,28 @@ async fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipe
 
 fn task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> usize {
     pipeline.tasks().iter().filter(|task| task.kind() == kind).count()
+}
+
+fn join_aggregate_sort_limit_sql_plan(left: &Path, right: &Path) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(
+        SessionConfig::new()
+            .with_repartition_file_scans(false)
+            .with_repartition_joins(false)
+            .with_repartition_aggregations(false)
+            .with_repartition_sorts(false)
+            .with_target_partitions(1),
+    );
+    block_on(ctx.register_parquet("left_input", left.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    block_on(ctx.register_parquet("right_input", right.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    let sql = "
+SELECT l.key, SUM(l.m00 + r.m01) AS sum_x00
+FROM left_input l
+JOIN right_input r ON l.key = r.key
+WHERE l.payload >= 10 AND r.payload >= 10
+GROUP BY l.key
+ORDER BY sum_x00 DESC, l.key ASC
+LIMIT 2
+";
+    let df = block_on(ctx.sql(sql)).unwrap();
+    block_on(df.create_physical_plan()).unwrap()
 }

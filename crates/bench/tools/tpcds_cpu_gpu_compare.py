@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare TPC-DS CPU DataFusion vs native GPU from two tpcds_three_way_bench TSVs.
+"""Compare TPC-DS CPU DataFusion vs native GPU from two tpcds_gpu_cpu_bench TSVs.
 
 Each TSV has one row per (engine, query, iteration) with a `warmup` flag. We take
 the mean wall_ms over measured (warmup=false) iterations per query for each engine,

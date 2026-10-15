@@ -21,7 +21,11 @@ from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY = ROOT / ".config" / "policies" / "cpu-packaging.toml"
+WORKSPACE_MANIFEST = ROOT / "Cargo.toml"
 SERVER_BINARY = "algeon_server"
+MANIFEST_NAME = "payload-manifest.json"
+CHECKSUMS_NAME = "SHA256SUMS"
+IMAGE_IDENTITY_FIELDS = ("version", "revision", "worktree_dirty", "source_repository", "cuda_toolkit_version")
 
 
 class PolicyError(RuntimeError):
@@ -221,11 +225,83 @@ def collect_fixed_tool_versions(
     }
 
 
+def workspace_identity() -> dict[str, Any]:
+    try:
+        with WORKSPACE_MANIFEST.open("rb") as manifest_file:
+            package = tomllib.load(manifest_file)["workspace"]["package"]
+        version = package["version"]
+        repository = package["repository"]
+    except (OSError, tomllib.TOMLDecodeError, KeyError) as error:
+        raise PolicyError(f"cannot read workspace.package version and repository from {WORKSPACE_MANIFEST}: {error}") from error
+    try:
+        revision = git_output("rev-parse", "HEAD").strip()
+        # Untracked files are ignored because a new source file only enters the
+        # build through an edit to a tracked file, which this status reports.
+        worktree_dirty = bool(git_output("status", "--porcelain", "--untracked-files=no").strip())
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise PolicyError(f"packaging needs a git checkout to record the source revision: {error}") from error
+    return {
+        "version": version,
+        "revision": revision,
+        "worktree_dirty": worktree_dirty,
+        "source_repository": repository,
+    }
+
+
+def git_output(*arguments: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(ROOT), *arguments],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
+
+
+def cuda_toolkit_version(environment: Mapping[str, str]) -> str:
+    """Return the major.minor CUDA release of nvcc under CUDA_HOME, else CUDA_PATH, else the first nvcc on PATH."""
+    nvcc: str | None = None
+    for selector in ("CUDA_HOME", "CUDA_PATH"):
+        root = environment.get(selector)
+        if root:
+            nvcc = str(Path(root) / "bin" / "nvcc")
+            break
+    if nvcc is None:
+        nvcc = shutil.which("nvcc", path=environment.get("PATH"))
+    if nvcc is None or not Path(nvcc).is_file():
+        raise PolicyError("cannot find nvcc through CUDA_HOME, CUDA_PATH or PATH to record the CUDA toolkit version")
+    output = run_text([nvcc, "--version"], cwd=ROOT, environment=environment)
+    match = re.search(r"release (\d+)\.(\d+)", output)
+    if match is None:
+        raise PolicyError(f"cannot parse the CUDA release from {nvcc} --version: {output!r}")
+    return f"{match.group(1)}.{match.group(2)}"
+
+
 def atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def atomic_text(path: Path, value: str) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(value, encoding="utf-8")
+    temporary.replace(path)
+
+
+def checksums_text(files: Mapping[str, str], manifest_sha256: str) -> str:
+    entries = {**files, MANIFEST_NAME: manifest_sha256}
+    return "".join(f"{digest}  {rel_path}\n" for rel_path, digest in sorted(entries.items()))
+
+
+def payload_inventory(dist_dir: Path) -> dict[str, str]:
+    """Hash every staged file except the manifest and checksum list, which describe the inventory."""
+    excluded = {dist_dir / MANIFEST_NAME, dist_dir / CHECKSUMS_NAME}
+    return {
+        str(entry.relative_to(dist_dir)): sha256_file(entry)
+        for entry in sorted(dist_dir.rglob("*"))
+        if entry.is_file() and entry not in excluded
+    }
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -250,12 +326,19 @@ def create_build_record(
     cwd: Path,
     environment: Mapping[str, str],
     fixed_tool_versions: Mapping[str, str],
+    identity: Mapping[str, Any],
+    cuda_toolkit: str,
 ) -> dict[str, Any]:
     if not binary.is_file():
         raise PolicyError(f"canonical Cargo build did not produce {binary}")
     record = {
         "record_kind": "canonical-build-record",
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "version": identity["version"],
+        "revision": identity["revision"],
+        "worktree_dirty": identity["worktree_dirty"],
+        "source_repository": identity["source_repository"],
+        "cuda_toolkit_version": cuda_toolkit,
         "policy_fingerprint": artifact_affecting_fingerprint(policy),
         "fixed_build_environment": dict(
             sorted(policy["clean_environment"]["fixed_build_environment"].items())
@@ -292,6 +375,9 @@ def verify_build_record(
         raise PolicyError(f"features mismatch: record={record.get('features')!r}, requested={list(features)!r}")
     if record.get("binary_name") != SERVER_BINARY:
         raise PolicyError(f"binary name mismatch: {record.get('binary_name')!r}")
+    missing = [field for field in IMAGE_IDENTITY_FIELDS if record.get(field) in (None, "")]
+    if missing:
+        raise PolicyError(f"build record lacks {missing}; rebuild without SKIP_CARGO_BUILD=1")
     if not binary.is_file():
         raise PolicyError(f"canonical artifact is missing: {binary}")
     actual_hash = sha256_file(binary)
@@ -372,6 +458,8 @@ def command_build(args: argparse.Namespace) -> None:
         cwd = Path(temporary)
         ensure_clean_cwd(cwd)
         fixed_tool_versions = collect_fixed_tool_versions(policy, cwd=cwd, environment=environment)
+        identity = workspace_identity()
+        cuda_toolkit = cuda_toolkit_version(environment)
         try:
             subprocess.run(command, cwd=cwd, env=environment, check=True)
         except (OSError, subprocess.CalledProcessError) as error:
@@ -390,6 +478,8 @@ def command_build(args: argparse.Namespace) -> None:
             cwd=cwd,
             environment=environment,
             fixed_tool_versions=fixed_tool_versions,
+            identity=identity,
+            cuda_toolkit=cuda_toolkit,
         )
     print(f"==> canonical artifact: {binary}")
     print(f"==> build record: {record_path}")
@@ -418,14 +508,7 @@ def command_create_manifest(args: argparse.Namespace) -> None:
     expected_fingerprint = artifact_affecting_fingerprint(policy)
     if record.get("policy_fingerprint") != expected_fingerprint:
         raise PolicyError("build record policy fingerprint does not match current policy")
-
-    output_path = args.output.resolve()
-    files: dict[str, str] = {}
-    for entry in sorted(dist_dir.rglob("*")):
-        if entry.is_file() and entry != output_path:
-            rel_path = str(entry.relative_to(dist_dir))
-            files[rel_path] = sha256_file(entry)
-
+    files = payload_inventory(dist_dir)
     staged_binary_rel = f"bin/{SERVER_BINARY}"
     if staged_binary_rel not in files:
         raise PolicyError(f"staged binary {staged_binary_rel} missing from dist")
@@ -434,6 +517,11 @@ def command_create_manifest(args: argparse.Namespace) -> None:
         "manifest_kind": "cpu-payload-manifest",
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "policy_fingerprint": expected_fingerprint,
+        "version": record["version"],
+        "revision": record["revision"],
+        "worktree_dirty": record["worktree_dirty"],
+        "source_repository": record["source_repository"],
+        "cuda_toolkit_version": record["cuda_toolkit_version"],
         "cpu": record["cpu"],
         "features": record["features"],
         "feature_string": record["feature_string"],
@@ -442,15 +530,17 @@ def command_create_manifest(args: argparse.Namespace) -> None:
         "source_binary_sha256": record["binary_sha256"],
         "files": files,
     }
-    atomic_json(output_path, manifest)
-    print(f"==> payload manifest: {output_path}")
+    manifest_path = dist_dir / MANIFEST_NAME
+    atomic_json(manifest_path, manifest)
+    atomic_text(dist_dir / CHECKSUMS_NAME, checksums_text(files, sha256_file(manifest_path)))
+    print(f"==> payload manifest: {manifest_path}")
 
 
 def command_verify_manifest(args: argparse.Namespace) -> None:
     policy_path = args.policy.resolve()
     policy = load_policy(policy_path)
     dist_dir = args.dist_dir.resolve()
-    manifest_path = args.manifest.resolve()
+    manifest_path = dist_dir / MANIFEST_NAME
     manifest = load_json(manifest_path)
 
     expected_fingerprint = artifact_affecting_fingerprint(policy)
@@ -463,11 +553,7 @@ def command_verify_manifest(args: argparse.Namespace) -> None:
     if not isinstance(files, dict) or not files:
         raise PolicyError("manifest contains no files")
 
-    actual_files = {
-        str(entry.relative_to(dist_dir))
-        for entry in dist_dir.rglob("*")
-        if entry.is_file() and entry.resolve() != manifest_path.resolve()
-    }
+    actual_files = set(payload_inventory(dist_dir))
     expected_files = set(files.keys())
     if actual_files != expected_files:
         extra = sorted(actual_files - expected_files)
@@ -486,14 +572,30 @@ def command_verify_manifest(args: argparse.Namespace) -> None:
     if files.get(staged_binary_rel) != manifest.get("binary_sha256"):
         raise PolicyError("binary_sha256 does not match staged binary file hash")
 
-    cpu = manifest["cpu"]
     manifest_sha256 = sha256_file(manifest_path)
+    checksums_path = dist_dir / CHECKSUMS_NAME
+    try:
+        checksums = checksums_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise PolicyError(f"cannot read {checksums_path}: {error}") from error
+    if checksums != checksums_text(files, manifest_sha256):
+        raise PolicyError(f"{CHECKSUMS_NAME} does not list exactly the manifest's files and the manifest hash")
+
+    cpu = manifest["cpu"]
     values = {
         "CPU_BASELINE": cpu["baseline"],
         "CPU_IMAGE_ARCH": cpu["image_arch"],
         "CPU_TARGET_TRIPLE": cpu["target_triple"],
         "CPU_BINARY_SHA256": manifest["binary_sha256"],
         "CPU_MANIFEST_SHA256": manifest_sha256,
+        "CPU_CHECKSUMS_SHA256": sha256_file(checksums_path),
+        "PAYLOAD_VERSION": manifest["version"],
+        "PAYLOAD_REVISION": manifest["revision"],
+        "PAYLOAD_WORKTREE_DIRTY": "true" if manifest["worktree_dirty"] else "false",
+        "PAYLOAD_SOURCE": manifest["source_repository"],
+        "PAYLOAD_CREATED": manifest["created_utc"],
+        "PAYLOAD_FEATURES": manifest["feature_string"],
+        "PAYLOAD_CUDA_TOOLKIT": manifest["cuda_toolkit_version"],
     }
     for key, value in values.items():
         print(f"{key}={shlex.quote(value)}")
@@ -531,11 +633,9 @@ def parser() -> argparse.ArgumentParser:
     create_manifest = subparsers.add_parser("create-manifest")
     create_manifest.add_argument("--dist-dir", type=Path, required=True)
     create_manifest.add_argument("--build-record", type=Path, required=True)
-    create_manifest.add_argument("--output", type=Path, required=True)
     create_manifest.set_defaults(function=command_create_manifest)
 
     verify_manifest = subparsers.add_parser("verify-manifest")
-    verify_manifest.add_argument("--manifest", type=Path, required=True)
     verify_manifest.add_argument("--dist-dir", type=Path, required=True)
     verify_manifest.set_defaults(function=command_verify_manifest)
 

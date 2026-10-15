@@ -1,28 +1,25 @@
-//! Planning report shape: capability, cost-selection, and final-plan evidence.
+//! Planning report structures for capability, cost-selection, and final-plan evidence.
 //!
-//! Each report has one reader. [`CandidateOutcome`] gives the optimizer one
-//! row per candidate, the final-plan coverage in [`crate::gpu_coverage`] gives
-//! the developer the completed plan, and the terminal attempt report gives the
-//! caller how execution ended. Tests and downstream report rows assert on these
-//! structured outcomes; they do not parse printed physical plans.
+//! Report structures target distinct consumption points. [`CandidateOutcome`] supplies
+//! per-candidate decisions to the optimizer, [`crate::gpu_coverage`] captures completed
+//! physical plan coverage, and terminal attempt reports record query execution outcomes.
+//! Verification suites and downstream diagnostics assert against these structured records
+//! rather than parsing textual physical plan representations.
 //!
-//! [`CandidateOutcome`] is per-candidate evidence: one report holds one row
-//! per optimizer candidate, and several decision kinds can coexist. Candidate
-//! rows never describe final-plan composition; see
-//! [`crate::gpu_coverage::QueryGpuPlanningOutcome`] for the completed plan.
-//! [`CandidateOutcomeKind`] owns the stable `selected`, `not_supported`, and
-//! `not_selected_by_cost` projection labels shared by
+//! [`CandidateOutcome`] preserves candidate-level evaluation records. A single report
+//! retains one entry per optimizer candidate across decision types. Candidate entries
+//! record individual lowering decisions rather than overall physical-plan composition;
+//! plan-level coverage is described by [`crate::gpu_coverage::QueryGpuPlanningOutcome`].
+//! [`CandidateOutcomeKind`] defines the stable `selected`, `not_supported`, and
+//! `not_selected_by_cost` projection labels shared across
 //! [`crate::gpu_coverage`] and [`crate::native_report`].
 
+use query_planning::triage::{TriageEvidenceRef, TriageSeverity, TriageSignal};
 pub use query_planning::{
     capability::Rejection,
     correlation::{PlanNodeId, QueryId, TraceId},
     plan::NativePlanCostReason,
     triage::{TriageCode, TriageSummary, TriageVerdict},
-};
-use query_planning::{
-    plan::NativePlanCostFacts,
-    triage::{TriageEvidenceRef, TriageSeverity, TriageSignal},
 };
 use serde_json::{Value, json};
 
@@ -52,9 +49,9 @@ impl UnsupportedColumnDetail {
 /// unsupported column, the expression-contract rejection, the plan element
 /// (operator, aggregate or window function, or declared ordering), or the
 /// admission rejection (with the validator's code, operation, and facts) that
-/// caused it. [`Self::blocking`] is the one description of it. The detail
-/// also says whether planning for one partition would lower the candidate,
-/// which the remedy of a reason that prescribes one partition reads.
+/// caused it. [`Self::blocking`] provides this description. The detail
+/// also records whether planning for one partition would lower the candidate,
+/// as evaluated by single-partition remedies.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotSupportedDetail {
     pub(crate) column: Option<UnsupportedColumnDetail>,
@@ -218,7 +215,7 @@ pub enum CandidateOutcomeKind {
     Selected,
     /// Candidate cannot execute under the native capability contract.
     NotSupported,
-    /// Candidate is native-capable but was not selected by the cost model.
+    /// Candidate is native-capable but a preference rule kept it on DataFusion.
     NotSelectedByCost,
 }
 
@@ -256,14 +253,12 @@ pub enum CandidateOutcome {
         /// Evidence naming the cause.
         detail: NotSupportedDetail,
     },
-    /// Candidate is native-capable but was not selected by the cost model.
+    /// Candidate is native-capable but a preference rule kept it on DataFusion.
     NotSelectedByCost {
         /// Candidate whose selection decision this outcome records.
         candidate: GpuCandidate,
-        /// Stable cost-selection reason code.
+        /// Stable preference-rule reason code.
         cost_reason: NativePlanCostReason,
-        /// Facts evaluated by the cost model.
-        evidence: NativeCandidateCostEvidence,
     },
 }
 
@@ -275,87 +270,6 @@ impl CandidateOutcome {
             Self::NotSupported { .. } => CandidateOutcomeKind::NotSupported,
             Self::NotSelectedByCost { .. } => CandidateOutcomeKind::NotSelectedByCost,
         }
-    }
-}
-
-/// Stable root-owned cost evidence for a native candidate selection decision.
-///
-/// The native engine owns the cost decision. This DTO preserves the
-/// decision facts at the adapter's public report boundary without making the
-/// report wire format depend on an engine-internal struct layout.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeCandidateCostEvidence {
-    /// Number of nodes in the native candidate IR.
-    pub node_count: usize,
-    /// Number of source nodes in the candidate.
-    pub source_count: usize,
-    /// Number of candidate sources backed by local Parquet.
-    pub local_parquet_source_count: usize,
-    /// Whether all local-Parquet sources provide row-group selection metadata.
-    pub selected_row_groups_known: bool,
-    /// Total selected Parquet row groups, or `None` when selection metadata is unavailable.
-    pub selected_row_groups: Option<usize>,
-    /// Estimated source rows, or `None` when any local-Parquet source row count is unavailable.
-    pub estimated_source_rows: Option<u64>,
-    /// Estimated projected source bytes, or `None` when any local-Parquet source byte estimate is unavailable.
-    pub estimated_source_bytes: Option<u64>,
-    /// Whether all local-Parquet sources provide selected row-group byte evidence.
-    pub selected_source_bytes_known: bool,
-    /// Number of joins in the candidate.
-    pub join_count: usize,
-    /// Number of joins with a residual predicate beyond their equality keys.
-    pub residual_join_count: usize,
-    /// Number of aggregate nodes in the candidate.
-    pub aggregate_count: usize,
-    /// Number of aggregate nodes with grouping keys.
-    pub grouped_aggregate_count: usize,
-    /// Number of sort nodes in the candidate.
-    pub sort_count: usize,
-    /// Number of limit nodes in the candidate.
-    pub limit_count: usize,
-    /// Smallest bounded sort fetch in rows, or `None` when no top-k bound exists.
-    pub min_topk_fetch: Option<usize>,
-}
-
-impl NativeCandidateCostEvidence {
-    pub(crate) fn from_cost_facts(facts: NativePlanCostFacts) -> Self {
-        Self {
-            node_count: facts.node_count,
-            source_count: facts.source_count,
-            local_parquet_source_count: facts.local_parquet_source_count,
-            selected_row_groups_known: facts.selected_row_groups_known,
-            selected_row_groups: facts.selected_row_groups,
-            estimated_source_rows: facts.estimated_source_rows,
-            estimated_source_bytes: facts.estimated_source_bytes,
-            selected_source_bytes_known: facts.selected_source_bytes_known,
-            join_count: facts.join_count,
-            residual_join_count: facts.residual_join_count,
-            aggregate_count: facts.aggregate_count,
-            grouped_aggregate_count: facts.grouped_aggregate_count,
-            sort_count: facts.sort_count,
-            limit_count: facts.limit_count,
-            min_topk_fetch: facts.min_topk_fetch,
-        }
-    }
-
-    pub(crate) fn to_json(&self) -> Value {
-        json!({
-            "node_count": self.node_count,
-            "source_count": self.source_count,
-            "local_parquet_source_count": self.local_parquet_source_count,
-            "selected_row_groups_known": self.selected_row_groups_known,
-            "selected_row_groups": self.selected_row_groups,
-            "estimated_source_rows": self.estimated_source_rows,
-            "estimated_source_bytes": self.estimated_source_bytes,
-            "selected_source_bytes_known": self.selected_source_bytes_known,
-            "join_count": self.join_count,
-            "residual_join_count": self.residual_join_count,
-            "aggregate_count": self.aggregate_count,
-            "grouped_aggregate_count": self.grouped_aggregate_count,
-            "sort_count": self.sort_count,
-            "limit_count": self.limit_count,
-            "min_topk_fetch": self.min_topk_fetch,
-        })
     }
 }
 
@@ -495,14 +409,9 @@ impl PlanningReport {
         self.outcomes.push(CandidateOutcome::NotSupported { candidate, capability_reason, detail });
     }
 
-    /// Appends a native-capable candidate retained on DataFusion with its cost reason and evidence.
-    pub fn push_not_selected_by_cost(
-        &mut self,
-        candidate: GpuCandidate,
-        cost_reason: NativePlanCostReason,
-        evidence: NativeCandidateCostEvidence,
-    ) {
-        self.outcomes.push(CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence });
+    /// Appends a native-capable candidate retained on DataFusion with its preference-rule reason.
+    pub fn push_not_selected_by_cost(&mut self, candidate: GpuCandidate, cost_reason: NativePlanCostReason) {
+        self.outcomes.push(CandidateOutcome::NotSelectedByCost { candidate, cost_reason });
     }
 
     /// Returns outcomes in discovery order.
@@ -515,9 +424,9 @@ impl PlanningReport {
         self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::Selected { .. })).count()
     }
 
-    /// Returns the selected candidate only when the report contains exactly one.
+    /// Returns the selected candidate when the report contains a single selection.
     ///
-    /// Returns `None` for zero or several selected candidates.
+    /// Returns `None` when zero or multiple candidates are selected.
     pub fn single_selected_candidate(&self) -> Option<&GpuCandidate> {
         let mut rewritten = self.outcomes.iter().filter_map(|outcome| match outcome {
             CandidateOutcome::Selected { candidate } => Some(candidate),
@@ -660,21 +569,18 @@ impl CandidateOutcome {
                 "candidate": candidate.to_json(),
                 "capability_reason_code": null,
                 "cost_reason_code": null,
-                "cost_evidence": null,
             }),
             Self::NotSupported { candidate, capability_reason, .. } => json!({
                 "outcome": self.kind().as_str(),
                 "candidate": candidate.to_json(),
                 "capability_reason_code": capability_reason.code(),
                 "cost_reason_code": null,
-                "cost_evidence": null,
             }),
-            Self::NotSelectedByCost { candidate, cost_reason, evidence } => json!({
+            Self::NotSelectedByCost { candidate, cost_reason } => json!({
                 "outcome": self.kind().as_str(),
                 "candidate": candidate.to_json(),
                 "capability_reason_code": null,
                 "cost_reason_code": cost_reason.code(),
-                "cost_evidence": evidence.to_json(),
             }),
         }
     }

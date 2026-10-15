@@ -9,9 +9,9 @@ import {AttemptLifetime, AllocationPath} from '@site/src/components/design/Guide
 
 # Memory and query lifetime
 
-Concurrent queries share a finite amount of GPU VRAM. Algeon separates
-permission to start from allocation during execution: the runtime commits a
-configured byte cap, and the query's allocator enforces it.
+Algeon separates admission from execution: the query runtime commits an
+immutable byte grant, and the query allocator enforces that cap against
+device allocations.
 
 ## Admission {/* #from-capability-validation-to-admission */}
 
@@ -63,10 +63,7 @@ Admission uses operator capability requirements. `query-planning` proves
 executability; `query-runtime` admits the attempt against the selected
 device's ledger.
 
-Some systems connect GPUs through
-[NVLink](https://www.nvidia.com/en-us/data-center/nvlink/) for peer-device
-traffic. Algeon keeps an attempt on its selected GPU. VRAM on other GPUs
-does not enlarge that device's grant or ledger capacity.
+An attempt executes entirely on its assigned GPU; ledger capacity and grants do not span devices.
 
 ## Capacity and allocation {/* #device-profiles-and-grants */}
 
@@ -77,6 +74,22 @@ without predicting the query's peak. For example, with 16 GiB available for gran
 and an 8 GiB query cap, memory accounting permits two grants, even when their
 current allocations total only 3 GiB. Other service limits can reduce that
 concurrency.
+
+With no explicit `default_query_limit_bytes`, the installed profile derives
+the default cap as `floor((M - K) / A_d)`. `M` is managed device capacity after
+reserved memory, `K` is the configured cache share, and `A_d` is
+`max_active_attempts`. Admission can adjust that cap for frozen resident data;
+an explicitly configured default is validated against the available capacity.
+The [admission settings](../integration/configuration.mdx#admission) define
+those capacity controls.
+
+For example, suppose `M - K` is 48 GiB and there is no frozen resident data or
+explicit query cap. A profile with `A_d = 1` derives a 48 GiB default grant;
+`A_d = 2` derives 24 GiB. The latter remains 24 GiB when only one client is
+active: the calculation uses the installed concurrency limit. Admission
+commits the grant in the ledger, and device allocations occur as the query
+executes. Source planning uses that grant to derive the
+[chunk target](./gpu-execution.mdx#cuda-streams-and-dependencies).
 
 Unless a profile sets `worker_count`, `stream_pool_size` and `lane_count`,
 each device derives these counts from `A_d` and `S_d`.
@@ -162,6 +175,3 @@ source and cleanup disposition. Metric names in
 [`NATIVE_ALGEON_DATAFUSION_METRIC_NAMES`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native_exec/metrics/contract.rs)
 describe the metric meaning and unit, and are updated whenever the underlying definitions change.
 
-See [error handling](../integration/handling-errors.mdx) and
-[admission configuration](../integration/configuration.mdx#admission) for the
-operational interfaces.

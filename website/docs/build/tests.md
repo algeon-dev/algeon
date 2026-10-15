@@ -280,7 +280,7 @@ itself.
 
 | Purpose | Command | Requires |
 | --- | --- | --- |
-| TPC-DS parity report | `ALGEON_PARQUET_DIR=/path/to/complete/tpcds-sf1 flock /tmp/cudf-gpu.lock cargo run -p bench --all-features --bin native_tpcds_parity_report` | A complete TPC-DS dataset. `ALGEON_TPCDS_CPU_TARGET_PARTITIONS` (default 16) and `ALGEON_TPCDS_CPU_BATCH_SIZE` (default 8192) configure the CPU oracle, with the same meaning as in `tpcds_three_way_bench` |
+| TPC-DS parity report | `ALGEON_PARQUET_DIR=/path/to/complete/tpcds-sf1 flock /tmp/cudf-gpu.lock cargo run -p bench --all-features --bin native_tpcds_parity_report` | A complete TPC-DS dataset. `ALGEON_TPCDS_CPU_TARGET_PARTITIONS` (default 16) and `ALGEON_TPCDS_CPU_BATCH_SIZE` (default 8192) configure the CPU oracle, with the same meaning as in `tpcds_gpu_cpu_bench` |
 | TPC-H execution report | `ALGEON_PARQUET_DIR=/path/to/complete/tpch-sf1 flock /tmp/cudf-gpu.lock cargo run -p bench --all-features --bin native_tpch_execution_report` | A complete TPC-H dataset |
 | Sustained-load goodput (`query_service_goodput`) | `crates/bench/scripts/run_goodput_matrix.sh calibrate g1` | The GPU and dataset recorded by `calibrate` |
 | Python-cuGraph comparison | `flock /tmp/cudf-gpu.lock cargo run -p tools --all-features -- cugraph-fixture-e2e bfs-include-edges` | A host with Python cuGraph installed |

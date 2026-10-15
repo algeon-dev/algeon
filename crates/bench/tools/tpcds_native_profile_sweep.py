@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a TPC-DS native GPU source-profile sweep.
 
-The sweep drives `tpcds_three_way_bench` with a matrix of bounded native source
+The sweep drives `tpcds_gpu_cpu_bench` with a matrix of bounded native source
 profiles, writes one raw TSV per candidate, and emits a compact summary TSV
 using median measured wall time per query. Defaults encode the native-profile
 analysis matrix.
@@ -114,7 +114,7 @@ def main() -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bench-bin", type=Path, default=Path("target/release/tpcds_three_way_bench"))
+    parser.add_argument("--bench-bin", type=Path, default=Path("target/release/tpcds_gpu_cpu_bench"))
     parser.add_argument("--parquet-dir", type=Path, default=os.environ.get("ALGEON_PARQUET_DIR"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--queries", default=DEFAULT_QUERIES)

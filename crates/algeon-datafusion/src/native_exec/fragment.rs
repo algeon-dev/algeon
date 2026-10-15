@@ -24,7 +24,7 @@ use query_engine::exec::admit_query_plan;
 use query_engine::exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput};
 use query_planning::{
     admission::{AdmittedPlan, AttemptCapabilityEvidence},
-    plan::{QueryPlan, ResultSink, row_bounds::query_plan_hard_row_upper_bound},
+    plan::{PlanNode, QueryPlan, ResultSink, row_bounds::query_plan_hard_row_upper_bound},
 };
 #[cfg(test)]
 use query_planning::{mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy};
@@ -130,7 +130,7 @@ pub struct AlgeonNativeExec {
     pub(super) prepared: bool,
     /// Units of the composed island that read this GPU-resident output. Above
     /// one, the island computes the output once and shares it.
-    shared_consumer_count: usize,
+    pub(super) shared_consumer_count: usize,
     pub(super) metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -677,6 +677,25 @@ fn validate_gpu_inputs(plan: &QueryPlan, gpu_inputs: &[Arc<dyn ExecutionPlan>], 
 }
 
 impl GpuResidentProducer for AlgeonNativeExec {
+    fn gpu_result_is_repeatable(&self) -> bool {
+        self.native_plan().nodes().iter().all(|node| match &node.kind {
+            PlanNode::Source(_)
+            | PlanNode::Filter(_)
+            | PlanNode::Projection(_)
+            | PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Limit(_)
+            | PlanNode::Join(_)
+            | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_) => true,
+            PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => false,
+        }) && self.gpu_inputs.iter().all(|input| {
+            super::producer::gpu_resident_producer(input.as_ref())
+                .is_some_and(GpuResidentProducer::gpu_result_is_repeatable)
+        })
+    }
+
     /// The name of a GPU-resident unit's output. Only GPU-resident units are
     /// classified as producers, so a host unit never answers.
     fn gpu_result_input_name(&self) -> &str {
@@ -766,7 +785,7 @@ impl GpuResidentProducer for AlgeonNativeExec {
             .await?;
             let (input_name, handle) = self.execute_leaf_gpu_result(native_context, partition, &admitted)?;
             if let Some(results) = shared_results {
-                results.retain(&input_name, &handle, self.shared_consumer_count - 1);
+                results.retain(&input_name, &handle);
             }
             Ok((input_name, handle))
         })

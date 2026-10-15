@@ -147,9 +147,8 @@ pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizer
         Vec::new()
     };
     let optimizer_fingerprint_input = format!(
-        "native_optimizer_rule=installed;{rule_names};session_options={stable_policy:?};native_optimizer_options={:?};native_plan_cost_options={:?};final_plan_requirements={final_plan_requirements:?}",
+        "native_optimizer_rule=installed;{rule_names};session_options={stable_policy:?};native_optimizer_options={:?};final_plan_requirements={final_plan_requirements:?}",
         optimizer_config.native_optimizer_options(),
-        optimizer_config.native_plan_cost_options(),
     );
     QueryGpuValidatedUnder {
         optimizer_config_source: config.optimizer_config_source.to_string(),

@@ -125,8 +125,8 @@ The ADBC Flight SQL driver picks the Python exception class from the gRPC code
 alone, and it maps `RESOURCE_EXHAUSTED` to `InternalError`. A memory-cap
 failure therefore arrives as `InternalError` even though the server classified
 it as `resource_exhausted`. Read `x-algeon-error-code` and `x-algeon-error-kind`
-from the exception's `details` list of `(key, value)` pairs instead of
-branching on the class.
+from the exception's `details` list of `(key, value)` pairs; do not branch
+on the exception class.
 
 ### Memory failures {/* #memory-failures */}
 

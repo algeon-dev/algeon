@@ -4,22 +4,22 @@ slug: /integration
 description: Choose between embedding Algeon in a Rust service or running it as a Flight SQL server.
 ---
 
-# Integrating Algeon
+# Integration
 
-Algeon runs GPU execution behind ordinary DataFusion APIs: you keep
-your SQL, DataFrame code, and Arrow results, and choose the integration
-surface that matches the service boundary you own. Throughout these docs,
-"native" means Algeon's GPU execution path.
+Algeon executes GPU plans through Apache DataFusion APIs while preserving
+standard SQL queries, DataFrame interfaces, and Arrow record batches.
+Applications select the integration surface matching their service boundary.
+Throughout these docs, "native" denotes Algeon's GPU execution path.
 
 | Surface | Use it when | Start here |
 | --- | --- | --- |
-| DataFusion session | You already own a Rust backend, DataFusion session lifecycle, auth, tenancy, and result formatting. | [DataFusion Session](./datafusion-session.mdx) |
-| Flight SQL server | You want a remote Arrow Flight SQL endpoint for non-Rust clients, notebooks, agents, or service-to-service calls. | [Flight SQL server](./flight-sql-server.mdx) |
+| DataFusion session | The hosting Rust service manages request dispatch, session lifecycles, authentication, multi-tenancy, and result formatting. | [DataFusion Session](./datafusion-session.mdx) |
+| Flight SQL server | Remote clients, notebooks, analytics agents, or non-Rust services query Algeon via Arrow Flight SQL. | [Flight SQL server](./flight-sql-server.mdx) |
 
 The session and server APIs use the same GPU backend. By default, Algeon selects supported
-relational SQL for cuDF execution. Choose `functions_only` to keep ordinary SQL
-on DataFusion CPU while explicit GPU UDTFs run on the GPU, or `native_required`
-to reject plans containing DataFusion CPU execution. See
+relational SQL for cuDF execution. Setting `functions_only` keeps ordinary SQL
+on DataFusion CPU while explicit GPU UDTFs run on the GPU; `native_required`
+rejects plans containing DataFusion CPU execution. See
 [Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode).
 
 The `cugraph`, `cuvs`, and `cuml` features make the matching UDTFs
@@ -32,40 +32,39 @@ removed together with its `iceberg` Cargo feature and its server catalog
 settings. A future integration would start from the upstream DataFusion
 Iceberg table provider in
 [apache/datafusion-iceberg](https://github.com/apache/datafusion-iceberg).
-The Flight SQL server reads local Parquet files. It registers no object
-store, so an `s3://` location fails there; an embedded session can still read
-`s3://` Parquet through `AlgeonNativeExecutionConfig::with_s3_storage`.
+Because the Flight SQL server registers no object store, `s3://` locations
+fail there; an embedded session can read `s3://` Parquet through
+`AlgeonNativeExecutionConfig::with_s3_storage`.
 
 ## Common flow
 
-1. **Build first.** Build the native libraries and then the Rust stack with
-   the features your deployment needs, following
-   [Build & Test](../build/overview.md). Every surface below starts from that
-   build.
-2. **Pick an entry point.** Embed a
-   [DataFusion session](./datafusion-session.mdx) in your Rust service or start
+1. Build the native libraries and the Rust stack with the features required
+   for the deployment, following [Build & Test](../build/overview.md). Every
+   surface below starts from that build.
+2. Select an entry point. Embed a
+   [DataFusion session](./datafusion-session.mdx) in a Rust service or start
    the [Flight SQL server](./flight-sql-server.mdx) for remote clients.
    In each case, declare the GPUs the process may use before running queries.
-   The server-side settings are in [Configuration](./configuration.mdx).
-3. **Provide tables.** In an embedded session, register tables as you would
-   in plain DataFusion (`CREATE EXTERNAL TABLE ... STORED AS PARQUET` or
+   Server-side settings are documented in [Configuration](./configuration.mdx).
+3. Provide tables. In an embedded session, register tables as in plain
+   DataFusion (`CREATE EXTERNAL TABLE ... STORED AS PARQUET` or
    `register_parquet`). See
    [Execute one attempt per query](./datafusion-session.mdx#execute-one-attempt-per-query).
    The server reads Parquet tables that clients register with
    `CREATE EXTERNAL TABLE`, as in the
    [citation table registration](./flight-sql-server.mdx#start-the-citation-demo-server).
-   If you use the `cugraph_*`, `cuvs_*`, or `cuml_*` UDTFs, list and validate installed
+   When using `cugraph_*`, `cuvs_*`, or `cuml_*` UDTFs, list and validate installed
    calls with [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx).
-4. **Check whether a query runs on the GPU.** Before shipping a query, ask for
-   its planned execution path, and the reason for any part that stays on the
-   CPU, with [GPU coverage validation](./gpu-coverage-validation.mdx):
+4. Verify whether a query runs on the GPU. Before shipping a query, inspect
+   its planned execution path and the reason for any part that remains on the
+   CPU using [GPU coverage validation](./gpu-coverage-validation.mdx):
    `algeon_explain_coverage` in embedded SQL, `EXPLAIN GPU` through Flight SQL,
    or `validate_query` in Rust. With the default `native_preferred` mode,
    relational candidates not selected for GPU execution stay in DataFusion.
-5. **Handle failures.** A GPU execution failure comes back as an error with
-   a stable code, kind, and status. At your application boundary, act on errors
-   that carry a typed Algeon identity and keep your existing policy for
-   ordinary DataFusion failures. See [Handling Errors](./handling-errors.mdx).
-   Queries that cannot get GPU execution capacity in time return
-   `service_overloaded` backpressure rather than waiting indefinitely. Waiters
-   are served first-in, first-out.
+5. Handle failures. A GPU execution failure returns an error with a stable
+   code, kind, and status. At the application boundary, inspect errors that
+   carry a typed Algeon identity and keep standard handlers for ordinary
+   DataFusion failures. See [Handling Errors](./handling-errors.mdx). Queries
+   that cannot acquire GPU execution capacity within configured deadlines
+   return `service_overloaded` backpressure; eligible waiters are served in
+   first-in, first-out order.

@@ -8,44 +8,53 @@ import {ParquetRead, StorageRoutes} from '@site/src/components/design/GuideDiagr
 
 # From Parquet to GPU memory
 
-A Parquet file contains compressed column pages plus metadata describing their
-locations. A GPU query needs decoded columns in **VRAM**, the GPU's local
-device memory. Between those representations, Algeon must select byte ranges,
-read them and decode them. Host staging buffers occupy separate system RAM.
+Parquet scans identify column byte ranges, stage buffers, and decode data into
+GPU VRAM using cuDF and KvikIO. Host staging buffers remain in system RAM.
 
 ## Projection and scan pruning
 
 <ParquetRead />
 
-The scan can exclude data at several levels. A **row group** is a horizontal
-slice of a Parquet file, with a separate column chunk for each field.
+Scans prune unneeded data across multiple granularities:
 
 | Unit | How the scan is reduced |
 | --- | --- |
-| Files | Native lowering preserves the file set supplied by DataFusion's scan, including any upstream file or partition pruning. |
-| Column chunks | Projection keeps columns needed by downstream operators and predicates. In the [grouped-sum example](./native-lowering.mdx#translate-the-work), `status` must still be read for the filter even though it is absent from the final output. |
-| Row groups | Native lowering preserves explicit row-group selections and can use footer statistics, such as min/max and null counts, to exclude groups for supported predicates. Groups with insufficient evidence remain candidates. |
-| Rows | Predicates evaluate the rows in retained groups, inside the reader when pushed down or in a GPU filter operator. This reduces rows passed onward after decoding. |
+| Files | Native lowering preserves the file set supplied by DataFusion's scan, including upstream partition pruning. |
+| Column chunks | Projection keeps only columns referenced by downstream operators and predicates. |
+| Row groups | Lowering evaluates footer statistics (min/max and null counts) and Bloom filters to prune row groups for supported predicates. |
+| Rows | Predicates evaluate within the cuDF reader or a downstream GPU filter, reducing output rows. |
 
-When a predicate is pushed into the cuDF reader, its statistics filter can
-reduce row groups further. Supported equality predicates can also use Bloom
-filters stored in the file. The predicate and available metadata determine
-which stages apply. Footer pruning of `s3://` sources before admission is an
-embedded-session setting, `AlgeonNativeExecutionConfig::with_lakehouse_footer_pruning`;
-the Flight SQL server exposes no object-store configuration.
-
-The host reads metadata to identify schema, row groups and column ranges.
-Selected payload reaches GPU buffers through the cuDF datasource and KvikIO.
-cuDF decompresses and decodes the retained column chunks. Parquet bytes on disk
-and decoded columns can have very different sizes. A selective row predicate
-can still require reading many bytes when metadata cannot exclude row groups.
+When a predicate is pushed into the cuDF reader, statistics filters reduce row
+groups before decompression. Footer pruning of `s3://` sources before admission
+is an embedded-session setting, `AlgeonNativeExecutionConfig::with_lakehouse_footer_pruning`;
+Flight SQL server sessions do not expose object-store pruning options.
 
 Source-read observations report `pruning_input_row_groups`,
 `row_groups_after_stats_filter` and `row_groups_after_bloom_filter` when the
-reader supplies that evidence. Their starting count is already after the
-caller's row-group selection. A missing stage count means it was not reported.
-It does not mean zero groups survived. Compare these counts with output rows
+reader supplies pruning evidence. Compare these counts with `output_rows`
 to distinguish metadata pruning from row filtering.
+
+## Row groups, source chunks and I/O tasks
+
+| Unit | Defined by | Size describes |
+| --- | --- | --- |
+| Parquet row group | The file writer | A set of rows stored as separate column chunks, with footer metadata |
+| Source chunk | Algeon's source planner | Selected row groups from one file, grouped against a decoded-byte target and a row-group cap |
+| KvikIO I/O task | The I/O layer | A range of stored bytes to read, bounded by `KVIKIO_TASK_SIZE` |
+
+The planner can combine several row groups into one source chunk. Compatible
+source chunks can then be batched into a reader call. The reader selects the
+column byte ranges, and KvikIO divides reads into I/O tasks on its shared
+pool. One source chunk can therefore require many I/O tasks. Changing the
+I/O task size changes the read subdivision; the source-chunk target still
+comes from the query's memory policy.
+
+Source sizing uses estimates of decoded columns because dictionary-encoded
+strings can expand substantially during decoding. The
+[native settings](../integration/configuration.mdx#native-settings) define
+throughput grouping, byte targets and their overrides. Follow
+[chunk execution](./gpu-execution.mdx#cuda-streams-and-dependencies) to see
+how a query's grant constrains that planning.
 
 ## The transport depends on the source
 
@@ -111,38 +120,20 @@ and the [GDS overview](https://docs.nvidia.com/gpudirect-storage/overview-guide/
 
 ### Object storage and libcurl
 
-Algeon's native S3 datasource uses KvikIO HTTP range reads. They run as tasks
-on the KvikIO thread pool shared with local reads. libcurl receives
-chunks into host buffers. KvikIO accumulates them in pinned staging memory
-and copies them to the GPU. The network receive buffer and pinned bounce
-buffer have different roles, even though both occupy host memory. Footer reads
-and cache fills for `s3://` sources run on a process-wide
-`algeon-object-store-control` Tokio runtime, separate from the host and device
-runtimes ([Runtimes and threads](./index.mdx#runtimes-and-threads)).
+Algeon's native S3 datasource uses KvikIO HTTP range reads executed on the
+shared thread pool. libcurl receives chunks into host memory; KvikIO stages
+them in pinned memory before copying to device VRAM. Direct storage-to-VRAM
+transfers via cuObject RDMA are not supported. Footer reads and cache fills
+for `s3://` sources run on a process-wide `algeon-object-store-control` Tokio
+runtime ([Runtimes and threads](./index.mdx#runtimes-and-threads)).
 
 KvikIO's
 [remote transfer implementation](https://github.com/rapidsai/kvikio/blob/0f6900f08c5a7ca150689e5454ae28562f875eec/cpp/src/remote_handle.cpp#L37-L133)
 shows the host staging and device copy. An `s3://` URL does not imply RDMA or
 GDS.
 
-### cuObject and RDMA
-
-[cuObject](https://docs.nvidia.com/gpudirect-storage/cuobject/) answers an S3
-range `GET` by writing the payload into a registered destination buffer with
-**RDMA**, remote direct memory access; when VRAM serves as the target
-destination, libcurl buffers and pinned staging memory are bypassed entirely
-along the payload path (represented by the dashed line in the diagram above).
-It needs a ConnectX-5 or newer InfiniBand or
-RoCE adapter on the client and NVIDIA's cuObject server library in the object
-store. Algeon does not support it yet: its S3 datasource reads through KvikIO's
-remote handle, which in the cuDF 26.08 build moves every remote payload over
-HTTP ([roadmap](../reference/roadmap.md#longer-term)).
-
 ## Source and workspace {/* #lakehouse-and-workspace-boundary */}
 
 Local and S3 Parquet are read-only sources. SQL views belong to the mutable
 DataFusion workspace; creating a view does not rewrite a Parquet file or
 materialize it on the GPU.
-Iceberg sources are currently [unsupported](../integration/overview.mdx#iceberg-support).
-
-Next, inspect [the decoded columns and their execution schedule](./gpu-execution.mdx).

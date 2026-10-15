@@ -34,10 +34,7 @@ use crate::{
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
     native_report::FinalPlanDisposition,
     planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
-    report::{
-        CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, NotSupportedDetail, PlanningReport,
-        SinglePartitionOutcome,
-    },
+    report::{CandidateOutcome, GpuCandidate, NotSupportedDetail, PlanningReport, SinglePartitionOutcome},
     session::AlgeonSessionStateBuilderExt,
 };
 
@@ -286,24 +283,7 @@ async fn validate_query_reports_capability_misses_without_terminal_rejection() {
 fn candidate_outcomes_classify_cost_decisions_as_cost() {
     let report = PlanningReport::from_outcomes([CandidateOutcome::NotSelectedByCost {
         candidate: GpuCandidate::new("ProjectionExec", 1),
-        cost_reason: NativePlanCostReason::SmallSelectiveTopK,
-        evidence: NativeCandidateCostEvidence {
-            node_count: 1,
-            source_count: 1,
-            local_parquet_source_count: 1,
-            selected_row_groups_known: true,
-            selected_row_groups: Some(1),
-            estimated_source_rows: Some(1),
-            estimated_source_bytes: Some(1),
-            selected_source_bytes_known: true,
-            join_count: 0,
-            residual_join_count: 0,
-            aggregate_count: 0,
-            grouped_aggregate_count: 0,
-            sort_count: 0,
-            limit_count: 0,
-            min_topk_fetch: Some(1),
-        },
+        cost_reason: NativePlanCostReason::NoColumnData,
     }]);
 
     let outcomes = candidate_outcomes_from_report(&report);
@@ -312,8 +292,8 @@ fn candidate_outcomes_classify_cost_decisions_as_cost() {
     assert_eq!(outcomes[0].selection, CandidateOutcomeKind::NotSelectedByCost);
     assert_eq!(outcomes[0].reason_kind, Some(QueryGpuCandidateReasonKind::Cost));
     assert_eq!(outcomes[0].category.as_deref(), Some("cost"));
-    assert_eq!(outcomes[0].reason_code.as_deref(), Some("native_small_selective_topk_not_selected_by_cost"));
-    assert_eq!(outcomes[0].remedy.as_ref().map(|remedy| remedy.code), Some("keep_cpu_for_small_selective_work"));
+    assert_eq!(outcomes[0].reason_code.as_deref(), Some("native_no_column_data_not_selected_by_cost"));
+    assert_eq!(outcomes[0].remedy.as_ref().map(|remedy| remedy.code), Some("keep_cpu_without_column_data"));
 }
 
 #[test]
@@ -503,7 +483,6 @@ async fn validate_query_concurrent_calls_report_their_own_planning_diagnostics()
                 && outcome["remedy_kind"].is_null()
                 && outcome["remedy"].is_null()
                 && outcome["blocking"].is_null()
-                && outcome["cost_evidence"].is_null()
         })
     }));
     assert_eq!(cpu.gpu_path(), "cpu");

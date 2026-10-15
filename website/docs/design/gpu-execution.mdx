@@ -4,82 +4,52 @@ title: Inside GPU execution
 description: "Column buffers, task dependencies and CUDA streams explain how native operators share one GPU."
 ---
 
-import {ColumnLayout, ResultEgress, StreamSchedule} from '@site/src/components/design/GuideDiagrams';
+import {ResultEgress, StreamSchedule} from '@site/src/components/design/GuideDiagrams';
 
 # Inside GPU execution
 
-After decoding, the input is a collection of buffers in GPU VRAM. The engine runs
-one compiled schedule for each native fragment, coordinated from one worker of
-the device's GPU execution runtime
-([Runtimes and threads](./index.mdx#runtimes-and-threads)). Its tasks call GPU
-operations, retain the intermediate results still in use and release completed
-resources.
-
-## Columns and memory access
-
-<ColumnLayout />
-
-Fixed-width values sit next to one another within a column. Nullable columns
-carry a validity bitmap; strings use offsets into a character buffer. A scan
-over `amount` can read adjacent values without loading unrelated fields from
-each row. Adjacent GPU threads can combine adjacent accesses into fewer memory
-transactions, much as locality reduces cache-line traffic in CPU code.
-
-Different operators create different access patterns and intermediate data:
-
-| Operation | Memory access and temporary state |
-| --- | --- |
-| Filter | Evaluate a column predicate and gather selected rows. Reading input can greatly exceed the size of the result. |
-| Hash join | Build a hash table from one input's keys, probe with the other input, then gather matching row pairs. Probes can touch scattered buckets. Duplicate keys can expand the result. |
-| Grouped aggregate | Combine rows by key into group state, then merge partial state when input is chunked. More distinct keys require more state. |
-| Sort / top-k | Compare and reorder values. Chunk candidates require a merge before they form a global result. |
-
-These access patterns explain why a compressed file's size cannot stand in
-for the query's VRAM demand. Decoded columns, operator state and output
-can coexist. Column reads and intermediate writes also consume device-memory
-bandwidth, even after input transfers over PCIe have completed.
+The engine runs a compiled schedule for each native fragment, coordinated from
+a worker thread in the device's GPU execution pool
+([Runtimes and threads](./index.mdx#runtimes-and-threads)). Operators execute
+GPU kernels on decoded columns in VRAM, retaining intermediate results until
+downstream consumers finish.
 
 ## CUDA streams and dependencies
 
-`CudaStream` identifies an ordered queue of GPU work, and work on separate
-streams needs explicit completion dependencies before sharing results.
+`CudaStream` identifies an ordered queue of GPU work. Work on separate
+streams requires explicit completion dependencies before exchanging data.
 
 <StreamSchedule />
 
-The coordinator is one `QueryExecution` job on one worker, and its tasks run on
-the attempt's root stream. Expanded chunk work (aggregate chunks, join probes
-and fused top-k candidates) goes to blocking-lane jobs. An execution **lane** is
-one auxiliary permit, one leased stream and a derived context. Its width is
-bounded by the minimum of `source_work_per_attempt`, the permits available at
-launch, and the pending work items; any run allocated fewer than two lanes
-executes inline on the coordinator. At the default `source_work_per_attempt` of 1, no run reaches
-two lanes. The coordinator merges lane outputs in dispatch order under the
-required SQL semantics. **A DataFusion CPU partition does not determine lane
-ownership or width.** A lane's stream lease lasts for the whole run, while each
-chunk job can land on any blocking-lane thread.
+The coordinator runs as a `QueryExecution` job on one pool worker, executing
+root tasks on the attempt's root stream. Expanded chunk work (aggregate chunks,
+join probes, and fused top-k candidates) executes on blocking-lane jobs. An
+execution **lane** consists of one auxiliary permit, one leased CUDA stream, and
+a derived context. Its width is bounded by `source_work_per_attempt`, available
+permits, and pending work items; runs allocated fewer than two lanes execute
+inline on the coordinator. At the default `source_work_per_attempt = 1`, chunk
+work executes inline. The coordinator merges lane outputs in dispatch order
+under the required SQL semantics; DataFusion CPU partitions do not dictate
+lane allocation or stream width. A lane's stream lease remains held for the
+entire run, while chunk jobs may execute on any blocking-lane thread.
 
-Related terms use the word lane in other senses.
+Related terms distinguish lane scopes:
 
 - An attempt lane (`lane_count`, which equals `max_active_attempts`) is the
-  identity slot an admitted attempt holds for its lifetime. See
-  [Capacity and allocation](./admission.mdx#device-profiles-and-grants).
-- An execution lane is the permit, stream and context described above.
-- Chunk lane work is one blocking-lane job that runs on an execution lane.
+  identity slot an admitted attempt holds for its lifetime ([Capacity and allocation](./admission.mdx#device-profiles-and-grants)).
+- An execution lane is the permit, stream, and context described above.
+- Chunk lane work is a blocking-lane job executing on an execution lane.
 
-Cross-stream dependencies use completion fences, such as CUDA events. The
-consumer waits for the producer's work before reading its buffers, and
-buffer ownership lasts through the final use. All lanes allocate inside
+Cross-stream dependencies use completion fences such as CUDA events. Buffer
+ownership lasts through final consumption, and all lanes allocate within
 [one query memory cap](./admission.mdx).
 
 ## Relational data into GPU algorithms {/* #gpu-algorithms */}
 
-A SQL table function can run cuGraph, cuVS or cuML inside a larger query.
-cuDF columns supply edges or features; the algorithm returns columns for
-subsequent filters, joins and aggregation. Format conversion and result
-ownership determine which boundaries borrow buffers and which perform device
-copies. See [GPU table functions](./gpu-table-functions.mdx) for a PageRank
-example, the prepared-export lifetime and the differences between the three
-libraries.
+SQL table functions integrate cuGraph, cuVS, and cuML within queries. cuDF
+columns supply input relations, and algorithm output columns feed downstream
+relational operators. [GPU table functions](./gpu-table-functions.mdx) details
+buffer ownership, zero-copy interop, and layout requirements across RAPIDS libraries.
 
 ## Result egress and host synchronization {/* #result-egress */}
 

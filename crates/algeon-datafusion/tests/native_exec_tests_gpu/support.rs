@@ -37,9 +37,9 @@ use datafusion::{
 use futures::executor::block_on;
 
 pub(super) use super::support_core::{
-    adapter_error, ilike_filter_plan, ilike_filter_plan_with_pattern, int32_array, int64_array,
-    join_aggregate_sort_limit_sql_plan, parquet_file_schema, parquet_scan, parquet_scan_with_target_partitions,
-    unique_temp_dir, write_batch, write_ilike_parquet_file, write_ilike_parquet_file_with_labels, write_parquet_file,
+    adapter_error, ilike_filter_plan, ilike_filter_plan_with_pattern, int32_array, int64_array, parquet_file_schema,
+    parquet_scan, parquet_scan_with_target_partitions, unique_temp_dir, write_batch, write_ilike_parquet_file,
+    write_ilike_parquet_file_with_labels, write_parquet_file,
 };
 
 pub(super) fn bounded_config() -> AlgeonNativeExecutionConfig {
@@ -62,10 +62,6 @@ pub(super) fn parquet_scan_with_declared_output_ordering(path: &Path) -> Arc<dyn
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_output_ordering(vec![ordering]).build();
     DataSourceExec::from_data_source(file_scan)
-}
-
-pub(super) fn join_aggregate_sort_sql_plan(left: &Path, right: &Path) -> Arc<dyn ExecutionPlan> {
-    super::support_core::join_aggregate_sort_sql_plan_with_limit(left, right, false)
 }
 
 pub(super) fn single_partition_sql_plan_with_parquet_tables(

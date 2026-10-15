@@ -44,7 +44,9 @@ use query_planning::{
     },
 };
 use query_runtime::{
-    observability::{AttemptDisposition, RuntimeTerminalOutcome},
+    observability::{
+        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, RuntimeTerminalOutcome,
+    },
     runtime::{ExecutionCancellation, QueryAdmissionRequest, StandaloneConfig},
 };
 use tokio::{runtime::Builder as TestRuntimeBuilder, task::yield_now, time::timeout};
@@ -2365,6 +2367,67 @@ async fn cugraph_bfs_projection_fanout_shares_one_full_result_producer() {
                     )
                 })
                 .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[tokio::test]
+async fn repeated_similarity_cte_executes_once_per_attempt_across_graph_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edges.parquet");
+    write_edge_parquet_with_graph_vertex_upper_bound(&path, Some(3));
+    let backend = test_gpu_backend();
+    let state = backend
+        .backend()
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .unwrap()
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let similar = "SELECT first, second, similarity FROM cugraph_jaccard(\
+        edges => (SELECT src, dst FROM edges),\
+        vertex_pairs => (SELECT src AS first, dst AS second FROM edges), directed => false)";
+    let repeated = format!(
+        "WITH similar AS ({similar}), worlds AS (\
+        SELECT vertex, community FROM cugraph_leiden(\
+            edges => (SELECT first AS src, second AS dst, CAST(similarity AS DOUBLE) AS weight FROM similar),\
+            directed => false, seed => 42)), bridges AS (\
+        SELECT vertex, value FROM cugraph_betweenness_centrality(\
+            edges => (SELECT first AS src, second AS dst FROM similar), directed => false))\
+        SELECT COUNT(*) AS pairs, MIN(CAST(s.similarity AS DOUBLE)) AS similarity FROM similar s \
+        JOIN worlds w ON w.vertex = s.first JOIN bridges b ON b.vertex = s.second"
+    );
+    let independent = format!(
+        "WITH a AS ({similar}), b AS ({similar})\
+        SELECT COUNT(*) AS pairs, MIN(CAST(a.similarity AS DOUBLE)) AS similarity FROM a JOIN b ON a.first = b.first AND a.second = b.second"
+    );
+    // Repeating the same SQL in another attempt must execute its producer again.
+    for (sql, executions) in [(&repeated, 1), (&repeated, 1), (&independent, 2)] {
+        let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
+        let batches = attempt.sql(&ctx, sql).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+        let report = attempt.completion().await;
+        assert_eq!(report.outcome, RuntimeTerminalOutcome::Succeeded, "{report:#?}");
+        assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed, "{report:#?}");
+        assert_eq!(
+            report.capacity_disposition,
+            AttemptCapacityDisposition::Released,
+            "resident handles must release the attempt grant"
+        );
+        let batch = &batches[0];
+        assert_eq!(batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 3);
+        assert!((batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap().value(0) - 1.0 / 3.0).abs() < 1e-6);
+        let snapshot = attempt.sealed_native_execution_snapshot().unwrap();
+        assert_eq!(
+            snapshot
+                .metrics
+                .graph_runtime_rows
+                .iter()
+                .filter(|row| row.algorithm == CugraphAlgorithm::Jaccard.code())
+                .count(),
+            executions,
+            "one runtime row for each executed similarity invocation: {snapshot:#?}"
         );
     }
 }

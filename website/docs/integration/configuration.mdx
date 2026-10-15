@@ -301,9 +301,9 @@ binary. It reads one line from stdin and prints the PHC string:
 printf '%s\n' 'correct horse battery staple' | target/release/algeon_server hash-password
 ```
 
-Run interactively, `hash-password` prompts on stderr. The standard library
-cannot hide terminal input, so the typed password stays visible. Piping it
-avoids that.
+Run interactively, `hash-password` prompts on stderr. Because the standard library
+cannot mask terminal input, typed characters remain visible on screen. Piping
+standard input prevents displaying the password.
 
 ## TLS {/* #tls */}
 
@@ -325,7 +325,7 @@ client_ca_path = "/etc/algeon/clients-ca.pem"   # optional
   file cannot be read, a PEM is invalid, or the key does not match the
   certificate. An unreadable file is named by its field and path. Key
   material never appears in the error.
-- Files are read once at startup, so replacing a certificate needs a restart.
+- Files are read once during process startup; certificate renewals require restarting the server.
 - Clients connect with `grpc+tls://host:50051` and trust the CA that signed
   the server certificate.
 - Loading `[tls]` logs `client_certificate_verification`, and the
@@ -437,9 +437,9 @@ resolution, rejections and the trust boundary.
 
 ## Startup SQL {/* #startup-sql */}
 
-`init_sql` names a SQL file that the server runs on its shared session before
-it binds the port, so tables and views exist without a client sending DDL
-after each restart:
+`init_sql` names a SQL file that the server executes on its shared session before
+binding the network listener. This pre-populates tables and views without
+requiring client DDL after restarts:
 
 ```sql
 -- /etc/algeon/init.sql
@@ -457,9 +457,9 @@ CREATE VIEW recent_lineitem AS SELECT * FROM lineitem WHERE l_shipdate >= DATE '
   with `invalid_configuration`. The message names `init_sql`, the 1-based
   statement number and the first 120 characters of the statement, with
   `OPTIONS` values masked.
-- Loading checks that the file exists, so `--check-config` reports a missing
-  file. Relative paths inside the SQL resolve against the server's working
-  directory.
+- Configuration validation verifies that the file exists; `--check-config`
+  reports an error when the path cannot be resolved. Relative paths inside the
+  SQL resolve against the server's working directory.
 - Objects created here share the server-wide namespace with client DDL.
 
 ## Command line {/* #command-line */}

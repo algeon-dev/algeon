@@ -6,13 +6,6 @@ use super::model::{QueryGpuRemedy, QueryGpuRemedyKind};
 
 pub(super) const fn cost_remedy(reason: NativePlanCostReason) -> QueryGpuRemedy {
     match reason {
-        NativePlanCostReason::SmallSelectiveTopK
-        | NativePlanCostReason::SmallSelectiveResidualJoin
-        | NativePlanCostReason::SmallSelectiveFullSort => QueryGpuRemedy::new(
-            "keep_cpu_for_small_selective_work",
-            QueryGpuRemedyKind::CpuPreferred,
-            "The cost model expects CPU execution to be cheaper for this small selective shape; increase useful GPU work or keep the DataFusion path.",
-        ),
         NativePlanCostReason::NoColumnData => QueryGpuRemedy::new(
             "keep_cpu_without_column_data",
             QueryGpuRemedyKind::CpuPreferred,

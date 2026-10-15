@@ -17,13 +17,13 @@
 # diagnostic.
 #
 # Redistributable builds do not rely on ambient Cargo flags or this developer
-# config alone. docker/stage-docker-payload.sh uses .config/policies/cpu-packaging.toml and an
+# config alone. docker/build-image.sh uses .config/policies/cpu-packaging.toml and an
 # isolated Cargo invocation with the policy's exact target and codegen flags.
 
 # Workspace builds also require the mold linker. Install `mold` (Ubuntu:
 # `sudo apt-get install -y mold`) and keep `clang` available so Cargo can pass
 # `-fuse-ld=mold`. Redistributable packaging intentionally ignores this file:
-# `docker/stage-docker-payload.sh` launches Cargo from an isolated cwd and clean CARGO_HOME
+# `docker/build-image.sh` launches Cargo from an isolated cwd and clean CARGO_HOME
 # with only the policy's target and rustflags.
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"

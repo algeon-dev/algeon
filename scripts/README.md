@@ -22,6 +22,13 @@ provides the shared saved-query metadata reader used by the community and
 supervised verification scripts. Local policy checks keep native source
 registry and workspace publication-policy failures separate in the full gate.
 
+`dev/merrec_benchmark.py` generates nested graph windows and vector query
+batches for `dev/merrec_run.py`, runs the exact FAISS baseline on frozen taste
+features, and summarizes existing runtime spans. Reproduction commands and
+timing boundaries live in the [MerRec scale benchmark guide](../fixture/demo/merrec/scripts/scale/benchmark.md).
+Its focused checks are `python -m unittest discover -s scripts/dev/tests -p test_merrec_benchmark.py`
+in the provisioned NumPy/PyArrow environment.
+
 `ci/release_archives.py --output /tmp/algeon-release` packages the allowlist
 owned by `ci/check_workspace_publication.py` with the adapter's release
 features. It checks normalized dependency versions, docs.rs metadata and
@@ -102,6 +109,11 @@ each `RUN` body of `docker/Dockerfile`, naming the instruction's first line on
 failure. It needs no staged payload or Docker daemon; a full `docker build`
 is not part of the gate. Its self-test is
 `ci/tests/check_docker_scripts_tests.sh`.
+`ci/tests/check_cpu_packaging_tests.sh` drives
+`build/cpu_packaging_policy.py` and `docker/build-image.sh` with fake
+`cargo`, `nvcc`, `readelf`, `ldd` and `docker` commands. It covers the build
+record, the manifest and `SHA256SUMS`, the image tag and build arguments, and
+the loader-closure failures of `docker/validate-loader-closure.sh`.
 
 `ci/check_public_api_surface.sh` compares the API snapshots and invokes
 `ci/check_public_api_docs.py` for the

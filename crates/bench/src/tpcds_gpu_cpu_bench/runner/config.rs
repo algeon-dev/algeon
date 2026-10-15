@@ -1,10 +1,8 @@
-use std::{error::Error, path::Path};
+use std::error::Error;
 
 use super::{
-    AlgeonSessionStateBuilderExt, BenchConfig, BenchRuntime, Engine, GpuDeviceMemoryLimit,
-    RelationalExecutionSelection, SessionContext, SessionStateBuilder, TPCDS_QUERIES, TpcdsNativeProfileSettings,
-    TpcdsQuery, register_tpcds_tables_with_native_metadata,
-    tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings,
+    BenchConfig, BenchRuntime, Engine, GpuDeviceMemoryLimit, RelationalExecutionSelection, SessionContext,
+    SessionStateBuilder, TPCDS_QUERIES, TpcdsQuery, register_tpcds_tables_with_native_metadata,
     tpcds_native_analytics_optimizer_config_with_profile_settings,
     tpcds_native_profile_settings_and_device_memory_limit_from_env, tpcds_native_profile_settings_with_env,
     tpcds_native_report_session_config,
@@ -22,14 +20,8 @@ impl BenchConfig {
         let engine = match std::env::var("ALGEON_TPCDS_BENCH_ENGINE").as_deref() {
             Ok("native_gpu") => Engine::NativeGpu,
             Ok("cpu_datafusion") => Engine::CpuDataFusion,
-            Ok("cost_declined_datafusion") => Engine::CostDeclinedDataFusion,
             Ok(other) => return Err(format!("unsupported ALGEON_TPCDS_BENCH_ENGINE={other}").into()),
-            Err(_) => {
-                return Err(
-                    "ALGEON_TPCDS_BENCH_ENGINE must be set to native_gpu, cpu_datafusion, or cost_declined_datafusion"
-                        .into(),
-                );
-            },
+            Err(_) => return Err("ALGEON_TPCDS_BENCH_ENGINE must be set to native_gpu or cpu_datafusion".into()),
         };
         let root = std::env::var(workloads::ALGEON_PARQUET_DIR_ENV)
             .map_err(|_| "ALGEON_PARQUET_DIR must be set to the SF100 parquet root")?;
@@ -45,9 +37,7 @@ impl BenchConfig {
             Engine::CpuDataFusion => {
                 (tpcds_native_profile_settings_with_env(|_| None), GpuDeviceMemoryLimit::default())
             },
-            Engine::NativeGpu | Engine::CostDeclinedDataFusion => {
-                tpcds_native_profile_settings_and_device_memory_limit_from_env()
-            },
+            Engine::NativeGpu => tpcds_native_profile_settings_and_device_memory_limit_from_env(),
         };
         Ok(Self {
             engine,
@@ -60,7 +50,6 @@ impl BenchConfig {
             relational_execution: match engine {
                 Engine::CpuDataFusion => RelationalExecutionSelection::CpuBaseline,
                 Engine::NativeGpu => RelationalExecutionSelection::strict_native(),
-                Engine::CostDeclinedDataFusion => RelationalExecutionSelection::native(),
             },
         })
     }
@@ -92,13 +81,7 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             let session_config = tpcds_tuned_cpu_session_config();
             let ctx = SessionContext::new_with_config(session_config);
             register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
-            Ok(BenchRuntime {
-                execution_ctx: ctx,
-                native_rule_installed: false,
-                native_planning_ctx: None,
-                skip_cost_declined: false,
-                backend: None,
-            })
+            Ok(BenchRuntime { execution_ctx: ctx, native_rule_installed: false, backend: None })
         },
         Engine::NativeGpu => {
             let optimizer_config = cfg
@@ -124,45 +107,7 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
                     return Err(error);
                 },
             };
-            Ok(BenchRuntime {
-                execution_ctx: ctx,
-                native_rule_installed: true,
-                native_planning_ctx: None,
-                skip_cost_declined: true,
-                backend: Some(backend),
-            })
-        },
-        Engine::CostDeclinedDataFusion => {
-            let cpu_ctx = SessionContext::new_with_config(tpcds_tuned_cpu_session_config());
-            register_tpcds_tables_with_native_metadata(&cpu_ctx, &cfg.root).await?;
-            let native_ctx =
-                build_native_planning_context(&cfg.root, &cfg.native_profile, cfg.relational_execution).await?;
-            Ok(BenchRuntime {
-                execution_ctx: cpu_ctx,
-                native_rule_installed: false,
-                native_planning_ctx: Some(native_ctx),
-                skip_cost_declined: false,
-                backend: None,
-            })
+            Ok(BenchRuntime { execution_ctx: ctx, native_rule_installed: true, backend: Some(backend) })
         },
     }
-}
-
-async fn build_native_planning_context(
-    root: &Path,
-    native_profile: &TpcdsNativeProfileSettings,
-    relational_execution: RelationalExecutionSelection,
-) -> Result<SessionContext, Box<dyn Error>> {
-    let optimizer_config = relational_execution
-        .configure_native_optimizer(tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings(
-            native_profile,
-        ))
-        .expect("cost-decision planning session installs the native rule");
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(tpcds_native_report_session_config())
-        .with_algeon_native(optimizer_config)
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    register_tpcds_tables_with_native_metadata(&ctx, root).await?;
-    Ok(ctx)
 }

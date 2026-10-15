@@ -21,8 +21,8 @@ description: Reference material for GPU execution support boundaries, benchmark 
 - [GPU Coverage Report](./gpu-coverage-report.mdx) - the columns, JSON
   fields, blocking kinds, remedies and runtime caveats of
   `algeon_explain_coverage` and `EXPLAIN GPU`.
-- [Benchmarks](./benchmarks/index.mdx) - where NVIDIA publishes the GPU
-  library benchmarks, and Algeon's own TPC-H and TPC-DS runs.
+- [Benchmarks](./benchmarks/index.mdx) - MerRec UDTF execution,
+  TPC-H and TPC-DS SF100 runs, and concurrent server streams.
 - [Glossary](./glossary.md) - one-line definitions of Algeon-specific terms,
   linking to the owning contract pages.
 - [Roadmap](./roadmap.md) - what is being worked on next, what waits for an

@@ -2380,21 +2380,9 @@ impl query_planning::plan::MlUmapInit
 pub const fn query_planning::plan::MlUmapInit::as_str(self) -> &'static str
 impl core::fmt::Display for query_planning::plan::MlUmapInit
 pub fn query_planning::plan::MlUmapInit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum query_planning::plan::NativePlanCostDecision
-pub query_planning::plan::NativePlanCostDecision::ContinueNative
-pub query_planning::plan::NativePlanCostDecision::ContinueNative::facts: query_planning::plan::NativePlanCostFacts
-pub query_planning::plan::NativePlanCostDecision::NotSelectedByCost
-pub query_planning::plan::NativePlanCostDecision::NotSelectedByCost::facts: query_planning::plan::NativePlanCostFacts
-pub query_planning::plan::NativePlanCostDecision::NotSelectedByCost::reason: query_planning::plan::NativePlanCostReason
-impl query_planning::plan::NativePlanCostDecision
-pub fn query_planning::plan::NativePlanCostDecision::facts(&self) -> &query_planning::plan::NativePlanCostFacts
-pub fn query_planning::plan::NativePlanCostDecision::is_not_selected_by_cost(&self) -> bool
 pub enum query_planning::plan::NativePlanCostReason
 pub query_planning::plan::NativePlanCostReason::HostLiteralPassthrough
 pub query_planning::plan::NativePlanCostReason::NoColumnData
-pub query_planning::plan::NativePlanCostReason::SmallSelectiveFullSort
-pub query_planning::plan::NativePlanCostReason::SmallSelectiveResidualJoin
-pub query_planning::plan::NativePlanCostReason::SmallSelectiveTopK
 impl query_planning::plan::NativePlanCostReason
 pub const fn query_planning::plan::NativePlanCostReason::code(self) -> &'static str
 pub enum query_planning::plan::PlanNode
@@ -3021,35 +3009,6 @@ pub query_planning::plan::MlUmapParams::set_op_mix_ratio: f64
 pub query_planning::plan::MlUmapParams::spread: f64
 impl query_planning::plan::MlUmapParams
 pub fn query_planning::plan::MlUmapParams::new(query_planning::plan::MlRelationBinding) -> Self
-pub struct query_planning::plan::NativePlanCostFacts
-pub query_planning::plan::NativePlanCostFacts::aggregate_count: usize
-pub query_planning::plan::NativePlanCostFacts::estimated_source_bytes: core::option::Option<u64>
-pub query_planning::plan::NativePlanCostFacts::estimated_source_rows: core::option::Option<u64>
-pub query_planning::plan::NativePlanCostFacts::grouped_aggregate_count: usize
-pub query_planning::plan::NativePlanCostFacts::join_count: usize
-pub query_planning::plan::NativePlanCostFacts::limit_count: usize
-pub query_planning::plan::NativePlanCostFacts::local_parquet_source_count: usize
-pub query_planning::plan::NativePlanCostFacts::min_topk_fetch: core::option::Option<usize>
-pub query_planning::plan::NativePlanCostFacts::node_count: usize
-pub query_planning::plan::NativePlanCostFacts::residual_join_count: usize
-pub query_planning::plan::NativePlanCostFacts::selected_row_groups: core::option::Option<usize>
-pub query_planning::plan::NativePlanCostFacts::selected_row_groups_known: bool
-pub query_planning::plan::NativePlanCostFacts::selected_source_bytes_known: bool
-pub query_planning::plan::NativePlanCostFacts::sort_count: usize
-pub query_planning::plan::NativePlanCostFacts::source_count: usize
-impl query_planning::plan::NativePlanCostFacts
-pub fn query_planning::plan::NativePlanCostFacts::diagnostic_facts(&self) -> alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>
-pub struct query_planning::plan::NativePlanCostOptions
-pub query_planning::plan::NativePlanCostOptions::enabled: bool
-pub query_planning::plan::NativePlanCostOptions::max_small_selective_residual_join_row_groups: usize
-pub query_planning::plan::NativePlanCostOptions::max_small_selective_residual_join_source_bytes: u64
-pub query_planning::plan::NativePlanCostOptions::max_small_selective_row_groups: usize
-pub query_planning::plan::NativePlanCostOptions::max_small_selective_source_bytes: u64
-pub query_planning::plan::NativePlanCostOptions::max_topk_fetch: usize
-impl query_planning::plan::NativePlanCostOptions
-pub const fn query_planning::plan::NativePlanCostOptions::disabled() -> Self
-impl core::default::Default for query_planning::plan::NativePlanCostOptions
-pub fn query_planning::plan::NativePlanCostOptions::default() -> Self
 pub struct query_planning::plan::NodeId(_)
 impl query_planning::plan::NodeId
 pub const fn query_planning::plan::NodeId::index(self) -> usize
@@ -3282,7 +3241,7 @@ pub fn query_planning::plan::ml_embedding_output_schema(arrow_schema::datatype::
 pub fn query_planning::plan::ml_forest_output_schema(arrow_schema::datatype::DataType, query_planning::plan::MlForestOutputContract) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_hdbscan_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_regression_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
-pub fn query_planning::plan::native_plan_cost_decision(&query_planning::plan::QueryPlan, &query_planning::plan::NativePlanCostOptions, bool) -> query_planning::plan::NativePlanCostDecision
+pub fn query_planning::plan::native_plan_cost_decision(&query_planning::plan::QueryPlan, bool) -> core::option::Option<query_planning::plan::NativePlanCostReason>
 pub fn query_planning::plan::planned_resident_graph_key(&query_planning::plan::GraphResidencyDescriptor, &query_planning::plan::GraphAlgorithmSpec) -> core::option::Option<query_planning::plan::ResidentGraphKey>
 pub fn query_planning::plan::stable_graph_result_schema(query_planning::plan::GraphAlgorithm) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_kmeans_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef

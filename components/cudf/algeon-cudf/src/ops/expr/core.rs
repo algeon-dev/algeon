@@ -4,8 +4,8 @@ use crate::frame::series::reduction::infer_reduce_output_type;
 /// A declarative expression over DataFrame columns.
 ///
 /// Expressions form a tree that is evaluated eagerly against a DataFrame via
-/// [`Expr::eval`]. No optimization is performed; each node is evaluated
-/// bottom-up.
+/// [`Expr::eval`]. Nodes are evaluated bottom-up; a binary operation can
+/// consume a literal operand as a scalar without broadcasting it first.
 #[derive(Clone)]
 pub enum Expr {
     /// Reference to a named column.
@@ -777,6 +777,29 @@ fn eval_binary_op_with_context(
     ctx: &ExprEvalContext<'_>,
 ) -> Result<Series> {
     let left = lhs.eval_with_context(ctx)?;
+    if let Some(value) = binary_rhs_scalar_value(rhs) {
+        let scalar = Scalar::from_scalar_value_in_domain(value, &ctx.output_domain)?;
+        let lv = left.view()?;
+        let inferred_out_type;
+        let out_type = match explicit_output_type {
+            Some(output_type) => output_type,
+            None => {
+                inferred_out_type =
+                    binary::infer_binary_output_dtype_in(lv.data_type()?, scalar.data_type()?, op, ctx.operation)?;
+                &inferred_out_type
+            },
+        };
+        let col = binary::binary_operation_vs_impl(
+            &lv,
+            &scalar,
+            op,
+            out_type,
+            &ctx.output_domain,
+            ctx.required_exec_options(),
+            ctx.operation,
+        )?;
+        return ctx.wrap_column(col);
+    }
     let right = rhs.eval_with_context(ctx)?;
     let (left, right) = align_decimal_binary_storage(left, right, ctx)?;
     let lv = left.view()?;
@@ -800,6 +823,19 @@ fn eval_binary_op_with_context(
         ctx.operation,
     )?;
     ctx.wrap_column(col)
+}
+
+fn binary_rhs_scalar_value(expr: &Expr) -> Option<&ScalarValue> {
+    match expr {
+        Expr::Alias { inner, .. } => binary_rhs_scalar_value(inner),
+        // Decimal operands retain the column path's common-storage alignment.
+        Expr::Literal(
+            ScalarValue::Decimal32 { .. } | ScalarValue::Decimal64 { .. } | ScalarValue::Decimal128 { .. },
+        ) => None,
+        Expr::Literal(ScalarValue::Null(dtype)) if dtype.id().is_decimal() => None,
+        Expr::Literal(value) => Some(value),
+        _ => None,
+    }
 }
 
 fn eval_string_concat(inputs: &[Expr], ctx: &ExprEvalContext<'_>) -> Result<Series> {

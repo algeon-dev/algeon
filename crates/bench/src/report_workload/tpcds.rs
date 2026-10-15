@@ -18,9 +18,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use query_planning::{
-    execution_contracts::SourceChunkPlanningMode, mode::StatisticalAggregateExecutionMode, plan::NativePlanCostOptions,
-};
+use query_planning::{execution_contracts::SourceChunkPlanningMode, mode::StatisticalAggregateExecutionMode};
 use query_runtime::runtime::GpuDeviceMemoryLimit;
 use workloads::tpcds::{
     TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, WorkloadError, WorkloadResult, discover_tpcds_table_layout,
@@ -64,37 +62,6 @@ pub const ALGEON_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "ALGEON_TPC
 /// the caller's workload surface.
 pub const ALGEON_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
     "ALGEON_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
-/// Enables or disables native cost selection for TPC-DS analytics planning.
-///
-/// Native all-GPU report/parity surfaces intentionally keep cost selection
-/// disabled while SQL may include GPU-only `cugraph_*` table functions.
-pub const ALGEON_TPCDS_NATIVE_COST_SELECTION_ENV: &str = "ALGEON_TPCDS_NATIVE_COST_SELECTION";
-/// Row-group threshold for small/selective cost selection on the TPC-DS
-/// analytics surface.
-pub const ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str =
-    "ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS";
-/// Source-read byte threshold for small/selective cost selection on the TPC-DS
-/// analytics surface.
-pub const ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str =
-    "ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES";
-/// Row-group threshold for residual-join cost selection on the TPC-DS
-/// analytics surface.
-pub const ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str =
-    "ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS";
-/// Source-read byte threshold for residual-join cost selection on the TPC-DS
-/// analytics surface.
-pub const ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str =
-    "ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES";
-/// Top-k fetch threshold for small/selective cost selection on the TPC-DS
-/// analytics surface.
-pub const ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV: &str =
-    "ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH";
-/// TPC-DS cost-selection residual-join row-group threshold.
-///
-/// This stays intentionally close to the engine default while admitting
-/// low-byte residual joins whose pruning evidence is spread across a modest
-/// number of Parquet row groups.
-pub const TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS: usize = 32;
 
 /// The conservative bounded profile uses current production-safe defaults.
 pub const TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
@@ -151,7 +118,7 @@ struct NativeProfileBase {
 ///
 /// Uses one target partition, disables DataFusion repartitioning, dynamic
 /// filter pushdown, and leaves Parquet pushdown filters enabled for scan
-/// pruning parity with report binaries. This base config remains compatible
+/// pruning parity with report binaries. The base config remains compatible
 /// with the CPU DataFusion oracle; native-only planner guards are applied by
 /// [`tpcds_native_report_session_config`].
 pub fn tpcds_report_session_config() -> SessionConfig {
@@ -170,9 +137,9 @@ pub fn tpcds_report_session_config() -> SessionConfig {
 
 /// Tuned CPU DataFusion engine config for TPC-DS SF100 comparisons.
 ///
-/// `tpcds_three_way_bench` times its `cpu_datafusion` engine with this config,
-/// and `native_tpcds_parity_report` uses it for the CPU oracle, so value
-/// parity is checked against the CPU engine the timing run measures.
+/// `tpcds_gpu_cpu_bench` times its `cpu_datafusion` engine with this config,
+/// and `native_tpcds_parity_report` uses it for the CPU oracle to verify
+/// value parity against the measured CPU engine.
 /// `ALGEON_TPCDS_CPU_TARGET_PARTITIONS` sets target partitions (default 16)
 /// and `ALGEON_TPCDS_CPU_BATCH_SIZE` sets batch size (default 8192); unset or
 /// unparsable values use the defaults. Repartitioning for scans, joins,
@@ -200,11 +167,10 @@ pub fn tpcds_tuned_cpu_session_config() -> SessionConfig {
 
 /// Session config used for native TPC-DS planning and execution contexts.
 ///
-/// This starts from [`tpcds_report_session_config`] and disables DataFusion
-/// table-level statistics collection. DataFusion physical join statistics
-/// can overflow on large multi-join TPC-DS plans; native source planning
-/// reads row-group metadata directly from Parquet footers. It does not rely
-/// on those table estimates.
+/// Builds on [`tpcds_report_session_config`] with DataFusion table-level
+/// statistics collection disabled. DataFusion physical join statistics can
+/// overflow on large multi-join TPC-DS plans; native source planning reads
+/// row-group metadata directly from Parquet footers rather than table estimates.
 pub fn tpcds_native_report_session_config() -> SessionConfig {
     native_tpcds_session_config(tpcds_report_session_config())
 }
@@ -218,9 +184,7 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
 ///
 /// Numeric env vars parse unsigned integers. Source chunk bytes and row-group
 /// limits are planning targets; positive-value validation happens when the
-/// native execution context is built. Cost-selection settings are intentionally
-/// dormant until the native SQL surface can distinguish ordinary TPC-DS shapes
-/// from GPU-only `cugraph_*` calls.
+/// native execution context is built.
 pub fn tpcds_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
         StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
@@ -260,58 +224,6 @@ pub fn tpcds_native_analytics_optimizer_config_with_profile_settings(
     )
 }
 
-/// Analytics/performance optimizer config for the `cost_declined_datafusion`
-/// benchmark surface. Ordinary native TPC-DS report/parity surfaces keep cost
-/// selection disabled so all-native validation remains exact; the comparison
-/// benchmark uses this config to quantify the conservative cost model.
-pub fn tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings(
-    profile: &TpcdsNativeProfileSettings,
-) -> AlgeonNativeOptimizerConfig {
-    tpcds_native_analytics_optimizer_config_with_profile_settings(profile)
-        .with_native_plan_cost_options(tpcds_native_cost_selection_options_from_env())
-}
-
-/// Resolves TPC-DS analytics cost-selection options from env.
-pub fn tpcds_native_cost_selection_options_from_env() -> NativePlanCostOptions {
-    tpcds_native_cost_selection_options_with_env(|name| std::env::var(name).ok())
-}
-
-/// Resolves TPC-DS analytics cost-selection options using an injected
-/// env reader for tests and benchmark harnesses.
-pub fn tpcds_native_cost_selection_options_with_env(
-    mut get: impl FnMut(&'static str) -> Option<String>,
-) -> NativePlanCostOptions {
-    let mut options = NativePlanCostOptions {
-        max_small_selective_residual_join_row_groups: TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS,
-        ..NativePlanCostOptions::default()
-    };
-
-    if let Some(value) = get(ALGEON_TPCDS_NATIVE_COST_SELECTION_ENV) {
-        options.enabled = parse_env_bool(ALGEON_TPCDS_NATIVE_COST_SELECTION_ENV, value);
-    }
-    if let Some(value) = get(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV) {
-        options.max_small_selective_row_groups =
-            parse_env_usize(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, value);
-    }
-    if let Some(value) = get(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV) {
-        options.max_small_selective_source_bytes =
-            parse_env_u64(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, value);
-    }
-    if let Some(value) = get(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV) {
-        options.max_small_selective_residual_join_row_groups =
-            parse_env_usize(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, value);
-    }
-    if let Some(value) = get(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV) {
-        options.max_small_selective_residual_join_source_bytes =
-            parse_env_u64(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, value);
-    }
-    if let Some(value) = get(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV) {
-        options.max_topk_fetch = parse_env_usize(ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV, value);
-    }
-
-    options
-}
-
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
     statistical_aggregate_execution_mode_default: StatisticalAggregateExecutionMode,
 ) -> AlgeonNativeOptimizerConfig {
@@ -328,26 +240,19 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
 ) -> AlgeonNativeOptimizerConfig {
     let statistical_aggregate_execution_mode =
         optional_env_statistical_aggregate_execution_mode().unwrap_or(statistical_aggregate_execution_mode_default);
-    // Keep cost selection disabled for ordinary report surfaces. Users can submit SQL containing
-    // `cugraph_*` table functions, and those plans must stay on the GPU, so cost
-    // selection must not decline them. The dedicated comparison benchmark installs
-    // its own cost-selection configuration after the GPU-island boundary is explicit.
-    let cost_options = NativePlanCostOptions::disabled();
-    AlgeonNativeOptimizerConfig::default()
-        .with_native_execution_config(
-            AlgeonNativeExecutionConfig::new(
-                SourceChunking::try_new(
-                    profile.max_source_chunk_bytes,
-                    profile.max_row_groups_per_chunk,
-                    profile.max_retry_attempts,
-                    profile.min_retry_chunk_row_groups,
-                )
-                .expect("validated TPC-DS native profile has nonzero source chunking"),
+    AlgeonNativeOptimizerConfig::default().with_native_execution_config(
+        AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(
+                profile.max_source_chunk_bytes,
+                profile.max_row_groups_per_chunk,
+                profile.max_retry_attempts,
+                profile.min_retry_chunk_row_groups,
             )
-            .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
-            .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
+            .expect("validated TPC-DS native profile has nonzero source chunking"),
         )
-        .with_native_plan_cost_options(cost_options)
+        .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
+        .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
+    )
 }
 
 /// Resolves the TPC-DS native bounded memory/source profile from env.
@@ -513,14 +418,6 @@ fn parse_env_usize(name: &'static str, value: String) -> usize {
         .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
 }
 
-fn parse_env_bool(name: &'static str, value: String) -> bool {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" | "enabled" => true,
-        "0" | "false" | "no" | "off" | "disabled" => false,
-        other => panic!("unsupported {name}={other}; expected true/false, yes/no, on/off, enabled/disabled, or 1/0"),
-    }
-}
-
 fn parse_env_source_chunk_planning_mode(value: String) -> SourceChunkPlanningMode {
     match value.trim().to_ascii_lowercase().as_str() {
         "conservative" => SourceChunkPlanningMode::Conservative,
@@ -621,7 +518,7 @@ pub async fn tpcds_datafusion_execution_workload_items(
 
 /// Builds native execution report items using an explicit optimizer config.
 ///
-/// This may touch CUDA because accepted native plans are executed.
+/// Executes accepted native plans on CUDA devices.
 pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,

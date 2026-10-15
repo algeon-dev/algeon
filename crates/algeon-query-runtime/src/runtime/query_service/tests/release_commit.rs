@@ -203,7 +203,8 @@ fn completion_dropped_before_its_seal_seals_with_the_attempt_outcome() {
     let report = completion.wait_timeout(Duration::from_secs(10)).expect("the recovery seal publishes the report");
     assert_eq!(report.outcome, RuntimeTerminalOutcome::Succeeded);
     let attempt_owner = release.join().expect("release thread completes");
-    let sealed = attempt_owner.sealed_snapshot_for_test().expect("the recovery seal publishes the snapshot");
+    // The completion worker publishes the report before storing the sealed snapshot.
+    let sealed = wait_for_sealed_observation(&attempt_owner.observation_for_test());
     assert_eq!(sealed.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
 }
 

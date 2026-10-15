@@ -1,6 +1,6 @@
 //! Tests for binary operations (numeric and string).
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, ErrorStatus, Exec, TimestampResolution, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, ErrorStatus, Exec, ScalarValue, TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::{
         binary::{self, BinaryOperator},
@@ -811,6 +811,13 @@ fn test_timestamp_arithmetic_values_and_failures_follow_arrow_checked_arithmetic
     assert_eq!((col("dur") + col("high")).eval(&df).unwrap_err().code(), ErrorCode::ValueOutOfRange);
     assert_eq!((col("low") - col("dur")).eval(&df).unwrap_err().code(), ErrorCode::ValueOutOfRange);
     assert_eq!((col("high") - col("low")).eval(&df).unwrap_err().code(), ErrorCode::ValueOutOfRange);
+    let one = Expr::Literal(ScalarValue::Duration { raw: 1, resolution });
+    let max = Expr::Literal(ScalarValue::Timestamp { raw: i64::MAX, resolution });
+    let min = Expr::Literal(ScalarValue::Timestamp { raw: i64::MIN, resolution });
+    assert_temporal_overflow((col("high") + one.clone()).eval(&df), "add", "timestamp plus scalar duration");
+    assert_temporal_overflow((col("low") - one).eval(&df), "sub", "timestamp minus scalar duration");
+    assert_temporal_overflow((col("dur") + max).eval(&df), "add", "duration plus scalar timestamp");
+    assert_temporal_overflow((col("high") - min).eval(&df), "sub", "timestamp minus scalar timestamp");
 }
 
 fn test_timestamp_arithmetic_never_fails_in_a_null_row() {
@@ -839,6 +846,14 @@ fn test_timestamp_arithmetic_never_fails_in_a_null_row() {
         assert_eq!(all_null.on(Exec::RETAINED).add(&ones).unwrap().null_count(), 2, "{context}");
         let (no_durations, no_timestamps) = all_valid(&[], resolution);
         assert_eq!(no_timestamps.on(Exec::RETAINED).add(&no_durations).unwrap().len(), 0, "{context}");
+        let null_frame = DataFrame::from_series([("ts", all_null)]).unwrap();
+        let one = Expr::Literal(ScalarValue::Duration { raw: 1, resolution });
+        assert_eq!((col("ts") + one.clone()).eval(&null_frame).unwrap().null_count(), 2, "{context}");
+        let null_duration = Expr::Literal(ScalarValue::Null(DataType::new(resolution.duration_type_id())));
+        let valid_frame = DataFrame::from_series([("ts", high)]).unwrap();
+        assert_eq!((col("ts") + null_duration).eval(&valid_frame).unwrap().null_count(), 4, "{context}");
+        let empty_frame = DataFrame::from_series([("ts", no_timestamps)]).unwrap();
+        assert_eq!((col("ts") + one).eval(&empty_frame).unwrap().len(), 0, "{context}");
 
         // The same overflowing rows fail once they are valid.
         let (_, valid_high) = all_valid(&[i64::MAX, 3], resolution);

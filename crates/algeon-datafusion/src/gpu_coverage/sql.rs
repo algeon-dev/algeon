@@ -203,7 +203,6 @@ pub fn coverage_batch(
                 serde_json::json!({
                     "detail": candidate.detail,
                     "blocking": candidate.blocking.as_ref().map(Blocking::to_json),
-                    "cost_evidence": candidate.cost_evidence.as_ref().map(|evidence| evidence.to_json()),
                 })
                 .to_string(),
             ));
