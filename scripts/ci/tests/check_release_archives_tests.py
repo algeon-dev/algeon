@@ -28,18 +28,43 @@ class ReleaseArchiveTests(unittest.TestCase):
             path.mkdir(parents=True)
             features = ["server"] if name == "algeon-datafusion" else []
             manifest = (
-                f'[package]\nname = "{name}"\nversion = "0.1.0"\npublish = ["crates-io"]\n'
+                f'[package]\nname = "{name}"\nversion = "0.1.0"\npublish = ["crates-io"]\nlicense = "Apache-2.0"\n'
                 '[package.metadata.docs.rs]\ndefault-target = "x86_64-unknown-linux-gnu"\ntargets = []\n'
                 f'features = {json.dumps(features)}\n[features]\n'
                 + ''.join(f'{feature} = []\n' for feature in features)
             )
             (path / "Cargo.toml").write_text(manifest)
+            (path / "LICENSE").write_bytes((ROOT / "LICENSE").read_bytes())
             self.packages.append(dict(name=name, version="0.1.0", path=str(path), docs_features=features))
         self.build_inputs = {name: [] for name in release.PUBLISHED}
         (self.output / "release.json").write_text(json.dumps(dict(packages=self.packages, build_inputs=self.build_inputs)))
         (self.output / "patches.toml").write_text('[patch.crates-io]\n' + ''.join(
             f'{package["name"]} = {{ path = {json.dumps(package["path"])} }}\n' for package in self.packages
         ))
+
+    def test_rejects_archive_without_workspace_license_metadata(self):
+        manifest = Path(self.packages[0]["path"]) / "Cargo.toml"
+        original = manifest.read_text()
+        for declaration in ('', 'license = "MIT"\n', 'license-file = "LICENSE"\n',
+                            'license = "Apache-2.0"\nlicense-file = "LICENSE"\n'):
+            with self.subTest(declaration=declaration):
+                manifest.write_text(original.replace('license = "Apache-2.0"\n', declaration))
+                with self.assertRaisesRegex(ValueError, "license metadata"):
+                    release.validate_archives(self.output)
+        manifest.write_text(original)
+        release.validate_archives(self.output)
+
+    def test_rejects_missing_or_incomplete_packaged_license(self):
+        license_path = Path(self.packages[0]["path"]) / "LICENSE"
+        original = license_path.read_bytes()
+        license_path.unlink()
+        with self.assertRaisesRegex(ValueError, "LICENSE"):
+            release.validate_archives(self.output)
+        license_path.write_text("Apache-2.0\n")
+        with self.assertRaisesRegex(ValueError, "LICENSE"):
+            release.validate_archives(self.output)
+        license_path.write_bytes(original)
+        release.validate_archives(self.output)
 
     def test_rejects_checkout_dependency_and_inexact_release_version(self):
         manifest = Path(self.packages[0]["path"]) / "Cargo.toml"

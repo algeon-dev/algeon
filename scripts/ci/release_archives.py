@@ -120,6 +120,13 @@ def validate_manifest(path: Path, versions: dict[str, str]) -> dict:
         raise ValueError(f"{path}: package identity differs from the release closure")
     if package.get("publish") != ["crates-io"] or "workspace" in manifest:
         raise ValueError(f"{name}: archive retains workspace/publication configuration")
+    with (ROOT / "Cargo.toml").open("rb") as stream:
+        license_id = tomllib.load(stream)["workspace"]["package"]["license"]
+    if package.get("license") != license_id or "license-file" in package:
+        raise ValueError(f"{name}: archive license metadata must declare {license_id} without license-file")
+    license_path = path / "LICENSE"
+    if not license_path.is_file() or license_path.read_bytes() != (ROOT / "LICENSE").read_bytes():
+        raise ValueError(f"{name}: archive must contain the complete workspace LICENSE")
     for alias, dependency in dependency_tables(manifest):
         dependency = {"version": dependency} if isinstance(dependency, str) else dependency
         if "path" in dependency or "git" in dependency or "workspace" in dependency:

@@ -258,8 +258,9 @@ closure separately from workspace rustdoc and the `DOCS_RS=1` workspace
 check. `scripts/ci/release_archives.py` reads the existing publication
 allowlist, packages it with explicit adapter features
 `cugraph,cuvs,cuml,server,nvml`, and checks normalized manifests, exact
-first-party dependency versions, docs.rs metadata and required native build
-inputs. `test-hooks` and `qualification` are excluded from release and
+first-party dependency versions, docs.rs metadata, the workspace SPDX license
+and full license text, and required native build inputs.
+`test-hooks` and `qualification` are excluded from release and
 docs.rs feature selections.
 
 Archives, extracted sources, `release.json`, `[patch.crates-io]` declarations,
@@ -371,6 +372,13 @@ install `algeon-datafusion` from crates.io. Published implementation packages
 keep their owner APIs for workspace consumers. The
 [API documentation boundary](#api-documentation-boundary) determines which
 interfaces require application-facing rustdoc.
+
+Every published crate inherits `workspace.package.license` through
+`license.workspace = true` and carries a `LICENSE` symlink to the root license
+file. Cargo packages that symlink as a regular file. Release archives must
+declare the workspace SPDX identifier without `license-file` and include the
+complete root license text; `release_archives.py` checks both. The root
+`LICENSE` remains the source of the license text.
 
 [`algeon-build-support`](../components/algeon-build-support/Cargo.toml)
 (library `rapids_build_support`) is the shared build-dependency for packages
