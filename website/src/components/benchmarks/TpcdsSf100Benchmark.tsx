@@ -33,44 +33,54 @@ const colorSpeedupSlow = '#C92A2A';
 const colorMemory = '#6366f1';
 const colorFailed = '#6C757D';
 
-// Q72 CPU takes 71.5s; the remaining queries finish below 35s.
-// The axis break covers a range with no measured values.
-const RUNTIME_Y_BREAK_START_MS = 35_000;
-const RUNTIME_Y_BREAK_END_MS = 60_000;
-const RUNTIME_Y_BREAK_WIDTH_MS = 2_500;
+type RuntimeAxisBreak = {startMs: number; endMs: number; widthMs: number};
+
 const RUNTIME_Y_TAIL_SCALE = 0.4;
 
-function brokenRuntimeMs(valueMs: number): number {
-  if (valueMs <= RUNTIME_Y_BREAK_START_MS) {
+// One outlier can run several times longer than every other bar. The
+// axis skips the empty band between the second-slowest bar and the outlier so the other
+// bars keep a readable height; without such an outlier the axis stays linear.
+function runtimeAxisBreak(valuesMs: number[]): RuntimeAxisBreak | null {
+  const sorted = [...valuesMs].sort((a, b) => b - a);
+  if (sorted.length < 2 || sorted[0] < 2 * sorted[1]) {
+    return null;
+  }
+  const startMs = Math.ceil(sorted[1] / 5_000) * 5_000;
+  const endMs = Math.floor(sorted[0] / 10_000) * 10_000;
+  if (endMs - startMs < 10_000) {
+    return null;
+  }
+  return {startMs, endMs, widthMs: Math.max(1_000, startMs * 0.08)};
+}
+
+function brokenRuntimeMs(valueMs: number, axisBreak: RuntimeAxisBreak | null): number {
+  if (axisBreak == null || valueMs <= axisBreak.startMs) {
     return valueMs;
   }
-  if (valueMs >= RUNTIME_Y_BREAK_END_MS) {
-    return (
-      RUNTIME_Y_BREAK_START_MS +
-      RUNTIME_Y_BREAK_WIDTH_MS +
-      (valueMs - RUNTIME_Y_BREAK_END_MS) * RUNTIME_Y_TAIL_SCALE
-    );
+  if (valueMs >= axisBreak.endMs) {
+    return axisBreak.startMs + axisBreak.widthMs + (valueMs - axisBreak.endMs) * RUNTIME_Y_TAIL_SCALE;
   }
-  // Values inside the skipped band (unexpected) are compressed into the gap.
   return (
-    RUNTIME_Y_BREAK_START_MS +
-    ((valueMs - RUNTIME_Y_BREAK_START_MS) / (RUNTIME_Y_BREAK_END_MS - RUNTIME_Y_BREAK_START_MS)) *
-      RUNTIME_Y_BREAK_WIDTH_MS
+    axisBreak.startMs +
+    ((valueMs - axisBreak.startMs) / (axisBreak.endMs - axisBreak.startMs)) * axisBreak.widthMs
   );
 }
 
-function runtimeYTicks(maxRealMs: number): {tickVals: number[]; tickText: string[]} {
-  const lowerSeconds = [0, 10, 20, 30];
-  const tickVals = lowerSeconds.map((seconds) => brokenRuntimeMs(seconds * 1000));
-  const tickText = lowerSeconds.map((seconds) => `${seconds}s`);
-
-  if (maxRealMs > RUNTIME_Y_BREAK_START_MS) {
-    const upperSeconds = Math.ceil(maxRealMs / 10_000) * 10;
-    tickVals.push(brokenRuntimeMs(RUNTIME_Y_BREAK_END_MS), brokenRuntimeMs(upperSeconds * 1000));
-    tickText.push(`${RUNTIME_Y_BREAK_END_MS / 1000}s`, `${upperSeconds}s`);
+function runtimeYTicks(
+  maxRealMs: number,
+  axisBreak: RuntimeAxisBreak,
+): {tickVals: number[]; tickText: string[]} {
+  const stepSeconds = axisBreak.startMs <= 20_000 ? 5 : 10;
+  const lowerSeconds: number[] = [];
+  for (let seconds = 0; seconds * 1000 <= axisBreak.startMs; seconds += stepSeconds) {
+    lowerSeconds.push(seconds);
   }
-
-  return {tickVals, tickText};
+  const upperSeconds = Math.ceil(maxRealMs / 10_000) * 10;
+  const tickSeconds = [...lowerSeconds, axisBreak.endMs / 1000, upperSeconds];
+  return {
+    tickVals: tickSeconds.map((seconds) => brokenRuntimeMs(seconds * 1000, axisBreak)),
+    tickText: tickSeconds.map((seconds) => `${seconds}s`),
+  };
 }
 
 function formatMs(value: number | null | undefined): string {
@@ -114,14 +124,17 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
     kvikioCompatMode: string;
   };
   const typedDataset = dataset as {scaleFactor: string};
+  const runtimeAxis = runtimeAxisBreak(
+    typedRows.flatMap((row) => [row.cpuMs, row.gpuMs ?? row.gpuWallMs ?? 0]),
+  );
   const runtimeData = typedRows.map((row) => {
     const cpuMs = row.cpuMs;
     const gpuMs = row.gpuMs ?? row.gpuWallMs ?? 0;
     return {
       query: row.queryId,
       // Transformed values drive bar height on the broken Y-axis.
-      CPU: brokenRuntimeMs(cpuMs),
-      GPU: brokenRuntimeMs(gpuMs),
+      CPU: brokenRuntimeMs(cpuMs, runtimeAxis),
+      GPU: brokenRuntimeMs(gpuMs, runtimeAxis),
       // Raw values feed the tooltip, which reports the measured wall time.
       cpuRawMs: cpuMs,
       gpuRawMs: gpuMs,
@@ -132,10 +145,11 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
     0,
     ...runtimeData.flatMap((row) => [row.cpuRawMs, row.gpuRawMs]),
   );
-  const runtimeUsesBrokenAxis = runtimeMaxRealMs > RUNTIME_Y_BREAK_START_MS;
-  const {tickVals: runtimeTickVals, tickText: runtimeTickText} = runtimeYTicks(runtimeMaxRealMs);
-  const runtimeYDomainMax = runtimeUsesBrokenAxis
-    ? Math.max(brokenRuntimeMs(runtimeMaxRealMs), ...runtimeTickVals) * 1.06
+  const {tickVals: runtimeTickVals, tickText: runtimeTickText} = runtimeAxis
+    ? runtimeYTicks(runtimeMaxRealMs, runtimeAxis)
+    : {tickVals: [], tickText: []};
+  const runtimeYDomainMax = runtimeAxis
+    ? Math.max(brokenRuntimeMs(runtimeMaxRealMs, runtimeAxis), ...runtimeTickVals) * 1.06
     : Math.max(runtimeMaxRealMs * 1.08, 1);
   const speedupData = typedRows
     .filter((row) => row.speedup != null)
@@ -171,9 +185,9 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
           <Tabs className={styles.chartTabs} groupId="tpcds-sf100-chart-tabs" queryString={false}>
             <TabItem value="runtime" label="Per-query runtime" default>
               <p className={styles.chartCaption}>
-                Wall time for the measured iteration.
-                {runtimeUsesBrokenAxis
-                  ? ` The Y-axis skips ${RUNTIME_Y_BREAK_START_MS / 1000}–${RUNTIME_Y_BREAK_END_MS / 1000}s.`
+                Wall time of the single measured iteration after one warm-up. Parquet in the OS page cache; no GPU resident cache.
+                {runtimeAxis
+                  ? ` The Y-axis skips ${runtimeAxis.startMs / 1000}–${runtimeAxis.endMs / 1000}s.`
                   : ''}
               </p>
               <p className={styles.chartScrollHint}>
@@ -205,9 +219,9 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
                         tick={{fontSize: 12}}
                         width={58}
                         domain={[0, runtimeYDomainMax]}
-                        ticks={runtimeUsesBrokenAxis ? runtimeTickVals : undefined}
+                        ticks={runtimeAxis ? runtimeTickVals : undefined}
                         tickFormatter={(value) => {
-                          if (!runtimeUsesBrokenAxis) {
+                          if (!runtimeAxis) {
                             return formatMs(Number(value));
                           }
                           const index = runtimeTickVals.indexOf(Number(value));
@@ -215,16 +229,16 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
                         }}
                         allowDataOverflow
                       />
-                      {runtimeUsesBrokenAxis ? (
+                      {runtimeAxis ? (
                         <ReferenceArea
-                          y1={RUNTIME_Y_BREAK_START_MS}
-                          y2={RUNTIME_Y_BREAK_START_MS + RUNTIME_Y_BREAK_WIDTH_MS}
+                          y1={runtimeAxis.startMs}
+                          y2={runtimeAxis.startMs + runtimeAxis.widthMs}
                           fill="var(--ifm-color-emphasis-200)"
                           fillOpacity={0.55}
                           strokeOpacity={0}
                           ifOverflow="extendDomain"
                           label={{
-                            value: `${RUNTIME_Y_BREAK_START_MS / 1000}–${RUNTIME_Y_BREAK_END_MS / 1000}s skipped`,
+                            value: `${runtimeAxis.startMs / 1000}–${runtimeAxis.endMs / 1000}s skipped`,
                             position: 'insideTopRight',
                             fill: 'var(--ifm-font-color-secondary)',
                             fontSize: 11,

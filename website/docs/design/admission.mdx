@@ -132,9 +132,15 @@ does not provide general disk spilling.
 
 An output may remain on the GPU for another native consumer. Its resident
 lease retains the backing buffers and completion dependencies through the
-last borrow. Source and graph caches can retain reusable data under their own
-device-ledger charges. Cached memory allocations remain fully accounted for
-within the device ledger. Output and resident facts carry scope, occurrence, schema and provenance.
+last borrow. `GpuDataFrame` records placement and retained owners, while
+`GpuResultHandle` exposes a resident result with its completion dependencies.
+Derived frames track surviving columns using `ColumnMemoryIdentity`. A
+downstream projection preserves that lease while referenced columns survive,
+releasing transitive leases when only fresh columns remain.
+
+Source and graph caches retain reusable data under their own device-ledger
+charges. Cached allocations remain accounted for within the device ledger.
+Output and resident facts carry scope, occurrence, schema and provenance.
 
 Cancellation halts new task submissions while active GPU operations run to completion.
 `ExecutionCancellation` is a token with an optional deadline. The engine checks

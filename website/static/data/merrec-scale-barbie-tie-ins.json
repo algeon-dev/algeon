@@ -1,262 +1,275 @@
 {
-  "license": "CC-BY-NC-4.0; derived from the MerRec dataset, Copyright Mercari, Inc.; see LICENSE-MERREC.md in this directory",
-  "name": "10_barbie_tie_ins",
-  "sql_file": "fixture/demo/merrec/scripts/scale/10_barbie_tie_ins.sql",
-  "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 2595\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
-  "binary_sha256": "1a86bf04698703b7524dfd106bc3492557e07fc3c9eb65f227a15b622a434985",
-  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
-  "runs": [
-    {
-      "name": "10_barbie_tie_ins_r1",
-      "query_id": "4e649f5a-782a-4c8c-a378-f60766199738",
-      "elapsed_s": 4.245312085840851,
-      "native_fragments": 11,
-      "host_boundaries": 0,
-      "allocator_peak_bytes": 14149643786,
-      "query_limit_bytes": 96636764160,
-      "source_cache_resident": {
-        "items.parquet": 0.2011,
-        "events.parquet": 0.1031
-      }
-    },
-    {
-      "name": "10_barbie_tie_ins_r2",
-      "query_id": "4f0e6d9a-5eea-40f9-a525-d50242616d49",
-      "elapsed_s": 3.3452679230831563,
-      "native_fragments": 11,
-      "host_boundaries": 0,
-      "allocator_peak_bytes": 14149643786,
-      "query_limit_bytes": 96636764160,
-      "source_cache_resident": {
-        "items.parquet": 0.2011,
-        "events.parquet": 0.1031
-      }
-    },
-    {
-      "name": "10_barbie_tie_ins_r3",
-      "query_id": "2f70f0a9-d12f-49bf-9040-39807bbc1727",
-      "elapsed_s": 3.33737186784856,
-      "native_fragments": 11,
-      "host_boundaries": 0,
-      "allocator_peak_bytes": 14149643786,
-      "query_limit_bytes": 96636764160,
-      "source_cache_resident": {
-        "items.parquet": 0.2011,
-        "events.parquet": 0.1031
-      }
-    }
-  ],
-  "median_elapsed_s_after_first": 3.3413198954658583,
-  "rows": 25,
-  "identical_results_across_runs": true,
-  "schema": [
-    "brand_name: string_view",
-    "fans_before: int64",
-    "fans_after: int64",
-    "lift_before: double",
-    "lift_after: double",
-    "lift_change: double"
-  ],
-  "records": [
-    {
-      "brand_name": "NYX",
-      "fans_before": 2781,
-      "fans_after": 4253,
-      "lift_before": 0.9702536288473614,
-      "lift_after": 2.069575818786982,
-      "lift_change": 2.1330255896549337
-    },
-    {
-      "brand_name": "Amc",
-      "fans_before": 2654,
-      "fans_after": 2815,
-      "lift_before": 0.974835772628121,
-      "lift_after": 1.820914719301097,
-      "lift_change": 1.8679194695450891
-    },
-    {
-      "brand_name": "Primark",
-      "fans_before": 1966,
-      "fans_after": 2987,
-      "lift_before": 1.100701129377499,
-      "lift_after": 2.0405481221730764,
-      "lift_change": 1.853862113621258
-    },
-    {
-      "brand_name": "ALDO",
-      "fans_before": 4571,
-      "fans_after": 6379,
-      "lift_before": 0.8514795429073221,
-      "lift_after": 1.502451737505666,
-      "lift_change": 1.7645188895268598
-    },
-    {
-      "brand_name": "Taylor Swift",
-      "fans_before": 15577,
-      "fans_after": 18514,
-      "lift_before": 0.6494634413140877,
-      "lift_after": 0.9581264043999292,
-      "lift_change": 1.4752584109450568
-    },
-    {
-      "brand_name": "Stoney Clover Lane",
-      "fans_before": 5156,
-      "fans_after": 5420,
-      "lift_before": 1.0601656087864544,
-      "lift_after": 1.5021175630610628,
-      "lift_change": 1.416870676252647
-    },
-    {
-      "brand_name": "Stanley",
-      "fans_before": 16209,
-      "fans_after": 16642,
-      "lift_before": 0.49297024461696226,
-      "lift_after": 0.6880479858617968,
-      "lift_change": 1.3957190994284248
-    },
-    {
-      "brand_name": "Dunkin'",
-      "fans_before": 1580,
-      "fans_after": 1459,
-      "lift_before": 0.7278208437624923,
-      "lift_after": 1.010969176346272,
-      "lift_change": 1.3890357565469487
-    },
-    {
-      "brand_name": "Henri Bendel",
-      "fans_before": 1133,
-      "fans_after": 1358,
-      "lift_before": 0.6493267043168143,
-      "lift_after": 0.8548874439419886,
-      "lift_change": 1.3165752128452102
-    },
-    {
-      "brand_name": "Dutch Bros",
-      "fans_before": 1035,
-      "fans_after": 1086,
-      "lift_before": 0.5347161436898036,
-      "lift_after": 0.7002860869880118,
-      "lift_change": 1.30964081644458
-    },
-    {
-      "brand_name": "Fresh",
-      "fans_before": 1136,
-      "fans_after": 1325,
-      "lift_before": 1.3315948349120303,
-      "lift_after": 1.739209278059506,
-      "lift_change": 1.306109961123726
-    },
-    {
-      "brand_name": "Starbucks",
-      "fans_before": 26096,
-      "fans_after": 29130,
-      "lift_before": 0.7560988611686769,
-      "lift_after": 0.9780395291461631,
-      "lift_change": 1.2935339270772608
-    },
-    {
-      "brand_name": "BOGG BAG",
-      "fans_before": 4578,
-      "fans_after": 3496,
-      "lift_before": 0.521001595171577,
-      "lift_after": 0.672753935740426,
-      "lift_change": 1.2912703952832885
-    },
-    {
-      "brand_name": "Farm Rio",
-      "fans_before": 2782,
-      "fans_after": 3044,
-      "lift_before": 0.5037218722608601,
-      "lift_after": 0.643431593797627,
-      "lift_change": 1.2773548841738922
-    },
-    {
-      "brand_name": "Alice + Olivia",
-      "fans_before": 1279,
-      "fans_after": 1511,
-      "lift_before": 0.6314239613818571,
-      "lift_after": 0.8051047705091445,
-      "lift_change": 1.2750621131754185
-    },
-    {
-      "brand_name": "HAUS LABORATORIES",
-      "fans_before": 1111,
-      "fans_after": 1361,
-      "lift_before": 0.7191215607652373,
-      "lift_after": 0.9158310521539136,
-      "lift_change": 1.2735413622967338
-    },
-    {
-      "brand_name": "Interscope Records",
-      "fans_before": 1630,
-      "fans_after": 2218,
-      "lift_before": 0.9198744687519776,
-      "lift_after": 1.169039965503048,
-      "lift_change": 1.27086902095361
-    },
-    {
-      "brand_name": "MacKenzie-Childs",
-      "fans_before": 1270,
-      "fans_after": 1758,
-      "lift_before": 0.5764184248206329,
-      "lift_after": 0.7286124379092185,
-      "lift_change": 1.2640339144883244
-    },
-    {
-      "brand_name": "ZARA",
-      "fans_before": 38166,
-      "fans_after": 48545,
-      "lift_before": 0.6506154623226323,
-      "lift_after": 0.820134820739725,
-      "lift_change": 1.2605523050619263
-    },
-    {
-      "brand_name": "Bombshell Sportswear",
-      "fans_before": 1113,
-      "fans_after": 1285,
-      "lift_before": 0.5058789068498597,
-      "lift_after": 0.6375117200629787,
-      "lift_change": 1.2602061707470766
-    },
-    {
-      "brand_name": "OPI",
-      "fans_before": 2406,
-      "fans_after": 3063,
-      "lift_before": 0.7159357090239905,
-      "lift_after": 0.8989143480968065,
-      "lift_change": 1.2555797074604145
-    },
-    {
-      "brand_name": "Dagne Dover",
-      "fans_before": 1823,
-      "fans_after": 2390,
-      "lift_before": 0.4315092577405609,
-      "lift_after": 0.5392955031503286,
-      "lift_change": 1.2497889523254972
-    },
-    {
-      "brand_name": "Rothy's",
-      "fans_before": 4272,
-      "fans_after": 4756,
-      "lift_before": 0.44114877255991186,
-      "lift_after": 0.5506279056182595,
-      "lift_change": 1.2481682821490325
-    },
-    {
-      "brand_name": "Brahmin",
-      "fans_before": 4044,
-      "fans_after": 4290,
-      "lift_before": 0.4785214128868047,
-      "lift_after": 0.5964184233767231,
-      "lift_change": 1.2463777112473904
-    },
-    {
-      "brand_name": "Golden Goose",
-      "fans_before": 2855,
-      "fans_after": 3436,
-      "lift_before": 0.3848386153784122,
-      "lift_after": 0.4752099059134255,
-      "lift_change": 1.234829060608045
-    }
-  ]
+ "license": "CC-BY-NC-4.0; derived from the MerRec dataset, Copyright Mercari, Inc.; see LICENSE-MERREC.md in this directory",
+ "name": "10_barbie_tie_ins",
+ "sql_file": "fixture/demo/merrec/scripts/scale/10_barbie_tie_ins.sql",
+ "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 2595\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
+ "binary_sha256": "f11352d8a2bb6873bf466b15698bbfb67d797a55d1a1dccbfb6713ca0e422969",
+ "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+ "runs": [
+  {
+   "name": "10_barbie_tie_ins_r1",
+   "query_id": "6b8d8dcf-2ded-4786-bc13-913058964014",
+   "elapsed_s": 3.717123707057908,
+   "native_fragments": 11,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 31893216673,
+   "query_limit_bytes": 96636764160,
+   "source_cache_resident": {
+    "items.parquet": 0.2463,
+    "events.parquet": 0.3012
+   }
+  },
+  {
+   "name": "10_barbie_tie_ins_r2",
+   "query_id": "781a438d-7d9f-4188-9203-7689f490ae43",
+   "elapsed_s": 3.130429327953607,
+   "native_fragments": 11,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 31893216673,
+   "query_limit_bytes": 96636764160,
+   "source_cache_resident": {
+    "items.parquet": 0.2463,
+    "events.parquet": 0.3012
+   }
+  },
+  {
+   "name": "10_barbie_tie_ins_r3",
+   "query_id": "08a74fe0-7762-4ed6-a245-c1760a33bda0",
+   "elapsed_s": 3.0220969659276307,
+   "native_fragments": 11,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 31893216673,
+   "query_limit_bytes": 96636764160,
+   "source_cache_resident": {
+    "items.parquet": 0.2463,
+    "events.parquet": 0.3012
+   }
+  },
+  {
+   "name": "10_barbie_tie_ins_r4",
+   "query_id": "e6d0ca39-05a4-4a98-8dd1-3f10833c8391",
+   "elapsed_s": 3.053084861021489,
+   "native_fragments": 11,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 31893216673,
+   "query_limit_bytes": 96636764160,
+   "source_cache_resident": {
+    "items.parquet": 0.2463,
+    "events.parquet": 0.3012
+   }
+  }
+ ],
+ "median_elapsed_s_after_first": 3.053084861021489,
+ "rows": 25,
+ "identical_results_across_runs": true,
+ "schema": [
+  "brand_name: string_view",
+  "fans_before: int64",
+  "fans_after: int64",
+  "lift_before: double",
+  "lift_after: double",
+  "lift_change: double"
+ ],
+ "records": [
+  {
+   "brand_name": "NYX",
+   "fans_before": 2781,
+   "fans_after": 4253,
+   "lift_before": 0.9702536288473614,
+   "lift_after": 2.069575818786982,
+   "lift_change": 2.1330255896549337
+  },
+  {
+   "brand_name": "Amc",
+   "fans_before": 2654,
+   "fans_after": 2815,
+   "lift_before": 0.974835772628121,
+   "lift_after": 1.820914719301097,
+   "lift_change": 1.8679194695450891
+  },
+  {
+   "brand_name": "Primark",
+   "fans_before": 1966,
+   "fans_after": 2987,
+   "lift_before": 1.100701129377499,
+   "lift_after": 2.0405481221730764,
+   "lift_change": 1.853862113621258
+  },
+  {
+   "brand_name": "ALDO",
+   "fans_before": 4571,
+   "fans_after": 6379,
+   "lift_before": 0.8514795429073221,
+   "lift_after": 1.502451737505666,
+   "lift_change": 1.7645188895268598
+  },
+  {
+   "brand_name": "Taylor Swift",
+   "fans_before": 15577,
+   "fans_after": 18514,
+   "lift_before": 0.6494634413140877,
+   "lift_after": 0.9581264043999292,
+   "lift_change": 1.4752584109450568
+  },
+  {
+   "brand_name": "Stoney Clover Lane",
+   "fans_before": 5156,
+   "fans_after": 5420,
+   "lift_before": 1.0601656087864544,
+   "lift_after": 1.5021175630610628,
+   "lift_change": 1.416870676252647
+  },
+  {
+   "brand_name": "Stanley",
+   "fans_before": 16209,
+   "fans_after": 16642,
+   "lift_before": 0.49297024461696226,
+   "lift_after": 0.6880479858617968,
+   "lift_change": 1.3957190994284248
+  },
+  {
+   "brand_name": "Dunkin'",
+   "fans_before": 1580,
+   "fans_after": 1459,
+   "lift_before": 0.7278208437624923,
+   "lift_after": 1.010969176346272,
+   "lift_change": 1.3890357565469487
+  },
+  {
+   "brand_name": "Henri Bendel",
+   "fans_before": 1133,
+   "fans_after": 1358,
+   "lift_before": 0.6493267043168143,
+   "lift_after": 0.8548874439419886,
+   "lift_change": 1.3165752128452102
+  },
+  {
+   "brand_name": "Dutch Bros",
+   "fans_before": 1035,
+   "fans_after": 1086,
+   "lift_before": 0.5347161436898036,
+   "lift_after": 0.7002860869880118,
+   "lift_change": 1.30964081644458
+  },
+  {
+   "brand_name": "Fresh",
+   "fans_before": 1136,
+   "fans_after": 1325,
+   "lift_before": 1.3315948349120303,
+   "lift_after": 1.739209278059506,
+   "lift_change": 1.306109961123726
+  },
+  {
+   "brand_name": "Starbucks",
+   "fans_before": 26096,
+   "fans_after": 29130,
+   "lift_before": 0.7560988611686769,
+   "lift_after": 0.9780395291461631,
+   "lift_change": 1.2935339270772608
+  },
+  {
+   "brand_name": "BOGG BAG",
+   "fans_before": 4578,
+   "fans_after": 3496,
+   "lift_before": 0.521001595171577,
+   "lift_after": 0.672753935740426,
+   "lift_change": 1.2912703952832885
+  },
+  {
+   "brand_name": "Farm Rio",
+   "fans_before": 2782,
+   "fans_after": 3044,
+   "lift_before": 0.5037218722608601,
+   "lift_after": 0.643431593797627,
+   "lift_change": 1.2773548841738922
+  },
+  {
+   "brand_name": "Alice + Olivia",
+   "fans_before": 1279,
+   "fans_after": 1511,
+   "lift_before": 0.6314239613818571,
+   "lift_after": 0.8051047705091445,
+   "lift_change": 1.2750621131754185
+  },
+  {
+   "brand_name": "HAUS LABORATORIES",
+   "fans_before": 1111,
+   "fans_after": 1361,
+   "lift_before": 0.7191215607652373,
+   "lift_after": 0.9158310521539136,
+   "lift_change": 1.2735413622967338
+  },
+  {
+   "brand_name": "Interscope Records",
+   "fans_before": 1630,
+   "fans_after": 2218,
+   "lift_before": 0.9198744687519776,
+   "lift_after": 1.169039965503048,
+   "lift_change": 1.27086902095361
+  },
+  {
+   "brand_name": "MacKenzie-Childs",
+   "fans_before": 1270,
+   "fans_after": 1758,
+   "lift_before": 0.5764184248206329,
+   "lift_after": 0.7286124379092185,
+   "lift_change": 1.2640339144883244
+  },
+  {
+   "brand_name": "ZARA",
+   "fans_before": 38166,
+   "fans_after": 48545,
+   "lift_before": 0.6506154623226323,
+   "lift_after": 0.820134820739725,
+   "lift_change": 1.2605523050619263
+  },
+  {
+   "brand_name": "Bombshell Sportswear",
+   "fans_before": 1113,
+   "fans_after": 1285,
+   "lift_before": 0.5058789068498597,
+   "lift_after": 0.6375117200629787,
+   "lift_change": 1.2602061707470766
+  },
+  {
+   "brand_name": "OPI",
+   "fans_before": 2406,
+   "fans_after": 3063,
+   "lift_before": 0.7159357090239905,
+   "lift_after": 0.8989143480968065,
+   "lift_change": 1.2555797074604145
+  },
+  {
+   "brand_name": "Dagne Dover",
+   "fans_before": 1823,
+   "fans_after": 2390,
+   "lift_before": 0.4315092577405609,
+   "lift_after": 0.5392955031503286,
+   "lift_change": 1.2497889523254972
+  },
+  {
+   "brand_name": "Rothy's",
+   "fans_before": 4272,
+   "fans_after": 4756,
+   "lift_before": 0.44114877255991186,
+   "lift_after": 0.5506279056182595,
+   "lift_change": 1.2481682821490325
+  },
+  {
+   "brand_name": "Brahmin",
+   "fans_before": 4044,
+   "fans_after": 4290,
+   "lift_before": 0.4785214128868047,
+   "lift_after": 0.5964184233767231,
+   "lift_change": 1.2463777112473904
+  },
+  {
+   "brand_name": "Golden Goose",
+   "fans_before": 2855,
+   "fans_after": 3436,
+   "lift_before": 0.3848386153784122,
+   "lift_after": 0.4752099059134255,
+   "lift_change": 1.234829060608045
+  }
+ ]
 }

@@ -27,8 +27,7 @@ choice.
 - Public API documentation. The primary milestone delivered a functional query
   engine; comprehensive public rustdoc documentation will follow as the API
   surface stabilizes.
-- A streamlined test harness that purges tests covering retired contracts,
-  thereby shortening developer iteration cycles.
+- Remove test coverage for retired contracts to reduce test execution times.
 - ClickBench alongside the TPC-H and TPC-DS results.
 - More cuVS and cuML algorithms, driven by user requests.
 

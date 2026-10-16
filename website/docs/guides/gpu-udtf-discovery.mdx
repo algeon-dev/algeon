@@ -123,14 +123,19 @@ the final planned path.
 ## 6. The sequence on a recorded session
 
 A session over the [MerRec dataset](./datasets/merrec.mdx) followed this
-sequence through Flight SQL, with an AI agent writing each statement after
-reading the previous response. It asked which brands moved toward Barbie's
+sequence through Flight SQL to investigate which brands moved toward Barbie's
 audience after the July 2023 film.
 
 <Table>
 <thead><tr><th>Step</th><th>Purpose</th><th>Outcome</th><th style={{textAlign: 'right'}}>Elapsed</th></tr></thead>
 <tbody>{session.steps.map(item => <tr key={item.step}><td>{item.step}</td><td>{item.intent}</td><td style={{whiteSpace: 'nowrap'}}>{item.status === 'ok' ? 'rows' : 'planning error'}</td><td style={{whiteSpace: 'nowrap', textAlign: 'right'}}>{wholeMs(item.elapsed_s)} ms</td></tr>)}</tbody>
 </Table>
+
+<div className="fineprint">
+
+Timings reflect median execution over Arrow Flight SQL against a release server in `native_required` mode.
+
+</div>
 
 Step 2 read the descriptor with `result_schemas_json`, and the call in step
 5 named its personalization and output columns correctly on the first

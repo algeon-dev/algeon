@@ -1323,3 +1323,10 @@ html[data-focus-mode='on'] .theme-layout-main {
   src: url('/fonts/Excalifont/Excalifont-Regular-623ccf21b21ef6b3a0d87738f77eb071.woff2') format('woff2');
   unicode-range: U+300-301,U+303;
 }
+
+/* A short message quoted verbatim, such as one Flight error line, reads better
+   wrapped than scrolled: the names at the end of the line are its point. */
+.wrap-lines pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

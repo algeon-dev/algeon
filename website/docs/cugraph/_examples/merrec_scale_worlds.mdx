@@ -2,6 +2,8 @@ import CodeBlock from '@theme/CodeBlock';
 import capture from '@site/static/data/merrec-scale-shopping-worlds.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
+export const worldOf = brand => capture.records.find(row => row.brand_name === brand).world;
+
 The query groups brands by overlapping audiences, including combinations
 that cross catalog categories. It uses May to October 2023 likes: a fan is a
 distinct shopper who liked a brand.
@@ -14,23 +16,26 @@ Leiden uses the retained connections and currently ignores edge weights.
 
 <CodeBlock language="sql" className="no-collapse">{capture.sql}</CodeBlock>
 
-The query returns five leading brands for each of 38 groups with at least
+The query returns five leading brands for each of
+{new Set(capture.records.map(row => row.world)).size} groups with at least
 15 members. Three selected groups illustrate different audience relationships:
 
 <Table>
 <thead><tr><th>Group</th><th>Brands</th><th>Five brands with the most fans</th></tr></thead>
-<tbody>{[38, 17, 12].map(id => {
+<tbody>{['Milwaukee', 'Bandai', 'Chanel'].map(worldOf).map(id => {
   const rows = capture.records.filter(row => row.world === id);
   return <tr key={id}><td>{id}</td><td>{rows[0].brands}</td><td>{rows.map(row => row.brand_name).join(', ')}</td></tr>;
 })}</tbody>
 </Table>
 
-The 101-brand group places power tools beside kitchen appliances, providing
-a candidate home-project collection to inspect.
+The {capture.records.find(row => row.brand_name === 'Milwaukee').brands}-brand
+group places power tools beside kitchen appliances, providing a candidate
+home-project collection to inspect.
 
 <div className="fineprint">
 
 The [saved capture](/data/merrec-scale-shopping-worlds.json) contains every
-returned group and the execution record.
+returned group and the execution record. Leiden returned the same groups in
+all {capture.runs.length} runs under different group numbers.
 
 </div>

@@ -122,7 +122,7 @@ export default function ServerLoadBenchmark(): React.ReactElement {
           <Tabs className={styles.chartTabs} groupId="server-load-chart-tabs" queryString={false}>
             <TabItem value="throughput" label="Throughput" default>
               <p className={styles.chartCaption}>
-                Completed queries per second over the measured pass, median of {config.repeats} runs.
+                Completed queries per second over the measured pass, median of {config.repeats} runs. Parquet in the OS page cache before each run.
               </p>
               <MetricChart metric="completedQps" unit="" digits={2} step={0.5} />
             </TabItem>

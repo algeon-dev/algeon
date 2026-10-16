@@ -34,8 +34,9 @@ JCPenney, Macy's, Claire's), house brands (Mainstays, Better Homes &
 Gardens) and catch-all entries (As Seen on TV, Customized & Personalized,
 Eyeshadow, US Vintage) hold most of the first fifteen positions, each with
 neighbors in 37 to 44 of the worlds. Samsung is the manufacturer with the
-highest score. Its 98 neighbors span 13 worlds. The list names brand entries
-that behave like stores.
+highest score. Its 98 neighbors span 13 worlds. To isolate manufacturer
+brands from retail aggregators, exclude retailer and catch-all labels in the
+initial CTE and rerun the centrality query.
 
 Betweenness depends on the graph the query defines. A different
 similarity threshold changes which paths exist, and a brand with few

@@ -240,38 +240,49 @@ python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 \
 ```
 
 The training script needs `pyarrow` and `xgboost`. The algorithm pages
-report the median Flight latency of runs 2 and 3, the native fragment and
-host boundary counts, and the query allocator peak of each statement.
+report the median Flight latency of the runs after the first, the native
+fragment and host boundary counts, and the query allocator peak of each
+statement.
 
 Captures of `07` to `29` on 2026-10-07 used a release server built from commit `10586fb3d`
 plus uncommitted engine fixes (whole-input `OVER ()` windows, temporal casts
 and checked timestamp arithmetic, union inputs that read one producer twice,
 and rejection and memory-failure diagnostics), the configuration above, and
 cached source files. Single-run statements report that run's latency.
-Statements `32` and `33` were recaptured on 2026-10-11 with a release server
-built from commit `bc4bbf62c` plus the uncommitted change that applies
-Algeon's KvikIO defaults (64 I/O threads) when the backend is built, with the
-source files cached. Statements `10` and `30` were recaptured on 2026-10-12
-with a release server built from commit `b919a772e`, each on a fresh server
-with the pages they read already in the page cache. The first run of each
-statement is the warmup and is reported separately: 4.25 s for `10` and
-20.32 s for `30`, whose server had first run the `--prepare-scale`
-statements. Each run record carries `source_cache_resident`, the resident
-fraction of each source file measured with `mincore` before the run. Each
+
+Statements `08`, `09`, `12`, `27`, `30` and `31` were recaptured on
+2026-10-15 with a release server built from commit `d4b48c569` and the
+configuration above. After `--register` and a `CREATE EXTERNAL TABLE` for
+`mr_taste64` over the existing `14_taste64` output, one server ran `08`,
+`09`, `10`, `12`, `13`, `27`, `30` and `31` with `--repeats 4`, in that
+order. The table reports the median of runs 2 to 4. The guide capture for
+`10` comes from the fresh server described next. `13` has no guide capture;
+its table row comes from this run.
+
+Statements `10`, `32` and `33` were recaptured the same day with the same
+binary on a freshly started server. After `--register`, it ran each statement
+four times back to back, starting with `10`. The first run of `10` was
+therefore the first query on that server, and the Barbie page reports it
+separately. Each
 period's DISTINCT edge relation in `10`, `32` and `33` is computed once and
 read by both graph calls, and the fragment count includes those two
 producers. The result rows of `10`, `32` and `33` are identical to the
 2026-10-07 captures.
 
+Each run record of the nine 2026-10-15 captures carries
+`source_cache_resident`, the resident fraction of each source file measured
+with `mincore` before the run; for each statement it did not change across
+runs 2 to 4.
+
 | File | Runs | Median after first (s) | Native fragments | Host boundaries | Allocator peak (GiB) |
 |---|---:|---:|---:|---:|---:|
 | `07_brand_overlap.sql` | 3 | 6.12 | 3 | 0 | 17.20 |
-| `08_brand_twins.sql` | 3 | 6.68 | 3 | 0 | 74.74 |
-| `09_shopping_worlds.sql` | 3 | 9.11 | 4 | 0 | 54.46 |
-| `10_barbie_tie_ins.sql` | 3 | 3.34 | 11 | 0 | 13.18 |
+| `08_brand_twins.sql` | 4 | 3.34 | 6 | 0 | 75.07 |
+| `09_shopping_worlds.sql` | 4 | 5.85 | 7 | 0 | 54.79 |
+| `10_barbie_tie_ins.sql` | 4 | 3.05 | 11 | 0 | 29.70 |
 | `11_brand_map.sql` | 3 | 17.74 | 7 | 0 | 54.46 |
-| `12_session_audit.sql` | 3 | 2.30 | 2 | 0 | 20.04 |
-| `13_pokemon_lookalikes.sql` | 3 | 21.88 | 7 | 0 | 25.06 |
+| `12_session_audit.sql` | 4 | 1.58 | 2 | 0 | 33.83 |
+| `13_pokemon_lookalikes.sql` | 4 | 13.68 | 7 | 0 | 44.08 |
 | `15_ann_exact.sql` | 3 | 43.18 | 4 | 0 | 3.87 |
 | `16_ann_cagra.sql` | 3 | 8.79 | 4 | 0 | 4.56 |
 | `17_ann_ivf_flat.sql` | 3 | 8.50 | 4 | 0 | 4.55 |
@@ -283,20 +294,19 @@ producers. The result rows of `10`, `32` and `33` are identical to the
 | `23_propensity_logreg.sql` | 3 | 24.78 | 4 | 0 | 21.79 |
 | `24_propensity_forest.sql` | 3 | 27.36 | 4 | 0 | 21.79 |
 | `25_gmv_forecast.sql` | 3 | 30.06 | 4 | 0 | 21.79 |
-| `27_propensity_xgboost.sql` | 3 | 14.89 | 3 | 0 | 21.58 |
+| `27_propensity_xgboost.sql` | 4 | 6.54 | 3 | 0 | 44.94 |
 | `28_ann_exact_10k.sql` | 3 | 0.34 | 4 | 0 | 2.12 |
 | `29_ann_cagra_10k.sql` | 3 | 8.03 | 4 | 0 | 2.12 |
-| `30_audience_funnel.sql` | 3 | 20.13 | 9 | 0 | 18.19 |
-| `31_world_bridges.sql` | 3 | 23.80 | 9 | 0 | 54.74 |
-| `32_barbie_control_hot_wheels.sql` | 3 | 3.31 | 11 | 0 | 13.18 |
-| `33_barbie_control_nike.sql` | 3 | 3.31 | 11 | 0 | 13.15 |
+| `30_audience_funnel.sql` | 4 | 8.15 | 12 | 0 | 44.92 |
+| `31_world_bridges.sql` | 4 | 8.15 | 15 | 0 | 54.46 |
+| `32_barbie_control_hot_wheels.sql` | 4 | 3.03 | 11 | 0 | 29.70 |
+| `33_barbie_control_nike.sql` | 4 | 3.02 | 11 | 0 | 29.68 |
 
-File `31` was captured later the same day on a release build of
-`016e6972f` (the same configuration and cached source files); each website
-capture records the `binary_sha256` of the server that produced it.
+Each website capture records the `binary_sha256` of the server that
+produced it.
 
 Results that vary between runs: ForceAtlas2 coordinates, Leiden community
 numbers (the grouping itself repeated, in `31` as well), KMeans persona sizes, the lookalike
-count (19,124 to 19,127 across the `13` and `30` captures, from distance ties), logistic regression buyer
-counts (by up to 12), and ANN mean distances. The other statements returned
-identical rows in all three runs.
+count (19,124 to 19,126 across the four `30` runs, from distance ties that also move the `13`
+count by a few shoppers), logistic regression buyer counts (by up to 12), and ANN mean
+distances. The other statements returned identical rows in every run.
