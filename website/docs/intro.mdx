@@ -4,7 +4,7 @@ sidebar_label: Overview
 title: Algeon
 hide_title: true
 slug: /
-description: "Compose GPU graph, vector, and machine-learning algorithms through SQL subqueries. An experimental query engine with Apache DataFusion integration."
+description: "Compose graph, vector, and machine-learning algorithms through SQL subqueries. An experimental query engine with Apache DataFusion integration, accelerated on NVIDIA GPUs."
 ---
 
 import Link from '@docusaurus/Link';
@@ -13,9 +13,12 @@ import styles from '@site/src/css/homepage.module.css';
 
 <div className={styles.hero}>
 
-# Compose GPU algorithms with SQL.
+# Compose algorithms with SQL.
 
-<p className={styles.lead}><span>Run graph, vector, and machine-learning algorithms on SQL subqueries,</span> <span>then join and filter their results in the same query.</span></p>
+<p className={styles.lead}>
+  <span>Run graph, vector, and machine-learning algorithms in one SQL query.</span>{' '}
+  <span>Follow what you find to questions you hadn’t thought to ask.</span>
+</p>
 
 <div className={styles.actions}>
   <Link className="button button--primary" to="/guides/datasets/merrec#barbie">See a SQL example</Link>
@@ -24,9 +27,11 @@ import styles from '@site/src/css/homepage.module.css';
 
 </div>
 
-Algeon is a GPU query engine built on Apache DataFusion. It exposes NVIDIA's
-cuGraph, cuVS and cuML libraries as SQL table functions and runs supported
-relational operations on cuDF. Use it as a Rust library in a DataFusion
+Algeon is a query engine built on Apache DataFusion. Currently accelerated
+on NVIDIA GPUs, it exposes NVIDIA's cuGraph, cuVS and cuML libraries as SQL
+table functions and runs supported relational operations on cuDF. Analysts and AI
+agents can change algorithm inputs and combine results in SQL as new questions
+emerge. Use it as a Rust library in a DataFusion
 session or connect through Arrow Flight SQL. It runs beside the query engines
 already reading the lakehouse and takes the questions they have no operator
 for. The [design guide](./design/index.mdx) follows a query from
@@ -35,9 +40,9 @@ describes the motivation and application scenarios.
 
 ## Compose algorithms {/* #from-a-question-to-a-working-set */}
 
-A SQL query passes a subquery to a GPU UDTF (user-defined table
-function) and gets rows back. SQL groups those rows, joins them to names or labels, or
-passes them to another UDTF.
+Each GPU algorithm is a table function (UDTF) whose input is a subquery. The
+query that uses the result also builds the graph or vectors, so nothing has to
+be loaded into a separate graph or vector database first.
 
 <FlowDiagram
   ariaLabel="SQL subquery to GPU UDTF to result rows in the same query."
@@ -58,7 +63,7 @@ passes them to another UDTF.
     },
   ]}
   groups={[{label: 'one SQL query · one physical plan', nodes: ['working-set', 'algorithm', 'rows']}]}
-  caption="Each UDTF accepts a relation with its required columns and types. Its output can feed another UDTF or a SQL join."
+  caption="A UDTF takes any relation that has the columns and types it requires."
 />
 
 The [MerRec](./guides/datasets/merrec.mdx) demo queries 1.27 billion
@@ -74,6 +79,30 @@ SQL query that composes graph, vector and machine-learning UDTFs:
 
 The other [demo datasets](./guides/datasets/index.mdx) apply the same pattern
 to a citation graph, a product catalog and a malware benchmark.
+
+## Where Algeon fits {/* #where-it-fits */}
+
+- **Ad-hoc graph, vector and ML pipelines on lakehouse data.** One SQL query
+  selects the input, runs the algorithm and joins the result back. A new
+  pipeline is a new query, with no export scripts and no separate graph or
+  vector database. [Examples](./guides/datasets/index.mdx).
+- **Analysts and AI agents testing hypotheses.** A question no dashboard
+  tracks needs many follow-up checks with other seeds, filters or controls.
+  The [MerRec case study](./guides/datasets/merrec.mdx) works through one.
+- **Backends for agents and data services.** The
+  [Flight SQL server](./integration/flight-sql-server.mdx)
+  queues concurrent queries, lists its functions in the catalog and returns
+  structured errors a program can act on.
+- **Join- and aggregation-heavy SQL over Parquet.** Supported plan fragments
+  run on cuDF. See the [benchmarks](./reference/benchmarks/index.mdx).
+- **Engines built on DataFusion.** Algeon adds GPU execution and the
+  algorithm functions to an existing
+  [DataFusion session](./integration/datafusion-session.mdx);
+  operators it does not support stay on the CPU.
+
+**Not a fit yet:** working sets larger than one GPU's memory, sources other
+than Parquet, and long-lived vector indexes or models. See
+[scope and non-goals](#scope).
 
 ## Algorithm families {/* #available-building-blocks */}
 

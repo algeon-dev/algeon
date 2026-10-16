@@ -164,80 +164,31 @@ and [ML Inputs](../cuml/ml-inputs.mdx). The API references describe
 
 ## Resident results and the query memory cap
 
-An interop read lease protects a library's access to producer buffers. A
-resident result also carries query-runtime ownership and accounting across
-native consumers. `GpuDataFrame` records placement and retained owners;
-`GpuResultHandle` exposes a resident result with its completion dependencies.
-A resident source must match its declared schema and the consumer's device.
-The handle also retains producer execution identity and graph-source
-provenance when available.
-
-Derived frames can contain a mixture of aliases and newly allocated columns.
-The identity-aware residency path associates a retained source lease with
-the `ColumnMemoryIdentity` values it protects. A later projection preserves
-that lease when those columns survive. When only fresh columns remain, the
-corresponding transitive lease can be released without retaining an unrelated
-source allocation.
-
-The attempt's immutable grant applies across its native fragments. For an
-uncached UDTF, graph workspace, packed matrices and algorithm outputs allocate
-through the query domain, alongside relational intermediates. cuML
-random-forest fitting also routes its native pool streams through that domain.
-Those streams share the
-allocation limit. They do not obtain independent query grants.
+For an uncached UDTF, graph workspaces, packed matrices and algorithm outputs
+allocate through the query domain under the attempt's immutable grant,
+alongside relational intermediate buffers. cuML pool streams also allocate
+within that domain and share the query memory limit.
 
 Reusable cached graphs have separate device-ledger charges. On a cache hit,
-the attempt stream waits for the parked graph, while algorithm workspace and
-outputs allocate under the borrowing attempt. The insertion path copies edges
-into the cache allocation scope, constructs the graph and runs the initial
-algorithm there, then copies its result into the attempt domain. Input
-columns, graph or index state and output buffers can coexist in VRAM, and an
-allocation can fail at its domain's cap. The
-[memory and query lifetime page](./admission.mdx) describes that enforcement.
+the attempt stream synchronizes with the parked graph, while algorithm
+workspaces and outputs allocate under the borrowing attempt. Graph insertion
+copies edges into the cache allocation scope, constructs the graph, and copies
+the algorithm result into the attempt domain. The
+[Memory and query lifetime page](./admission.mdx#resident-handoff-and-release)
+governs device buffer leases, column-level identity tracking and ledger charges.
 
-DataFusion inlines a CTE at each reference, and projection pruning keeps in
-each copy only the columns its reader uses. A query root that lowers over GPU
-function results runs in one context with the native units lowered from
-those functions' inputs, including the edge and side inputs of each cuGraph
-call. When two or more of these units (including the query root) contain an
-identical subplan whose root reduces rows (such as an aggregate or a limit with
-a fetch), a single producer computes the result and the reading units list
-that producer as a GPU-resident input. The first reading unit to run computes the result. It
-stays resident under the attempt's grant until the last reading unit has
-read it. A chain of scans, filters, projections and joins streams chunk by
-chunk and is computed again by each reader. Copies that read different
-columns of a CTE differ after pruning, as do copies whose filters DataFusion
-pushed below the reducing root, and each computes its own result. For private
-intermediate projection bindings whose readers are all projections with
-unqualified columns, extraction compares output names by position. Generated
-aliases can differ while the expressions, field types, nullability and
-metadata match. This comparison preserves node boundaries and the root
-schema; the executable producer retains its original plan. Separate graph
-invocations that read one shared edge relation still build one graph each. In
-`EXPLAIN` output the producer reports `shared_consumers`, and the
-`shared_resident_extraction` planning diagnostics record the decision for
-each node of each unit.
+Shared relational subplans across GPU function inputs and query roots
+(including inlined CTEs) follow
+[Shared resident subplans](./native-lowering.mdx#shared-resident-subplans).
+Separate graph invocations that read an identical edge relation build separate
+graph instances.
 
-Within one composed island execution, repeated readers of one cuGraph
-similarity invocation can also share its GPU-resident result. Eligible
-invocations have native relational edge and side-input producers whose GPU
-dependencies are recursively repeatable. A native relational producer must
-contain only relational IR nodes; embedded graph, vector and ML algorithm
-nodes exclude reuse. Host input producers and nondeterministic GPU
-dependencies also exclude it. The identity combines the logical invocation
-with execution-scope fingerprints for its output and its edge and side-input
-producer subtrees, distinguishing input plans, output options and pushed-down
-predicates. Independently written SQL calls retain separate invocation
-identities.
-
-The island creates a fresh shared execution scope for each execution. The
-scope registers effective reading occurrences from the prepared producer tree
-and retains eligible results under the attempt's grant. A reused parent
-producer registers its child reads once, including reads of shared relational
-inputs. The last registered reader removes the retained
-result handle; cancellation or an error releases the scope's handles through
-the attempt's existing completion and cleanup contract. Cross-query graph
-caching follows the separate device-ledger contract described above.
+Within a composed island execution, repeated readers of a cuGraph similarity
+invocation share its GPU-resident result when relational edge and side-input
+producers have deterministic GPU dependencies. The shared invocation identity
+incorporates the logical function call and execution-scope fingerprints of its
+input subtrees. Registered reader occurrences retain the result handle under the
+attempt's grant until the final reader completes.
 
 ## Reproducibility
 

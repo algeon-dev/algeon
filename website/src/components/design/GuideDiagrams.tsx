@@ -4,9 +4,9 @@ import type {DiagramNode, Tone} from './Diagram';
 import {SANS, sketchLine, sketchRoundRect} from './sketch';
 import styles from './styles.module.css';
 
-type Point = [number, number];
+export type Point = [number, number];
 
-function Card({x, y, w, h = 72, name, note, tone = 'plain', kind, dashed = false}: DiagramNode & {
+export function Card({x, y, w, h = 72, name, note, tone = 'plain', kind, dashed = false}: DiagramNode & {
   x: number;
   y: number;
   w: number;
@@ -16,7 +16,7 @@ function Card({x, y, w, h = 72, name, note, tone = 'plain', kind, dashed = false
   return <Box node={{name, note, tone, kind}} x={x} y={y} w={w} h={h} borderDashed={dashed} />;
 }
 
-function Arrow({id, points, dashed = false, arrowhead = true}: {
+export function Arrow({id, points, dashed = false, arrowhead = true}: {
   id: string; points: Point[]; dashed?: boolean; arrowhead?: boolean;
 }) {
   const end = points[points.length - 1];
@@ -43,14 +43,14 @@ function Arrow({id, points, dashed = false, arrowhead = true}: {
   </g>;
 }
 
-function Label({x, y, children, textAnchor = 'start'}: {
+export function Label({x, y, children, textAnchor = 'start'}: {
   x: number; y: number; children: React.ReactNode; textAnchor?: 'start' | 'middle' | 'end';
 }) {
   return <text x={x} y={y} textAnchor={textAnchor}
     fill={COLOR.muted} fontFamily={SANS} fontSize={13}>{children}</text>;
 }
 
-function EdgeLabel({x, y, text, anchor = 'middle'}: {
+export function EdgeLabel({x, y, text, anchor = 'middle'}: {
   x: number; y: number; text: string; anchor?: 'start' | 'middle' | 'end';
 }) {
   const width = textWidth(text, LABEL);
@@ -61,7 +61,7 @@ function EdgeLabel({x, y, text, anchor = 'middle'}: {
   </g>;
 }
 
-function Region({x, y, w, h, label, tone = 'plain', labelOffset = 14}: {
+export function Region({x, y, w, h, label, tone = 'plain', labelOffset = 14}: {
   x: number; y: number; w: number; h: number; label?: string; tone?: Tone; labelOffset?: number;
 }) {
   return <g>
@@ -72,7 +72,7 @@ function Region({x, y, w, h, label, tone = 'plain', labelOffset = 14}: {
   </g>;
 }
 
-function GuideFigure({height, width = 800, minWidth = 640, maxWidth = 680, label, title, caption, children}: {
+export function GuideFigure({height, width = 800, minWidth = 640, maxWidth = 680, label, title, caption, children}: {
   height: number; width?: number; minWidth?: number; maxWidth?: number;
   title?: string; label: string; caption: React.ReactNode; children: React.ReactNode;
 }) {
@@ -98,12 +98,12 @@ export function QueryArchitecture() {
     <Arrow id="architecture:engine-planning" points={[[448, 280], [296, 280]]} dashed />
     <Arrow id="architecture:engine-runtime" points={[[488, 328], [488, 412], [296, 412]]} dashed />
     <Arrow id="architecture:runtime-planning" points={[[160, 372], [160, 328]]} dashed />
-    <Arrow id="architecture:submit" points={[[612, 328], [612, 520]]} />
-    <EdgeLabel x={628} y={496} text="GPU submissions" anchor="start" />
-    <Arrow id="architecture:read" points={[[296, 564], [448, 564]]} />
-    <EdgeLabel x={372} y={548} text="read pages" />
-    <Arrow id="architecture:result" points={[[612, 608], [612, 664]]} />
-    <EdgeLabel x={628} y={640} text="device → host" anchor="start" />
+    <Arrow id="architecture:submit" points={[[612, 328], [612, 552]]} />
+    <EdgeLabel x={628} y={512} text="GPU submissions" anchor="start" />
+    <Arrow id="architecture:read" points={[[296, 544], [372, 544], [372, 580], [448, 580]]} />
+    <EdgeLabel x={372} y={528} text="read pages" />
+    <Arrow id="architecture:result" points={[[448, 628], [372, 628], [372, 668], [296, 668]]} />
+    <EdgeLabel x={372} y={684} text="device → host" />
     <Card x={40} y={40} w={256} h={88} name="DataFusion"
       note={['SQL / DataFrame', 'Physical plan on CPU']} tone="plan" />
     <Card x={448} y={40} w={328} h={88} name="algeon-datafusion"
@@ -114,11 +114,11 @@ export function QueryArchitecture() {
       note={['Execute the schedule', 'Use planning + runtime contracts']} tone="bridge" />
     <Card x={40} y={372} w={256} h={80} name="query-runtime"
       note={['One device + grant', 'Attempt lifetime and cache']} tone="engine" />
-    <Card x={40} y={520} w={256} h={88} name="Parquet storage"
+    <Card x={40} y={504} w={256} h={80} name="Parquet storage"
       note={['Local NVMe or S3', 'Selected column pages']} tone="lake" />
-    <Card x={448} y={520} w={328} h={88} name="GPU operations" tone="gpu"
+    <Card x={448} y={552} w={328} h={104} name="GPU operations" tone="gpu"
       note={['cuDF · cuGraph · cuVS · cuML', 'Decode → filter / join / aggregate']} />
-    <Card x={448} y={664} w={328} h={80} name="Arrow result" tone="bridge"
+    <Card x={40} y={628} w={256} h={80} name="Arrow result" tone="bridge"
       note="Via adapter → DataFusion → caller" />
     <Arrow id="architecture:flow-legend" points={[[40, 784], [88, 784]]} />
     <Label x={100} y={788}>Execution / data flow</Label>
@@ -543,7 +543,7 @@ export function GpuUdtfFlow() {
 }
 
 export function AttemptLifetime() {
-  return <GuideFigure title="Query attempt lifetime" height={560}
+  return <GuideFigure title="Query attempt lifetime" width={824} height={560}
     label="Attempt lifecycle across three thread contexts. On the host runtime, the capability proof precedes execution and the attempt waits in the admission queue on the caller's task. On the device's algeon-gpu-{d} runtime, an envelope lifecycle job takes the lane, root stream and allocation domain, one QueryExecution job runs the whole GPU schedule on one worker, and each poll submits one job that materializes a chunk of at most 4 MiB, which the host runtime receives as an Arrow batch. The next poll loops back to the materialize job. When the stream reaches EOF, is dropped or is cancelled, the cleanup thread synchronizes the attempt's streams and returns capacity."
     caption="The first poll waits for admission on the caller's task, then runs the whole GPU schedule as one pool job. Each later poll submits one job that moves at most 4 MiB to the host. Release follows the terminal outcome and the cleanup thread's synchronize.">
 
@@ -558,8 +558,8 @@ export function AttemptLifetime() {
     <Arrow id="attempt:materialize-batch" points={[[624, 272], [624, 148]]} />
     <Arrow id="attempt:next-poll" points={[[712, 148], [712, 272]]} dashed />
     <EdgeLabel x={696} y={192} text="next poll" anchor="end" />
-    <Arrow id="attempt:release" points={[[760, 108], [784, 108], [784, 488], [760, 488]]} />
-    <EdgeLabel x={768} y={404} text="EOF · drop · cancel" anchor="end" />
+    <Arrow id="attempt:release" points={[[760, 108], [808, 108], [808, 488], [760, 488]]} />
+    <EdgeLabel x={792} y={404} text="EOF · drop · cancel" anchor="end" />
     <Card x={24} y={68} w={192} h={80} name="Capability proof" note="Before execution" tone="plan" />
     <Card x={272} y={68} w={216} h={80} name="Admission queue"
       note={['Wait for capacity', "On the caller's task"]} tone="plan" />

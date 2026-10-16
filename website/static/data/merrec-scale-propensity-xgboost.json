@@ -3,38 +3,63 @@
  "name": "27_propensity_xgboost",
  "sql_file": "fixture/demo/merrec/scripts/scale/27_propensity_xgboost.sql",
  "sql": "WITH test AS (\n  SELECT e.user_id AS id,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS gmv,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,\n    CAST(MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS INT) AS label\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_time >= TIMESTAMP '2023-06-01 00:00:00' AND e.event_time < TIMESTAMP '2023-10-01 00:00:00'\n  GROUP BY e.user_id\n  HAVING SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20\n),\nscores AS (\n  SELECT id, prediction AS score FROM cuml_forest_predict(\n    input => (SELECT id, LN(1 + views) AS views, LN(1 + likes) AS likes, LN(1 + intents) AS intents, LN(1 + buys) AS buys, LN(1 + gmv) AS gmv, LN(1 + views_30d) AS views_30d, LN(1 + likes_30d) AS likes_30d, LN(1 + intents_30d) AS intents_30d, LN(1 + buys_30d) AS buys_30d, LN(1 + mean_price) AS mean_price FROM test ORDER BY id),\n    model => 'propensity_xgb.json', model_format => 'xgboost_json')\n), ranked AS (\n  SELECT t.label, t.buys_30d,\n         ROW_NUMBER() OVER (ORDER BY s.score DESC, t.id) AS rk,\n         COUNT(*) OVER () AS shoppers,\n         SUM(CASE WHEN t.buys_30d > 0 THEN 1 ELSE 0 END) OVER () AS rule_size\n  FROM scores s JOIN test t ON t.id = s.id\n)\nSELECT MAX(shoppers) AS shoppers, MAX(shoppers) / 100 AS top_1pct, MAX(rule_size) AS rule_size,\n       SUM(label) AS buyers,\n       SUM(CASE WHEN rk <= shoppers / 100 THEN label ELSE 0 END) AS model_top_1pct_buyers,\n       SUM(CASE WHEN rk <= rule_size THEN label ELSE 0 END) AS model_rule_size_buyers,\n       SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END) AS rule_buyers\nFROM ranked;\n",
- "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
+ "binary_sha256": "f11352d8a2bb6873bf466b15698bbfb67d797a55d1a1dccbfb6713ca0e422969",
  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
  "runs": [
   {
    "name": "27_propensity_xgboost_r1",
-   "query_id": "43c36ae5-ffbd-40cd-ae52-9c15fe84e40d",
-   "elapsed_s": 14.838451779913157,
+   "query_id": "379cc1a5-48bd-4932-87e5-c531ec4fb910",
+   "elapsed_s": 6.837735884124413,
    "native_fragments": 3,
    "host_boundaries": 0,
-   "allocator_peak_bytes": 23173270141,
-   "query_limit_bytes": 96636764160
+   "allocator_peak_bytes": 48251310663,
+   "query_limit_bytes": 96636764160,
+   "source_cache_resident": {
+    "items.parquet": 0.2425,
+    "events.parquet": 0.3038
+   }
   },
   {
    "name": "27_propensity_xgboost_r2",
-   "query_id": "7d5bf3b2-a61d-47d9-890d-7641b2814622",
-   "elapsed_s": 14.876955162035301,
+   "query_id": "db235d1a-940c-4c0f-bd4a-22b414d16aff",
+   "elapsed_s": 6.535526184132323,
    "native_fragments": 3,
    "host_boundaries": 0,
-   "allocator_peak_bytes": 23173270141,
-   "query_limit_bytes": 96636764160
+   "allocator_peak_bytes": 48251310663,
+   "query_limit_bytes": 96636764160,
+   "source_cache_resident": {
+    "items.parquet": 0.2813,
+    "events.parquet": 0.3038
+   }
   },
   {
    "name": "27_propensity_xgboost_r3",
-   "query_id": "bb749678-396e-4c46-94ff-6466cc2efb35",
-   "elapsed_s": 14.905480078887194,
+   "query_id": "7437251a-1df1-4b9b-af13-9b96740040d2",
+   "elapsed_s": 6.549479904118925,
    "native_fragments": 3,
    "host_boundaries": 0,
-   "allocator_peak_bytes": 23173270141,
-   "query_limit_bytes": 96636764160
+   "allocator_peak_bytes": 48251310663,
+   "query_limit_bytes": 96636764160,
+   "source_cache_resident": {
+    "items.parquet": 0.2813,
+    "events.parquet": 0.3038
+   }
+  },
+  {
+   "name": "27_propensity_xgboost_r4",
+   "query_id": "0d8d0660-10a0-48c1-8369-44887fea183d",
+   "elapsed_s": 6.537845919840038,
+   "native_fragments": 3,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 48251310663,
+   "query_limit_bytes": 96636764160,
+   "source_cache_resident": {
+    "items.parquet": 0.2813,
+    "events.parquet": 0.3038
+   }
   }
  ],
- "median_elapsed_s_after_first": 14.891217620461248,
+ "median_elapsed_s_after_first": 6.537845919840038,
  "rows": 1,
  "identical_results_across_runs": true,
  "schema": [

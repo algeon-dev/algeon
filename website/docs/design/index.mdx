@@ -101,12 +101,11 @@ Query execution jobs take at most `worker_count - 1` workers, which leaves one
 for context setup and release cleanup. Chunk lane jobs and source reads use the
 blocking lane of the same runtime.
 
-A submission acquires a job-class permit immediately. If a class is saturated,
-the service returns `service_overloaded`, making the admission envelope of a
-placed attempt the sole bounded waiting point. A pool thread that must wait on an async primitive
-parks in `block_until`, which polls under `unconstrained` because an exhausted
-Tokio cooperative budget returns `Pending` without registering the waker. A
-job submitted from inside the same pool runs inline. Host-side `spawn_blocking`
+A submission acquires a job-class permit immediately. When a class is
+saturated, the service returns `service_overloaded`. Bounded waiting occurs
+only within the admission queue. A pool worker waiting on asynchronous
+completion parks in `block_until` without blocking the host runtime. A job
+submitted from inside the same pool executes inline. Host-side `spawn_blocking`
 covers backend close, server shutdown drains, the query-stats lease and
 password verification.
 

@@ -1,16 +1,16 @@
 ---
-title: "Introducing Algeon: Interactive Graph, Vector, and ML Analytics for the Agent Era"
-description: "Algeon runs graph, vector and machine-learning algorithms on SQL subqueries and returns their output as rows, inside one SQL query. This post explains why that fits an agent that asks many questions through a backend service, where Algeon sits beside the query engines already on the lake, how the engine is built, and what it cannot do yet."
+title: "Introducing Algeon: Interactive Graph, Vector, and ML Analytics for the Agent's Loop"
+description: "Follow a marketplace investigation to see how Algeon combines SQL with GPU graph, vector, and ML algorithms, supports follow-up queries, and fits beside existing lakehouse engines."
 slug: introducing-algeon
-date: 2026-10-14
+date: 2026-10-15
 tags: [announcement]
 authors: morris
 ---
 
 import CodeBlock from '@theme/CodeBlock';
+import Link from '@docusaurus/Link';
 import Table from '@site/src/theme/MDXComponents/Table';
-import {FlowDiagram} from '@site/src/components/design/Diagram';
-import {AgentLoopFigure, GlueVsPlanFigure} from '@site/src/components/blog/IntroFigures';
+import {AgentLoopFigure, BarbieTitleShareFigure, GlueVsPlanFigure, QueryInterfaceFigure} from '@site/src/components/blog/IntroFigures';
 import session from '@site/static/data/merrec-agent-session.json';
 import barbie from '@site/static/data/merrec-scale-barbie-tie-ins.json';
 import listingCheck from '@site/static/data/merrec-barbie-listing-check.json';
@@ -24,242 +24,151 @@ export const gib = bytes => (bytes / 2 ** 30).toFixed(2);
 export const peakOf = capture => gib(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)));
 export const byStage = Object.fromEntries(funnel.records.map(row => [row.stage, row]));
 export const nyx = listingCheck.records.find(row => row.brand_name === 'NYX');
+export const swift = listingCheck.records.find(row => row.brand_name === 'Taylor Swift');
+export const nyxListing = listingCheck.listing_records.find(row => row.brand_name === 'NYX');
 
-An agent session over 1.27 billion marketplace events compared brand affinity
-to Barbie's audience between May-June and July-August 2023, around the film's release.
-It issued five queries to Algeon through Arrow Flight SQL. The first two read
-the catalog to check which graph functions this build installs and what
-personalized PageRank takes and returns. The third looked up Barbie's brand id
-to seed from, and the fourth used `EXPLAIN GPU` to check whether the whole query
-would stay on the GPU.
-The fifth ran four graph calls over the events and returned
-{stepOf(5).rows.length} brands in {seconds(stepOf(5).elapsed_s)} seconds.
-Personalized PageRank highlighted brands such as NYX whose affinity to Barbie rose
-between the two periods, and follow-up queries verified the inventory tie-in
-against listing titles within seconds.
-
+Which brands moved toward Barbie's audience around the July 2023 film release?
+An agent put that question to Algeon over Arrow Flight SQL, using
+[MerRec](/guides/datasets/merrec), a dataset of 1.27 billion marketplace events.
+The query compared brand affinity in May-June with July-August. Primark and
+AMC appeared near the top, alongside the cosmetics brand NYX in first place
+and Taylor Swift in fifth. What could explain those changes?
 {/* truncate */}
 
-<Table>
-<thead><tr><th>Step</th><th>Purpose</th><th>Outcome</th><th style={{textAlign: 'right'}}>Elapsed</th></tr></thead>
-<tbody>{session.steps.map(item => <tr key={item.step}><td>{item.step}</td><td>{item.intent}</td><td style={{whiteSpace: 'nowrap'}}>{item.status === 'ok' ? 'rows' : 'planning error'}</td><td style={{whiteSpace: 'nowrap', textAlign: 'right'}}>{wholeMs(item.elapsed_s)} ms</td></tr>)}</tbody>
-</Table>
+Algeon runs graph, vector, and machine-learning algorithms as table functions
+inside SQL. Each function takes rows from a subquery and returns rows for the
+rest of the query to use. In this investigation, SQL selected the likes,
+graph algorithms measured brand affinity, and a final join attached brand
+names to the ranking.
 
-<div className="fineprint">
-
-Release build on one NVIDIA RTX PRO 6000, a 90 GiB query grant, `native_required` mode and the source Parquet on local NVMe.
-
-</div>
-
-Pre-aggregated rollups and reporting tables summarize metrics along predefined
-dimensions, such as regional revenue or endpoint latency. Investigating weak
-signals, such as unindexed supplier relationships or emerging brand affinities,
-instead requires ad hoc joins across unaggregated relations.
-
-An investigative agent tests competing hypotheses through sequences of
-dependent queries. If each query takes minutes, interactive exploration becomes
-impractical. Within a five-to-ten-second interaction budget, multiple dependent
-queries require individual executions to complete in well under a second. Graph
-traversals, vector similarity search, and model scoring make this target harder
-to meet when each operation introduces separate scheduling, data movement, or
-execution overhead.
-
-Algeon operates alongside lakehouse engines, which handle scheduled batch ETL
-and produce base tables. Algeon executes ad hoc queries involving graph, vector,
-and machine learning operations. Rather than invoking these algorithms as
-separate processing stages, Algeon integrates them as relational operators
-within a single physical execution plan. Intermediate results flow between
-operators as Arrow record batches, allowing these operations to participate in
-the same query execution pipeline.
-
-## A working set for each question
-
-A lakehouse holds terabytes, and almost no single question needs more than a
-sliver of it. A question is about one tenant, one quarter, one product line,
-one cohort. SQL narrows the scan through date filters, dimension joins, and
-segment aggregations that isolate relevant records. The surviving rows form
-the question's working set. Fleet studies put numbers on how small it
-usually is. In the Amazon Redshift fleet
-the median query uses 0.6 GB of memory and the 99th-percentile query 21.4 GB;
-among paying BigQuery customers, 90% of queries process less than 100 MB.[^1]
-
-Algeon executes GPU-accelerated SQL across that working set slice. A working
-set of that size fits in GPU memory. The two queries in this post run over
-[MerRec](/guides/datasets/merrec), the public marketplace dataset behind the
-opening session, and peaked at {peakOf(barbie)} GiB and {peakOf(funnel)} GiB
-across its 1.27 billion events.
-
-The questions worth asking about the working set, though, are often the ones
-relational algebra handles badly. Which of these companies form a tightly
-knit cluster? What is the shortest chain from this supplier to that
-sanctioned entity? Which products sit nearest to this one in embedding space?
-Which of these rows would the model we trained last quarter flag? Each has a
-well-understood algorithm and a mature GPU implementation. Relational algebra
-can spell some of them out, a shortest path as a recursive CTE or a
-nearest-neighbor search as a cross join with a per-row top-k, but the planner
-then faces an iteration or a cross product with no single operator to place,
-and modularity-based community detection has no practical SQL spelling at
-all.
-
-<FlowDiagram
-  ariaLabel="A lakehouse of terabytes is reduced by SQL to a working set of gigabytes, a GPU algorithm runs over it inside the same query, and the output returns as rows or feeds the next stage."
-  nodes={[
-    {id: 'lake', kind: 'terabytes', name: 'Lakehouse', note: 'Parquet · tables · views', tone: 'lake'},
-    {
-      id: 'working-set', kind: 'gigabytes', name: 'Working set', tone: 'engine',
-      edgeLabel: ['filter · join', 'aggregate'], note: 'fine-grained · fits GPU memory',
-    },
-    {
-      id: 'algorithm', kind: 'gpu algorithm', name: 'Algorithm output', tone: 'gpu',
-      edgeLabel: ['cugraph_* · cuvs_*', 'cuml_*'], note: ['paths · communities', 'neighbors · scores'],
-    },
-    {id: 'answer', kind: 'rows', name: 'Answer', note: 'back to the caller', tone: 'plain',
-      edgeLabel: ['join · filter', 'aggregate']},
-  ]}
-  groups={[{label: 'one SQL query · one physical plan', nodes: ['working-set', 'algorithm', 'answer']}]}
-  returns={[{from: 'algorithm', to: 'working-set', label: 'next stage input'}]}
-  caption={<>SQL reduces the lakehouse to a working set that fits in GPU memory.
-  Algeon places the specialized algorithm after that reduction, inside the
-  same query, and returns its output as rows that ordinary SQL can keep
-  working on, or that the next algorithm can take as input.</>}
-/>
-
-Executing the algorithm after the reduction also alters algorithm selection.
-NVIDIA's cuVS guide states the condition for exact search:
-["Use brute-force for heavily filtered queries. If a filter excludes most
-vectors, brute-force can search only the remaining candidates while IVF and
-graph indexes may skip useful vectors before the filter is
-applied."](https://docs.nvidia.com/cuvs/user-guide/api-guides/indexing-guide/brute-force#when-to-use-brute-force)
-In SQL that filter is the `WHERE` clause and the joins that define the
-working set. For example, the campaign query below restricts candidate
-embeddings to eligible shoppers before running an exact nearest-neighbor
-search over the survivors. The same holds for graphs. The Barbie query that
-opened this post builds a separate like graph for each of its two periods from
-the filtered events. A result produced this way stays tied to the conditions
-that admitted its input, and those conditions are visible in the SQL.
+The ranking also raised questions that needed different SQL. An endpoint
+built to return brand rankings might accept a new date range or seed brand,
+but checking the titles of liked products requires another query. With
+Algeon, an agent or analyst can express that follow-up through the SQL
+interface, using the tables and functions available to the session.
 
 ## Replacing glue code with in-plan UDTFs
 
-Outside the query engine, a GPU graph algorithm over warehouse data runs as a
-detour around the warehouse. In a typical workflow outside the engine, selected
-rows are exported to cloud storage, loaded and transformed within a Python
-notebook, processed through cuGraph, and imported back into the warehouse for
-subsequent joins. Each step is an ad-hoc
-ETL script, written for the small fraction of the dataset that one question
-needs, and two scripts that differ slightly can encode different semantics
-without anyone comparing them.
+A workflow built from separate SQL and graph tools often exports the selected
+rows, constructs a graph in application code, runs an algorithm, and imports
+the scores for another join. Algeon's user-defined table functions (UDTFs)
+put these dependencies in the query plan. The query author supplies the
+input relations and algorithm parameters; the engine executes the operators
+and manages their memory.
 
 <GlueVsPlanFigure
-  caption={<>Left: the detour as glue code, where each step is an
-  ad-hoc ETL script and most steps copy the data. Right: the same work as one
-  SQL query, with the algorithm as a UDTF between the SQL that
-  prepares its input and the SQL that consumes its output.</>}
+  caption={<>A table function accepts the rows selected by SQL and returns
+  rows that downstream joins and aggregations can use. The application
+  does not need to export and reimport each intermediate result.</>}
 />
 
-In Algeon, selection and cleaning happen in SQL before the algorithm,
-enrichment happens in SQL after it, and the algorithm sits between them as a
-UDTF (user-defined table function) with a documented input relation and a
-documented output schema. The physical
-decisions (what to scan, what to push down, whether a stage can stay on the
-device) belong to the planner; the choice of algorithm and its options stays
-with the query author.
+For the Barbie query, each period has a graph connecting shoppers to the
+brands they liked. Personalized PageRank starts from the Barbie vertex and
+scores connections through that graph. Dividing each score by ordinary
+PageRank adjusts for the brand's overall graph score. We call this ratio
+its affinity to Barbie's audience.
 
-The detour also fixed where the work could run. A GPU graph step lived in a
-notebook or a scheduled job, and a service that needed the result waited for
-a file to land. With the algorithm inside the query, the same service submits
-the SQL, over Arrow Flight SQL or through the DataFusion session it embeds,
-and receives Arrow batches in the same call. No notebook or ad-hoc script sits
-between the question and the rows. Graph construction, the algorithm and the
-joins around it run inside the request, under the memory grant that request
-was admitted with.
-
-The Barbie query from the opening session has that shape. A `WITH`
-clause selects distinct shopper-brand likes from May through August and
-flags the ones after July 1. Personalized PageRank from the Barbie vertex
-measures each brand's connection to Barbie's audience in each period, and
-dividing it by ordinary PageRank adjusts for the brand's overall graph score.
-The final `SELECT` compares that ratio across the two periods, keeps brands
-with at least 1,000 fans in both, and attaches brand names with a join. The
-preview ends after the four graph calls.
+The query compares affinity across the periods, keeps brands with at least
+1,000 distinct fans in both, and ranks the relative change. The July-August
+window starts on July 1, twenty days before the film opened, so the comparison
+includes the weeks leading up to the release. The SQL preview ends after
+the four graph calls.
 
 <CodeBlock language="sql" previewBefore="), fans AS (">{barbie.sql}</CodeBlock>
 
-Because the edge and personalization relations are
-[subqueries in the plan](/design/gpu-table-functions#an-algorithm-inside-a-query),
-the period filter and the seed stay in the SQL session, and any additional filtering
-condition can be modified directly within the SQL statement. The like graphs
-live in GPU memory while the query
-runs, and nothing is exported. In the opening session this query was the
-fifth Flight SQL call, and it returned its rows in
-{seconds(stepOf(5).elapsed_s)} seconds with both graph builds inside that
-time.
-
-## Validating hypotheses on the same working set
-
-An initial graph query identifies candidate records across relations that no
-pre-existing dashboard tracks, but graph centrality alone does not explain
-affinity shifts. Confirmation of an observed correlation requires testing alternative
-hypotheses on the same working set.
-
-The opening query ranked brands by affinity change, defined as the ratio of
-personalized to ordinary PageRank with at least 1,000 distinct fans in both
-periods. Retail and entertainment tie-ins were expected, but the ranking also
-highlighted cosmetics brand NYX alongside AMC and Primark; Taylor Swift ranked
-fifth and provided a comparison record.
+The ranking put NYX first, followed by AMC, Primark, ALDO, and Taylor Swift.
 
 <Table>
-<thead><tr><th>Brand</th><th>May-June affinity</th><th>July-August affinity</th></tr></thead>
-<tbody>{barbie.records.filter((row, index) => index < 4 || row.brand_name === 'Taylor Swift').map(row => <tr key={row.brand_name}><td>{row.brand_name}</td><td>{row.lift_before.toFixed(2)}</td><td>{row.lift_after.toFixed(2)}</td></tr>)}</tbody>
+<thead><tr><th>Brand</th><th>May-June affinity</th><th>July-August affinity</th><th>Change</th></tr></thead>
+<tbody>{barbie.records.filter((row, index) => index < 4 || row.brand_name === 'Taylor Swift').map(row => <tr key={row.brand_name}><td>{row.brand_name}</td><td>{row.lift_before.toFixed(2)}</td><td>{row.lift_after.toFixed(2)}</td><td>{row.lift_change.toFixed(2)}×</td></tr>)}</tbody>
 </Table>
 
-To test whether these affinity increases coincided with Barbie-themed merchandise,
-a follow-up query counted likes on listings whose names contained "Barbie".
-For NYX, the share of likes on matching listings rose from
-{nyx.barbie_pct_may_june.toFixed(2)}% to {nyx.barbie_pct_july_august.toFixed(2)}%,
-confirming inventory aligned with the film release. Taylor Swift also had a high
-graph score, but the name check found few matching likes, and that movement remains
-unexplained by item titles.
+The graph inputs are [subqueries in the plan](/design/gpu-table-functions#an-algorithm-inside-a-query).
+Changing a date filter or seed requires editing the SQL. The like graphs and
+intermediate results remain in GPU memory during this query; graph
+construction is included in the measured time.
 
-To test whether the rise reflected a general summer retail trend, follow-up
-queries substituted other seed brands. Nike served as an unrelated baseline; none
-of the four brands appeared among the 25 largest affinity changes from Nike.
-Hot Wheels, a Mattel brand whose collector audience overlaps Barbie's, produced
-smaller increases for NYX, ALDO, and Primark. Each check ran as a single SQL
-query with one modified parameter, documented in the
-[full investigation](/guides/datasets/merrec#barbie) in the MerRec guide.
+The ranking returned {stepOf(5).rows.length} brands in
+{seconds(stepOf(5).elapsed_s)} seconds in the session replay. In separate
+repeated runs, its median was {seconds(barbie.median_elapsed_s_after_first)}
+seconds after the first run. An equivalent CPU workflow using 32-thread
+DuckDB and igraph took a median of 23.3 seconds on the same host and returned
+identical top-25 rankings. The [case study](/guides/datasets/merrec#barbie)
+includes the timing breakdown.
 
-Each follow-up check incurred overhead comparable to the primary query. The Hot
-Wheels and Nike control reruns completed over Flight SQL in
-{seconds(controls.hot_wheels.median_elapsed_s_after_first)} s and
-{seconds(controls.nike.median_elapsed_s_after_first)} s respectively, while the
-name check executed as a standard relational aggregation. Together, the four
-queries isolated the underlying effect. NYX, ALDO, and Primark expanded Barbie
-inventories and shifted toward the Hot Wheels audience, AMC shifted exclusively
-with Barbie, and Taylor Swift remained uncorrelated with title inventory.
-Because execution occurs in-process without manual data exports, verification
-queries execute in the same interactive session.
+<div className="fineprint">
+
+GPU timings in this post use an NVIDIA RTX PRO 6000 with a 90 GiB query
+grant and `native_required` mode. Source Parquet files were staged on local
+NVMe and held in the OS page cache for both the GPU and CPU comparisons.
+
+</div>
+
+## Testing follow-up hypotheses on the working set
+
+A change in graph affinity leaves its cause open. Barbie merchandise could
+account for some of the ranking. Broader summer trends or an overlapping
+collector audience could also contribute. We followed the ranking with a
+product-title check and two reruns using other seed brands. These were
+separate queries after the recorded agent session.
+
+The title check counts likes on listings whose names contain "Barbie" over
+the two periods. For NYX, that share rose from
+{nyx.barbie_pct_may_june.toFixed(2)}% to
+{nyx.barbie_pct_july_august.toFixed(2)}%, with listings such as
+"{nyxListing.name}". For Taylor Swift, only {swift.barbie_likes_july_august}
+of {swift.total_likes_july_august.toLocaleString('en-US')} July-August likes
+went to matching listings.
+
+<BarbieTitleShareFigure
+  records={listingCheck.records}
+  caption={<>Share of likes on listings with "Barbie" in the title, before
+  and during the release period. NYX, Primark, ALDO, and AMC show substantial
+  increases; Taylor Swift's share remains below 0.1%.</>}
+/>
+
+These results support a merchandise explanation for NYX, Primark, ALDO, and
+AMC. The name match is an imperfect measure: seller descriptions and color
+names can also contain "Barbie". It does not establish what caused the graph
+affinity to change.
+
+Next, we reran the graph query with Nike and Hot Wheels as seeds, changing
+the seed brand id and its exclusion from the results. None of those four
+brands appeared among Nike's 25 largest affinity changes. With Hot Wheels,
+NYX, ALDO, and Primark appeared with smaller changes; AMC was absent from
+the top 25. The Hot Wheels result is consistent with an overlapping Mattel
+collector audience. These comparisons help distinguish the rankings, though
+absence from a top-25 list cannot rule out a broader seasonal change.
+
+The Hot Wheels and Nike reruns took
+{seconds(controls.hot_wheels.median_elapsed_s_after_first)} and
+{seconds(controls.nike.median_elapsed_s_after_first)} seconds respectively,
+using medians after the first run. The [full investigation](/guides/datasets/merrec#barbie)
+contains the follow-up SQL and all result rows. The checks support some
+explanations and leave Taylor Swift's rise unresolved. Investigating that
+connection would require another question and another query.
 
 ## Chaining multiple algorithms in one query
 
-One algorithm's output is often the candidate set, the structure or the
-feature the next stage needs, and often something plain SQL could not have
-produced at all. The
-[campaign query](/guides/datasets/merrec#audience-funnel) from the same MerRec dataset
-does this three times for a planner who can contact 5,000 shoppers about
-Pokemon listings. Personalized PageRank from the Pokemon brand vertex scores
-every shopper on the like graph. An exact nearest-neighbor search finds the
-taste lookalikes of earlier buyers among eligible shoppers. A forest trained
-offline ranks the union of the two lists, and a `GROUP BY` at the end counts
-how many shoppers in each list bought a Pokemon listing in the following two
-months. The intermediate relations stay on the device, and the list size,
-`k` and the PageRank cutoff are parameters for the next run.
+The Barbie investigation changed the query as new questions arose. A single
+question can also require several algorithms. To select 5,000 shoppers for
+a Pokemon promotion, the [campaign query](/guides/datasets/merrec#audience-funnel)
+combines graph affinity, vector similarity, and model scores.
 
-The query also evaluates two baseline controls using identical model parameters
-and candidate pool sizes. After ranking, the combined graph-and-embedding pool
-identified
-{byStage[8].pokemon_buyers_sep_oct - byStage[7].pokemon_buyers_sep_oct} more
-subsequent buyers than the baseline heuristic of targeting previous Pokemon
-viewers.
+Personalized PageRank from the Pokemon brand identifies graph candidates.
+Exact nearest-neighbor search finds eligible shoppers with tastes similar
+to historical buyers. An offline-trained XGBoost model ranks the union of
+these candidates, and the query keeps the top 5,000. A final aggregation
+counts how many bought Pokemon products in the following two months.
+
+<QueryInterfaceFigure
+  caption={<>Eligibility filters, graph candidates, vector neighbors, and
+  model scores form one SQL query. Candidate limits and algorithm parameters
+  can be changed in that query.</>}
+/>
+
+For comparison, the model also ranks all eligible shoppers and those who
+previously viewed a Pokemon listing. Each pool contributes its top 5,000.
 
 <Table>
 <thead><tr><th>Candidate pool</th><th>Shortlist size</th><th>Bought Pokemon in Sep-Oct</th></tr></thead>
@@ -270,140 +179,128 @@ viewers.
 ].map(({stage, label}) => <tr key={stage}><td>{label}</td><td>{byStage[stage].shoppers.toLocaleString('en-US')}</td><td>{byStage[stage].pokemon_buyers_sep_oct}</td></tr>)}</tbody>
 </Table>
 
-Targeting previous viewers relies on direct historical purchase signals.
-Queries combining graph traversal with embedding similarity identify lookalike shoppers
-lacking explicit prior interactions. Inside a single physical plan across cuGraph,
-cuVS, and cuML, intermediate buffers remain in GPU memory, producing the ranked
-shortlist in approximately 20 seconds. The 93 to 72 buyer difference reflects
-observational correlation in historical records; evaluating incremental lift
-would require an online randomized trial.
+The graph-or-taste shortlist contained
+{byStage[8].pokemon_buyers_sep_oct - byStage[7].pokemon_buyers_sep_oct} more
+later buyers than the previous-viewer shortlist. Its candidates need not
+have viewed a Pokemon listing before September. This is a historical
+comparison; an online randomized trial would be needed to measure whether
+sending the promotion caused additional purchases.
+
+The query ran in a median of {seconds(funnel.median_elapsed_s_after_first)}
+seconds after the first run. Intermediate results stayed in GPU memory
+across cuGraph, cuVS, and cuML, including the candidate relations used by
+the model and the scores consumed by the final SQL.
+
+## A working set for each question
+
+Both examples select algorithm inputs from a larger dataset. The Barbie
+query builds graphs from distinct shopper-brand likes in each period. The
+campaign query restricts vector search to eligible shoppers. SQL expresses
+those filters and joins before the algorithm runs, forming the working set
+for that question.
+
+Memory requirements include graph construction, algorithm scratch space,
+and intermediate results as well as the input rows. Across the recorded
+runs, peak query allocations were {peakOf(barbie)} GiB for Barbie and
+{peakOf(funnel)} GiB for the campaign, within the configured 90 GiB grant.
+
+Algeon currently runs each query on one GPU and does not spill to disk.
+A query whose allocations exceed its grant fails. Filters and candidate
+limits therefore affect both the analytical question and whether it fits
+the available memory.
 
 ## Built for the agent's loop
 
-The client application manages domain vocabularies, query formulation, and
-result evaluation. An ontology maps application terms to SQL tables, keys, and
-predicates. DataFusion and Algeon handle physical planning, join ordering,
-and GPU memory allocation, allowing the client service to focus on hypothesis
-testing.
+The opening session shows how an agent can discover and use this SQL
+interface. It made five Flight SQL calls: two catalog reads for graph
+functions and their signatures, a brand-id lookup, an `EXPLAIN GPU` check
+for native coverage, and the ranking query.
 
-<AgentLoopFigure
-  caption={<>The application owns the agent, the ontology that maps its
-  vocabulary to tables and keys, and the service that submits SQL. Algeon
-  plans, admits, and executes each query on the GPU over the lakehouse,
-  and returns rows plus structured diagnostics the agent can act on.</>}
-/>
+<Table>
+<thead><tr><th>Step</th><th>Purpose</th><th style={{textAlign: 'right'}}>Elapsed</th></tr></thead>
+<tbody>{session.steps.map(item => <tr key={item.step}><td>{item.step}</td><td>{item.intent}</td><td style={{whiteSpace: 'nowrap', textAlign: 'right'}}>{wholeMs(item.elapsed_s)} ms</td></tr>)}</tbody>
+</Table>
 
-Algeon pairs Apache DataFusion with NVIDIA's RAPIDS libraries. DataFusion parses
-SQL, optimizes the logical plan, and executes on the CPU when an operator lacks a
-GPU implementation. RAPIDS runs specialized algorithms from
-[`cuGraph`](/cugraph), [`cuVS`](/cuvs), and [`cuML`](/cuml) directly as table
-functions in the physical plan. When surrounding operators lower natively,
-intermediate relations stay in GPU memory across stages, avoiding host memory
-copies between graph traversals, vector lookups, and model scoring.
+The agent wrote the statements in order after reading each response on
+October 12. The timings above come from replaying those statements on
+October 15 against an updated server. The [session record](/data/merrec-agent-session.json)
+documents the replay method and results.
 
-Planning errors return as structured diagnostics. Queries return Arrow record
-batches in seconds, and invalid statements fail at planning time before device
-allocation starts. For example, if a query references an assumed output column
-`score` instead of `value` on `cugraph_personalized_pagerank`, Flight returns
-the schema mismatch in 3 milliseconds:
+Errors also provide information for revising a query. A separate probe asked
+for a `score` column when `cugraph_personalized_pagerank` returns `vertex`
+and `value`. Flight returned this error in
+{Math.round(session.probes.find(probe => probe.error.includes('No field named score')).elapsed_s * 1000)} milliseconds:
 
-```text
-Flight returned invalid argument error, with message: No field named score. Valid fields are vertex, value.
-```
+<CodeBlock language="text" className="wrap-lines">{'Flight returned invalid argument error, with message: No field named score. Valid fields are vertex, value.'}</CodeBlock>
 
-The calling service receives the expected schema without launching a kernel or
-allocating device buffers. Each query executes under an immutable memory grant
-from the device ledger, bounding memory usage across concurrent clients.
-The [design guide](/design) and [integration guide](/integration) document the
-underlying physical lowering rules and memory contracts.
+The schema check returned valid column names during planning, before GPU
+execution or device buffer allocation. The calling application can use
+those names to revise the query.
+
+The application remains responsible for choosing questions, generating SQL,
+and evaluating the results. Its domain mapping, or ontology, connects terms
+such as "brand" and "shopper" to tables, keys, and predicates. When several
+engines serve the lake, the application also tracks their available
+functions and chooses where to submit each query.
+
+Algeon combines Apache DataFusion with NVIDIA RAPIDS. DataFusion parses SQL
+and optimizes the plan. Algeon executes supported relational operators and
+[`cuGraph`](/cugraph), [`cuVS`](/cuvs), and [`cuML`](/cuml) table functions on
+the GPU. Native stages can keep intermediate relations there until the
+final rows return as Arrow record batches. Execution mode controls whether
+unsupported operators stay on DataFusion's CPU path or cause planning to
+fail; the examples here require native execution. Each GPU query attempt
+receives a fixed [memory grant](/design/admission), enforced during execution.
 
 ## Beside the engines already on the lake
 
-Distributed query engines and batch schedulers manage large-scale lakehouse
-workloads. NVIDIA accelerates distributed batch execution through GPU-accelerated
-Spark packages: [cuDF for Spark](https://github.com/NVIDIA/cudf-spark) replaces
-Spark SQL operators with cuDF implementations, and
-[cuML for Spark](https://github.com/NVIDIA/cuml-spark) provides PySpark ML
-estimators backed by cuML. A Spark driver coordinates task execution across
-cluster partitions.
+Algeon targets investigations over prepared data. In an existing deployment,
+Spark jobs can continue preparing Parquet tables, while engines such as
+Trino, ClickHouse, or StarRocks serve the application's standard analytical
+queries. The application can submit graph, vector, and ML queries to Algeon
+against those Parquet files.
 
-Algeon targets the phase following batch preparation, when a filtered working set
-receives repeated ad hoc queries from an interactive service. Latency per attempt
-takes precedence over aggregate batch throughput. On the MerRec dataset, with
-files staged in the OS page cache, the Barbie query completed over Flight SQL in
-a median of {seconds(barbie.median_elapsed_s_after_first)} s after its first run
-(an equivalent DuckDB and igraph pipeline required 23.3 s on the same host for
-identical top-25 rankings); the [MerRec guide](/guides/datasets/merrec) documents
-initial and median timings.
+<AgentLoopFigure
+  olap
+  caption={<>The application maps domain terms to tables and functions,
+  selects an engine, and submits SQL through its backend service. Algeon
+  executes the graph, vector, and ML queries; results return to the
+  application for evaluation and follow-up questions.</>}
+/>
 
-The execution model also differs. In Spark, an ML estimator is an external object
-in Python or Scala, and graph operations require external GraphX or GraphFrames
-APIs. A pipeline combining relational filters, graph algorithms, and inference
-buffers intermediate results in driver or application memory. In Algeon, each
-algorithm is an in-plan table function within a single SQL statement.
-
-Spark and Algeon address distinct stages. Spark manages cluster extraction,
-large-scale transformation, and distributed model training. Algeon executes
-interactive analytical queries against the resulting Parquet files. When an
-exploratory pattern proves persistent, such as the candidate generation funnel,
-that logic can be deployed as a scheduled Spark job over the wider lake. Both
-read Parquet directly and build on RAPIDS libraries.
+This arrangement requires data preparation. The examples use local Parquet
+copies on the GPU host. Algeon does not provide Trino or ClickHouse
+connectors, and it does not resolve Iceberg snapshots from table metadata.
+Adapters for query engines other than DataFusion are not planned. The
+current storage and execution limits are listed below.
 
 ## Known gaps
 
-- Cloud object storage across major providers lacks GPU-direct RDMA support.
-  The runs in this post stage working sets on local NVMe drives attached to the
-  GPU host. File reads route through KvikIO in compatibility mode, using pinned
-  host bounce buffers to transfer data from NVMe into GPU memory. Local NVMe
-  staging delivers interactive query latencies, but maintaining local disk
-  copies remains an operational trade-off for lakehouse setups. Direct reads from
-  shared object storage via GDS and cuObject are tracked on the
-  [roadmap](/reference/roadmap#longer-term).
-- Lakehouse table formats lack mature Rust integration. Upstream crates
-  including `datafusion-iceberg` and `iceberg-rust` remain under active
-  development. Algeon currently reads standalone Parquet files directly,
-  without resolving Iceberg metadata, manifest lists, or snapshot histories.
-  Managed Iceberg table support is planned as a
-  [mid-term roadmap item](/reference/roadmap#mid-term).
-- A query runs on one GPU and does not spill. Independent queries can run on
-  different devices, but a single query cannot span multiple GPUs. A working set
-  larger than its grant fails with an allocation error. Graph construction and
-  algorithm scratch space count toward that grant. Disk spilling through
-  cuCascade and multi-GPU execution are tracked on the
-  [roadmap](/reference/roadmap#longer-term).
-- Vector indexes, graph topologies, and fitted models are built per execution.
-  Forest inference reads its model file during planning for each statement.
-  While a bounded server can retain constructed graphs across calls for a subset
-  of algorithms, persistent cross-query artifacts remain planned for future
-  releases.
-- GPU relational coverage is a subset of SQL and of Arrow types. Nested and
-  binary types and most list shapes stay on the CPU path. The
-  [native SQL reference](/reference/native-sql-support) lists supported operators
-  and type mappings.
+<Table>
+<thead><tr><th>Gap</th><th>Today</th><th>Planned</th></tr></thead>
+<tbody>
+<tr><td style={{whiteSpace: 'nowrap'}}>Object storage reads</td><td>No GPU-direct RDMA from the major cloud providers. The runs in this post stage working sets on local NVMe attached to the GPU host, and file reads route through KvikIO in compatibility mode with pinned host bounce buffers. Keeping local copies is an operational trade-off for a lakehouse setup.</td><td>GDS and cuObject reads from shared object storage, <Link to="/reference/roadmap#longer-term">longer term</Link></td></tr>
+<tr><td style={{whiteSpace: 'nowrap'}}>Lakehouse table formats</td><td>Algeon reads standalone Parquet files and resolves no Iceberg metadata, manifest lists, or snapshot histories.</td><td>Managed Iceberg tables, <Link to="/reference/roadmap#mid-term">mid term</Link></td></tr>
+<tr><td style={{whiteSpace: 'nowrap'}}>One GPU, no spill</td><td>A query runs on one GPU. Independent queries can run on different devices, but a working set larger than its grant fails with an allocation error, and graph construction and algorithm scratch space count toward that grant.</td><td>Disk spilling through cuCascade and multi-GPU execution, <Link to="/reference/roadmap#longer-term">longer term</Link></td></tr>
+<tr><td style={{whiteSpace: 'nowrap'}}>Per-query artifacts</td><td>Vector indexes, graph topologies, and fitted models are built per execution, and forest inference reads its model file during planning for each statement. A bounded server can retain constructed graphs across calls for a subset of algorithms.</td><td>Persistent cross-query artifacts in a future release</td></tr>
+<tr><td style={{whiteSpace: 'nowrap'}}>GPU relational coverage</td><td>A subset of SQL and of Arrow types. Nested and binary types and most list shapes stay on the CPU path.</td><td>The <Link to="/reference/native-sql-support">native SQL reference</Link> lists supported operators and type mappings</td></tr>
+</tbody>
+</Table>
 
 ## Next
 
-The [roadmap](/reference/roadmap) keeps the current order of work, starting
-with an admission model that sizes grants closer to what a plan needs and
-packaged releases that deploy without a native build. Adapters for engines
-other than DataFusion are not planned.
+The Barbie investigation illustrates the workflow Algeon supports today.
+A graph ranking led to a product-title check and comparisons with other
+seed brands, all expressed through SQL. Some results gained supporting
+evidence; Taylor Swift remained a question for further investigation.
+The campaign example extended that interface to graph, vector, and model
+operations within one query.
 
-Until a packaged release exists, running Algeon means Linux, an NVIDIA GPU
-and a [source build](/build/from-source). The
+Algeon is available to try when the required data can be staged as Parquet
+and the query fits on one GPU. Running it currently requires Linux, an
+NVIDIA GPU, and a [source build](/build/from-source). Start with the
 [MerRec setup](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/README.md)
-prepares the dataset behind this post.
-
-The next useful experiment is a complete investigation on a known dataset.
-Identify a query with a verifiable baseline, define the working set, and execute
-the algorithm in SQL. Measure total elapsed time, including scan and data
-preparation, and compare outputs against a trusted reference. A
-[GitHub issue](https://github.com/algeon-dev/algeon/issues) documenting the SQL,
-expected results, and execution timings highlights where an operator is missing
-or performance regresses.
-
-[^1]: Redshift figures are from van Renen et al.,
-[*Why TPC Is Not Enough: An Analysis of the Amazon Redshift
-Fleet*](https://www.vldb.org/pvldb/vol17/p3694-saxena.pdf), PVLDB 17(11),
-2024, Table 6. The BigQuery figure is from Jordan Tigani,
-[*Big Data is Dead*](https://motherduck.com/blog/big-data-is-dead/),
-MotherDuck, 2023.
+to reproduce these queries and measurements. The [development plan](/reference/roadmap)
+includes closer sizing of memory grants and packaged releases that remove
+the native build requirement. Issues and operator coverage requests are
+tracked on [GitHub](https://github.com/algeon-dev/algeon/issues).

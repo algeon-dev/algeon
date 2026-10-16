@@ -38,9 +38,9 @@ comparison for the product-name check below.
 
 The time filters, four graph calls and brand joins ran natively in one
 plan. Over Flight SQL, the first run on a fresh server took
-**{capture.runs[0].elapsed_s.toFixed(2)} s** and runs 2 and 3 a median of
+**{capture.runs[0].elapsed_s.toFixed(2)} s** and runs 2 to {capture.runs.length} a median of
 **{capture.median_elapsed_s_after_first.toFixed(2)} s**.
-On the same host and warm cache, an equivalent CPU pipeline combining 32-thread DuckDB
+On the same host, with the files in the page cache, an equivalent CPU pipeline combining 32-thread DuckDB
 with igraph took a median of **23.3 s** (2.3 s SQL extraction, 13.0 s renumbering and
 graph construction, 7.7 s for four PageRank calls, 0.3 s final join) with identical
 top-25 rankings. Device execution avoids transferring and renumbering the 23 million

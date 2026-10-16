@@ -75,11 +75,10 @@ and GPU copy still belong to this compatibility path. Larger range reads
 amortize syscall and submission overhead.
 Source reads run as `SupervisedWorker` jobs on the blocking
 lane of the GPU execution runtime, each backed by an attempt auxiliary
-permit. A read issued from an execution lane runs inline on that
-lane. Reads never wait for a permit, because the coordinator may hold every
-permit through its own lanes. With none free, a required read runs inline on
-the coordinator and a prefetch is skipped. None of these source read tasks
-execute on the host runtime. A `max_source_reads_in_flight` above 1
+permit. A read issued from an execution lane executes inline on that
+lane. When auxiliary permits are unavailable, a required read executes inline on
+the coordinator while prefetch pauses. Source read tasks do not
+execute on the host runtime. A `max_source_reads_in_flight` value above 1
 enables prefetch.
 
 KvikIO's settings are global to the process. Algeon's cuDF component applies
@@ -88,12 +87,11 @@ source read runs. The server, library embedders and the benchmark binaries all
 build their backend through that call. The defaults are compatibility mode
 `ON` (also
 [libcudf's default](https://github.com/algeon-dev/cudf/blob/algeon-26.08/cpp/src/io/utilities/config_utils.cpp#L19-L33)),
-64 I/O threads and a 4 MiB task size. KvikIO's own variables
+64 I/O threads and a 4 MiB task size. KvikIO's environment variables
 `KVIKIO_COMPAT_MODE`, `KVIKIO_NTHREADS` and `KVIKIO_TASK_SIZE` override their
-fields; a field whose variable is unset keeps the Algeon default. Algeon has
-no other name or TOML field for these settings. At startup the server logs one
-`source I/O ready` line, and its `kvikio_compat_mode`, `kvikio_threads` and
-`kvikio_task_size_bytes` fields give the effective values.
+fields; a field whose variable is unset keeps the Algeon default. At startup the
+server logs one `source I/O ready` line, and its `kvikio_compat_mode`,
+`kvikio_threads` and `kvikio_task_size_bytes` fields give the effective values.
 
 KvikIO splits a local read into tasks no larger than the task size and runs
 them on its thread pool. A process has one such pool. Local `pread` tasks and
@@ -129,8 +127,28 @@ runtime ([Runtimes and threads](./index.mdx#runtimes-and-threads)).
 
 KvikIO's
 [remote transfer implementation](https://github.com/rapidsai/kvikio/blob/0f6900f08c5a7ca150689e5454ae28562f875eec/cpp/src/remote_handle.cpp#L37-L133)
-shows the host staging and device copy. An `s3://` URL does not imply RDMA or
-GDS.
+reflects this host staging and device copy sequence.
+
+## Caches along the path {/* #caches */}
+
+A first run of a query leaves state in four places, and each one covers a
+different part of the next read.
+
+- The OS page cache holds file pages from buffered `pread`. A hit skips the
+  NVMe read; host staging, the device copy and decoding still run.
+- Algeon's source chunk planner caches Parquet footer metadata within one
+  planning pass. Each query plan reads footers again.
+- Decoded local-Parquet sources and constructed graphs can stay on the device
+  under `cache_cap_bytes` ([Admission settings](../integration/configuration.mdx#admission)).
+  The default is `0`, so queries share nothing on the GPU unless a server sets
+  a cap. See [Reuse in bounded servers](../cugraph/overview.mdx#reuse-in-bounded-servers)
+  and [Completion and resident data](./admission.mdx#resident-handoff-and-release).
+- The RMM memory resource pool and the KvikIO bounce buffer pool keep their
+  allocations after a query. The next query reuses that memory and reads its
+  own bytes into it.
+
+The [benchmarks](../reference/benchmarks/index.mdx) page states which of
+these layers held data for each published run.
 
 ## Source and workspace {/* #lakehouse-and-workspace-boundary */}
 

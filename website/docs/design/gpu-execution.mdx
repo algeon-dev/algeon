@@ -42,7 +42,9 @@ Related terms distinguish lane scopes:
 
 Cross-stream dependencies use completion fences such as CUDA events. Buffer
 ownership lasts through final consumption, and all lanes allocate within
-[one query memory cap](./admission.mdx).
+[one query memory cap](./admission.mdx). Within composed island executions,
+shared execution scopes coordinate multi-reader lifecycles, retaining resident
+handles until the final reader completes.
 
 ## Runtime dynamic filters
 
@@ -61,8 +63,8 @@ host predicate helpers cannot apply that payload. A source route requiring
 reader or row-group pruning downloads the distinct keys, retains the device
 keyset for post-decode membership, and preserves the source pruning policy.
 The large reader-only producer policy continues to derive a scalar range.
-Keys above `i64::MAX` in a UInt64 producer remain unsupported. Consumer bounds
-must fit their declared integer or Date32 type before membership is bound.
+Producer key limits and consumer type bounds follow
+[native lowering contracts](./native-lowering.mdx#selection-fallback-and-mixed-execution).
 
 ## Relational data into GPU algorithms {/* #gpu-algorithms */}
 

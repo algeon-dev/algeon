@@ -81,7 +81,9 @@ export default function TpchSf100Benchmark(): React.ReactElement {
         <div className={`${styles.chartCard} ${styles.tabChartCard}`}>
           <Tabs className={styles.chartTabs} groupId="tpch-sf100-chart-tabs" queryString={false}>
             <TabItem value="runtime" label="Per-query runtime" default>
-              <p className={styles.chartCaption}>Wall time, measured iteration mean.</p>
+              <p className={styles.chartCaption}>
+                Wall time of the single measured iteration after one warm-up. Parquet in the OS page cache; no GPU resident cache.
+              </p>
               <div className={styles.chart}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={runtimeData} margin={{top: 8, right: 16, left: 0, bottom: 0}}>

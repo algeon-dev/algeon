@@ -141,9 +141,9 @@ triple and `target-cpu=x86-64-v3` from `.config/policies/cpu-packaging.toml`.
 It writes a build record (binary hash, policy fingerprint, features, target
 triple, codegen flags, version, source revision and CUDA toolkit release)
 beside the binary. An ordinary `target/release` build has no such record and
-is not reused. On 2026-10-14 the `FEATURES=cugraph,cuml,cuvs,nvml` build took
-7 min 20 s end to end, 5 min 21 s of it in Cargo with a warm native prefix and
-compiler cache. The `FEATURES=nvml` build took 3 min 03 s.
+is not reused. A packaging build with `FEATURES=cugraph,cuml,cuvs,nvml`
+typically takes 7 to 8 minutes with a warm native prefix and compiler cache,
+or 3 minutes when built with `FEATURES=nvml`.
 
 `SKIP_CARGO_BUILD=1` re-stages a payload from a previous packaging build only:
 
@@ -151,8 +151,8 @@ compiler cache. The `FEATURES=nvml` build took 3 min 03 s.
 SKIP_CARGO_BUILD=1 bash docker/build-image.sh
 ```
 
-It reuses the artifact only when the recorded build record still agrees; a
-reuse run took 41 s.
+It reuses the artifact only when the recorded build record still agrees;
+re-staging an existing payload takes under a minute.
 `docker/dist/payload-manifest.json` records the staged files, checksums and
 policy fingerprint. The script fails before `docker build` when the staged
 files or `SHA256SUMS` disagree with that manifest. `CPU_PACKAGE_DIST_DIR`
@@ -169,9 +169,9 @@ What ends up in the image:
 | CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, and others) | `nvidia/cuda:*-runtime` | harvested in the Dockerfile through `ldd` |
 | `libgomp1`, `libbrotli1`, `tini` | Ubuntu apt | installed in the runtime stage |
 
-On 2026-10-14 `docker images` reported 3.69 GB disk usage and 1.31 GB
-content size for the `FEATURES=cugraph,cuml,cuvs,nvml` image, and 1.32 GB and
-361 MB for the `FEATURES=nvml` image.
+The `FEATURES=cugraph,cuml,cuvs,nvml` image occupies 3.7 GB of disk space
+with 1.31 GB content size, while the `FEATURES=nvml` image occupies 1.32 GB
+with 361 MB content size.
 
 :::warning[Build machine versus target host CPU]
 This image targets x86-64-v3. Both the build machine and every target host must

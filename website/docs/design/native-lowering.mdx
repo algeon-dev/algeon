@@ -108,6 +108,21 @@ build-before-probe barrier. The
 [pipeline compiler](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-planning/src/pipeline/compile.rs)
 owns these task and resource relationships.
 
+### Shared resident subplans {/* #shared-resident-subplans */}
+
+When DataFusion inlines a CTE or common subquery across physical units,
+projection pruning retains only referenced columns in each copy. When two or
+more native units of one attempt contain an identical closed subplan whose root
+reduces rows (such as an aggregate or a limit with a fetch), native optimization
+extracts a single GPU-resident producer.
+
+The first reading unit computes the result, which remains resident on the
+device under the attempt's grant until all registered units have read it.
+Streaming chains of scans, filters, projections and joins continue to execute
+chunk by chunk for each reader. In `EXPLAIN` output, the extracted producer
+reports `shared_consumers`, and `shared_resident_extraction` diagnostics record
+per-candidate decisions.
+
 ## Partitions and result semantics
 
 Native execution replaces DataFusion CPU partition streams with chunk-based

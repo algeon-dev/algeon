@@ -6,10 +6,10 @@ export const n = value => value.toLocaleString('en-US');
 
 The events table has a `session_id` column, and grouping by it looks like
 the obvious way to build sessions. A graph checks that assumption before
-any session analysis depends on it. Every
-October user and every session ID becomes a vertex, with an edge from a
-user to each session ID in their events. If a session ID belonged to one
-user, every connected component would contain exactly one user.
+any session analysis depends on it. A standard `GROUP BY session_id HAVING COUNT(DISTINCT user_id) > 1`
+identifies whether session IDs collide, but does not calculate transitive collisions across multiple keys and users.
+
+Constructing a bipartite graph between users and session IDs and computing Weakly Connected Components (WCC) uncovers transitive chains. If User A shares Session 1 with User B, and User B shares Session 2 with User C, WCC assigns all three to one component. If every session ID belonged to an isolated user, every connected component would contain exactly one user.
 
 Graph vertices can be strings, so a user vertex is `user:` followed by the
 user ID and a session vertex is the session ID itself. The two kinds cannot
@@ -33,8 +33,7 @@ October's 2,986,296 users through shared session IDs. Only
 IDs that nobody else uses. Across the six months, 15,138,756 of the
 25,864,474 distinct session IDs appear for more than one user, and one ID
 appears for 54 users. Session analysis on this dataset has to group by
-`(user_id, session_id)`. The query reveals repeated session IDs across multiple users
-in the source records.
+`(user_id, session_id)`.
 
 The same query, with the column substituted, audits any other identifier
 such as a device, cart or order ID. A component with more than one owner is

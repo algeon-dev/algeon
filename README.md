@@ -1,7 +1,7 @@
 <p align="center">
   <img src="website/static/img/algeon-logo.png" alt="Algeon" width="420">
   <br>
-  <em>Compose GPU algorithms with SQL.</em><br><br>
+  <em>Compose algorithms with SQL.</em><br><br>
   <a href="https://algeon.dev">Website</a> |
   <a href="https://algeon.dev/build">Build</a> |
   <a href="https://docs.rs/algeon-datafusion">API Docs</a>
@@ -9,19 +9,14 @@
 
 ---
 
-Algeon (`/ˈæl.dʒi.ən/`, "AL-jee-on") is a GPU query engine built on
-[Apache DataFusion](https://datafusion.apache.org/) that enables AI agents,
-analysts, and data platforms to investigate warehouse data through SQL. It exposes
-NVIDIA's [cuGraph](https://docs.rapids.ai/api/cugraph/stable/),
-[cuVS](https://docs.rapids.ai/api/cuvs/stable/), and
-[cuML](https://docs.rapids.ai/api/cuml/stable/) libraries as SQL table
-functions and executes supported relational operations on
-[cuDF](https://docs.rapids.ai/api/cudf/stable/). A table function takes
-ordinary subqueries as its relation arguments and returns rows that the same
-statement can join, filter, aggregate, or pipe into the next algorithm stage.
-Applications embed Algeon as a Rust library in a DataFusion session or connect
-through Arrow Flight SQL. It runs beside the query engines already reading
-the lakehouse and takes the questions they have no operator for.
+Algeon (`/ˈæl.dʒi.ən/`, "AL-jee-on") is a GPU-accelerated query engine built on
+[Apache DataFusion](https://datafusion.apache.org/). It brings NVIDIA's
+[cuGraph](https://docs.rapids.ai/api/cugraph/stable/),
+[cuVS](https://docs.rapids.ai/api/cuvs/stable/) and
+[cuML](https://docs.rapids.ai/api/cuml/stable/) algorithms into SQL as table
+functions, alongside [cuDF](https://docs.rapids.ai/api/cudf/stable/) relational
+execution. Subqueries supply algorithm inputs; the results feed joins,
+aggregations or another algorithm within the same SQL statement.
 
 <p align="center">
   <picture>
@@ -30,9 +25,52 @@ the lakehouse and takes the questions they have no operator for.
   </picture>
 </p>
 
-## A GPU algorithm in SQL
+## Where Algeon fits
 
-Find the foundational papers BERT relies on without citing them directly:
+- **Ad-hoc graph, vector and ML pipelines on lakehouse data.** One SQL query
+  selects the input, runs the algorithm and joins the result back. A new
+  pipeline is a new query, with no export scripts.
+  [Examples](https://algeon.dev/guides/datasets).
+- **Analysts and AI agents testing hypotheses.** A question no dashboard
+  tracks needs many follow-up checks with other seeds, filters or controls.
+  The [MerRec case study](https://algeon.dev/guides/datasets/merrec#audience-funnel)
+  compares graph affinity, vector similarity and model scores for selecting
+  a campaign audience.
+- **Backends for agents and data services.** The
+  [Flight SQL server](https://algeon.dev/integration/flight-sql-server)
+  queues concurrent queries, lists its functions in the catalog and returns
+  structured errors a program can act on.
+- **Join- and aggregation-heavy SQL over Parquet.** Supported plan fragments
+  run on cuDF. See the [benchmarks](https://algeon.dev/reference/benchmarks).
+- **Engines built on DataFusion.** Algeon adds GPU execution and the
+  algorithm functions to an existing
+  [DataFusion session](https://algeon.dev/integration/datafusion-session);
+  operators it does not support stay on the CPU.
+
+**Not a fit yet:** working sets larger than one GPU's memory, sources other
+than Parquet, and long-lived vector indexes or models. See
+[scope and non-goals](https://algeon.dev/#scope).
+Inputs, intermediate results and algorithm scratch space count toward the
+query's GPU memory limit.
+Lakehouse catalog integrations (WIP).
+
+## Getting started
+
+Algeon requires Linux, a supported NVIDIA GPU, the CUDA toolkit and native
+RAPIDS libraries. Check the [prerequisites](https://algeon.dev/build/prerequisites)
+before building.
+
+- **Run a SQL server:** follow the
+  [Flight SQL server build steps](https://algeon.dev/build#run-as-a-flight-sql-server),
+  then submit a query with the
+  [client quickstart](https://algeon.dev/integration/flight-sql-server#quickstart).
+- **Embed in Rust:** follow the
+  [DataFusion session guide](https://algeon.dev/integration/datafusion-session)
+  for dependencies, native library setup and a query example.
+
+## An algorithm in SQL
+
+Explore related research beyond BERT's direct references:
 
 ```sql
 CREATE OR REPLACE VIEW bert_seed AS
@@ -61,44 +99,32 @@ LIMIT 5;
 | 2014 | Adam: A Method for Stochastic Optimization | 0.002358 |
 | 1990 | A statistical approach to machine translation | 0.002344 |
 
-The graph algorithm executes as a table function. Its edge list and seed are
-subqueries, and its output joins with `papers` to retrieve titles, satisfies
-the two `NOT EXISTS` filters, and sorts like any other relation. The 45.6 million
-citation edges are read into GPU memory for this statement and released when
-it finishes.
+Personalized PageRank runs over
+[45.6 million citation edges](https://algeon.dev/guides/datasets/citation-network)
+on the GPU.
+SQL joins the scores to paper titles and excludes BERT and its direct references.
+[Run this example](https://algeon.dev/integration/flight-sql-server#start-the-citation-demo-server).
 
-Queries can also chain multiple algorithm families in a single physical plan
-without intermediate host copies. For example, an audience campaign analysis
+Within supported GPU plan fragments, intermediate relations stay in device
+memory between SQL and algorithm stages. An audience campaign analysis
 over the [MerRec dataset](https://algeon.dev/guides/datasets/merrec#audience-funnel)
 computes seed affinity with `cugraph_personalized_pagerank`, identifies
 taste lookalikes with `cuvs_brute_force_knn`, scores candidate shoppers with a
 pretrained forest model through `cuml_forest_predict`, and aggregates conversion
-with standard SQL. Intermediate relations remain resident in GPU memory throughout
-execution. [Explore the examples](https://algeon.dev/guides/datasets).
+with standard SQL. [Explore the examples](https://algeon.dev/guides/datasets).
 
-## Motivation: from warehouse to working set
+## Discover signals, ask new questions
 
-An analytical question often concerns one tenant, one quarter, or one cohort.
-SQL narrows the data lakehouse to the rows that matter. When that working
-set and intermediate algorithm state fit in GPU memory, subsequent questions can
-extend beyond joins and aggregations: identifying clusters, retrieving nearest
-neighbors in embedding space, or scoring candidate rows with a machine learning
-model.
+Exploratory analysis often starts before the right question is known. Graph
+relationships, vector similarity and model scores can expose signals that
+suggest what to investigate next. An analyst or agent can follow those signals
+by changing seeds, comparing cohorts and testing controls in SQL.
 
-Executing these algorithms on warehouse data traditionally requires an external
-detour: exporting rows to cloud storage, loading them into a Python notebook,
-calling a library, writing the results back, and joining them in the warehouse.
-In an iterative investigation loop, where an AI agent or an analyst tests competing
-hypotheses and adjusts parameters across successive queries, that handoff adds
-latency and glue code that must change with every follow-up question.
-
-Algeon places the algorithm directly in the physical execution plan, between the
-SQL that prepares its input and the SQL that consumes its output. The intermediate
-tables remain on the device, eliminating external orchestration scripts and host
-round-trips. Revising the hypothesis or modifying input filters requires only
-issuing another SQL statement.
-[Introducing Algeon](https://algeon.dev/blog/introducing-algeon) details this
-investigative pattern on large-scale datasets.
+Algeon supports this search for "unknown unknowns" by composing GPU algorithms
+with SQL that inspects and tests their results. In the
+[Barbie investigation](https://algeon.dev/guides/datasets/merrec#barbie), changes
+in brand affinity prompted checks of listing names and alternative seed brands.
+Those checks supported some explanations and left other changes unexplained.
 
 ## In-process execution
 
@@ -139,10 +165,6 @@ columns and back.
 > Stability and result verification remain incomplete. Compare outputs
 > against trusted reference results. The
 > [roadmap](https://algeon.dev/reference/roadmap) lists what changes next.
-
-Currently, one query runs on one GPU inside a fixed memory grant, with no
-spilling. The [scope and non-goals](https://algeon.dev/#scope) section lists
-the other limits.
 
 GitHub Actions runs only the checks that need no GPU. GPU validation runs
 locally because hosted runners have no NVIDIA GPU, and

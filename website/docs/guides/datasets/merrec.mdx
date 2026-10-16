@@ -17,34 +17,27 @@ import CodeBlock from '@theme/CodeBlock';
 import BrandMap from '@site/src/components/merrec/BrandMap';
 import brandMap from '@site/static/data/merrec-brand-map.json';
 
-# MerRec <span className="heading-subtitle">A Large-scale Multipurpose Mercari Dataset for C2C Recommendation Systems</span> {/* #merrec */}
+# Graph, vector search, and model scoring in one SQL query <span className="heading-subtitle">A MerRec case study over 1.27 billion marketplace events</span> {/* #merrec */}
 
-[MerRec](https://huggingface.co/datasets/mercari-us/merrec) holds 1.27 billion
+[MerRec](https://huggingface.co/datasets/mercari-us/merrec) contains 1.27 billion
 events from 5.57 million Mercari US shoppers between May and October 2023:
-views, likes, cart taps, offers and completed purchases over 82.6 million
-listings. Likes define interest, completed purchases supply the later
-outcome, and every query ran over the full dataset on one GPU.
+views, likes, cart taps, offers and completed purchases across 82.6 million
+listings.
 
-- [Barbie's July](#barbie): which brands moved toward Barbie's audience between
-  May-June and July-August, around the film release, checked against listing names
-  and two control seeds.
-  Personalized PageRank against PageRank, four graph calls in one query.
-- [Shopping worlds](#shopping-worlds): 38 brand groups that cut across the
-  catalog's categories, and the retailers that [connect them](#bridges).
-  Jaccard over 12.5 million brand pairs, then Leiden and betweenness.
-- [A campaign list](#audience-funnel): graph affinity, taste lookalikes and
-  a trained model, each stage scored against later purchases. cuGraph, cuVS
-  and cuML in one plan.
-- [Lookalikes on their own](#pokemon): the vector stage by itself, split by
-  prior Pokemon views.
-- [An existing model with a budget](#model): an offline XGBoost model scored
-  in SQL against the rule a marketer would try first.
-- [Catalog duplicates](#brand-twins): two million brand pairs scored by
-  shared fans, with no string matching.
-- [Session IDs](#sessions): a graph check of a column that looks like a key.
+Every query here went over Arrow Flight SQL to one Algeon server with an
+NVIDIA RTX PRO 6000 (96 GB) and read Parquet files from local NVMe. A 90 GiB
+grant capped each query's device allocations. The shopper taste vectors
+(`mr_taste64`) and the XGBoost model (`propensity_xgb.json`) were prepared
+before the queries ran. In a deployment, the application chooses seeds,
+cohorts and parameters and passes the selected shoppers on to its campaign
+service.
 
 The [discovery guide](../gpu-udtf-discovery.mdx#6-the-sequence-on-a-recorded-session)
-shows the first question as a recorded Flight SQL session.
+shows the Barbie question as a recorded Flight SQL session.
+
+## Which 5,000 shoppers should a Pokemon campaign reach? {/* #audience-funnel */}
+
+<Funnel />
 
 ## Which brands grew closer to Barbie's audience? {/* #barbie */}
 
@@ -66,10 +59,6 @@ group. Select groups to see where they sit and which brands have the most fans.
 ## Which brands connect the shopping worlds? {/* #bridges */}
 
 <Bridges />
-
-## Which 5,000 shoppers should a Pokemon campaign reach? {/* #audience-funnel */}
-
-<Funnel />
 
 ## Does a Pokemon lookalike audience find new interest? {/* #pokemon */}
 
@@ -104,13 +93,14 @@ retained values, not attributes reconstructed at event time.
 
 <div className="fineprint">
 
-Each section links to its saved SQL and results, with query IDs, the server
-configuration and the SHA-256 of the release binary that produced them. The
-captures span several builds; the
-[scale README](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/README.md)
-lists every query with its capture date, build and page-cache state. Each query uses one GPU
-and its working set must fit the configured memory limit. The largest
-allocator peak among these queries was 74.7 GiB of a 90 GiB grant.
+Each section links to its saved SQL and results, with server configurations and
+execution metrics. Each query ran four times, and the quoted timing is the median
+of runs 2 to 4 with the source pages resident in the OS page cache. Detailed
+reproduction steps and scripts are documented in the
+[scale README](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/README.md).
+Each query uses one GPU and its working set must fit the configured memory limit.
+The largest allocator peak among these queries was 75.1 GiB of a 90 GiB grant,
+in the duplicate-brand query.
 
 MerRec is published by Mercari, Inc. under
 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/). The saved
