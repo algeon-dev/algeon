@@ -16,7 +16,7 @@ server = ["algeon-datafusion/server"]
 nvml = ["algeon-datafusion/nvml"]
 
 [dependencies]
-algeon-datafusion = "=0.1.0"
+algeon-datafusion = "=0.1.1"
 datafusion = "55.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"

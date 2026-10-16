@@ -38,6 +38,10 @@ export const speedup = (cpuSeconds, gpuSeconds) => {
   return `${ratio.toFixed(ratio >= 10 ? 0 : 1)}×`;
 };
 export const itemPageRank = merrecAlgorithmBenchmark.itemPageRank;
+export const itemPageRankGraphSeconds = medianAfterWarmups(
+  itemPageRank.gpu.runs.map((run) => run.hostStagesSeconds.graph_task),
+  itemPageRank.gpu.warmups,
+);
 export const merrecSpeedup = (row) => cpuPipelineMedianSeconds(row.cpu) / gpuMedianSeconds(row.gpu);
 export const merrecQueriesBySpeedup = [...merrecAlgorithmBenchmark.queries].sort((a, b) => merrecSpeedup(b) - merrecSpeedup(a));
 export const merrecQuery = (name) => merrecAlgorithmBenchmark.queries.find((row) => row.gpu.case === name);
@@ -70,11 +74,10 @@ export const formatOperations = (queries, datasetRows) => {
 
 # Benchmarks
 
-These benchmarks measure physical execution across two workloads:
-analytical queries that combine relational operators with native GPU graph,
-vector, and machine learning table functions over the 1.27-billion-event MerRec
-dataset, and standard relational suites (TPC-H and TPC-DS at scale factor 100)
-alongside concurrent server load under Apache Arrow Flight SQL.
+The MerRec queries compare Algeon with CPU pipelines over the
+1.27-billion-event dataset. The TPC-H and TPC-DS suites at scale factor 100
+compare the CPU and GPU paths, and the server load runs drive concurrent
+TPC-H streams through Arrow Flight SQL.
 
 ## GPU algorithms
 
@@ -120,39 +123,44 @@ pays process start-up costs.
 <details>
 <summary>Stage breakdown across the eight queries</summary>
 
-- Barbie tie-ins constructs two undirected graphs from 23 million distinct
-  user-brand pairs and evaluates personalized and global PageRank. Across the CPU
-  pipeline, DuckDB consumes 2.3 s for joins, igraph vertex renumbering and graph assembly
-  take 13.0 s, and four PageRank invocations require 7.7 s. Running NetworkX 3.7 with
-  cuGraph's absolute L1 tolerance (`tol = 1e-5 / N`) takes 158 s, as its default
-  `tol=1e-6` represents mean per-vertex error and terminates after two iterations on 2.1
-  million vertices.
-- Session audits checks 39.8 million user-session edges for weakly connected
-  components. DuckDB deduplication and renumbering take 9.3 s; scipy
-  `connected_components` takes 3.0 s.
-- Audience funnel combines graph affinity, taste vectors, and purchase
-  propensity in one plan. The CPU baseline coordinates intermediate tables between
-  igraph, FAISS, and XGBoost in host memory, where graph construction and personalized
-  PageRank take 14 s. Tied distances at the 20th-neighbor cutoff produce lookalike
-  audience counts between 19,096 and 19,104 shoppers.
-- Propensity scoring spends 14.7 s in DuckDB aggregating features over events prior
-  to September, accounting for most of the {merrecGpuSeconds('27_propensity_xgboost')}
-  GPU duration. Forest inference takes 1.1 s in XGBoost compared to
-  {merrecStageSeconds('27_propensity_xgboost', 'ml_native')} in cuML. Tied scores at the
-  shortlist cutoff select 16,087 buyers on GPU and 16,090 on CPU.
-- Brand twins evaluates Jaccard similarity over fan sets for the 2,000 largest brands
-  via DuckDB self-join, consuming 2.9 s for collection and 3.4 s for the join.
-- Pokemon lookalikes constructs 64-dimensional taste vectors across 2.1 million
-  shoppers in DuckDB (19.5 s) before retrieving 20 neighbors per seed buyer.
-  Nearest neighbor search takes 6.4 s in FAISS compared to
-  {merrecStageSeconds('13_pokemon_lookalikes', 'vector_native:search')} in cuVS.
-- Shopping worlds builds fan sets and computes Jaccard pairs for the 5,000 largest
-  brands in DuckDB (8.3 s); igraph completes Leiden in 0.5 s. Because cuGraph and igraph
-  implement different heuristic partitioning passes, community assignments differ along
-  partition boundaries.
-- World bridges evaluates 12.5 million brand pairs with Jaccard similarity in DuckDB
-  (6.2 s), clusters with Leiden, and calculates exact betweenness centrality in
-  NetworKit (1.7 s).
+- Barbie tie-ins builds two undirected graphs from 23 million distinct
+  user-brand pairs and runs personalized and global PageRank on each. The CPU
+  pipeline takes 2.3 s in the DuckDB join, 13.0 s renumbering vertices and
+  building the igraph graphs, and 7.7 s in the four PageRank calls. NetworkX
+  3.7 takes 158 s once its tolerance matches cuGraph's absolute L1 tolerance
+  (`tol = 1e-5 / N`); its default `tol=1e-6` is a mean per-vertex error and
+  stops after two iterations on 2.1 million vertices.
+- Session audit finds weakly connected components over 39.8 million
+  user-session edges. DuckDB deduplication and renumbering take 9.3 s and
+  scipy `connected_components` takes 3.0 s.
+- Audience funnel combines graph affinity, taste vectors and purchase
+  propensity in one plan. The CPU pipeline passes intermediate tables between
+  igraph, FAISS and XGBoost in host memory; graph construction and
+  personalized PageRank take 14 s. Shoppers tied at the 20th-neighbor distance
+  fall on either side of the cutoff, and the lookalike count varies between
+  19,096 and 19,104.
+- Propensity model takes 14.7 s in DuckDB to aggregate features over the
+  events before September, and that aggregation takes most of the
+  {merrecGpuSeconds('27_propensity_xgboost')} on the GPU. Forest inference
+  takes 1.1 s in XGBoost and {merrecStageSeconds('27_propensity_xgboost', 'ml_native')}
+  in cuML. Tied scores at the shortlist cutoff give 16,087 buyers on the GPU
+  and 16,090 on the CPU.
+- Brand twins compares the fan sets of the 2,000 largest brands by Jaccard
+  similarity. The DuckDB self-join takes 2.9 s to collect the fan sets and
+  3.4 s to join them.
+- Pokemon lookalikes builds a 64-dimensional taste vector for each of 2.1
+  million shoppers in SQL, then searches 20 neighbors of each seed buyer.
+  DuckDB takes 19.5 s to build the vectors. The search takes 6.4 s in FAISS
+  and {merrecStageSeconds('13_pokemon_lookalikes', 'vector_native:search')}
+  in cuVS.
+- Shopping worlds groups the 5,000 largest brands into worlds with Leiden
+  over a Jaccard similarity graph. DuckDB takes 8.3 s for the fan sets and
+  Jaccard, and igraph 0.5 s for Leiden. The two Leiden implementations return
+  different partitions; the result lists are not compared row by row.
+- World bridges scores 12.5 million brand pairs with Jaccard similarity,
+  splits the similarity graph into worlds with Leiden and ranks bridge brands
+  by exact betweenness. The DuckDB self-join takes 6.2 s and NetworKit's
+  betweenness 1.7 s.
 
 </details>
 
@@ -177,13 +185,17 @@ keeps every run.
 
 ### Exact kNN over 2.1 million vectors
 
-This benchmark queries 100, 1,000, 10,000, and 100,000 shoppers against all {merrecAlgorithmBenchmark.dataset.tasteRows.toLocaleString('en-US')} {merrecAlgorithmBenchmark.dataset.dimensions}-dimensional Float32 vectors in the `mr_taste64` table, retrieving the 10 nearest neighbors for each query vector. At 100,000 queries, this workload executes 210 billion vector distance calculations and top-10 selections.
+Each search finds the 10 nearest of the
+{merrecAlgorithmBenchmark.dataset.tasteRows.toLocaleString('en-US')}
+{merrecAlgorithmBenchmark.dataset.dimensions}-dimensional Float32 taste vectors
+in `mr_taste64` for the first 100 to 100,000 shoppers. The distance column
+counts query rows times taste rows.
 
-Algeon evaluates the search through the `cuvs_brute_force_knn` table function directly in SQL.
-The measured duration covers the entire statement: Parquet file scan on local NVMe, matrix
-staging, device computation, and result delivery over Arrow Flight SQL. The CPU comparison
-runs FAISS 1.15.1 `IndexFlatL2` on 32 threads using OpenBLAS, timed from Parquet loading to
-Arrow record batch materialization.
+Algeon runs the search through the `cuvs_brute_force_knn` table function in
+SQL. The Algeon time covers the whole query, from the Parquet scan on local
+NVMe to the last result batch over Flight SQL. The CPU time is FAISS 1.15.1
+`IndexFlatL2` on {merrecAlgorithmBenchmark.exactKnn[0].cpu.threads} threads,
+timed from Parquet load to the Arrow result.
 
 <Table>
   <thead>
@@ -210,13 +222,18 @@ Arrow record batch materialization.
   </tbody>
 </Table>
 
-Every GPU result achieves identical candidate neighbor distances to FAISS when verified in
-Float64 arithmetic within a tolerance of 1e-6. Identifiers at tied distance boundaries may
-differ between implementations.
+GPU and FAISS neighbor distances agree within 1e-6 after both are recomputed
+in Float64. Neighbors at tied distances may differ by ID.
 
 ### Item-user PageRank
 
-The query below constructs a weighted, undirected graph from six months of Mercari item views. It groups 1,268,092,738 raw events by `(item_id, user_id)` to calculate interaction weights, resulting in an active graph of {itemPageRank.vertices.toLocaleString('en-US')} vertices and {itemPageRank.normalizedDirectedEdges.toLocaleString('en-US')} normalized directed edges. It then evaluates `cugraph_pagerank` to numerical convergence in {itemPageRank.iterations} iterations under the default `alpha => 0.85` and `epsilon => 1e-5`:
+The query below builds a weighted, undirected graph from six months of item
+views. It scans the 1,268,092,738 events, groups the item views by
+`(item_id, user_id)` for the interaction weights, and runs `cugraph_pagerank`
+over the resulting {itemPageRank.vertices.toLocaleString('en-US')} vertices and
+{itemPageRank.normalizedDirectedEdges.toLocaleString('en-US')} directed edges.
+PageRank converges in {itemPageRank.iterations} iterations at the default
+`alpha => 0.85` and `epsilon => 1e-5`.
 
 ```sql
 SELECT vertex, value
@@ -235,12 +252,11 @@ ORDER BY value DESC, vertex
 LIMIT 20;
 ```
 
-From scanning Parquet on local NVMe through relational grouping, graph construction,
-iterative PageRank, and top-20 ordering, the statement completes in a median of
-{merrecSeconds(gpuMedianSeconds(itemPageRank.gpu))}. Within that duration, the cuGraph
-native algorithm execution alone takes {merrecSeconds(itemPageRank.gpu.runs[1].hostStagesSeconds.graph_task || 7.92)}.
-Aggregated edges and graph buffers remain resident in GPU memory throughout execution
-without host serialization.
+The whole query, edge preparation included, takes a median of
+{merrecSeconds(gpuMedianSeconds(itemPageRank.gpu))}; the cuGraph PageRank call
+accounts for {merrecSeconds(itemPageRankGraphSeconds)} of it. The aggregated
+edges and the graph stay in device memory between the `GROUP BY` and the
+PageRank call.
 
 ## Relational path
 
@@ -426,8 +442,8 @@ default completed {(gpuSeries(2).peak.completedQps / cpuSeries.peak.completedQps
 times as many.
 
 The admission setting `max_active_attempts` sets where throughput levels off.
-The engine admits up to this limit of concurrent queries simultaneously, holding
-subsequent submissions in a FIFO admission queue. Each admitted query receives a
+The server runs up to that many queries at once and queues later submissions
+in FIFO order. Each admitted query receives a
 fixed memory cap equal to device managed capacity divided by `max_active_attempts`:
 {gib(gpuSeries(1).queryLimitBytes)} GiB at concurrency limit 1,
 {gib(gpuSeries(2).queryLimitBytes)} GiB at the default limit 2, and
@@ -438,29 +454,30 @@ stayed near {gpuSeries(1).peak.completedQps.toFixed(2)} queries per second from
 {Math.round((gpuSeries(3).peak.completedQps / gpuSeries(2).peak.completedQps - 1) * 100)}%
 above the default. All 22 queries completed under each of the three caps. A
 query that allocates more than its cap fails with `query_memory_limit_exceeded`
-while the other admitted queries continue. Raising `max_active_attempts` increases
-throughput for queries that fit within the smaller memory partition and decreases the
-largest single query the server can admit. [Memory and query lifetime](../../design/admission.mdx)
-describes the queue, the caps, and allocator enforcement mechanisms.
+while the other admitted queries continue. Raising `max_active_attempts` raises
+throughput for queries that fit the smaller cap and lowers the largest query the
+server can admit. [Memory and query lifetime](../../design/admission.mdx)
+describes the queue, the caps and how the allocator enforces them.
 
 ### Server overload and admission queue behavior
 
 In these overload runs, the client submitted queries to the default configuration
 at sustained rates from 1.0× to 2.0× of rated capacity
 ({serverLoadBenchmark.overload.capacityQps.toFixed(2)} queries per second) for five minutes
-after 30 seconds of warm-up. Queries were dispatched on schedule regardless of prior query completion.
+after 30 seconds of warm-up. The client submitted each query on schedule whether or not
+earlier queries had finished.
 
 <ServerLoadOverloadTable />
 
-Completed throughput remained stable between
+Completed throughput held between
 {Math.min(...overloadSaturated.map((level) => level.completedQps.median)).toFixed(2)} and
 {Math.max(...overloadSaturated.map((level) => level.completedQps.median)).toFixed(2)} queries per
-second across the entire range from 1.0× to 2.0× offered load. Excess traffic was rejected with
-`service_overloaded`. When all {serverLoadBenchmark.config.maxQueuedAttempts} queue positions were
-occupied, incoming queries were rejected after a median delay of {Math.round(overloadQueueFullMs)} ms.
-Queued queries that reached the `max_queue_wait_ms` threshold ({serverLoadBenchmark.config.maxQueueWaitMs / 1000} s)
-were rejected upon timeout. Admitted queries under 1.5× load and above experienced queuing before execution,
-raising p95 completion latency to
+second from 1.0× to 2.0× offered load. The server rejected the excess with
+`service_overloaded`. With all {serverLoadBenchmark.config.maxQueuedAttempts} queue positions
+occupied, a new query was rejected after a median of {Math.round(overloadQueueFullMs)} ms.
+A queued query that waited longer than `max_queue_wait_ms` ({serverLoadBenchmark.config.maxQueueWaitMs / 1000} s)
+was rejected at that point. At 1.5× load and above, admitted queries waited in the queue
+before execution, and p95 completion latency reached
 {Math.max(...overloadSaturated.filter((level) => level.factor >= 1.5).map((level) => level.completedP95Seconds.median)).toFixed(1)} s.
 Every admitted query result matched the CPU reference output. After each run, the server
 reported no active queries and no remaining memory grants.

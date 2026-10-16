@@ -134,7 +134,7 @@ The script drives `components/cudf/cudf`, keeps its CMake cache under
 `target/native/cudf-install`, and completes the exported RMM dependency
 closure (`rapids_logger`, `nvtx3`, `fmt`, `spdlog`) that cuVS and cuGraph
 need. It then builds and installs the production Rust shim and its crate-version
-marker into the same prefix. Success looks like:
+marker into the same prefix. After the script finishes, these paths exist:
 
 ```bash
 ls "$ALGEON_ROOT"/target/native/cudf-install/lib/libcudf.so \
@@ -152,7 +152,7 @@ bash scripts/build/build_libcuvs.sh
 
 The script builds `components/cuvs/cuvs` against the RMM in
 `target/native/cudf-install` and installs the C++ and C libraries into
-`target/native/cuvs-install`. Success looks like:
+`target/native/cuvs-install`. Check the install prefix with:
 
 ```bash
 ls "$ALGEON_ROOT"/target/native/cuvs-install/lib/libcuvs.so \
@@ -170,7 +170,8 @@ The script builds `components/cugraph/cugraph` into
 `target/native/cugraph-build`, bound to the cuDF/RMM and cuVS prefixes
 selected above, then installs the registry-consumer artifacts into
 `target/native/cugraph-install`. It fails if CMake or the dynamic loader
-resolves a private or different copy of either. Success looks like:
+resolves a private or different copy of either. A completed build populates
+both the build tree and the install prefix:
 
 ```bash
 ls "$ALGEON_ROOT"/target/native/cugraph-build/libcugraph.so \

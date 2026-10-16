@@ -341,7 +341,7 @@ export function renderDenseOutputSchema(spec) {
       cell(field.repeats ? `${field.description} ${repeatedFieldSentence(field)}` : field.description),
     ])),
     '',
-    '**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.',
+    'The output schema depends on the call. Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the schema that the validated ID types and literal options produce.',
   ].join('\n');
 }
 

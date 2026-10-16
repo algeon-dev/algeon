@@ -1,4 +1,7 @@
 pub mod algeon_datafusion
+pub use algeon_datafusion::AlgeonGpuDeviceConfig
+pub use algeon_datafusion::AlgeonGpuDeviceProfile
+pub use algeon_datafusion::GpuMemoryOwnership
 pub mod algeon_datafusion::attempt
 pub use algeon_datafusion::attempt::AttemptBackendCountersSnapshot
 pub use algeon_datafusion::attempt::AttemptCancellation
@@ -2116,3 +2119,52 @@ pub fn datafusion::execution::session_state::SessionStateBuilder::with_algeon_na
 pub mod algeon_datafusion::source_cardinality
 pub const algeon_datafusion::source_cardinality::SOURCE_UNIQUE_KEYS_METADATA_KEY: &str
 pub fn algeon_datafusion::source_cardinality::schema_with_source_unique_keys(&arrow_schema::schema::Schema, &[&[&str]]) -> arrow_schema::schema::Schema
+pub struct algeon_datafusion::AlgeonAttempt
+impl algeon_datafusion::attempt::AlgeonAttempt
+pub fn algeon_datafusion::attempt::AlgeonAttempt::attempt_id(&self) -> query_runtime::observability::schedule_projection::AttemptId
+pub fn algeon_datafusion::attempt::AlgeonAttempt::cancellation(&self) -> query_runtime::attempt::cancellation::AttemptCancellation
+pub fn algeon_datafusion::attempt::AlgeonAttempt::completion(&self) -> query_runtime::attempt::owner::AttemptCompletion
+pub async fn algeon_datafusion::attempt::AlgeonAttempt::execute_dataframe(&self, datafusion::dataframe::DataFrame) -> datafusion_common::error::Result<algeon_datafusion::attempt::AttemptStream>
+pub fn algeon_datafusion::attempt::AlgeonAttempt::execute_physical_plan(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<algeon_datafusion::attempt::AttemptStream>
+pub fn algeon_datafusion::attempt::AlgeonAttempt::plan_sql<'a>(&'a self, &'a datafusion::execution::context::SessionContext, &'a str) -> futures_core::future::BoxFuture<'a, datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>>
+pub fn algeon_datafusion::attempt::AlgeonAttempt::planning_diagnostics(&self) -> core::option::Option<algeon_datafusion::planner::NativePlanningDiagnostics>
+pub fn algeon_datafusion::attempt::AlgeonAttempt::register_sealed_report_observer<F>(&self, F) where F: core::ops::function::Fn(core::option::Option<alloc::sync::Arc<query_runtime::observability::attempt_report::QueryAttemptReport>>, query_runtime::observability::recorder::SealedRuntimeObservationSnapshot) + core::marker::Send + core::marker::Sync + 'static
+pub fn algeon_datafusion::attempt::AlgeonAttempt::sealed_graph_claim_calibration_snapshot(&self) -> core::option::Option<algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot>
+pub fn algeon_datafusion::attempt::AlgeonAttempt::sealed_native_execution_snapshot(&self) -> core::option::Option<algeon_datafusion::attempt::SealedAttemptNativeExecutionSnapshot>
+pub fn algeon_datafusion::attempt::AlgeonAttempt::sql<'a>(&'a self, &'a datafusion::execution::context::SessionContext, &'a str) -> impl core::future::future::Future<Output = datafusion_common::error::Result<algeon_datafusion::attempt::AttemptStream>> + core::marker::Send + 'a
+impl core::fmt::Debug for algeon_datafusion::attempt::AlgeonAttempt
+pub fn algeon_datafusion::attempt::AlgeonAttempt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct algeon_datafusion::AlgeonGpuBackend
+impl algeon_datafusion::backend::AlgeonGpuBackend
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::attempt_counters_snapshot(&self) -> query_runtime::attempt::queue::AttemptBackendCountersSnapshot
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::begin_attempt(&self, algeon_datafusion::attempt::AttemptOptions) -> algeon_datafusion::error::Result<algeon_datafusion::attempt::AlgeonAttempt>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::begin_attempt_with_query_cap_bytes(&self, algeon_datafusion::attempt::AttemptOptions, u64) -> algeon_datafusion::error::Result<algeon_datafusion::attempt::AlgeonAttempt>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::take_abandoned_attempt_reports(&self, usize) -> alloc::vec::Vec<alloc::sync::Arc<query_runtime::observability::attempt_report::QueryAttemptReport>>
+impl algeon_datafusion::backend::AlgeonGpuBackend
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::backend_metrics_snapshot(&self) -> query_runtime::runtime::backend_metrics::BackendMetricsSnapshot
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::builder() -> algeon_datafusion::backend::AlgeonGpuBackendBuilder
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::close(&self) -> bool
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::close_and_wait(&self, core::time::Duration) -> algeon_datafusion::error::Result<query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
+pub async fn algeon_datafusion::backend::AlgeonGpuBackend::close_and_wait_async(&self, core::time::Duration) -> algeon_datafusion::error::Result<query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::close_and_wait_until(&self, std::time::Instant) -> algeon_datafusion::error::Result<query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::close_snapshot(&self) -> query_runtime::runtime::backend_close::GpuBackendCloseSnapshot
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::cugraph_bfs_singleflight_snapshot(&self) -> algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::device_startup_records(&self) -> &[query_runtime::runtime::backend_core::GpuBackendDeviceStartupRecord]
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::device_telemetry_snapshots(&self) -> algeon_datafusion::error::Result<alloc::vec::Vec<query_runtime::runtime::gpu::inventory::DeviceTelemetrySnapshot>>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::devices(&self) -> &[query_runtime::runtime::backend_core::GpuBackendDeviceConfig]
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::diagnostics(&self) -> algeon_datafusion::error::Result<query_runtime::runtime::query_service::service::api::BackendDiagnostics>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> algeon_datafusion::error::Result<datafusion::execution::session_state::SessionStateBuilder>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::is_session_state_bound(&self, &datafusion::execution::session_state::SessionState) -> bool
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::kvikio_process_config(&self) -> core::option::Option<cudf::io::KvikioProcessConfig>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::optimizer_config(&self) -> &algeon_datafusion::planner::AlgeonNativeOptimizerConfig
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::probe_device_capacity(usize, query_runtime::runtime::backend_core::GpuMemoryOwnership, u64) -> algeon_datafusion::error::Result<query_runtime::runtime::backend_core::GpuDeviceCapacityProbe>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::quarantine_device_for_qualification(&self, usize) -> algeon_datafusion::error::Result<query_runtime::runtime::query_service::service::api::DeviceQuarantineInjection>
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::queue_policy(&self) -> &algeon_datafusion::backend::AlgeonGpuQueuePolicy
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::same_backend(&self, &Self) -> bool
+pub struct algeon_datafusion::AttemptOptions
+pub algeon_datafusion::AttemptOptions::deadline: core::option::Option<std::time::Instant>
+pub algeon_datafusion::AttemptOptions::observation: query_runtime::observability::recorder::RuntimeObservationConfig
+pub algeon_datafusion::AttemptOptions::query_id: core::option::Option<alloc::string::String>
+pub algeon_datafusion::AttemptOptions::trace_context: core::option::Option<alloc::string::String>
+impl core::default::Default for algeon_datafusion::attempt::AttemptOptions
+pub fn algeon_datafusion::attempt::AttemptOptions::default() -> Self

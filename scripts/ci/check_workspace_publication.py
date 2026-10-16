@@ -13,6 +13,10 @@ release closure to unpublishable -- ``cargo package`` failed on a contract no
 manifest appeared to state.  An inherited publication status hides which
 packages ship, so this check requires each manifest to say so itself and
 pins the closure to the list below.
+
+The README each published crate shows on crates.io is checked too. It must
+not name workspace-only paths or commands, and no two crates may open with the
+same paragraph.
 """
 
 from __future__ import annotations
@@ -48,10 +52,66 @@ PUBLISHED = frozenset(
     }
 )
 
+# Tokens that resolve only inside this checkout.
+README_INTERNAL_TOKENS = ("scripts/", "cargo nt", "target/native", "check_all.sh")
+
 
 def fail(message: str) -> None:
     print(f"FAIL: workspace publication policy: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def readme_path(package: dict, manifest: dict) -> Path | None:
+    """The README file Cargo packages with ``package``; None when the manifest disables it."""
+    package_dir = Path(package["manifest_path"]).parent
+    declared = manifest.get("package", {}).get("readme")
+    if declared is False:
+        return None
+    if declared is None:
+        # Cargo's auto-detection order when the field is absent.
+        for candidate in ("README.md", "README.txt", "README"):
+            if (package_dir / candidate).is_file():
+                return package_dir / candidate
+        return None
+    return package_dir / declared
+
+
+def first_paragraph(text: str) -> str:
+    """Skips leading headings and blank lines, then joins the following lines up to
+    the next blank line with spaces."""
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines) and (lines[index].startswith("#") or not lines[index].strip()):
+        index += 1
+    paragraph = []
+    while index < len(lines) and lines[index].strip():
+        paragraph.append(lines[index].strip())
+        index += 1
+    return " ".join(paragraph)
+
+
+def check_readmes(members: dict) -> None:
+    openings: dict[str, tuple[str, Path]] = {}
+    for name in sorted(PUBLISHED):
+        package = members[name]
+        with Path(package["manifest_path"]).open("rb") as source:
+            manifest = tomllib.load(source)
+        path = readme_path(package, manifest)
+        if path is None or not path.is_file():
+            fail(f"{name} is published but has no README to show on crates.io")
+        text = path.read_text(encoding="utf-8")
+        display = path.resolve().relative_to(ROOT)
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            hits = [token for token in README_INTERNAL_TOKENS if token in line]
+            if hits:
+                fail(f"{name}: {display}:{line_number} names workspace-only {', '.join(repr(hit) for hit in hits)}")
+        opening = first_paragraph(text)
+        if not opening:
+            fail(f"{name}: {display} has no opening paragraph after its title")
+        if opening in openings:
+            other, other_path = openings[opening]
+            fail(f"{name}: {display} opens with the same paragraph as {other} ({other_path.resolve().relative_to(ROOT)})")
+        openings[opening] = (name, path)
 
 
 def main() -> None:
@@ -121,10 +181,12 @@ def main() -> None:
             if target in members and target not in PUBLISHED:
                 fail(f"{name} is published but depends on unpublished workspace package {target}")
 
+    check_readmes(members)
+
     print(
         "PASS: workspace publication policy: "
         f"{len(PUBLISHED)} published, {len(members) - len(PUBLISHED)} private, "
-        "all declared directly"
+        "all declared directly, READMEs distinct and free of workspace paths"
     )
 
 

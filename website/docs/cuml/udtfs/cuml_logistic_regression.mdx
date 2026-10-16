@@ -73,7 +73,7 @@ The list-column shape excludes other feature columns. See [ML Inputs](../ml-inpu
 | `prediction` | `Int32` | no | Predicted zero-based class index; a tie between classes takes the lowest index. |
 | `probability` | `Float32` | no | Probability of the predicted class, as cuML's predict_proba defines it: the sigmoid of the decision score for two classes, the softmax over the decision scores for three or more. |
 
-**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+The output schema depends on the call. Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the schema that the validated ID types and literal options produce.
 
 ## Examples
 

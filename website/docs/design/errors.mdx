@@ -36,8 +36,8 @@ only when crossing a layer boundary.
   server upgrades them to Algeon errors.
 - Protocol policy outside the built-in server belongs to the host application.
 
-Declining a native candidate during standard physical planning does not
-constitute an error. `NotSupported` and `NotSelectedByCost` are candidate
+A native candidate declined during standard physical planning is not an
+error. `NotSupported` and `NotSelectedByCost` are candidate
 outcomes in a `PlanningReport`, never error codes or `DataFusionError`s, and the
 original DataFusion plan remains executable. A malformed plan, a plan that `native_required` mode rejects
 because it needs DataFusion CPU, or a runtime failure is an error.

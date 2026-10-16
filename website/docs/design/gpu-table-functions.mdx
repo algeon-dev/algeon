@@ -42,8 +42,8 @@ GROUP BY p.field;
 ```
 
 The edge predicate changes the graph on which PageRank runs. The score
-predicate applies to its output. Moving it before the algorithm would change
-the query's meaning. See the [PageRank reference](../cugraph/udtfs/centrality/cugraph_pagerank.mdx)
+predicate applies to its output. The same predicate placed before the algorithm
+would change the query's meaning. See the [PageRank reference](../cugraph/udtfs/centrality/cugraph_pagerank.mdx)
 for a captured dataset example and the full argument contract.
 
 Each SQL family registers a DataFusion `RelationPlanner`. Named relation
@@ -73,9 +73,8 @@ without that intermediate round trip over PCIe.
 The cuDF frame retains ownership of its edge columns. Calling
 `try_prepare_device_table_export()` creates a `PreparedTableExport` containing
 the column layout, buffer ranges and device placement, together with producer
-readiness. The export also retains a shared owner of the frame. Preparing this
-description does not copy the edge values or transfer their allocation to
-cuGraph.
+readiness. The export also retains a shared owner of the frame. The preparation does
+not copy the edge values or transfer their allocation to cuGraph.
 
 The cuGraph resource handle binds to the execution runtime's device, CUDA
 stream and memory resource. Before graph construction, a read lease orders
@@ -95,9 +94,9 @@ object. Result-schema normalization supplies the SQL-facing `vertex` and
 aggregate to the resulting `GpuDataFrame`.
 
 The PageRank result copy consumes device-memory bandwidth and temporarily
-requires both allocations. Keeping this boundary in VRAM avoids a host
-materialization, but the graph preparation and result conversion still have
-measurable costs.
+requires both allocations. Because this boundary stays in VRAM, no host
+materialization occurs, but the graph preparation and result conversion still
+have measurable costs.
 
 ## Ownership lasts through GPU completion
 
@@ -120,8 +119,8 @@ an immediate host wait on that lease. Graph parking settles these input
 completions before the graph enters a reusable cache. An export without a
 retained owner requires synchronization before lease completion returns.
 
-The cleanup paths cover early returns as well. Dropping an incomplete read
-lease invokes the backend completion fallback. Dropping a pending
+The cleanup paths cover early returns as well. A dropped incomplete read
+lease invokes the backend completion fallback; a dropped pending
 `LeaseCompletion` waits on its witness. If that wait fails, the retained owner
 is deliberately leaked because queued reads may still reference it. Attempt
 cleanup and device capacity reuse follow the
@@ -132,8 +131,8 @@ Their Rust wrappers restrict transfer between threads. The engine creates them
 inside the attempt's execution job on an `algeon-gpu-{d}` worker, and a `!Send`
 handle cannot leave that job. `ParkedGraph` (`Send + !Sync`) is the form that
 moves between attempts. A graph prepared for cache transfer uses `ParkedGraph`
-with a completion event. Resuming it on an attempt's stream establishes the
-dependency before algorithm execution.
+with a completion event. When an attempt resumes it on its stream, that event
+establishes the dependency before algorithm execution.
 
 ## cuVS and cuML layouts and result ownership
 

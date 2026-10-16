@@ -1,5 +1,8 @@
 use std::fmt;
 
+/// Whether an allocation failure came from the device or from a reservation
+/// limit. `Unknown` means the shim did not record a source; it is never
+/// inferred from an out-of-memory status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CumlErrorFailureSource {
     Physical,
@@ -16,6 +19,8 @@ impl fmt::Display for CumlErrorFailureSource {
     }
 }
 
+/// Failure detail the shim keeps thread-locally after a failed call.
+/// `algeon-cuml` copies it out as soon as the failed call returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CumlErrorDetail {
     pub status: u32,

@@ -75,7 +75,7 @@ The list-column shape excludes other feature columns. See [ML Inputs](../ml-inpu
 | `id` | `same_as_predict.id` | no | Logical ID from the predict relation. |
 | `prediction` | `Float32` | no | Predicted regression target. |
 
-**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+The output schema depends on the call. Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the schema that the validated ID types and literal options produce.
 
 ## Examples
 

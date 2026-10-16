@@ -18,6 +18,9 @@ functions, alongside [cuDF](https://docs.rapids.ai/api/cudf/stable/) relational
 execution. Subqueries supply algorithm inputs; the results feed joins,
 aggregations or another algorithm within the same SQL statement.
 
+For background and a worked SQL example, see
+[Introducing Algeon](https://algeon.dev/blog/introducing-algeon).
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="website/static/img/intro-flow-dark.png">
