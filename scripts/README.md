@@ -117,8 +117,14 @@ is not part of the gate. Its self-test is
 `ci/tests/check_cpu_packaging_tests.sh` drives
 `build/cpu_packaging_policy.py` and `docker/build-image.sh` with fake
 `cargo`, `nvcc`, `readelf`, `ldd` and `docker` commands. It covers the build
-record, the manifest and `SHA256SUMS`, the image tag and build arguments, and
-the loader-closure failures of `docker/validate-loader-closure.sh`.
+record and its `cargo metadata` capture, the manifest and `SHA256SUMS`, the
+license directory staged by `docker/stage_licenses.py`, the image tag and
+build arguments, and the loader-closure failures of
+`docker/validate-loader-closure.sh`.
+`ci/tests/check_publish_image_tests.sh` runs `docker/publish-image.sh` with
+fake `docker` and `git` commands and covers each label check that refuses a
+release, the dry run, the tag-and-push sequence, and moving `latest` only for
+the highest release tag.
 
 `ci/check_public_api_surface.sh` compares the API snapshots and invokes
 `ci/check_public_api_docs.py` for the
