@@ -1,11 +1,17 @@
 use std::{
     io::Write,
+    os::unix::fs::PermissionsExt,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
+use arrow::{
+    array::{Int64Array, RecordBatch},
+    datatypes::{DataType, Field, Schema},
+};
 use cudf::testing;
 use datafusion::{execution::SessionStateBuilder, prelude::SessionConfig};
+use parquet::arrow::ArrowWriter;
 use query_runtime::observability::RuntimeObservationConfig;
 use tokio::{runtime::Builder as TestRuntimeBuilder, time::timeout};
 use tracing::{Level, subscriber};
@@ -58,6 +64,7 @@ fn base_config() -> ServerConfig {
         auth: AuthConfig::default(),
         cugraph: None,
         models: None,
+        data_root: None,
         tls: None,
         init_sql: None,
     }
@@ -630,6 +637,190 @@ async fn init_sql_errors_mask_statement_option_values() {
     // `RedactedSql` so a rendering that includes it would still be masked.
     assert!(!error.message().contains("sekrit"), "{}", error.message());
     assert!(error.message().contains("CREATE EXTERNAL TABLE r"), "{}", error.message());
+}
+
+fn write_parquet(path: &std::path::Path, values: &[i64]) {
+    let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(values.to_vec()))])
+        .expect("test batch");
+    let mut writer = ArrowWriter::try_new(std::fs::File::create(path).expect("create parquet"), schema, None)
+        .expect("parquet writer");
+    writer.write(&batch).expect("write parquet");
+    writer.close().expect("close parquet");
+}
+
+async fn count_rows(ctx: &SessionContext, table: &str) -> i64 {
+    let batches =
+        ctx.sql(&format!("SELECT count(*) FROM {table}")).await.expect("plan count").collect().await.expect("count");
+    batches[0].column(0).as_any().downcast_ref::<Int64Array>().expect("count column").value(0)
+}
+
+#[tokio::test]
+async fn data_root_registers_parquet_files_and_dataset_directories_by_their_names() {
+    let root = tempfile::tempdir().expect("data root");
+    write_parquet(&root.path().join("Orders.PARQUET"), &[1, 2, 3]);
+    let events = root.path().join("events");
+    std::fs::create_dir(&events).unwrap();
+    write_parquet(&events.join("part-0.parquet"), &[1, 2]);
+    write_parquet(&events.join("part-1.parquet"), &[3, 4, 5]);
+    std::fs::write(events.join("_SUCCESS"), b"").unwrap();
+    let notes = root.path().join("notes");
+    std::fs::create_dir(&notes).unwrap();
+    std::fs::write(notes.join("readme.txt"), b"no data").unwrap();
+    write_parquet(&root.path().join(".staging.parquet"), &[1]);
+    write_parquet(&root.path().join("_tmp.parquet"), &[1]);
+    std::fs::create_dir(root.path().join("_temporary")).unwrap();
+    write_parquet(&root.path().join("_temporary").join("part-0.parquet"), &[1]);
+    std::fs::write(root.path().join("orders.csv"), b"v\n1\n").unwrap();
+    let ctx = SessionContext::new();
+
+    session::register_data_root(&ctx, root.path()).await.expect("register the data root");
+
+    let schema = ctx.catalog("datafusion").and_then(|catalog| catalog.schema("public")).expect("default schema");
+    let mut names = schema.table_names();
+    names.sort();
+    assert_eq!(names, ["Orders", "events"]);
+    assert_eq!(count_rows(&ctx, "\"Orders\"").await, 3);
+    assert_eq!(count_rows(&ctx, "events").await, 5);
+}
+
+#[tokio::test]
+async fn data_root_reads_names_with_glob_and_url_characters_literally() {
+    let parent = tempfile::tempdir().expect("data root parent");
+    // A glob character in the root itself splits every scheme-less location.
+    let root = parent.path().join("[prod] data");
+    std::fs::create_dir(&root).unwrap();
+    // Each sibling matches the glob a scheme-less location would derive from
+    // the entry before it.
+    write_parquet(&root.join("sales[2024].parquet"), &[1, 2, 3]);
+    write_parquet(&root.join("sales2.parquet"), &[1; 7]);
+    write_parquet(&root.join("wild*card?.parquet"), &[1; 4]);
+    write_parquet(&root.join("wild-card!.parquet"), &[1]);
+    write_parquet(&root.join("space and %41.parquet"), &[1; 6]);
+    for (directory, rows) in [("q[1]", 2), ("q1", 5)] {
+        std::fs::create_dir(root.join(directory)).unwrap();
+        write_parquet(&root.join(directory).join("part-0.parquet"), &vec![1; rows]);
+    }
+    let ctx = SessionContext::new();
+
+    session::register_data_root(&ctx, &root).await.expect("register the data root");
+
+    for (table, rows) in [
+        ("sales[2024]", 3),
+        ("sales2", 7),
+        ("wild*card?", 4),
+        ("wild-card!", 1),
+        ("space and %41", 6),
+        ("q[1]", 2),
+        ("q1", 5),
+    ] {
+        assert_eq!(count_rows(&ctx, &format!("\"{table}\"")).await, rows, "{table}");
+    }
+}
+
+#[tokio::test]
+async fn data_root_skips_entries_it_cannot_inspect_with_a_warning() {
+    let root = tempfile::tempdir().expect("data root");
+    write_parquet(&root.path().join("orders.parquet"), &[1, 2]);
+    // A host symlink outside a container bind mount dangles inside it.
+    let dangling = root.path().join("linked.parquet");
+    std::os::unix::fs::symlink(root.path().join("absent").join("linked.parquet"), &dangling).unwrap();
+    let logs = CapturedLogs::default();
+    let _subscriber = subscriber::set_default(
+        FmtSubscriber::builder().with_writer(logs.clone()).with_ansi(false).with_max_level(Level::INFO).finish(),
+    );
+    let ctx = SessionContext::new();
+
+    session::register_data_root(&ctx, root.path()).await.expect("a dangling link does not stop startup");
+
+    let schema = ctx.catalog("datafusion").and_then(|catalog| catalog.schema("public")).expect("default schema");
+    assert_eq!(schema.table_names(), ["orders"]);
+    let logs = logs.text();
+    assert!(logs.contains("skipping data root entry that cannot be inspected"), "{logs}");
+    assert!(logs.contains(&dangling.display().to_string()), "{logs}");
+}
+
+#[tokio::test]
+async fn data_root_skips_a_directory_whose_listing_fails_before_a_parquet_file() {
+    let root = tempfile::tempdir().expect("data root");
+    write_parquet(&root.path().join("orders.parquet"), &[1, 2]);
+    let locked = root.path().join("scratch").join("private");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&locked).is_ok() {
+        // A privileged user reads the directory regardless of its mode.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let logs = CapturedLogs::default();
+    let _subscriber = subscriber::set_default(
+        FmtSubscriber::builder().with_writer(logs.clone()).with_ansi(false).with_max_level(Level::INFO).finish(),
+    );
+    let ctx = SessionContext::new();
+
+    let result = session::register_data_root(&ctx, root.path()).await;
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    result.expect("an unlistable directory without Parquet files does not stop startup");
+    let schema = ctx.catalog("datafusion").and_then(|catalog| catalog.schema("public")).expect("default schema");
+    assert_eq!(schema.table_names(), ["orders"]);
+    let logs = logs.text();
+    assert!(logs.contains("skipping data root directory whose listing failed"), "{logs}");
+    assert!(logs.contains(&root.path().join("scratch").display().to_string()), "{logs}");
+}
+
+#[tokio::test]
+async fn data_root_rejects_two_entries_with_one_table_name() {
+    let root = tempfile::tempdir().expect("data root");
+    write_parquet(&root.path().join("sales.parquet"), &[1]);
+    let directory = root.path().join("sales");
+    std::fs::create_dir(&directory).unwrap();
+    write_parquet(&directory.join("part-0.parquet"), &[2]);
+    let ctx = SessionContext::new();
+
+    let error = session::register_data_root(&ctx, root.path()).await.expect_err("two entries name `sales`");
+
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration, "{error}");
+    assert_eq!(error.fact_value("config_field"), Some("data.root"));
+    assert_eq!(error.fact_value("reason"), Some("data_root_duplicate_table"));
+    assert_eq!(error.fact_value("table"), Some("sales"));
+    for path in [directory, root.path().join("sales.parquet")] {
+        assert!(error.message().contains(&path.display().to_string()), "{}", error.message());
+    }
+}
+
+#[tokio::test]
+async fn data_root_names_a_parquet_file_whose_schema_cannot_be_read() {
+    let root = tempfile::tempdir().expect("data root");
+    let broken = root.path().join("broken.parquet");
+    std::fs::write(&broken, b"not parquet").unwrap();
+    let ctx = SessionContext::new();
+
+    let error = session::register_data_root(&ctx, root.path()).await.expect_err("an unreadable footer");
+
+    assert_eq!(error.code(), ErrorCode::InvalidConfiguration, "{error}");
+    assert_eq!(error.fact_value("config_field"), Some("data.root"));
+    assert_eq!(error.fact_value("table"), Some("broken"));
+    assert!(error.message().contains(&broken.display().to_string()), "{}", error.message());
+    assert!(std::error::Error::source(&error).is_some(), "the DataFusion cause is retained");
+    assert!(!ctx.table_exist("broken").expect("catalog lookup"));
+}
+
+#[tokio::test]
+async fn startup_sql_runs_after_the_data_root_tables_are_registered() {
+    let root = tempfile::tempdir().expect("data root");
+    write_parquet(&root.path().join("orders.parquet"), &[1, 5, 10]);
+    let init_sql = root.path().join("_init.sql");
+    std::fs::write(&init_sql, "CREATE VIEW large_orders AS SELECT v FROM orders WHERE v > 2;\n")
+        .expect("write init_sql");
+    let mut config = base_config();
+    config.data_root = Some(root.path().to_path_buf());
+    config.init_sql = Some(init_sql);
+    let ctx = SessionContext::new();
+
+    session::prepare_shared_session(&ctx, &config).await.expect("prepare the shared session");
+
+    assert_eq!(count_rows(&ctx, "large_orders").await, 2);
 }
 
 #[derive(Clone, Default)]

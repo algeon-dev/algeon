@@ -8,7 +8,7 @@ use super::{
     env::scalar_leaves,
     file::{
         ServerAdmissionDeviceProfileFileConfig, ServerAdmissionFileConfig, ServerCugraphFileConfig,
-        ServerModelsFileConfig, ServerNativeFileConfig, ServerObservabilityFileConfig,
+        ServerDataFileConfig, ServerModelsFileConfig, ServerNativeFileConfig, ServerObservabilityFileConfig,
     },
     table_lookup,
 };
@@ -74,6 +74,7 @@ fn project(config: &ServerConfig, tls: Option<&ServerTlsFileConfig>) -> ServerFi
             },
             None => ServerModelsFileConfig { root: None, max_model_bytes: None },
         },
+        data: ServerDataFileConfig { root: config.data_root.clone() },
         auth: config.auth.clone(),
         tls: tls.cloned(),
     }

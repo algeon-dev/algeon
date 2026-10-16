@@ -19,6 +19,7 @@ pub(super) struct ServerFile {
     pub(super) observability: ServerObservabilityFileConfig,
     pub(super) cugraph: ServerCugraphFileConfig,
     pub(super) models: ServerModelsFileConfig,
+    pub(super) data: ServerDataFileConfig,
     pub(super) auth: AuthConfig,
     pub(super) tls: Option<ServerTlsFileConfig>,
 }
@@ -50,6 +51,14 @@ pub(super) struct ServerTlsFileConfig {
 pub(super) struct ServerModelsFileConfig {
     pub(super) root: Option<PathBuf>,
     pub(super) max_model_bytes: Option<u64>,
+}
+
+/// `[data]`: the directory whose Parquet files and dataset directories the
+/// server registers as tables at startup.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub(super) struct ServerDataFileConfig {
+    pub(super) root: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -144,6 +153,7 @@ impl ServerFile {
                 max_output_staging_bytes: Some(0),
             },
             models: ServerModelsFileConfig { root: Some(PathBuf::new()), max_model_bytes: Some(0) },
+            data: ServerDataFileConfig { root: Some(PathBuf::new()) },
             auth: AuthConfig { mode: AuthMode::BasicBearer { users: Vec::new(), token_ttl_secs: 0 } },
             tls: Some(ServerTlsFileConfig {
                 cert_path: PathBuf::new(),

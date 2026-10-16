@@ -16,6 +16,7 @@ use support::{env_with_server_toml, load, load_toml};
 
 mod admission;
 mod cugraph;
+mod data;
 mod feature_gates;
 mod models;
 mod native_profile;

@@ -102,6 +102,9 @@ max_output_staging_bytes = 1073741824           # ALGEON_SERVER_CUGRAPH_MAX_OUTP
 # root = "/srv/models"                          # ALGEON_SERVER_MODELS_ROOT
 # max_model_bytes = 268435456                   # ALGEON_SERVER_MODELS_MAX_MODEL_BYTES
 
+[data]
+# root = "/data"                                # ALGEON_SERVER_DATA_ROOT
+
 [auth.mode]
 kind = "disabled"                               # ALGEON_SERVER_AUTH_MODE_KIND
 # token_ttl_secs = 3600                         # ALGEON_SERVER_AUTH_MODE_TOKEN_TTL_SECS
@@ -434,6 +437,49 @@ unavailable with `model_root_unconfigured`. Embedded sessions use
 `CumlModelStoreConfig` through `try_with_cuml_sql_config`, and
 [Model files](../cuml/udtfs/cuml_forest_predict.mdx#model-files) covers path
 resolution, rejections and the trust boundary.
+
+## Data root {/* #data-root */}
+
+```toml
+[data]
+root = "/data"
+```
+
+`root` names a directory whose Parquet data the server registers as tables
+before it runs [startup SQL](#startup-sql). It must be an existing directory
+when the configuration loads. Unset, no tables are registered. Only the first
+level of the directory is read, in name order:
+
+| Entry | Becomes |
+|---|---|
+| `orders.parquet` (extension in any case) | Table `orders` over that file |
+| Directory `events/` that holds Parquet files | Table `events`, as `CREATE EXTERNAL TABLE events STORED AS PARQUET LOCATION 'file:///data/events/'` would register it |
+| A name starting with `.` or `_` | Skipped, so Spark's `_SUCCESS` markers and hidden files are ignored |
+| Any other file, or a directory without Parquet files | Skipped |
+
+Table names keep the case and every character of the file or directory name,
+including glob characters such as `[`, `*` and `?`. Query `Orders.parquet` as
+`"Orders"` and `sales[2024].parquet` as `"sales[2024]"`.
+
+The server logs a warning naming the path and skips:
+
+- an entry it cannot inspect, such as a symbolic link whose target is outside
+  a container bind mount;
+- an entry whose name is not valid UTF-8;
+- a directory whose listing fails, for example on a subdirectory without read
+  permission, before a Parquet file is found.
+
+These stop startup with `invalid_configuration` naming the paths:
+
+- two entries that map to one table name, such as `sales.parquet` and
+  `sales/`;
+- a Parquet file or a directory holding Parquet files whose schema cannot be
+  read or that cannot be registered, with the reader error in the message.
+
+The log prints one `registered data root table` line with the table name and
+path for each table, then the total count. The tables live in the
+[shared catalog](./flight-sql-server.mdx#shared-catalog). Startup SQL can build
+views over them or replace one with `CREATE OR REPLACE EXTERNAL TABLE`.
 
 ## Startup SQL {/* #startup-sql */}
 
