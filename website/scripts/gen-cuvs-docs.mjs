@@ -157,7 +157,7 @@ function vectorElementTypes(spec) {
 
 function renderInputs(spec) {
   return [
-    'Each relation argument is a parenthesized `SELECT` subquery that the planner keeps as a real child; metadata validation resolves a registered table or view for the same role instead. See [Vector Inputs](../vector-inputs.mdx) for the relation identity rules and the ID, dense-vector type, null, finite-value, and runtime-dimension contract.',
+    'Each relation argument is a parenthesized `SELECT` subquery that the planner keeps as an operator child. Metadata validation resolves a registered table or view for the same role. See [Vector Inputs](../vector-inputs.mdx) for the relation identity rules and the ID, dense-vector type, null, finite-value, and runtime-dimension contract.',
     '',
     table(['Role', 'Required', 'Validation reference', 'Description'], spec.relation_roles.map(role => [
       code(role.name), role.required === false ? 'no' : 'yes', code(role.reference?.type || 'table'), cell(role.description),
@@ -173,7 +173,7 @@ function renderVectorBindingShapes(spec) {
   const bindingOption = Object.values(spec.options_schema.properties || {}).find(option => option?.properties?.vector?.oneOf);
   if (!bindingOption) {
     return [
-      `Each relation subquery must project an ${code('id')} field followed by either one or more feature fields of a supported element type (${vectorElementTypes(spec).map(code).join(', ')}) or exactly one list field of a supported element type, under any name.`,
+      `Each relation subquery must project an ${code('id')} field followed by either one or more feature fields of a supported element type (${vectorElementTypes(spec).map(code).join(', ')}) or one list field of a supported element type, under any name.`,
       '',
       'For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and its list field. Nullable field types are accepted. A null ID, feature value, list row, or list element fails the query.',
     ].join('\n');

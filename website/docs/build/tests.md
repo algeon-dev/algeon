@@ -253,7 +253,7 @@ binary(/multi_gpu|multi_device/)
 ```
 
 These cases assert the device precondition when explicitly run. A single-GPU
-invocation fails that precondition instead of reporting a pass.
+invocation reports a precondition failure.
 
 ## Feature flags
 

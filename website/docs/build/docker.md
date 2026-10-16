@@ -113,11 +113,11 @@ FEATURES=cugraph,cuml,cuvs,nvml bash docker/build-image.sh
 ```
 
 The tag is `<version>-<cpu baseline>` for the default feature set, such as
-`algeon-server:0.1.0-x86-64-v3`. The empty feature list appends `-cudf`, and
+`algeon-server:0.1.1-x86-64-v3`. The empty feature list appends `-cudf`, and
 any other feature set appends its sorted features joined by `-`. The builds
-above produce `algeon-server:0.1.0-x86-64-v3-cudf`,
-`algeon-server:0.1.0-x86-64-v3-nvml` and
-`algeon-server:0.1.0-x86-64-v3-cugraph-cuml-cuvs-nvml`, and leave the default
+above produce `algeon-server:0.1.1-x86-64-v3-cudf`,
+`algeon-server:0.1.1-x86-64-v3-nvml` and
+`algeon-server:0.1.1-x86-64-v3-cugraph-cuml-cuvs-nvml`, and leave the default
 image in place. The build record, payload manifest and `dev.algeon.features`
 label record the selected list, which is empty for `FEATURES=''`.
 `IMAGE_REPOSITORY` replaces `algeon-server`. The image labels record the
@@ -127,7 +127,7 @@ baseline. A build from a worktree with uncommitted changes also prints a
 `warning:` line:
 
 ```bash
-docker inspect --format '{{json .Config.Labels}}' algeon-server:0.1.0-x86-64-v3
+docker inspect --format '{{json .Config.Labels}}' algeon-server:0.1.1-x86-64-v3
 ```
 
 A server built without the `cugraph` feature still installs the cuGraph SQL
@@ -188,7 +188,7 @@ loopback only, and mount the directory that holds your Parquet files:
 ```bash
 docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
   -v "$PWD/data:/data:ro" \
-  algeon-server:0.1.0-x86-64-v3
+  algeon-server:0.1.1-x86-64-v3
 ```
 
 The image sets `ALGEON_SERVER_BIND=0.0.0.0:50051` because a loopback listener
@@ -206,7 +206,7 @@ docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
   -v "$PWD/data:/data:ro" \
   -v "$PWD/server.toml:/etc/algeon/server.toml:ro" \
   -e ALGEON_SERVER_CONFIG_FILE=/etc/algeon/server.toml \
-  algeon-server:0.1.0-x86-64-v3
+  algeon-server:0.1.1-x86-64-v3
 ```
 
 Arguments after the image name go to `algeon_server`. Validate a mounted
@@ -216,7 +216,7 @@ file without starting the server or touching a GPU:
 docker run --rm \
   -v "$PWD/server.toml:/etc/algeon/server.toml:ro" \
   -e ALGEON_SERVER_CONFIG_FILE=/etc/algeon/server.toml \
-  algeon-server:0.1.0-x86-64-v3 --check-config
+  algeon-server:0.1.1-x86-64-v3 --check-config
 ```
 
 It prints the effective configuration with the source of each value and exits
@@ -227,10 +227,10 @@ the arguments.
 
 The [configuration reference](../integration/configuration.mdx#complete-example)
 lists every key. Any scalar key can also be passed as an `ALGEON_SERVER_*`
-variable with `-e`. The image's `ALGEON_SERVER_BIND` overrides `bind` in a
-mounted file, so change the container port with
+variable with `-e`. Because the image's `ALGEON_SERVER_BIND` overrides `bind` in a
+mounted file, the container port is set with
 `-e ALGEON_SERVER_BIND=0.0.0.0:<port>`. The healthcheck reads that variable.
-The server runs as UID 1001 in the container, so mounted
+The server runs as UID 1001 in the container; mounted
 files must be readable by that user.
 
 Table locations are paths inside the container. With the data directory
@@ -256,7 +256,7 @@ starting Algeon Flight SQL server
 The image has a TCP healthcheck for `ALGEON_SERVER_BIND`:
 
 ```bash
-docker ps --filter ancestor=algeon-server:0.1.0-x86-64-v3
+docker ps --filter ancestor=algeon-server:0.1.1-x86-64-v3
 ```
 
 On `SIGTERM` the server allows `observability.shutdown_grace_secs`, 30 s by

@@ -2,7 +2,7 @@
 sidebar_position: 6
 slug: /design/admission
 title: Memory and query lifetime
-description: "One device, one memory cap and one cleanup lifecycle for each native query attempt."
+description: "How a native query attempt binds to one device, runs under a memory cap and releases its resources."
 ---
 
 import {AttemptLifetime, AllocationPath} from '@site/src/components/design/GuideDiagrams';
@@ -116,8 +116,8 @@ the device's RMM memory resource. RMM is RAPIDS' memory-management library.
 A pool can reuse GPU allocations across operations.
 
 The grant covers allocations in device VRAM. I/O bounce buffers and other host
-staging occupy system RAM, outside this GPU cap. Pinning a host buffer for DMA
-does not charge it as a device allocation.
+staging occupy system RAM, outside this GPU cap. A host buffer pinned for DMA
+is not charged as a device allocation.
 
 The query domain's allocator alone enforces the query cap shared by all
 execution lanes. An allocation exceeding the cap returns a typed failure at
@@ -146,8 +146,8 @@ Cancellation halts new task submissions while active GPU operations run to compl
 `ExecutionCancellation` is a token with an optional deadline. The engine checks
 it at native boundaries (the next source chunk, task, operator or
 materialization step) and does not interrupt a CUDA call already running.
-Dropping the result stream cancels the attempt without blocking the caller's
-runtime, and the terminal outcome records `Dropped`, `Cancelled` or `Panicked`.
+When the caller drops the result stream, the attempt is cancelled without
+blocking the caller's runtime, and the terminal outcome records `Dropped`, `Cancelled` or `Panicked`.
 The chunk coordinator joins its lane jobs and synchronizes their readiness
 events before the lane leases return. A stream lease returns to the pool only
 after the cleanup thread synchronizes it. Flight
@@ -155,7 +155,7 @@ after the cleanup thread synchronizes it. Flight
 the same path through a per-statement token.
 
 The attempt releases its grant once its outcome is terminal and no fragment is
-running. Ending one fragment's stream does not release the grant. Retained
+running. The end of one fragment's stream does not release the grant. Retained
 outputs and pending GPU work must settle before their resources can be reused.
 At release, the attempt's cleanup stream is synchronized and its memory domain
 sampled. A failed synchronization, a persistent CUDA fault, or memory still

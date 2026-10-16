@@ -67,6 +67,13 @@ impl Drop for NativeHandle {
     }
 }
 
+/// A cuML handle bound to one `cudf::Runtime` device, its CUDA stream and the
+/// RMM resource the device memory manager currently installs.
+///
+/// Every native call revalidates that binding and routes the manager's
+/// resource on the runtime stream. The memory resource owner must outlive the
+/// handle. The handle, and the buffers, models and stream pools created from
+/// it, are neither `Send` nor `Sync`.
 pub struct CumlResources {
     runtime: Arc<Runtime>,
     native: BindingExtensionLease<NativeHandle>,
@@ -74,6 +81,9 @@ pub struct CumlResources {
 }
 
 impl CumlResources {
+    /// Binds a handle to `runtime`. Fails with `MemoryResourceUnsupported` when
+    /// the runtime's memory resource is not the device memory manager's current
+    /// resource, since cuML allocates through that resource.
     pub fn for_runtime(runtime: Arc<Runtime>) -> Result<Self> {
         let binding = runtime.execution_binding().map_err(|e| from_interop(OP, e))?;
         let stream = binding.cuda_stream().as_raw() as usize;
@@ -141,8 +151,17 @@ impl CumlResources {
         n.raw(op).map(|_| ())
     }
 
-    /// Creates RF pool streams covered by the runtime stream's query-domain grant.
-    /// When `reservation` is `None`, pool allocations route to the device manager's backend resource.
+    /// Creates the stream pool random-forest fit runs on.
+    ///
+    /// Under a query domain, pass the runtime stream's `StreamReservationLease`;
+    /// every pool stream then receives a sibling lease with that domain's
+    /// allocation limit. For a standalone runtime, pass `None` to route the
+    /// device manager's backend resource to each pool stream. Passing `None` for
+    /// a reserved stream is not detected, and pool allocations then bypass the
+    /// domain limit; a lease for another stream or device fails with
+    /// `ReservationCoverageMissing`. Fit synchronizes the pool on success and
+    /// on failure, and routes or member leases are removed before the native
+    /// streams are destroyed.
     pub fn training_streams(
         &self,
         count: NonZeroUsize,
@@ -245,6 +264,8 @@ impl fmt::Debug for CumlResources {
     }
 }
 
+/// Pool streams for random-forest fit, each covered by a sibling reservation
+/// or a backend-resource route for the lifetime of the pool.
 pub struct TrainingStreams {
     members: Vec<RawStreamReservationLease>,
     routes: Vec<RawCurrentResourceRouteLease>,

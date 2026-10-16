@@ -70,7 +70,7 @@ The list-column shape excludes other feature columns. See [ML Inputs](../ml-inpu
 | `cluster_id` | `Int64` | no | Selected cluster ID; -1 indicates noise. |
 | `probability` | `Float32` | no | Membership probability for the selected cluster. |
 
-**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+The output schema depends on the call. Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the schema that the validated ID types and literal options produce.
 
 ## Examples
 

@@ -110,6 +110,11 @@ const config: Config = {
           label: 'Docs',
         },
         {
+          href: 'https://docs.rs/algeon-datafusion/latest/algeon_datafusion/',
+          label: 'API Docs',
+          position: 'right',
+        },
+        {
           to: '/blog',
           label: 'Blog',
           position: 'right',

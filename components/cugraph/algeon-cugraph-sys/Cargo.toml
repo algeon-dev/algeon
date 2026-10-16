@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/algeon-cugraph-sys"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["cugraph", "cuda", "ffi", "gpu", "rapids"]
 
 [package.metadata.bindgen-cli]
