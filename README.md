@@ -58,11 +58,21 @@ Lakehouse catalog integrations (WIP).
 
 ## Getting started
 
-Algeon requires Linux, a supported NVIDIA GPU, the CUDA toolkit and native
-RAPIDS libraries. Check the [prerequisites](https://algeon.dev/build/prerequisites)
-before building.
+Algeon requires Linux and a supported NVIDIA GPU.
 
-- **Run a SQL server:** follow the
+- **Try the server image:** serve the Parquet files in the current directory
+  as tables:
+
+  ```bash
+  docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
+    -v "$PWD:/data:ro" ghcr.io/algeon-dev/algeon-server
+  ```
+
+  Check the [host requirements and supported GPUs](https://algeon.dev/build/docker#run-the-published-image),
+  then submit a query with the
+  [client quickstart](https://algeon.dev/integration/flight-sql-server#quickstart).
+- **Build a SQL server:** check the
+  [prerequisites](https://algeon.dev/build/prerequisites) and follow the
   [Flight SQL server build steps](https://algeon.dev/build#run-as-a-flight-sql-server),
   then submit a query with the
   [client quickstart](https://algeon.dev/integration/flight-sql-server#quickstart).

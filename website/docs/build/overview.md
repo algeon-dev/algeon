@@ -19,7 +19,9 @@ For an application that embeds Algeon, start with
 the application's Cargo features need and for the loader environment of its
 binary.
 
-To run the Flight SQL server without contributing, follow
+To run the Flight SQL server without building anything, use the
+[published image](./docker.md#run-the-published-image). To build the server
+without contributing, follow
 [Run as a Flight SQL server](#run-as-a-flight-sql-server). For repository
 development, follow these pages in order:
 
@@ -29,8 +31,8 @@ development, follow these pages in order:
    shell, the four native builds, the Rust workspace, and the full gate.
 3. [Tests](./tests.md): focused checks, the local pre-merge gate, and
    acceptance runs.
-4. [Building with Docker](./docker.md): optional packaging of the Flight SQL
-   server after a source build.
+4. [Docker](./docker.md): the published server image, and packaging your own
+   image after a source build.
 
 ## Run as a Flight SQL server {/* #run-as-a-flight-sql-server */}
 
