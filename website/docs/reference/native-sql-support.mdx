@@ -10,9 +10,9 @@ Algeon selects a whole DataFusion physical-plan candidate for cuDF execution
 when every operator, expression, type and source in it has a native kernel
 with matching semantics. Memory capacity does not govern planning support. An
 admitted query executes within its assigned grant and returns a typed
-allocation error if device memory is exhausted. Check a production query with
+allocation error if device memory is exhausted. For a production query,
 [`algeon_explain_coverage`](../integration/gpu-coverage-validation.mdx)
-rather than this page.
+reports the exact coverage; this page summarizes the rules.
 
 ## Relational plan shapes
 
@@ -73,9 +73,9 @@ millisecond difference.
 
 Carry types from [Data Type Support](./data-type-support.md) can be selected
 and returned but are not valid expression values, keys, sort or partition
-values, or aggregate and window inputs. The one exception is a global
-`COUNT(column)` without `DISTINCT`, `FILTER` or `GROUP BY` over a `List`,
-`LargeList` or `FixedSizeList` column, which counts the non-null rows without
+values, or aggregate and window inputs. A global `COUNT(column)` without
+`DISTINCT`, `FILTER` or `GROUP BY` over a `List`, `LargeList` or
+`FixedSizeList` column is accepted and counts the non-null rows without
 reading the list values.
 
 ## Aggregates

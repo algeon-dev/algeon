@@ -132,7 +132,7 @@ on the exception class.
 
 For `query_memory_limit_exceeded`, `device_out_of_memory` and
 `device_allocation_failed`, the message names the operation and the requested,
-peak and grant bytes it carries, each also in GiB. It then asks the caller to
+peak and grant bytes it carries, each also in GiB. The remedy is to
 filter or project earlier, split the query, or raise
 `admission.device_profiles.default_query_limit_bytes` for the device, since an
 unchanged resubmission fails again. A device allocation failure also points at
@@ -152,9 +152,9 @@ An `algorithm_did_not_converge` message names the algorithm, the iterations
 reached and the configured limits, with matching `algorithm`, `iterations`, `max_iterations` and
 `epsilon` metadata. Resubmitting the identical query reproduces the convergence
 failure. The message ends with the
-native layer's `remedy`. Katz centrality asks for a lower `alpha` (below
+native layer's `remedy`. For Katz centrality the remedy is a lower `alpha` (below
 1/lambda_max, the reciprocal of the largest adjacency eigenvalue) or a higher
-`max_iterations`; HITS and eigenvector centrality ask for a higher
+`max_iterations`; for HITS and eigenvector centrality it is a higher
 `max_iterations` or `epsilon`.
 
 ### Strict unsupported rejection {/* #strict-unsupported-rejection */}

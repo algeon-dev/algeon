@@ -17,20 +17,20 @@ Use the release adapter and its compatible DataFusion dependency range:
 
 ```toml
 [dependencies]
-algeon-datafusion = { version = "0.1.0", features = ["cugraph", "cuvs", "cuml"] }
+algeon-datafusion = { version = "0.1.1", features = ["cugraph", "cuvs", "cuml"] }
 datafusion = "55.1"
 futures = "0.3"
 ```
 
 The dependency ranges permit Algeon 0.1.x and DataFusion 55.x updates. Build
 native libraries from the source tag matching the resolved Algeon version
-recorded in the application's `Cargo.lock`, such as `v0.1.0` for `0.1.0`.
+recorded in the application's `Cargo.lock`, such as `v0.1.1` for `0.1.1`.
 An Algeon version update requires native libraries from the corresponding
 release. Follow [Building for an Application](../build/rust-dependency.md)
 for the native build order and the application's build and runtime loader
-configuration. That guide pins `0.1.0`. Update its source tag and adapter
+configuration. That guide pins `0.1.1`. Update its source tag and adapter
 version together when using another Algeon release. The recipe requires the
-`v0.1.0` tag and the crates.io packages.
+`v0.1.1` tag and the crates.io packages.
 
 The `algeon-datafusion` crate has no default features. Add `cugraph` for graph SQL, `cuvs`
 for vector SQL, `cuml` for machine-learning SQL, and `nvml` for optional device

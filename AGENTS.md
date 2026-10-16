@@ -1,9 +1,10 @@
 # AGENTS.md
 
 Before editing, read the applicable `AGENTS.md` files along each target path,
-including nested guidance not loaded at startup. Component contracts live in
-`components/{cudf,cugraph,cuvs,cuml}/AGENTS.md`. For build, CI, or packaging
-maintenance (including configuration outside `scripts/`), also read
+including nested guidance not loaded at startup. Each component's `AGENTS.md`
+under `components/` points to the documents that own its contracts. For
+build, CI, or packaging maintenance (including configuration outside
+`scripts/`), also read
 [scripts/AGENTS.md](scripts/AGENTS.md).
 
 ## Working principles

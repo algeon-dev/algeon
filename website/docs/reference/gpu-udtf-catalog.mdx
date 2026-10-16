@@ -49,8 +49,8 @@ ORDER BY function_name;
 | `summary` | `Utf8` | One-line description. |
 | `relation_roles_json` | `Utf8` | Ordered relation-role definitions. |
 
-`available=true` means the UDTF can be planned. It says nothing about whether
-the surrounding query runs on the GPU.
+`available=true` covers the UDTF itself; the relational operators around it
+are planned separately.
 
 ## gpu_describe_function(function_name)
 
@@ -92,7 +92,7 @@ FROM gpu_validate_call(
 );
 ```
 
-The envelope has exactly two fields. `relations` is an object keyed by the
+The envelope holds `relations` and `options`. `relations` is an object keyed by the
 descriptor's relation roles, each with one `table` field holding a one-, two-
 or three-part DataFusion table or view reference. `options` is an object the
 UDTF validates. Unknown envelope keys, roles and option keys are rejected. The

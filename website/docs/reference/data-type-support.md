@@ -50,8 +50,8 @@ reads only the top-level validity of the column.
 | `Null` | None | The untyped null column type. |
 
 Native lists use Int32 offsets. Every offset, child length and `rows * D`
-must fit the nonnegative Int32 range. A `LargeList` outside it is rejected,
-not truncated. Each non-null `FixedSizeList` row holds exactly `D` child
+must fit the nonnegative Int32 range. A `LargeList` outside that range is
+rejected. Each non-null `FixedSizeList` row holds exactly `D` child
 positions. NaN, infinities, signed zero, root and child nulls, and empty valid
 lists are payload values that carry paths preserve.
 
@@ -78,7 +78,7 @@ path. `gpu_describe_function('<udtf>')` returns the contract and
   feature column and vector binding in a call has the same element type. The
   [element and metric matrix](../cuvs/vector-inputs.mdx#vector-element-and-metric-support-by-udtf)
   lists the supported combinations. Integer IVF-PQ does not support cosine.
-- Floating elements must be finite. Nothing casts elements implicitly. Use
+- Floating elements must be finite. Elements are not cast implicitly; use
   `CAST` in the subquery. `Float16` has no cuDF representation.
 - Pairwise `distance` matches its `Float32` or `Float64` input, ANN distance is
   `Float32` and KMeans `cluster_id` is `Int32`.
