@@ -26,7 +26,7 @@ succeeds. A row with a null operand never fails.
 | `CAST` of a timestamp or duration to a finer unit | The stored count times the unit ratio leaves `Int64`. | `TIMESTAMP(0)` to `TIMESTAMP(9)` fails beyond 9,223,372,036 seconds from the epoch, about 292 years. A `DATE` fails at microsecond and nanosecond resolution the same way, from 106,752 days at nanosecond resolution. |
 | `CAST` of a timestamp or duration to a coarser unit | Never. | Divides and truncates toward zero: `-1500` milliseconds is `-1` second, `-1` nanosecond is `0` seconds. A timestamp cast to `DATE` floors to the calendar date, so `-1` nanosecond is the day before the epoch. |
 | `CAST` of a timestamp or duration to `BIGINT`, or of an integer to a timestamp | Never. | The stored count in the type's own unit, with no rescaling. |
-| Timestamp `-` timestamp, timestamp `+`/`-` duration | The result leaves `Int64`, which takes operands more than 292 years apart at nanosecond resolution. | Does not wrap: Arrow checks these even for the wrapping SQL operators. DataFusion casts the coarser of two units to the finer one first, with the checked cast above. A timestamp plus an `INTERVAL` is a calendar computation and is not checked this way. |
+| Timestamp `-` timestamp, timestamp `+`/`-` duration | The result leaves `Int64`, which takes operands more than 292 years apart at nanosecond resolution. | Does not wrap, because Arrow checks these even for the wrapping SQL operators. DataFusion casts the coarser of two units to the finer one first, with the checked cast above. A timestamp plus an `INTERVAL` is a calendar computation and is not checked this way. |
 
 ## Guarded evaluation
 

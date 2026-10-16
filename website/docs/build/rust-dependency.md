@@ -14,8 +14,8 @@ tag, and how the application finds them at build time and at run time. The
 application code, from the backend to execution modes, is in
 [DataFusion Session](../integration/datafusion-session.mdx).
 
-The commands describe the `0.1.0` release with native libraries from the
-`v0.1.0` tag and require that tag and the release packages to be available.
+The commands describe the `0.1.1` release with native libraries from the
+`v0.1.1` tag and require that tag and the release packages to be available.
 
 ## 1. Select the release and configure the native build
 
@@ -29,9 +29,9 @@ Clone the matching native source release into a directory separate from the
 application:
 
 ```bash
-git clone --branch v0.1.0 --recurse-submodules \
-  https://github.com/algeon-dev/algeon.git algeon-native-v0.1.0
-cd algeon-native-v0.1.0
+git clone --branch v0.1.1 --recurse-submodules \
+  https://github.com/algeon-dev/algeon.git algeon-native-v0.1.1
+cd algeon-native-v0.1.1
 git submodule status --recursive
 ```
 
@@ -39,8 +39,8 @@ For an existing checkout, select the tag and update its pinned submodules
 before building:
 
 ```bash
-cd /absolute/path/to/algeon-native-v0.1.0
-git checkout v0.1.0
+cd /absolute/path/to/algeon-native-v0.1.1
+git checkout v0.1.1
 git submodule sync --recursive
 git submodule update --init --recursive
 ```
@@ -143,7 +143,7 @@ cd "$ALGEON_APP_ROOT"
 
 The standalone manifest below uses registry dependencies and forwards optional
 features to the adapter. Its `datafusion = "55.1"` dependency accepts compatible
-55.x updates; `algeon-datafusion = "=0.1.0"` pins the Algeon release. Cargo
+55.x updates; `algeon-datafusion = "=0.1.1"` pins the Algeon release. Cargo
 creates an application lockfile on the first build. Keep that lockfile for
 subsequent `--locked` builds.
 
@@ -167,7 +167,7 @@ server = ["algeon-datafusion/server"]
 nvml = ["algeon-datafusion/nvml"]
 
 [dependencies]
-algeon-datafusion = "=0.1.0"
+algeon-datafusion = "=0.1.1"
 datafusion = "55.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"

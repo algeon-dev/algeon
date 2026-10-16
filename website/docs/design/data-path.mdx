@@ -45,8 +45,8 @@ to distinguish metadata pruning from row filtering.
 The planner can combine several row groups into one source chunk. Compatible
 source chunks can then be batched into a reader call. The reader selects the
 column byte ranges, and KvikIO divides reads into I/O tasks on its shared
-pool. One source chunk can therefore require many I/O tasks. Changing the
-I/O task size changes the read subdivision; the source-chunk target still
+pool. One source chunk can therefore require many I/O tasks. The
+I/O task size controls the read subdivision; the source-chunk target still
 comes from the query's memory policy.
 
 Source sizing uses estimates of decoded columns because dictionary-encoded
