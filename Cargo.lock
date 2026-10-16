@@ -33,11 +33,11 @@ dependencies = [
 
 [[package]]
 name = "algeon-build-support"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "algeon-cudf"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ahash",
  "algeon-cudf-sys",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "algeon-cudf-sys"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
  "cmake",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "algeon-cugraph"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-cudf",
  "algeon-cudf-sys",
@@ -76,14 +76,14 @@ dependencies = [
 
 [[package]]
 name = "algeon-cugraph-sys"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
 ]
 
 [[package]]
 name = "algeon-cuml"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-cudf",
  "algeon-cuml-sys",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "algeon-cuml-sys"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
  "cmake",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "algeon-cuvs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-cudf",
  "algeon-cuvs-sys",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "algeon-cuvs-sys"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
  "anyhow",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "algeon-datafusion"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
  "algeon-cudf",
@@ -169,14 +169,14 @@ dependencies = [
 
 [[package]]
 name = "algeon-interop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "static_assertions",
 ]
 
 [[package]]
 name = "algeon-query-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
  "algeon-cudf",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "algeon-query-planning"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow",
  "blake3",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "algeon-query-runtime"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-cudf",
  "algeon-cudf-sys",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "algeon-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
  "algeon-cudf-sys",
@@ -726,7 +726,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bench"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
  "algeon-cudf",
@@ -1924,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "examples"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
  "algeon-cudf-sys",
@@ -4234,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "tools"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "algeon-build-support",
  "algeon-cudf",
@@ -5007,7 +5007,7 @@ dependencies = [
 
 [[package]]
 name = "workloads"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow",
  "datafusion",
