@@ -57,6 +57,11 @@ class cudf_device_guard {
   bool active_      = false;
 };
 
+/// Reads the CUDA device count into `count`. On failure `count` is 0, the
+/// recorded error names the installed driver's CUDA version or states that no
+/// driver is loaded, and the result is `CUDF_ERROR_CUDA`.
+cudf_status_t cudf_read_cuda_device_count(int32_t* count);
+
 // Device-domain invariant: each device's current RMM resource is installed
 // once when its memory domain is created (manager creation or lazy default)
 // and never changes afterwards. Operations must never swap it; libcudf

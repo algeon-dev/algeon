@@ -26,7 +26,37 @@ bool cudf_device_attribute_to_cuda_attribute(int32_t attr, cudaDeviceAttr* out)
     default: return false;
   }
 }
+
+std::string cuda_version_string(int version)
+{
+  return std::to_string(version / 1000) + "." + std::to_string((version % 1000) / 10);
+}
 }  // namespace
+
+cudf_status_t cudf_read_cuda_device_count(int32_t* count)
+{
+  cudaError_t const err = cudaGetDeviceCount(count);
+  if (err == cudaSuccess) { return CUDF_SUCCESS; }
+  *count = 0;
+  auto msg           = std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(err);
+  int driver_version = 0;
+  // A process that cannot load the driver library at all, such as a container
+  // started without GPU access, also reports cudaErrorInsufficientDriver.
+  // cudaDriverGetVersion reports 0 in that case, which separates it from a
+  // driver that is too old.
+  if (cudaDriverGetVersion(&driver_version) == cudaSuccess) {
+    if (driver_version == 0) {
+      msg += "; no NVIDIA driver is available to this process";
+    } else {
+      int runtime_version = 0;
+      cudaRuntimeGetVersion(&runtime_version);
+      msg += "; the NVIDIA driver supports CUDA " + cuda_version_string(driver_version) +
+             " and the CUDA runtime is " + cuda_version_string(runtime_version);
+    }
+  }
+  set_error(msg);
+  return CUDF_ERROR_CUDA;
+}
 
 extern "C" {
 cudf_status_t cudf_cuda_get_device(int32_t* device)
@@ -88,13 +118,7 @@ cudf_status_t cudf_cuda_get_device_count(int32_t* count)
   *count = 0;
   CUDF_RUST_TRY
   {
-    cudaError_t err = cudaGetDeviceCount(count);
-    if (err != cudaSuccess) {
-      auto msg = std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(err);
-      set_error(msg);
-      return CUDF_ERROR_CUDA;
-    }
-    return CUDF_SUCCESS;
+    return cudf_read_cuda_device_count(count);
   }
   CUDF_RUST_CATCH
 }
