@@ -70,7 +70,7 @@ The adapter, runtime and engine call the components they need directly.
 Component APIs bind operations to a CUDA stream and memory resource. Native
 RAPIDS libraries perform the work. Shared interop contracts preserve buffer
 ownership across library boundaries. The
-[cuDF component README](https://github.com/algeon-dev/algeon/blob/main/components/cudf/README.md)
+[cuDF binding design](https://github.com/algeon-dev/algeon/blob/main/components/cudf/DESIGN.md)
 shows how one binding meets these rules: its layers, handle ownership, stream
 provenance and memory domains.
 

@@ -17,6 +17,8 @@ Algeon (`/ˈæl.dʒi.ən/`, "AL-jee-on") is a GPU-accelerated query engine built
 functions, alongside [cuDF](https://docs.rapids.ai/api/cudf/stable/) relational
 execution. Subqueries supply algorithm inputs; the results feed joins,
 aggregations or another algorithm within the same SQL statement.
+To learn more about Algeon and see it in action, read
+[Introducing Algeon](https://algeon.dev/blog/introducing-algeon).
 
 <p align="center">
   <picture>

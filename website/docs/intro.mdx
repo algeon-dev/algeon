@@ -17,7 +17,7 @@ import styles from '@site/src/css/homepage.module.css';
 
 <p className={styles.lead}>
   <span>Run graph, vector, and machine-learning algorithms in one SQL query.</span>{' '}
-  <span>Follow what you find to questions you hadn’t thought to ask.</span>
+  <span>Join their results, filter them, and keep querying.</span>
 </p>
 
 <div className={styles.actions}>
@@ -33,7 +33,7 @@ table functions and runs supported relational operations on cuDF. Analysts and A
 agents can change algorithm inputs and combine results in SQL as new questions
 emerge. Use it as a Rust library in a DataFusion
 session or connect through Arrow Flight SQL. It runs beside the query engines
-already reading the lakehouse and takes the questions they have no operator
+already reading the lakehouse and answers the questions they have no operator
 for. The [design guide](./design/index.mdx) follows a query from
 SQL to GPU columns and back, and [Introducing Algeon](/blog/introducing-algeon)
 describes the motivation and application scenarios.
@@ -133,7 +133,7 @@ fields and retry guidance.
 ## DataFusion integration {/* #how-it-fits-into-datafusion */}
 
 <ArchitectureDiagram
-  caption={<>A query enters through the interface you already use. Algeon's
+  caption={<>A query enters through a DataFusion session or the Flight SQL server. Algeon's
   DataFusion optimizer rule replaces supported plan candidates with GPU
   execution in the same process, and results return as ordinary Arrow
   batches. Table data comes from Parquet files on local disk or in

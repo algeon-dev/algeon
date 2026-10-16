@@ -67,7 +67,7 @@ The list-column shape excludes other feature columns. See [ML Inputs](../ml-inpu
 | `prediction` | `Float32 or Int32` | no | Float32 score of a single-output model with output =&gt; 'scores'; Int32 class index with output =&gt; 'class_index'. |
 | `output_<index>` | `Float32` | no | Score of one model output, returned instead of prediction for a multi-output model with output =&gt; 'scores'. The output contains `model output count` such columns, `output_0` through `output_&lt;model output count - 1&gt;`. |
 
-**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+The output schema depends on the call. Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the schema that the validated ID types and literal options produce.
 
 import Notes from '../_notes/cuml_forest_predict.mdx';
 

@@ -74,7 +74,7 @@ The list-column shape excludes other feature columns. See [ML Inputs](../ml-inpu
 | `id` | `same_as_input.id` | no | Logical input ID. |
 | `dim_<index>` | `Float32` | no | Embedded dimension value, repeated n_components times. The output contains `n_components` such columns, `dim_0` through `dim_&lt;n_components - 1&gt;`. |
 
-**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+The output schema depends on the call. Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the schema that the validated ID types and literal options produce.
 
 ## Examples
 

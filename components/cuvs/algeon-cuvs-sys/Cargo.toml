@@ -10,7 +10,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/algeon-cuvs-sys"
-readme = "../README.md"
+readme = "README.md"
 categories = ["api-bindings", "external-ffi-bindings"]
 keywords = ["cuvs", "cuda", "ffi", "gpu", "rapids"]
 

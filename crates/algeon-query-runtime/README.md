@@ -1,37 +1,12 @@
-# query-runtime
+# algeon-query-runtime
 
-`algeon-query-runtime` is a published implementation dependency of Algeon.
-Applications use [`algeon-datafusion`](https://docs.rs/algeon-datafusion)
-and its re-exported types. This page describes the workspace owner API; see
-the [API documentation boundary](https://algeon.dev/design#api-documentation).
+`algeon-query-runtime` owns the attempt lifecycle, admission to a GPU, the
+per-device memory ledger and its immutable grants, resident caches, and the
+observation snapshot that reports and metrics read. It depends on
+`algeon-query-planning` and `algeon-cudf`, and `algeon-query-engine` and
+`algeon-datafusion` build on it. Applications depend on `algeon-datafusion`,
+which re-exports the runtime types they need.
 
-`query-runtime` is the native owner of attempt lifecycle
-and GPU resource admission. It depends on `query-planning` contracts and
-does not depend on `query-engine` execution.
-
-## Main areas
-
-- `attempt/` owns cancellation, lifecycle, queue state, and attempt ownership.
-- `runtime/query_service/` and `runtime/gpu/` own device placement, the single
-  per-device ledger, immutable grants, transactions, and cleanup.
-- `runtime/cache/` and `runtime/source_identity/` own resident cache lifecycle
-  and cache identity.
-- `observability/` and `metrics/` project the single runtime observation
-  snapshot and sealed attempt evidence.
-- `native_error.rs` owns the one cuDF-to-`QueryError` projection, so the
-  runtime and the engine classify a native failure identically.
-
-Parquet footer parsing and source chunk planning belong to `query-engine`.
-The runtime owns the resources those readers use: the object-store client
-registry, credential profiles, the I/O executor, queues, and cancellation.
-
-Runtime consumes the planning proof and refines deferred evidence inside the
-same immutable grant.
-
-## Validation
-
-```bash
-cargo nextest run -p query-runtime --all-features --lib
-cargo clippy -p query-runtime --all-targets --all-features
-bash scripts/check_all.sh
-```
+[Memory and query lifetime](https://algeon.dev/design/admission) and
+[runtimes and threads](https://algeon.dev/design#runtimes-and-threads)
+document the contracts.

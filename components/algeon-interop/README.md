@@ -1,10 +1,8 @@
 # algeon-interop
 
-`algeon-interop` (`rapids_interop`) is a published implementation dependency
-of Algeon. Applications use
-[`algeon-datafusion`](https://docs.rs/algeon-datafusion). See the
-[API documentation boundary](https://algeon.dev/design#api-documentation).
-
-The crate owns shared buffer, execution-binding and completion contracts for
-Algeon GPU components. Producers and consumers retain storage through the
-completion obligations documented on the exported types.
+`algeon-interop` (library `rapids_interop`) defines the buffer,
+execution-binding and completion contracts the cuDF, cuGraph, cuVS and cuML
+components use to share GPU buffers. A producer keeps its storage alive
+until the consumer's completion obligation is met, and the exported types
+state those obligations. Applications do not depend on it directly; they
+use [`algeon-datafusion`](https://docs.rs/algeon-datafusion).
