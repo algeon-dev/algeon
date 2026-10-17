@@ -18,6 +18,11 @@ evidence as described in
   section lists its phases. Failed runs upload the phase logs.
 - The website's `npm ci`, `npm run typecheck` and `npm run build`.
 
+[`deploy-website.yml`](deploy-website.yml) builds the website again and
+deploys it to Cloudflare Pages on pushes to `main` that change the site or
+the root README. [Deployment](../../website/README.md#deployment) lists the
+secrets it needs.
+
 [`dependabot.yml`](../dependabot.yml) proposes monthly GitHub Actions and
 website npm updates. It leaves Cargo out, since no hosted run can execute the
 GPU tests a dependency bump needs.
