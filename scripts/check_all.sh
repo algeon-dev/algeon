@@ -136,6 +136,7 @@ POLICY_SCRIPTS=(
   scripts/ci/check_cugraph_example_ddl.sh
   scripts/ci/tests/check_docker_scripts_tests.sh
   scripts/ci/check_docker_scripts.sh
+  scripts/ci/tests/check_publish_image_tests.sh
 )
 
 policy_scripts() {

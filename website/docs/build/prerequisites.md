@@ -5,6 +5,11 @@ description: Install the upstream native-build prerequisites, then add the small
 
 # Prerequisites
 
+This page covers building from source. The
+[published server image](./docker.md#run-the-published-image) needs only an
+NVIDIA driver, the NVIDIA Container Toolkit and a CPU that meets the
+[CPU requirement](#cpu-requirement).
+
 Start with the [RAPIDS install guide](https://docs.rapids.ai/install/) for your
 Linux distribution. It owns NVIDIA driver, CUDA toolkit, GPU support,
 host-compiler, CMake, and Ninja compatibility. The upstream dependency

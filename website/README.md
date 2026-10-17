@@ -155,14 +155,18 @@ The site is deployed to **Cloudflare Pages** (project `algeon`) at the
 apex custom domain **<https://algeon.dev>** (`url` + `baseUrl: '/'` in
 `docusaurus.config.ts`).
 
-Two paths, both live:
+[`deploy-website.yml`](../.github/workflows/deploy-website.yml) runs
+`npm ci`, `npm run typecheck`, `npm run build` and `npm run deploy` on every
+push to `main` that touches `website/**` or the root `README.md`. The
+**Run workflow** button on its Actions page redeploys without a push.
 
-- **Automatic**: `.github/workflows/deploy-website.yml` builds this directory
-  and deploys via `cloudflare/wrangler-action` on every push to `main` that
-  touches `website/**` (needs the `CLOUDFLARE_API_TOKEN` /
-  `CLOUDFLARE_ACCOUNT_ID` repository secrets).
-- **Manual**:
-  `npm ci && npm run typecheck && npm run build && npm run deploy`.
+The job runs in the `website` GitHub environment, which admits only `main`
+and holds two secrets:
 
-See [`DEPLOY.md`](./DEPLOY.md) for the full Cloudflare Pages setup, secrets, and
-custom-domain reference.
+- `CLOUDFLARE_API_TOKEN`: an account API token with the
+  **Cloudflare Pages: Edit** permission.
+- `CLOUDFLARE_ACCOUNT_ID`: the account that owns the `algeon` project.
+
+The custom domain and its certificate are managed in the Cloudflare Pages
+dashboard. A manual deploy from a logged-in `wrangler` runs the same
+four npm commands locally.

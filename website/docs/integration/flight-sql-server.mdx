@@ -13,9 +13,27 @@ and returns Arrow record batches to ADBC and Flight SQL clients. Its
 embeddable implementation and public API live in
 `algeon_datafusion::server`; `crates/algeon-server` is the standalone launcher.
 
+## Run the published image {/* #run-the-published-image */}
+
+The published image needs no source build. From the directory that holds your
+Parquet files:
+
+```bash
+docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
+  -v "$PWD:/data:ro" ghcr.io/algeon-dev/algeon-server
+```
+
+The image includes cuGraph, cuVS and cuML. Each Parquet file and each
+directory of Parquet files under the mounted `/data` becomes a table at startup
+(see [Data root](./configuration.mdx#data-root)). The server listens
+on host loopback port 50051 with authentication disabled; continue with the
+[quickstart](#quickstart). Host requirements, supported GPUs and
+troubleshooting are on
+[Run the published image](../build/docker.md#run-the-published-image).
+
 ## Build and start
 
-After the native libraries are built (see
+To build the server instead, after the native libraries are built (see
 [Run as a Flight SQL server](../build/overview.md#run-as-a-flight-sql-server)), build the
 `algeon-server` package and its `algeon_server` binary:
 

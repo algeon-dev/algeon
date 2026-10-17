@@ -2018,6 +2018,7 @@ pub struct algeon_datafusion::server::ServerConfig
 pub algeon_datafusion::server::ServerConfig::auth: algeon_datafusion::server::AuthConfig
 pub algeon_datafusion::server::ServerConfig::bind_addr: core::net::socket_addr::SocketAddr
 pub algeon_datafusion::server::ServerConfig::cugraph: core::option::Option<algeon_datafusion::server::CugraphServerConfig>
+pub algeon_datafusion::server::ServerConfig::data_root: core::option::Option<std::path::PathBuf>
 pub algeon_datafusion::server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<query_runtime::runtime::backend_core::GpuBackendDeviceProfile>
 pub algeon_datafusion::server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, query_runtime::runtime::backend_core::GpuMemoryOwnership)>
 pub algeon_datafusion::server::ServerConfig::http2_keepalive: algeon_datafusion::server::Http2Keepalive

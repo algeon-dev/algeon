@@ -1,11 +1,21 @@
-use std::{fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use datafusion::{
-    execution::SessionStateBuilder,
-    logical_expr::{DdlStatement, LogicalPlan},
+    common::{DFSchema, TableReference},
+    datasource::listing::ListingTableUrl,
+    error::{DataFusionError, Result as DataFusionResult},
+    execution::{SessionState, SessionStateBuilder},
+    logical_expr::{CreateExternalTable, DdlStatement, LogicalPlan},
     prelude::{SessionConfig, SessionContext},
     sql::{parser::DFParserBuilder, sqlparser::dialect::dialect_from_str},
 };
+use futures::StreamExt;
+use url::Url;
 
 use crate::server::{
     adapter_error::Error as AdapterError,
@@ -23,9 +33,10 @@ use crate::server::{
 ///
 /// The backend's optimizer template overrides the config template. The function
 /// installs cuVS and cuML SQL and optional cuGraph SQL. Session installation
-/// failures retain a typed server error. [`ServerConfig::init_sql`] is not run
-/// here; [`crate::server::FlightSqlServerBuilder::build`] runs it on the
-/// shared session.
+/// failures retain a typed server error. [`ServerConfig::data_root`] and
+/// [`ServerConfig::init_sql`] are not applied here;
+/// [`crate::server::FlightSqlServerBuilder::build`] applies them to the shared
+/// session afterwards, data root tables first.
 pub async fn build_session_context_with_backend(
     config: &ServerConfig,
     backend: &AlgeonGpuBackend,
@@ -49,6 +60,181 @@ pub async fn build_session_context_with_backend(
         None => builder,
     };
     Ok(SessionContext::new_with_state(builder.build()))
+}
+
+/// Registers the [`ServerConfig::data_root`] tables on `ctx`, then runs
+/// [`ServerConfig::init_sql`], so startup SQL can build views over the
+/// registered tables or replace them.
+pub(crate) async fn prepare_shared_session(ctx: &SessionContext, config: &ServerConfig) -> ServerResult<()> {
+    if let Some(root) = &config.data_root {
+        register_data_root(ctx, root).await?;
+    }
+    if let Some(path) = &config.init_sql {
+        run_init_sql(ctx, path).await?;
+    }
+    Ok(())
+}
+
+/// DataFusion's file type name for `STORED AS PARQUET`.
+const PARQUET_FILE_TYPE: &str = "PARQUET";
+/// The glob DataFusion's listing table factory adds to a folder location of
+/// `STORED AS PARQUET`, so a directory counts as a dataset exactly when DDL
+/// on it would list a file.
+const PARQUET_FOLDER_GLOB: &str = "*.parquet";
+
+/// One first-level entry of the data root that maps to a table.
+struct DataRootEntry {
+    name: String,
+    path: PathBuf,
+    /// A `file://` URL. DataFusion splits a scheme-less location at the
+    /// first `*`, `?` or `[` into a prefix and a glob, so a plain path with
+    /// one of those characters would read other files or none.
+    location: Url,
+    is_dir: bool,
+}
+
+/// Registers each Parquet file and Parquet dataset directory at the first
+/// level of `root` as a table on `ctx`, in name order, through the same
+/// listing table factory that `CREATE EXTERNAL TABLE ... STORED AS PARQUET`
+/// uses. Entries that cannot be inspected and directories whose listing fails
+/// before a Parquet file appears are skipped with a warning. An unreadable
+/// root, two entries with one table name, and a dataset that cannot be
+/// registered are `invalid_configuration` naming `data.root` and the path.
+pub(crate) async fn register_data_root(ctx: &SessionContext, root: &Path) -> ServerResult<()> {
+    let state = ctx.state();
+    let entries = data_root_entries(root)?;
+    let mut tables = BTreeMap::<String, PathBuf>::new();
+    for entry in entries {
+        if entry.is_dir {
+            match folder_lists_parquet(&state, &entry.location).await {
+                Ok(true) => {},
+                Ok(false) => continue,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %entry.path.display(),
+                        error = %error,
+                        "skipping data root directory whose listing failed before a Parquet file was found"
+                    );
+                    continue;
+                },
+            }
+        }
+        if let Some(first) = tables.get(&entry.name) {
+            return Err(ServerError::invalid_config(
+                "data.root",
+                format!(
+                    "has two entries for table `{}`: `{}` and `{}`; rename one of them",
+                    entry.name,
+                    first.display(),
+                    entry.path.display()
+                ),
+            )
+            .with_fact("reason", "data_root_duplicate_table")
+            .with_fact("table", &entry.name));
+        }
+        register_data_root_table(ctx, &state, &entry).await?;
+        tracing::info!(table = %entry.name, path = %entry.path.display(), "registered data root table");
+        tables.insert(entry.name, entry.path);
+    }
+    tracing::info!(root = %root.display(), table_count = tables.len(), "registered data root tables");
+    Ok(())
+}
+
+/// The first-level entries of `root` that may map to a table, sorted by file
+/// name. Directories are kept without inspecting their contents.
+fn data_root_entries(root: &Path) -> ServerResult<Vec<DataRootEntry>> {
+    let unreadable = |error: std::io::Error| {
+        ServerError::invalid_config_with_source("data.root", format!("`{}` cannot be read", root.display()), error)
+    };
+    let root = std::path::absolute(root).map_err(unreadable)?;
+    let mut dir_entries =
+        fs::read_dir(&root).and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>()).map_err(unreadable)?;
+    dir_entries.sort_by_key(fs::DirEntry::file_name);
+    let mut entries = Vec::new();
+    for dir_entry in dir_entries {
+        let file_name = dir_entry.file_name();
+        // Spark writes `_SUCCESS` markers beside its output files.
+        if matches!(file_name.as_encoded_bytes().first(), Some(b'.' | b'_')) {
+            continue;
+        }
+        let path = dir_entry.path();
+        // Follows symbolic links, so a linked file or dataset registers like
+        // the entry it points to. A link to a host path outside a container
+        // bind mount dangles inside the container.
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), error = %error, "skipping data root entry that cannot be inspected");
+                continue;
+            },
+        };
+        let (name, location) = if metadata.is_dir() {
+            (path.file_name(), Url::from_directory_path(&path))
+        } else if metadata.is_file()
+            && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("parquet"))
+        {
+            (path.file_stem(), Url::from_file_path(&path))
+        } else {
+            continue;
+        };
+        let Some(name) = name.and_then(|name| name.to_str()) else {
+            tracing::warn!(path = %path.display(), "skipping data root entry whose name is not valid UTF-8");
+            continue;
+        };
+        let location = location.map_err(|()| {
+            ServerError::invalid_config("data.root", format!("`{}` cannot be written as a file URL", path.display()))
+        })?;
+        entries.push(DataRootEntry { name: name.to_string(), path, location, is_dir: metadata.is_dir() });
+    }
+    Ok(entries)
+}
+
+/// Whether DataFusion's listing of the folder `location` would read a
+/// Parquet file. The walk stops at the first match, and it bypasses the
+/// list-files cache so the registered table's own listing populates it.
+async fn folder_lists_parquet(state: &SessionState, location: &Url) -> DataFusionResult<bool> {
+    let url = ListingTableUrl::parse(location.as_str())?.with_glob(PARQUET_FOLDER_GLOB)?;
+    let ignore_subdirectory = state.config_options().execution.listing_table_ignore_subdirectory;
+    let store = state.runtime_env().object_store(url.object_store())?;
+    let mut files = store.list(Some(url.prefix()));
+    while let Some(file) = files.next().await {
+        if url.contains(&file?.location, ignore_subdirectory) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn register_data_root_table(
+    ctx: &SessionContext,
+    state: &SessionState,
+    entry: &DataRootEntry,
+) -> ServerResult<()> {
+    let failed = |error: DataFusionError| {
+        ServerError::invalid_config_with_source(
+            "data.root",
+            format!("`{}` cannot be registered as table `{}`: {error}", entry.path.display(), entry.name),
+            error,
+        )
+        .with_fact("table", &entry.name)
+    };
+    let name = TableReference::bare(entry.name.as_str());
+    let command = CreateExternalTable::builder(
+        name.clone(),
+        entry.location.as_str(),
+        PARQUET_FILE_TYPE,
+        Arc::new(DFSchema::empty()),
+    )
+    .build();
+    let factory = state.table_factories().get(PARQUET_FILE_TYPE).ok_or_else(|| {
+        ServerError::invalid_config(
+            "data.root",
+            format!("cannot be registered because the session has no `{PARQUET_FILE_TYPE}` table factory"),
+        )
+    })?;
+    let provider = factory.create(state, &command).await.map_err(failed)?;
+    ctx.register_table(name, provider).map_err(failed)?;
+    Ok(())
 }
 
 /// Runs every statement of the `init_sql` file on `ctx`, in order. Each

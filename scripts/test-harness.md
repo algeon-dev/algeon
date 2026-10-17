@@ -395,8 +395,9 @@ listed in [LICENSE-MERREC.md](../website/static/data/LICENSE-MERREC.md). Each
 capture names its terms in a top-level `license` field, which the capture
 writers under `scripts/dev` emit from `merrec_verify_common.MERREC_LICENSE`.
 No published crate, Docker image or release archive may include those files:
-the Docker scripts stage only the server binary and native libraries, and
-`release_archives.py` packages crate directories.
+the Docker scripts stage only the server binary, native libraries and the
+license texts of bundled components, and `release_archives.py` packages crate
+directories.
 [`check_third_party_data.py`](ci/check_third_party_data.py) enforces the
 location, the field, the file list and the packaging boundary in the policy
 phase. A new derived capture goes in that directory with the field and a line

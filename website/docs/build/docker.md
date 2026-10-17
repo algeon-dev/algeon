@@ -1,18 +1,68 @@
 ---
 sidebar_position: 5
 sidebar_label: Docker
-description: Build the Algeon Flight SQL server image from locally built native artifacts and smoke-test Flight SQL.
+description: Run the published Algeon Flight SQL server image, or build an image from locally built native artifacts, and smoke-test Flight SQL.
 ---
 
-# Building with Docker
+# Docker
 
-The Docker image packages the standalone Flight SQL server plus the exact
-locally built RAPIDS libraries it was linked against.
+The published image `ghcr.io/algeon-dev/algeon-server` runs the standalone
+Flight SQL server with cuGraph, cuVS and cuML SQL. Building your own image
+packages the server with the RAPIDS libraries of a local source build, for
+other GPU architectures, other features or a modified checkout.
 
-:::note[Docker requires a source build]
+## Run the published image
 
-Complete [Building from Source](./from-source.md) before following this page.
-`docker/build-image.sh` packages the locally built native libraries.
+From the directory that holds your Parquet files:
+
+```bash
+docker run --rm --gpus all -p 127.0.0.1:50051:50051 -v "$PWD:/data:ro" ghcr.io/algeon-dev/algeon-server
+```
+
+The host needs:
+
+- a CPU that implements x86-64-v3, as described under
+  [CPU requirement](./prerequisites.md#cpu-requirement);
+- an NVIDIA driver R580 or newer, the first branch that supports CUDA 13;
+- the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html),
+  which `--gpus all` uses to expose the driver to the container;
+- a GPU from the table below.
+
+The image carries kernel images for five targets. A GPU of compute capability
+8.9 runs the `sm_86` kernels, because a kernel image runs on GPUs of the same
+major version and an equal or higher minor version.
+
+| Compute capability | Kernel image | GPUs |
+| --- | --- | --- |
+| 8.0 | `sm_80` | A100, A30 |
+| 8.6 | `sm_86` | A10, A10G, A40, RTX A6000, GeForce RTX 30 series |
+| 8.9 | `sm_86` | L4, L40S, RTX 6000 Ada, GeForce RTX 40 series |
+| 9.0 | `sm_90a` | H100, H200 |
+| 10.0, 10.3 | `sm_100f` | B200, B300 |
+| 12.0 | `sm_120a` | RTX PRO 6000 Blackwell, GeForce RTX 50 series |
+
+Turing GPUs (T4, GeForce RTX 20 series) and older ones are not supported;
+their first GPU query fails with `no kernel image is available for execution
+on the device`. Only compute capability 12.0 has been verified on hardware.
+The other rows follow from the kernel images in the release build and have not
+run on those GPUs.
+
+Each Parquet file and each directory of Parquet files at the top level of the
+mounted `/data` becomes a table at startup, so `events.parquet` is queried as
+`events`. [Data root](../integration/configuration.mdx#data-root)
+gives the naming rules. Without a mount the server starts with no tables. The
+server listens on host loopback port 50051 with authentication disabled;
+submit a query with the
+[client quickstart](../integration/flight-sql-server.mdx#quickstart).
+Configuration files, authentication and TLS work as described under
+[Run the server](#run-the-server).
+
+## Build your own image
+
+:::note[Building an image requires a source build]
+
+Complete [Building from Source](./from-source.md) before following this
+section. `docker/build-image.sh` packages the locally built native libraries.
 It cannot create their cuDF, cuVS, cuML, or cuGraph artifacts itself.
 
 :::
@@ -31,18 +81,23 @@ When `patchelf` is available it rewrites RUNPATHs to `/app/lib` and
 `$ORIGIN`.
 
 The script then checks the staged loader closure with
-`docker/validate-loader-closure.sh`, writes `payload-manifest.json` and
-`SHA256SUMS`, and runs `docker build` with `docker/dist` as the build context.
-Inside the build, the harvest stage checks the manifest and `SHA256SUMS`
-against the hashes verified on the host and every other file against
-`SHA256SUMS`, rejects a CUDA runtime image older than
+`docker/validate-loader-closure.sh`, stages the [license texts](#licenses),
+writes `payload-manifest.json` and `SHA256SUMS`, and runs `docker build` with
+`docker/dist` as the build context. Inside the build, the harvest stage checks
+the manifest and `SHA256SUMS` against the hashes verified on the host and
+every other file against `SHA256SUMS`, rejects a CUDA runtime image older than
 the toolkit that built the payload, reruns the closure check, and copies out
 only the CUDA toolkit libraries the server links or dlopens. The runtime stage
-reruns the closure check on the assembled image.
+starts from `ubuntu:24.04`, the OS of the CUDA images, and reruns the closure
+check on the assembled image. The `nvidia/cuda` base images would add only the
+CUDA forward-compatibility libraries, which an R580 or newer driver does not
+need.
 
 ## Prerequisites
 
-The default full image expects these root-owned artifacts:
+The default full image expects these root-owned artifacts, plus the matching
+`cudf-build`, `cuvs-build`, `cugraph-build` and `cuml-build` trees, which
+hold the license files of the fetched native dependencies:
 
 ```text
 algeon/
@@ -59,7 +114,9 @@ algeon/
 
 The cuDF script also installs `libcudf_rust_rmm_interop.so` beside the shim.
 `docker/build-image.sh` stages both automatically. It reads the
-matching install prefixes under `ALGEON_NATIVE_DIR`.
+matching install prefixes and build trees under `ALGEON_NATIVE_DIR`; the
+`CUDF_CPP_BUILD_DIR`, `CUVS_CPP_BUILD_DIR`, `CUGRAPH_CMAKE_BUILD_DIR` and
+`CUML_CPP_BUILD_DIR` selectors of the native build scripts move a build tree.
 
 The cuDF-only `FEATURES=''` and `FEATURES=nvml` images omit cuVS, cuML, and
 cuGraph, so they need none of those native artifacts. `nvml` adds GPU
@@ -75,7 +132,7 @@ so the native libraries are assumed to come from that same toolkit.
 
 Install Docker and configure GPU containers with the
 [NVIDIA Container Toolkit documentation](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-The default runtime images are CUDA 13.2.1. The harvest stage fails when
+The default CUDA runtime image is CUDA 13.2.1. The harvest stage fails when
 the `CUDA_RUNTIME_IMAGE` major differs from the build toolkit's or its minor
 is older. The harvested runtime libraries are minor-version compatible within
 CUDA 13, so the host needs an NVIDIA driver that supports CUDA 13 (R580 or
@@ -91,6 +148,17 @@ build, as described in
 [Choosing CUDA architectures](./from-source.md#choosing-cuda-architectures),
 and inspect the recorded value with the commands in
 [The architecture contract record](./from-source.md#the-architecture-contract-record).
+`docker/build-image.sh` copies the requested and real values of the cuDF record
+into `payload-manifest.json` and the requested value into the
+`dev.algeon.cuda-architectures` label, and refuses to stage a cuDF install
+without a record.
+
+The published image covers the [supported GPU table](#run-the-published-image)
+with this list, exported before the first native build:
+
+```bash
+export CMAKE_CUDA_ARCHITECTURES="80-real;86-real;90a-real;100f-real;120a-real"
+```
 
 ## Build the image
 
@@ -113,21 +181,21 @@ FEATURES=cugraph,cuml,cuvs,nvml bash docker/build-image.sh
 ```
 
 The tag is `<version>-<cpu baseline>` for the default feature set, such as
-`algeon-server:0.1.1-x86-64-v3`. The empty feature list appends `-cudf`, and
+`algeon-server:0.1.2-x86-64-v3`. The empty feature list appends `-cudf`, and
 any other feature set appends its sorted features joined by `-`. The builds
-above produce `algeon-server:0.1.1-x86-64-v3-cudf`,
-`algeon-server:0.1.1-x86-64-v3-nvml` and
-`algeon-server:0.1.1-x86-64-v3-cugraph-cuml-cuvs-nvml`, and leave the default
+above produce `algeon-server:0.1.2-x86-64-v3-cudf`,
+`algeon-server:0.1.2-x86-64-v3-nvml` and
+`algeon-server:0.1.2-x86-64-v3-cugraph-cuml-cuvs-nvml`, and leave the default
 image in place. The build record, payload manifest and `dev.algeon.features`
 label record the selected list, which is empty for `FEATURES=''`.
 `IMAGE_REPOSITORY` replaces `algeon-server`. The image labels record the
 version, source revision, whether the worktree had uncommitted changes,
-repository URL, creation time, features, CUDA toolkit release and CPU
-baseline. A build from a worktree with uncommitted changes also prints a
+repository URL, creation time, features, CUDA toolkit release, requested CUDA
+architectures, CPU baseline, and the two base images. A build from a worktree with uncommitted changes also prints a
 `warning:` line:
 
 ```bash
-docker inspect --format '{{json .Config.Labels}}' algeon-server:0.1.1-x86-64-v3
+docker inspect --format '{{json .Config.Labels}}' algeon-server:0.1.2-x86-64-v3
 ```
 
 A server built without the `cugraph` feature still installs the cuGraph SQL
@@ -166,12 +234,45 @@ What ends up in the image:
 | cuVS `.so` | `target/native/cuvs-install` | bundled: `libcuvs.so` for any GPU SQL feature, `libcuvs_c.so` for `cuvs` |
 | cuML `.so` | `target/native/cuml-install` | bundled for `cuml`: `libcuml.so`, `libcuml_rust.so`, `libtreelite.so`, `libnvforest.so` |
 | `libcudf_rust*.so` FFI bridges | cudf-sys CMake `OUT_DIR` | bundled by `build-image.sh` |
-| CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, and others) | `nvidia/cuda:*-runtime` | harvested in the Dockerfile through `ldd` |
+| CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, and others) | `nvidia/cuda:*-runtime` (`CUDA_RUNTIME_IMAGE`) | harvested in the Dockerfile through `ldd` |
+| License texts | native build trees, Cargo registry, `nvidia/cuda:*-runtime` | `/app/licenses`, see [Licenses](#licenses) |
+| Base OS | `ubuntu:24.04` (`RUNTIME_BASE_IMAGE`) | runtime stage base |
 | `libgomp1`, `libbrotli1`, `tini` | Ubuntu apt | installed in the runtime stage |
 
-The `FEATURES=cugraph,cuml,cuvs,nvml` image occupies 3.7 GB of disk space
-with 1.31 GB content size, while the `FEATURES=nvml` image occupies 1.32 GB
-with 361 MB content size.
+The image size depends on the features and the CUDA architecture list, so it
+is measured per build with `docker image ls`.
+
+### Licenses
+
+`/app/licenses` holds the license texts of everything the image bundles.
+`INVENTORY.tsv` lists each component with its version, declared license,
+the staged files that bundle it, and its license files. `FORKS.tsv` names the
+repository and the checked-out commit of each staged cuDF, cuVS, cuGraph or
+cuML submodule, and links to [Fork changes](https://algeon.dev/reference/forks)
+for what the forks change:
+
+| Directory | Contents |
+| --- | --- |
+| `algeon/` | Algeon `LICENSE` and `NOTICE` |
+| `rapids/<layer>/` | `LICENSE` of the cuDF, cuVS, cuGraph or cuML submodule for each staged layer |
+| `native/<layer>/<package>/` | license files of each package that CPM or FetchContent fetched into the layer's build tree, except GoogleTest and rapids-cmake, which never reach a staged library |
+| `rust/<crate>-<version>/` | license files of each crate that `cargo metadata` shows linked into `algeon_server`; a crate that ships none gets the standard text of its declared license, from `docker/license-texts` or, for Apache-2.0, the repository `LICENSE`; MIT and BSD-3-Clause texts name the crate's `cargo metadata` authors as copyright holders, or `the <crate> authors` and its repository when it lists none |
+| `cuda/` | `NGC-DL-CONTAINER-LICENSE` and the copyright file, which holds the CUDA EULA, of each Debian package that ships a harvested CUDA library; `LIBRARIES.tsv` maps each library to its package and license file |
+
+`LIBRARIES.tsv` maps `libnvtx3interop.so.1` to `native/cudf/nvtx3/LICENSE.txt`
+instead of its package's copyright file. NVTX is Apache-2.0 WITH
+LLVM-exception, as the SPDX line of `nvToolsExt.h` in the same package
+states, and the CUDA EULA's list of redistributable files does not name it.
+The Dockerfile keeps such exceptions in one commented table in the harvest
+stage and fails the build when the package stops declaring that license.
+
+The canonical build captures `cargo metadata` beside the binary and binds its
+hash to the build record, so `SKIP_CARGO_BUILD=1` reuses the same crate list.
+Staging fails when a staged library belongs to no listed component, a
+component has no license source, or a staged submodule has modified tracked
+files. The host-staged files are part of
+`payload-manifest.json` and `SHA256SUMS`; the harvest stage fails when a
+harvested CUDA library has no owning package with a copyright file.
 
 :::warning[Build machine versus target host CPU]
 This image targets x86-64-v3. Both the build machine and every target host must
@@ -188,7 +289,7 @@ loopback only, and mount the directory that holds your Parquet files:
 ```bash
 docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
   -v "$PWD/data:/data:ro" \
-  algeon-server:0.1.1-x86-64-v3
+  algeon-server:0.1.2-x86-64-v3
 ```
 
 The image sets `ALGEON_SERVER_BIND=0.0.0.0:50051` because a loopback listener
@@ -206,7 +307,7 @@ docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
   -v "$PWD/data:/data:ro" \
   -v "$PWD/server.toml:/etc/algeon/server.toml:ro" \
   -e ALGEON_SERVER_CONFIG_FILE=/etc/algeon/server.toml \
-  algeon-server:0.1.1-x86-64-v3
+  algeon-server:0.1.2-x86-64-v3
 ```
 
 Arguments after the image name go to `algeon_server`. Validate a mounted
@@ -216,7 +317,7 @@ file without starting the server or touching a GPU:
 docker run --rm \
   -v "$PWD/server.toml:/etc/algeon/server.toml:ro" \
   -e ALGEON_SERVER_CONFIG_FILE=/etc/algeon/server.toml \
-  algeon-server:0.1.1-x86-64-v3 --check-config
+  algeon-server:0.1.2-x86-64-v3 --check-config
 ```
 
 It prints the effective configuration with the source of each value and exits
@@ -230,15 +331,18 @@ lists every key. Any scalar key can also be passed as an `ALGEON_SERVER_*`
 variable with `-e`. Because the image's `ALGEON_SERVER_BIND` overrides `bind` in a
 mounted file, the container port is set with
 `-e ALGEON_SERVER_BIND=0.0.0.0:<port>`. The healthcheck reads that variable.
+The image's `ALGEON_SERVER_DATA_ROOT=/data` likewise overrides `[data] root`.
 The server runs as UID 1001 in the container; mounted
 files must be readable by that user.
 
-Table locations are paths inside the container. With the data directory
-mounted at `/data`:
+The top-level Parquet files and directories under `/data` become tables at
+startup, as described under
+[Data root](../integration/configuration.mdx#data-root). Other
+table locations are paths inside the container too:
 
 ```sql
-CREATE OR REPLACE EXTERNAL TABLE events
-STORED AS PARQUET LOCATION '/data/events.parquet';
+CREATE OR REPLACE EXTERNAL TABLE archived_events
+STORED AS PARQUET LOCATION '/data/archive/events.parquet';
 ```
 
 To register tables at every start, mount a SQL file of DDL statements and
@@ -256,7 +360,7 @@ starting Algeon Flight SQL server
 The image has a TCP healthcheck for `ALGEON_SERVER_BIND`:
 
 ```bash
-docker ps --filter ancestor=algeon-server:0.1.1-x86-64-v3
+docker ps --filter ancestor=algeon-server:0.1.2-x86-64-v3
 ```
 
 On `SIGTERM` the server allows `observability.shutdown_grace_secs`, 30 s by
@@ -291,8 +395,45 @@ cargo run -p tools -- \
 
 The result has a `vertex` and a `value` column with one row per vertex.
 
+## Publish a release image
+
+Maintainers publish `ghcr.io/algeon-dev/algeon-server:<version>` from a clean
+clone of tag `v<version>`, with the release
+`CMAKE_CUDA_ARCHITECTURES` list from [GPU architectures](#gpu-architectures)
+set for the whole native build and both base images pinned by digest:
+
+```bash
+CUDA_RUNTIME_IMAGE='nvidia/cuda:13.2.1-runtime-ubuntu24.04@sha256:<digest>' \
+RUNTIME_BASE_IMAGE='ubuntu:24.04@sha256:<digest>' \
+  bash docker/build-image.sh
+bash docker/publish-image.sh --dry-run algeon-server:<version>-x86-64-v3
+bash docker/publish-image.sh algeon-server:<version>-x86-64-v3
+```
+
+`docker/publish-image.sh` neither rebuilds nor logs in. It refuses an image
+unless `dev.algeon.worktree-dirty` is `false`, the revision label equals the
+commit of tag `v<version>` in the checkout, the features are the shipped
+default list, `dev.algeon.cuda-architectures` equals the release list, and
+both base image labels carry a digest. It also tags and pushes `:latest` when
+`v<version>` is the highest `vX.Y.Z` tag in the checkout by numeric
+comparison, ignoring pre-release tags; for an older release it pushes only
+`:<version>` and says that `:latest` stays. `--dry-run` runs the same checks
+and prints the planned tags; otherwise the script tags and pushes and prints
+the pushed digest. `--repository` replaces `ghcr.io/algeon-dev/algeon-server`.
+
 ## Troubleshooting
 
+- The container exits at startup with `no NVIDIA driver is available to this
+  process`: it was started without `--gpus all`, or the host lacks the
+  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- The host driver predates CUDA 13. Install driver R580 or newer. The symptom
+  depends on how the NVIDIA Container Toolkit injects the GPU. With its
+  default runtime hook, `docker run` fails before the server starts with
+  `unsatisfied condition: cuda>=13.0`, from the image's `NVIDIA_REQUIRE_CUDA`.
+  In CDI mode the toolkit ignores `NVIDIA_REQUIRE_*`, so the container starts
+  and the server exits with `cudaGetDeviceCount failed: ...; the NVIDIA driver
+  supports CUDA X.Y and the CUDA runtime is 13.2`, where X.Y is the driver's
+  CUDA version.
 - `docker/build-image.sh` cannot find `libcudf.so`, `librmm.so`, or
   `libcugraph.so`: finish the source build first, or set `ALGEON_NATIVE_DIR` to
   the root containing the matching install prefixes.
@@ -307,11 +448,13 @@ The result has a `vertex` and a `value` column with one row per vertex.
   the deployment GPU's architecture. Rebuild them as described under
   [GPU architectures](#gpu-architectures).
 - The harvest stage fails with `the payload was built with CUDA toolkit`:
-  set the `CUDA_RUNTIME_IMAGE` and `CUDA_BASE_IMAGE` environment variables to
-  images of the toolkit's CUDA major and the same or a newer minor.
-- Startup fails with a missing CUDA library such as `libcublas.so.13`: rebuild
-  the image with matching `CUDA_RUNTIME_IMAGE` and `CUDA_BASE_IMAGE`, keeping
-  both on the same CUDA minor.
+  set the `CUDA_RUNTIME_IMAGE` environment variable to an image of the
+  toolkit's CUDA major and the same or a newer minor.
+- Staging fails with `license staging failed`: the message names the build
+  tree, fetched package or crate without a license source, or the staged
+  library without a listed component. Keep the native build trees beside their
+  install prefixes, and add a standard text to `docker/license-texts` for a
+  crate that declares a license there is no text for.
 - A plain `docker build` fails with `missing packaging build args`: the image
   needs the verified payload and build arguments that `docker/build-image.sh`
   supplies.

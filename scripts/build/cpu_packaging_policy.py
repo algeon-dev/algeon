@@ -25,6 +25,10 @@ WORKSPACE_MANIFEST = ROOT / "Cargo.toml"
 SERVER_BINARY = "algeon_server"
 MANIFEST_NAME = "payload-manifest.json"
 CHECKSUMS_NAME = "SHA256SUMS"
+# The license staging reads this `cargo metadata` capture to list the Rust
+# packages linked into the binary, so it is bound to the artifact like the
+# build record.
+CARGO_METADATA_SUFFIX = ".cargo-metadata.json"
 IMAGE_IDENTITY_FIELDS = ("version", "revision", "worktree_dirty", "source_repository", "cuda_toolkit_version")
 
 
@@ -327,6 +331,7 @@ def create_build_record(
     fixed_tool_versions: Mapping[str, str],
     identity: Mapping[str, Any],
     cuda_toolkit: str,
+    cargo_metadata: Path,
 ) -> dict[str, Any]:
     if not binary.is_file():
         raise PolicyError(f"canonical Cargo build did not produce {binary}")
@@ -348,6 +353,7 @@ def create_build_record(
         "feature_string": ",".join(features),
         "binary_name": SERVER_BINARY,
         "binary_sha256": sha256_file(binary),
+        "cargo_metadata_sha256": sha256_file(cargo_metadata),
         "rustc_version": run_text([rustc_path, "--version"], cwd=cwd, environment=environment),
         "rustc_vv": run_text([rustc_path, "-Vv"], cwd=cwd, environment=environment),
         "cargo_version": run_text([cargo_path, "--version"], cwd=cwd, environment=environment),
@@ -382,7 +388,22 @@ def verify_build_record(
     actual_hash = sha256_file(binary)
     if record.get("binary_sha256") != actual_hash:
         raise PolicyError(f"canonical artifact hash mismatch: record={record.get('binary_sha256')!r}, actual={actual_hash}")
+    metadata_path = cargo_metadata_path(binary)
+    recorded_metadata_hash = record.get("cargo_metadata_sha256")
+    if not recorded_metadata_hash:
+        raise PolicyError("build record lacks cargo_metadata_sha256; rebuild without SKIP_CARGO_BUILD=1")
+    if not metadata_path.is_file():
+        raise PolicyError(f"cargo metadata capture is missing: {metadata_path}")
+    actual_metadata_hash = sha256_file(metadata_path)
+    if recorded_metadata_hash != actual_metadata_hash:
+        raise PolicyError(
+            f"cargo metadata hash mismatch: record={recorded_metadata_hash!r}, actual={actual_metadata_hash}"
+        )
     return record
+
+
+def cargo_metadata_path(binary: Path) -> Path:
+    return binary.with_name(binary.name + CARGO_METADATA_SUFFIX)
 
 
 def command_describe(args: argparse.Namespace) -> None:
@@ -465,6 +486,28 @@ def command_build(args: argparse.Namespace) -> None:
 
         binary = cargo_target_dir / target / cpu["cargo_profile"] / SERVER_BINARY
         record_path = binary.with_name(binary.name + ".build-record.json")
+        metadata_command = [
+            cargo_path,
+            "metadata",
+            "--format-version",
+            "1",
+            "--locked",
+            "--manifest-path",
+            str(args.manifest.resolve()),
+            "--no-default-features",
+            *(["--features", ",".join(features)] if features else []),
+            "--filter-platform",
+            target,
+        ]
+        try:
+            metadata = subprocess.run(
+                metadata_command, cwd=cwd, env=environment, check=True, text=True, stdout=subprocess.PIPE
+            ).stdout
+            json.loads(metadata)
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+            raise PolicyError(f"cargo metadata failed: {error}") from error
+        metadata_path = cargo_metadata_path(binary)
+        atomic_text(metadata_path, metadata)
         create_build_record(
             policy=policy,
             features=features,
@@ -478,6 +521,7 @@ def command_build(args: argparse.Namespace) -> None:
             fixed_tool_versions=fixed_tool_versions,
             identity=identity,
             cuda_toolkit=cuda_toolkit,
+            cargo_metadata=metadata_path,
         )
     print(f"==> canonical artifact: {binary}")
     print(f"==> build record: {record_path}")
@@ -526,6 +570,10 @@ def command_create_manifest(args: argparse.Namespace) -> None:
         "binary_name": SERVER_BINARY,
         "binary_sha256": files[staged_binary_rel],
         "source_binary_sha256": record["binary_sha256"],
+        "cuda_architectures": {
+            "requested": args.cuda_architectures_requested,
+            "real": args.cuda_architectures_real,
+        },
         "files": files,
     }
     manifest_path = dist_dir / MANIFEST_NAME
@@ -579,6 +627,11 @@ def command_verify_manifest(args: argparse.Namespace) -> None:
     if checksums != checksums_text(files, manifest_sha256):
         raise PolicyError(f"{CHECKSUMS_NAME} does not list exactly the manifest's files and the manifest hash")
 
+    cuda_architectures = manifest.get("cuda_architectures")
+    if not isinstance(cuda_architectures, dict) or not all(
+        isinstance(cuda_architectures.get(key), str) and cuda_architectures[key] for key in ("requested", "real")
+    ):
+        raise PolicyError("manifest lacks the requested and real CUDA architectures")
     cpu = manifest["cpu"]
     values = {
         "CPU_BASELINE": cpu["baseline"],
@@ -594,6 +647,8 @@ def command_verify_manifest(args: argparse.Namespace) -> None:
         "PAYLOAD_CREATED": manifest["created_utc"],
         "PAYLOAD_FEATURES": manifest["feature_string"],
         "PAYLOAD_CUDA_TOOLKIT": manifest["cuda_toolkit_version"],
+        "PAYLOAD_CUDA_ARCHITECTURES": cuda_architectures["requested"],
+        "PAYLOAD_CUDA_REAL_ARCHITECTURES": cuda_architectures["real"],
     }
     for key, value in values.items():
         print(f"{key}={shlex.quote(value)}")
@@ -631,6 +686,8 @@ def parser() -> argparse.ArgumentParser:
     create_manifest = subparsers.add_parser("create-manifest")
     create_manifest.add_argument("--dist-dir", type=Path, required=True)
     create_manifest.add_argument("--build-record", type=Path, required=True)
+    create_manifest.add_argument("--cuda-architectures-requested", required=True)
+    create_manifest.add_argument("--cuda-architectures-real", required=True)
     create_manifest.set_defaults(function=command_create_manifest)
 
     verify_manifest = subparsers.add_parser("verify-manifest")
