@@ -318,16 +318,18 @@ def load_manifest(path: str) -> dict[str, object]:
 def assert_manifest_contract() -> None:
     workspace = load_manifest("Cargo.toml")
     workspace_dependencies = workspace["workspace"]["dependencies"]
+    # Published workspace crates pin each other at the exact workspace version.
+    pinned_version = "=" + workspace["workspace"]["package"]["version"]
     assert workspace_dependencies["cuvs"] == {
         "package": "algeon-cuvs",
         "path": "components/cuvs/algeon-cuvs",
-        "version": "=0.1.0",
-    }
+        "version": pinned_version,
+    }, workspace_dependencies["cuvs"]
     assert workspace_dependencies["cuvs-sys"] == {
         "package": "algeon-cuvs-sys",
         "path": "components/cuvs/algeon-cuvs-sys",
-        "version": "=0.1.0",
-    }
+        "version": pinned_version,
+    }, workspace_dependencies["cuvs-sys"]
     adapter = load_manifest("crates/algeon-datafusion/Cargo.toml")
     assert adapter["features"]["cuvs"] == [
         "dep:cuvs",
