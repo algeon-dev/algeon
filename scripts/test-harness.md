@@ -145,7 +145,13 @@ Every test lands in one lane:
 The gate exports one canonical native `LD_LIBRARY_PATH` before all phases;
 doctests inherit it without prepending directories again. It prints Cargo's
 effective toolchain values from the merged configuration with shell and
-`force` precedence applied. During `test-build`, the gate captures fresh
+`force` precedence applied. That configuration query, rustfmt, checked
+bindings and the rustdoc JSON behind the public API phases all run the one
+nightly named in
+[`.config/policies/nightly-toolchain.txt`](../.config/policies/nightly-toolchain.txt).
+A pin bump regenerates the snapshots and their `TOOLCHAIN.txt` with
+`bash scripts/ci/check_public_api_surface.sh write --all-features` in the same
+change. During `test-build`, the gate captures fresh
 Cargo metadata and builds the workspace with all features through a
 binaries-only nextest list. Both metadata files belong to that gate run.
 The tests phase reuses them without another Cargo build or metadata query,
@@ -395,8 +401,9 @@ listed in [LICENSE-MERREC.md](../website/static/data/LICENSE-MERREC.md). Each
 capture names its terms in a top-level `license` field, which the capture
 writers under `scripts/dev` emit from `merrec_verify_common.MERREC_LICENSE`.
 No published crate, Docker image or release archive may include those files:
-the Docker scripts stage only the server binary and native libraries, and
-`release_archives.py` packages crate directories.
+the Docker scripts stage only the server binary, native libraries and the
+license texts of bundled components, and `release_archives.py` packages crate
+directories.
 [`check_third_party_data.py`](ci/check_third_party_data.py) enforces the
 location, the field, the file list and the packaging boundary in the policy
 phase. A new derived capture goes in that directory with the field and a line

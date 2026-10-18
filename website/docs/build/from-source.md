@@ -15,7 +15,8 @@ Before you start:
 - [Prerequisites](./prerequisites.md) are installed: CUDA toolkit with `nvcc`,
   a RAPIDS-compatible host compiler, CMake, Ninja, `clang`, `mold`, `patchelf`
   (the native install scripts bind each library's RUNPATH with it), and Rust.
-  Step 5 also needs `cargo-nextest` and the required `cargo-hack` version.
+  Step 5 also needs the
+  [contributor gate tools](./prerequisites.md#rust-toolchain-and-test-runner).
 - The build host has the GPU the artifacts will run on, or you have chosen an
   explicit architecture list ([Choosing CUDA architectures](#choosing-cuda-architectures)).
 
@@ -89,9 +90,14 @@ unset CUDF_CMAKE_CUDA_ARCHITECTURES
 # their package build scripts. External applications need their own loader
 # environment as described in Building for an Application.
 unset ALGEON_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \
-  CUVS_INSTALL_DIR CUVS_ROOT CUML_CPP_BUILD_DIR CUML_INSTALL_DIR \
+  CUVS_CPP_BUILD_DIR CUVS_INSTALL_DIR CUVS_ROOT CUML_CPP_BUILD_DIR CUML_INSTALL_DIR \
   CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR CUGRAPH_NATIVE_INCLUDE_DIRS \
   CUGRAPH_NATIVE_LINK_DIRS CUGRAPH_RUNTIME_LIB_DIRS
+
+# Repository binaries find their libraries through RUNPATH, which the loader
+# searches after LD_LIBRARY_PATH. A value left from another checkout would
+# shadow this checkout's libraries.
+unset LD_LIBRARY_PATH
 ```
 
 Edit the CUDA and compiler lines if your toolkit or compiler lives elsewhere.
@@ -105,7 +111,7 @@ Confirm that no selector escapes the checkout:
 
 ```bash
 env | sort | grep -E '^(ALGEON_ROOT|CMAKE_CUDA_ARCHITECTURES)='
-env | sort | grep -E '^(INSTALL_PREFIX|ALGEON_NATIVE_DIR|CUDF_[^=]*|CUVS_[^=]*|CUML_[^=]*|CUGRAPH_[^=]*)=' && echo "selector leaked" || echo "clean"
+env | sort | grep -E '^(INSTALL_PREFIX|ALGEON_NATIVE_DIR|LD_LIBRARY_PATH|CUDF_[^=]*|CUVS_[^=]*|CUML_[^=]*|CUGRAPH_[^=]*)=' && echo "selector leaked" || echo "clean"
 ```
 
 The first command must show `ALGEON_ROOT` at the checkout root and
@@ -241,14 +247,16 @@ retaining the same feature contract:
 
 ```bash
 cargo build -p algeon-datafusion --all-features
-cargo build -p query-engine --all-features
-cargo build -p cudf --all-features
+cargo build -p algeon-query-engine --all-features
+cargo build -p algeon-cudf --all-features
 ```
 
 ## 5. Validate the checkout
 
-This step is for contributors. Running the server does not need it. Run the
-single full pre-merge gate bare, from the checkout root:
+This step is for contributors. Running the server does not need it. The gate
+needs the pinned nightly toolchain and the other tools listed under
+[Rust toolchain and test runner](./prerequisites.md#rust-toolchain-and-test-runner).
+Run the single full pre-merge gate bare, from the checkout root:
 
 ```bash
 bash scripts/check_all.sh
@@ -261,11 +269,14 @@ nextest lanes, doctests, rustdoc, public API snapshots, and clippy. A passing
 run ends with a phase table and:
 
 ```text
-OK: canonical full pre-merge surface passed.
+OK: full pre-merge gate passed.
 ```
 
-[Tests](./tests.md) explains the phases, the partial edit loops, and where the
-logs go when a phase fails.
+A full run can outlast a terminal session.
+[The full gate](./tests.md#the-full-gate) shows how to start it under `nohup`
+and poll `target/check-all/latest/summary.tsv`. [Tests](./tests.md) also
+explains the phases, the partial edit loops, and where the logs go when a
+phase fails.
 
 To package the standalone Flight SQL server after this source build, continue
 with [Building with Docker](./docker.md).
@@ -285,11 +296,13 @@ Set one only to point a step at a prefix outside the checkout.
 | `CMAKE_CUDA_ARCHITECTURES` | One CUDA target list shared by cuDF, cuVS, cuGraph, and cuML. Defaults to `NATIVE`. |
 | `CUDF_CPP_BUILD_DIR` | cuDF CMake cache. Defaults to `target/native/cudf-build`. |
 | `CUDF_INSTALL_DIR` / `INSTALL_PREFIX` | cuDF install containing the stack's one shared `librmm.so`. Defaults to `target/native/cudf-install`. |
-| `CUVS_INSTALL_DIR` / `CUVS_ROOT` | One cuVS prefix used by its build, Rust bindings, and cuGraph. Defaults to `target/native/cuvs-install`. |
+| `CUVS_CPP_BUILD_DIR` | cuVS CMake build tree. Defaults to `target/native/cuvs-build`. |
+| `CUVS_INSTALL_DIR` | cuVS install prefix read by `scripts/build/build_libcuvs.sh`, `build_libcugraph.sh`, and Docker packaging. Defaults to `target/native/cuvs-install`. |
+| `CUVS_ROOT` | cuVS prefix override read only by the `algeon-cuvs-sys` build script. Defaults to the same `target/native/cuvs-install` prefix. |
 | `CUML_CPP_BUILD_DIR` / `CUML_INSTALL_DIR` | cuML build tree and native install. Defaults to `target/native/cuml-build` and `target/native/cuml-install`. |
 | `CUGRAPH_CMAKE_BUILD_DIR` | cuGraph CMake build and runtime-library directory. Defaults to `target/native/cugraph-build`. |
 | `CUGRAPH_INSTALL_DIR` | Installed cuGraph libraries, headers, and crate-version marker. Defaults to `target/native/cugraph-install`. |
-| `LD_LIBRARY_PATH` | Runtime library directories for the selected feature closure and CUDA. Repository binaries receive rpath arguments from their own package build scripts; downstream application binaries do not inherit those arguments from dependency crates. External applications and rustdoc doctests need an explicit loader environment or application-owned RUNPATH. See [Building for an Application](./rust-dependency.md#4-build-and-run-the-application). |
+| `LD_LIBRARY_PATH` | Runtime library directories for the selected feature closure and CUDA. The build shell clears it, because the loader searches it before the RUNPATH of repository binaries and a value naming another checkout would shadow this one's libraries. Repository binaries receive rpath arguments from their own package build scripts; downstream application binaries do not inherit those arguments from dependency crates. External applications and rustdoc doctests need an explicit loader environment or application-owned RUNPATH. See [Building for an Application](./rust-dependency.md#4-build-and-run-the-application). |
 
 ### Choosing CUDA architectures
 

@@ -97,7 +97,7 @@ class DocumentationTests(unittest.TestCase):
                               "algeon_datafusion": APPLICATION}.items():
             cls.sources[crate] = cls.directory / f"{crate}.rs"
             cls.sources[crate].write_text(source)
-            command = ["rustc", "+nightly", "--crate-type", "lib", "--crate-name", crate,
+            command = ["rustc", "+" + POLICY.NIGHTLY_TOOLCHAIN, "--crate-type", "lib", "--crate-name", crate,
                        str(cls.sources[crate]), "-o", str(cls.directory / f"lib{crate}.rlib"),
                        "-L", f"dependency={cls.directory}"]
             if crate != "query_planning":
@@ -120,7 +120,7 @@ class DocumentationTests(unittest.TestCase):
 
     @classmethod
     def document(cls, crate):
-        command = ["rustdoc", "+nightly", "--crate-type", "lib", "--crate-name", crate,
+        command = ["rustdoc", "+" + POLICY.NIGHTLY_TOOLCHAIN, "--crate-type", "lib", "--crate-name", crate,
                    "-Z", "unstable-options", "--output-format", "json", "--document-private-items",
                    "--document-hidden-items", str(cls.sources[crate]), "-o", str(cls.directory),
                    "-L", f"dependency={cls.directory}"]
@@ -355,12 +355,11 @@ from pathlib import Path
 args = sys.argv[1:]
 if args[0] == "metadata":
     print(Path(os.environ["DOC_FIXTURE_METADATA"]).read_text())
-elif args[0] == "public-api":
-    if "--version" in args:
-        print("cargo-public-api fixture")
-    else:
-        print("pub mod " + args[args.index("-p") + 1].replace("-", "_"))
-elif args[:2] == ["+nightly", "doc"]:
+elif args == ["public-api", "--version"]:
+    print("cargo-public-api fixture")
+elif args[:2] == [os.environ["DOC_FIXTURE_TOOLCHAIN"], "public-api"]:
+    print("pub mod " + args[args.index("-p") + 1].replace("-", "_"))
+elif args[:2] == [os.environ["DOC_FIXTURE_TOOLCHAIN"], "doc"]:
     Path(os.environ["DOC_FIXTURE_BUILD_LOG"]).write_text(json.dumps({"args": args, "flags": os.environ["RUSTDOCFLAGS"]}))
     if os.environ.get("DOC_FIXTURE_BUILD_FAIL"):
         sys.exit(1)
@@ -388,6 +387,7 @@ else:
             "PUBLIC_API_SKIP_HIDDEN_POLICY": "1", "PUBLIC_API_SKIP_DOCUMENTATION_POLICY": "0",
             "DOC_FIXTURE_METADATA": str(self.metadata_path), "DOC_FIXTURE_JSON": str(self.directory),
             "DOC_FIXTURE_BUILD_LOG": str(self.directory / "build.json"), "RUSTDOCFLAGS": "-D warnings",
+            "DOC_FIXTURE_TOOLCHAIN": "+" + POLICY.NIGHTLY_TOOLCHAIN,
         })
         script = ROOT / "scripts/ci/check_public_api_surface.sh"
         cargo_args = ["--all-features", "--target-dir", str(self.directory / "custom-target"),

@@ -533,7 +533,7 @@ Inspect required library resolution with the GNU loader on x86-64 Linux:
 
 The command should succeed and resolve Algeon and RAPIDS libraries to the
 selected install prefixes. ELF `DT_AUXILIARY` filters are
-[optional](https://www.sourceware.org/binutils/docs/ld/Options.html#index-g_t_002df).
+[optional](https://www.sourceware.org/binutils/docs/ld/Options.html#index-_002df-name).
 `ldd` can list a missing auxiliary filter even when required libraries resolve.
 Direct binary execution confirms the query's result assertions on the available
 GPU.

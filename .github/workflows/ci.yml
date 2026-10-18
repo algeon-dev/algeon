@@ -38,7 +38,7 @@ jobs:
       - name: Install Rust toolchains
         run: |
           rustup toolchain install stable --profile minimal --component clippy
-          rustup toolchain install nightly --profile minimal --component rustfmt
+          rustup toolchain install "$(<.config/policies/nightly-toolchain.txt)" --profile minimal --component rustfmt
           rustup toolchain install "$(cargo metadata --no-deps --format-version 1 \
             | jq -r '[.packages[].rust_version | select(. != null)] | unique | .[0]')" --profile minimal
           rustup default stable

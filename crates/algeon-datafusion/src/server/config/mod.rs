@@ -26,6 +26,7 @@ use crate::server::{
 
 mod admission;
 mod cugraph;
+mod data;
 mod effective;
 mod env;
 mod file;
@@ -37,6 +38,7 @@ mod tls;
 use admission::{server_device_profiles, server_queue_policy};
 pub use cugraph::CugraphServerConfig;
 use cugraph::cugraph_config;
+use data::data_root;
 pub(crate) use effective::non_default_settings;
 pub use env::{ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_LOG_ENV};
 use env::{EnvOverride, ServerEnvironment};
@@ -103,6 +105,28 @@ pub struct ServerConfig {
     /// Models root for `cuml_forest_predict`, from the `[models]` table.
     /// `None` leaves the function unavailable with `model_root_unconfigured`.
     pub models: Option<CumlModelStoreConfig>,
+    /// Directory of Parquet data, from `[data] root`. Loading resolves it to
+    /// an absolute path and requires a directory.
+    /// [`FlightSqlServerBuilder::build`] registers its first-level entries as
+    /// tables in the shared catalog before it runs [`Self::init_sql`]:
+    ///
+    /// - A file with the extension `parquet`, in any case, becomes a table
+    ///   named by the file stem.
+    /// - A directory becomes a table named by the directory, read like
+    ///   `CREATE EXTERNAL TABLE <name> STORED AS PARQUET LOCATION '<dir>/'`,
+    ///   when that location lists at least one Parquet file.
+    /// - Names starting with `.` or `_`, other files, and directories
+    ///   without Parquet files are skipped.
+    ///
+    /// Table names keep the case and characters of the entry name. Entries
+    /// that cannot be inspected, names that are not UTF-8, and directories
+    /// whose listing fails before a Parquet file is found are skipped with a
+    /// warning. Two entries with the same table name, or a Parquet entry whose
+    /// schema cannot be read or that cannot be registered, fail the build with
+    /// `invalid_configuration` naming the paths. `None` registers nothing.
+    ///
+    /// [`FlightSqlServerBuilder::build`]: crate::server::FlightSqlServerBuilder::build
+    pub data_root: Option<PathBuf>,
     /// TLS for the Flight SQL listener, from the `[tls]` table. `None` serves
     /// plaintext. The value must carry an identity, because tonic panics when
     /// it builds a listener from a config without one. A client CA makes the
@@ -182,6 +206,7 @@ impl ServerConfig {
         let native_optimizer_config = native_optimizer_config(&file.native, sources)?;
         let cugraph = cugraph_config(&file.cugraph, sources)?;
         let models = models_config(&file.models, sources)?;
+        let data_root = data_root(&file.data, sources)?;
         let tls = tls_config(file.tls.as_ref(), sources)?;
         let init_sql = file.init_sql.map(|path| readable_init_sql(path, sources)).transpose()?;
         file.auth.mode.validate()?;
@@ -198,6 +223,7 @@ impl ServerConfig {
             auth: file.auth,
             cugraph,
             models,
+            data_root,
             tls,
             init_sql,
         };
@@ -386,7 +412,7 @@ impl LoadedServerConfig {
     /// Loads the configuration from `vars`, a complete set of environment
     /// variables, in place of the process environment. Variables without the
     /// `ALGEON_SERVER_` prefix are ignored. File I/O still happens for the
-    /// config file, TLS files, the models root, and `init_sql`.
+    /// config file, TLS files, the models and data roots, and `init_sql`.
     pub fn from_vars<K, V>(vars: impl IntoIterator<Item = (K, V)>) -> Result<Self>
     where
         K: Into<String>,

@@ -94,6 +94,24 @@ case "${cuvs_library_path}" in
         ;;
 esac
 
+# LD_LIBRARY_PATH outranks the RUNPATH of every consumer, so a libcuvs found
+# through it would shadow the canonical one. Checking before configure avoids
+# discovering that only after the full build.
+ambient_cuvs_error() {
+    echo "error: ambient loader shadows canonical libcuvs with '$1'." >&2
+    echo "Unset LD_LIBRARY_PATH or remove that directory from it, then rerun: bash scripts/build/build_libcugraph.sh" >&2
+    exit 1
+}
+cuvs_soname="$(readelf -d "${cuvs_library_path}" | sed -n 's/.*(SONAME).*\[\(.*\)\]/\1/p')"
+cuvs_soname="${cuvs_soname:-libcuvs.so}"
+IFS=: read -ra ambient_loader_dirs <<<"${LD_LIBRARY_PATH:-}"
+for ambient_dir in "${ambient_loader_dirs[@]+"${ambient_loader_dirs[@]}"}"; do
+    [[ -n "${ambient_dir}" && -e "${ambient_dir}/${cuvs_soname}" ]] || continue
+    ambient_cuvs_path="$(readlink -f "${ambient_dir}/${cuvs_soname}")"
+    [[ "${ambient_cuvs_path}" == "${cuvs_library_path}" ]] || ambient_cuvs_error "${ambient_cuvs_path}"
+    break
+done
+
 algeon_cuda_require_contract \
     "cuDF" "${cudf_install_dir}" "${cuda_architectures}" \
     "bash scripts/build/build_libcudf.sh"
@@ -261,8 +279,7 @@ fi
 if [[ "${#ambient_cuvs_paths[@]}" == "1" ]]; then
     ambient_cuvs_path="$(readlink -f "${ambient_cuvs_paths[0]}")"
     if [[ "${ambient_cuvs_path}" != "${cuvs_library_path}" ]]; then
-        echo "error: ambient loader shadows canonical libcuvs with '${ambient_cuvs_path}'." >&2
-        exit 1
+        ambient_cuvs_error "${ambient_cuvs_path}"
     fi
 fi
 

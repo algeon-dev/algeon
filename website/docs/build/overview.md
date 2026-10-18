@@ -19,7 +19,9 @@ For an application that embeds Algeon, start with
 the application's Cargo features need and for the loader environment of its
 binary.
 
-To run the Flight SQL server without contributing, follow
+To run the Flight SQL server without building anything, use the
+[published image](./docker.md#run-the-published-image). To build the server
+without contributing, follow
 [Run as a Flight SQL server](#run-as-a-flight-sql-server). For repository
 development, follow these pages in order:
 
@@ -29,8 +31,8 @@ development, follow these pages in order:
    shell, the four native builds, the Rust workspace, and the full gate.
 3. [Tests](./tests.md): focused checks, the local pre-merge gate, and
    acceptance runs.
-4. [Building with Docker](./docker.md): optional packaging of the Flight SQL
-   server after a source build.
+4. [Docker](./docker.md): the published server image, and packaging your own
+   image after a source build.
 
 ## Run as a Flight SQL server {/* #run-as-a-flight-sql-server */}
 
@@ -38,8 +40,8 @@ Follow these steps and skip the rest of this guide:
 
 1. Check the [CPU requirement](./prerequisites.md#cpu-requirement) and
    install the CUDA toolkit, host compiler, and stable Rust from
-   [Prerequisites](./prerequisites.md). Nightly Rust, `cargo-nextest`, and
-   `cargo-hack` are not needed.
+   [Prerequisites](./prerequisites.md). The pinned nightly toolchain,
+   `cargo-nextest`, `cargo-hack`, and the other gate tools are not needed.
 2. Clone the repository and configure the build shell as in steps 1 and 2 of
    [Building from Source](./from-source.md#1-clone-and-initialize-the-repository).
 3. Build the native libraries in order:
@@ -57,7 +59,10 @@ Follow these steps and skip the rest of this guide:
    instead ([NVML diagnostics](./rust-dependency.md#nvml-diagnostics)).
 
 5. Start `target/release/algeon_server`. It needs no configuration file and
-   listens on `127.0.0.1:50051`.
+   listens on `127.0.0.1:50051`. Start it from the build shell, which clears
+   `LD_LIBRARY_PATH`. In a shell where that variable names another checkout's
+   native libraries, run `env -u LD_LIBRARY_PATH target/release/algeon_server`
+   instead.
 6. Run a first query with the
    [Flight SQL quickstart](../integration/flight-sql-server.mdx#quickstart).
 
@@ -71,8 +76,9 @@ The [module ownership map](../design/index.mdx#crates-and-ownership) defines the
 adapter, planning, runtime and engine boundaries. Their native dependencies are
 [`components/cudf`](https://github.com/algeon-dev/algeon/blob/main/components/cudf/README.md),
 `components/cuvs`, `components/cuml` and `components/cugraph`. These hold the
-safe Rust APIs `cudf`/`cudf-sys` (with `rapids-interop`), `cuvs`/`cuvs-sys`,
-`cuml`/`cuml-sys` and `cugraph`/`cugraph-sys`, and pin the
+safe Rust APIs `algeon-cudf`/`algeon-cudf-sys` (with `algeon-interop`),
+`algeon-cuvs`/`algeon-cuvs-sys`, `algeon-cuml`/`algeon-cuml-sys` and
+`algeon-cugraph`/`algeon-cugraph-sys`, and pin the
 [cuDF](https://github.com/algeon-dev/cudf),
 [cuVS](https://github.com/algeon-dev/cuvs) and
 [cuGraph](https://github.com/algeon-dev/cugraph) forks and the cuML source as

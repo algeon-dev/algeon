@@ -41,10 +41,11 @@ release: 1.99.0-nightly
 LLVM version: 22.1.8'
 baseline_toolchain_file=$(printf 'cargo-public-api: %s\nnightly rustc:\n%s\n' "${baseline_tool_version}" "${baseline_rustc_vv}")
 
+nightly_toolchain=$(<.config/policies/nightly-toolchain.txt)
 cat >"${tmp_dir}/bin/rustc" <<SH
 #!/usr/bin/env bash
 set -u
-if [[ "\$1" == "+nightly" && "\$2" == "-Vv" ]]; then
+if [[ "\$1" == "+${nightly_toolchain}" && "\$2" == "-Vv" ]]; then
   printf '%s\n' "\${FAKE_RUSTC_NIGHTLY_VV:-${baseline_rustc_vv}}"
   exit "\${FAKE_RUSTC_STATUS:-0}"
 fi

@@ -11,6 +11,9 @@ import sys
 from collections import deque
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+NIGHTLY_TOOLCHAIN = (ROOT / ".config/policies/nightly-toolchain.txt").read_text().strip()
+
 
 class PolicyError(Exception):
     pass
@@ -55,7 +58,7 @@ def build_arguments(args: list[str]) -> list[str]:
 
 def build(metadata: dict, destination: Path, args: list[str]) -> None:
     libraries = workspace_libraries(metadata)
-    command = ["cargo", "+nightly", "doc", "--workspace", "--lib", "--no-deps", "--locked"]
+    command = ["cargo", "+" + NIGHTLY_TOOLCHAIN, "doc", "--workspace", "--lib", "--no-deps", "--locked"]
     command.extend(build_arguments(args))
     environment = os.environ.copy()
     # Private items supply signatures for reachable types. Their link rendering

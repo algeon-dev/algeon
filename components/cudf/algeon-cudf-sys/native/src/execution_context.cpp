@@ -248,13 +248,9 @@ cudf_status_t cudf_resolve_required_exec_options(cudf_exec_options_t const* opti
     set_error("exec options device must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  int32_t device_count           = 0;
-  cudaError_t const count_status = cudaGetDeviceCount(&device_count);
-  if (count_status != cudaSuccess) {
-    auto msg = std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(count_status);
-    set_error(msg);
-    return CUDF_ERROR_CUDA;
-  }
+  int32_t device_count             = 0;
+  cudf_status_t const count_status = cudf_read_cuda_device_count(&device_count);
+  if (count_status != CUDF_SUCCESS) { return count_status; }
   if (options->device >= device_count) {
     set_error("exec options device is outside the available CUDA device range");
     return CUDF_ERROR_INVALID_OPERATION;

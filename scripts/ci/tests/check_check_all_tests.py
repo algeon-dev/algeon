@@ -54,6 +54,9 @@ class GateTests(unittest.TestCase):
             (root / "scripts/check_all.sh").write_text(script)
             shutil.copy(ROOT / "scripts/ci/cargo_toolchain_environment.py", root / "scripts/ci")
             shutil.copy(ROOT / "scripts/ci/native_free_packages.py", root / "scripts/ci")
+            (root / ".config/policies/public-api").mkdir(parents=True)
+            shutil.copy(ROOT / ".config/policies/nightly-toolchain.txt", root / ".config/policies")
+            shutil.copy(ROOT / ".config/policies/public-api/TOOLCHAIN.txt", root / ".config/policies/public-api")
             for name in re.findall(r"scripts/[\w/.-]+\.(?:sh|py)", script):
                 path = root / name
                 if path.exists():
@@ -84,6 +87,9 @@ if args == ["nextest", "--version"]:
     print("cargo-nextest test-version")
 elif args == ["hack", "--version"]:
     print("cargo-hack 0.6.45")
+elif args == ["public-api", "--version"]:
+    toolchain = Path(".config/policies/public-api/TOOLCHAIN.txt").read_text()
+    print(toolchain.splitlines()[0].removeprefix("cargo-public-api: "))
 elif "config" in args and os.environ["GATE_CARGO_ENV"] == "0":
     # Like Cargo on a host whose configuration has no [env] table.
     if "env" in args:
@@ -183,6 +189,9 @@ elif args[:1] == ["nt"]:
         self.assertIn("--all-features", builds[0]["args"])
         self.assertIn("binaries-only", builds[0]["args"])
         self.assertTrue(any(event["kind"] == "metadata-loaded" for event in events))
+        nightly = "+" + (ROOT / ".config/policies/nightly-toolchain.txt").read_text().strip()
+        self.assertIn([nightly, "fmt", "--all", "--check"], [event["args"] for event in events])
+        self.assertTrue(any(event["args"][:2] == [nightly, "-Z"] for event in events))
 
     def test_compile_failure_skips_execution_and_continues_checks(self):
         events, _, rows = self.run_gate(build_status=7)

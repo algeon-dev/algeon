@@ -48,9 +48,21 @@ if [[ ! -x "${upstream_build}" ]]; then
     exit 1
 fi
 
+# KvikIO links a static curl into libcudf. Its optional codecs and protocols
+# default to whatever -dev packages the host has, which would add NEEDED
+# entries that the server image does not ship. Remote reads need none of them.
+curl_cmake_args=(
+    "-DCURL_BROTLI=OFF"
+    "-DCURL_ZSTD=OFF"
+    "-DUSE_NGHTTP2=OFF"
+    "-DUSE_LIBIDN2=OFF"
+    "-DCURL_USE_LIBSSH2=OFF"
+)
+
 LIB_BUILD_DIR="${build_dir}" \
 INSTALL_PREFIX="${install_dir}" \
 CUDF_CMAKE_CUDA_ARCHITECTURES="${cuda_architectures}" \
+EXTRA_CMAKE_ARGS="${curl_cmake_args[*]}" \
     "${upstream_build}" libcudf
 
 validate_cache_identity

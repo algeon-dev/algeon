@@ -100,6 +100,10 @@ done
 [[ "${CMAKE:-}" == "/usr/bin/cmake" ]]
 [[ "${CMAKE_GENERATOR:-}" == "Ninja" ]]
 [[ -n "${CARGO_HOME:-}" && ! -e "${CARGO_HOME}/config.toml" && ! -e "${CARGO_HOME}/config" ]]
+if [[ " $* " == *" metadata "* ]]; then
+  cat "$(dirname "$0")/../cargo-metadata.json"
+  exit 0
+fi
 
 target_dir=""
 target=""
@@ -150,6 +154,80 @@ set -euo pipefail
 printf '%s\n' "$@" >"${FAKE_DOCKER_ARGS:-/dev/null}"
 SH
 chmod +x "${tmp_dir}/bin/cargo" "${tmp_dir}/bin/rustc" "${tmp_dir}/bin/nvcc" "${tmp_dir}/bin/docker"
+
+# The fake `cargo metadata` links one crate with license files and one that
+# relies on a standard text. A proc macro, its dependency and a build
+# dependency never reach the binary and must not be staged.
+for crate in licensed-1.0.0 bare-2.0.0 macro-0.1.0 macrodep-0.1.0 builddep-0.1.0; do
+  mkdir -p "${tmp_dir}/registry/${crate}/src/vendored"
+  printf '[package]\n' >"${tmp_dir}/registry/${crate}/Cargo.toml"
+done
+printf 'licensed MIT text\n' >"${tmp_dir}/registry/licensed-1.0.0/LICENSE-MIT"
+printf 'vendored C library license\n' >"${tmp_dir}/registry/licensed-1.0.0/src/vendored/COPYING"
+printf 'license data table\n' >"${tmp_dir}/registry/licensed-1.0.0/src/vendored/license_table.rs"
+for crate in macro-0.1.0 macrodep-0.1.0 builddep-0.1.0; do
+  printf 'unreached license\n' >"${tmp_dir}/registry/${crate}/LICENSE"
+done
+# write_cargo_metadata <file> <license of the bare crate> [<authors JSON list of the bare crate>]
+write_cargo_metadata() {
+  python3 - "${tmp_dir}" "${ROOT}" "$1" "$2" "${3:-[\"Bare Author <bare@example.com>\"]}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+tmp, root, output, bare_license, bare_authors = sys.argv[1:6]
+registry = "registry+https://github.com/rust-lang/crates.io-index"
+
+
+def package(name, version, license, kind="lib", source=registry, authors=(), repository=None):
+    manifest = f"{root}/crates/algeon-server/Cargo.toml" if source is None else f"{tmp}/registry/{name}-{version}/Cargo.toml"
+    return {
+        "id": f"{name} {version}",
+        "name": name,
+        "version": version,
+        "license": license,
+        "license_file": None,
+        "manifest_path": manifest,
+        "source": source,
+        "authors": list(authors),
+        "repository": repository,
+        "targets": [{"kind": [kind]}],
+    }
+
+
+def edge(target, kind=None):
+    return {"pkg": target, "dep_kinds": [{"kind": kind, "target": None}]}
+
+
+metadata = {
+    "packages": [
+        package("algeon-server", "0.0.0", "Apache-2.0", "bin", None),
+        package("licensed", "1.0.0", "MIT OR Apache-2.0"),
+        package("bare", "2.0.0", bare_license, authors=json.loads(bare_authors), repository="https://example.com/bare"),
+        package("macro", "0.1.0", "MIT", "proc-macro"),
+        package("macrodep", "0.1.0", "MIT"),
+        package("builddep", "0.1.0", "MIT"),
+    ],
+    "resolve": {
+        "root": "algeon-server 0.0.0",
+        "nodes": [
+            {
+                "id": "algeon-server 0.0.0",
+                "deps": [edge("licensed 1.0.0"), edge("macro 0.1.0"), edge("builddep 0.1.0", "build")],
+            },
+            {"id": "licensed 1.0.0", "deps": [edge("bare 2.0.0")]},
+            {"id": "bare 2.0.0", "deps": []},
+            {"id": "macro 0.1.0", "deps": [edge("macrodep 0.1.0")]},
+            {"id": "macrodep 0.1.0", "deps": []},
+            {"id": "builddep 0.1.0", "deps": []},
+        ],
+    },
+    "version": 1,
+}
+Path(output).write_text(json.dumps(metadata), encoding="utf-8")
+PY
+}
+write_cargo_metadata "${tmp_dir}/cargo-metadata.json" 'Apache-2.0 WITH LLVM-exception OR MIT'
 workspace_version=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["workspace"]["package"]["version"])' "${ROOT}/Cargo.toml")
 head_revision=$(git -C "${ROOT}" rev-parse HEAD)
 worktree_dirty=false
@@ -207,6 +285,7 @@ assert all(record["fixed_tool_versions"].values())
 assert "--target" in command and "x86_64-unknown-linux-gnu" in command
 assert "target.x86_64-unknown-linux-gnu.rustflags=[\"-C\",\"target-cpu=x86-64-v3\"]" in command
 assert "--no-default-features" in command and "--locked" in command
+assert record["cargo_metadata_sha256"]
 PY
 echo "PASS: ambient compiler selectors are replaced and build record captures fixed tool inputs"
 echo "PASS: canonical command and build record reflect exact policy inputs"
@@ -229,6 +308,20 @@ python3 "${HELPER}" verify-build \
 grep -Fq 'artifact hash mismatch' "${tmp_dir}/tampered-binary.output" || fail "missing artifact tamper diagnostic"
 cp "${tmp_dir}/binary.backup" "${binary}"
 echo "PASS: artifact tamper prevents SKIP_CARGO_BUILD reuse"
+
+metadata_capture="${binary}.cargo-metadata.json"
+[[ -f "${metadata_capture}" ]] || fail "the canonical build did not capture cargo metadata beside the artifact"
+cp "${metadata_capture}" "${tmp_dir}/metadata.backup"
+printf ' ' >>"${metadata_capture}"
+status=0
+python3 "${HELPER}" verify-build \
+  --features 'nvml' \
+  --binary "${binary}" --record "${build_record}" \
+  >"${tmp_dir}/tampered-metadata.output" 2>&1 || status=$?
+[[ "${status}" -eq 2 ]] || fail "a changed cargo metadata capture was accepted for artifact reuse"
+grep -Fq 'cargo metadata hash mismatch' "${tmp_dir}/tampered-metadata.output" || fail "missing metadata tamper diagnostic"
+cp "${tmp_dir}/metadata.backup" "${metadata_capture}"
+echo "PASS: the cargo metadata capture is bound to the build record"
 
 cp "${POLICY}" "${tmp_dir}/prose-policy.toml"
 python3 - "${tmp_dir}/prose-policy.toml" <<'PY'
@@ -270,6 +363,8 @@ printf 'post-stage-patchelf-fixture\n' >>"${staged_binary}"
 python3 "${HELPER}" create-manifest \
   --dist-dir "${tmp_dir}/dist" \
   --build-record "${build_record}" \
+  --cuda-architectures-requested '80-real;120a-real' \
+  --cuda-architectures-real '120a;80' \
   >"${tmp_dir}/manifest.output"
 
 eval "$(python3 "${HELPER}" verify-manifest --dist-dir "${tmp_dir}/dist")"
@@ -284,9 +379,48 @@ eval "$(python3 "${HELPER}" verify-manifest --dist-dir "${tmp_dir}/dist")"
 [[ "${CPU_CHECKSUMS_SHA256}" == "$(sha256sum "${tmp_dir}/dist/SHA256SUMS" | awk '{print $1}')" ]]
 [[ "${PAYLOAD_FEATURES}" == "nvml" ]]
 [[ "${PAYLOAD_CUDA_TOOLKIT}" == "13.2" ]]
+[[ "${PAYLOAD_CUDA_ARCHITECTURES}" == "80-real;120a-real" ]]
+[[ "${PAYLOAD_CUDA_REAL_ARCHITECTURES}" == "120a;80" ]]
 (cd "${tmp_dir}/dist" && sha256sum --quiet -c SHA256SUMS) || fail "SHA256SUMS does not verify with sha256sum -c"
 grep -Fq '  payload-manifest.json' "${tmp_dir}/dist/SHA256SUMS" || fail "SHA256SUMS omits the manifest"
 echo "PASS: payload manifest and SHA256SUMS created and verified"
+
+# A reused payload from a clean worktree must not label an image assembled
+# from uncommitted files as clean. An empty index makes git report every
+# tracked file as changed without touching the real worktree.
+cp -a "${tmp_dir}/dist" "${tmp_dir}/dirty-dist"
+python3 - "${build_record}" "${tmp_dir}/clean-record.json" <<'PY'
+import json
+import sys
+
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+record["worktree_dirty"] = False
+json.dump(record, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+GIT_INDEX_FILE="${tmp_dir}/empty-index" python3 "${HELPER}" create-manifest \
+  --dist-dir "${tmp_dir}/dirty-dist" --build-record "${tmp_dir}/clean-record.json" \
+  --cuda-architectures-requested '80-real' --cuda-architectures-real '80' >/dev/null
+python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["worktree_dirty"] is True' \
+  "${tmp_dir}/dirty-dist/payload-manifest.json" || fail "image-time uncommitted changes were labeled clean"
+echo "PASS: uncommitted changes at image build mark the manifest dirty"
+
+python3 - "${build_record}" "${tmp_dir}/stale-record.json" <<'PY'
+import json
+import sys
+
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+record["revision"] = "0" * 40
+json.dump(record, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+status=0
+python3 "${HELPER}" create-manifest \
+  --dist-dir "${tmp_dir}/dirty-dist" --build-record "${tmp_dir}/stale-record.json" \
+  --cuda-architectures-requested '80-real' --cuda-architectures-real '80' \
+  >"${tmp_dir}/stale-record.output" 2>&1 || status=$?
+[[ "${status}" -eq 2 ]] || fail "payload from another revision was accepted"
+grep -Fq 'differs from HEAD' "${tmp_dir}/stale-record.output" || fail "missing stale revision diagnostic"
+rm -rf "${tmp_dir}/dirty-dist"
+echo "PASS: payload from another revision is refused"
 
 cp "${staged_binary}" "${tmp_dir}/staged_binary.backup"
 printf 'tamper-staged\n' >>"${staged_binary}"
@@ -329,6 +463,11 @@ for needle in \
   '"$CPU_CHECKSUMS_SHA256" SHA256SUMS | sha256sum -c -' \
   'org.opencontainers.image.revision="${ALGEON_REVISION}"' \
   'dev.algeon.features="${ALGEON_FEATURES}"' \
+  'dev.algeon.cuda-architectures="${CUDA_ARCHITECTURES}"' \
+  'org.opencontainers.image.base.name="${RUNTIME_BASE_IMAGE}"' \
+  'dev.algeon.cuda-runtime-image="${CUDA_RUNTIME_IMAGE}"' \
+  'COPY --from=cuda-harvest /cuda-licenses/' \
+  'license=native/cudf/nvtx3/LICENSE.txt' \
   '"$CPU_MANIFEST_SHA256" payload-manifest.json | sha256sum -c -' \
   'sha256sum -c --quiet SHA256SUMS' \
   'bash /payload/validate-loader-closure.sh' \
@@ -354,6 +493,28 @@ grep -Fq 'build-record' "${tmp_dir}/skip-without-provenance.output" \
 mkdir -p "${tmp_dir}/cudf/lib" "${tmp_dir}/native" \
   "${target_root}/x86-64-v3/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib"
 ln -s ../cudf "${tmp_dir}/native/cudf-install"
+mkdir -p "${tmp_dir}/cudf/share/algeon-native"
+printf 'requested=80-real;120a-real\nreal=120a;80\n' >"${tmp_dir}/cudf/share/algeon-native/cuda-architectures.env"
+# fake_build_tree <layer> : a build tree whose CMakeCache names one CPM package
+# with a license, a FetchContent-only package with a license, and GoogleTest
+# without one, which the staging skips as test-only.
+fake_build_tree() {
+  local build="${tmp_dir}/native/$1-build"
+  mkdir -p "${build}/_deps/dep$1-src/docs" "${build}/_deps/fetched$1-src" "${build}/_deps/gtest-src"
+  printf '%s dependency license\n' "$1" >"${build}/_deps/dep$1-src/LICENSE"
+  printf 'documentation-only license\n' >"${build}/_deps/dep$1-src/docs/LICENSE"
+  printf '%s fetched license\n' "$1" >"${build}/_deps/fetched$1-src/COPYING"
+  cat >"${build}/CMakeCache.txt" <<CACHE
+CMAKE_PROJECT_VERSION:STATIC=26.08.00
+CPM_PACKAGE_dep$1_SOURCE_DIR:INTERNAL=${build}/_deps/dep$1-src
+CPM_PACKAGE_dep$1_VERSION:INTERNAL=1.2.3
+CPM_PACKAGE_GTest_SOURCE_DIR:INTERNAL=${build}/_deps/gtest-src
+FETCHCONTENT_BASE_DIR:PATH=${build}/_deps
+CACHE
+}
+for layer in cudf cuvs cugraph cuml; do
+  fake_build_tree "${layer}"
+done
 for library in libcudf.so librmm.so librapids_logger.so; do
   printf 'fake %s\n' "${library}" >"${tmp_dir}/cudf/lib/${library}"
 done
@@ -418,9 +579,122 @@ ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_LDD_AUXILIARY_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/build-image.sh >"${tmp_dir}/build-image.output"
-for staged in payload-manifest.json SHA256SUMS validate-loader-closure.sh; do
+for staged in payload-manifest.json SHA256SUMS validate-loader-closure.sh licenses/INVENTORY.tsv \
+  licenses/algeon/LICENSE licenses/algeon/NOTICE licenses/rapids/cudf/LICENSE \
+  licenses/native/cudf/depcudf/LICENSE licenses/native/cudf/fetchedcudf/COPYING \
+  licenses/rust/licensed-1.0.0/LICENSE-MIT licenses/rust/licensed-1.0.0/src/vendored/COPYING \
+  licenses/rust/bare-2.0.0/MIT.txt licenses/FORKS.tsv; do
   [[ -f "${tmp_dir}/docker-dist/${staged}" ]] || fail "full fake staging path omitted ${staged}"
 done
+for unshipped in licenses/native/cudf/depcudf/docs licenses/native/cudf/gtest licenses/native/cudf/GTest \
+  licenses/rapids/cuvs licenses/rust/macro-0.1.0 licenses/rust/macrodep-0.1.0 licenses/rust/builddep-0.1.0 \
+  licenses/rust/licensed-1.0.0/src/vendored/license_table.rs; do
+  [[ ! -e "${tmp_dir}/docker-dist/${unshipped}" ]] || fail "license staging shipped ${unshipped}"
+done
+python3 - "${tmp_dir}/docker-dist" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+dist = Path(sys.argv[1])
+manifest = json.loads((dist / "payload-manifest.json").read_text())
+assert "licenses/INVENTORY.tsv" in manifest["files"], sorted(manifest["files"])
+assert manifest["cuda_architectures"] == {"requested": "80-real;120a-real", "real": "120a;80"}
+rows = [line.split("\t") for line in (dist / "licenses/INVENTORY.tsv").read_text().splitlines()]
+assert rows[0] == ["kind", "name", "version", "declared_license", "source", "covers", "license_files"], rows[0]
+by_name = {row[1]: row for row in rows[1:]}
+assert set(by_name) == {"algeon", "cudf", "depcudf", "fetchedcudf", "licensed", "bare"}, sorted(by_name)
+assert by_name["algeon"][5].split() == ["bin/algeon_server", "lib/libcudf_rust.so", "lib/libcudf_rust_rmm_interop.so"]
+assert by_name["cudf"][5].split() == ["lib/libcudf.so", "lib/librmm.so"]
+assert by_name["depcudf"][2] == "1.2.3"
+assert by_name["bare"][6] == "rust/bare-2.0.0/MIT.txt", by_name["bare"]
+notice = (dist / "licenses/rust/bare-2.0.0/MIT.txt").read_text().splitlines()[2]
+assert notice == "Copyright (c) Bare Author <bare@example.com>", notice
+PY
+cudf_commit=$(git -C "${ROOT}/components/cudf/cudf" rev-parse HEAD)
+cudf_url=$(git config --file "${ROOT}/.gitmodules" submodule.components/cudf/cudf.url)
+[[ "$(cat "${tmp_dir}/docker-dist/licenses/FORKS.tsv")" == "$(printf 'layer\trepository\tcommit\tchanges\ncudf\t%s\t%s\thttps://algeon.dev/reference/forks' "${cudf_url}" "${cudf_commit}")" ]] \
+  || fail "FORKS.tsv does not name the cuDF fork and commit: $(cat "${tmp_dir}/docker-dist/licenses/FORKS.tsv")"
+echo "PASS: the payload ships license texts for every staged component and records the CUDA architectures"
+
+# Each missing license source fails the staging before docker build.
+license_dist="${tmp_dir}/license-dist"
+mkdir -p "${license_dist}/bin" "${license_dist}/lib"
+printf 'server\n' >"${license_dist}/bin/algeon_server"
+printf 'cudf\n' >"${license_dist}/lib/libcudf.so"
+# run_stage_licenses <cargo metadata> [<repository root>]
+run_stage_licenses() {
+  rm -rf "${license_dist}/licenses"
+  python3 "${ROOT}/docker/stage_licenses.py" --repo-root "${2:-${ROOT}}" --dist-dir "${license_dist}" \
+    --cargo-metadata "$1" --root-package algeon-server --layer "cudf=${tmp_dir}/native/cudf-build"
+}
+run_stage_licenses "${tmp_dir}/cargo-metadata.json" >"${tmp_dir}/license-ok.output" 2>&1 \
+  || fail "license staging rejected a complete fixture: $(cat "${tmp_dir}/license-ok.output")"
+write_cargo_metadata "${tmp_dir}/unlicensed-metadata.json" 'LicenseRef-Proprietary'
+status=0
+run_stage_licenses "${tmp_dir}/unlicensed-metadata.json" >"${tmp_dir}/license-crate.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "a crate without a license file or standard text was accepted"
+grep -Fq "bare-2.0.0 ships no license file and declares 'LicenseRef-Proprietary'" "${tmp_dir}/license-crate.output" \
+  || fail "missing crate license diagnostic: $(cat "${tmp_dir}/license-crate.output")"
+printf 'unowned\n' >"${license_dist}/lib/libunowned.so"
+status=0
+run_stage_licenses "${tmp_dir}/cargo-metadata.json" >"${tmp_dir}/license-orphan.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "a staged library without a licensed owner was accepted"
+grep -Fq "staged files belong to no licensed component: ['lib/libunowned.so']" "${tmp_dir}/license-orphan.output" \
+  || fail "missing orphan library diagnostic: $(cat "${tmp_dir}/license-orphan.output")"
+rm -f "${license_dist}/lib/libunowned.so"
+mv "${tmp_dir}/native/cudf-build/_deps/fetchedcudf-src/COPYING" "${tmp_dir}/fetched-COPYING"
+status=0
+run_stage_licenses "${tmp_dir}/cargo-metadata.json" >"${tmp_dir}/license-native.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "a fetched native package without a license file was accepted"
+grep -Fq "fetchedcudf fetched into" "${tmp_dir}/license-native.output" \
+  || fail "missing native license diagnostic: $(cat "${tmp_dir}/license-native.output")"
+mv "${tmp_dir}/fetched-COPYING" "${tmp_dir}/native/cudf-build/_deps/fetchedcudf-src/COPYING"
+echo "PASS: license staging fails on a crate, native package or staged library without a license source"
+
+write_cargo_metadata "${tmp_dir}/authorless-metadata.json" 'MIT' '[]'
+run_stage_licenses "${tmp_dir}/authorless-metadata.json" >"${tmp_dir}/license-authorless.output" 2>&1 \
+  || fail "license staging rejected a crate without authors: $(cat "${tmp_dir}/license-authorless.output")"
+notice=$(sed -n 3p "${license_dist}/licenses/rust/bare-2.0.0/MIT.txt")
+[[ "${notice}" == "Copyright (c) the bare authors (https://example.com/bare)" ]] \
+  || fail "a crate without authors got the copyright line '${notice}'"
+if grep -Eq '<year>|<copyright holders>|\{copyright_holders\}' "${license_dist}/licenses/rust/bare-2.0.0/MIT.txt"; then
+  fail "a standard license text kept a copyright placeholder"
+fi
+echo "PASS: standard license texts carry the crate's copyright notice"
+
+# FORKS.tsv names the checked-out submodule commit, so a modified submodule
+# cannot be described and fails the staging.
+fake_repo="${tmp_dir}/repo"
+mkdir -p "${fake_repo}/components/cudf/cudf" "${fake_repo}/docker"
+cp "${ROOT}/LICENSE" "${ROOT}/NOTICE" "${ROOT}/.gitmodules" "${fake_repo}/"
+cp -R "${ROOT}/docker/license-texts" "${fake_repo}/docker/"
+cp "${ROOT}/components/cudf/cudf/LICENSE" "${fake_repo}/components/cudf/cudf/LICENSE"
+git -C "${fake_repo}/components/cudf/cudf" init -q
+git -C "${fake_repo}/components/cudf/cudf" add LICENSE
+git -C "${fake_repo}/components/cudf/cudf" -c user.name=fixture -c user.email=fixture@example.com commit -qm fixture
+fake_commit=$(git -C "${fake_repo}/components/cudf/cudf" rev-parse HEAD)
+run_stage_licenses "${tmp_dir}/cargo-metadata.json" "${fake_repo}" >"${tmp_dir}/license-fork.output" 2>&1 \
+  || fail "license staging rejected a clean submodule: $(cat "${tmp_dir}/license-fork.output")"
+grep -Fq "${fake_commit}" "${license_dist}/licenses/FORKS.tsv" || fail "FORKS.tsv omits the submodule commit"
+printf 'local edit\n' >>"${fake_repo}/components/cudf/cudf/LICENSE"
+status=0
+run_stage_licenses "${tmp_dir}/cargo-metadata.json" "${fake_repo}" >"${tmp_dir}/license-dirty.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "license staging accepted a modified submodule"
+grep -Fq 'submodule components/cudf/cudf has modified files' "${tmp_dir}/license-dirty.output" \
+  || fail "missing modified submodule diagnostic: $(cat "${tmp_dir}/license-dirty.output")"
+echo "PASS: FORKS.tsv names each staged submodule commit and a modified submodule fails the staging"
+
+mv "${tmp_dir}/cudf/share/algeon-native/cuda-architectures.env" "${tmp_dir}/cuda-architectures.env"
+status=0
+CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-no-arch" \
+FEATURES=nvml SKIP_CARGO_BUILD=1 NO_STRIP=1 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
+PATH="${tmp_dir}/bin:${PATH}" \
+  bash docker/build-image.sh >"${tmp_dir}/no-arch.output" 2>&1 || status=$?
+[[ "${status}" -eq 1 ]] || fail "staging accepted a cuDF install without a CUDA architecture record"
+grep -Fq 'cuda-architectures.env not found' "${tmp_dir}/no-arch.output" || fail "missing architecture record diagnostic"
+mv "${tmp_dir}/cuda-architectures.env" "${tmp_dir}/cudf/share/algeon-native/cuda-architectures.env"
+echo "PASS: the image records the cuDF CUDA architecture contract or refuses to stage"
 [[ ! -e "${tmp_dir}/docker-dist/lib/librapids_logger.so" ]] \
   || fail "static/absorbed logger package staged an unneeded shared logger"
 lean_tag="algeon-datafusion-test:${workspace_version}-x86-64-v3-nvml"
@@ -444,6 +718,7 @@ for needle in \
   "ALGEON_WORKTREE_DIRTY=${worktree_dirty}" \
   'ALGEON_FEATURES=nvml' \
   'CUDA_TOOLKIT_VERSION=13.2' \
+  'CUDA_ARCHITECTURES=80-real;120a-real' \
   '-t' \
   "${lean_tag}"; do
   grep -Fxq -- "${needle}" "${tmp_dir}/docker.args" \
@@ -609,6 +884,9 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as manifest_file:
     manifest = json.load(manifest_file)
 assert "nvml" not in manifest["features"], manifest["features"]
+for layer in ("cudf", "cuvs", "cugraph", "cuml"):
+    assert f"licenses/rapids/{layer}/LICENSE" in manifest["files"], layer
+    assert f"licenses/native/{layer}/dep{layer}/LICENSE" in manifest["files"], layer
 PY
 echo "PASS: the shipped feature set keeps the plain tag and a lean set gets a feature suffix"
 

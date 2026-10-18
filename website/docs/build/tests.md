@@ -21,10 +21,13 @@ Before running Cargo checks:
 
 - The [build shell](./from-source.md#2-configure-the-build-shell) is
   configured and all four native layers plus the Rust workspace are built.
-- The latest stable `cargo-nextest` and `cargo-hack` 0.6.45 are installed
-  ([Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner)). The
-  gate checks that nextest runs and prints its version. Nextest is not pinned.
-  The full gate also checks the exact `cargo-hack` version.
+- The gate tools from
+  [Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner) are
+  installed: the pinned nightly toolchain, the latest stable `cargo-nextest`,
+  `cargo-hack` 0.6.45, `cargo-public-api`, `bindgen-cli`, and PyYAML. The gate
+  checks that nextest runs and prints its version. Nextest is not pinned.
+  The full and `--native-free` modes also check the exact `cargo-hack`
+  version, and the full mode checks `cargo-public-api`.
 - No benchmark, running Flight SQL server, or other checkout's gate holds
   `/tmp/cudf-gpu.lock`, since GPU tests wait on that lock until it is free.
 
@@ -75,7 +78,7 @@ therefore relies on `cargo-nextest` for per-process isolation. The
 Formatting, lints, and docs match the gate's phases:
 
 ```bash
-cargo +nightly fmt --all --check
+cargo +"$(cat .config/policies/nightly-toolchain.txt)" fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep-going
 bash scripts/ci/check_public_api_surface.sh check --all-features
@@ -214,8 +217,8 @@ FAIL: full pre-merge gate reported problems.
 - A single failing phase is fastest to iterate on with the
   [targeted edit loops](#targeted-edit-loops). Rerun the full gate when
   completing pre-merge validation.
-- Exit status 2 before any phase means an argument, environment, or
-  tool-version error, and the message names the fix.
+- Exit status 2 before any phase means an argument or environment error, a
+  missing tool, or a tool-version mismatch, and the message names the fix.
 - `cargo nextest replay` replays a stored run's results for each test
   without rerunning anything.
 

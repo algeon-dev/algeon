@@ -51,7 +51,7 @@ fi
 }
 
 if [[ -z "${RUSTFMT:-}" ]]; then
-  export RUSTFMT="$(rustup which rustfmt --toolchain nightly)"
+  export RUSTFMT="$(rustup which rustfmt --toolchain "$(<"${repo_root}/.config/policies/nightly-toolchain.txt")")"
 fi
 
 cd "${repo_root}"

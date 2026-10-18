@@ -116,10 +116,12 @@ Three UDTF families wrap NVIDIA's GPU libraries:
 
 ## Build and run {/* #start-exploring */}
 
-Algeon supports Linux with an NVIDIA GPU. Follow [Build & Test](./build/overview.md)
+Algeon supports Linux with an NVIDIA GPU. The
+[published server image](./build/docker.md#run-the-published-image) runs the
+Flight SQL server without a source build. Follow [Build & Test](./build/overview.md)
 for prerequisites and build instructions, or
 [Run as a Flight SQL server](./build/overview.md#run-as-a-flight-sql-server)
-to skip the contributor setup. Then choose an integration:
+to build only the server. Then choose an integration:
 
 - **Rust application:** install Algeon in an [embedded DataFusion session](./integration/datafusion-session.mdx).
 - **SQL client:** run the [Arrow Flight SQL server](./integration/flight-sql-server.mdx) and connect with ADBC.

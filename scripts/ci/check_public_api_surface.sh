@@ -19,16 +19,15 @@
 # private item, method, field, or module) when reproduced without trybuild.
 #
 # `cargo public-api` has no `--toolchain` flag by design (it only supports
-# `cargo +toolchain public-api`); left to itself it resolves `nightly` to whichever
-# channel rustup currently maps it to (see cargo-public-api's resolve_toolchain), a
-# floating channel, same as this repo's `cargo +nightly fmt`. rustdoc JSON content
-# can shift across nightlies even when the stable format-version number is unchanged.
-# Without recording that identity, a routine nightly bump presents
-# as an unreviewable wall of "removed"/"added" API lines that looks like a
-# real regression. TOOLCHAIN.txt below pins the exact rustc build and
-# cargo-public-api version the snapshots were generated with, and `check`
-# compares identity *before* diffing content. A toolchain drift is reported
-# as its own failure, distinct from an actual API change.
+# `cargo +toolchain public-api`); left to itself it would use the floating
+# `nightly` channel (see cargo-public-api's resolve_toolchain). rustdoc JSON
+# content can shift across nightlies even when the stable format-version number
+# is unchanged, so this script runs the toolchain named in
+# .config/policies/nightly-toolchain.txt. TOOLCHAIN.txt below records the exact
+# rustc build and cargo-public-api version the snapshots were generated with,
+# and `check` compares identity *before* diffing content. A toolchain drift,
+# such as a pin bump without regenerated snapshots, is reported as its own
+# failure, distinct from an actual API change.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -39,6 +38,7 @@ cd "${ROOT}"
 # throwaway directory and leave the real checked-in snapshots untouched.
 SNAPSHOT_DIR=${PUBLIC_API_SNAPSHOT_DIR:-.config/policies/public-api}
 TOOLCHAIN_FILE="${SNAPSHOT_DIR}/TOOLCHAIN.txt"
+NIGHTLY_TOOLCHAIN=$(<.config/policies/nightly-toolchain.txt)
 
 # crate name -> snapshot file basename
 CRATES=(
@@ -56,9 +56,9 @@ CRATES=(
 
 current_toolchain_identity() {
   local rustc_output tool_version
-  if ! rustc_output=$(rustc +nightly -Vv 2>&1); then
-    echo "ERROR: 'rustc +nightly -Vv' failed; is the nightly toolchain installed?" >&2
-    echo "  Install it with: rustup toolchain install nightly" >&2
+  if ! rustc_output=$(rustc "+${NIGHTLY_TOOLCHAIN}" -Vv 2>&1); then
+    echo "ERROR: 'rustc +${NIGHTLY_TOOLCHAIN} -Vv' failed; is the pinned nightly toolchain installed?" >&2
+    echo "  Install it with: rustup toolchain install ${NIGHTLY_TOOLCHAIN} --profile minimal --component rustfmt" >&2
     return 1
   fi
   if ! tool_version=$(cargo public-api --version 2>&1); then
@@ -150,7 +150,7 @@ else
     echo "  If the current toolchain is intentional (for example after a nightly bump), confirm no" >&2
     echo "  real public API changed, then regenerate with:" >&2
     echo "    bash scripts/ci/check_public_api_surface.sh write $*" >&2
-    echo "  Otherwise, install the recorded nightly build shown above and rerun this check." >&2
+    echo "  Otherwise, install ${NIGHTLY_TOOLCHAIN} and the recorded cargo-public-api version, then rerun this check." >&2
     exit 1
   fi
 fi
@@ -159,7 +159,7 @@ for crate in "${CRATES[@]}"; do
   snapshot="${SNAPSHOT_DIR}/${crate}.txt"
   actual="${work_dir}/${crate}.txt"
   err="${work_dir}/${crate}.err"
-  if ! cargo public-api -p "${crate}" "$@" -sss --color never >"${actual}" 2>"${err}"; then
+  if ! cargo "+${NIGHTLY_TOOLCHAIN}" public-api -p "${crate}" "$@" -sss --color never >"${actual}" 2>"${err}"; then
     echo "ERROR: cargo public-api failed for '${crate}':" >&2
     sed 's/^/  /' "${err}" >&2
     status=1

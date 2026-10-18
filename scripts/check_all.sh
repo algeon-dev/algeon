@@ -13,6 +13,8 @@ cd "${ROOT}" || exit 2
 export LD_LIBRARY_PATH="${ROOT}/target/native/cudf-install/lib:${ROOT}/target/native/cuvs-install/lib:${ROOT}/target/native/cugraph-install/lib:${ROOT}/target/native/cuml-install/lib:${ROOT}/target/native/cugraph-build"
 
 readonly REQUIRED_CARGO_HACK_VERSION=0.6.45
+NIGHTLY_TOOLCHAIN=$(<.config/policies/nightly-toolchain.txt) || exit 2
+readonly NIGHTLY_TOOLCHAIN
 readonly GPU_LOCK=/tmp/cudf-gpu.lock
 
 usage() {
@@ -59,6 +61,16 @@ if [[ "${mode}" != fast ]]; then
   require_version "cargo-hack ${REQUIRED_CARGO_HACK_VERSION}" \
     "cargo install --locked --version ${REQUIRED_CARGO_HACK_VERSION} cargo-hack" cargo hack --version
 fi
+if [[ "${mode}" == full ]]; then
+  # The public API snapshots record the cargo-public-api build that wrote them.
+  public_api_version=$(sed -n 's/^cargo-public-api: //p' .config/policies/public-api/TOOLCHAIN.txt)
+  require_version "${public_api_version}" \
+    "cargo install --locked --version ${public_api_version##* } cargo-public-api" cargo public-api --version
+fi
+if ! python3 -c 'import tomllib, yaml' 2>/dev/null; then
+  echo "ERROR: policy checks need Python 3.11 or newer with PyYAML. Install it with: sudo apt-get install python3-yaml" >&2
+  exit 2
+fi
 
 if [[ "${mode}" == native-free ]]; then
   # Every build script takes its DOCS_RS branch and skips native discovery and
@@ -69,7 +81,7 @@ fi
 
 # The whole merged config, because `config get env` fails on a host whose
 # Cargo configuration has no [env] table, such as a hosted CI runner.
-cargo +nightly -Z unstable-options config get --format toml --show-origin \
+cargo "+${NIGHTLY_TOOLCHAIN}" -Z unstable-options config get --format toml --show-origin \
   | python3 scripts/ci/cargo_toolchain_environment.py || exit 2
 echo "check_all: LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"
 
@@ -136,6 +148,7 @@ POLICY_SCRIPTS=(
   scripts/ci/check_cugraph_example_ddl.sh
   scripts/ci/tests/check_docker_scripts_tests.sh
   scripts/ci/check_docker_scripts.sh
+  scripts/ci/tests/check_publish_image_tests.sh
 )
 
 policy_scripts() {
@@ -324,7 +337,7 @@ echo "check_all: mode=${mode} logs=${LOG_DIR}"
 source_start=$(source_identity)
 if [[ "${mode}" == full ]]; then echo "CHECK SOURCE START: $(gate_source_identity)"; fi
 
-run rustfmt cargo +nightly fmt --all --check &
+run rustfmt cargo "+${NIGHTLY_TOOLCHAIN}" fmt --all --check &
 run native-sources bash scripts/ci/check_native_sources.sh &
 run policy-scripts policy_scripts &
 if [[ "${mode}" == full ]]; then

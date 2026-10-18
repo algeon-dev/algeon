@@ -214,8 +214,9 @@ impl FlightSqlServerBuilder {
     /// Does not bind or serve. It constructs a backend and session when they
     /// were not injected, and rejects incompatible injections. Invalid TLS material
     /// is rejected before a new backend initializes GPU resources. The
-    /// [`ServerConfig::init_sql`] statements run on the shared session last;
-    /// a failing statement fails the build with `invalid_configuration`.
+    /// shared session then registers the [`ServerConfig::data_root`] tables
+    /// and runs the [`ServerConfig::init_sql`] statements, in that order; a
+    /// failure in either fails the build with `invalid_configuration`.
     pub async fn build(self) -> Result<FlightSqlServer> {
         let config = self.config.ok_or_else(|| {
             ServerError::builder_validation(
@@ -275,9 +276,7 @@ impl FlightSqlServerBuilder {
             },
             None => Arc::new(session::build_session_context_with_backend(&effective_config, &backend).await?),
         };
-        if let Some(path) = &effective_config.init_sql {
-            session::run_init_sql(&ctx, path).await?;
-        }
+        session::prepare_shared_session(&ctx, &effective_config).await?;
 
         let auth_interceptor = auth::AuthInterceptor::new(effective_config.auth.mode.clone(), auth::TokenStore::new());
         log_auth_mode_snapshot(&effective_config.auth.mode);

@@ -10,11 +10,13 @@
 #   lib/libcuvs.so* libcuvs_c.so*      canonical cuVS install (C API only for `cuvs`)
 #   lib/libcuml.so* libcuml_rust.so*   canonical cuML install (for `cuml`)
 #   lib/libtreelite.so* libnvforest.so* cuML native dependencies
+#   licenses/                          license texts and INVENTORY.tsv (stage_licenses.py)
 #   validate-loader-closure.sh         the closure check the Dockerfile reruns
 #   payload-manifest.json SHA256SUMS   provenance and file hashes
 #
 # The Dockerfile harvests the CUDA toolkit libraries (libcudart, libcublas,
-# libnvrtc, ...) from an nvidia/cuda runtime image, so they are not staged.
+# libnvrtc, ...) and their license files from an nvidia/cuda runtime image, so
+# they are not staged.
 #
 # Usage:
 #   bash docker/build-image.sh                     # server.features in .config/policies/cpu-packaging.toml
@@ -23,12 +25,15 @@
 #   NO_STRIP=1 bash docker/build-image.sh          # keep debug symbols
 #   SKIP_CARGO_BUILD=1 bash docker/build-image.sh  # reuse only a verified canonical artifact
 #
-# Other inputs: ALGEON_NATIVE_DIR (native install root, default target/native),
+# Other inputs: ALGEON_NATIVE_DIR (native install and build root, default
+# target/native), the native build-tree selectors CUDF_CPP_BUILD_DIR,
+# CUVS_CPP_BUILD_DIR, CUGRAPH_CMAKE_BUILD_DIR and CUML_CPP_BUILD_DIR,
 # CPU_PACKAGE_TARGET_ROOT, CPU_PACKAGE_DIST_DIR, IMAGE_REPOSITORY,
-# CUDA_RUNTIME_IMAGE and CUDA_BASE_IMAGE.
+# CUDA_RUNTIME_IMAGE and RUNTIME_BASE_IMAGE.
 #
-# Prerequisites: native artifacts under ALGEON_NATIVE_DIR, docker, readelf and
-# ldd; patchelf and strip are recommended.
+# Prerequisites: native artifacts and their build trees under
+# ALGEON_NATIVE_DIR, docker, python3, readelf and ldd; patchelf and strip are
+# recommended.
 
 set -euo pipefail
 
@@ -57,12 +62,24 @@ command -v docker >/dev/null 2>&1 || {
     echo "ERROR: docker is required to build the image." >&2
     exit 1
 }
+# The Dockerfile needs BuildKit (`# syntax=` and `RUN --mount`). Without this
+# check a missing builder surfaces only after the canonical Cargo build.
+docker buildx version >/dev/null 2>&1 || {
+    echo "ERROR: docker buildx (BuildKit) is required. Install Docker Engine 23 or newer with the buildx plugin." >&2
+    exit 1
+}
 
 ALGEON_NATIVE_DIR="${ALGEON_NATIVE_DIR:-$REPO_ROOT/target/native}"
 CUDF_INSTALL_DIR="$ALGEON_NATIVE_DIR/cudf-install"
 CUVS_INSTALL_DIR="$ALGEON_NATIVE_DIR/cuvs-install"
 CUML_INSTALL_DIR="$ALGEON_NATIVE_DIR/cuml-install"
 CUGRAPH_INSTALL_DIR="$ALGEON_NATIVE_DIR/cugraph-install"
+# The license sources of the fetched native dependencies live in the build
+# trees; the selectors match scripts/build/build_lib*.sh.
+CUDF_BUILD_DIR="${CUDF_CPP_BUILD_DIR:-$ALGEON_NATIVE_DIR/cudf-build}"
+CUVS_BUILD_DIR="${CUVS_CPP_BUILD_DIR:-$ALGEON_NATIVE_DIR/cuvs-build}"
+CUGRAPH_BUILD_DIR="${CUGRAPH_CMAKE_BUILD_DIR:-$ALGEON_NATIVE_DIR/cugraph-build}"
+CUML_BUILD_DIR="${CUML_CPP_BUILD_DIR:-$ALGEON_NATIVE_DIR/cuml-build}"
 
 # /app/lib is where the Dockerfile places the runtime libraries.
 RUNTIME_LIB_DIR="/app/lib"
@@ -87,6 +104,7 @@ cd "$REPO_ROOT"
 CARGO_BUILD_ROOT="$CPU_PACKAGE_TARGET_ROOT/$CPU_ARTIFACT_DIR"
 BINARY="$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/algeon_server"
 BUILD_RECORD="$BINARY.build-record.json"
+CARGO_METADATA="$BINARY.cargo-metadata.json"
 
 if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
     echo "==> Building canonical algeon_server artifact ..."
@@ -156,6 +174,18 @@ copy_lib() {
 
 CUDF_LIB="$CUDF_INSTALL_DIR/lib"
 [[ -d "$CUDF_LIB" ]] || { echo "ERROR: $CUDF_LIB not found: build cudf first." >&2; exit 1; }
+
+# The cuVS, cuGraph and cuML build scripts reject a prefix whose record differs
+# from cuDF's, so cuDF's record describes every staged layer.
+source "$REPO_ROOT/scripts/build/cuda_architecture_contract.sh"
+CUDA_CONTRACT="$(algeon_cuda_contract_path "$CUDF_INSTALL_DIR")"
+[[ -f "$CUDA_CONTRACT" ]] || {
+    echo "ERROR: $CUDA_CONTRACT not found; rebuild cuDF with scripts/build/build_libcudf.sh so the image can record its CUDA architectures." >&2
+    exit 1
+}
+CUDA_ARCHITECTURES_REQUESTED="$(algeon_cuda_read_contract_value "$CUDA_CONTRACT" requested)"
+CUDA_ARCHITECTURES_REAL="$(algeon_cuda_read_contract_value "$CUDA_CONTRACT" real)"
+echo "==> CUDA architectures   : requested=$CUDA_ARCHITECTURES_REQUESTED real=$CUDA_ARCHITECTURES_REAL"
 echo "==> Staging forked cuDF libs from $CUDF_LIB"
 copy_lib "$CUDF_LIB/libcudf.so"          || { echo "ERROR: libcudf.so missing" >&2; exit 1; }
 copy_lib "$CUDF_LIB/librmm.so"           || { echo "ERROR: librmm.so missing" >&2; exit 1; }
@@ -309,22 +339,37 @@ bash "$SCRIPT_DIR/validate-loader-closure.sh" \
     --bin "$DIST_DIR/bin/algeon_server" --lib "$DIST_DIR/lib" --features "$FEATURES"
 cp "$SCRIPT_DIR/validate-loader-closure.sh" "$DIST_DIR/validate-loader-closure.sh"
 
-python3 "$POLICY_HELPER" create-manifest --dist-dir "$DIST_DIR" --build-record "$BUILD_RECORD"
+# 5. The license directory covers every staged file except the CUDA toolkit
+# libraries, whose licenses the Dockerfile copies from the runtime image.
+license_layers=(--layer "cudf=$CUDF_BUILD_DIR")
+[[ $want_cuvs_runtime -eq 1 ]] && license_layers+=(--layer "cuvs=$CUVS_BUILD_DIR")
+[[ $want_cugraph -eq 1 ]] && license_layers+=(--layer "cugraph=$CUGRAPH_BUILD_DIR")
+[[ $want_cuml -eq 1 ]] && license_layers+=(--layer "cuml=$CUML_BUILD_DIR")
+echo "==> Staging license texts"
+python3 "$SCRIPT_DIR/stage_licenses.py" \
+    --repo-root "$REPO_ROOT" --dist-dir "$DIST_DIR" \
+    --cargo-metadata "$CARGO_METADATA" --root-package algeon-server \
+    "${license_layers[@]}"
+
+python3 "$POLICY_HELPER" create-manifest --dist-dir "$DIST_DIR" --build-record "$BUILD_RECORD" \
+    --cuda-architectures-requested "$CUDA_ARCHITECTURES_REQUESTED" \
+    --cuda-architectures-real "$CUDA_ARCHITECTURES_REAL"
 # COPY keeps context modes, and the image's root-owned /app must not inherit a
 # group-writable host umask.
 chmod -R u=rwX,go=rX "$DIST_DIR"
 eval "$(python3 "$POLICY_HELPER" verify-manifest --dist-dir "$DIST_DIR")"
 [[ "$PAYLOAD_WORKTREE_DIRTY" == "false" ]] \
-    || echo "warning: the payload was built from a worktree with uncommitted changes; revision $PAYLOAD_REVISION does not describe it exactly."
+    || echo "warning: the payload or image build saw uncommitted changes; revision $PAYLOAD_REVISION does not describe the image exactly."
 
 echo ""
 echo "==> Staged payload ($(du -sh "$DIST_DIR" | cut -f1) total):"
-( cd "$DIST_DIR" && find . -type f -o -type l | sort | while read -r f; do
+( cd "$DIST_DIR" && find . -path ./licenses -prune -o \( -type f -o -type l \) -print | sort | while read -r f; do
     printf '    %-46s %s\n' "$f" "$(du -h "$f" 2>/dev/null | cut -f1)"
-  done )
+  done
+  printf '    %-46s %s\n' "./licenses/ ($(find licenses -type f | wc -l) files)" "$(du -sh licenses | cut -f1)" )
 echo ""
 
-# 5. Only the shipped feature set gets the plain <version>-<baseline> tag, so
+# 6. Only the shipped feature set gets the plain <version>-<baseline> tag, so
 # a lean build never overwrites the shipped image. An empty feature list is
 # tagged -cudf.
 IMAGE_TAG_SUFFIX="$PAYLOAD_VERSION-$CPU_BASELINE"
@@ -350,9 +395,10 @@ docker_args=(
     --build-arg "ALGEON_CREATED=$PAYLOAD_CREATED"
     --build-arg "ALGEON_FEATURES=$PAYLOAD_FEATURES"
     --build-arg "CUDA_TOOLKIT_VERSION=$PAYLOAD_CUDA_TOOLKIT"
+    --build-arg "CUDA_ARCHITECTURES=$PAYLOAD_CUDA_ARCHITECTURES"
 )
 [[ -n "${CUDA_RUNTIME_IMAGE:-}" ]] && docker_args+=(--build-arg "CUDA_RUNTIME_IMAGE=$CUDA_RUNTIME_IMAGE")
-[[ -n "${CUDA_BASE_IMAGE:-}" ]] && docker_args+=(--build-arg "CUDA_BASE_IMAGE=$CUDA_BASE_IMAGE")
+[[ -n "${RUNTIME_BASE_IMAGE:-}" ]] && docker_args+=(--build-arg "RUNTIME_BASE_IMAGE=$RUNTIME_BASE_IMAGE")
 docker_args+=(-t "$IMAGE_TAG" "$DIST_DIR")
 
 echo "==> Building image: $IMAGE_TAG"
