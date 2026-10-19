@@ -33,7 +33,7 @@ DataFusion, the DataFusion baseline remains in place.
 | Expression | Native forms |
 | --- | --- |
 | Values | Columns and literals. |
-| Arithmetic | `+`, `-`, `*`, `/`, `%` and unary minus. Decimal `%` is not native. Integer `/`, any `%` and timestamp `+`/`-` are not evaluated in reader predicates or join residuals. |
+| Arithmetic | `+`, `-`, `*`, `/`, `%` and unary minus. Decimal `%` is not native. Integer `/`, any `%` and timestamp `+`/`-` are not evaluated in reader predicates; [join conditions](./native-evaluation-semantics.mdx#where-checked-operations-are-not-evaluated) evaluate them only in parts that cannot fail. |
 | Timestamp arithmetic | Two timezone-free timestamps of one unit subtract to a `Duration` of that unit. Such a timestamp plus or minus a duration gives a timestamp. Duration plus duration, date plus or minus duration, and date minus date are not native. |
 | Comparison and logic | Comparisons, `AND`, `OR`, `NOT`, null tests. |
 | Conditionals | `CASE`. |

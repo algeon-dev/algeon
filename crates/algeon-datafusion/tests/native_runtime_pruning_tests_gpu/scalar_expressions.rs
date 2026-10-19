@@ -8,7 +8,7 @@ use algeon_datafusion::{
 use arrow::{
     array::{
         Array, AsArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int8Array, Int16Array,
-        Int32Array, Int64Array,
+        Int32Array, Int64Array, StringArray,
     },
     compute::{cast, concat_batches},
     datatypes::{Float32Type, Float64Type, TimeUnit},
@@ -1287,6 +1287,13 @@ fn scalar_expressions_cases_3() {
                 .expect("case runtime")
                 .block_on(native_runtime_checked_failures_fail_the_query_like_cpu())
         }),
+        ("native_runtime_join_filters_with_single_input_expressions_match_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_join_filters_with_single_input_expressions_match_cpu())
+        }),
     ]);
 }
 
@@ -1558,6 +1565,97 @@ async fn native_runtime_decimal_join_residuals_match_cpu_without_host_boundaries
         ),
     ] {
         assert_native_fails_like_cpu(&path, name, sql).await;
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn write_join_filter_string_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
+        Field::new("key", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("amount", DataType::Int64, true),
+    ]));
+    // Each key holds two rows, so every row has one partner besides itself. Row 4 has no name and no amount.
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8])),
+            Arc::new(Int32Array::from(vec![1, 1, 2, 2, 3, 3, 4, 4])),
+            Arc::new(StringArray::from(vec![
+                Some("Barbie"),
+                Some("ken"),
+                Some("barbie doll"),
+                None,
+                Some("Bar"),
+                Some("alpha"),
+                Some("Barbie"),
+                Some("zed"),
+            ])),
+            Arc::new(Int64Array::from(vec![Some(5), Some(60), Some(7), None, Some(70), Some(-1), Some(7), Some(100)])),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+/// Join filters that read both inputs stay on the join. Their single-input
+/// string predicates and null-aware comparisons are computed on that input
+/// before the join, and a cross-input null-aware comparison filters the matched
+/// pairs of an inner join.
+async fn native_runtime_join_filters_with_single_input_expressions_match_cpu() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-join-filter-strings");
+    let path = dir.join("input.parquet");
+    write_join_filter_string_input_parquet(&path);
+
+    for (name, sql) in [
+        (
+            "inner-lower-like",
+            "SELECT l.row_id, r.row_id AS r_id FROM bench l JOIN bench r ON l.key = r.key \
+             AND (LOWER(r.name) LIKE '%bar%' OR l.amount > 50) ORDER BY l.row_id, r_id",
+        ),
+        (
+            "left-like",
+            "SELECT l.row_id, r.row_id AS r_id FROM bench l LEFT JOIN bench r ON l.key = r.key \
+             AND r.row_id <> l.row_id AND (r.name LIKE 'B%' OR l.amount > 50) ORDER BY l.row_id, r_id",
+        ),
+        (
+            "full-like",
+            "SELECT l.row_id, r.row_id AS r_id FROM bench l FULL JOIN bench r ON l.key = r.key \
+             AND (r.name LIKE '%ie%' OR l.amount > 60) ORDER BY l.row_id, r_id",
+        ),
+        (
+            "semi-not-like",
+            "SELECT row_id FROM bench l WHERE EXISTS (SELECT 1 FROM bench r WHERE r.key = l.key \
+             AND r.row_id <> l.row_id AND (r.name NOT LIKE '%a%' OR l.amount < 0)) ORDER BY row_id",
+        ),
+        (
+            "anti-not-like",
+            "SELECT row_id FROM bench l WHERE NOT EXISTS (SELECT 1 FROM bench r WHERE r.key = l.key \
+             AND r.row_id <> l.row_id AND (r.name NOT LIKE '%a%' OR l.amount < 0)) ORDER BY row_id",
+        ),
+        (
+            "single-input-concatenation-and-is-distinct-from",
+            "SELECT l.row_id, r.row_id AS r_id FROM bench l JOIN bench r ON l.key = r.key \
+             AND ((r.name || '!') = 'Barbie!' OR (l.amount IS DISTINCT FROM 7)) ORDER BY l.row_id, r_id",
+        ),
+        (
+            "cross-input-is-not-distinct-from",
+            "SELECT l.row_id, r.row_id AS r_id FROM bench l JOIN bench r ON l.key = r.key \
+             AND l.row_id <> r.row_id AND ((l.name IS NOT DISTINCT FROM r.name) OR l.amount IS NULL) \
+             ORDER BY l.row_id, r_id",
+        ),
+    ] {
+        let cpu = cpu_sql_output(&path, sql).await;
+        assert!(cpu.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "{name} must exercise output rows");
+        let plan = sql_plan(&path, SessionConfig::new(), sql).await;
+        let optimization = optimize_with_pruning_template_requiring_native(plan);
+        assert_algeon_native_exec(&optimization.plan, name);
+        let native = collect(optimization.plan, Arc::new(TaskContext::default())).await.unwrap();
+        assert_batches_equal(&cpu, &native);
     }
 
     fs::remove_dir_all(dir).unwrap();

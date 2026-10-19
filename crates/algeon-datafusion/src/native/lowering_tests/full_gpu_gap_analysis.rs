@@ -426,6 +426,74 @@ const EXISTING_COVERAGE_CASES: &[GpuGapCase] = &[
     },
 ];
 
+/// Join filters DataFusion keeps on the join because they read both inputs.
+/// Their single-input parts outside the cuDF join AST are computed on that
+/// input before the join, unless they can fail.
+const JOIN_RESIDUAL_CASES: &[GpuGapCase] = &[
+    GpuGapCase {
+        id: "join_residual_like_inner",
+
+        sql: "SELECT b.id, s.id AS sid FROM bench b JOIN bench s ON b.key = s.key \
+              AND (s.name LIKE 'a%' OR b.payload > 10)",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "join_residual_lower_like_left",
+
+        sql: "SELECT b.id, s.id AS sid FROM bench b LEFT JOIN bench s ON b.key = s.key \
+              AND (LOWER(s.name) LIKE '%a%' OR b.payload > 10)",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "join_residual_not_like_full",
+
+        sql: "SELECT b.id, s.id AS sid FROM bench b FULL JOIN bench s ON b.key = s.key \
+              AND (s.name NOT LIKE '%a%' OR b.payload > 10)",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "join_residual_like_semi",
+
+        sql: "SELECT b.id FROM bench b WHERE EXISTS \
+              (SELECT 1 FROM bench s WHERE s.key = b.key AND (s.name LIKE 'a%' OR b.payload > 10))",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "join_residual_like_anti",
+
+        sql: "SELECT b.id FROM bench b WHERE NOT EXISTS \
+              (SELECT 1 FROM bench s WHERE s.key = b.key AND (s.name LIKE 'a%' OR b.payload > 10))",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "join_residual_null_aware_comparisons",
+
+        sql: "SELECT b.id, s.id AS sid FROM bench b JOIN bench s ON b.key = s.key \
+              AND ((s.payload IS DISTINCT FROM 5) OR b.name IS NOT DISTINCT FROM s.name)",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "join_residual_concatenation",
+
+        sql: "SELECT b.id, s.id AS sid FROM bench b JOIN bench s ON b.key = s.key \
+              AND ((s.name || '!') = b.name OR b.payload > 10)",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    // The cast fails on a payload above 999. DataFusion casts only key-matched
+    // pairs, and a pre-join column would cast every row.
+    GpuGapCase {
+        id: "join_residual_cast_that_can_fail",
+
+        sql: "SELECT b.id FROM bench b JOIN bench s ON b.key = s.key \
+              AND CAST(s.payload AS DECIMAL(3, 0)) > CAST(b.id AS DECIMAL(10, 0))",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedExpression,
+            unsupported_category: "expression",
+            blocking: ("cast", "cast from Int64 to Decimal128(3, 0) in `CAST(payload AS Decimal128(3, 0))`"),
+        },
+    },
+];
+
 #[tokio::test]
 async fn full_gpu_gap_analysis_sql_planning_coverage_is_stable() {
     let dir = unique_temp_dir("algeon-datafusion-full-gpu-gap-analysis");
@@ -468,6 +536,7 @@ fn gpu_gap_cases() -> Vec<GpuGapCase> {
         SCALAR_EXPRESSION_CASES,
         ROOT_SOURCE_CASES,
         EXISTING_COVERAGE_CASES,
+        JOIN_RESIDUAL_CASES,
     ]
     .into_iter()
     .flatten()

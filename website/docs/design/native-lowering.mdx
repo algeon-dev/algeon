@@ -241,6 +241,14 @@ may still become GPU fragments. Explicit graph, vector and ML functions also
 form GPU fragments. Transfers at CPU/GPU boundaries are part of the cost of
 such a mixed plan.
 
+A join condition that reads both inputs stays on the join. Each part of it
+that reads one input and that the cuDF join AST cannot evaluate, such as
+`LIKE`, a string function or `IS DISTINCT FROM`, becomes a column of that
+input computed before the join, as an expression join key does. Only a part
+that cannot fail moves, because DataFusion evaluates the condition on
+key-matched pairs alone. [Native Evaluation Semantics](../reference/native-evaluation-semantics.mdx#where-checked-operations-are-not-evaluated)
+states where a part with a checked operation runs.
+
 Decimal division in a keyed inner join predicate uses the native GPU
 post-join filter. Equality keys first select candidate row pairs. The GPU
 column evaluator then checks decimal division and preserves `CASE` branch

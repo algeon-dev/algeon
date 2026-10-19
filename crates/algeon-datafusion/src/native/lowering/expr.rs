@@ -81,13 +81,23 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
     let activation_nodes = Cell::new(0);
     lower_validated_physical_expr(
         validated,
-        LoweringScope { bindings, join_columns: None, activation: None, activation_nodes: &activation_nodes },
+        LoweringScope {
+            bindings,
+            join_columns: None,
+            join_substitutions: &[],
+            activation: None,
+            activation_nodes: &activation_nodes,
+        },
     )
 }
 
+/// Lowers a join filter expression whose column `i` reads `columns[&i]`.
+/// Each subexpression in `substitutions`, matched by pointer identity, lowers
+/// to its paired expression instead.
 pub(super) fn lower_validated_join_residual_expr(
     validated: &ValidatedPhysicalExpr,
     columns: &BTreeMap<usize, ColumnRef>,
+    substitutions: &[(Arc<dyn PhysicalExpr>, NativeExpr)],
 ) -> Result<NativeExpr, LoweringRejection> {
     let activation_nodes = Cell::new(0);
     lower_validated_physical_expr(
@@ -95,6 +105,7 @@ pub(super) fn lower_validated_join_residual_expr(
         LoweringScope {
             bindings: None,
             join_columns: Some(columns),
+            join_substitutions: substitutions,
             activation: None,
             activation_nodes: &activation_nodes,
         },
@@ -106,6 +117,7 @@ pub(super) fn lower_validated_join_residual_expr(
 struct LoweringScope<'a> {
     bindings: Option<&'a [FieldBinding]>,
     join_columns: Option<&'a BTreeMap<usize, ColumnRef>>,
+    join_substitutions: &'a [(Arc<dyn PhysicalExpr>, NativeExpr)],
     /// Set inside a `CASE` branch or the right operand of an `AND` or `OR`,
     /// which DataFusion may evaluate on a subset of rows: the rows where this
     /// boolean is TRUE. Native evaluation visits every row, so an operand that
@@ -150,6 +162,9 @@ fn lower_validated_physical_expr(
 ) -> Result<NativeExpr, LoweringRejection> {
     let expr = validated.expr();
     let input_schema = validated.input_schema();
+    if let Some((_, substitute)) = scope.join_substitutions.iter().find(|(site, _)| Arc::ptr_eq(site, expr)) {
+        return Ok(substitute.clone());
+    }
     if let Some(column) = expr.downcast_ref::<Column>() {
         if let Some(columns) = scope.join_columns {
             let resolved = resolve_column(column, input_schema)?;

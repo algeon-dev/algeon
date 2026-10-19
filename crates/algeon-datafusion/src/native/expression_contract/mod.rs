@@ -14,9 +14,7 @@ pub(in crate::native) use capability::{
     is_decimal128_to_float32_cast_via_float64, is_list_carry_type, is_narrow_decimal_carry, is_numeric_or_decimal_type,
     is_supported_to_timestamp_seconds_cast, is_supported_try_cast_pair, native_aggregate_function_kind,
 };
-pub(in crate::native) use join_residual::{
-    JoinResidualCastMode, ValidatedJoinResidual, join_residual_cast_mode, validate_join_residual,
-};
+pub(in crate::native) use join_residual::{ValidatedJoinResidual, validate_join_residual};
 pub(crate) use rejection::{
     ExpressionCapability, ExpressionRejection, ExpressionRejectionKind, ExpressionRejectionSubject,
 };

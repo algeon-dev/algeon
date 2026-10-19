@@ -490,6 +490,8 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
+    // The plan reads one left SUBSTRING expression in both disjuncts, which
+    // lowers to one pre-join column.
     let join = rewritten_native_join(&result);
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
@@ -509,7 +511,7 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
                     Expr::Binary { left, right, op: BinaryOp::NotEq, .. }
                         if matches!(
                             left.as_ref(),
-                            Expr::Column(column) if column.to_string() == "input0.__algeon_native_join_residual_left_1"
+                            Expr::Column(column) if column.to_string() == "input0.__algeon_native_join_residual_left_0"
                         )
                             && matches!(
                                 right.as_ref(),
@@ -525,16 +527,68 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
     );
     assert_join_input_materializes_substring(
         result.selected_plan(),
-        join.inputs[0],
-        "__algeon_native_join_residual_left_1",
-        "l_zip",
-    );
-    assert_join_input_materializes_substring(
-        result.selected_plan(),
         join.inputs[1],
         "__algeon_native_join_residual_right_0",
         "r_zip",
     );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_join_filter_like_is_computed_on_the_input_it_reads() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-sql-join-filter-like");
+    let path = dir.join("bench.parquet");
+    write_full_gpu_gap_analysis_parquet_file(&path);
+
+    for (label, sql, join_type) in [
+        (
+            "inner",
+            "SELECT b.id, s.id AS sid FROM bench b JOIN bench s ON b.key = s.key \
+             AND (s.name LIKE '%a%' OR b.payload > 10)",
+            NativeJoinType::Inner,
+        ),
+        (
+            "left",
+            "SELECT b.id, s.id AS sid FROM bench b LEFT JOIN bench s ON b.key = s.key \
+             AND (s.name LIKE '%a%' OR b.payload > 10)",
+            NativeJoinType::Left,
+        ),
+        (
+            "semi",
+            "SELECT b.id FROM bench b WHERE EXISTS \
+             (SELECT 1 FROM bench s WHERE s.key = b.key AND (s.name LIKE '%a%' OR b.payload > 10))",
+            NativeJoinType::LeftSemi,
+        ),
+    ] {
+        let plan = sql_plan(&path, direct_friendly_sql_session_config(), sql).await;
+        let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+        let join = rewritten_native_join(&result);
+        assert_eq!(join.spec.join_type, join_type, "{label}");
+        let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+        let mut synthetic = Vec::new();
+        residual.any(|expr| {
+            if let Expr::Column(column) = expr
+                && column.name().starts_with("__algeon_native_join_residual_")
+            {
+                synthetic.push(column.name().to_string());
+            }
+            false
+        });
+        let [alias] = synthetic.as_slice() else {
+            panic!("{label} residual must read one pre-join column: {residual}");
+        };
+        let materializes_like = join.inputs.iter().any(|input| {
+            matches!(
+                &result.selected_plan().node(*input).expect("join input should exist").kind,
+                PlanNode::Projection(projection) if projection.expressions().any(|expr| matches!(
+                    expr,
+                    Expr::Alias { expr, alias: actual } if actual == alias && matches!(expr.as_ref(), Expr::Like { .. })
+                ))
+            )
+        });
+        assert!(materializes_like, "{label}: the input that reads s.name must compute the LIKE as {alias}");
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }
