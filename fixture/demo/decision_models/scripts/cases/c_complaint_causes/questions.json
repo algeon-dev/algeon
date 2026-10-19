@@ -1,0 +1,40 @@
+{
+  "complaint_cause": {
+    "type": "choice",
+    "instructions": "The state is one low-rating (1 or 2 star) Amazon review of a headphone or earbud product, with the product title and the size of the group of similar complaints it belongs to. Choose the primary cause of the complaint: the single problem that, had it not occurred, would most likely have kept the reviewer from giving a low rating. Judge from what the reviewer reports, not from the product title.",
+    "criteria": {
+      "product_defect_or_failure": "The unit is broken or failed: dead on arrival, one side or the microphone stopped working, it no longer charges or powers on, a part snapped or peeled, the battery died after weeks, or pairing stopped working after it had worked before.",
+      "performance_below_spec": "The unit works as designed but performs poorly from the start: weak or distorted sound, low volume, short battery life, weak noise cancelling, Bluetooth range or lag problems, or a poor microphone, without a breakdown.",
+      "shipping_packaging_or_delivery": "The problem arose in delivery: the package was late, lost, damaged in transit, previously opened or used, or arrived with parts missing from the box.",
+      "wrong_or_counterfeit_item": "The reviewer received something other than what was listed: a fake or counterfeit of the advertised brand, a different model, version or color, or a refurbished unit sold as new.",
+      "expectation_or_usability_mismatch": "The unit works and performs as advertised but does not suit the reviewer: uncomfortable or poor fit, wrong size, confusing controls or app, incompatibility with the reviewer's device, or features the reviewer misunderstood.",
+      "price_or_service": "The complaint is about value for money, a price change, the seller's or manufacturer's customer service, warranty handling, or the return and refund process."
+    }
+  },
+  "manufacturer_actionable": {
+    "type": "noul",
+    "instructions": "Could the manufacturer of this product prevent the cause of this complaint by changing the product's design, components, factory quality control, firmware, packaging inside the retail box, or documentation?",
+    "criteria": {
+      "true": "The cause lies in the product itself or its documentation, and a change in design, components, quality control, firmware or the manual would prevent it for future buyers.",
+      "false": "The cause lies with the carrier, a marketplace seller, a counterfeiter, the price, or a personal preference the product was never designed to meet; changing the product would not prevent it."
+    }
+  },
+  "safety_hazard": {
+    "type": "noul",
+    "instructions": "Does the review describe a risk of physical harm to a person or property: overheating, burning, smoke, fire, a swollen or leaking battery, electric shock, burns, rashes or allergic reactions, or hearing damage from sudden loud output?",
+    "criteria": {
+      "true": "The review reports such an event or a concrete risk of one.",
+      "false": "No risk of physical harm is described; discomfort from fit or ordinary ear fatigue does not count."
+    }
+  },
+  "severity": {
+    "type": "score",
+    "instructions": "How severe is the impact of the problem on the reviewer?",
+    "criteria": [
+      "0 - minor annoyance; the product remains usable for its purpose",
+      "1 - a main function is impaired but the product is still usable",
+      "2 - the product is unusable for the reviewer or had to be returned or replaced",
+      "3 - physical harm, a safety incident, or damage to another device or property"
+    ]
+  }
+}

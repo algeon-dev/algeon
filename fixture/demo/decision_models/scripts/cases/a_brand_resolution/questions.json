@@ -1,0 +1,30 @@
+{
+  "relationship_type": {
+    "type": "choice",
+    "instructions": "Determine the exact catalog relationship between Brand A and Brand B, which share high behavioral fan overlap in a peer-to-peer marketplace.",
+    "criteria": {
+      "same_entity_alias": "Exact same brand, artist group, or company entered under two different names, abbreviations, acronyms, or historical rebrands (e.g., 'Tomorrow X Together' = 'TXT', 'A Bathing Ape' = 'Bape', 'Mugler' = 'Thierry Mugler', 'Dior' = 'Christian Dior', 'Good Smile' = 'Good Smile Company', 'Jeffree Star Cosmetics' = 'JSC')",
+      "sub_brand_or_diffusion_line": "One is a direct sub-brand, diffusion line, or division of the other parent fashion/footwear brand (e.g., 'Victoria\\'s Secret' and 'PINK', 'Free People' and 'We The Free', 'Nike' and 'Air Jordan'/'Jordan', 'NCT' and sub-unit 'NCT 127' or 'NCT Dream')",
+      "ip_franchise_and_owner_maker": "One is a character IP / game / anime franchise and the other is its parent studio, publisher, or toy manufacturer (e.g., 'Hello Kitty'/'My Melody'/'Kuromi'/'Cinnamoroll' and 'Sanrio', 'Rilakkuma' and 'San-X', 'Yu-Gi-Oh!' and 'Konami', 'Pokemon' and 'Nintendo', 'Gundam' and 'Bandai')",
+      "distinct_co_liked_peers": "Two distinct competing brands, separate music artists/groups, or sister characters that merely appeal to the same fan demographic (e.g., 'Ateez' vs 'Stray Kids', 'Panini' vs 'Topps', 'My Melody' vs 'Kuromi')"
+    }
+  },
+  "should_merge_brand_id": {
+    "type": "noul",
+    "instructions": "In a master brand catalog deduplication pipeline, should Brand A and Brand B be merged into a single canonical `brand_id` because they denote the exact same brand entity (acronym, abbreviation, spelling variant, or rebrand)?",
+    "criteria": {
+      "true": "Yes: Brand A and Brand B are synonymous names/abbreviations/rebrands for the exact same entity and splitting them is a catalog duplication bug",
+      "false": "No: They are distinct brands, character vs parent company, parent vs sub-brand, or separate artists/characters"
+    }
+  },
+  "alignment_score": {
+    "type": "score",
+    "instructions": "Rate the ontological equivalence between Brand A and Brand B.",
+    "criteria": [
+      "0 - Separate competing brands, separate musical artists, or distinct sister characters",
+      "1 - Franchise/character IP paired with its manufacturer or publisher (e.g., Hello Kitty & Sanrio)",
+      "2 - Parent brand paired with an official sub-brand, division, or group sub-unit (e.g., Victoria's Secret & PINK)",
+      "3 - Identical brand entity split across two catalog strings (e.g., TXT & Tomorrow X Together, Bape & A Bathing Ape)"
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "mechanism": {
+    "type": "choice",
+    "instructions": "In a peer-to-peer marketplace (Mercari, US), this listing was liked by many shoppers who also liked Barbie-brand items around the July 2023 release of the Barbie movie. Classify why the listing draws those shoppers.",
+    "criteria": {
+      "official_barbie_collab": "An officially licensed Barbie product or Barbie movie tie-in made by the listed brand with Mattel (e.g., Barbie x ALDO shoes and bags, NYX Barbie makeup collection, AMC Barbie Corvette popcorn vessel, OPI Barbie nail polish collection, Primark or Forever 21 Barbie capsule apparel, Stoney Clover Lane Barbie patches and pouches)",
+      "barbiecore_pink_aesthetic": "Not a licensed Barbie product but a pink or 'Barbiecore' styled item that matches the movie's look, sometimes with 'Barbie' added to the title by the seller as a search tag (e.g., a pink ZARA dress a seller titles 'Barbie dress', a pink Stanley tumbler, hot pink heels)",
+      "eras_tour_or_pop_fandom": "Merchandise or outfits of another pop-culture fandom popular with the same summer 2023 audience and unrelated to Barbie (e.g., Taylor Swift Eras Tour merchandise, tour outfits, friendship bracelets, concert posters, albums)",
+      "general_brand_staple": "A regular product of the brand with no Barbie, pink-aesthetic or pop-fandom link (e.g., a neutral-color staple, a core bestseller, a basic everyday item)"
+    }
+  },
+  "official_license": {
+    "type": "noul",
+    "instructions": "Is this listing an officially licensed Mattel Barbie collaboration product or a Barbie movie promotional item?",
+    "criteria": {
+      "true": "Licensed Barbie collaboration or official Barbie movie promotion, co-branded with Barbie or Mattel by the brand or by a cinema chain",
+      "false": "No Barbie license: an unlicensed item, a pink item the seller describes as Barbie, or an unrelated product"
+    }
+  },
+  "pink_aesthetic": {
+    "type": "noul",
+    "instructions": "Does the title or the color field indicate a pink color family: pink, rose, magenta, fuchsia, blush, or 'Barbie' used as a color?",
+    "criteria": {
+      "true": "The title or color names pink, hot pink, rose, magenta, fuchsia, blush or 'Barbie pink'",
+      "false": "Neither the title nor the color field carries a pink color signal"
+    }
+  }
+}
