@@ -1,0 +1,17 @@
+{
+  "multi_brand_retailer": [
+    "Bed Bath & Beyond", "Cabela's", "Cato", "Charming Charlie", "Claire's", "Hobby Lobby", "Hot Topic",
+    "JCPenney", "Kohl's", "Loot Crate", "Macy's", "Nordstrom", "Pier 1 Imports", "Pier One", "Rue21",
+    "Spencer's", "Ulta", "Walmart", "World Market"
+  ],
+  "superstore_house_brand": [
+    "Better Homes & Gardens", "Cherokee", "Circo", "Faded Glory", "Hyper Tough", "INC International Concepts",
+    "Mainstays", "No Boundaries", "Room Essentials", "SO", "Secret Treasures", "Sonoma", "Style & Co",
+    "Wonder Nation", "Xhilaration", "a.n.a"
+  ],
+  "generic_catchall_or_category": [
+    "American Vintage", "ART", "Army", "As Seen on TV", "Authentic Original Vintage Style",
+    "Customized & Personalized", "Eyeshadow", "Independent", "Indie", "Lot", "Original Vintage Style", "Rare",
+    "The Unbranded Brand", "US Vintage"
+  ]
+}

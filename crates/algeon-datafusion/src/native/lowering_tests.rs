@@ -453,15 +453,19 @@ fn assert_join_input_materializes_upper_utf8view_cast(
                     if actual_alias == alias
                         && matches!(
                             expr.as_ref(),
-                            Expr::Upper(expr)
+                            Expr::Cast { expr, target_type: DataType::Utf8View }
                                 if matches!(
                                     expr.as_ref(),
-                                    Expr::Column(column) if column.name() == source_column
+                                    Expr::Upper(expr)
+                                        if matches!(
+                                            expr.as_ref(),
+                                            Expr::Column(column) if column.name() == source_column
+                                        )
                                 )
                         )
             )
         }),
-        "join input projection should materialize upper({source_column}) as {alias}: {:?}",
+        "join input projection should materialize CAST(upper({source_column}) AS Utf8View) as {alias}: {:?}",
         projection.expressions().collect::<Vec<_>>()
     );
 }

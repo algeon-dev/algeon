@@ -26,8 +26,7 @@ use query_planning::expr::{
 
 use super::{
     ExpressionCapability, ExpressionRejectionSubject, ScalarFunctionKind, SupportedBinaryOperator, fallible_operand,
-    join_residual::validate_join_residual_scalar_function, join_residual_cast_mode, native_aggregate_function_kind,
-    validate_join_residual, validate_physical_expr_contract,
+    native_aggregate_function_kind, validate_join_residual, validate_physical_expr_contract,
 };
 use crate::{capability::CapabilityReason, native::lowering::lower_physical_expr_for_test};
 
@@ -59,22 +58,227 @@ fn binary_capability_rejection_is_structured_and_preserves_public_reason() {
     assert_eq!(rejection.capability_reason(), CapabilityReason::UnsupportedExpression);
 }
 
-#[test]
-fn join_residual_cast_targets_are_owned_by_the_contract() {
-    assert_eq!(join_residual_cast_mode(&DataType::Int64).unwrap(), super::JoinResidualCastMode::Ast);
-    assert_eq!(
-        join_residual_cast_mode(&DataType::Decimal128(12, 2)).unwrap(),
-        super::JoinResidualCastMode::Materialize
-    );
-    let rejection = join_residual_cast_mode(&DataType::Date32).unwrap_err();
-    assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualCastTarget);
+/// The left input reads `name`, `n` and `t`, the right input `r` and `label`;
+/// the filter schema lists them in that order.
+fn join_residual_schemas() -> (Arc<Schema>, Arc<Schema>, Arc<Schema>) {
+    let timestamp = DataType::Timestamp(TimeUnit::Millisecond, None);
+    let left = Arc::new(Schema::new(vec![
+        Field::new("name", DataType::Utf8, true),
+        Field::new("n", DataType::Int32, true),
+        Field::new("t", timestamp.clone(), true),
+    ]));
+    let right =
+        Arc::new(Schema::new(vec![Field::new("r", DataType::Int32, true), Field::new("label", DataType::Utf8, true)]));
+    let filter = Arc::new(Schema::new(vec![
+        Field::new("name", DataType::Utf8, true),
+        Field::new("n", DataType::Int32, true),
+        Field::new("t", timestamp, true),
+        Field::new("r", DataType::Int32, true),
+        Field::new("label", DataType::Utf8, true),
+    ]));
+    (left, right, filter)
+}
+
+fn join_residual_filter(expr: Arc<dyn PhysicalExpr>, filter_schema: &Arc<Schema>) -> JoinFilter {
+    JoinFilter::new(
+        expr,
+        vec![
+            ColumnIndex { index: 0, side: JoinSide::Left },
+            ColumnIndex { index: 1, side: JoinSide::Left },
+            ColumnIndex { index: 2, side: JoinSide::Left },
+            ColumnIndex { index: 0, side: JoinSide::Right },
+            ColumnIndex { index: 1, side: JoinSide::Right },
+        ],
+        Arc::clone(filter_schema),
+    )
 }
 
 #[test]
-fn join_residual_scalar_functions_add_a_stricter_contract_layer() {
-    validate_join_residual_scalar_function(ScalarFunctionKind::Substring).unwrap();
-    let rejection = validate_join_residual_scalar_function(ScalarFunctionKind::Abs).unwrap_err();
+fn join_residual_moves_single_input_expressions_outside_the_ast_before_the_join() {
+    let (left_schema, right_schema, schema) = join_residual_schemas();
+    let column = |name: &str| col(name, &schema).unwrap();
+    let text = |value: &str| lit(ScalarValue::Utf8(Some(value.to_string())));
+    let int = |value: i32| lit(ScalarValue::Int32(Some(value)));
+    let like = |negated: bool, expr: Arc<dyn PhysicalExpr>| -> Arc<dyn PhysicalExpr> {
+        Arc::new(LikeExpr::new(negated, false, expr, text("%bar%")))
+    };
+    let abs = scalar_function("abs", math::abs(), vec![column("n")], DataType::Int32);
+    let single_input_case: Arc<dyn PhysicalExpr> = Arc::new(
+        CaseExpr::try_new(
+            None,
+            vec![(binary(column("n"), Operator::Gt, int(0), &schema).unwrap(), column("n"))],
+            Some(int(0)),
+        )
+        .unwrap(),
+    );
+    let or_right_positive = |site: Arc<dyn PhysicalExpr>| {
+        let right_positive = binary(column("r"), Operator::Gt, int(0), &schema).unwrap();
+        (Arc::clone(&site), binary(site, Operator::Or, right_positive, &schema).unwrap())
+    };
+    let compared = |site: Arc<dyn PhysicalExpr>, operator: Operator, other: Arc<dyn PhysicalExpr>| {
+        (Arc::clone(&site), binary(site, operator, other, &schema).unwrap())
+    };
+    let cases = vec![
+        ("like", or_right_positive(like(false, column("name")))),
+        ("not like", or_right_positive(like(true, column("name")))),
+        (
+            "like over lower",
+            or_right_positive(like(
+                false,
+                scalar_function("lower", string::lower(), vec![column("name")], DataType::Utf8),
+            )),
+        ),
+        (
+            "is distinct from",
+            or_right_positive(binary(column("n"), Operator::IsDistinctFrom, int(5), &schema).unwrap()),
+        ),
+        ("abs", compared(abs, Operator::Gt, column("r"))),
+        (
+            "concatenation",
+            compared(
+                binary(column("name"), Operator::StringConcat, text("!"), &schema).unwrap(),
+                Operator::Eq,
+                column("label"),
+            ),
+        ),
+        ("try cast", compared(Arc::new(TryCastExpr::new(column("name"), DataType::Int32)), Operator::Eq, column("r"))),
+        (
+            "timestamp to bigint",
+            compared(
+                Arc::new(CastExpr::new(column("t"), DataType::Int64, None)),
+                Operator::Gt,
+                Arc::new(CastExpr::new(column("r"), DataType::Int64, None)),
+            ),
+        ),
+        (
+            "integer division by a literal",
+            compared(binary(column("n"), Operator::Divide, int(2), &schema).unwrap(), Operator::Eq, column("r")),
+        ),
+        ("single-input case", compared(single_input_case, Operator::Eq, column("r"))),
+    ];
+    for (label, (site, residual)) in cases {
+        let filter = join_residual_filter(residual, &schema);
+        let validated = validate_join_residual(&filter, &left_schema, &right_schema)
+            .unwrap_or_else(|error| panic!("{label} must validate: {error:?}"));
+        let sites = validated.materializations();
+        assert_eq!(sites.len(), 1, "{label}: {sites:?}");
+        assert!(Arc::ptr_eq(&sites[0].expr, &site), "{label} materializes {:?}", sites[0].expr);
+        assert_eq!(sites[0].side, JoinSide::Left, "{label}");
+    }
+
+    let ast_only = binary(
+        binary(binary(column("n"), Operator::Plus, int(1), &schema).unwrap(), Operator::Gt, column("r"), &schema)
+            .unwrap(),
+        Operator::And,
+        Arc::new(NotExpr::new(Arc::new(IsNullExpr::new(column("n"))))),
+        &schema,
+    )
+    .unwrap();
+    let filter = join_residual_filter(ast_only, &schema);
+    let validated = validate_join_residual(&filter, &left_schema, &right_schema).unwrap();
+    assert!(validated.materializations().is_empty(), "the AST evaluates arithmetic, comparison and NOT");
+}
+
+#[test]
+fn join_residual_keeps_operations_that_can_fail_out_of_pre_join_columns() {
+    let (left_schema, right_schema, schema) = join_residual_schemas();
+    let column = |name: &str| col(name, &schema).unwrap();
+    let to_decimal = |name: &str, precision: u8| -> Arc<dyn PhysicalExpr> {
+        Arc::new(CastExpr::new(column(name), DataType::Decimal128(precision, 0), None))
+    };
+    let narrowing_subject =
+        ExpressionRejectionSubject::Cast { source: DataType::Int32, target: DataType::Decimal128(4, 0) };
+
+    // An Int32 does not always fit four digits, and a pre-join column would
+    // also cast rows that match no key.
+    let narrowing = binary(to_decimal("n", 4), Operator::Eq, to_decimal("r", 10), &schema).unwrap();
+    let rejection =
+        validate_join_residual(&join_residual_filter(narrowing, &schema), &left_schema, &right_schema).unwrap_err();
+    assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualCastTarget);
+    assert_eq!(rejection.subject(), &narrowing_subject);
+    assert_eq!(rejection.sql(), Some("CAST(n AS Decimal128(4, 0))"));
+
+    let guarded: Arc<dyn PhysicalExpr> = Arc::new(
+        CaseExpr::try_new(
+            None,
+            vec![(
+                binary(column("n"), Operator::Gt, lit(ScalarValue::Int32(Some(0))), &schema).unwrap(),
+                to_decimal("n", 4),
+            )],
+            None,
+        )
+        .unwrap(),
+    );
+    let guarded = binary(guarded, Operator::Eq, to_decimal("r", 10), &schema).unwrap();
+    let rejection =
+        validate_join_residual(&join_residual_filter(guarded, &schema), &left_schema, &right_schema).unwrap_err();
+    assert_eq!(rejection.subject(), &narrowing_subject, "the rejection names the cast inside the CASE");
+
+    // The checked post-join filter of a decimal division evaluates matched
+    // pairs only, so the narrowing cast stays in the residual there.
+    let left_cast = to_decimal("n", 4);
+    let right_cast = to_decimal("r", 10);
+    let quotient = binary(Arc::clone(&left_cast), Operator::Divide, Arc::clone(&right_cast), &schema).unwrap();
+    let post_join = binary(quotient, Operator::Gt, lit(ScalarValue::Decimal128(Some(1), 10, 0)), &schema).unwrap();
+    let filter = join_residual_filter(post_join, &schema);
+    let validated = validate_join_residual(&filter, &left_schema, &right_schema).unwrap();
+    let sites = validated.materializations();
+    assert_eq!(sites.len(), 1, "{sites:?}");
+    assert!(Arc::ptr_eq(&sites[0].expr, &right_cast), "only the cast that always fits moves before the join");
+}
+
+#[test]
+fn join_residual_rejects_cross_input_expressions_neither_evaluator_runs() {
+    let (left_schema, right_schema, schema) = join_residual_schemas();
+    let column = |name: &str| col(name, &schema).unwrap();
+    let validate = |expr: Arc<dyn PhysicalExpr>| {
+        validate_join_residual(&join_residual_filter(expr, &schema), &left_schema, &right_schema).map(|_| ())
+    };
+
+    let concatenation = binary(
+        binary(column("name"), Operator::StringConcat, column("label"), &schema).unwrap(),
+        Operator::Eq,
+        lit(ScalarValue::Utf8(Some("x".to_string()))),
+        &schema,
+    )
+    .unwrap();
+    let rejection = validate(concatenation).unwrap_err();
+    assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualShape);
+    assert!(matches!(
+        rejection.subject(),
+        ExpressionRejectionSubject::BinaryOperator { operator: Operator::StringConcat, .. }
+    ));
+
+    let sum = binary(column("n"), Operator::Plus, column("r"), &schema).unwrap();
+    let widened = binary(
+        Arc::new(CastExpr::new(sum, DataType::Decimal128(12, 0), None)),
+        Operator::Gt,
+        lit(ScalarValue::Decimal128(Some(5), 12, 0)),
+        &schema,
+    )
+    .unwrap();
+    let rejection = validate(widened).unwrap_err();
+    assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualCastTarget);
+    assert_eq!(
+        rejection.subject(),
+        &ExpressionRejectionSubject::Cast { source: DataType::Int32, target: DataType::Decimal128(12, 0) }
+    );
+
+    let difference = binary(column("n"), Operator::Minus, column("r"), &schema).unwrap();
+    let distance = binary(
+        scalar_function("abs", math::abs(), vec![difference], DataType::Int32),
+        Operator::Lt,
+        lit(ScalarValue::Int32(Some(5))),
+        &schema,
+    )
+    .unwrap();
+    let rejection = validate(distance).unwrap_err();
     assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualScalarFunction);
+    assert_eq!(rejection.subject(), &ExpressionRejectionSubject::ScalarFunction("abs".to_string()));
+
+    // An inner join runs a null-aware comparison as a post-join filter.
+    validate(binary(column("n"), Operator::IsDistinctFrom, column("r"), &schema).unwrap())
+        .expect("a cross-input IS DISTINCT FROM stays in the residual");
 }
 
 #[test]
@@ -664,11 +868,6 @@ fn join_residual_ast_rejects_integer_division_and_casts_it_cannot_evaluate_or_ch
     let elapsed_bound =
         binary(elapsed, Operator::Gt, lit(ScalarValue::DurationMillisecond(Some(5))), &filter_schema).unwrap();
     assert_eq!(validate(elapsed_bound).unwrap_err().capability(), ExpressionCapability::JoinResidualShape);
-
-    // The cast cannot fail, but the AST has no cast over temporal values.
-    let temporal_cast =
-        binary(cast("t", DataType::Int64), Operator::Eq, col("r", &filter_schema).unwrap(), &filter_schema).unwrap();
-    assert_eq!(validate(temporal_cast).unwrap_err().capability(), ExpressionCapability::CastPair);
 
     let failing_cast =
         binary(cast("l", DataType::UInt64), Operator::Eq, cast("r", DataType::UInt64), &filter_schema).unwrap();

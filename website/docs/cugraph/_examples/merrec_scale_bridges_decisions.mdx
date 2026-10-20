@@ -1,0 +1,90 @@
+import CodeBlock from '@theme/CodeBlock';
+import Table from '@site/src/theme/MDXComponents/Table';
+import bridges from '@site/static/data/merrec-decision-bridges.json';
+
+export const n = value => value.toLocaleString('en-US');
+export const all = bridges.windows.all;
+export const sepOct = bridges.windows.sep_oct;
+export const stage = (window, name) => window.stages.find(item => item.name === name);
+export const purifiedTop = all.ranking.filter(row => row.purified_rank !== null && row.purified_rank <= 15)
+  .sort((a, b) => a.purified_rank - b.purified_rank);
+export const excludedInTop20 = all.ranking.filter(row => row.original_rank !== null && row.original_rank <= 20 && row.band === 'reject').length;
+export const unjudged = all.ranking.filter(row => row.purified_rank !== null && row.purified_rank <= 120 && row.band === null).length;
+export const pass1 = all.passes[0];
+export const pass2 = all.passes[1];
+export const decide1 = all.decisions[0];
+export const rankOrDash = value => value === null ? 'not in top 120' : value;
+export const multiplier = row => row.original_betweenness ? (row.purified_betweenness / row.original_betweenness).toFixed(2) : '';
+export const peak = window => (Math.max(...window.stages.map(item => item.allocator_peak_bytes)) / 2 ** 30).toFixed(2);
+
+The exclusion list came from a decision model. {excludedInTop20} of the
+first 20 entries in the published ranking are retailers, house brands or
+catch-all labels, and
+betweenness is a property of the paths through them, so deleting them from
+the output changes nothing for the other brands. The graph has to be rebuilt
+without them.
+
+A context query joined each of the 120 ranked entries to its catalog
+footprint: listings, distinct first and second level categories, the three
+largest category paths, mean price and four sample titles. A hosted decision
+model answered three questions per entry from that context alone, with no
+graph numbers in the prompt: the kind of entry (standalone brand,
+multi-brand retailer, superstore house brand, generic catch-all), the
+probability that the entry is a standalone brand, and a 0 to 3 pollution
+score. The application's policy accepts an entry when the probability is at
+least {bridges.policy.accept_min.toFixed(2)} and the kind is `standalone_brand`,
+rejects it below {bridges.policy.review_min.toFixed(2)}, and sends the rest to
+review. The answers for all 120 entries became a Parquet file, registered as
+`brand_ontology`, and the bridges query ran again with one change in its
+first CTE: entries the policy rejected or held for review leave the fan
+graph.
+
+<CodeBlock language="sql" className="no-collapse" folds={[
+  {from: '), top_brands AS (', label: 'unchanged from the bridges query above'},
+]}>{bridges.sql.recompute}</CodeBlock>
+
+Pass 1 judged the published top 120: {pass1.new_band_counts.accept} accepted,
+{pass1.new_band_counts.review} for review, {pass1.new_band_counts.reject} rejected
+({pass1.api_calls} calls, ${decide1.cost_usd.toFixed(4)}, {decide1.wall_s.toFixed(1)} s).
+Review entries stay out of the graph too. The purified ranking placed
+{pass2.new_entries} entries the first pass had not seen in its top 120, so a
+second pass judged those ({pass2.api_calls} calls) and recomputed once more,
+which brought {unjudged} further unjudged entries into the top 120. The table
+lists the purified top 15 with each brand's rank in the
+published ranking and in the published ranking with the excluded entries
+deleted after the fact, its purified betweenness and the ratio of that score
+to its original one.
+
+<Table>
+<thead><tr><th>Purified</th><th>Brand</th><th>Original</th><th>Post-filter</th><th>Betweenness</th><th>Ratio</th></tr></thead>
+<tbody>{purifiedTop.map(row => <tr key={row.brand_id}><td>{row.purified_rank}</td><td>{row.name}</td><td>{rankOrDash(row.original_rank)}</td><td>{rankOrDash(row.postfilter_rank)}</td><td>{row.purified_betweenness.toFixed(5)}</td><td>{multiplier(row)}</td></tr>)}</tbody>
+</Table>
+
+Samsung's betweenness doubles in the purified graph. Conair and Black & Decker move from the sixties
+into the top 10, and Bella enters a top 15 it was absent from. Post-filtering
+keeps 11 of these 15 brands but in a different order and cannot place Bella.
+The full 202-row table with every brand that appears in any of the three
+rankings is `windows.all.ranking` in the data file; the {all.review_queue.length}-entry
+review queue of both passes, with its context, is `windows.all.review_queue`. Claire's is there with
+a standalone probability of 0.89 and a kind of `multi_brand_retailer` at
+0.98, the kind of disagreement the review band holds.
+
+Two controls. A hand-written denylist of {all.denylist_vs_model.denylist_size} retailer
+and catch-all names, run through the same recompute, excludes
+{all.denylist_vs_model.overlap} of the same entries; the model also excludes
+{all.denylist_vs_model.only_model.length} the list missed and keeps
+{all.denylist_vs_model.only_denylist.length} the list names. The two purified rankings
+share 13 of their top 15. On the September to October window the model's
+answers are reused from the first run: {sepOct.totals.registry_hits} of
+{sepOct.totals.entities} lookups hit the registry, the remaining
+{sepOct.totals.api_calls} calls cost ${sepOct.totals.cost_usd.toFixed(4)}, and
+the model excludes {sepOct.denylist_vs_model.only_model.length} entries the denylist
+does not know, among them Amazon, Sephora and QVC, while
+{sepOct.denylist_vs_model.denylist_unmatched.length} of the list's names do not
+appear in that window's top 120 at all.
+
+<div className="fineprint">
+
+The probe and each recompute ran as one statement with {stage(all, 'probe').native_fragments} native fragments and zero host DataFusion boundaries; the probe took {stage(all, 'probe').elapsed_s.toFixed(2)} s and the purified recompute {stage(all, 'recompute').elapsed_s.toFixed(2)} s on the May to October window, {stage(sepOct, 'recompute').elapsed_s.toFixed(2)} s on September to October. The largest query allocator peak was {peak(all)} GiB of the {(stage(all, 'probe').query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit. Both passes together made {all.totals.api_calls} model calls for ${all.totals.cost_usd.toFixed(4)}. The [data file](/data/merrec-decision-bridges.json) holds the question set, the policy, the denylist, the executed SQL, the stage metrics, every judgment and every ranking and review row for both windows. The model's answers to the same entry vary slightly between calls, so a rerun that ignores the registry is a new sample.
+
+</div>

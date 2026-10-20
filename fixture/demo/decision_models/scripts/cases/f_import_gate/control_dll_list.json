@@ -1,0 +1,15 @@
+{
+  "description": "Hand-written CRT, GUI and COM boilerplate DLLs for variant V3; every DLL whose name starts with a listed prefix is excluded as well.",
+  "dlls": [
+    "msvbvm60.dll", "msvbvm50.dll",
+    "msvcrt.dll", "msvcr70.dll", "msvcr71.dll", "msvcr80.dll", "msvcr90.dll", "msvcr100.dll", "msvcr110.dll",
+    "msvcr120.dll",
+    "msvcp60.dll", "msvcp71.dll", "msvcp80.dll", "msvcp90.dll", "msvcp100.dll", "msvcp110.dll", "msvcp120.dll",
+    "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "ucrtbase.dll",
+    "mfc42.dll", "mfc42u.dll", "mfc71.dll", "mfc80.dll", "mfc90.dll", "mfc100.dll", "mfc100u.dll", "mfc110u.dll",
+    "mfc120u.dll", "mfc140.dll", "mfc140u.dll",
+    "user32.dll", "gdi32.dll", "gdiplus.dll", "comctl32.dll", "comdlg32.dll", "imm32.dll", "uxtheme.dll",
+    "ole32.dll", "oleaut32.dll", "mscoree.dll"
+  ],
+  "prefixes": ["api-ms-win-crt-"]
+}

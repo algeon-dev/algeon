@@ -65,10 +65,22 @@ WHERE n >= 0 AND total / n > 1          -- fails on a row with n = 0, as on Data
 ## Where checked operations are not evaluated
 
 Integer `/`, any `%`, and timestamp `+` or `-` are not evaluated inside reader
-predicates or join residual conditions. A reader predicate with one of them
-stays a filter after the scan, and a join residual with one of them keeps the
-join on DataFusion. A join residual with a decimal `/` keeps the join on
-DataFusion as well.
+predicates. A reader predicate with one of them stays a filter after the scan.
+
+DataFusion evaluates a join condition that reads both inputs only on the row
+pairs whose equality keys match. Native lowering moves each part of the
+condition that reads one input and contains no checked operation before the
+join, where it is computed on every row of that input. Such a part cannot
+fail, and the extra rows change no result. Integer `/` and `%` by a literal
+other than `0` and `-1`, and floating-point `%`, can move this way.
+
+A part that reads one input and contains a checked operation stays in the
+condition. When the condition belongs to an inner join with equality keys and
+contains a decimal `/`, it is evaluated after matching, on the matched pairs
+only, with the guards described above. Any other condition with a checked
+operation keeps the join on DataFusion. Integer `/` or `%` with a column
+divisor, `%` over both inputs, and timestamp `+` or `-` keep it there in every
+join.
 
 <div className="fineprint">
 

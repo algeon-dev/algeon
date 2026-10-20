@@ -1,0 +1,29 @@
+{
+  "dll_role": {
+    "type": "choice",
+    "instructions": "The state describes one Windows DLL as it appears in the import tables of Win32 malware samples from the EMBER2024 challenge set: how many samples import it, how many distinct functions they import from it, and its most widely imported functions. Classify the role of this DLL in an ordinary Windows program.",
+    "criteria": {
+      "language_crt_or_gui_boilerplate": "A language runtime, C or C++ runtime, .NET loader, or GUI, windowing, drawing or COM framework library that a compiler or UI toolkit links into ordinary programs regardless of what they do (e.g., MSVBVM60 and MSVBVM50 for Visual Basic 6; MSVCRT, MSVCR*, MSVCP*, VCRUNTIME140, UCRTBASE and api-ms-win-crt-* for the Microsoft C and C++ runtime; MSCOREE for .NET; MFC42 and MFC140U for MFC; USER32, GDI32, GDIPLUS, COMCTL32, COMDLG32, IMM32 and UXTHEME for windows and drawing; OLE32 and OLEAUT32 for COM)",
+      "bundled_third_party_app_lib": "A third-party or application-specific library shipped next to one program or framework and not part of Windows (e.g., Qt5Core or Qt5Gui for Qt, SDL2, libssl and libcrypto from OpenSSL, libcurl, sqlite3, zlib1, Python or Lua runtimes, game engine, VoIP or media SDK libraries)",
+      "os_system_network_crypto_or_security_api": "A Windows system library that exposes operating-system services: process, thread, memory, file, registry, service, network, cryptography, security, user session or diagnostics APIs (e.g., KERNEL32, ADVAPI32, NTDLL, WININET, WINHTTP, WS2_32, CRYPT32, SHELL32, PSAPI, DBGHELP, URLMON, NETAPI32, WTSAPI32)"
+    }
+  },
+  "is_compiler_or_gui_noise": {
+    "type": "noul",
+    "instructions": "A similarity graph links Windows malware samples through the imported functions they share and is used to find samples of the same malware family. Should the unweighted import edges to this DLL be dropped from that graph because two samples sharing these imports only indicates that both were built with the same compiler, language runtime or UI toolkit?",
+    "criteria": {
+      "true": "Shared imports from this DLL mostly reflect the build toolchain or UI framework (language runtime, C or C++ runtime, GUI, drawing or COM boilerplate); unrelated programs built the same way share them, so the edges add noise to family similarity.",
+      "false": "Shared imports from this DLL can reflect shared functionality, shared code or the same bundled component (system, network, crypto, security or process APIs, or one specific third-party library), so the edges carry evidence that two samples are related."
+    }
+  },
+  "forensic_signal_score": {
+    "type": "score",
+    "instructions": "How much does sharing imports from this DLL tell a malware analyst about two samples being related or having the same capabilities?",
+    "criteria": [
+      "0 - none: imported by almost any program built with the same compiler, runtime or UI toolkit",
+      "1 - weak: common Windows functionality used alike by benign and malicious programs",
+      "2 - moderate: capability-bearing APIs such as networking, cryptography, process or registry manipulation, or a specific bundled library",
+      "3 - strong: abuse-prone or rare APIs such as code injection, anti-debugging, credential access, service or driver control, or a library tied to one toolset"
+    ]
+  }
+}

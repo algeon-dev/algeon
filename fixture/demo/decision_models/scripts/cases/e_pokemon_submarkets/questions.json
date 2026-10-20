@@ -1,0 +1,38 @@
+{
+  "submarket": {
+    "type": "choice",
+    "instructions": "On a peer-to-peer marketplace (Mercari), this listing carries the Pokemon brand. The state gives only the listing's title, category, condition, color and price. Classify the listing into the Pokemon sub-market it sells into.",
+    "criteria": {
+      "tcg_sealed_or_single_card": "One Pokemon Trading Card Game card or one factory-sealed card product (e.g., single cards, alt arts, graded slabs from PSA, BGS or CGC, promo cards, booster packs, booster boxes, Elite Trainer Boxes (ETB), premium collection boxes)",
+      "tcg_bundle_lot_or_binder": "Many Pokemon cards or several card products sold together (e.g., bulk lots, mixed card lots, binders filled with cards, whole collections, tins with assorted cards, bundles of several packs or boxes)",
+      "video_game_or_hardware": "Pokemon video games and gaming hardware (e.g., game cartridges, discs and cases, Nintendo Switch, DS, 3DS, Game Boy and GBA games, consoles, Pokemon GO Plus+, strategy guides)",
+      "plush_toy_or_apparel": "Pokemon merchandise outside cards and games (e.g., plush, Squishmallows, figures, Funko, statues, apparel, hats, backpacks, keychains, stickers, home decor)"
+    }
+  },
+  "habitual_collector_score": {
+    "type": "score",
+    "instructions": "How habitual a Pokemon buyer is the typical shopper who opens this listing?",
+    "criteria": [
+      "0 - Casual gift shopper or novelty browser with a one-off interest",
+      "1 - Mainstream video game buyer who returns for new game releases",
+      "2 - Active hobbyist browsing card lots, bulk and binders",
+      "3 - Dedicated TCG collector chasing single cards, graded slabs and sealed boxes"
+    ]
+  },
+  "is_tcg_card": {
+    "type": "noul",
+    "instructions": "Is this listing a Pokemon Trading Card Game product, so that the shoppers who view it can be treated as a trading-card audience?",
+    "criteria": {
+      "true": "The listing sells Pokemon TCG cards or sealed card product: single or graded cards, booster packs, booster boxes, ETBs, tins, card lots or binders of cards",
+      "false": "The listing sells something else: a video game, console or accessory, plush, figure, apparel, decor, an empty box, a display case or other merchandise"
+    }
+  },
+  "is_hardware_or_game": {
+    "type": "noul",
+    "instructions": "Is this listing a video game, a game console or a gaming hardware accessory?",
+    "criteria": {
+      "true": "The listing sells a game cartridge, disc or case, a Nintendo Switch, DS, 3DS, Game Boy or GBA game or console, a Pokemon GO Plus+ or another gaming device or accessory",
+      "false": "The listing sells cards, sealed card product, plush, figures, apparel or other merchandise"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "action_question": "should_merge_brand_id",
+  "accept_min": 0.70,
+  "review_min": 0.30,
+  "require": {"relationship_type": ["same_entity_alias"]}
+}

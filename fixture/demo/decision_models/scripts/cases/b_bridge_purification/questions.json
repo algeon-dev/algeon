@@ -1,0 +1,30 @@
+{
+  "entity_kind": {
+    "type": "choice",
+    "instructions": "In a peer-to-peer marketplace (Mercari), sellers select a `brand_name` from a dropdown. Some entries are real standalone brands, while others are generic catch-all tags, product categories, multi-brand department stores/retailers, or mass-retailer private labels. Classify this `brand_name` entry.",
+    "criteria": {
+      "standalone_brand": "A genuine standalone consumer brand, fashion label, cosmetics brand, electronics/toy manufacturer, or entertainment IP (e.g., H&M, ZARA, Anthropologie, Nike, Free People, Urban Outfitters, Morphe, Tarte, Disney)",
+      "multi_brand_retailer": "A department store, big-box superstore, specialty retail chain, or mall store that sells many third-party or licensed franchises under one roof (e.g., Walmart, Macy's, JCPenney, Target, Sephora, Claire's, Hot Topic, BoxLunch, Spencer's, Kohl's, Nordstrom, Costco)",
+      "superstore_house_brand": "A private-label / house brand owned by a mass big-box superstore (Walmart, Target, Costco, Amazon) spanning home/apparel/general merchandise (e.g., Mainstays, Better Homes & Gardens, THRESHOLD, Time and Tru, No Boundaries, Wild Fable, Universal Thread, Cat & Jack, Room Essentials, Kirkland Signature)",
+      "generic_catchall_or_category": "Not a brand at all, but a generic seller descriptor, vintage tag, infomercial label, or product type mistakenly listed as a brand (e.g., Customized & Personalized, US Vintage, American Vintage, As Seen on TV, Eyeshadow, Handmade, Boutique)"
+    }
+  },
+  "is_standalone_brand": {
+    "type": "noul",
+    "instructions": "Is this entry a genuine standalone consumer brand rather than a generic descriptor, category name, department store, or big-box private label?",
+    "criteria": {
+      "true": "Distinct standalone brand or creator label with its own brand identity",
+      "false": "Generic catch-all tag, product category, department store/superstore, or big-box house label"
+    }
+  },
+  "wormhole_pollution": {
+    "type": "score",
+    "instructions": "How severely does this entry act as an artificial cross-community 'wormhole' that conflates unrelated shopping communities in a brand co-liking graph?",
+    "criteria": [
+      "0 - Cohesive standalone brand representing a real, specific brand affinity",
+      "1 - Broad lifestyle/fashion retailer or specialty store with moderately diverse categories",
+      "2 - Mass-market superstore house label or department store spanning unrelated household and apparel verticals",
+      "3 - Severe graph pollutant: generic non-brand catch-all tag (e.g. 'Customized & Personalized', 'As Seen on TV', 'US Vintage', 'Eyeshadow') or universal big-box superstore ('Walmart')"
+    ]
+  }
+}

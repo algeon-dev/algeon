@@ -8,10 +8,12 @@ description: Eight questions over 1.27 billion Mercari US marketplace events, fr
 import Barbie from '../../cugraph/_examples/merrec_scale_barbie.mdx';
 import ShoppingWorlds from '../../cugraph/_examples/merrec_scale_worlds.mdx';
 import Bridges from '../../cugraph/_examples/merrec_scale_bridges.mdx';
+import BridgesDecisions from '../../cugraph/_examples/merrec_scale_bridges_decisions.mdx';
 import Funnel from '../../cuml/_examples/merrec_scale_funnel.mdx';
 import Pokemon from '../../cuvs/_examples/merrec_scale_lookalikes.mdx';
 import ExistingModel from '../../cuml/_examples/merrec_scale_xgboost.mdx';
 import Twins from '../../cugraph/_examples/merrec_scale_twins.mdx';
+import TwinsDecisions from '../../cugraph/_examples/merrec_scale_twins_decisions.mdx';
 import Sessions from '../../cugraph/_examples/merrec_scale_sessions.mdx';
 import CodeBlock from '@theme/CodeBlock';
 import BrandMap from '@site/src/components/merrec/BrandMap';
@@ -60,6 +62,8 @@ group. Select groups to see where they sit and which brands have the most fans.
 
 <Bridges />
 
+<BridgesDecisions />
+
 ## Does a Pokemon lookalike audience find new interest? {/* #pokemon */}
 
 <Pokemon />
@@ -71,6 +75,8 @@ group. Select groups to see where they sit and which brands have the most fans.
 ## Which catalog entries are one brand listed twice? {/* #brand-twins */}
 
 <Twins />
+
+<TwinsDecisions />
 
 ## Is `session_id` a per-user session key? {/* #sessions */}
 

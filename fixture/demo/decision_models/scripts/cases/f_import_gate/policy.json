@@ -1,0 +1,1 @@
+{"action_question": "is_compiler_or_gui_noise", "accept_min": 0.70, "review_min": 0.30, "require": {"dll_role": ["language_crt_or_gui_boilerplate"]}}

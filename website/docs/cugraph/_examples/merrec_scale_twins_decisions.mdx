@@ -1,0 +1,74 @@
+import CodeBlock from '@theme/CodeBlock';
+import Table from '@site/src/theme/MDXComponents/Table';
+import twins from '@site/static/data/merrec-decision-twins.json';
+
+export const n = value => value.toLocaleString('en-US');
+export const stage = name => twins.stages.find(item => item.name === name);
+export const decide = twins.decisions[0];
+export const trigram = twins.trigram_control;
+export const estimate = twins.full_pairwise_cost_estimate;
+export const peak = (Math.max(...twins.stages.map(item => item.allocator_peak_bytes)) / 2 ** 30).toFixed(2);
+
+Which of those pairs are one brand? A decision model answered for the
+120 highest-scoring pairs. The pair list is the query above with the fan
+graph restricted to entries the [bridges follow-up](#bridges) accepted as
+standalone brands, so retailers and catch-all labels pair with nothing, and
+the limit raised from 30 to 120. For each pair the model saw the Jaccard
+score and both entries' listings, mean price, two largest category paths and
+three sample titles, and answered three questions: the relationship
+(`same_entity_alias`, `sub_brand_or_diffusion_line`,
+`ip_franchise_and_owner_maker`, `distinct_co_liked_peers`), the probability
+that the two ids should merge, and a 0 to 3 alignment score. The policy
+accepts a merge at a probability of {twins.policy.accept_min.toFixed(2)} or more
+when the relationship is `same_entity_alias`, rejects it below
+{twins.policy.review_min.toFixed(2)}, and sends the rest to review.
+
+{twins.band_counts.accept} pairs were accepted, {twins.band_counts.review} sent to
+review and {twins.band_counts.reject} rejected ({decide.api_calls} calls,
+${decide.cost_usd.toFixed(4)}, {decide.wall_s.toFixed(1)} s). The rejects include the
+pairs a fan-overlap rule alone would merge: Rilakkuma and San-X, Hello
+Kitty and Sanrio, Konami and Yu-Gi-Oh!, Panini and Topps. The review queue
+holds Hourglass Cosmetics and Hourglass at 0.69, Beats by Dr. Dre and Beats
+at 0.68, and the sub-brand pairs Air Jordan and Jordan, Polo Ralph Lauren
+and Ralph Lauren.
+
+Accepted pairs are edges. `cugraph_weakly_connected_components` gives each
+entry the smallest brand id of its component as a canonical id, and a scan
+of every like event counts, per canonical brand, the exact number of
+distinct users who liked any member. Every merged brand has two ids; the
+table compares the fans of the id with more of them against the distinct
+count over both, and the share of the summed count that is the same people
+twice.
+
+<CodeBlock language="sql" className="no-collapse">{twins.sql.canonical}</CodeBlock>
+
+<CodeBlock language="sql" className="no-collapse" folds={[
+  {from: ', brands AS (', label: 'brand names and the final aggregate'},
+]}>{twins.sql.dedup}</CodeBlock>
+
+<Table>
+<thead><tr><th>Brand</th><th>Most fans on one id</th><th>Distinct fans</th><th>Gain</th><th>Double counted</th></tr></thead>
+<tbody>{twins.clusters.map(row => <tr key={row.canonical_id}><td>{row.member_names.join(' / ')}</td><td>{n(row.primary_fans)}</td><td>{n(row.exact_union_fans)}</td><td>+{row.gain_pct.toFixed(1)}%</td><td>{row.double_count_pct.toFixed(1)}%</td></tr>)}</tbody>
+</Table>
+
+These are exact counts over all 182.9 million like events. Whichever id a
+report used for Dior, it was missing about a third of the brand's fans, and
+adding the two ids would have counted a quarter of the sum twice.
+
+A string control proposes pairs by word-trigram similarity over all
+{n(trigram.brand_names)} names, with a threshold of {trigram.threshold} (pg_trgm's
+default 0.3 pairs Dior with Christian Dior and a great deal else). It finds
+{trigram.accepted_found} of the {trigram.accepted_aliases} pairs the policy merged
+and misses the acronyms, rebrands and spellings: TXT, Bape, Dior, LOFT, HERMES,
+Thierry Mugler, L'Oreal, Thrive, e.l.f. Cosmetics. Its {n(trigram.pairs_proposed_all_brands)}
+proposals over the whole catalog are mostly case and punctuation variants,
+with pairs that share every trigram such as Boom Boom and Boom. Judging every one of the
+{n(estimate.pairs)} pairs instead of the probe's {estimate.probe_decisions} would cost
+about ${Math.round(estimate.estimated_cost_usd).toLocaleString('en-US')} at this
+run's mean cost per decision; the probe keeps the question affordable.
+
+<div className="fineprint">
+
+The probe ran with {stage('probe').native_fragments} native fragments and zero host DataFusion boundaries in {stage('probe').elapsed_s.toFixed(2)} s; the component labels took {stage('canonical').elapsed_s.toFixed(2)} s and the fan count over all likes {stage('dedup').elapsed_s.toFixed(2)} s. The largest query allocator peak was {peak} GiB of the {(stage('probe').query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit. The trigram control ran on the CPU in {trigram.elapsed_s.toFixed(1)} s. The [data file](/data/merrec-decision-twins.json) holds the question set, the policy, the executed SQL, the stage metrics, all 120 judged pairs, the review queue, the merged clusters and the control's found, missed and wrongly proposed pairs.
+
+</div>

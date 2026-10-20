@@ -157,9 +157,9 @@ fn add_join_residual_materializations(
     input: LoweredNativeInput,
     materializations: &[JoinResidualMaterialization],
 ) -> Result<LoweredNativeInput, LoweringFailure> {
-    // Residual casts that cannot live in the predicate AST are appended as
-    // synthetic pre-join projection columns on the original DataFusion side.
-    // Canonical input ordering happens after this step.
+    // Residual subexpressions that the contract moves before the join are
+    // appended as synthetic projection columns on the original DataFusion
+    // side. Canonical input ordering happens after this step.
     if materializations.is_empty() {
         return Ok(input);
     }
