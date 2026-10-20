@@ -27,7 +27,8 @@ API calls; pass the same window flags as the live run:
 pass k (the same `03_recompute.sql` statement over all decisions so far), its
 top 120 entries not decided yet go to the backend, and the engine table holds
 the bands of every pass. Pass the same `--passes` to the replay. The denylist
-control and the review queue use pass 1. `--with-canonical` adds the
+control uses pass 1; the review queue, band counts and kind counts cover
+every pass. `--with-canonical` adds the
 recompute through case A's `registry/brand_canonical.engine.parquet` when that
 file exists.
 
@@ -193,8 +194,11 @@ def main() -> None:
     decisions = {}
     bands: dict[str, str] = {}
     ids_in_order: list[int] = []
+    judged_in: dict[int, tuple[int, int]] = {}
+    contexts_all: dict = {}
+    names_all: dict[int, str] = {}
     passes = []
-    first = None
+    first_bands: dict[str, str] = {}
     denied: list[dict] = []
     for number in range(1, args.passes + 1):
         tag = "" if number == 1 else f"_pass{number}"
@@ -206,6 +210,9 @@ def main() -> None:
         context_stage = case.run_stage(f"context{tag}", render(
             case.sql("02_context.sql"), brand_ids=", ".join(str(brand_id) for brand_id in ids)))
         contexts = {row["brand_id"]: row for row in context_stage.table.to_pylist()}
+        contexts_all.update(contexts)
+        names_all.update({row["brand_id"]: row["brand_name"] for row in candidates})
+        probe_rank = ranks(candidates)
         entities = [Entity(str(row["brand_id"]), state_text(row, contexts.get(row["brand_id"], {})))
                     for row in candidates]
         batch = case.decide(registry, entities, name=f"decide{tag}")
@@ -213,6 +220,7 @@ def main() -> None:
         for decision in batch.decisions:
             if decision.entity_key not in decisions:
                 ids_in_order.append(int(decision.entity_key))
+                judged_in[int(decision.entity_key)] = (number, probe_rank[int(decision.entity_key)])
             decisions[decision.entity_key] = decision
         bands.update(pass_bands)
 
@@ -228,7 +236,7 @@ def main() -> None:
         purified = purified_stage.table.to_pylist()
 
         if number == 1:
-            first = {"batch": batch, "bands": pass_bands, "contexts": contexts}
+            first_bands = pass_bands
             denylist_spec = case.load_json("control_denylist.json")
             denylist = {name for names in denylist_spec.values() for name in names}
             denylist_table = pa.table({
@@ -269,24 +277,24 @@ def main() -> None:
     else:
         case.capture.note("canonical recompute not requested (--with-canonical)")
 
-    first_batch, first_bands, first_contexts = first["batch"], first["bands"], first["contexts"]
-    first_decisions = first_batch.by_key()
     names = {str(row["brand_id"]): row["brand_name"] for row in original}
+    original_rank = ranks(original)
     model_excluded = {names[key] for key, band in first_bands.items() if band != "accept"}
     denylist_excluded = {row["brand_name"] for row in original if row["brand_name"] in denylist}
     case.capture.result("ranking", passes[-1]["ranking"])
     case.capture.result("passes", passes)
-    case.capture.result("band_counts", band_counts(first_bands, first_bands))
+    case.capture.result("band_counts", band_counts(bands, bands))
     case.capture.result("kind_counts", dict(sorted(Counter(
-        decision.value("entity_kind") for decision in first_batch.decisions).items())))
+        decision.value("entity_kind") for decision in decisions.values()).items())))
     case.capture.result("review_queue", [
-        {"brand_id": row["brand_id"], "name": row["brand_name"], "original_rank": rank,
-         "entity_kind": first_decisions[str(row["brand_id"])].value("entity_kind"),
-         "entity_kind_p": first_decisions[str(row["brand_id"])].probability("entity_kind"),
-         "is_standalone_brand": first_decisions[str(row["brand_id"])].value("is_standalone_brand"),
-         "wormhole_pollution": first_decisions[str(row["brand_id"])].value("wormhole_pollution"),
-         "context": context_summary(first_contexts.get(row["brand_id"], {}))}
-        for rank, row in enumerate(original, 1) if first_bands[str(row["brand_id"])] == "review"])
+        {"brand_id": brand_id, "name": names_all[brand_id], "pass": judged_in[brand_id][0],
+         "probe_rank": judged_in[brand_id][1], "original_rank": original_rank.get(brand_id),
+         "entity_kind": decisions[str(brand_id)].value("entity_kind"),
+         "entity_kind_p": decisions[str(brand_id)].probability("entity_kind"),
+         "is_standalone_brand": decisions[str(brand_id)].value("is_standalone_brand"),
+         "wormhole_pollution": decisions[str(brand_id)].value("wormhole_pollution"),
+         "context": context_summary(contexts_all.get(brand_id, {}))}
+        for brand_id in ids_in_order if bands[str(brand_id)] == "review"])
     case.capture.result("denylist_vs_model", {
         "denylist_size": len(denylist),
         "denylist_matched": len(denylist_excluded),
@@ -297,7 +305,8 @@ def main() -> None:
         "only_model": sorted(model_excluded - denylist_excluded),
     })
     case.capture.result("decisions", [
-        {"brand_id": brand_id, "content_hash": decisions[str(brand_id)].content_hash,
+        {"brand_id": brand_id, "name": names_all[brand_id], "pass": judged_in[brand_id][0],
+         "band": bands[str(brand_id)], "content_hash": decisions[str(brand_id)].content_hash,
          "model_id": decisions[str(brand_id)].model_id, "answers": decisions[str(brand_id)].answers}
         for brand_id in ids_in_order])
     case.finish()

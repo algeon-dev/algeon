@@ -32,6 +32,7 @@ fixture/demo/decision_models/
   scripts/cases/       a_brand_resolution/ b_bridge_purification/ c_complaint_causes/
                        d_barbie_mechanisms/ e_pokemon_submarkets/ f_import_gate/
   scripts/tests/       unit tests (no server, no API)
+  scripts/export_website.py   writes website/static/data/merrec-decision-{bridges,twins}.json from the A and B captures
   registry/            *.parquet registries and *.engine.parquet decision tables (local only)
   captures/            <case>[_<label>][.<backend>]_<mode>.json (local only)
   data/ember/          EMBER2024 challenge node tables written by f_import_gate/prepare_tables.py (local only)
@@ -41,7 +42,10 @@ fixture/demo/decision_models/
 The root `.gitignore` versions only `README.md`, `scripts/` and `*.sh` under a
 demo directory. Registries and captures stay local: the MerRec-derived ones
 carry CC BY-NC text and may be published only under `website/static/data`
-(see `scripts/test-harness.md`, "Third-party data").
+(see `scripts/test-harness.md`, "Third-party data"). `export_website.py`
+writes the two files the MerRec guide and the blog read from the case A and
+B captures; it drops the backend name, model ids and registry hashes, and
+`--check` verifies the files on disk match the captures.
 
 ## Backends
 

@@ -1,5 +1,6 @@
 ---
 title: "Introducing Algeon: Interactive Graph, Vector, and ML Analytics for the Agent's Loop"
+sidebar_label: "Introducing Algeon"
 description: "Follow a marketplace investigation to see how Algeon combines SQL with GPU graph, vector, and ML algorithms, supports follow-up queries, and fits beside existing lakehouse engines."
 slug: introducing-algeon
 date: 2026-10-15
@@ -294,7 +295,9 @@ A graph ranking led to a product-title check and comparisons with other
 seed brands, all expressed through SQL. Some results gained supporting
 evidence; Taylor Swift remained a question for further investigation.
 The campaign example extended that interface to graph, vector, and model
-operations within one query.
+operations within one query. A [later post](/blog/decision-model-in-the-loop)
+puts a decision model's answers back into the bridges and brand twins
+queries and checks the rebuilt rankings against controls.
 
 Algeon is available to try when the required data can be staged as Parquet
 and the query fits on one GPU. Running it currently requires Linux, an

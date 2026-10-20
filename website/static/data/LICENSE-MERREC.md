@@ -25,6 +25,8 @@ Files covered:
 - `merrec-barbie-control-seeds.json`
 - `merrec-barbie-listing-check.json`
 - `merrec-brand-map.json`
+- `merrec-decision-bridges.json`
+- `merrec-decision-twins.json`
 - `merrec-pokemon-interest-check.json`
 - `merrec-scale-ann.json`
 - `merrec-scale-audience-funnel.json`
