@@ -49,7 +49,7 @@ use tokio::sync::Notify;
 use crate::{
     attempt::execute_in_internal_attempt,
     error::{Error, ErrorCode, Result},
-    native_exec::metrics::NativeExecutionMetricsCapture,
+    native_exec::{metrics::NativeExecutionMetricsCapture, occurrence::SharedHostOccurrenceResults},
     planner::native::Invocation,
 };
 
@@ -190,11 +190,13 @@ struct TicketAdmission {
 }
 
 /// The ticket of one DataFusion execution of a native admission root, with
-/// the occurrence round of that execution.
+/// the occurrence round and the shared host occurrence results of that
+/// execution. A later execution of the same plan starts with neither.
 #[derive(Debug)]
 struct ActiveQueryAdmissionTicket {
     ticket: Arc<QueryAdmissionTicket>,
     execution_round: AttemptExecutionRound,
+    host_occurrence_results: Arc<SharedHostOccurrenceResults>,
 }
 
 pub(crate) fn query_admission_ticket_from_task_context(
@@ -204,6 +206,15 @@ pub(crate) fn query_admission_ticket_from_task_context(
         .session_config()
         .get_extension::<ActiveQueryAdmissionTicket>()
         .map(|extension| Arc::clone(&extension.ticket))
+}
+
+/// Host occurrence evaluations shared by the readers of one DataFusion
+/// execution, when `task_context` executes under an admission root.
+pub(crate) fn shared_host_occurrence_results(task_context: &TaskContext) -> Option<Arc<SharedHostOccurrenceResults>> {
+    task_context
+        .session_config()
+        .get_extension::<ActiveQueryAdmissionTicket>()
+        .map(|extension| Arc::clone(&extension.host_occurrence_results))
 }
 
 /// The ticket that native work in `task_context` admits under: the active
@@ -251,7 +262,11 @@ pub(crate) fn task_context_with_query_admission_ticket(
         ticket.current_capability_evidence().and_then(|evidence| evidence.execution_manifest().cloned()),
     );
     let mut session_config = task_context.session_config().clone();
-    session_config.set_extension(Arc::new(ActiveQueryAdmissionTicket { ticket, execution_round }));
+    session_config.set_extension(Arc::new(ActiveQueryAdmissionTicket {
+        ticket,
+        execution_round,
+        host_occurrence_results: Arc::default(),
+    }));
     Arc::new(TaskContext::new(
         task_context.task_id(),
         task_context.session_id(),

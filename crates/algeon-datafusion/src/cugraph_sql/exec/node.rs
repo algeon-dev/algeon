@@ -1,6 +1,6 @@
 use std::{
     mem,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -20,24 +20,24 @@ use super::{
     ExecutionPlanMetricsSet, GpuDataFrame, GpuIslandHostBoundaryConfig, GpuResidentProducer, GpuResultHandle,
     GraphAlgorithmRuntimeMetrics, GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader,
     GraphBfsPublishedResult, GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionMetrics,
-    GraphExecutionPlan, GraphResidencyDescriptor, MetricsSet, NEXT_CUGRAPH_GPU_RESULT_INPUT_ID,
-    NativeExecutionMetricsCapture, NativeExpr, Partitioning, PhysicalExpr, PhysicalSortExpr, PlanNode, PlanProperties,
-    RecordBatch, RecordBatchStreamAdapter, Result, Schema, SchemaRef, SendableRecordBatchStream, SortOptions,
-    SourceNode, StagedCugraphInputs, TaskContext, TreeNodeRecursion, TryStreamExt, UploadedCugraphInputs,
-    attach_graph_residency, check_host_staging_cancellation, collect_cugraph_inputs, counted_cudf_runtime,
-    cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted, cugraph_execution_capability_evidence,
-    cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor, cugraph_schema_query_plan,
-    edge_source_graph_vertex_estimate, execute_cugraph_query_to_gpu_with_options, graph_uses_logical_mapping,
-    materialize_gpu_output_eagerly, native_graph_spec_for_placement_hint, plan, planned_resident_graph_key,
-    preflight_cugraph_query_plan, prepare_cugraph_source_metadata, record_batches_to_gpu, run_gpu_execution_task,
-    task_context_with_cugraph_execution_ticket, validate_cugraph_graph_owner_preflight,
+    GraphExecutionPlan, GraphResidencyDescriptor, MetricsSet, NativeExecutionMetricsCapture, NativeExpr, Partitioning,
+    PhysicalExpr, PhysicalSortExpr, PlanNode, PlanProperties, RecordBatch, RecordBatchStreamAdapter, Result, Schema,
+    SchemaRef, SendableRecordBatchStream, SortOptions, SourceNode, StagedCugraphInputs, TaskContext, TreeNodeRecursion,
+    TryStreamExt, UploadedCugraphInputs, attach_graph_residency, check_host_staging_cancellation,
+    collect_cugraph_inputs, counted_cudf_runtime, cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted,
+    cugraph_execution_capability_evidence, cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor,
+    cugraph_schema_query_plan, edge_source_graph_vertex_estimate, execute_cugraph_query_to_gpu_with_options,
+    graph_uses_logical_mapping, materialize_gpu_output_eagerly, native_graph_spec_for_placement_hint, plan,
+    planned_resident_graph_key, preflight_cugraph_query_plan, prepare_cugraph_source_metadata, record_batches_to_gpu,
+    run_gpu_execution_task, task_context_with_cugraph_execution_ticket, validate_cugraph_graph_owner_preflight,
     validate_standalone_bounded_cugraph_sources,
 };
 use crate::{
     attempt::InvocationAttempt,
+    gpu_functions::GpuFunctionInvocation,
     native_exec::{
         GraphClaimCalibrationCapture, SealedAttemptMetricsTarget, admission::QueryAdmissionTicket,
-        gpu_function_occurrence_from_task_context, gpu_resident_producer,
+        gpu_function_occurrence_from_task_context,
     },
     planner::native::Invocation,
     report::PlanningReport,
@@ -93,8 +93,7 @@ impl CugraphAlgoExec {
     }
 
     pub(crate) fn next_gpu_result_input_name() -> String {
-        let id = NEXT_CUGRAPH_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
-        format!("__algeon_datafusion_cugraph_result_{id}")
+        GpuFunctionInvocation::mint("cugraph").result_input_name()
     }
 
     #[cfg(test)]
@@ -964,24 +963,8 @@ impl GpuResidentProducer for CugraphAlgoExec {
         &self.gpu_result_input_name
     }
 
-    fn gpu_result_is_repeatable(&self) -> bool {
-        self.spec.algorithm.is_similarity()
-            && self.predicate_sources.iter().chain([&self.edge_source]).all(|input| {
-                gpu_resident_producer(input.as_ref()).is_some_and(GpuResidentProducer::gpu_result_is_repeatable)
-            })
-    }
-
-    fn reusable_gpu_result_scope(&self) -> Result<Option<Vec<PlanFingerprint>>> {
-        if !self.gpu_result_is_repeatable() {
-            return Ok(None);
-        }
-        let scopes = self
-            .gpu_result_capability_evidence()?
-            .execution_scopes()
-            .iter()
-            .map(|scope| scope.execution_scope_fingerprint())
-            .collect::<Vec<_>>();
-        Ok(Some(scopes))
+    fn reusable_gpu_result_scope(&self) -> Result<Option<PlanFingerprint>> {
+        Ok(Some(cugraph_schema_query_plan(&self.plan_definition())?.execution_fingerprint()))
     }
 
     fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {

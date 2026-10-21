@@ -22,8 +22,6 @@ use futures::future::BoxFuture;
 #[cfg(test)]
 use query_engine::exec::admit_query_plan;
 use query_engine::exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput};
-#[cfg(feature = "cugraph")]
-use query_planning::plan::PlanNode;
 use query_planning::{
     admission::{AdmittedPlan, AttemptCapabilityEvidence},
     plan::{QueryPlan, ResultSink, row_bounds::query_plan_hard_row_upper_bound},
@@ -679,26 +677,6 @@ fn validate_gpu_inputs(plan: &QueryPlan, gpu_inputs: &[Arc<dyn ExecutionPlan>], 
 }
 
 impl GpuResidentProducer for AlgeonNativeExec {
-    #[cfg(feature = "cugraph")]
-    fn gpu_result_is_repeatable(&self) -> bool {
-        self.native_plan().nodes().iter().all(|node| match &node.kind {
-            PlanNode::Source(_)
-            | PlanNode::Filter(_)
-            | PlanNode::Projection(_)
-            | PlanNode::Aggregate(_)
-            | PlanNode::Window(_)
-            | PlanNode::Sort(_)
-            | PlanNode::Limit(_)
-            | PlanNode::Join(_)
-            | PlanNode::Union(_)
-            | PlanNode::EdgeNormalize(_) => true,
-            PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => false,
-        }) && self.gpu_inputs.iter().all(|input| {
-            super::producer::gpu_resident_producer(input.as_ref())
-                .is_some_and(GpuResidentProducer::gpu_result_is_repeatable)
-        })
-    }
-
     /// The name of a GPU-resident unit's output. Only GPU-resident units are
     /// classified as producers, so a host unit never answers.
     fn gpu_result_input_name(&self) -> &str {

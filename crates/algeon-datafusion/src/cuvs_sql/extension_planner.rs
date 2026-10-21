@@ -43,14 +43,7 @@ impl ExtensionPlanner for CuvsExtensionPlanner {
                     .map(LexOrdering::new)
             })
             .collect::<Result<Vec<_>>>()?;
-        CuvsAlgoExec::try_new(
-            node.operation(),
-            node.validated_options().clone(),
-            physical_inputs.to_vec(),
-            input_orderings,
-            node.output_schema(),
-            native_execution_config,
-        )
-        .map(|exec| Some(Arc::new(exec) as Arc<dyn ExecutionPlan>))
+        CuvsAlgoExec::try_new(node, physical_inputs.to_vec(), input_orderings, native_execution_config)
+            .map(|exec| Some(Arc::new(exec) as Arc<dyn ExecutionPlan>))
     }
 }

@@ -20,7 +20,7 @@ use super::{
 use crate::{
     error::{Error, Result},
     gpu_functions::{
-        dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions,
+        GpuFunctionInvocation, dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions,
         input_orderings_with_expressions,
     },
 };
@@ -36,6 +36,7 @@ pub struct CuvsLogicalNode {
     /// empty when the input declares no order.
     input_orderings: Vec<Vec<SortExpr>>,
     options: CuvsValidatedOptions,
+    invocation: GpuFunctionInvocation,
     schema: DFSchemaRef,
 }
 
@@ -46,6 +47,15 @@ impl CuvsLogicalNode {
     /// missing columns, unsupported types, or incompatible cardinalities return typed
     /// Algeon errors through the DataFusion error boundary.
     pub fn try_new(operation: CuvsOperation, inputs: Vec<LogicalPlan>, options_json: &str) -> DataFusionResult<Self> {
+        Self::try_new_for_invocation(operation, inputs, options_json, GpuFunctionInvocation::mint("cuvs"))
+    }
+
+    fn try_new_for_invocation(
+        operation: CuvsOperation,
+        inputs: Vec<LogicalPlan>,
+        options_json: &str,
+        invocation: GpuFunctionInvocation,
+    ) -> DataFusionResult<Self> {
         let descriptor = operation.descriptor();
         if inputs.len() != descriptor.relation_roles.len() {
             return Err(invalid_call(
@@ -65,7 +75,7 @@ impl CuvsLogicalNode {
         validate_known_cardinalities(operation, &inputs, &options)?;
         let schema = derive_output_schema(operation, &inputs, &options, &dimensions, element)?;
         let input_orderings = vec![Vec::new(); inputs.len()];
-        Ok(Self { operation, inputs, input_orderings, options, schema })
+        Ok(Self { operation, inputs, input_orderings, options, invocation, schema })
     }
 
     /// Declares each relation argument's order, which fixes its `row_ordinal`
@@ -100,6 +110,10 @@ impl CuvsLogicalNode {
     pub fn output_schema(&self) -> SchemaRef {
         Arc::clone(self.schema.inner())
     }
+
+    pub(crate) fn invocation(&self) -> GpuFunctionInvocation {
+        self.invocation
+    }
 }
 
 impl PartialEq for CuvsLogicalNode {
@@ -108,6 +122,7 @@ impl PartialEq for CuvsLogicalNode {
             && self.inputs == other.inputs
             && self.input_orderings == other.input_orderings
             && self.options == other.options
+            && self.invocation == other.invocation
     }
 }
 
@@ -119,16 +134,18 @@ impl Hash for CuvsLogicalNode {
         self.inputs.hash(state);
         self.input_orderings.hash(state);
         self.options.hash(state);
+        self.invocation.hash(state);
     }
 }
 
 impl PartialOrd for CuvsLogicalNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (&self.operation, &self.inputs, &self.input_orderings, &self.options).partial_cmp(&(
+        (&self.operation, &self.inputs, &self.input_orderings, &self.options, &self.invocation).partial_cmp(&(
             &other.operation,
             &other.inputs,
             &other.input_orderings,
             &other.options,
+            &other.invocation,
         ))
     }
 }
@@ -177,7 +194,7 @@ impl UserDefinedLogicalNodeCore for CuvsLogicalNode {
         };
         let options_json =
             dense_relation_function(self.operation).options_json(&inputs, self.options.value_options().clone())?;
-        Self::try_new(self.operation, inputs, &options_json)?
+        Self::try_new_for_invocation(self.operation, inputs, &options_json, self.invocation)?
             .with_input_orderings(input_orderings)
             .map_err(DataFusionError::from)
     }

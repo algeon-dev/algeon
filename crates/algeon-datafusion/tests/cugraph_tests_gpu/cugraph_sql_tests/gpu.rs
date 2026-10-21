@@ -258,7 +258,10 @@ async fn functions_only_keeps_sql_limit_outside_the_cugraph_function() {
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
 }
 
-async fn assert_repeated_cugraph_cte_executes(mode: AlgeonGpuExecutionMode, expected_gpu_executions: usize) {
+/// DataFusion copies the CTE at both references. Functions-only execution
+/// keeps both copies as host occurrences and a native join reads one producer;
+/// either way the two references read one evaluation.
+async fn assert_repeated_cugraph_cte_executes(mode: AlgeonGpuExecutionMode, displayed_occurrences: usize) {
     let (_backend, ctx) = backend_cugraph_sql_context_with_mode(SessionStateBuilder::new_with_default_features(), mode);
     register_edge_memtable(&ctx, "shared_cte_edges", DataType::Int64, DataType::Int64, DataType::Float64);
     let plan = ctx
@@ -279,19 +282,15 @@ async fn assert_repeated_cugraph_cte_executes(mode: AlgeonGpuExecutionMode, expe
     let rendered = displayable(plan.as_ref()).indent(false).to_string();
     assert_eq!(
         rendered.matches("CugraphAlgoExec: algorithm=DegreesAll").count(),
-        expected_gpu_executions,
-        "the execution policy must preserve its declared CTE sharing behavior:\n{rendered}"
+        displayed_occurrences,
+        "the execution policy must preserve its declared CTE placement:\n{rendered}"
     );
     let batches = collect(Arc::clone(&plan), ctx.task_ctx())
         .await
         .expect("both references to one cuGraph table provider must execute");
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
     let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
-    assert_eq!(
-        metrics.graph_runtime_rows.len(),
-        expected_gpu_executions,
-        "each unshared graph occurrence must execute once"
-    );
+    assert_eq!(metrics.graph_runtime_rows.len(), 1, "both CTE references must read one graph evaluation");
 }
 
 #[tokio::test]

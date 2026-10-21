@@ -43,15 +43,7 @@ impl ExtensionPlanner for CumlExtensionPlanner {
                     .map(LexOrdering::new)
             })
             .collect::<Result<Vec<_>>>()?;
-        CumlAlgoExec::try_new(
-            node.operation(),
-            node.validated_options().clone(),
-            node.model().cloned(),
-            physical_inputs.to_vec(),
-            input_orderings,
-            node.output_schema(),
-            native_execution_config,
-        )
-        .map(|exec| Some(Arc::new(exec) as Arc<dyn ExecutionPlan>))
+        CumlAlgoExec::try_new(node, physical_inputs.to_vec(), input_orderings, native_execution_config)
+            .map(|exec| Some(Arc::new(exec) as Arc<dyn ExecutionPlan>))
     }
 }

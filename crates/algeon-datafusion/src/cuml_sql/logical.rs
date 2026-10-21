@@ -23,7 +23,7 @@ use super::{
 use crate::{
     error::Result,
     gpu_functions::{
-        dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions,
+        GpuFunctionInvocation, dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions,
         input_orderings_with_expressions,
     },
 };
@@ -41,6 +41,7 @@ pub struct CumlLogicalNode {
     options: CumlValidatedOptions,
     /// Model bound at planning; present only for `cuml_forest_predict`.
     model: Option<Arc<MlForestModelSnapshot>>,
+    invocation: GpuFunctionInvocation,
     schema: DFSchemaRef,
 }
 
@@ -60,10 +61,20 @@ impl CumlLogicalNode {
         options_json: &str,
         model: Option<Arc<MlForestModelSnapshot>>,
     ) -> DataFusionResult<Self> {
+        Self::try_new_for_invocation(operation, inputs, options_json, model, GpuFunctionInvocation::mint("cuml"))
+    }
+
+    fn try_new_for_invocation(
+        operation: CumlOperation,
+        inputs: Vec<LogicalPlan>,
+        options_json: &str,
+        model: Option<Arc<MlForestModelSnapshot>>,
+        invocation: GpuFunctionInvocation,
+    ) -> DataFusionResult<Self> {
         let (options, output) = Self::validate_call(operation, &inputs, options_json, model.as_deref())?;
         let schema = Arc::new(DFSchema::try_from(output.as_ref().clone())?);
         let input_orderings = vec![Vec::new(); inputs.len()];
-        Ok(Self { operation, inputs, input_orderings, options, model, schema })
+        Ok(Self { operation, inputs, input_orderings, options, model, invocation, schema })
     }
 
     fn validate_call(
@@ -318,6 +329,10 @@ impl CumlLogicalNode {
     pub fn output_schema(&self) -> SchemaRef {
         Arc::clone(self.schema.inner())
     }
+
+    pub(crate) fn invocation(&self) -> GpuFunctionInvocation {
+        self.invocation
+    }
 }
 
 #[cfg(feature = "server")]
@@ -370,6 +385,7 @@ impl PartialEq for CumlLogicalNode {
             && self.input_orderings == other.input_orderings
             && self.options == other.options
             && self.model == other.model
+            && self.invocation == other.invocation
     }
 }
 impl Eq for CumlLogicalNode {}
@@ -380,17 +396,26 @@ impl Hash for CumlLogicalNode {
         self.input_orderings.hash(state);
         self.options.hash(state);
         self.model.hash(state);
+        self.invocation.hash(state);
     }
 }
 impl PartialOrd for CumlLogicalNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.operation.descriptor().sql_function_name, &self.inputs, &self.input_orderings, &self.options, &self.model)
+        (
+            self.operation.descriptor().sql_function_name,
+            &self.inputs,
+            &self.input_orderings,
+            &self.options,
+            &self.model,
+            &self.invocation,
+        )
             .partial_cmp(&(
                 other.operation.descriptor().sql_function_name,
                 &other.inputs,
                 &other.input_orderings,
                 &other.options,
                 &other.model,
+                &other.invocation,
             ))
     }
 }
@@ -437,7 +462,7 @@ impl UserDefinedLogicalNodeCore for CumlLogicalNode {
         };
         let options_json =
             dense_relation_function(self.operation).options_json(&inputs, self.options.value_options().clone())?;
-        Self::try_new_with_model(self.operation, inputs, &options_json, self.model.clone())?
+        Self::try_new_for_invocation(self.operation, inputs, &options_json, self.model.clone(), self.invocation)?
             .with_input_orderings(input_orderings)
             .map_err(DataFusionError::from)
     }

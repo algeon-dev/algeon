@@ -1,5 +1,3 @@
-use std::sync::atomic::AtomicU64;
-
 use admission::{
     cugraph_execution_config_after_staging, edge_source_graph_vertex_estimate, edge_source_output_rows,
     graph_input_native_producer, lowered_native_edge_plan, plan_contains_algeon_native,
@@ -109,8 +107,6 @@ use crate::{
         prepare_gpu_resident_producer_for_execution, run_gpu_execution_task,
     },
 };
-
-static NEXT_CUGRAPH_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Default)]
 struct CugraphResultPlanOptions {

@@ -725,7 +725,7 @@ async fn assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(mode: AlgeonGpu
         .expect("both shared-producer branches must satisfy their own downstream occurrence");
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 8);
     let metrics = NativeDataFusionExecutionMetrics::from_metrics(&recursive_plan_metrics(plan.as_ref()));
-    assert_eq!(metrics.graph_runtime_rows.len(), 2, "each unshared CTE occurrence executes once");
+    assert_eq!(metrics.graph_runtime_rows.len(), 1, "both references of the ForceAtlas2 CTE read one evaluation");
     close_cuvs_test_backend(backend, ctx);
 }
 
@@ -1511,6 +1511,89 @@ async fn cte_aggregate_read_by_gpu_function_inputs_and_joins_is_computed_once() 
     assert_eq!((shared_consumers, parquet_files), (3, 2));
     assert_eq!(rows, [(4, 8.0, 2.0), (4, 8.0, 22.0)]);
     assert_eq!(run_shared_cte_functions_only(NESTED_PERSONAS_SQL, temp_dir.path()).await, rows);
+}
+
+/// Both references of the `km` CTE read one K-means call site.
+const KMEANS_SELF_JOIN_SQL: &str = "WITH km AS (\
+       SELECT id, cluster_id FROM cuvs_kmeans(\
+         input => (SELECT id, d0, d1 FROM cluster_points), n_clusters => 2, max_iter => 5, init => 'random')) \
+     SELECT COUNT(*) AS rows_joined, SUM(CASE WHEN a.cluster_id <> b.cluster_id THEN 1 ELSE 0 END) AS disagreeing \
+     FROM km a JOIN km b ON a.id = b.id";
+
+/// Two call sites with identical text.
+const KMEANS_TWO_CALLS_SQL: &str = "SELECT COUNT(*) AS rows_joined, \
+       SUM(CASE WHEN a.cluster_id <> b.cluster_id THEN 1 ELSE 0 END) AS disagreeing \
+     FROM cuvs_kmeans(\
+         input => (SELECT id, d0, d1 FROM cluster_points), n_clusters => 2, max_iter => 5, init => 'random') a \
+     JOIN cuvs_kmeans(\
+         input => (SELECT id, d0, d1 FROM cluster_points), n_clusters => 2, max_iter => 5, init => 'random') b \
+       ON a.id = b.id";
+
+/// Registers 64 points with unique ids, half at (0, 1) and half at (10, 11).
+async fn register_cluster_points(ctx: &SessionContext, dir: &std::path::Path) {
+    let path = dir.join("cluster_points.parquet");
+    let schema = wide_vector_schema("id");
+    let ids = (0..64).collect::<Vec<i64>>();
+    let d0 = ids.iter().map(|id| if *id < 32 { 0.0 } else { 10.0 }).collect::<Vec<f32>>();
+    let d1 = ids.iter().map(|id| if *id < 32 { 1.0 } else { 11.0 }).collect::<Vec<f32>>();
+    let batch = wide_vector_batch(Arc::clone(&schema), "id", &ids, &d0, &d1);
+    let mut writer = ArrowWriter::try_new(File::create(&path).expect("create Parquet fixture"), schema, None)
+        .expect("create Parquet writer");
+    writer.write(&batch).expect("write Parquet fixture");
+    writer.close().expect("finish Parquet fixture");
+    ctx.register_parquet("cluster_points", path.to_str().expect("UTF-8 Parquet path"), ParquetReadOptions::default())
+        .await
+        .expect("register cluster points");
+}
+
+/// Runs `sql` under `mode` in one attempt and returns its joined and
+/// disagreeing row counts with the number of vector algorithm tasks executed.
+async fn run_kmeans_join(mode: AlgeonGpuExecutionMode, sql: &str, dir: &std::path::Path) -> (i64, i64, usize) {
+    let (backend, ctx) = cuvs_bounded_context_with_mode(mode);
+    register_cluster_points(&ctx, dir).await;
+    let attempt = backend.begin_attempt(AttemptOptions::default()).expect("begin cuVS attempt");
+    let completion = attempt.completion();
+    let plan = attempt.plan_sql(&ctx, sql).await.expect("plan the K-means join");
+    let mut stream = attempt.execute_physical_plan(plan, &ctx).expect("execute the K-means join");
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.next().await {
+        batches.push(batch.expect("K-means join batch"));
+    }
+    drop(stream);
+    let _report = completion.await;
+    let metrics = attempt.sealed_native_execution_snapshot().expect("sealed native execution snapshot").metrics;
+    let vector_tasks = metrics
+        .task_operator_rows
+        .iter()
+        .filter(|row| row.operator_kind == "vector_algorithm")
+        .map(|row| row.task_count)
+        .sum::<usize>();
+    drop(attempt);
+    close_cuvs_test_backend(backend, ctx);
+    let [batch] = batches.as_slice() else {
+        panic!("the aggregate returns one batch: {batches:?}");
+    };
+    let count = |column: usize| batch.column(column).as_any().downcast_ref::<Int64Array>().expect("count").value(0);
+    (count(0), count(1), vector_tasks)
+}
+
+#[tokio::test]
+async fn kmeans_cte_references_read_one_evaluation_and_separate_calls_do_not() {
+    let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
+    // A native join reads one K-means producer for both references.
+    assert_eq!(
+        run_kmeans_join(AlgeonGpuExecutionMode::NativePreferred, KMEANS_SELF_JOIN_SQL, temp_dir.path()).await,
+        (64, 0, 1)
+    );
+    // A CPU join reads two host occurrences that replay one evaluation.
+    assert_eq!(
+        run_kmeans_join(AlgeonGpuExecutionMode::FunctionsOnly, KMEANS_SELF_JOIN_SQL, temp_dir.path()).await,
+        (64, 0, 1)
+    );
+    for mode in [AlgeonGpuExecutionMode::NativePreferred, AlgeonGpuExecutionMode::FunctionsOnly] {
+        let (rows_joined, _, vector_tasks) = run_kmeans_join(mode, KMEANS_TWO_CALLS_SQL, temp_dir.path()).await;
+        assert_eq!((rows_joined, vector_tasks), (64, 2), "identical call sites evaluate independently under {mode:?}");
+    }
 }
 
 fn cuvs_test_backend_with_mode(mode: AlgeonGpuExecutionMode) -> AlgeonGpuBackend {

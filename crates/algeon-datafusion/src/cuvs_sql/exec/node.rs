@@ -1,9 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
 };
 
 use arrow::datatypes::SchemaRef;
@@ -12,7 +9,7 @@ use query_planning::plan::QueryPlan;
 
 use super::{
     super::{
-        CuvsOperation, CuvsValidatedOptions, CuvsVectorRelationBinding, DenseVectorBinding,
+        CuvsLogicalNode, CuvsOperation, CuvsValidatedOptions, CuvsVectorRelationBinding, DenseVectorBinding,
         error::{feature_disabled, invalid_call},
     },
     lowering::lower_cuvs_query_plan,
@@ -29,8 +26,6 @@ use crate::{
     },
 };
 
-static NEXT_CUVS_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
-
 #[derive(Clone, Debug)]
 /// Validated operation settings retained by the specialized physical execution wrapper.
 pub struct CuvsRelationFunctionSpec {
@@ -44,25 +39,24 @@ pub struct CuvsRelationFunctionSpec {
 pub type CuvsAlgoExec = RelationFunctionExec<CuvsRelationFunctionSpec>;
 
 impl RelationFunctionExec<CuvsRelationFunctionSpec> {
+    /// Plans `node`'s call over its physical `inputs`; the input and result
+    /// names derive from the node's invocation.
     pub(crate) fn try_new(
-        operation: CuvsOperation,
-        options: CuvsValidatedOptions,
+        node: &CuvsLogicalNode,
         inputs: Vec<Arc<dyn ExecutionPlan>>,
         input_orderings: Vec<Option<LexOrdering>>,
-        output_schema: SchemaRef,
         native_execution_config: AlgeonNativeExecutionConfig,
     ) -> DataFusionResult<Self> {
-        let id = NEXT_CUVS_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
-        let input_names =
-            (0..inputs.len()).map(|index| format!("__algeon_datafusion_cuvs_input_{id}_{index}")).collect();
+        let invocation = node.invocation();
+        let input_names = (0..inputs.len()).map(|index| invocation.relation_input_name(index)).collect();
         Self::try_new_with_names(
-            CuvsRelationFunctionSpec { operation, options },
+            CuvsRelationFunctionSpec { operation: node.operation(), options: node.validated_options().clone() },
             inputs,
-            output_schema,
+            node.output_schema(),
             native_execution_config,
             input_names,
             input_orderings,
-            format!("__algeon_datafusion_cuvs_result_{id}"),
+            invocation.result_input_name(),
         )
     }
 

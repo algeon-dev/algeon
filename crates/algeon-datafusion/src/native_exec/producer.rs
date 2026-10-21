@@ -33,19 +33,21 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
     /// matches the consumer plan's GPU-resident source name.
     fn gpu_result_input_name(&self) -> &str;
 
-    /// Whether this producer's inputs and operation permit reuse of one
-    /// logical invocation's result. Host-staged inputs and GPU functions
-    /// without a repeatability contract keep the default.
-    #[cfg(feature = "cugraph")]
-    fn gpu_result_is_repeatable(&self) -> bool {
-        false
-    }
-
-    /// Native output identities eligible for reuse within one composed island.
-    /// The invocation name remains part of the key, keeping independently
-    /// authored calls separate. Output pushdown must change this identity;
-    /// the result scope also binds the complete input producer subtree.
-    fn reusable_gpu_result_scope(&self) -> Result<Option<Vec<PlanFingerprint>>> {
+    /// Execution scope of the relation a GPU table function invocation
+    /// produces, or `None` for a producer that is not a GPU function call.
+    ///
+    /// Every physical occurrence of one SQL invocation shares
+    /// [`gpu_result_input_name`](Self::gpu_result_input_name), and occurrences
+    /// with equal names and scopes read one evaluation within a composed
+    /// island. The scope covers the function's validated options and any
+    /// output pushdown, which give two occurrences of one invocation
+    /// different relations. It excludes the input subtrees' plans: each
+    /// occurrence is planned from the same logical call, and a physical
+    /// rewrite of one copy's inputs preserves the relation they compute.
+    /// Facts a producer derives from its inputs, such as cuGraph's row and
+    /// vertex bounds, stay in the scope, so copies whose inputs report
+    /// different bounds evaluate separately.
+    fn reusable_gpu_result_scope(&self) -> Result<Option<PlanFingerprint>> {
         Ok(None)
     }
 
