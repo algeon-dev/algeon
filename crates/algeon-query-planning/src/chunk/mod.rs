@@ -23,6 +23,7 @@ pub mod assembly;
 #[doc(hidden)]
 pub mod decimal;
 pub mod decoded;
+pub(crate) mod elements;
 mod memory;
 mod model;
 mod planner;
@@ -44,8 +45,9 @@ pub use policy::{
 /// What the execution backend contributes to exact source-read sizing.
 ///
 /// Chunk planning consumes these; it never derives a backend memory model of
-/// its own. The minimum read budget is the backend reader's floor, and type
-/// support decides whether a column has an exact fixed-width bound at all.
+/// its own. The minimum read budget is the backend reader's floor, type
+/// support decides whether a column has an exact fixed-width bound at all, and
+/// the per-column element limit caps the rows and nested elements of one read.
 #[derive(Debug, Clone, Copy)]
 pub struct SourceReadSizing<'a> {
     backend: &'a dyn BackendCapabilities,
@@ -61,6 +63,12 @@ impl<'a> SourceReadSizing<'a> {
     /// The backend reader's minimum source-read budget in bytes.
     pub(crate) const fn minimum_read_budget_bytes(&self) -> u64 {
         self.minimum_read_budget_bytes
+    }
+
+    /// The backend's per-column element limit
+    /// ([`BackendCapabilities::max_column_elements`]).
+    pub(crate) fn max_column_elements(&self) -> u64 {
+        self.backend.max_column_elements()
     }
 
     /// Whether the backend can represent this Arrow type.

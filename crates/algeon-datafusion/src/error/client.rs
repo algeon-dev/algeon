@@ -71,6 +71,11 @@ pub(crate) fn client_message(error: &Error) -> ClientMessage {
     let mut logged = client_status_message(error);
     let detail = client_actionable_kind(error).then(|| error.client_detail()).flatten();
     let mut text = detail.map_or_else(|| logged.clone(), |detail| client_schema_detail_message(detail, &logged));
+    if error.code() == ErrorCode::SizeOverflow
+        && let Some(column) = error.fact_value("column")
+    {
+        text = size_overflow_message(error, Some(column));
+    }
     if error.code() == ErrorCode::FinalPlanRequirementUnsatisfied {
         logged.insert_str(0, NATIVE_REQUIRED_REJECTION);
         text.insert_str(0, NATIVE_REQUIRED_REJECTION);
@@ -129,10 +134,7 @@ fn client_status_message(error: &Error) -> String {
             "query budget cannot fit on any eligible device: {}. Request a smaller query cap or wait for device capacity to free; do not retry the same request unchanged",
             error.message()
         ),
-        ErrorCode::SizeOverflow => format!(
-            "result size computation overflowed the platform range: {}. Change the request shape to produce a smaller result; retrying the same request unchanged cannot succeed",
-            error.message()
-        ),
+        ErrorCode::SizeOverflow => size_overflow_message(error, None),
         ErrorCode::HostMaterializationLimitExceeded => format!(
             "one result row exceeds the configured host materialization limit: {}. Narrow the request or raise the limit; retrying the same request unchanged cannot succeed",
             error.message()
@@ -203,6 +205,38 @@ fn memory_failure_detail(error: &Error) -> Option<String> {
         [init @ .., last] => format!(": {}, and {last}", init.join(", ")),
     };
     Some(format!("{}{figures}", location.unwrap_or_default()))
+}
+
+/// Client text of a size overflow. When the native layers recorded the
+/// per-column element limit a read or an intermediate result exceeded, the
+/// text names the element count, the limit and the change that fits under it:
+/// smaller Parquet row groups when one row group alone exceeds the limit,
+/// otherwise a filter or a split at the row cap. `column` is the caller's
+/// column name, which joins only the wire text. Counts are parsed as numbers,
+/// so no foreign text enters the message.
+fn size_overflow_message(error: &Error, column: Option<&str>) -> String {
+    const NO_RETRY: &str = "retrying the same request unchanged cannot succeed";
+    let count = |key: &str| error.fact_value(key).and_then(|value| value.parse::<u64>().ok());
+    let (Some(elements), Some(limit)) = (count("element_count"), count("element_limit")) else {
+        return format!(
+            "result size computation overflowed the platform range: {}. Change the request shape to produce a smaller result; {NO_RETRY}",
+            error.message()
+        );
+    };
+    let subject = column.map_or_else(|| "one column".to_string(), |column| format!("column `{column}`"));
+    if let Some(rows) = count("max_row_group_rows") {
+        return format!(
+            "one Parquet row group of {subject} decodes to {elements} elements, above the limit of {limit} elements per column. Rewrite the file with row groups of at most {rows} rows; {NO_RETRY}"
+        );
+    }
+    match count("row_cap") {
+        Some(row_cap) => format!(
+            "{subject} would hold {elements} elements in one relation or intermediate result, above the limit of {limit} elements per column; at its width at most {row_cap} rows fit. Filter the input, or split the relation (for example a UNION ALL of calls over row ranges) so each part holds at most {row_cap} rows; {NO_RETRY}"
+        ),
+        None => format!(
+            "{subject} would hold {elements} elements in one relation or intermediate result, above the limit of {limit} elements per column. Filter the input, or split the relation (for example a UNION ALL of calls over row ranges); {NO_RETRY}"
+        ),
+    }
 }
 
 /// Client text for rejections that name the caller's own schema identifiers.

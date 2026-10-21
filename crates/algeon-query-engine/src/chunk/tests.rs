@@ -6,12 +6,13 @@ use std::{
 };
 
 use arrow::{
-    array::{Int64Array, StringArray},
-    datatypes::{DataType, Field, Schema},
+    array::{Array, Int32Array, Int64Array, ListArray, StringArray},
+    datatypes::{DataType, Field, Int32Type, Schema},
     record_batch::RecordBatch,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_planning::{
+    backend::BackendCapabilities,
     chunk::{
         LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
         SourceTaskMemoryModel, decimal::validate_supplied_reader_decimal_types_match_footer,
@@ -27,8 +28,9 @@ use query_planning::{
 };
 
 use super::*;
-use crate::source_chunk::metadata::{
-    SourceMetadataCacheKey, local_parquet_footer_metadata_path, sidecar_content_identity,
+use crate::{
+    rapids_backend::rapids_backend,
+    source_chunk::metadata::{SourceMetadataCacheKey, local_parquet_footer_metadata_path, sidecar_content_identity},
 };
 
 fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
@@ -51,6 +53,8 @@ fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
         estimated_chunk_bytes: Some(bytes),
         estimated_source_read_bytes: Some(bytes),
         estimated_decoded_bytes: None,
+        estimated_column_elements: Some(1),
+        max_column_elements: u64::MAX,
         exact_source_read_preflight_bytes: Some(bytes),
         source_file_row_groups: None,
         source_file_row_group_bytes: Some(vec![bytes]),
@@ -59,6 +63,7 @@ fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
         source_file_pure_filter_compressed_bytes: Some(vec![0]),
         source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
         source_file_row_group_decoded_bytes: None,
+        source_file_row_group_column_elements: None,
         source_file_row_group_rows: Some(vec![1]),
         reader_decimal_types: Vec::new(),
         reader_decimal_types_footer_verified: false,
@@ -178,6 +183,155 @@ fn source_chunks_bound_decoded_dictionary_strings_by_the_byte_target() {
     for chunk in &plan.chunks {
         assert_eq!(chunk.estimated_decoded_bytes, Some(2 * 4096 * (8 + 8 + 200)));
     }
+    fs::remove_file(path).unwrap();
+}
+
+const VECTOR_ROW_GROUP_ROWS: u64 = 200_000;
+const VECTOR_WIDTH: i32 = 2048;
+
+/// A 2048-wide float vector source like an embedding table: each 200,000-row
+/// row group decodes to 409,600,000 list values, within the backend's
+/// per-column element limit, and five row groups together are too.
+fn vector_source(row_group_rows: Vec<u64>) -> LocalParquetSource {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(
+            "fp",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), VECTOR_WIDTH),
+            true,
+        ),
+    ]));
+    let file = LocalParquetFile::new("/tmp/missing-vector-source.parquet")
+        .with_row_groups((0..row_group_rows.len()).collect())
+        .with_row_group_bytes(vec![1024; row_group_rows.len()])
+        .with_row_group_rows(row_group_rows);
+    LocalParquetSource::from_files(vec![file], schema, vec!["id".to_string(), "fp".to_string()])
+}
+
+fn assert_within_element_limit(chunks: &[SourceChunk]) {
+    let limit = rapids_backend().max_column_elements();
+    for chunk in chunks {
+        assert_eq!(chunk.max_column_elements, limit);
+        assert!(chunk.estimated_column_elements.is_some_and(|elements| elements <= limit), "{chunk:?}");
+    }
+}
+
+#[test]
+fn vector_source_chunks_and_batches_stay_within_the_backend_column_element_limit() {
+    let source = vector_source(vec![VECTOR_ROW_GROUP_ROWS; 15]);
+    let row_group_elements = VECTOR_ROW_GROUP_ROWS * VECTOR_WIDTH as u64;
+
+    let widened =
+        plan_local_parquet_source_chunks(NodeId::from_index_for_test(3), &source, SourceChunkPlanningPolicy::default())
+            .unwrap();
+    assert_eq!(widened.chunks.iter().map(SourceChunk::row_group_count).collect::<Vec<_>>(), vec![5, 5, 5]);
+    assert_within_element_limit(&widened.chunks);
+    assert!(widened.chunks.iter().all(|chunk| chunk.estimated_column_elements == Some(5 * row_group_elements)));
+
+    let single = plan_local_parquet_source_chunks(
+        NodeId::from_index_for_test(3),
+        &source,
+        SourceChunkPlanningPolicy::new(None, 1),
+    )
+    .unwrap();
+    assert_eq!(single.chunk_count(), 15);
+    let batches = plan_source_chunk_batches(&single.chunks, None);
+    assert_eq!(batches.iter().map(SourceChunkBatch::chunk_count).collect::<Vec<_>>(), vec![5, 5, 5]);
+    for batch in &batches {
+        let batch_elements = batch.chunks.iter().filter_map(|chunk| chunk.estimated_column_elements).sum::<u64>();
+        assert!(batch_elements <= rapids_backend().max_column_elements(), "{batch:?}");
+    }
+    let (left, right) = batches[0].clone().split_for_retry().expect("a five-chunk batch splits");
+    assert_within_element_limit(&left.chunks);
+    assert_within_element_limit(&right.chunks);
+}
+
+#[test]
+fn vector_row_group_above_the_column_element_limit_fails_with_the_row_group_size_that_fits() {
+    let source = vector_source(vec![VECTOR_ROW_GROUP_ROWS, 2_897_819]);
+
+    let error =
+        plan_local_parquet_source_chunks(NodeId::from_index_for_test(3), &source, SourceChunkPlanningPolicy::default())
+            .expect_err("one row group of 2,897,819 vectors cannot decode into one backend column");
+
+    assert_eq!(error.code(), QueryErrorCode::SizeOverflow);
+    let fact = |key| error.wire_fact(key).map(|value| value.into_owned());
+    assert_eq!(fact("column").as_deref(), Some("fp"));
+    assert_eq!(fact("row_group").as_deref(), Some("1"));
+    assert_eq!(fact("row_group_rows").as_deref(), Some("2897819"));
+    assert_eq!(fact("element_count"), Some((2_897_819 * VECTOR_WIDTH as u64).to_string()));
+    assert_eq!(fact("element_limit"), Some(rapids_backend().max_column_elements().to_string()));
+    let max_row_group_rows = rapids_backend().max_column_elements() / VECTOR_WIDTH as u64;
+    assert_eq!(fact("max_row_group_rows"), Some(max_row_group_rows.to_string()));
+    assert!(fact("remedy").is_some_and(|remedy| remedy.contains(&format!("at most {max_row_group_rows} rows"))));
+}
+
+#[test]
+fn variable_list_row_groups_without_footer_value_counts_are_read_alone() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "values",
+        DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
+        true,
+    )]));
+    let file = LocalParquetFile::new("/tmp/missing-list-source.parquet")
+        .with_row_groups(vec![0, 1, 2])
+        .with_row_group_bytes(vec![1024; 3])
+        .with_row_group_rows(vec![10; 3]);
+    let source = LocalParquetSource::from_files(vec![file], schema, vec!["values".to_string()]);
+
+    let plan =
+        plan_local_parquet_source_chunks(NodeId::from_index_for_test(3), &source, SourceChunkPlanningPolicy::default())
+            .unwrap();
+
+    assert_eq!(plan.chunks.iter().map(SourceChunk::row_group_count).collect::<Vec<_>>(), vec![1, 1, 1]);
+    assert!(plan.chunks.iter().all(|chunk| chunk.estimated_column_elements.is_none()));
+    assert!(plan_source_chunk_batches(&plan.chunks, None).iter().all(SourceChunkBatch::is_singleton));
+}
+
+#[test]
+fn variable_list_elements_come_from_footer_leaf_value_counts() {
+    let path = std::env::temp_dir().join(format!(
+        "query-engine-list-elements-{}-{}.parquet",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let values = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+        Some(vec![Some(1), Some(2), Some(3)]),
+        Some(vec![]),
+        Some(vec![Some(4), Some(5), Some(6), Some(7), Some(8)]),
+        None,
+    ]);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("values", values.data_type().clone(), true),
+    ]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(values)])
+            .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let mut writer = ArrowWriter::try_new(fs::File::create(&path).unwrap(), Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path.clone())],
+        schema,
+        vec!["key".to_string(), "values".to_string()],
+    );
+
+    let plan = plan_local_parquet_source_chunks(
+        NodeId::from_index_for_test(3),
+        &source,
+        SourceChunkPlanningPolicy::new(None, 1),
+    )
+    .unwrap();
+
+    // Each row group counts one leaf entry per value plus one per empty or
+    // null list: 3 + 1 and 5 + 1.
+    assert_eq!(
+        plan.chunks.iter().map(|chunk| chunk.estimated_column_elements).collect::<Vec<_>>(),
+        vec![Some(4), Some(6)]
+    );
+    assert_eq!(plan.chunks[0].source_file_row_group_column_elements, Some(vec![4, 6]));
     fs::remove_file(path).unwrap();
 }
 

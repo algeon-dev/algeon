@@ -40,6 +40,7 @@ pub fn query_planning::backend::BackendCapabilities::aggregate_output_names(&sel
 pub fn query_planning::backend::BackendCapabilities::binary_output_type(&self, query_planning::expr::BinaryOp, &arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> query_planning::error::Result<arrow_schema::datatype::DataType>
 pub fn query_planning::backend::BackendCapabilities::check_expression(&self, &query_planning::expr::Expr, query_planning::backend::ExpressionUse) -> query_planning::error::Result<()>
 pub fn query_planning::backend::BackendCapabilities::check_projection_output(&self, &query_planning::plan::ProjectionOutput) -> query_planning::error::Result<()>
+pub fn query_planning::backend::BackendCapabilities::max_column_elements(&self) -> u64
 pub fn query_planning::backend::BackendCapabilities::supports_type(&self, &arrow_schema::datatype::DataType) -> bool
 pub mod query_planning::capability
 pub enum query_planning::capability::AggregateExecutionStage
@@ -381,6 +382,7 @@ pub fn query_planning::chunk::decoded::row_group_decoded_bytes_from_footer(&parq
 pub struct query_planning::chunk::SourceChunk
 pub query_planning::chunk::SourceChunk::chunk_index: usize
 pub query_planning::chunk::SourceChunk::estimated_chunk_bytes: core::option::Option<u64>
+pub query_planning::chunk::SourceChunk::estimated_column_elements: core::option::Option<u64>
 pub query_planning::chunk::SourceChunk::estimated_decoded_bytes: core::option::Option<u64>
 pub query_planning::chunk::SourceChunk::estimated_source_read_bytes: core::option::Option<u64>
 pub query_planning::chunk::SourceChunk::exact_source_read_preflight_bytes: core::option::Option<u64>
@@ -393,6 +395,7 @@ pub query_planning::chunk::SourceChunk::known_pure_filter_uncompressed_bytes: co
 pub query_planning::chunk::SourceChunk::known_row_count: core::option::Option<u64>
 pub query_planning::chunk::SourceChunk::known_row_group_bytes: core::option::Option<u64>
 pub query_planning::chunk::SourceChunk::location: query_planning::source::ParquetSourceLocation
+pub query_planning::chunk::SourceChunk::max_column_elements: u64
 pub query_planning::chunk::SourceChunk::partition_values: alloc::vec::Vec<query_planning::expr::LiteralValue>
 pub query_planning::chunk::SourceChunk::path: std::path::PathBuf
 pub query_planning::chunk::SourceChunk::read_columns: alloc::vec::Vec<alloc::string::String>
@@ -411,6 +414,7 @@ pub query_planning::chunk::SourceChunk::source_file_projected_uncompressed_bytes
 pub query_planning::chunk::SourceChunk::source_file_pure_filter_compressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_pure_filter_uncompressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_row_group_bytes: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceChunk::source_file_row_group_column_elements: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_row_group_decoded_bytes: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_row_group_rows: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_row_groups: core::option::Option<alloc::vec::Vec<usize>>

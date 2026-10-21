@@ -12,6 +12,7 @@
 
 use std::borrow::Cow;
 
+use cudf::core::error::FactKeyName;
 use query_planning::error::{MemoryFailure, MemoryUsage, QueryError, QueryErrorCode, redact_uri_tokens};
 
 /// Wraps a `cudf::Error` at the native-engine boundary.
@@ -68,6 +69,7 @@ fn cudf_query_error_with_code(
         .with_fact("cudf_status", source.status())
         .with_fact("cudf_operation", source.operation());
     error = with_cudf_ffi_detail_facts(error, source);
+    error = with_cudf_column_element_limit_facts(error, source);
     if let Some(detail) = source.budget_exhaustion() {
         error = error.with_memory_failure(memory_failure(detail));
     }
@@ -133,6 +135,23 @@ pub fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
         return None;
     }
     Some(redact_uri_tokens(message))
+}
+
+/// Projects the column, element count, limit and row cap of a cuDF size
+/// overflow, which the client message of `size_overflow` reads.
+fn with_cudf_column_element_limit_facts(mut error: QueryError, source: &cudf::Error) -> QueryError {
+    if source.code() != cudf::ErrorCode::SizeOverflow {
+        return error;
+    }
+    if let Some(column) = source.fact_value(FactKeyName::ColumnName) {
+        error = error.with_fact("column", column.to_string());
+    }
+    for key in ["element_count", "element_limit", "row_cap"] {
+        if let Some(value) = source.detail_value(key) {
+            error = error.with_fact(key, value);
+        }
+    }
+    error
 }
 
 fn with_cudf_ffi_detail_facts(mut error: QueryError, source: &cudf::Error) -> QueryError {

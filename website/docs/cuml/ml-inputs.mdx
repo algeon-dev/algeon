@@ -138,6 +138,19 @@ ORDER BY score DESC;
 Class weights are not exposed. To trade precision for recall, threshold this
 score instead of `prediction`, which cuts at 0.5.
 
+## Relation size
+
+cuDF indexes the values of a list column with 32-bit offsets. One relation
+argument, or one intermediate result inside its subquery, can hold at most
+2,147,483,647 list values per column: 1,048,575 rows of a 2048-wide
+`FixedSizeList` feature. Scans and filters over larger Parquet files run. The
+source planner reads each file in parts under the limit, sized from the
+footer's value counts or, without a footer, from fixed list widths. A larger
+relation fails with `size_overflow`, naming the column, the value count and
+the row count that fits. Filter or sample the training relation below that
+row count, since one call trains one model. A `predict` or `input` relation
+can be split into row ranges, one call each, and combined with `UNION ALL`.
+
 ## Validation boundary
 
 SQL planning and `gpu_validate_call` check names, static Arrow types, list

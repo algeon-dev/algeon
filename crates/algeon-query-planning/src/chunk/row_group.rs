@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 
 use parquet::file::metadata::ParquetMetaData;
 
-use super::decoded::source_row_group_decoded_bytes_from_footer;
+use super::{
+    decoded::source_row_group_decoded_bytes_from_footer,
+    elements::{ColumnElements, row_group_column_elements_from_footer},
+};
 use crate::{
     parquet_stats::{ColumnByteKind, row_group_column_bytes},
     source::{LocalParquetFile, LocalParquetSource, SourceColumnRef},
@@ -19,6 +22,8 @@ pub struct RowGroupMetadata {
     pure_filter_uncompressed_bytes: Option<Vec<u64>>,
     decoded_bytes: Option<Vec<u64>>,
     row_group_rows: Option<Vec<u64>>,
+    /// Footer-only: source-supplied facts carry no leaf value counts.
+    column_elements: Option<Vec<ColumnElements>>,
 }
 
 impl RowGroupMetadata {
@@ -60,6 +65,10 @@ impl RowGroupMetadata {
 
     pub(crate) fn row_group_rows(&self, row_group: usize) -> Option<u64> {
         self.row_group_rows.as_ref().and_then(|rows| rows.get(row_group).copied())
+    }
+
+    pub(crate) fn column_elements(&self, row_group: usize) -> Option<ColumnElements> {
+        self.column_elements.as_ref().and_then(|elements| elements.get(row_group).copied())
     }
 
     pub(crate) fn row_group_bytes_vec(&self) -> Option<Vec<u64>> {
@@ -145,6 +154,7 @@ pub fn row_group_metadata_from_footer(metadata: &ParquetMetaData, source: &Local
             .iter()
             .map(|row_group| u64::try_from(row_group.num_rows()).ok())
             .collect::<Option<Vec<_>>>(),
+        column_elements: row_group_column_elements_from_footer(metadata, source),
     }
 }
 
@@ -190,6 +200,7 @@ pub fn source_row_group_metadata(
         footer_metadata.as_ref().and_then(RowGroupMetadata::row_group_rows_vec),
         footer_row_group_count,
     );
+    let column_elements = footer_metadata.and_then(|footer| footer.column_elements);
 
     if row_group_bytes.is_some()
         || projected_compressed_bytes.is_some()
@@ -198,6 +209,7 @@ pub fn source_row_group_metadata(
         || pure_filter_uncompressed_bytes.is_some()
         || decoded_bytes.is_some()
         || row_group_rows.is_some()
+        || column_elements.is_some()
     {
         Some(RowGroupMetadata {
             row_group_bytes,
@@ -207,6 +219,7 @@ pub fn source_row_group_metadata(
             pure_filter_uncompressed_bytes,
             decoded_bytes,
             row_group_rows,
+            column_elements,
         })
     } else {
         None
@@ -243,6 +256,7 @@ mod tests {
             pure_filter_uncompressed_bytes: Some(bytes.clone()),
             decoded_bytes: Some(bytes),
             row_group_rows: Some(rows),
+            column_elements: None,
         }
     }
 

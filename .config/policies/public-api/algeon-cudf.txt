@@ -3,6 +3,7 @@ pub mod cudf::core
 pub mod cudf::core::column
 pub struct cudf::core::column::Column
 impl cudf::core::Column
+pub const cudf::core::Column::MAX_ELEMENTS: usize
 pub fn cudf::core::Column::data_type(&self) -> cudf::core::error::Result<cudf::core::types::DataType>
 pub fn cudf::core::Column::deep_copy(&self) -> cudf::core::error::Result<Self>
 pub fn cudf::core::Column::device_data_ptr(&self) -> cudf::core::error::Result<*const std::os::raw::c_void>
@@ -1030,6 +1031,7 @@ impl core::fmt::Display for cudf::core::types::TypeId
 pub fn cudf::core::types::TypeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cudf::core::Column
 impl cudf::core::Column
+pub const cudf::core::Column::MAX_ELEMENTS: usize
 pub fn cudf::core::Column::data_type(&self) -> cudf::core::error::Result<cudf::core::types::DataType>
 pub fn cudf::core::Column::deep_copy(&self) -> cudf::core::error::Result<Self>
 pub fn cudf::core::Column::device_data_ptr(&self) -> cudf::core::error::Result<*const std::os::raw::c_void>

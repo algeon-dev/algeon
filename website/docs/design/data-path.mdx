@@ -39,7 +39,7 @@ to distinguish metadata pruning from row filtering.
 | Unit | Defined by | Size describes |
 | --- | --- | --- |
 | Parquet row group | The file writer | A set of rows stored as separate column chunks, with footer metadata |
-| Source chunk | Algeon's source planner | Selected row groups from one file, grouped against a decoded-byte target and a row-group cap |
+| Source chunk | Algeon's source planner | Selected row groups from one file, grouped against a decoded-byte target, a row-group cap and the backend's per-column element limit |
 | KvikIO I/O task | The I/O layer | A range of stored bytes to read, bounded by `KVIKIO_TASK_SIZE` |
 
 The planner can combine several row groups into one source chunk. Compatible
@@ -48,6 +48,12 @@ column byte ranges, and KvikIO divides reads into I/O tasks on its shared
 pool. One source chunk can therefore require many I/O tasks. The
 I/O task size controls the read subdivision; the source-chunk target still
 comes from the query's memory policy.
+
+Every planned read, and every batch of chunks read together, decodes into
+one cuDF table. Its row count and the child value count of each list column
+stay within the 2,147,483,647 elements one cuDF column indexes, counted from
+the footer's per-leaf `num_values`. A row group that alone exceeds that count
+fails planning with `size_overflow` and the row group size that fits.
 
 Source sizing uses estimates of decoded columns because dictionary-encoded
 strings can expand substantially during decoding. The

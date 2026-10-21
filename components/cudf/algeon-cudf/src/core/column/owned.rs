@@ -144,6 +144,11 @@ unsafe impl Send for Column {}
 unsafe impl Sync for Column {}
 
 impl Column {
+    /// Largest element count of one column at any level: its row count and,
+    /// for a nested column, each child's element count. libcudf indexes
+    /// columns with the 32-bit `cudf::size_type`.
+    pub const MAX_ELEMENTS: usize = i32::MAX as usize;
+
     pub(crate) fn backing_allocation_pointers(&self) -> Result<Vec<usize>> {
         let operation = "column::backing_allocation_pointers";
         let mut count = 0usize;

@@ -227,10 +227,15 @@ impl DataFrame {
             table_refs.push(tv);
         }
 
-        let result_table =
-            ops::concatenate::concatenate_tables_with_exec(&table_refs, &output_domain, execution.exec_options())?;
+        let column_names = self.column_names_owned();
+        let result_table = ops::concatenate::concatenate_tables_with_exec(
+            &table_refs,
+            &column_names,
+            &output_domain,
+            execution.exec_options(),
+        )?;
 
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        Self::from_table_with_names(result_table, column_names)
     }
 
     pub(crate) fn validate_concat_schema(&self, other: &DataFrame, operation: &'static str) -> Result<()> {

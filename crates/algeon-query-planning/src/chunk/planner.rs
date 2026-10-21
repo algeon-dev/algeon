@@ -40,6 +40,10 @@ fn source_read_bytes_for_batch_chunks(chunks: &[SourceChunk]) -> Option<u64> {
 /// source-read bytes when it has none; chunks without either estimate are kept
 /// as singleton batches so batching cannot defeat the bounded memory policy.
 /// A batch's `estimated_source_read_bytes` stays the sum of encoded bytes.
+///
+/// A batch's summed `estimated_column_elements` stays within the chunks'
+/// `max_column_elements`, so one batch read decodes into one backend table.
+/// Chunks without an element count stay singleton batches.
 pub fn plan_source_chunk_batches(
     chunks: &[SourceChunk],
     max_batch_source_read_bytes: Option<u64>,
@@ -63,6 +67,7 @@ pub fn plan_source_chunk_batches_with_row_cap(
     let mut current_bytes: Option<u64> = Some(0);
     let mut current_planning_bytes: Option<u64> = Some(0);
     let mut current_rows: Option<u64> = Some(0);
+    let mut current_column_elements: Option<u64> = Some(0);
     let mut current_reason: Option<&'static str> = None;
 
     for chunk in chunks {
@@ -77,6 +82,7 @@ pub fn plan_source_chunk_batches_with_row_cap(
                 max_batch_source_read_bytes,
             )
             .or_else(|| source_chunk_batch_row_extension_rejection(current_rows, chunk, max_batch_rows))
+            .or_else(|| source_chunk_batch_column_element_extension_rejection(current_column_elements, previous, chunk))
         });
         let can_extend = current.last().is_some() && extension_rejection.is_none();
         if !current.is_empty() && !can_extend {
@@ -87,6 +93,7 @@ pub fn plan_source_chunk_batches_with_row_cap(
             current_bytes = Some(0);
             current_planning_bytes = Some(0);
             current_rows = Some(0);
+            current_column_elements = Some(0);
             current_reason = None;
         }
 
@@ -100,6 +107,8 @@ pub fn plan_source_chunk_batches_with_row_cap(
                 .and_then(|total| chunk_planning_bytes.and_then(|bytes| total.checked_add(bytes)));
         }
         current_rows = current_rows.and_then(|total| chunk.known_row_count.and_then(|rows| total.checked_add(rows)));
+        current_column_elements = current_column_elements
+            .and_then(|total| chunk.estimated_column_elements.and_then(|elements| total.checked_add(elements)));
         current.push(chunk.clone());
     }
 
@@ -154,6 +163,9 @@ fn chunk_multi_source_batch_rejection(chunk: &SourceChunk) -> Option<&'static st
     }
     if batchable_chunk_source_read_bytes(chunk).is_none() {
         return Some("ineligible_missing_source_read_bytes");
+    }
+    if chunk.estimated_column_elements.is_none() {
+        return Some("ineligible_missing_column_elements");
     }
     None
 }
@@ -217,6 +229,18 @@ fn source_chunk_batch_row_extension_rejection(
         return Some("incompatible_missing_next_rows");
     };
     (current_rows.saturating_add(right_rows) > max_rows).then_some("row_target_exceeded")
+}
+
+fn source_chunk_batch_column_element_extension_rejection(
+    current_column_elements: Option<u64>,
+    left: &SourceChunk,
+    right: &SourceChunk,
+) -> Option<&'static str> {
+    let (Some(current), Some(right_elements)) = (current_column_elements, right.estimated_column_elements) else {
+        return Some("ineligible_missing_column_elements");
+    };
+    let max_column_elements = left.max_column_elements.min(right.max_column_elements);
+    (current.saturating_add(right_elements) > max_column_elements).then_some("column_element_limit_exceeded")
 }
 
 fn source_chunks_have_adjacent_row_groups(left: &SourceChunk, right: &SourceChunk) -> bool {

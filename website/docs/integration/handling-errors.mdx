@@ -146,6 +146,17 @@ the sealed attempt report.
 | `budget_bytes` | The query grant. |
 | `budget_current_bytes` | Usage sampled after the failing operation released its working set, kept out of the message. |
 
+### Column element limit {/* #column-element-limit */}
+
+One cuDF column holds at most 2,147,483,647 elements at each level: its rows
+and the child values of each list. A `size_overflow` caused by that limit
+names the column, its element count and the limit. When one relation or
+intermediate result would exceed it, the message also gives the row count that
+fits at the column's width and asks for a filter or a split into row ranges
+combined with `UNION ALL`. When a single Parquet row group exceeds it, the
+message gives the row group size to rewrite the file with. The column name
+appears only in the client message, never in the server log.
+
 ### Non-converged algorithms {/* #algorithm-did-not-converge */}
 
 An `algorithm_did_not_converge` message names the algorithm, the iterations
