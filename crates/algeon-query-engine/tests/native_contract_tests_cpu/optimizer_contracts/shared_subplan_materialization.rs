@@ -677,6 +677,18 @@ fn t_shared_subplan_rejects_cases() {
             native_optimizer_does_not_combine_scalar_branches_with_different_local_filters,
         ),
         (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_does_not_combine_grouped_branches_with_different_local_filters",
+            native_optimizer_does_not_combine_grouped_branches_with_different_local_filters,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_does_not_combine_grouped_branches_over_differently_ordered_limits",
+            native_optimizer_does_not_combine_grouped_branches_over_differently_ordered_limits,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_does_not_combine_grouped_branches_reading_different_join_sides",
+            native_optimizer_does_not_combine_grouped_branches_reading_different_join_sides,
+        ),
+        (
             "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_grouped_materialization_when_source_predicate_collides_with_aggregate_alias",
             native_optimizer_rejects_grouped_materialization_when_source_predicate_collides_with_aggregate_alias,
         ),
@@ -736,6 +748,88 @@ fn native_optimizer_does_not_combine_scalar_branches_with_different_local_filter
     assert_eq!(diagnostics.considered_count, 2);
     assert_eq!(diagnostics.candidate_count, 0);
     assert_eq!(diagnostics.applied_count, 0);
+}
+
+/// One branch filters the shared source above the reader and the other does
+/// not; one aggregate image cannot answer both.
+fn native_optimizer_does_not_combine_grouped_branches_with_different_local_filters() {
+    let plan = repeated_grouped_count_with_and_without_local_filter_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 2);
+    assert_eq!(diagnostics.candidate_count, 0);
+    assert_eq!(diagnostics.applied_count, 0);
+}
+
+/// `ORDER BY a LIMIT 10` and `ORDER BY a DESC LIMIT 10` keep different rows,
+/// so the sort below a limit is part of what the aggregate groups.
+fn native_optimizer_does_not_combine_grouped_branches_over_differently_ordered_limits() {
+    assert_grouped_branches_stay_apart(repeated_grouped_count_over_ordered_limits_plan());
+}
+
+/// Both branches emit a join column named `x`, one from the left input and one
+/// from the right; grouping by `x` groups different values.
+fn native_optimizer_does_not_combine_grouped_branches_reading_different_join_sides() {
+    assert_grouped_branches_stay_apart(repeated_grouped_count_over_join_sides_plan());
+}
+
+fn assert_grouped_branches_stay_apart(plan: QueryPlan) {
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    assert_eq!(result.plan, plan);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.candidate_count, 0);
+    assert_eq!(diagnostics.applied_count, 0);
+}
+
+/// Branches that join the same sources on the same keys but prune columns at
+/// different points and order the join output from different sides group the
+/// same rows, as TPC-DS q27's rollup branches do.
+#[test]
+fn native_optimizer_combines_grouped_join_branches_that_differ_only_in_column_pruning() {
+    let plan = repeated_grouped_join_aggregate_with_different_column_pruning_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(
+        plan,
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    assert_eq!(result.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Aggregate(_))).count(), 1);
 }
 
 fn native_optimizer_rejects_grouped_materialization_when_source_predicate_collides_with_aggregate_alias() {
@@ -1269,6 +1363,206 @@ fn estimated_sales_source_without_reader_predicate(bytes: u64) -> SourceNode {
         source_schema,
         vec!["county".to_string(), "quarter".to_string(), "year".to_string(), "sales".to_string()],
     ))
+}
+
+fn repeated_grouped_count_with_and_without_local_filter_plan() -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let aggregate_schema =
+        Arc::new(Schema::new(vec![Field::new("g", DataType::Int32, false), Field::new("n", DataType::Int64, true)]));
+    let mut aggregates = Vec::new();
+    for filtered in [true, false] {
+        let source = builder.add_source(estimated_local_source_with_stable_id(
+            "labels",
+            "labels",
+            &["g", "label"],
+            512 * 1024 * 1024,
+            10_000_000,
+        ));
+        let input = if filtered {
+            builder.add_filter(source, Expr::is_not_null(Expr::column("label"))).unwrap()
+        } else {
+            source
+        };
+        let aggregate = builder
+            .add_aggregate(
+                input,
+                AggregateSpec::new(
+                    vec![Expr::column("g")],
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "n")],
+                ),
+                Arc::clone(&aggregate_schema),
+            )
+            .unwrap();
+        aggregates.push(aggregate);
+    }
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
+}
+
+fn repeated_grouped_count_over_ordered_limits_plan() -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let aggregate_schema = schema(&["g", "n"]);
+    let mut aggregates = Vec::new();
+    for descending in [false, true] {
+        let source = builder.add_source(estimated_local_source_with_stable_id(
+            "ranked",
+            "ranked",
+            &["g", "a"],
+            512 * 1024 * 1024,
+            10_000_000,
+        ));
+        let sorted =
+            builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("a"), descending, false)])).unwrap();
+        let limited = builder.add_limit(sorted, LimitSpec::fetch(10)).unwrap();
+        aggregates.push(
+            builder
+                .add_aggregate(
+                    limited,
+                    AggregateSpec::new(
+                        vec![Expr::column("g")],
+                        vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "n")],
+                    ),
+                    Arc::clone(&aggregate_schema),
+                )
+                .unwrap(),
+        );
+    }
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
+}
+
+fn repeated_grouped_count_over_join_sides_plan() -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let aggregate_schema = schema(&["x", "n"]);
+    let mut aggregates = Vec::new();
+    for side in [JoinSide::Left, JoinSide::Right] {
+        let left = builder.add_source(estimated_local_source_with_stable_id(
+            "join_left",
+            "join_left",
+            &["k", "x"],
+            512 * 1024 * 1024,
+            10_000_000,
+        ));
+        let right = builder.add_source(estimated_local_source_with_stable_id(
+            "join_right",
+            "join_right",
+            &["k", "x"],
+            512 * 1024 * 1024,
+            10_000_000,
+        ));
+        let index = usize::from(side == JoinSide::Right);
+        let joined = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_output_projection(vec![JoinOutputColumn::new(
+                    side,
+                    ColumnRef::input(index, "x", "x"),
+                    "x",
+                )]),
+                schema(&["x"]),
+            )
+            .unwrap();
+        aggregates.push(
+            builder
+                .add_aggregate(
+                    joined,
+                    AggregateSpec::new(
+                        vec![Expr::column("x")],
+                        vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "n")],
+                    ),
+                    Arc::clone(&aggregate_schema),
+                )
+                .unwrap(),
+        );
+    }
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
+}
+
+fn repeated_grouped_join_aggregate_with_different_column_pruning_plan() -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let aggregate_schema = schema(&["customer_id", "store_sales"]);
+    let mut aggregates = Vec::new();
+    for prune_after_join in [true, false] {
+        let fact = builder.add_source(estimated_local_source_with_stable_id(
+            "customer_sales",
+            "customer_sales",
+            &["customer_id", "dim_key", "sales"],
+            512 * 1024 * 1024,
+            10_000_000,
+        ));
+        let dimension = builder.add_source(estimated_local_source_with_stable_id(
+            "customer_dim",
+            "customer_dim",
+            &["dim_key"],
+            1024 * 1024,
+            10_000,
+        ));
+        let mut output_projection = vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "customer_id", "customer_id"), "customer_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sales", "sales"), "sales"),
+        ];
+        let mut order_side = JoinSide::Right;
+        if prune_after_join {
+            output_projection.push(JoinOutputColumn::left(ColumnRef::input(0, "dim_key", "dim_key"), "dim_key"));
+            order_side = JoinSide::Left;
+        }
+        let join_schema =
+            schema(&output_projection.iter().map(|output| output.output_name.as_str()).collect::<Vec<_>>());
+        let joined = builder
+            .add_join(
+                fact,
+                dimension,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(
+                        ColumnRef::input(0, "dim_key", "dim_key"),
+                        ColumnRef::input(1, "dim_key", "dim_key"),
+                    )],
+                )
+                .with_output_projection(output_projection)
+                .with_datafusion_order_preserved_side(order_side),
+                join_schema,
+            )
+            .unwrap();
+        let input = if prune_after_join {
+            builder
+                .add_projection(
+                    joined,
+                    ["customer_id", "sales"]
+                        .into_iter()
+                        .map(|name| {
+                            ProjectionOutput::new(
+                                Expr::column(name).alias(name),
+                                Field::new(name, DataType::Int32, false),
+                            )
+                        })
+                        .collect(),
+                )
+                .unwrap()
+        } else {
+            joined
+        };
+        aggregates.push(
+            builder
+                .add_aggregate(
+                    input,
+                    AggregateSpec::new(
+                        vec![Expr::column("customer_id")],
+                        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
+                    ),
+                    Arc::clone(&aggregate_schema),
+                )
+                .unwrap(),
+        );
+    }
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_grouped_aggregate_predicate_alias_collision_plan() -> QueryPlan {
