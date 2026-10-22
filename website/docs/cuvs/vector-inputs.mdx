@@ -61,6 +61,24 @@ with `list_vector_with_additional_features`.
 - Variable-width `List` and `LargeList` rows must have one uniform, positive
   dimension after evaluation.
 
+## Relation size
+
+cuDF indexes the values of a list column with 32-bit offsets. One relation
+argument can therefore hold at most 2,147,483,647 list values in its vector
+column, which is 1,048,575 rows of a 2048-dimension `FixedSizeList`. The same
+limit applies to each intermediate result inside the subquery. Separate scalar
+feature columns hold up to 2,147,483,647 rows each.
+
+A subquery may scan and filter a larger Parquet file. The source planner reads
+it in parts that each stay under the limit, sized from the footer's value
+counts or, without a footer, from fixed list widths, and only the rows the subquery
+returns count toward the relation. A relation above the limit fails the query
+with `size_overflow`. The message names the column, its value count and the row
+count that fits at its width. Filter the subquery to fewer rows, or split the
+dataset into row ranges, run one call per range and combine the results with
+`UNION ALL`. For brute-force kNN over a split dataset, keep the `k` smallest
+distances per query across the parts.
+
 ## Null values
 
 Schema nullability does not matter. A nullable field type is accepted for the

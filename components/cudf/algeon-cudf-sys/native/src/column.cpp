@@ -77,6 +77,47 @@ cudf_status_t resolve_column_view_null_count(cudf::column_view const& view,
   return CUDF_SUCCESS;
 }
 
+// Mirrors cudf::empty_like for nested columns: a zero-row LIST holds an empty
+// INT32 offsets child before its element child, and no level owns a buffer.
+std::unique_ptr<cudf::column> make_empty_column_from_type_tree(cudf_column_type_node_t const* nodes,
+                                                               int32_t num_nodes,
+                                                               int32_t& cursor)
+{
+  CUDF_EXPECTS(cursor < num_nodes,
+               "type tree ends before every declared child is described",
+               std::invalid_argument);
+  auto const& node = nodes[cursor++];
+  CUDF_EXPECTS(node.num_children >= 0, "type tree num_children must be >= 0", std::invalid_argument);
+  CUDF_EXPECTS(node.type_id > CUDF_TYPE_EMPTY && node.type_id <= CUDF_TYPE_STRUCT &&
+                 node.type_id != CUDF_TYPE_DICTIONARY32,
+               "type tree node has no empty column construction",
+               cudf::data_type_error);
+
+  std::vector<std::unique_ptr<cudf::column>> children;
+  if (node.type_id == CUDF_TYPE_LIST) {
+    CUDF_EXPECTS(
+      node.num_children == 1, "type tree LIST node requires exactly one child", std::invalid_argument);
+    children.push_back(cudf::make_empty_column(cudf::data_type{cudf::type_id::INT32}));
+    children.push_back(make_empty_column_from_type_tree(nodes, num_nodes, cursor));
+  } else if (node.type_id == CUDF_TYPE_STRUCT) {
+    CUDF_EXPECTS(
+      node.num_children > 0, "type tree STRUCT node requires at least one child", std::invalid_argument);
+    children.reserve(static_cast<size_t>(node.num_children));
+    for (int32_t child = 0; child < node.num_children; ++child) {
+      children.push_back(make_empty_column_from_type_tree(nodes, num_nodes, cursor));
+    }
+  } else {
+    CUDF_EXPECTS(node.num_children == 0, "type tree leaf node must have no children", std::invalid_argument);
+    return cudf::make_empty_column(host_fixed_width_dtype(node.type_id, node.scale));
+  }
+  return std::make_unique<cudf::column>(cudf::data_type{to_cudf_type_id(node.type_id)},
+                                        0,
+                                        rmm::device_buffer{},
+                                        rmm::device_buffer{},
+                                        0,
+                                        std::move(children));
+}
+
 }  // namespace
 
 static cudf_status_t create_column_from_device_data_impl(cudf_type_id_t type_id,
@@ -144,6 +185,35 @@ cudf_status_t cudf_column_create_empty_ex(cudf_type_id_t type_id,
       auto col = cudf::make_empty_column(dtype);
       *out     = cudf_release_column_handle(std::move(col), cudf_capture_exec_provenance(*exec));
     }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_create_empty_from_type_tree_ex(cudf_column_type_node_t const* nodes,
+                                                         int32_t num_nodes,
+                                                         cudf_exec_options_t const* options,
+                                                         cudf_column_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(nodes, "nodes is null");
+  if (num_nodes <= 0) {
+    set_error(CUDF_ERROR_INVALID_ARGUMENT, "num_nodes must be > 0");
+    return CUDF_ERROR_INVALID_ARGUMENT;
+  }
+  CUDF_RUST_TRY
+  {
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    int32_t cursor = 0;
+    auto col       = make_empty_column_from_type_tree(nodes, num_nodes, cursor);
+    CUDF_EXPECTS(cursor == num_nodes,
+                 "type tree has nodes after the root subtree",
+                 std::invalid_argument);
+    *out = cudf_release_column_handle(std::move(col), cudf_capture_exec_provenance(*exec));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

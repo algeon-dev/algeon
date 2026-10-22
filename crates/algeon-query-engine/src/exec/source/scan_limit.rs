@@ -1,41 +1,22 @@
 use std::time::Instant;
 
-use arrow::{
-    array::new_empty_array,
-    record_batch::{RecordBatch, RecordBatchOptions},
-};
-
 use super::{
-    DataFrame, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError, QueryErrorCode, Result, SourceChunk,
-    cudf_query_error, local_parquet_execution_frame_schema, parquet_chunk_path_fact,
+    DataFrame, ExecutionContext, ExecutionMetrics, LocalParquetSource, Result, SourceChunk, cudf_query_error,
+    local_parquet_execution_frame_schema, parquet_chunk_path_fact,
 };
 
-/// Builds a zero-row device frame with the execution-frame schema, by uploading an empty Arrow
-/// batch. It stands in for a read that is known to return no rows, such as a scan limit of 0 or a
-/// source whose files were all pruned.
+/// Builds a zero-row device frame with the execution-frame schema from the schema alone, with no
+/// host Arrow import. It stands in for a read that is known to return no rows, such as a scan limit
+/// of 0 or a source whose files or row groups were all pruned.
 pub(super) fn empty_local_parquet_execution_frame(
     context: &ExecutionContext,
     source: &LocalParquetSource,
 ) -> Result<DataFrame> {
     let schema = local_parquet_execution_frame_schema(source)?;
-    let columns = schema.fields().iter().map(|field| new_empty_array(field.data_type())).collect();
-    let batch = RecordBatch::try_new_with_options(
-        std::sync::Arc::clone(&schema),
-        columns,
-        &RecordBatchOptions::new().with_row_count(Some(0)),
-    )
-    .map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::Internal,
-            "query_engine.local_parquet_source.empty_scan_limit",
-            "failed to construct zero-row local parquet source batch",
-        )
-        .with_source(error)
-    })?;
-    DataFrame::from_record_batch(&context.runtime()?, &batch).map_err(|error| {
+    context.runtime()?.empty_dataframe_from_arrow_schema(&schema).map_err(|error| {
         cudf_query_error(
             "query_engine.local_parquet_source.empty_scan_limit",
-            "failed to upload zero-row local parquet source batch",
+            "failed to build zero-row local parquet source frame",
             error,
         )
     })

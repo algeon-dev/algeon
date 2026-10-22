@@ -1,24 +1,27 @@
 //! Dynamic-filter route discovery.
 //!
-//! The rule matches an inner single-key hash join under `NullsDoNotMatch` whose
-//! build key traces to one source column, or to a grouping-only aggregate's key
-//! set, and whose probe key traces to a local Parquet source column, to a filter
-//! above it, or to the join's own probe input. In the rewrite, no node changes.
-//! The pass replaces the plan's [`DynamicFilterRoute`] annotations with routes
-//! that name a producer (the hash build or the aggregate key set) and a consumer;
-//! execution applies the produced key payload at the consumer before rows reach
-//! the join. A route changes no result because such a join emits a probe row only
-//! when its key appears in the build, so removing probe rows whose key cannot
-//! appear removes nothing the join would keep. The consumer must not sit upstream
-//! of the producer, a source read by other consumers must be proven constrained
-//! by the same key set (`keyset_constraints`), and the route must not close a
-//! dependency cycle with earlier routes (`cycle`).
+//! The rule matches a single-key hash join under `NullsDoNotMatch` that discards
+//! probe rows matching no build row (an inner or semi join, or an anti join that
+//! builds its left input), whose build key traces to one source column, or to a
+//! grouping-only aggregate's key set, and whose probe key traces to a local
+//! Parquet source column, to a filter above it, or to the join's own probe
+//! input. In the rewrite, no node changes. The pass replaces the plan's
+//! [`DynamicFilterRoute`] annotations with routes that name a producer (the hash
+//! build or the aggregate key set) and a consumer; execution applies the
+//! produced key payload at the consumer before rows reach the join. A route
+//! changes no result because such a join keeps nothing of a probe row whose key
+//! does not appear in the build. An outer join's preserved input, an anti join's
+//! left input and a mark join's left input keep unmatched rows and never
+//! consume. The consumer must not sit upstream of the producer, a source read by
+//! other consumers must be proven constrained by the same key set
+//! (`keyset_constraints`), and the route must not close a dependency cycle with
+//! earlier routes (`cycle`).
 //!
 //! Discovery is the last step of the pass table because `QueryPlan::rewrite`
 //! drops a route whose endpoint node changed; a rule running afterwards would
-//! lose routes. Equalities in an inner join's residual predicate add further
-//! candidates (`residual_equality`). Rejection reasons and the candidate
-//! diagnostics fields are report contracts.
+//! lose routes. Equalities in a join's residual predicate add further candidates
+//! for the inputs whose unmatched rows the join discards (`residual_equality`).
+//! Rejection reasons and the candidate diagnostics fields are report contracts.
 
 use std::collections::BTreeSet;
 
@@ -153,7 +156,10 @@ pub struct DynamicFilterRouteCandidateDiagnostics {
 pub enum DynamicFilterRouteRejectedReason {
     /// Pass was disabled.
     PassDisabled,
-    /// Join shape cannot produce a route yet.
+    /// The join keeps probe rows that match no build row (an outer join's
+    /// preserved input, an anti or mark join's left input), matches null keys,
+    /// is null-aware, has other than one key, has no output columns, or reuses
+    /// a prebuilt build artifact.
     UnsupportedJoinShape,
     /// Build-side key lineage could not be resolved to one source column.
     ProducerKeyLineageUnavailable,
@@ -202,15 +208,38 @@ fn producer_input_is_literal_batch_exact_keyset(plan: &QueryPlan, node_id: NodeI
     }
 }
 
-/// The join shape whose probe rows a build key payload may remove. Under
-/// null-equal matching a null probe key matches null build keys, and no payload
-/// kind represents null, so only `NullsDoNotMatch` joins qualify.
+/// The join shape whose probe rows a build key payload may remove: the join
+/// discards probe rows that match no build row, and its single key never
+/// matches null. Under null-equal matching a null probe key matches null build
+/// keys, and no payload kind represents null, so only `NullsDoNotMatch` joins
+/// qualify.
 fn join_shape_supported(join: &JoinNode) -> bool {
-    join.spec.join_type == JoinType::Inner
+    let probe_side = match join.spec.build_side {
+        JoinSide::Left => JoinSide::Right,
+        JoinSide::Right => JoinSide::Left,
+    };
+    join_type_discards_unmatched_rows(&join.spec.join_type, probe_side)
         && join.spec.keys.len() == 1
         && join.spec.null_equality == JoinNullEquality::NullsDoNotMatch
         && !join.spec.output_projection.is_empty()
         && join.spec.build_artifact_id.is_none()
+}
+
+/// Whether a join of `join_type` drops every row of its `side` input that
+/// matches no row of the other input, so that removing such rows before the
+/// join leaves its output unchanged. Inner and semi joins drop unmatched rows
+/// of both inputs. Left outer, anti and mark joins keep every left row, as
+/// output or as its mark, and a right row that matches nothing contributes to
+/// none of them. A null-aware anti join reads the right input's nulls and its
+/// emptiness, so neither of its inputs qualifies.
+fn join_type_discards_unmatched_rows(join_type: &JoinType, side: JoinSide) -> bool {
+    match join_type {
+        JoinType::Inner | JoinType::LeftSemi => true,
+        JoinType::Left | JoinType::LeftAnti { null_aware: false } | JoinType::LeftMark { .. } => {
+            side == JoinSide::Right
+        },
+        JoinType::LeftAnti { null_aware: true } | JoinType::Full | JoinType::Cross => false,
+    }
 }
 
 fn subtree_contains_node(plan: &QueryPlan, root: NodeId, target: NodeId) -> bool {

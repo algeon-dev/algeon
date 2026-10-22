@@ -112,6 +112,14 @@ pub struct SourceChunk {
     /// ([`crate::chunk::decoded`]), when every row group has an estimate.
     /// Chunk and batch planning compare it with the source-byte target.
     pub estimated_decoded_bytes: Option<u64>,
+    /// Upper bound on the decoded elements of the chunk's largest read
+    /// column, counted at its largest nesting level: the sum, over its row
+    /// groups, of each row group's largest column. `None` when a row group has no count.
+    pub estimated_column_elements: Option<u64>,
+    /// The backend's per-column element limit the chunk was planned under.
+    /// A multi-chunk batch keeps its summed `estimated_column_elements`
+    /// within it.
+    pub max_column_elements: u64,
     /// Exact cudf source-read budget in bytes for fixed-width projected columns.
     pub exact_source_read_preflight_bytes: Option<u64>,
     /// Source-level selected row groups, before chunking.
@@ -128,6 +136,8 @@ pub struct SourceChunk {
     pub source_file_pure_filter_uncompressed_bytes: Option<Vec<u64>>,
     /// Per-row-group decoded read-column estimates for the full file, if available.
     pub source_file_row_group_decoded_bytes: Option<Vec<u64>>,
+    /// Per-row-group largest read-column element counts for the full file, if available.
+    pub source_file_row_group_column_elements: Option<Vec<u64>>,
     /// Per-row-group row counts for the full file, if available.
     pub source_file_row_group_rows: Option<Vec<u64>>,
     /// Per-read-column decimal storage types proven from Parquet metadata.

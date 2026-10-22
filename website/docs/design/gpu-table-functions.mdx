@@ -182,12 +182,35 @@ Shared relational subplans across GPU function inputs and query roots
 Separate graph invocations that read an identical edge relation build separate
 graph instances.
 
-Within a composed island execution, repeated readers of a cuGraph similarity
-invocation share its GPU-resident result when relational edge and side-input
-producers have deterministic GPU dependencies. The shared invocation identity
-incorporates the logical function call and execution-scope fingerprints of its
-input subtrees. Registered reader occurrences retain the result handle under the
-attempt's grant until the final reader completes.
+### One evaluation for each call site {/* #one-evaluation-per-invocation */}
+
+The relation planner gives each SQL call of a GPU function an invocation
+identity. DataFusion copies a CTE or view at every reference, and each copy
+keeps that identity, while two calls with identical text receive different
+ones. Within one query execution, the references of one call read a single
+evaluation. A function in the [reproducibility table](#reproducibility) then
+returns one relation to every reader, apart from the separate evaluations
+listed below.
+
+Inside a composed island, the first occurrence to run computes the
+GPU-resident result. Later occurrences read that result and skip their own
+input subplans. The handle stays under the attempt's grant until the final
+reader completes. A result option pushed into one occurrence, such as a
+`LIMIT` absorbed by a cuGraph producer, changes the relation that occurrence
+computes and gives it a separate evaluation.
+
+References that cross into DataFusion operators as host Arrow share one
+evaluation as well. The first reference that DataFusion polls runs the
+function, and every reference replays the retained batches; the attempt
+manifest records one host occurrence for them. The batches stay in host
+memory until the last reference finishes and count against the DataFusion
+memory pool when host output accounting is enabled.
+
+A composed island and the host boundaries keep separate results. When one
+reference is read inside an island and another crosses into DataFusion, or
+two islands each read a reference, the call runs once in each of them.
+Separate queries, including repeated executions of one prepared statement,
+evaluate it again.
 
 ## Reproducibility
 
@@ -215,7 +238,9 @@ Two runs of the same query on the same data, options and GPU return the same rel
 
 Connected-component labels (the minimum vertex ID of each component), degrees, triangle counts and core numbers involve no floating-point accumulation and repeat. The similarity functions `cugraph_jaccard`, `cugraph_sorensen`, `cugraph_overlap` and `cugraph_cosine` contain no atomic accumulation. None of the remaining functions has a `seed` option (the `seeds` argument of the betweenness functions lists source vertices and draws no random numbers).
 
-Floating-point results from atomic reductions require tolerance comparisons rather than bitwise equality. Community and cluster identifiers are arbitrary integers; validation checks partition membership rather than label values. To preserve non-deterministic results across queries, materialize the relation using `CREATE TABLE ... AS` ([Reuse algorithm results](../cugraph/graph-options.mdx#reuse-algorithm-results)).
+Floating-point results from atomic reductions require tolerance comparisons rather than bitwise equality. Community and cluster identifiers are arbitrary integers; validation checks partition membership rather than label values.
+
+The table compares separate executions. Within one query, the references of one CTE or view read [one evaluation](#one-evaluation-per-invocation) and agree with each other, except where that section lists separate evaluations. Two calls written separately with the same arguments are two evaluations and can disagree. To preserve non-deterministic results across queries, materialize the relation using `CREATE TABLE ... AS` ([Reuse algorithm results](../cugraph/graph-options.mdx#reuse-algorithm-results)).
 
 A seed fixes random draws over one row order. Without a top-level `ORDER BY`, the row order of an input subquery can change between runs, thereby shifting seeded results as well. See [Input order](../cuml/ml-inputs.mdx#input-order) and [Relation identity](../cuvs/vector-inputs.mdx#relation-identity).
 

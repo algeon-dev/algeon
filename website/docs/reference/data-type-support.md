@@ -51,7 +51,14 @@ reads only the top-level validity of the column.
 
 Native lists use Int32 offsets. Every offset, child length and `rows * D`
 must fit the nonnegative Int32 range. A `LargeList` outside that range is
-rejected. Each non-null `FixedSizeList` row holds exactly `D` child
+rejected. The range bounds one relation or intermediate result, such as a
+UDTF relation argument, a join build side or a sort input: at most
+2,147,483,647 child values per list column, or 1,048,575 rows of a 2048-wide
+`FixedSizeList`. A Parquet scan over a larger file reads it in parts that each
+fit. A result above the limit fails with `size_overflow`, naming the column
+and the row count that fits; filter it, or split it into row ranges combined
+with `UNION ALL`. A single Parquet row group above the limit fails planning,
+and the message gives the row group size to rewrite the file with. Each non-null `FixedSizeList` row holds exactly `D` child
 positions. NaN, infinities, signed zero, root and child nulls, and empty valid
 lists are payload values that carry paths preserve.
 

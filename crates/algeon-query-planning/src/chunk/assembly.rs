@@ -5,7 +5,13 @@ use std::collections::BTreeSet;
 use arrow::datatypes::DataType;
 
 use super::{
-    SourceChunk, SourceChunkPlanningPolicy, SourceReadSizing, decoded::ReadColumnWidths, row_group::RowGroupMetadata,
+    SourceChunk, SourceChunkPlanningPolicy, SourceReadSizing,
+    decoded::ReadColumnWidths,
+    elements::{
+        ColumnElements, read_columns_bound_elements_per_row, row_group_column_elements_from_schema,
+        rows_within_element_limit,
+    },
+    row_group::RowGroupMetadata,
 };
 use crate::{
     datatypes::arrow_fixed_width_byte_size,
@@ -63,6 +69,19 @@ pub(crate) fn validate_selected_row_groups(
     Ok(())
 }
 
+/// Groups `row_groups` of one file into chunks bounded by the policy's row
+/// group cap and source-byte target, and by the backend's per-column element
+/// limit ([`super::elements`]).
+///
+/// A row group whose read columns have no bounded elements per row (a
+/// variable-width list column without footer value counts) gets a chunk of
+/// its own, the same way batch planning keeps chunks without a byte estimate
+/// apart. A row group without a row count whose columns all have bounded
+/// elements per row adds nothing to the element sum, as unknown bytes add
+/// nothing to the byte target; its chunk has no `estimated_column_elements`
+/// and stays a singleton batch. A row group whose own largest column exceeds
+/// the element limit fails with [`QueryErrorCode::SizeOverflow`], since
+/// row-group planning cannot split it.
 #[doc(hidden)]
 #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 pub fn append_row_group_chunks(
@@ -77,10 +96,17 @@ pub fn append_row_group_chunks(
     reader_decimal_types_footer_verified: bool,
     sizing: SourceReadSizing<'_>,
     chunks: &mut Vec<SourceChunk>,
-) {
+) -> Result<()> {
     let max_row_groups = policy.effective_max_row_groups_per_chunk();
+    let max_column_elements = sizing.max_column_elements();
     let row_group_count_basis = metadata.map_or(row_groups.len(), RowGroupMetadata::row_group_count).max(1);
     let read_column_widths = ReadColumnWidths::of(&source.schema, &source.read_columns);
+    let elements_per_row_bounded = read_columns_bound_elements_per_row(&source.schema, &source.read_columns);
+    let file_column_elements = metadata.and_then(|metadata| {
+        (0..metadata.row_group_count())
+            .map(|row_group| row_group_column_elements(source, metadata, row_group).map(|largest| largest.elements))
+            .collect::<Option<Vec<_>>>()
+    });
     let mut current = PendingChunk::default();
 
     for row_group in row_groups {
@@ -107,7 +133,32 @@ pub fn append_row_group_chunks(
             .and_then(|metadata| metadata.decoded_bytes(*row_group))
             .or_else(|| read_column_widths.decoded_bytes(row_group_rows?, source_read_bytes?));
         let planning_bytes = decoded_bytes.or(source_read_bytes);
-        if current.should_flush_before(planning_bytes, max_row_groups, policy.max_source_chunk_bytes) {
+        let column_elements = metadata.and_then(|metadata| row_group_column_elements(source, metadata, *row_group));
+        if let Some(largest) = column_elements
+            && largest.elements > max_column_elements
+        {
+            return Err(row_group_exceeds_column_element_limit_error(
+                source,
+                file,
+                file_index,
+                *row_group,
+                row_group_rows,
+                largest,
+                max_column_elements,
+            ));
+        }
+        let column_elements = match column_elements {
+            Some(largest) => RowGroupElements::Known(largest.elements),
+            None if elements_per_row_bounded => RowGroupElements::UnknownRows,
+            None => RowGroupElements::Unbounded,
+        };
+        if current.should_flush_before(
+            planning_bytes,
+            column_elements,
+            max_row_groups,
+            policy.max_source_chunk_bytes,
+            max_column_elements,
+        ) {
             push_pending_chunk(
                 source_node_id,
                 source,
@@ -115,6 +166,7 @@ pub fn append_row_group_chunks(
                 file_index,
                 row_groups.len(),
                 metadata,
+                file_column_elements.as_deref(),
                 policy,
                 reader_decimal_types,
                 reader_decimal_types_footer_verified,
@@ -133,6 +185,7 @@ pub fn append_row_group_chunks(
             pure_filter_compressed_bytes,
             pure_filter_uncompressed_bytes,
             row_group_rows,
+            column_elements,
         );
     }
 
@@ -143,6 +196,7 @@ pub fn append_row_group_chunks(
         file_index,
         row_groups.len(),
         metadata,
+        file_column_elements.as_deref(),
         policy,
         reader_decimal_types,
         reader_decimal_types_footer_verified,
@@ -150,6 +204,65 @@ pub fn append_row_group_chunks(
         &mut current,
         chunks,
     );
+    Ok(())
+}
+
+/// Element count of one row group's largest read column, as far as planning
+/// can bound it.
+#[derive(Debug, Clone, Copy)]
+enum RowGroupElements {
+    Known(u64),
+    /// Every read column has bounded elements per row, but the row count is
+    /// unknown.
+    UnknownRows,
+    /// A read column has no bound on its elements per row.
+    Unbounded,
+}
+
+/// The largest read column of `row_group`: the footer's leaf value counts when
+/// present, otherwise the schema's fixed widths times its row count.
+fn row_group_column_elements(
+    source: &LocalParquetSource,
+    metadata: &RowGroupMetadata,
+    row_group: usize,
+) -> Option<ColumnElements> {
+    metadata.column_elements(row_group).or_else(|| {
+        row_group_column_elements_from_schema(&source.schema, &source.read_columns, metadata.row_group_rows(row_group)?)
+    })
+}
+
+fn row_group_exceeds_column_element_limit_error(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    file_index: usize,
+    row_group: usize,
+    row_group_rows: Option<u64>,
+    largest: ColumnElements,
+    max_column_elements: u64,
+) -> QueryError {
+    let mut error = QueryError::new(
+        QueryErrorCode::SizeOverflow,
+        "query_engine.source_chunk.plan",
+        "one parquet row group decodes to more elements in one column than one backend column holds",
+    )
+    .with_fact("reason", "row_group_column_elements_exceed_backend_limit")
+    .with_fact("path", file.location.diagnostic_location())
+    .with_fact("stable_id", parquet_file_stable_id_fact(file))
+    .with_fact("file_index", file_index)
+    .with_fact("row_group", row_group)
+    .with_fact("element_count", largest.elements)
+    .with_fact("element_limit", max_column_elements);
+    if let Some(column) = largest.read_column.and_then(|position| source.read_columns.get(position)) {
+        error = error.with_fact("column", column);
+    }
+    if let Some(rows) = row_group_rows {
+        let max_row_group_rows = rows_within_element_limit(rows, largest.elements, max_column_elements);
+        error = error
+            .with_fact("row_group_rows", rows)
+            .with_fact("max_row_group_rows", max_row_group_rows)
+            .with_fact("remedy", format!("rewrite the file with row groups of at most {max_row_group_rows} rows"));
+    }
+    error
 }
 #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 pub(crate) fn push_pending_chunk(
@@ -159,6 +272,7 @@ pub(crate) fn push_pending_chunk(
     file_index: usize,
     planned_row_group_count: usize,
     metadata: Option<&RowGroupMetadata>,
+    file_column_elements: Option<&[u64]>,
     policy: SourceChunkPlanningPolicy,
     reader_decimal_types: &[ParquetReaderDecimalType],
     reader_decimal_types_footer_verified: bool,
@@ -208,6 +322,8 @@ pub(crate) fn push_pending_chunk(
         estimated_chunk_bytes,
         estimated_source_read_bytes,
         estimated_decoded_bytes,
+        estimated_column_elements: pending.known_column_elements(),
+        max_column_elements: sizing.max_column_elements(),
         exact_source_read_preflight_bytes,
         source_file_row_groups: file.row_groups.clone(),
         source_file_row_group_bytes: metadata.and_then(RowGroupMetadata::row_group_bytes_vec),
@@ -217,6 +333,7 @@ pub(crate) fn push_pending_chunk(
         source_file_pure_filter_uncompressed_bytes: metadata
             .and_then(RowGroupMetadata::pure_filter_uncompressed_bytes_vec),
         source_file_row_group_decoded_bytes: metadata.and_then(RowGroupMetadata::decoded_bytes_vec),
+        source_file_row_group_column_elements: file_column_elements.map(<[u64]>::to_vec),
         source_file_row_group_rows: metadata.and_then(RowGroupMetadata::row_group_rows_vec),
         reader_decimal_types: reader_decimal_types.to_vec(),
         reader_decimal_types_footer_verified,
@@ -325,6 +442,7 @@ pub fn single_all_row_groups_chunk(
     policy: SourceChunkPlanningPolicy,
     reader_decimal_types: &[ParquetReaderDecimalType],
     reader_decimal_types_footer_verified: bool,
+    sizing: SourceReadSizing<'_>,
 ) -> SourceChunk {
     SourceChunk {
         source_node_id,
@@ -345,6 +463,8 @@ pub fn single_all_row_groups_chunk(
         estimated_chunk_bytes: file.file_size_bytes,
         estimated_source_read_bytes: file.file_size_bytes,
         estimated_decoded_bytes: None,
+        estimated_column_elements: None,
+        max_column_elements: sizing.max_column_elements(),
         exact_source_read_preflight_bytes: None,
         source_file_row_groups: file.row_groups.clone(),
         source_file_row_group_bytes: None,
@@ -353,6 +473,7 @@ pub fn single_all_row_groups_chunk(
         source_file_pure_filter_compressed_bytes: None,
         source_file_pure_filter_uncompressed_bytes: None,
         source_file_row_group_decoded_bytes: None,
+        source_file_row_group_column_elements: None,
         source_file_row_group_rows: None,
         reader_decimal_types: reader_decimal_types.to_vec(),
         reader_decimal_types_footer_verified,
@@ -396,12 +517,14 @@ pub fn zero_column_count_identity_chunk(
         policy,
         reader_decimal_types,
         reader_decimal_types_footer_verified,
+        sizing,
     );
     chunk.reads_all_row_groups = false;
     chunk.known_row_count = Some(0);
     chunk.estimated_chunk_bytes = Some(0);
     chunk.estimated_source_read_bytes = Some(0);
     chunk.estimated_decoded_bytes = Some(0);
+    chunk.estimated_column_elements = Some(0);
     chunk.exact_source_read_preflight_bytes =
         exact_source_read_preflight_bytes(source, chunk.known_row_count, true, sizing);
     chunk.size_estimate_based = false;
@@ -431,6 +554,8 @@ pub(crate) struct PendingChunk {
     known_pure_filter_uncompressed_bytes: u64,
     known_decoded_bytes: u64,
     known_rows: u64,
+    known_column_elements: u64,
+    has_unbounded_column_elements: bool,
     has_unknown_bytes: bool,
     has_unknown_projected_compressed_bytes: bool,
     has_unknown_projected_uncompressed_bytes: bool,
@@ -438,6 +563,7 @@ pub(crate) struct PendingChunk {
     has_unknown_pure_filter_uncompressed_bytes: bool,
     has_unknown_decoded_bytes: bool,
     has_unknown_rows: bool,
+    has_unknown_column_elements: bool,
 }
 
 impl PendingChunk {
@@ -453,6 +579,7 @@ impl PendingChunk {
         pure_filter_compressed_bytes: Option<u64>,
         pure_filter_uncompressed_bytes: Option<u64>,
         row_group_rows: Option<u64>,
+        column_elements: RowGroupElements,
     ) {
         self.row_groups.push(row_group);
         if let Some(row_group_bytes) = row_group_bytes {
@@ -497,19 +624,41 @@ impl PendingChunk {
         } else {
             self.has_unknown_rows = true;
         }
+        match column_elements {
+            RowGroupElements::Known(elements) => {
+                self.known_column_elements = self.known_column_elements.saturating_add(elements);
+            },
+            RowGroupElements::UnknownRows => self.has_unknown_column_elements = true,
+            RowGroupElements::Unbounded => {
+                self.has_unknown_column_elements = true;
+                self.has_unbounded_column_elements = true;
+            },
+        }
     }
 
     fn should_flush_before(
         &self,
         next_row_group_bytes: Option<u64>,
+        next_column_elements: RowGroupElements,
         max_row_groups: usize,
         max_source_chunk_bytes: Option<u64>,
+        max_column_elements: u64,
     ) -> bool {
         if self.row_groups.is_empty() {
             return false;
         }
         if self.row_groups.len() >= max_row_groups {
             return true;
+        }
+        match next_column_elements {
+            _ if self.has_unbounded_column_elements => return true,
+            RowGroupElements::Unbounded => return true,
+            RowGroupElements::Known(elements)
+                if self.known_column_elements.saturating_add(elements) > max_column_elements =>
+            {
+                return true;
+            },
+            RowGroupElements::Known(_) | RowGroupElements::UnknownRows => {},
         }
 
         let Some(max_source_chunk_bytes) = max_source_chunk_bytes else {
@@ -550,6 +699,10 @@ impl PendingChunk {
         (!self.has_unknown_rows).then_some(self.known_rows)
     }
 
+    fn known_column_elements(&self) -> Option<u64> {
+        (!self.has_unknown_column_elements).then_some(self.known_column_elements)
+    }
+
     fn clear(&mut self) {
         self.row_groups.clear();
         self.known_bytes = 0;
@@ -560,6 +713,8 @@ impl PendingChunk {
         self.known_pure_filter_uncompressed_bytes = 0;
         self.known_decoded_bytes = 0;
         self.known_rows = 0;
+        self.known_column_elements = 0;
+        self.has_unbounded_column_elements = false;
         self.has_unknown_bytes = false;
         self.has_unknown_projected_compressed_bytes = false;
         self.has_unknown_projected_uncompressed_bytes = false;
@@ -567,5 +722,6 @@ impl PendingChunk {
         self.has_unknown_pure_filter_uncompressed_bytes = false;
         self.has_unknown_decoded_bytes = false;
         self.has_unknown_rows = false;
+        self.has_unknown_column_elements = false;
     }
 }

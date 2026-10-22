@@ -3,6 +3,7 @@ use std::{path::Path, sync::Arc};
 use arrow::array::{Int32Array, Int64Array};
 use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
 use query_planning::{
+    dynamic_filter::DynamicFilterConsumer,
     expr::ColumnRef,
     optimizer::{AggregateJoinPushdownRejectedReason, NativeOptimizerChange, optimize_query_plan},
     plan::QueryPlan,
@@ -413,7 +414,15 @@ fn bounded_native_query_filters_left_semi_groups_before_the_final_aggregate() {
         pushdown.candidates[0].rejected_reason,
         Some(AggregateJoinPushdownRejectedReason::LeftSemiAlreadyFiltersFinalGroups)
     );
-    assert_eq!(optimizer_result.plan, plan, "the semi filter must stay directly below the grouped aggregate");
+    assert_eq!(
+        (optimizer_result.plan.nodes(), optimizer_result.plan.sink()),
+        (plan.nodes(), plan.sink()),
+        "the semi filter must stay directly below the grouped aggregate"
+    );
+    let routes = optimizer_result.plan.dynamic_filter_routes();
+    assert_eq!(routes.len(), 1, "the semi join build keys should reduce the detail source: {routes:?}");
+    let detail_source = plan.nodes()[0].id;
+    assert_eq!(routes[0].consumer, DynamicFilterConsumer::LocalParquetSource { source_node_id: detail_source });
 
     let context = backend_context_with_grant(SEMI_GROUP_FILTER_GRANT_BYTES);
     let (result, _metrics, peak_bytes) = execute_admitted_with_peak(&context, &optimizer_result.plan);

@@ -13,7 +13,8 @@
 //! is complete before the consumer starts, and a consumer whose route produced
 //! no payload runs unfiltered. Correctness never depends on a payload: each one
 //! covers every non-null producer key, so applying it removes only rows that
-//! could not have matched.
+//! could not have matched, and discovery places a consumer only on a join input
+//! whose unmatched rows the join discards.
 
 use std::{collections::BTreeMap, fmt};
 

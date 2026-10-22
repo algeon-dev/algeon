@@ -72,6 +72,7 @@ static int cudf_rust_c_header_smoke(void) {
   SMOKE_CHECK_FN(cudf_status_t, cudf_column_adopt_device_buffer_nullable, cudf_type_id_t, cudf_device_buffer_handle, cudf_device_buffer_handle, int32_t, int32_t, cudf_column_handle*);
 
   // Column and table creation, copying, and inspection
+  SMOKE_CHECK_FN(cudf_status_t, cudf_column_create_empty_from_type_tree_ex, cudf_column_type_node_t const*, int32_t, cudf_exec_options_t const*, cudf_column_handle*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_column_create_numeric_ex, cudf_type_id_t, void const*, int32_t, uint8_t const*, int32_t, cudf_exec_options_t const*, cudf_column_handle*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_column_create_fixed_width_from_host_ex, cudf_type_id_t, int32_t, void const*, int32_t, uint8_t const*, int32_t, cudf_exec_options_t const*, cudf_column_handle*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_column_create_sequence_ex, cudf_scalar_handle, cudf_scalar_handle, int32_t, cudf_exec_options_t const*, cudf_column_handle*);

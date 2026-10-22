@@ -827,7 +827,7 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
         ";rule=shared_resident_extraction,considered_count=6,extracted_count=0,rejected_count=0,candidates="
     ));
     assert!(optimizer_cell.contains("decision=Skipped,reason=NotRepeated,resident_input_name=none"));
-    assert!(optimizer_cell.contains(";rule=dynamic_filter_route_discovery,considered_count=2,route_count=1"));
+    assert!(optimizer_cell.contains(";rule=dynamic_filter_route_discovery,considered_count=2,route_count=2"));
     assert!(optimizer_cell.contains(";rule=aggregate_join_pushdown,considered_count=1,applied_count=0"));
     assert!(text.contains("\tnative_optimizer\t"));
     assert!(text.contains("rule=semijoin_reduction,considered_count=1,applied_count=1"));

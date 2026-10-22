@@ -6,6 +6,7 @@
 
 use arrow::datatypes::DataType as ArrowDataType;
 use cudf::{
+    core::Column,
     interop::arrow_host::{arrow_type_from_cudf_dtype, cudf_dtype_from_arrow_type, is_supported_arrow_type},
     ops::binary::{BinaryOperator, infer_binary_output_dtype},
 };
@@ -43,6 +44,10 @@ pub fn rapids_analysis_context(policy: PlanningPolicy) -> AnalysisContext<'stati
 impl BackendCapabilities for RapidsBackend {
     fn supports_type(&self, data_type: &ArrowDataType) -> bool {
         is_supported_arrow_type(data_type)
+    }
+
+    fn max_column_elements(&self) -> u64 {
+        Column::MAX_ELEMENTS as u64
     }
 
     fn binary_output_type(&self, op: BinaryOp, left: &ArrowDataType, right: &ArrowDataType) -> Result<ArrowDataType> {

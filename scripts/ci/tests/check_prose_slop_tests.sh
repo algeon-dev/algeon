@@ -32,13 +32,24 @@ if ! "${CHECK_SCRIPT}" "${scratch}/clean.md" >/dev/null 2>&1; then
   fail "clean file unexpectedly failed check_prose_slop"
 fi
 
-# 1b. Default targets that are absent (gitignored private trees) are skipped.
-mkdir -p "${scratch}/checkout/website/docs"
+# 1b. The default scan reads website/docs/ only; the gitignored docs/ and
+# note/ trees are never scanned. The script scans the checkout that contains
+# it, so the scratch checkout gets its own copy.
+mkdir -p "${scratch}/checkout/website/docs" "${scratch}/checkout/scripts/ci" \
+  "${scratch}/checkout/docs" "${scratch}/checkout/note"
 cp "${scratch}/clean.md" "${scratch}/checkout/website/docs/clean.md"
-if ! (cd "${scratch}/checkout" && "${CHECK_SCRIPT}" >/dev/null 2>&1); then
-  fail "default scan failed in a checkout without docs/ or note/"
+printf 'A private draft \u2014 never scanned.\n' >"${scratch}/checkout/docs/draft.md"
+printf 'A private note \u2014 never scanned.\n' >"${scratch}/checkout/note/draft.md"
+cp "${CHECK_SCRIPT}" "${scratch}/checkout/scripts/ci/check_prose_slop.sh"
+checkout_script="${scratch}/checkout/scripts/ci/check_prose_slop.sh"
+if ! (cd "${scratch}/checkout" && "${checkout_script}" >/dev/null 2>&1); then
+  fail "default scan read docs/ or note/"
 fi
-if (cd "${scratch}/checkout" && "${CHECK_SCRIPT}" missing.md >/dev/null 2>&1); then
+printf 'A published page \u2014 scanned.\n' >"${scratch}/checkout/website/docs/page.md"
+if (cd "${scratch}/checkout" && "${checkout_script}" >/dev/null 2>&1); then
+  fail "default scan missed a violation under website/docs/"
+fi
+if (cd "${scratch}/checkout" && "${checkout_script}" missing.md >/dev/null 2>&1); then
   fail "an explicitly named missing path unexpectedly passed"
 fi
 

@@ -9,10 +9,14 @@
 //! unit takes the result; the device buffers then live as long as a reading
 //! unit holds its input map.
 //!
-//! Repeatable GPU functions also register their reading occurrences here.
-//! Their logical invocation name and native output scope distinguish separate
-//! calls and pushed result options. Counts exclude the children of reused
-//! parents because those children execute only for the first reader.
+//! GPU table function occurrences register here as well. DataFusion copies a
+//! CTE or view at each reference, so one SQL invocation can appear several
+//! times in an island. Occurrences with one invocation name and one output
+//! scope evaluate once, and every later occurrence reads that result, which
+//! keeps the references of a function with nondeterministic results
+//! consistent. Separate call sites have separate names and pushed result
+//! options have separate scopes. Counts exclude the children of reused
+//! occurrences because those children execute only for the first reader.
 
 use std::{
     collections::BTreeMap,
@@ -43,7 +47,7 @@ pub(crate) struct SharedResidentResults {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ReusableProducerIdentity {
     invocation: String,
-    scope: Vec<PlanFingerprint>,
+    scope: PlanFingerprint,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -157,43 +161,12 @@ fn count_consumers(
 }
 
 fn reusable_producer_identity(plan: &dyn ExecutionPlan) -> Result<Option<ReusableProducerIdentity>> {
-    if let Some(cooperative) = plan.downcast_ref::<CooperativeExec>() {
-        return reusable_producer_identity(cooperative.input().as_ref());
-    }
     let Some(producer) = gpu_resident_producer(plan) else {
         return Ok(None);
     };
-    let Some(mut scope) = producer.reusable_gpu_result_scope()? else {
-        return Ok(None);
-    };
-    for child in plan.children() {
-        if !append_input_execution_scopes(child.as_ref(), &mut scope)? {
-            return Ok(None);
-        }
-    }
-    Ok(Some(ReusableProducerIdentity { invocation: producer.gpu_result_input_name().to_string(), scope }))
-}
-
-fn append_input_execution_scopes(plan: &dyn ExecutionPlan, scopes: &mut Vec<PlanFingerprint>) -> Result<bool> {
-    if let Some(cooperative) = plan.downcast_ref::<CooperativeExec>() {
-        return append_input_execution_scopes(cooperative.input().as_ref(), scopes);
-    }
-    let Some(producer) = gpu_resident_producer(plan) else {
-        return Ok(false);
-    };
-    scopes.extend(
-        producer
-            .gpu_result_capability_evidence()?
-            .execution_scopes()
-            .iter()
-            .map(|scope| scope.execution_scope_fingerprint()),
-    );
-    for child in plan.children() {
-        if !append_input_execution_scopes(child.as_ref(), scopes)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    Ok(producer
+        .reusable_gpu_result_scope()?
+        .map(|scope| ReusableProducerIdentity { invocation: producer.gpu_result_input_name().to_string(), scope }))
 }
 
 /// `task_context` carrying a fresh result scope for one composed island.

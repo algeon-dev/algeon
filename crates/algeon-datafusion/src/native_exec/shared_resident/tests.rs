@@ -5,9 +5,8 @@ use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions, coop::CooperativeExec, empty::EmptyExec,
 };
 use query_planning::{
-    expr::Expr,
-    plan::{ProjectionOutput, QueryPlanBuilder},
-    source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
+    plan::QueryPlanBuilder,
+    source::{LocalParquetFile, LocalParquetSource, SourceNode},
 };
 
 use super::SharedResidentResults;
@@ -16,7 +15,7 @@ use crate::{
         CugraphAlgoExec, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphGraphOptions,
         CugraphLeidenParams, CugraphSimilarityParams, GpuIslandHostBoundaryConfig, result_schema_for_params,
     },
-    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, NativeOutput, admit_for_test, gpu_resident_producer},
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, NativeOutput, admit_for_test},
 };
 
 fn native_input(columns: &[&str], name: &str) -> Arc<dyn ExecutionPlan> {
@@ -106,86 +105,20 @@ fn repeated_invocations_preserve_output_pushdown_and_independent_calls() {
 }
 
 #[test]
-fn replaced_relation_inputs_do_not_share_a_result() {
+fn rewritten_relation_inputs_read_one_result_of_their_invocation() {
     let original =
         algorithm("similar", CugraphAlgorithmParams::Similarity(CugraphSimilarityParams::default()), None, false);
-    let changed = Arc::clone(&original)
+    let rewritten = Arc::clone(&original)
         .replace_children(
-            vec![native_input(&["src", "dst"], "changed_edges"), native_input(&["first", "second"], "pairs")],
+            vec![native_input(&["src", "dst"], "rewritten_edges"), native_input(&["first", "second"], "pairs")],
             ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
         )
         .unwrap();
-    let results = SharedResidentResults::for_gpu_inputs(&[
-        Arc::clone(&original),
-        Arc::clone(&original),
-        Arc::clone(&changed),
-        Arc::clone(&changed),
-    ])
-    .unwrap();
+    let results = SharedResidentResults::for_gpu_inputs(&[Arc::clone(&original), Arc::clone(&rewritten)]).unwrap();
     let original = results.reusable_identity(original.as_ref()).unwrap().unwrap();
-    let changed = results.reusable_identity(changed.as_ref()).unwrap().unwrap();
-    assert!(original != changed, "same invocation and schema with different input contents must remain separate");
-}
-
-fn similarity_edges(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    let input_name = gpu_resident_producer(input.as_ref()).unwrap().gpu_result_input_name().to_string();
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, input.schema())));
-    let projection = builder
-        .add_projection(
-            source,
-            vec![
-                ProjectionOutput::new(Expr::column("first"), Field::new("src", DataType::Int64, false)),
-                ProjectionOutput::new(Expr::column("second"), Field::new("dst", DataType::Int64, false)),
-            ],
-        )
-        .unwrap();
-    let plan = builder.finish_with_host_sink(projection).unwrap().clone_with_gpu_resident_sink();
-    let config = AlgeonNativeExecutionConfig::default();
-    Arc::new(
-        AlgeonNativeExec::try_new(
-            admit_for_test(&plan, &config).unwrap(),
-            vec![input],
-            NativeOutput::GpuResident { input_name: "nested_edges".to_string() },
-            config,
-            None,
-        )
-        .unwrap(),
-    )
-}
-
-#[test]
-fn nested_function_input_contents_are_part_of_reuse_identity() {
-    let inner = algorithm("inner", CugraphAlgorithmParams::Similarity(CugraphSimilarityParams::default()), None, false);
-    let changed_inner = Arc::clone(&inner)
-        .replace_children(
-            vec![native_input(&["src", "dst"], "changed_edges"), native_input(&["first", "second"], "pairs")],
-            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-        )
-        .unwrap();
-    let outer = algorithm("outer", CugraphAlgorithmParams::Similarity(CugraphSimilarityParams::default()), None, false);
-    let original = Arc::clone(&outer)
-        .replace_children(
-            vec![similarity_edges(inner), native_input(&["first", "second"], "pairs")],
-            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-        )
-        .unwrap();
-    let changed = outer
-        .replace_children(
-            vec![similarity_edges(changed_inner), native_input(&["first", "second"], "pairs")],
-            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-        )
-        .unwrap();
-    let results = SharedResidentResults::for_gpu_inputs(&[
-        Arc::clone(&original),
-        Arc::clone(&original),
-        Arc::clone(&changed),
-        Arc::clone(&changed),
-    ])
-    .unwrap();
-    let original = results.reusable_identity(original.as_ref()).unwrap().unwrap();
-    let changed = results.reusable_identity(changed.as_ref()).unwrap().unwrap();
-    assert!(original != changed, "a nested function's changed input must distinguish the outer result");
+    let rewritten = results.reusable_identity(rewritten.as_ref()).unwrap().unwrap();
+    assert!(original == rewritten, "a physical rewrite of one copy's inputs keeps the invocation's one result");
+    assert_eq!(results.reusable_consumers[&original], 2);
 }
 
 #[test]
@@ -207,7 +140,7 @@ fn reused_functions_register_only_executed_reads_of_shared_inputs() {
 }
 
 #[test]
-fn nondeterministic_functions_and_host_staging_exclude_reuse() {
+fn nondeterministic_functions_and_host_staged_inputs_reuse_one_result() {
     let leiden = algorithm("worlds", CugraphAlgorithmParams::Leiden(CugraphLeidenParams::default()), None, false);
     let host = algorithm("host", CugraphAlgorithmParams::Similarity(CugraphSimilarityParams::default()), None, true);
     let results = SharedResidentResults::for_gpu_inputs(&[
@@ -218,8 +151,7 @@ fn nondeterministic_functions_and_host_staging_exclude_reuse() {
     ])
     .unwrap();
     for plan in [leiden, host] {
-        let producer = gpu_resident_producer(plan.as_ref()).unwrap();
-        assert!(!producer.gpu_result_is_repeatable());
-        assert!(results.reusable_identity(plan.as_ref()).unwrap().is_none());
+        let identity = results.reusable_identity(plan.as_ref()).unwrap().expect("every GPU function call is reusable");
+        assert_eq!(results.reusable_consumers[&identity], 2);
     }
 }

@@ -501,6 +501,9 @@ binary(/_cpu$/)
     | internal::resolve::tests::validate_no_duplicate_names_rejects_dup
     | io::tests::test_collect_column_names_rejects_negative_count
     | ops::reshape::tests::interleave_output_size_overflow_is_structured
+    | ops::concatenate::tests::concatenated_vector_frames_overflow_at_the_list_child_with_the_width_row_cap
+    | ops::concatenate::tests::concatenation_up_to_the_width_row_cap_is_accepted_and_one_row_more_is_rejected
+    | ops::concatenate::tests::concatenated_flat_rows_overflow_at_the_row_count
     | runtime::device_health::tests::cross_device_teardown_suspends_instead_of_quarantining
     | diagnostics::memory::tests::fixed_pressure_plan_is_bounded_and_preserves_the_documented_reserve
     | runtime::matrix::tests::matrix_element_count_accepts_cudf_size_type_maximum

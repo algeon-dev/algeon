@@ -36,7 +36,7 @@ use datafusion::{
     datasource::MemTable,
     execution::{SessionStateBuilder, context::QueryPlanner},
     logical_expr::{LogicalPlan, UserDefinedLogicalNodeCore},
-    physical_plan::ExecutionPlan,
+    physical_plan::{ExecutionPlan, displayable},
     physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner},
     prelude::SessionContext,
 };
@@ -583,6 +583,39 @@ async fn sql_schemas_match_ir_and_physical_nodes() {
         let physical = ctx.state().create_physical_plan(&logical).await.unwrap();
         assert!(find_exec(physical.as_ref()).is_some(), "{}", operation.descriptor().sql_function_name);
     }
+}
+
+/// DataFusion copies a CTE at each reference. Both physical copies keep the
+/// call site's invocation and bind one result name, while two call sites with
+/// identical text keep separate names.
+#[tokio::test]
+async fn cte_references_share_one_invocation_and_separate_call_sites_do_not() {
+    let ctx = context();
+    let umap = format!("{CUML_UMAP_FUNCTION}(input => (SELECT id, d0, d1 FROM vectors))");
+    let shared = gpu_result_inputs(
+        &ctx,
+        &format!("WITH emb AS (SELECT * FROM {umap}) SELECT a.id FROM emb a JOIN emb b ON a.id = b.id"),
+    )
+    .await;
+    assert_eq!(shared.len(), 2, "{shared:?}");
+    assert_eq!(shared[0], shared[1], "inlined references of one call must read one result");
+    let separate = gpu_result_inputs(&ctx, &format!("SELECT a.id FROM {umap} a JOIN {umap} b ON a.id = b.id")).await;
+    assert_eq!(separate.len(), 2, "{separate:?}");
+    assert_ne!(separate[0], separate[1], "separately authored calls must stay independent");
+}
+
+/// The `gpu_result_input` of every cuML exec in the optimized physical plan.
+async fn gpu_result_inputs(ctx: &SessionContext, sql: &str) -> Vec<String> {
+    let logical = ctx.state().create_logical_plan(sql).await.unwrap();
+    let physical = ctx.state().create_physical_plan(&logical).await.unwrap();
+    displayable(physical.as_ref())
+        .indent(false)
+        .to_string()
+        .lines()
+        .filter(|line| line.contains("CumlAlgoExec"))
+        .filter_map(|line| line.split("gpu_result_input=").nth(1))
+        .map(|name| name.split(',').next().unwrap_or(name).trim().to_string())
+        .collect()
 }
 
 #[tokio::test]

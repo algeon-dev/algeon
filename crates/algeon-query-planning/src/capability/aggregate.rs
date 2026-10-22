@@ -40,22 +40,11 @@ fn aggregate_expr_is_exact_distinct_count(expr: &AggregateExpr) -> bool {
 pub enum AggregateStateContract {
     /// No distinct or group-only dedup state is required.
     Plain,
-    /// SQL setop-style dedup over grouped keys that have no aggregate expressions.
+    /// Grouped keys with no aggregate expressions, the shape `SELECT DISTINCT` lowers to.
     DedupGroupOnly,
     /// Exact count-distinct state represented as `COUNT(DISTINCT col)` or
     /// native `NUnique(col)`.
     ExactDistinctCount,
-}
-
-impl AggregateStateContract {
-    /// Stable diagnostic label for this aggregate state contract.
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Plain => "plain",
-            Self::DedupGroupOnly => "dedup_group_only",
-            Self::ExactDistinctCount => "exact_distinct_count",
-        }
-    }
 }
 
 /// The state shape bounded admission may rely on for `spec`, or `None` when the

@@ -142,7 +142,8 @@ Look for both fields in the physical plan:
 
 ## Reuse algorithm results
 
-A view stores a query definition. Later reads can execute the algorithm again.
+A view stores a query definition. Each later query that reads it executes the
+algorithm again.
 Community partitions and layout coordinates can change between executions.
 The [reproducibility section](../design/gpu-table-functions.mdx#reproducibility)
 lists which functions repeat. Use `CREATE OR REPLACE TABLE ... AS` when later

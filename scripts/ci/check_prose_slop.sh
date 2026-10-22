@@ -23,8 +23,9 @@ USAGE = """Usage: check_prose_slop.sh [OPTIONS] [PATHS...]
 
 Checks markdown documentation for AI writing slop (em-dashes and banned phrases)
 and validates YAML front matter syntax.
-When no paths or git flags are given, defaults to scanning:
-  docs/ note/ website/docs/
+When no paths or git flags are given, defaults to scanning website/docs/.
+The gitignored docs/ and note/ trees are outside git and CI and are never
+scanned by default.
 
 Options:
   --staged            Check files currently staged in git
@@ -33,13 +34,8 @@ Options:
   -h, --help          Show this help message
 """
 
-DEFAULT_TARGETS = ["docs", "note", "website/docs"]
+DEFAULT_TARGETS = ["website/docs"]
 DOC_EXTENSIONS = {".md", ".mdx", ".markdown", ".txt"}
-
-# Exclude self-referential policy / plan documents by default
-DEFAULT_EXCLUDED_PATHS = {
-    "docs/plan/2026-09-20-de-ai-slop-elimination-and-prevention-plan.md",
-}
 
 BANNED_PATTERNS = [
     ("em-dash ('—')", re.compile(r"\u2014")),
@@ -106,10 +102,7 @@ def collect_files(mode, targets, excludes):
             if p.suffix.lower() in DOC_EXTENSIONS and p.is_file():
                 files.append(p)
     else:
-        # docs/ and note/ are gitignored private trees, so a default target may be
-        # absent from a checkout; explicitly named paths must exist.
-        search_roots = targets if targets else [target for target in DEFAULT_TARGETS if Path(target).exists()]
-        for target in search_roots:
+        for target in targets or DEFAULT_TARGETS:
             p = Path(target)
             if p.is_file():
                 files.append(p)
@@ -125,8 +118,6 @@ def collect_files(mode, targets, excludes):
     filtered = []
     for f in sorted(set(files)):
         rel = f.as_posix()
-        if rel in DEFAULT_EXCLUDED_PATHS:
-            continue
         if any(exc.search(rel) for exc in excludes):
             continue
         filtered.append(f)

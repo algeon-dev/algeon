@@ -25,7 +25,7 @@ use query_planning::{
     admission::AttemptCapabilityEvidence,
     error::QueryError,
     expr::Expr as NativeExpr,
-    plan::{NodeId, ProjectionOutput, QueryPlan, QueryPlanBuilder},
+    plan::{NodeId, PlanFingerprint, ProjectionOutput, QueryPlan, QueryPlanBuilder},
     source::{GpuResidentSource, SourceNode},
 };
 use query_runtime::runtime::{ExecutionContext, resident::GpuResultHandle};
@@ -334,6 +334,10 @@ impl<S: RelationFunctionSpec> GpuResidentProducer for RelationFunctionExec<S> {
 
     fn host_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         self.capability_evidence_for_sink(RelationFunctionSink::HostArrow)
+    }
+
+    fn reusable_gpu_result_scope(&self) -> Result<Option<PlanFingerprint>> {
+        Ok(Some(plan_for_sink(&self.native_host_plan, RelationFunctionSink::GpuResident).execution_fingerprint()))
     }
 
     fn native_relation_input_names(&self) -> Option<&[String]> {

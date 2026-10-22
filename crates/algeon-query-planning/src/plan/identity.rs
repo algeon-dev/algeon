@@ -25,7 +25,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 
-use super::{Annotations, PlanNode, QueryNode, QueryPlan};
+use super::{Annotations, NodeId, PlanNode, QueryNode, QueryPlan, clone_plan_node_with_inputs};
 use crate::source::SourceNode;
 
 mod impls;
@@ -306,6 +306,18 @@ impl QueryPlan {
         sink.input().stable_hash(&mut hasher);
         sink.caller_visible_host_schema().stable_hash(&mut hasher);
         dynamic_filter_routes.stable_hash(&mut hasher);
+        PlanFingerprint(hasher.finish_digest())
+    }
+}
+
+impl PlanNode {
+    /// Digest of this operator alone: every input id is hashed as one
+    /// placeholder, so operators in different subtrees that compute the same
+    /// thing from their inputs compare equal.
+    pub(crate) fn detached_fingerprint(&self) -> PlanFingerprint {
+        let detached = clone_plan_node_with_inputs(self, |_| NodeId(0));
+        let mut hasher = PlanHasher::new();
+        detached.stable_hash(&mut hasher);
         PlanFingerprint(hasher.finish_digest())
     }
 }

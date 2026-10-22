@@ -318,9 +318,20 @@ fn native_optimizer_rejects_join_probe_dynamic_filter_for_reused_local_source() 
     assert!(routes.is_empty());
 }
 
+// The final join drops aggregate rows whose key matches no part key, whether it
+// is an inner join or a semi join, so both constrain the shared partsupp path.
 #[test]
 fn native_optimizer_routes_q02_like_shared_partsupp_source_when_all_key_consumers_are_constrained() {
-    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions::default());
+    for final_join_type in [JoinType::Inner, JoinType::LeftSemi] {
+        assert_q02_like_shared_partsupp_source_routed(final_join_type);
+    }
+}
+
+fn assert_q02_like_shared_partsupp_source_routed(final_join_type: JoinType) {
+    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
+        final_join_type,
+        ..SharedPartsuppDynamicFilterPlanOptions::default()
+    });
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
@@ -412,8 +423,12 @@ fn t_q02_like_cases() {
             native_optimizer_rejects_q02_like_shared_source_filter_with_unconstrained_extra_consumer,
         ),
         (
-            "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_outer_joined",
-            native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_outer_joined,
+            "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_full_outer_joined",
+            native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_full_outer_joined,
+        ),
+        (
+            "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_left_outer_preserved",
+            native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_left_outer_preserved,
         ),
         (
             "optimizer_contracts::dynamic_filter::shared_sources::native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_uses_null_equal_join",
@@ -434,11 +449,25 @@ fn t_q02_like_cases() {
     ]);
 }
 
-fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_outer_joined() {
-    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
-        final_join_type: JoinType::Left,
+fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_full_outer_joined() {
+    assert_q02_like_shared_partsupp_source_not_routed(SharedPartsuppDynamicFilterPlanOptions {
+        final_join_type: JoinType::Full,
         ..SharedPartsuppDynamicFilterPlanOptions::default()
     });
+}
+
+/// A left outer join keeps every left row, so the aggregate path on its left
+/// input is not constrained by the part keys.
+fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_left_outer_preserved() {
+    assert_q02_like_shared_partsupp_source_not_routed(SharedPartsuppDynamicFilterPlanOptions {
+        final_join_type: JoinType::Left,
+        final_join_swaps_inputs: true,
+        ..SharedPartsuppDynamicFilterPlanOptions::default()
+    });
+}
+
+fn assert_q02_like_shared_partsupp_source_not_routed(plan_options: SharedPartsuppDynamicFilterPlanOptions) {
+    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(plan_options);
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),

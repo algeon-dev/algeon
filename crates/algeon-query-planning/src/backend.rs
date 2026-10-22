@@ -60,6 +60,14 @@ pub trait BackendCapabilities: fmt::Debug + Send + Sync {
     /// are enforced during plan validation.
     fn supports_type(&self, data_type: &ArrowDataType) -> bool;
 
+    /// Largest number of elements one backend column holds, counted at every
+    /// level: the row count, and the child element count of each nested list.
+    ///
+    /// A column that would exceed it in one source read or one intermediate
+    /// result cannot be represented. Source chunk planning sizes every read
+    /// under this count.
+    fn max_column_elements(&self) -> u64;
+
     /// The Arrow output type of the backend's binary kernel for these operands.
     ///
     /// An `Err` means the kernel has no binding for the operand pair, and

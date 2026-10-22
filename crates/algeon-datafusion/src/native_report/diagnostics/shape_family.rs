@@ -69,7 +69,7 @@ fn input_family(shape: &CandidateShape) -> &'static str {
         (false, false, false) => {},
         _ => return "mixed_join",
     }
-    if shape.contains_operator("UnionExec") {
+    if shape.contains_operator("UnionExec") || shape.contains_operator("InterleaveExec") {
         return "union";
     }
     let mut sources = Vec::new();
@@ -136,6 +136,16 @@ mod tests {
                 )
             )),
             "sort_union_input"
+        );
+        assert_eq!(
+            family(unary(
+                "AggregateExec",
+                CandidateShape::new(
+                    "InterleaveExec",
+                    vec![CandidateShape::leaf("LocalParquetScan"), CandidateShape::leaf("LocalParquetScan")]
+                )
+            )),
+            "global_union_aggregate"
         );
         assert_eq!(
             family(unary(

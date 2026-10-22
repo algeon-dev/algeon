@@ -76,7 +76,7 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
 }
 
 /// The backend inputs chunk planning consumes: the cuDF reader's minimum
-/// source-read budget and its Arrow type support.
+/// source-read budget, its Arrow type support and its per-column element limit.
 fn rapids_source_read_sizing() -> SourceReadSizing<'static> {
     SourceReadSizing::new(rapids_backend(), cudf::DataFrame::minimum_parquet_source_read_budget_bytes() as u64)
 }
@@ -133,6 +133,7 @@ pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
                 policy,
                 &reader_decimal_types,
                 reader_decimal_types_footer_verified,
+                sizing,
             ));
             continue;
         };
@@ -149,7 +150,7 @@ pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
             reader_decimal_types_footer_verified,
             sizing,
             &mut chunks,
-        );
+        )?;
     }
 
     chunks = apply_source_scan_limit_to_chunks(source, chunks, sizing)?;

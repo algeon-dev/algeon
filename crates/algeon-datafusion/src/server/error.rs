@@ -1373,6 +1373,56 @@ mod tests {
         }
     }
 
+    /// A native size overflow that names the per-column element limit, wrapped
+    /// at the adapter boundary like `native_memory_failure`.
+    fn native_element_limit_failure(limit_facts: &[(&'static str, u64)]) -> Error {
+        let native = limit_facts.iter().fold(
+            QueryError::new(
+                QueryErrorCode::SizeOverflow,
+                "query_engine.local_parquet_chunk.read",
+                "secret native text naming s3://bucket/private/fingerprints.parquet",
+            )
+            .with_fact("column", "fp")
+            .with_fact("element_count", 5_934_733_312_u64)
+            .with_fact("element_limit", 2_147_483_647_u64),
+            |native, (key, value)| native.with_fact(key, value),
+        );
+        Error::from_native("algeon_datafusion.native_exec.execute", "Algeon native query execution failed", native)
+    }
+
+    #[test]
+    fn element_limit_overflow_names_the_column_limit_and_row_cap_on_the_wire_only() {
+        let error = native_element_limit_failure(&[("row_cap", 1_048_575)]);
+        let status = adapter_error_to_status(&error);
+
+        assert_eq!(status.code(), Code::ResourceExhausted);
+        assert_eq!(
+            status.message(),
+            "column `fp` would hold 5934733312 elements in one relation or intermediate result, above the limit of 2147483647 elements per column; at its width at most 1048575 rows fit. Filter the input, or split the relation (for example a UNION ALL of calls over row ranges) so each part holds at most 1048575 rows; retrying the same request unchanged cannot succeed"
+        );
+        assert_error_metadata(&status, "size_overflow", "resource_exhausted", "permanent");
+        let logged = client_message(&error).logged;
+        assert!(logged.starts_with("one column would hold 5934733312 elements"), "{logged}");
+        assert!(!logged.contains("`fp`"), "{logged}");
+        for hidden in ["secret native text", "s3://"] {
+            assert!(!status.message().contains(hidden), "{}", status.message());
+        }
+        assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn oversized_row_group_overflow_names_the_row_group_size_that_fits() {
+        let status = adapter_error_to_status(&native_element_limit_failure(&[
+            ("row_group_rows", 2_897_819),
+            ("max_row_group_rows", 1_048_575),
+        ]));
+
+        assert_eq!(
+            status.message(),
+            "one Parquet row group of column `fp` decodes to 5934733312 elements, above the limit of 2147483647 elements per column. Rewrite the file with row groups of at most 1048575 rows; retrying the same request unchanged cannot succeed"
+        );
+    }
+
     #[test]
     fn device_allocation_failures_name_the_same_facts_and_keep_the_sealed_report_pointer() {
         for code in [QueryErrorCode::DeviceOutOfMemory, QueryErrorCode::DeviceAllocationFailed] {

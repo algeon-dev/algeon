@@ -27,6 +27,7 @@
 //! assert_eq!(df2.num_columns(), 2);
 //! ```
 mod batch;
+mod empty;
 mod estimate;
 mod export;
 mod import;

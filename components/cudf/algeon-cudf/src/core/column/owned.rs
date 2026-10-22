@@ -144,6 +144,11 @@ unsafe impl Send for Column {}
 unsafe impl Sync for Column {}
 
 impl Column {
+    /// Largest element count of one column at any level: its row count and,
+    /// for a nested column, each child's element count. libcudf indexes
+    /// columns with the 32-bit `cudf::size_type`.
+    pub const MAX_ELEMENTS: usize = i32::MAX as usize;
+
     pub(crate) fn backing_allocation_pointers(&self) -> Result<Vec<usize>> {
         let operation = "column::backing_allocation_pointers";
         let mut count = 0usize;
@@ -183,6 +188,30 @@ impl Column {
         let exec_options = domain.enter_execution()?;
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_create_empty_ex(type_id.to_raw(), exec_options.options(), &mut handle) },
+            operation,
+        )?;
+        Self::from_handle_with_domain(handle, domain)
+    }
+
+    /// Creates a zero-row column whose type, children included, is the pre-order type tree `nodes`.
+    pub(crate) fn empty_from_type_tree_in_domain(
+        nodes: &[cudf_sys::cudf_column_type_node_t],
+        domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let num_nodes = usize_to_i32_len(nodes.len(), "type_tree_node_count", operation)?;
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.enter_execution()?;
+        error::check_status_in(
+            // SAFETY: `nodes` stays borrowed for the call and holds `num_nodes` initialized entries.
+            unsafe {
+                cudf_sys::cudf_column_create_empty_from_type_tree_ex(
+                    nodes.as_ptr(),
+                    num_nodes,
+                    exec_options.options(),
+                    &mut handle,
+                )
+            },
             operation,
         )?;
         Self::from_handle_with_domain(handle, domain)

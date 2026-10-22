@@ -5,7 +5,9 @@
 //! missing columns, scan limits. The abstract fingerprint adds what the source
 //! reads and emits. Both wildcard the reader predicate, and each has an exact
 //! twin that includes it. A grouped family keys on abstract fingerprints, so
-//! members must read the same columns; a scalar filtered family keys on rowset
+//! members must read the same columns, and on the operators between the
+//! aggregate and its sources, so a filter, join or computed projection that
+//! differs between members keeps them apart; a scalar filtered family keys on rowset
 //! fingerprints, because its rewrite re-reads the source with the union of the
 //! branches' columns. Signature strings are compared for equality only and are
 //! never shown in reports except through `family_key`.
@@ -24,8 +26,8 @@ use super::{
     source_widening::{local_parquet_source_node_occurrences_are_unique, scalar_source_occurrences_are_unique},
 };
 use crate::{
-    expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, Expr},
-    plan::{NodeId, PlanNode, QueryPlan},
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, ColumnQualifier, Expr},
+    plan::{JoinNode, JoinSide, JoinSpec, NodeId, PlanNode, ProjectionNode, QueryPlan},
     source::{
         LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ParquetSourceLocation, ResolvedParquetSource,
         SourceColumnRef, SourceNode,
@@ -41,10 +43,10 @@ pub(super) struct AggregateMaterializationSignature {
     /// unchanged under the same name. A grouped branch predicate may be
     /// re-applied after the aggregate only over these.
     pub(super) post_aggregate_filter_columns_by_source: BTreeMap<String, BTreeSet<String>>,
-    /// Hash of the family signature: group keys, aggregate expressions and
-    /// predicate-wildcarded sources (grouped), or input shape and rowsets
-    /// (scalar). Equal keys mean the aggregates differ at most in reader
-    /// predicates.
+    /// Hash of the family signature: group keys, aggregate expressions, input
+    /// operators and predicate-wildcarded sources (grouped), or input shape
+    /// and rowsets (scalar). Equal keys mean the aggregates differ at most in
+    /// reader predicates.
     pub(super) family_key: String,
     pub(super) group_exprs: Vec<String>,
     pub(super) aggregate_exprs: Vec<String>,
@@ -159,9 +161,22 @@ pub(super) fn aggregate_materialization_signature(
             source_fingerprints.join("|")
         )
     } else {
+        // Every member reads the representative's aggregate, so members must
+        // compute the same rows apart from the reader predicates the rewrite
+        // factors. Over projections and sorts of one source, the canonical
+        // expressions already name source columns; any other input must match
+        // operator for operator.
+        let input_shape = if aggregate_alias_canonicalization_input_is_rowset_preserving(plan, input) {
+            "source_columns".to_string()
+        } else {
+            grouped_input_shape(plan, input, &aggregate_read_columns(spec))?
+        };
+        let canonical_group_exprs =
+            spec.group_exprs.iter().map(|expr| aggregate_input_expr_signature(plan, input, expr)).collect::<Vec<_>>();
         format!(
-            "groups={};aggr={};sources={}",
+            "groups={};canonical_groups={};aggr={};input={input_shape};sources={}",
             group_exprs.join(","),
+            canonical_group_exprs.join(","),
             aggregate_exprs.join(","),
             source_fingerprints.join("|")
         )
@@ -182,6 +197,137 @@ pub(super) fn aggregate_materialization_signature(
         exact_source_signature,
         source_bytes,
         source_rows,
+    })
+}
+
+/// Columns of a node's output that the operators above it read.
+enum ReadColumns {
+    /// Every column, by name and position, and the row order: an operator
+    /// above depends on more than the named values.
+    All,
+    /// Only these columns, and only as an unordered set of rows.
+    Named(BTreeSet<String>),
+}
+
+/// The columns a grouped aggregate reads, or [`ReadColumns::All`] when one of
+/// its functions depends on input order. Floating statistical aggregates
+/// replay DataFusion's input order to stay bit-exact.
+fn aggregate_read_columns(spec: &AggregateSpec) -> ReadColumns {
+    if spec.aggr_exprs.iter().any(|aggregate| aggregate.function.is_floating_statistical()) {
+        return ReadColumns::All;
+    }
+    let exprs = spec
+        .group_exprs
+        .iter()
+        .chain(spec.aggr_exprs.iter().flat_map(|aggregate| std::iter::once(&aggregate.expr).chain(&aggregate.filter)));
+    ReadColumns::Named(exprs.flat_map(Expr::columns).map(|column| column.name().to_string()).collect())
+}
+
+/// Operator structure below a grouped aggregate, with each local Parquet
+/// source reduced to its predicate-wildcarded abstract fingerprint.
+///
+/// While only named columns of an unordered row set are read, the shape
+/// describes those columns and nothing else: sorts and projections that only
+/// select columns are left out, a join keeps its type, keys, residual
+/// predicate and null equality plus the output columns read above it (with
+/// the side and input column each comes from), and a filter or computed
+/// projection adds the columns it reads. Branches over the same rows differ in
+/// column pruning and in physical join choices that order the output (TPC-DS
+/// q27's rollup branches); neither reaches a read column. Below an operator
+/// that depends on order or positions (a limit, window or union), and below
+/// anything else, the shape is exact operator for operator.
+fn grouped_input_shape(plan: &QueryPlan, node_id: NodeId, read: &ReadColumns) -> Option<String> {
+    let ReadColumns::Named(read) = read else {
+        return exact_input_shape(plan, node_id);
+    };
+    let node = plan.node(node_id)?;
+    let (fingerprint, inputs) = match &node.kind {
+        PlanNode::Source(_) => return exact_input_shape(plan, node_id),
+        PlanNode::Sort(sort) => return grouped_input_shape(plan, sort.input, &ReadColumns::Named(read.clone())),
+        PlanNode::Projection(projection) if projection_only_selects_columns(projection) => {
+            return grouped_input_shape(plan, projection.input, &ReadColumns::Named(read.clone()));
+        },
+        PlanNode::Projection(projection) => {
+            let input_read = projection.expressions().flat_map(Expr::columns).map(|column| column.name().to_string());
+            (node.kind.detached_fingerprint(), vec![(projection.input, ReadColumns::Named(input_read.collect()))])
+        },
+        PlanNode::Filter(filter) => {
+            let mut input_read = read.clone();
+            input_read.extend(filter.predicate.columns().map(|column| column.name().to_string()));
+            (node.kind.detached_fingerprint(), vec![(filter.input, ReadColumns::Named(input_read))])
+        },
+        PlanNode::Join(join) => {
+            let spec = &join.spec;
+            let mut outputs = spec
+                .output_projection
+                .iter()
+                .filter(|output| read.contains(&output.output_name))
+                .cloned()
+                .collect::<Vec<_>>();
+            outputs.sort_by(|left, right| left.output_name.cmp(&right.output_name));
+            let mut side_reads = [BTreeSet::new(), BTreeSet::new()];
+            for output in &outputs {
+                let side = usize::from(output.side == JoinSide::Right);
+                side_reads[side].insert(output.column.name().to_string());
+            }
+            for key in &spec.keys {
+                side_reads[0].insert(key.left.name().to_string());
+                side_reads[1].insert(key.right.name().to_string());
+            }
+            for column in spec.residual_predicate.iter().flat_map(Expr::columns) {
+                match column.qualifier() {
+                    Some(ColumnQualifier::Input { index }) if *index < 2 => {
+                        side_reads[*index].insert(column.name().to_string());
+                    },
+                    _ => side_reads.iter_mut().for_each(|side| {
+                        side.insert(column.name().to_string());
+                    }),
+                }
+            }
+            let mut rows = JoinSpec::new(spec.join_type.clone(), spec.keys.clone())
+                .with_null_equality(spec.null_equality)
+                .with_output_projection(outputs);
+            if let Some(predicate) = &spec.residual_predicate {
+                rows = rows.with_residual_predicate(predicate.clone());
+            }
+            let [left_read, right_read] = side_reads;
+            (
+                PlanNode::Join(JoinNode { inputs: join.inputs, spec: rows }).detached_fingerprint(),
+                vec![(join.inputs[0], ReadColumns::Named(left_read)), (join.inputs[1], ReadColumns::Named(right_read))],
+            )
+        },
+        _ => return exact_input_shape(plan, node_id),
+    };
+    let inputs = inputs
+        .iter()
+        .map(|(input, input_read)| grouped_input_shape(plan, *input, input_read))
+        .collect::<Option<Vec<_>>>()?;
+    Some(format!("{fingerprint}({})", inputs.join(",")))
+}
+
+/// Operator-for-operator shape of the subtree at `node_id`, with each local
+/// Parquet source reduced to its predicate-wildcarded abstract fingerprint.
+fn exact_input_shape(plan: &QueryPlan, node_id: NodeId) -> Option<String> {
+    let node = plan.node(node_id)?;
+    if let PlanNode::Source(source) = &node.kind
+        && let SourceNode::LocalParquet(source) = source.as_ref()
+    {
+        let fingerprint = local_source_materialization_signature(source).abstract_fingerprint;
+        return Some(format!("local_parquet({fingerprint})"));
+    }
+    let inputs = node.input_ids().iter().map(|input| exact_input_shape(plan, *input)).collect::<Option<Vec<_>>>()?;
+    Some(format!("{}({})", node.kind.detached_fingerprint(), inputs.join(",")))
+}
+
+/// Whether every output of `projection` is an unqualified input column under
+/// its own name, possibly behind aliases.
+fn projection_only_selects_columns(projection: &ProjectionNode) -> bool {
+    projection.outputs.iter().all(|output| {
+        let mut expr = &output.expr;
+        while let Expr::Alias { expr: inner, .. } = expr {
+            expr = inner;
+        }
+        matches!(expr, Expr::Column(column) if column.qualifier().is_none() && column.name() == output.field.name())
     })
 }
 

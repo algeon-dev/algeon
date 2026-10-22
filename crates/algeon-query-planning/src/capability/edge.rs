@@ -5,13 +5,9 @@
 //! input, union position, sink materialization) and one decision. Rejections
 //! here are local to the edge; whole-plan admission lives in [`crate::admission`].
 
-use std::collections::BTreeSet;
-
 use super::{
-    JoinForm, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink,
-    aggregate::{AggregateStateContract, aggregate_state_contract},
-    classify_join,
-    graph::{consumer_nodes, join_side_index, opposite_join_side},
+    JoinSide, NodeId, PlanNode, QueryPlan, ResultSink,
+    graph::consumer_nodes,
     model::{
         CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ResultSinkKind, VectorInputRole,
     },
@@ -19,9 +15,12 @@ use super::{
     rejection::Reason,
 };
 
-/// One edge per input slot of `kind`, in input order. The left-anti dedup
-/// check refines only an edge whose base decision is satisfied, so a missing
-/// producer keeps its own, more local, reason.
+/// One edge per input slot of `kind`, in input order.
+///
+/// Edge analysis infers no set operation from the producers around a join. A
+/// native left anti join keeps every probe row with no build match, duplicates
+/// included, and reads only key existence from its build input, so its edges
+/// carry the base decision like every other join edge.
 pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &PlanNode) -> Vec<EdgeContract> {
     kind.input_ids()
         .iter()
@@ -31,109 +30,9 @@ pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &
             let input_role = input_role(kind, input_index);
             let contract_kinds = edge_contract_kinds(plan, *producer, consumer, kind, input_role);
             let decision = edge_decision(plan, *producer, consumer);
-            let decision = match (&decision, kind) {
-                (CapabilityDecision::Satisfied, PlanNode::Join(join))
-                    if matches!(join.spec.join_type, JoinType::LeftAnti { .. }) =>
-                {
-                    left_anti_dedup_edge_decision(plan, *producer, input_role, join)
-                },
-                _ => decision,
-            };
             EdgeContract { producer: *producer, consumer, contract_kinds, input_role, decision }
         })
         .collect()
-}
-
-/// Set-operation guard for left-anti joins.
-///
-/// An anti build against a dedup aggregate claims EXCEPT DISTINCT, so an
-/// aggregate build must be one: a grouped aggregate with measures or
-/// distinct state is EXCEPT ALL, which the bounded engine cannot do with
-/// multiplicity. Sources, filters, and joins keep ordinary anti semantics,
-/// which the engine executes directly, so only aggregate builds are policed.
-/// For an except-shaped join the probe side must be dedup-proven, or a
-/// trailing scalar count would count duplicates.
-fn left_anti_dedup_edge_decision(
-    plan: &QueryPlan,
-    producer: NodeId,
-    input_role: InputRole,
-    join: &JoinNode,
-) -> CapabilityDecision {
-    let producer_state = plan.node(producer).and_then(|node| match &node.kind {
-        PlanNode::Aggregate(aggregate) => aggregate_state_contract(&aggregate.spec),
-        _ => None,
-    });
-    match input_role {
-        InputRole::JoinBuildInput { .. } => {
-            if matches!(plan.node(producer).map(|node| &node.kind), Some(PlanNode::Aggregate(_)))
-                && producer_state != Some(AggregateStateContract::DedupGroupOnly)
-            {
-                return CapabilityDecision::rejected(
-                    Reason::LeftAntiBuildRequiresDedupAggregate,
-                    [
-                        ("producer", producer.to_string()),
-                        (
-                            "producer_aggregate_state",
-                            producer_state.map_or("none", AggregateStateContract::as_str).to_string(),
-                        ),
-                    ],
-                );
-            }
-            CapabilityDecision::Satisfied
-        },
-        InputRole::JoinProbeInput { .. } => {
-            let build_input = join.inputs[join_side_index(join.spec.build_side)];
-            let build_dedup = plan.node(build_input).is_some_and(|node| match &node.kind {
-                PlanNode::Aggregate(aggregate) => {
-                    aggregate_state_contract(&aggregate.spec) == Some(AggregateStateContract::DedupGroupOnly)
-                },
-                _ => false,
-            });
-            if build_dedup && !anti_probe_input_is_dedup_proven(plan, producer, &mut BTreeSet::new()) {
-                return CapabilityDecision::rejected(
-                    Reason::LeftAntiProbeRequiresDedupProvenInput,
-                    [
-                        ("producer", producer.to_string()),
-                        (
-                            "producer_aggregate_state",
-                            producer_state.map_or("none", AggregateStateContract::as_str).to_string(),
-                        ),
-                    ],
-                );
-            }
-            CapabilityDecision::Satisfied
-        },
-        _ => CapabilityDecision::Satisfied,
-    }
-}
-
-/// Structural proof that an anti-join probe input is a distinct relation:
-/// either a group-only dedup aggregate, or a keyed filtered left-anti join
-/// whose own build input is a dedup aggregate and whose probe input is
-/// dedup-proven. Consults no row estimates.
-fn anti_probe_input_is_dedup_proven(plan: &QueryPlan, node_id: NodeId, visiting: &mut BTreeSet<NodeId>) -> bool {
-    if !visiting.insert(node_id) {
-        return false;
-    }
-    match plan.node(node_id).map(|node| &node.kind) {
-        Some(PlanNode::Aggregate(aggregate)) => {
-            aggregate_state_contract(&aggregate.spec) == Some(AggregateStateContract::DedupGroupOnly)
-        },
-        Some(PlanNode::Join(join))
-            if matches!(join.spec.join_type, JoinType::LeftAnti { .. })
-                && matches!(classify_join(node_id, join), Ok(JoinForm::KeyedFilteredSemiAnti)) =>
-        {
-            let build_input = join.inputs[join_side_index(join.spec.build_side)];
-            let probe_input = join.inputs[join_side_index(opposite_join_side(join.spec.build_side))];
-            plan.node(build_input).is_some_and(|node| match &node.kind {
-                PlanNode::Aggregate(aggregate) => {
-                    aggregate_state_contract(&aggregate.spec) == Some(AggregateStateContract::DedupGroupOnly)
-                },
-                _ => false,
-            }) && anti_probe_input_is_dedup_proven(plan, probe_input, visiting)
-        },
-        _ => false,
-    }
 }
 
 /// Contract kinds one edge carries: producer facts first (source format, join

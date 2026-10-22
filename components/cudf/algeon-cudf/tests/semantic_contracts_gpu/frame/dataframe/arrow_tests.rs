@@ -14,6 +14,7 @@ use arrow::{
 };
 use cudf::{
     DataFrame, DataType, ErrorCode, ErrorKind, Exec, TypeId,
+    core::column::ColumnView,
     frame::dataframe::GpuRecordBatch,
     interop::arrow_host::{all_null_list_series, cudf_dtype_from_arrow_type, estimate_list_import_device_memory_bytes},
     testing::{
@@ -29,7 +30,8 @@ use cudf::{
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, column_from_strs_nullable, dataframe_from_columns,
-    error_context_value, nullable_series, sample_runtime, series,
+    error_context_value, int64_array, nested_dataframe, nullable_series, sample_runtime, series, struct_array,
+    with_test_runtime,
 };
 
 fn import_record_batch(batch: &RecordBatch) -> cudf::Result<DataFrame> {
@@ -2037,6 +2039,118 @@ fn test_from_record_batches_rejects_schema_mismatch() {
     assert_eq!(error.code(), ErrorCode::TypeMismatch);
 }
 
+/// Pre-order cudf types of a column, skipping list offsets children so a
+/// zero-row column and a non-empty one of the same type compare equal.
+fn logical_type_tree(view: &ColumnView<'_>, out: &mut Vec<DataType>) {
+    let dtype = view.data_type().unwrap();
+    out.push(dtype);
+    match dtype.id() {
+        TypeId::List => logical_type_tree(&view.child(1).unwrap(), out),
+        TypeId::Struct => {
+            for index in 0..view.num_children().unwrap() {
+                logical_type_tree(&view.child(index).unwrap(), out);
+            }
+        },
+        _ => {},
+    }
+}
+
+fn frame_type_trees(frame: &DataFrame) -> Vec<(String, Vec<DataType>)> {
+    frame
+        .column_names()
+        .into_iter()
+        .map(|name| {
+            let mut tree = Vec::new();
+            logical_type_tree(&frame.series(name).unwrap().testing_view().unwrap(), &mut tree);
+            (name.to_string(), tree)
+        })
+        .collect()
+}
+
+fn test_empty_dataframe_from_arrow_schema_keeps_nested_types_without_host_import() {
+    let weights = ListArray::from_iter_primitive::<Float64Type, _, _>([
+        Some(vec![Some(0.5)]),
+        Some(vec![]),
+        Some(vec![Some(1.5), Some(2.5)]),
+    ]);
+    let columns: Vec<(&str, ArrayRef)> = vec![
+        ("id", Arc::new(Int32Array::from(vec![1, 2, 3]))),
+        ("name", Arc::new(StringArray::from(vec!["a", "b", "c"]))),
+        ("amount", Arc::new(Decimal128Array::from(vec![100, 250, -5]).with_precision_and_scale(38, 2).unwrap())),
+        ("seen_at", Arc::new(TimestampMicrosecondArray::from(vec![1, 2, 3]).with_timezone("UTC"))),
+        (
+            "scores",
+            Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>([
+                Some(vec![Some(1.0)]),
+                Some(vec![]),
+                Some(vec![Some(2.0), Some(3.0)]),
+            ])),
+        ),
+        (
+            "embedding",
+            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                [Some(vec![Some(1.0), Some(2.0)]), Some(vec![Some(3.0), Some(4.0)]), Some(vec![Some(5.0), Some(6.0)])],
+                2,
+            )),
+        ),
+        ("info", struct_array(vec![("count", int64_array(&[7, 8, 9])), ("weights", Arc::new(weights))])),
+    ];
+    let schema = RecordBatch::try_from_iter(columns.clone()).unwrap().schema();
+
+    let (empty, rows) = with_test_runtime(|runtime| {
+        reset_arrow_host_interop_observation_for_test();
+        let empty = runtime.empty_dataframe_from_arrow_schema(&schema).unwrap();
+        assert_eq!(arrow_host_import_call_count_for_test(), 0);
+        (empty, nested_dataframe(runtime, columns))
+    });
+
+    let decimal = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
+    let expected = [
+        ("id", vec![DataType::new(TypeId::Int32)]),
+        ("name", vec![DataType::new(TypeId::String)]),
+        ("amount", vec![decimal]),
+        ("seen_at", vec![DataType::new(TypeId::TimestampMicroseconds)]),
+        ("scores", vec![DataType::new(TypeId::List), DataType::new(TypeId::Float64)]),
+        ("embedding", vec![DataType::new(TypeId::List), DataType::new(TypeId::Float32)]),
+        (
+            "info",
+            vec![
+                DataType::new(TypeId::Struct),
+                DataType::new(TypeId::Int64),
+                DataType::new(TypeId::List),
+                DataType::new(TypeId::Float64),
+            ],
+        ),
+    ]
+    .map(|(name, tree)| (name.to_string(), tree))
+    .to_vec();
+    assert_eq!(empty.num_rows(), 0);
+    assert_eq!(frame_type_trees(&empty), expected);
+    assert_eq!(frame_type_trees(&rows), expected);
+
+    let combined = empty.on(Exec::RETAINED).concat(&rows).unwrap();
+    assert_eq!(combined.num_rows(), 3);
+    assert_eq!(frame_type_trees(&combined), expected);
+    assert_eq!(combined.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+fn test_empty_dataframe_from_arrow_schema_rejects_unmapped_field_type() {
+    let schema = Schema::new(vec![
+        Field::new("id", ArrowDataType::Int32, false),
+        Field::new(
+            "code",
+            ArrowDataType::Dictionary(Box::new(ArrowDataType::Int32), Box::new(ArrowDataType::Utf8)),
+            true,
+        ),
+    ]);
+
+    let err = sample_runtime().empty_dataframe_from_arrow_schema(&schema).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(err.operation(), "arrow_host::empty_dataframe_from_arrow_schema");
+    assert_eq!(error_context_value(&err, "field_name").as_deref(), Some("code"));
+}
+
 pub(super) const CASES: &[(&str, fn())] = &[
     (
         "arrow_tests::test_arrow_datatype_try_from_type_id_supported_mappings",
@@ -2291,4 +2405,12 @@ pub(super) const CASES: &[(&str, fn())] = &[
     ),
     ("arrow_tests::test_from_record_batches_rejects_empty_input", test_from_record_batches_rejects_empty_input),
     ("arrow_tests::test_from_record_batches_rejects_schema_mismatch", test_from_record_batches_rejects_schema_mismatch),
+    (
+        "arrow_tests::test_empty_dataframe_from_arrow_schema_keeps_nested_types_without_host_import",
+        test_empty_dataframe_from_arrow_schema_keeps_nested_types_without_host_import,
+    ),
+    (
+        "arrow_tests::test_empty_dataframe_from_arrow_schema_rejects_unmapped_field_type",
+        test_empty_dataframe_from_arrow_schema_rejects_unmapped_field_type,
+    ),
 ];

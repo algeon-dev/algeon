@@ -48,6 +48,7 @@ pub fn apply_source_scan_limit_to_chunks(
                 chunk.scan_limit_rows = Some(0);
                 chunk.known_row_count = Some(0);
                 chunk.estimated_decoded_bytes = Some(0);
+                chunk.estimated_column_elements = Some(0);
                 chunk.exact_source_read_preflight_bytes =
                     exact_source_read_preflight_bytes(source, chunk.known_row_count, chunk.zero_column_count, sizing);
                 limited.push(chunk);
@@ -181,6 +182,9 @@ pub(crate) fn rewrite_scan_limited_chunk_selection(
             .or_else(|| {
                 proportional_bytes(chunk.estimated_decoded_bytes, selected_row_groups.len(), chunk.row_group_count())
             });
+    let estimated_column_elements =
+        sum_selected_row_group_values(chunk.source_file_row_group_column_elements.as_ref(), &selected_row_groups)
+            .or(chunk.estimated_column_elements);
     let estimated_source_read_bytes = source_read_uncompressed_bytes(
         source,
         known_projected_uncompressed_bytes,
@@ -199,6 +203,7 @@ pub(crate) fn rewrite_scan_limited_chunk_selection(
     chunk.estimated_chunk_bytes = estimated_chunk_bytes;
     chunk.estimated_source_read_bytes = estimated_source_read_bytes;
     chunk.estimated_decoded_bytes = estimated_decoded_bytes;
+    chunk.estimated_column_elements = estimated_column_elements;
     chunk.exact_source_read_preflight_bytes =
         exact_source_read_preflight_bytes(source, Some(selected_row_group_rows), chunk.zero_column_count, sizing);
     chunk.known_row_count = Some(output_row_count);

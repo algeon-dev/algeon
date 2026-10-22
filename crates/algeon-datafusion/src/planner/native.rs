@@ -15,12 +15,16 @@
 //! The selection contract lives in `website/docs/design/native-lowering.mdx`
 //! ("Select an execution path" and "Require GPU execution").
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use datafusion::{
     common::{
         DataFusionError, Result as DataFusionResult,
         config::{ConfigOptions, OptimizerOptions},
+        tree_node::{Transformed, TreeNode},
     },
     execution::SessionState,
     logical_expr::LogicalPlan,
@@ -31,7 +35,7 @@ use query_planning::{
     admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence},
     correlation::QueryId,
     optimizer::NativeOptimizerDiagnostics,
-    plan::QueryPlan,
+    plan::{PlanFingerprint, QueryPlan},
     source::SourceDiagnostics,
 };
 
@@ -455,8 +459,10 @@ impl AlgeonNativePhysicalOptimizerRule {
         // disposition before the ticket is minted so the admission that
         // follows has a planning predecessor in the lifecycle.
         if binds_final_plan {
-            let mut next_occurrence = 0_u64;
-            optimized.plan = bind_gpu_function_host_occurrences(optimized.plan, true, &mut next_occurrence)?;
+            optimized.plan = bind_final_gpu_function_host_occurrences(
+                optimized.plan,
+                native_execution_config.host_output_memory_pool_accounting(),
+            )?;
         }
         if binds_final_plan
             && plan_contains_gpu_execution(optimized.plan.as_ref())
@@ -589,27 +595,71 @@ fn gpu_function_execution_manifest(plan: &dyn ExecutionPlan) -> Result<Option<At
     if occurrences.is_empty() {
         return Ok(None);
     }
-    AttemptExecutionManifest::new(occurrences).map(Some).map_err(|error| {
-        Error::from_native(
-            "algeon_datafusion.native_optimizer.execution_manifest",
-            "the final GPU function occurrence graph is invalid",
-            error,
-        )
-    })
+    AttemptExecutionManifest::new(occurrences.into_iter().map(|(_, occurrence)| occurrence).collect())
+        .map(Some)
+        .map_err(|error| {
+            Error::from_native(
+                "algeon_datafusion.native_optimizer.execution_manifest",
+                "the final GPU function occurrence graph is invalid",
+                error,
+            )
+        })
 }
 
 /// Wraps each GPU function whose result crosses into DataFusion as host Arrow
-/// in a `GpuFunctionHostOccurrenceExec` carrying a plan-unique occurrence id.
+/// in a `GpuFunctionHostOccurrenceExec` and records how many of those nodes
+/// read each occurrence.
 ///
-/// Ids are `<producer>#<n>` in pre-order, so the same function reached twice
-/// (DataFusion inlines CTE references) gets two occurrences. A function read on
-/// the device by a native unit or by another producer is a GPU-resident input
-/// and is left unwrapped. Execution later validates each host occurrence
-/// against the manifest built from these ids.
+/// Ids are `<producer>#<n>` in pre-order. DataFusion copies a CTE or view at
+/// each reference, so one invocation can reach several host boundaries; the
+/// copies with one producer identity and one host plan share an id and read
+/// one evaluation. A pushed result option changes the host plan and keeps its
+/// own id. A function read on the device by a native unit or by another
+/// producer is a GPU-resident input and is left unwrapped. Execution later
+/// validates each host occurrence against the manifest built from these ids.
+fn bind_final_gpu_function_host_occurrences(
+    plan: Arc<dyn ExecutionPlan>,
+    account_memory_pool: bool,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    let mut binding = HostOccurrenceBinding::default();
+    let plan = bind_gpu_function_host_occurrences(plan, true, &mut binding)?;
+    if binding.readers.values().all(|readers| *readers == 1) {
+        return Ok(plan);
+    }
+    plan.transform_up(|node| {
+        let Some(bound) = node.downcast_ref::<GpuFunctionHostOccurrenceExec>() else {
+            return Ok(Transformed::no(node));
+        };
+        let readers = binding.readers[bound.occurrence_id()];
+        if readers == bound.readers() {
+            return Ok(Transformed::no(node));
+        }
+        Ok(Transformed::yes(Arc::new(
+            GpuFunctionHostOccurrenceExec::new(
+                Arc::clone(bound.input()),
+                bound.occurrence_id(),
+                bound.producer_identity(),
+            )
+            .with_readers(readers, account_memory_pool),
+        ) as Arc<dyn ExecutionPlan>))
+    })
+    .map(|transformed| transformed.data)
+}
+
+/// Occurrence ids assigned while binding one final plan.
+#[derive(Default)]
+struct HostOccurrenceBinding {
+    next_occurrence: u64,
+    /// Occurrence id of each producer identity and host plan fingerprint.
+    occurrence_ids: HashMap<(String, PlanFingerprint), String>,
+    /// Number of bound nodes that read each occurrence id.
+    readers: HashMap<String, usize>,
+}
+
 fn bind_gpu_function_host_occurrences(
     plan: Arc<dyn ExecutionPlan>,
     materializes_host_result: bool,
-    next_occurrence: &mut u64,
+    binding: &mut HostOccurrenceBinding,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     if plan.downcast_ref::<GpuFunctionHostOccurrenceExec>().is_some() {
         return Ok(plan);
@@ -619,7 +669,7 @@ fn bind_gpu_function_host_occurrences(
         let mut rewritten_children = Vec::with_capacity(children.len());
         let mut children_changed = false;
         for child in children {
-            let rewritten = bind_gpu_function_host_occurrences(Arc::clone(&child), false, next_occurrence)?;
+            let rewritten = bind_gpu_function_host_occurrences(Arc::clone(&child), false, binding)?;
             children_changed |= !Arc::ptr_eq(&child, &rewritten);
             rewritten_children.push(rewritten);
         }
@@ -636,7 +686,7 @@ fn bind_gpu_function_host_occurrences(
     for child in children {
         let child_materializes_host_result = producer.is_none() || gpu_resident_producer(child.as_ref()).is_none();
         let rewritten =
-            bind_gpu_function_host_occurrences(Arc::clone(&child), child_materializes_host_result, next_occurrence)?;
+            bind_gpu_function_host_occurrences(Arc::clone(&child), child_materializes_host_result, binding)?;
         children_changed |= !Arc::ptr_eq(&child, &rewritten);
         rewritten_children.push(rewritten);
     }
@@ -648,12 +698,23 @@ fn bind_gpu_function_host_occurrences(
     let Some(producer) = gpu_resident_producer(plan.as_ref()) else {
         return Ok(plan);
     };
-    if !materializes_host_result || producer.host_result_query_plan()?.is_none() {
+    if !materializes_host_result {
         return Ok(plan);
     }
+    let Some(host_plan) = producer.host_result_query_plan()? else {
+        return Ok(plan);
+    };
     let producer_identity = producer.gpu_result_input_name().to_string();
-    let occurrence_id = format!("{producer_identity}#{}", *next_occurrence);
-    *next_occurrence = next_occurrence.saturating_add(1);
+    let HostOccurrenceBinding { next_occurrence, occurrence_ids, readers } = binding;
+    let occurrence_id = occurrence_ids
+        .entry((producer_identity.clone(), host_plan.execution_fingerprint()))
+        .or_insert_with(|| {
+            let occurrence_id = format!("{producer_identity}#{next_occurrence}");
+            *next_occurrence = next_occurrence.saturating_add(1);
+            occurrence_id
+        })
+        .clone();
+    *readers.entry(occurrence_id.clone()).or_default() += 1;
     Ok(Arc::new(GpuFunctionHostOccurrenceExec::new(plan, occurrence_id, producer_identity)))
 }
 
@@ -661,13 +722,15 @@ fn bind_gpu_function_host_occurrences(
 /// returns the occurrence ids that `plan`'s parent reads through it.
 ///
 /// Each entry records the host occurrences below it as predecessors, in the
-/// order DataFusion executes them. A host-materializing producer without a
-/// bound occurrence is an adapter defect: binding and collection must have
-/// walked the same final plan.
+/// order DataFusion executes them. Readers that share an occurrence id add
+/// one entry, from the first reader in pre-order: their input subtrees are
+/// copies of one call, whose nested occurrences share ids in the same way. A
+/// host-materializing producer without a bound occurrence is an adapter
+/// defect: binding and collection must have walked the same final plan.
 fn collect_gpu_function_occurrences(
     plan: &dyn ExecutionPlan,
     materializes_host_result: bool,
-    occurrences: &mut Vec<AttemptExecutionOccurrence>,
+    occurrences: &mut Vec<(String, AttemptExecutionOccurrence)>,
 ) -> Result<Vec<String>> {
     if plan.downcast_ref::<AlgeonNativeExec>().is_some_and(AlgeonNativeExec::materializes_host) {
         let mut predecessors = Vec::new();
@@ -682,6 +745,9 @@ fn collect_gpu_function_occurrences(
     }
     if let Some(bound) = plan.downcast_ref::<GpuFunctionHostOccurrenceExec>() {
         let predecessors = collect_gpu_function_occurrences(bound.input().as_ref(), false, occurrences)?;
+        if occurrences.iter().any(|(occurrence_id, _)| occurrence_id == bound.occurrence_id()) {
+            return Ok(vec![bound.occurrence_id().to_string()]);
+        }
         let producer = gpu_resident_producer(bound.input().as_ref()).ok_or_else(|| {
             Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -700,12 +766,15 @@ fn collect_gpu_function_occurrences(
             .with_log_safe_fact("reason", "bound_gpu_occurrence_host_plan_missing")
             .with_log_safe_fact("occurrence_id", bound.occurrence_id())
         })?;
-        occurrences.push(AttemptExecutionOccurrence::host_arrow_for_producer(
-            bound.occurrence_id(),
-            bound.producer_identity(),
-            &host_plan,
-            predecessors,
-            producer.host_result_has_deferred_graph_facts(),
+        occurrences.push((
+            bound.occurrence_id().to_string(),
+            AttemptExecutionOccurrence::host_arrow_for_producer(
+                bound.occurrence_id(),
+                bound.producer_identity(),
+                &host_plan,
+                predecessors,
+                producer.host_result_has_deferred_graph_facts(),
+            ),
         ));
         return Ok(vec![bound.occurrence_id().to_string()]);
     }
@@ -1012,8 +1081,7 @@ mod tests {
         let (_backend, config) = backend_admission_config();
         let graph = deferred_cugraph_exec(&config);
         let plan = Arc::new(CooperativeExec::new(graph)) as Arc<dyn ExecutionPlan>;
-        let mut next_occurrence = 0;
-        let plan = bind_gpu_function_host_occurrences(plan, true, &mut next_occurrence)
+        let plan = bind_final_gpu_function_host_occurrences(plan, false)
             .expect("final-plan binding should assign graph occurrence lineage");
 
         let (_, evidence) = plan_native_admission(plan.as_ref(), &config, None)

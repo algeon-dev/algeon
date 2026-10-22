@@ -1421,6 +1421,92 @@ fn whole_input_aggregate_windows_match_datafusion() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// At four partitions DataFusion merges sorted partitions by an expression
+/// key, and plans a `UNION ALL` of joins that share the grouping key's hash
+/// partitioning as an `InterleaveExec`. Each query lowers whole under
+/// NativeRequired and returns DataFusion's rows.
+#[test]
+fn multi_partition_expression_merge_and_interleaved_union_match_datafusion() {
+    const FILES: i32 = 3;
+    const ROWS_PER_FILE: i32 = 2_000;
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-merge-interleave");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("key", DataType::Int32, false),
+        Field::new("value", DataType::Float64, false),
+        Field::new("weight", DataType::Float64, false),
+    ]));
+    for file in 0..FILES {
+        let ids = (file * ROWS_PER_FILE)..((file + 1) * ROWS_PER_FILE);
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from_iter_values(ids.clone())),
+                Arc::new(Int32Array::from_iter_values(ids.clone().map(|id| id % 997))),
+                Arc::new(Float64Array::from_iter_values(ids.clone().map(|id| f64::from((id * 7919) % 1009)))),
+                Arc::new(Float64Array::from_iter_values(ids.map(|id| f64::from(id % 13 + 1)))),
+            ],
+        )
+        .unwrap();
+        let file = File::create(dir.join(format!("part{file}.parquet"))).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+    let config = || {
+        let mut config = SessionConfig::new().with_target_partitions(4);
+        config.options_mut().optimizer.hash_join_single_partition_threshold = 0;
+        config.options_mut().optimizer.hash_join_single_partition_threshold_rows = 0;
+        config
+    };
+    let required = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config())
+            .with_algeon_native(native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired))
+            .build(),
+    );
+    let cpu = SessionContext::new_with_config(config());
+    let cases = [
+        ("SortPreservingMergeExec", "SELECT id, value, weight FROM input ORDER BY value / weight DESC, id LIMIT 20"),
+        (
+            "InterleaveExec",
+            "SELECT key, COUNT(*) AS n, SUM(value) AS s FROM (\
+             SELECT a.key, a.value FROM input a JOIN input b ON a.key = b.key WHERE a.weight >= 7 \
+             UNION ALL SELECT a.key, a.value FROM input a JOIN input b ON a.key = b.key WHERE a.weight < 7) u \
+             GROUP BY key ORDER BY key",
+        ),
+    ];
+    let runtime = Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+    runtime.block_on(async {
+        for ctx in [&required, &cpu] {
+            ctx.register_parquet("input", dir.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+        }
+        for (operator, query) in cases {
+            let cpu_plan = cpu.sql(query).await.unwrap().create_physical_plan().await.unwrap();
+            let cpu_tree = displayable(cpu_plan.as_ref()).indent(false).to_string();
+            assert!(cpu_tree.contains(operator), "{query}\n{cpu_tree}");
+            let native_plan = required
+                .sql(query)
+                .await
+                .unwrap()
+                .create_physical_plan()
+                .await
+                .unwrap_or_else(|error| panic!("NativeRequired plans {query}: {error}"));
+            assert!(
+                below_native_admission(&native_plan).downcast_ref::<AlgeonNativeExec>().is_some(),
+                "{query}\n{}",
+                displayable(native_plan.as_ref()).indent(false)
+            );
+            let rows = |batches: Vec<RecordBatch>| pretty_format_batches(&batches).unwrap().to_string();
+            let actual = rows(collect(native_plan, Arc::new(TaskContext::default())).await.unwrap());
+            let expected = rows(collect(cpu_plan, Arc::new(TaskContext::default())).await.unwrap());
+            assert_eq!(actual, expected, "{query}");
+        }
+    });
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// DataFusion inserts a multi-partition partition-preserving SortExec under
 /// window aggregates when target_partitions > 1. The native planner must
 /// normalize this input into a native sort and lower the entire window plan

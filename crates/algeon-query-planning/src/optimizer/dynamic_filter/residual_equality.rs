@@ -1,10 +1,12 @@
-//! Route candidates from column equalities in an inner join's residual.
+//! Route candidates from column equalities in a join's residual.
 //!
 //! A mixed join evaluates `left.a = right.b` inside its residual. It does not use
 //! that equality as a hash key. The equality constrains the consumer side as a
 //! key would, so a supported hash build below the producer side that carries the
 //! same source column can supply a payload to the consumer's local Parquet
-//! source. The residual join is never its own producer. Candidates are reported
+//! source. Only an input whose unmatched rows the join discards consumes, as for
+//! key routes; SQL equality never holds for null, whatever the key null
+//! equality. The residual join is never its own producer. Candidates are reported
 //! only when the producer side is already filtered or is smaller than the
 //! consumer by rows or bytes; otherwise the producer-before-consumer dependency
 //! would cost more than the rows it removes. Only equalities that are conjuncts
@@ -13,9 +15,10 @@
 
 use super::{
     AggregateGroupKeyLineage, BinaryOp, ColumnQualifier, DynamicFilterExecutionOptions, DynamicFilterProducer, Expr,
-    JoinNode, JoinSide, JoinType, LocalParquetSource, NodeId, PlanNode, QueryPlan, SourceColumnLineage, SourceNode,
+    JoinNode, JoinSide, LocalParquetSource, NodeId, PlanNode, QueryPlan, SourceColumnLineage, SourceNode,
     dedup_lineages, estimated_output_bytes, estimated_output_rows, join_shape_supported, join_side_index,
-    lineages_for_column, local_parquet_source, subtree_contains_node, unique_lineage,
+    join_type_discards_unmatched_rows, lineages_for_column, local_parquet_source, subtree_contains_node,
+    unique_lineage,
 };
 
 /// One producer and consumer pairing derived from a residual equality, before
@@ -37,9 +40,6 @@ pub(super) fn residual_equality_route_candidates(
     join_node_id: NodeId,
     join: &JoinNode,
 ) -> Vec<ResidualEqualityRouteCandidate> {
-    if join.spec.join_type != JoinType::Inner {
-        return Vec::new();
-    }
     let Some(residual) = &join.spec.residual_predicate else {
         return Vec::new();
     };
@@ -47,26 +47,30 @@ pub(super) fn residual_equality_route_candidates(
     collect_residual_input_equalities(residual, &mut equalities);
     let mut candidates = Vec::new();
     for equality in equalities {
-        candidates.extend(residual_equality_route_candidates_for_orientation(
-            plan,
-            parent_counts,
-            join_node_id,
-            join,
-            equality.left_column.as_str(),
-            equality.right_column.as_str(),
-            JoinSide::Left,
-            JoinSide::Right,
-        ));
-        candidates.extend(residual_equality_route_candidates_for_orientation(
-            plan,
-            parent_counts,
-            join_node_id,
-            join,
-            equality.right_column.as_str(),
-            equality.left_column.as_str(),
-            JoinSide::Right,
-            JoinSide::Left,
-        ));
+        if join_type_discards_unmatched_rows(&join.spec.join_type, JoinSide::Right) {
+            candidates.extend(residual_equality_route_candidates_for_orientation(
+                plan,
+                parent_counts,
+                join_node_id,
+                join,
+                equality.left_column.as_str(),
+                equality.right_column.as_str(),
+                JoinSide::Left,
+                JoinSide::Right,
+            ));
+        }
+        if join_type_discards_unmatched_rows(&join.spec.join_type, JoinSide::Left) {
+            candidates.extend(residual_equality_route_candidates_for_orientation(
+                plan,
+                parent_counts,
+                join_node_id,
+                join,
+                equality.right_column.as_str(),
+                equality.left_column.as_str(),
+                JoinSide::Right,
+                JoinSide::Left,
+            ));
+        }
     }
     candidates
 }

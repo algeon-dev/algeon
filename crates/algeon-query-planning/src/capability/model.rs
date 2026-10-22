@@ -210,10 +210,8 @@ pub enum ResidualRequirement {
 ///
 /// Every edge requires its producer to exist in the plan and to yield a
 /// GPU-resident cudf frame. `decision` carries `missing_edge_producer` when the
-/// producer is absent, which plan construction already rules out, and the
-/// left-anti dedup reasons when an anti join's aggregate build or probe is not
-/// a proven distinct relation; every other edge is satisfied here and judged
-/// by the compiled pipeline contracts.
+/// producer is absent, which plan construction already rules out; every other
+/// edge is satisfied here and judged by the compiled pipeline contracts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeContract {
     /// Producer node for this dependency.
