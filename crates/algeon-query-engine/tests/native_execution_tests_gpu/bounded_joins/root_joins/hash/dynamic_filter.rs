@@ -60,12 +60,104 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
     fs::remove_dir_all(dir).unwrap();
 }
 
+// The `x IN (SELECT ... WHERE ...)` shape: a left semi join that builds a
+// filtered right input. The build keys prune the probe source's row groups,
+// and the result matches the same plan executed without routes.
+fn bounded_native_query_applies_semi_join_build_dynamic_filter_to_probe_source() {
+    let runtime = backend_runtime();
+    let dir = unique_temp_dir("query-engine-bounded-root-semi-join-dynamic-filter");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_dynamic_filter_probe_parquet(&left_path);
+    write_join_right_keys_parquet(&runtime, &right_path, &[1, 2, 2, 3]);
+    let right_schema = Arc::new(Schema::new(vec![Field::new("order_id", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&left_path)
+                .with_file_size_bytes(fs::metadata(&left_path).unwrap().len())
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string()],
+    )));
+    let right = builder
+        .add_filter(right, Expr::binary(Expr::column("order_id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2))))
+        .unwrap();
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::LeftSemi, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
+    let optimize = |route_discovery| {
+        let options = NativeOptimizerOptions {
+            dynamic_filter_route_discovery: route_discovery,
+            join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+            ..NativeOptimizerOptions::default()
+        };
+        optimize_query_plan(
+            plan.clone(),
+            &options,
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap()
+    };
+    let routed = optimize(DynamicFilterRouteDiscoveryOptions::default());
+    let unrouted = optimize(DynamicFilterRouteDiscoveryOptions::disabled());
+    assert_eq!(routed.diagnostics.dynamic_filter_route_discovery.route_count, 1);
+    assert!(unrouted.plan.dynamic_filter_routes().is_empty());
+    let context = backend_context_with_grant(1024 * 1024);
+
+    let mut outputs = Vec::new();
+    for (optimized, row_groups_committed) in [(&routed, 2), (&unrouted, 4)] {
+        let result = execute_query_plan(&context, &optimized.plan).unwrap();
+        let output = result.output().as_host_arrow().unwrap();
+        let mut rows = int32_array(output, 0)
+            .values()
+            .iter()
+            .copied()
+            .zip(int32_array(output, 1).values().iter().copied())
+            .collect::<Vec<_>>();
+        rows.sort_unstable();
+        assert_eq!(result.metrics().row_groups_committed, row_groups_committed);
+        outputs.push(rows);
+    }
+    assert_eq!(outputs[0], vec![(2, 20), (2, 21)]);
+    assert_eq!(outputs[0], outputs[1]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn dynamic_filter_cases_policy_1_1() {
     run_named_cases(&[
         (
             "bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source",
             bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source,
+        ),
+        (
+            "bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_semi_join_build_dynamic_filter_to_probe_source",
+            bounded_native_query_applies_semi_join_build_dynamic_filter_to_probe_source,
         ),
         (
             "bounded_joins::root_joins::hash::dynamic_filter::bounded_native_query_applies_dynamic_filter_to_source_under_full_sort_probe",

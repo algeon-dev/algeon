@@ -243,6 +243,9 @@ pub(super) struct SharedPartsuppDynamicFilterPlan {
 pub(super) struct SharedPartsuppDynamicFilterPlanOptions {
     pub(super) extra_unconstrained_partsupp_consumer: bool,
     pub(super) final_join_type: JoinType,
+    /// Puts the aggregate on the final join's left input and the part side on
+    /// its right input.
+    pub(super) final_join_swaps_inputs: bool,
     pub(super) final_join_null_equality: JoinNullEquality,
     pub(super) derived_aggregate_group_key: bool,
     pub(super) filter_part_build_keyset: bool,
@@ -255,6 +258,7 @@ impl Default for SharedPartsuppDynamicFilterPlanOptions {
         Self {
             extra_unconstrained_partsupp_consumer: false,
             final_join_type: JoinType::Inner,
+            final_join_swaps_inputs: false,
             final_join_null_equality: JoinNullEquality::NullsDoNotMatch,
             derived_aggregate_group_key: false,
             filter_part_build_keyset: false,
@@ -360,29 +364,50 @@ pub(super) fn q02_like_shared_partsupp_dynamic_filter_plan(
     } else {
         part_partsupp_join
     };
+    let final_join_spec = if options.final_join_swaps_inputs {
+        JoinSpec::new(
+            options.final_join_type,
+            vec![
+                JoinKey::new(
+                    ColumnRef::input(0, aggregate_key_name, aggregate_key_name),
+                    ColumnRef::input(1, "p_partkey", "p_partkey"),
+                ),
+                JoinKey::new(
+                    ColumnRef::input(0, "min_supplycost", "min_supplycost"),
+                    ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
+                ),
+            ],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, aggregate_key_name, aggregate_key_name), "p_partkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "min_supplycost", "min_supplycost"), "ps_supplycost"),
+        ])
+    } else {
+        JoinSpec::new(
+            options.final_join_type,
+            vec![
+                JoinKey::new(
+                    ColumnRef::input(0, "p_partkey", "p_partkey"),
+                    ColumnRef::input(1, aggregate_key_name, aggregate_key_name),
+                ),
+                JoinKey::new(
+                    ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
+                    ColumnRef::input(1, "min_supplycost", "min_supplycost"),
+                ),
+            ],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
+        ])
+    };
+    let (final_join_left, final_join_right) =
+        if options.final_join_swaps_inputs { (partsupp_min, final_join_left) } else { (final_join_left, partsupp_min) };
     let final_join = builder
         .add_join(
             final_join_left,
-            partsupp_min,
-            JoinSpec::new(
-                options.final_join_type,
-                vec![
-                    JoinKey::new(
-                        ColumnRef::input(0, "p_partkey", "p_partkey"),
-                        ColumnRef::input(1, aggregate_key_name, aggregate_key_name),
-                    ),
-                    JoinKey::new(
-                        ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
-                        ColumnRef::input(1, "min_supplycost", "min_supplycost"),
-                    ),
-                ],
-            )
-            .with_null_equality(options.final_join_null_equality)
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
-                JoinOutputColumn::left(ColumnRef::input(0, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
-            ])
-            .with_build_side(JoinSide::Right),
+            final_join_right,
+            final_join_spec.with_null_equality(options.final_join_null_equality).with_build_side(JoinSide::Right),
             Arc::clone(&result_schema),
         )
         .unwrap();

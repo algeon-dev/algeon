@@ -1,3 +1,5 @@
+use query_planning::optimizer::NativeOptimizerResult;
+
 use super::*;
 
 #[test]
@@ -445,4 +447,108 @@ fn native_optimizer_discovers_dynamic_filter_route_for_inner_keyed_residual_join
     assert!(matches!(routes[0].producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. }));
     assert_eq!(routes[0].producer_columns, vec!["right_key".to_string()]);
     assert_eq!(routes[0].consumer_columns, vec!["left_key".to_string()]);
+}
+
+/// A keyed `left_key = right_key` join whose build side is the small input, so
+/// the size heuristics never decline the probe source. Returns the plan with the
+/// left and right source ids.
+fn build_small_left_only_output_join_plan(join_type: JoinType, build_side: JoinSide) -> (QueryPlan, NodeId, NodeId) {
+    let (small, large) = ((16 * 1024 * 1024, 100_000), (512 * 1024 * 1024, 10_000_000));
+    let ((left_bytes, left_rows), (right_bytes, right_rows)) = match build_side {
+        JoinSide::Left => (small, large),
+        JoinSide::Right => (large, small),
+    };
+    let mut fields = vec![Field::new("left_key", DataType::Int32, false)];
+    if let Some(mark_column) = join_type.mark_column() {
+        fields.push(Field::new(mark_column, DataType::Boolean, false));
+    }
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(estimated_local_source("left", "left_key", left_bytes, left_rows));
+    let right = builder.add_source(estimated_local_source("right", "right_key", right_bytes, right_rows));
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                join_type,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "left_key", "left_key"),
+                    ColumnRef::input(1, "right_key", "right_key"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(
+                ColumnRef::input(0, "left_key", "left_key"),
+                "left_key",
+            )])
+            .with_build_side(build_side),
+            Arc::new(Schema::new(fields)),
+        )
+        .unwrap();
+    (builder.finish_gpu_resident(join).unwrap(), left, right)
+}
+
+fn discover_dynamic_filter_routes(plan: QueryPlan) -> NativeOptimizerResult {
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+    optimize_query_plan(
+        plan,
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap()
+}
+
+fn assert_single_build_route_to_source(result: &NativeOptimizerResult, build_side: JoinSide, consumer_source: NodeId) {
+    let routes = result.plan.dynamic_filter_routes();
+    assert_eq!(routes.len(), 1, "{routes:?}");
+    assert!(
+        matches!(routes[0].producer, DynamicFilterProducer::HashJoinBuild { build_side: side, .. } if side == build_side)
+    );
+    assert!(matches!(
+        routes[0].consumer,
+        DynamicFilterConsumer::LocalParquetSource { source_node_id } if source_node_id == consumer_source
+    ));
+    assert_eq!(routes[0].consumer_lowering, DynamicFilterConsumerLowering::ReaderPredicate);
+}
+
+fn assert_join_shape_rejected(result: &NativeOptimizerResult) {
+    let discovery = &result.diagnostics.dynamic_filter_route_discovery;
+    assert_eq!(discovery.considered_count, 1);
+    assert_eq!(discovery.route_count, 0);
+    assert_eq!(discovery.candidates[0].rejected_reason, Some(DynamicFilterRouteRejectedReason::UnsupportedJoinShape));
+    assert!(result.plan.dynamic_filter_routes().is_empty());
+}
+
+// A semi join drops the rows of either input that match nothing on the other,
+// so the build keys may prune the probe source whichever side builds. A mark
+// join keeps every left row and marks it, so its left input never consumes.
+#[test]
+fn native_optimizer_routes_semi_join_build_keys_to_probe_source_but_not_into_mark_join_left_input() {
+    let (plan, left, _) = build_small_left_only_output_join_plan(JoinType::LeftSemi, JoinSide::Right);
+    assert_single_build_route_to_source(&discover_dynamic_filter_routes(plan), JoinSide::Right, left);
+
+    let (plan, _, right) = build_small_left_only_output_join_plan(JoinType::LeftSemi, JoinSide::Left);
+    assert_single_build_route_to_source(&discover_dynamic_filter_routes(plan), JoinSide::Left, right);
+
+    let (plan, _, _) =
+        build_small_left_only_output_join_plan(JoinType::LeftMark { mark_column: "mark".to_string() }, JoinSide::Right);
+    assert_join_shape_rejected(&discover_dynamic_filter_routes(plan));
+}
+
+// An anti join keeps exactly the left rows that match nothing, so only its
+// right input may lose unmatched rows. Under `NOT IN` semantics a right null or
+// an empty right input changes the result, so neither input consumes.
+#[test]
+fn native_optimizer_routes_anti_join_build_keys_only_into_its_right_input() {
+    let (plan, _, right) = build_small_left_only_output_join_plan(JoinType::LEFT_ANTI, JoinSide::Left);
+    assert_single_build_route_to_source(&discover_dynamic_filter_routes(plan), JoinSide::Left, right);
+
+    let (plan, _, _) = build_small_left_only_output_join_plan(JoinType::LEFT_ANTI, JoinSide::Right);
+    assert_join_shape_rejected(&discover_dynamic_filter_routes(plan));
+
+    let (plan, _, _) = build_small_left_only_output_join_plan(JoinType::LeftAnti { null_aware: true }, JoinSide::Left);
+    assert_join_shape_rejected(&discover_dynamic_filter_routes(plan));
 }

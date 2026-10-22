@@ -56,6 +56,19 @@ chunks. Empty and dense range payloads retain no key column. cuDF orders
 membership reads against the retained producer stream and retains completion
 dependencies until consumption ends.
 
+Route discovery places a consumer only on a join input whose unmatched rows
+the join discards. Inner and semi joins discard them on both inputs. A left
+outer, anti or mark join discards them on its right input alone; each left row
+reaches the output, or the mark column, whether it matches or not. A
+null-aware anti join reads the nulls and the emptiness of its right input and
+takes no route on either input. Only single-key joins under
+`NullsDoNotMatch` produce a key route. Native execution builds the right input
+of every keyed left outer and mark join. Build-side selection may move a keyed
+semi or anti join's build to its left input, and the route then reduces the
+right input. A key route at a left outer or mark join, or at an anti join that
+builds its right input, would consume the left input and is rejected as
+`UnsupportedJoinShape`.
+
 Integer bounds and distinct counts classify empty, dense range, small-IN-list
 and larger exact keysets without copying the key column to the host. Resident
 exact payload metadata carries the existing kind, count and range diagnostics;

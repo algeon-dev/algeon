@@ -4,17 +4,19 @@
 //! A local Parquet source with several parents may take a source-level dynamic
 //! filter only when every path upward from it, following the key column through
 //! filters, renaming projections, sorts, grouping-only aggregates and join output
-//! projections, reaches an inner `NullsDoNotMatch` join that equates the column
-//! with the same producer key set. Rows the filter removes then match nothing on
-//! any path and contribute to no output. A limit or window ends a path
+//! projections, reaches a `NullsDoNotMatch` join that equates the column with the
+//! same producer key set and discards the column's input rows that match
+//! nothing. Rows the filter removes then match nothing on any path and
+//! contribute to no output. A limit or window ends a path
 //! negatively because it selects rows by position, so removing rows below it
 //! changes its output even when a join above would constrain the key.
 
 use std::collections::BTreeSet;
 
 use super::{
-    AggregateGroupKeyLineage, AggregateNode, JoinNode, JoinNullEquality, JoinSide, JoinType, NodeId, PlanNode,
-    QueryPlan, aggregate_group_key_output_name, direct_projection_column_name, subtree_contains_node, unique_lineage,
+    AggregateGroupKeyLineage, AggregateNode, JoinNode, JoinNullEquality, JoinSide, NodeId, PlanNode, QueryPlan,
+    aggregate_group_key_output_name, direct_projection_column_name, join_type_discards_unmatched_rows,
+    subtree_contains_node, unique_lineage,
 };
 
 /// Whether every consumer of `source_column` at `source_node_id` is constrained
@@ -218,10 +220,10 @@ fn join_constrains_or_carries_column(
     )
 }
 
-/// Whether `join` equates `column` on `child_side` with the producer key: the
-/// other input must contain the producer key-set node and the other key's
-/// unique lineage must be the producer's source column, so the two sides are
-/// filtered by the same values.
+/// Whether `join` equates `column` on `child_side` with the producer key and
+/// drops `child_side` rows that match nothing: the other input must contain the
+/// producer key-set node and the other key's unique lineage must be the
+/// producer's source column, so the two sides are filtered by the same values.
 #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 fn join_directly_constrains_column(
     plan: &QueryPlan,
@@ -233,7 +235,9 @@ fn join_directly_constrains_column(
     producer_source_node_id: NodeId,
     producer_source_column: &str,
 ) -> bool {
-    if join.spec.join_type != JoinType::Inner || join.spec.null_equality != JoinNullEquality::NullsDoNotMatch {
+    if !join_type_discards_unmatched_rows(&join.spec.join_type, child_side)
+        || join.spec.null_equality != JoinNullEquality::NullsDoNotMatch
+    {
         return false;
     }
     join.spec.keys.iter().any(|key| {
