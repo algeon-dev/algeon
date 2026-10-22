@@ -145,6 +145,12 @@ pub(super) fn scalar_input_expr_lineage_signature(plan: &QueryPlan, node_id: Nod
     }
 }
 
+/// Source column that `column` at `node_id` carries unchanged, through
+/// operators across which a reader predicate over that column selects the same
+/// rows before or after them. A limit stops the lineage, since it keeps a
+/// different prefix of the widened rows. A join carries a column only from an
+/// input whose rows it passes through
+/// ([`JoinType::passes_through_rows_of`](crate::plan::JoinType::passes_through_rows_of)).
 pub(super) fn materialized_column_lineage(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -170,6 +176,9 @@ pub(super) fn materialized_column_lineage(
         },
         PlanNode::Join(join) => {
             let output = join.spec.output_projection.iter().find(|output| output.output_name == column)?;
+            if !join.spec.join_type.passes_through_rows_of(output.side) {
+                return None;
+            }
             let input = match output.side {
                 JoinSide::Left => join.inputs[0],
                 JoinSide::Right => join.inputs[1],
@@ -177,8 +186,8 @@ pub(super) fn materialized_column_lineage(
             materialized_column_lineage(plan, input, output.column.name())
         },
         PlanNode::Sort(sort) => materialized_column_lineage(plan, sort.input, column),
-        PlanNode::Limit(limit) => materialized_column_lineage(plan, limit.input, column),
-        PlanNode::Aggregate(_)
+        PlanNode::Limit(_)
+        | PlanNode::Aggregate(_)
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
