@@ -81,10 +81,6 @@ pub enum Reason {
     UnsupportedJoinResidualExpressionCapability,
     /// A sort-key expression cannot be evaluated by the backend.
     UnsupportedSortExpressionCapability,
-    /// The anti-join build lacks the required deduplicating aggregate.
-    LeftAntiBuildRequiresDedupAggregate,
-    /// The anti-join probe lacks proof that its input is deduplicated.
-    LeftAntiProbeRequiresDedupProvenInput,
     /// The producer referenced by an execution edge is absent from the plan.
     MissingEdgeProducer,
     /// A shared aggregate producer has a consumer outside the aggregate contract.
@@ -220,8 +216,6 @@ impl Reason {
             Self::UnsupportedAggregateGroupExpressionCapability => "unsupported_aggregate_group_expression_capability",
             Self::UnsupportedJoinResidualExpressionCapability => "unsupported_join_residual_expression_capability",
             Self::UnsupportedSortExpressionCapability => "unsupported_sort_expression_capability",
-            Self::LeftAntiBuildRequiresDedupAggregate => "left_anti_build_requires_dedup_aggregate",
-            Self::LeftAntiProbeRequiresDedupProvenInput => "left_anti_probe_requires_dedup_proven_input",
             Self::MissingEdgeProducer => "missing_edge_producer",
             Self::AggregateSharedProducerConsumerNotAggregate => "aggregate_shared_producer_consumer_not_aggregate",
             Self::AggregateSharedProducerInputLineageUnresolved => "aggregate_shared_producer_input_lineage_unresolved",
@@ -317,8 +311,6 @@ impl Reason {
                 CapabilityRejectionCategory::UnsupportedExpressionFamily
             },
             Self::UnsupportedSortExpressionCapability => CapabilityRejectionCategory::UnsupportedExpressionFamily,
-            Self::LeftAntiBuildRequiresDedupAggregate => CapabilityRejectionCategory::MissingEdgeContract,
-            Self::LeftAntiProbeRequiresDedupProvenInput => CapabilityRejectionCategory::MissingEdgeContract,
             Self::MissingEdgeProducer => CapabilityRejectionCategory::MissingEdgeContract,
             Self::AggregateSharedProducerConsumerNotAggregate => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::AggregateSharedProducerInputLineageUnresolved => {

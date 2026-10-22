@@ -11,7 +11,7 @@ use query_planning::{
         bounded_join_unsupported_shape_facts, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
     backend::AnalysisContext,
-    capability::{CapabilityDecision, EdgeConsumer, JoinForm, JoinStrategy, Reason},
+    capability::{CapabilityDecision, EdgeConsumer, JoinForm, JoinStrategy},
     error::{QueryError, QueryErrorCode, Result},
     expr::Expr,
     mode::StatisticalAggregateExecutionMode,

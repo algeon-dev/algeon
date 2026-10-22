@@ -84,10 +84,3 @@ pub(super) const fn join_side_index(side: JoinSide) -> usize {
         JoinSide::Right => 1,
     }
 }
-
-pub(super) const fn opposite_join_side(side: JoinSide) -> JoinSide {
-    match side {
-        JoinSide::Left => JoinSide::Right,
-        JoinSide::Right => JoinSide::Left,
-    }
-}

@@ -80,6 +80,54 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// `LEFT JOIN (SELECT DISTINCT ...) d ... WHERE d.key IS NULL` over an
+/// inner-join probe becomes a LeftAnti with a group-only dedup build. The
+/// probe repeats key 1 with identical rows, and the anti join keeps both.
+fn native_optimizer_rule_executes_left_anti_over_join_probe_keeping_duplicate_rows() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-bounded-left-anti-join-probe-duplicates");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_join_left_parquet_file(&left);
+    write_join_right_parquet_file(&right);
+    let plan = single_partition_sql_plan_with_parquet_tables(
+        &[("left_input", &left), ("right_input", &right)],
+        "SELECT p.key, p.r_payload \
+         FROM (SELECT l.key, r.r_payload FROM left_input l JOIN right_input r ON r.key = l.key) p \
+         LEFT JOIN (SELECT DISTINCT r.key FROM right_input r WHERE r.r_m01 > 1) d ON d.key = p.key \
+         WHERE d.key IS NULL \
+         ORDER BY p.key",
+    );
+    let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let (optimized, diagnostics) =
+        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
+    assert!(
+        below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some(),
+        "outcomes={:?}; plan={}",
+        report.outcomes(),
+        displayable(optimized.as_ref()).indent(false)
+    );
+    assert_eq!(report.selected_count(), 1, "outcomes={:?}", report.outcomes());
+    assert_eq!(report.not_selected_count(), 0, "outcomes={:?}", report.outcomes());
+    assert_eq!(
+        diagnostics.native_optimizer.outer_join_null_rejection.applied_count, 1,
+        "{:?}",
+        diagnostics.native_optimizer.outer_join_null_rejection
+    );
+
+    let native_rows =
+        null_aware_anti_join_rows(&block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap());
+    let datafusion_rows =
+        null_aware_anti_join_rows(&block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap());
+    assert_eq!(datafusion_rows, vec![(Some(1), 10), (Some(1), 10)]);
+    assert_eq!(native_rows, datafusion_rows);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn null_aware_anti_join_rows(batches: &[RecordBatch]) -> Vec<(Option<i32>, i32)> {
     let mut rows = batches
         .iter()
@@ -148,6 +196,10 @@ fn bounded_join_cases_1() {
         (
             "native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan",
             native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan,
+        ),
+        (
+            "native_optimizer_rule_executes_left_anti_over_join_probe_keeping_duplicate_rows",
+            native_optimizer_rule_executes_left_anti_over_join_probe_keeping_duplicate_rows,
         ),
     ]);
 }

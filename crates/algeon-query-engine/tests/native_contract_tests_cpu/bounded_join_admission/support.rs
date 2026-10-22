@@ -267,18 +267,69 @@ fn bounded_aggregate_state_and_max_rows_are_node_facts() {
 }
 
 #[test]
-fn bounded_left_anti_build_edge_requires_dedup_aggregate() {
-    // EXCEPT ALL-shaped: the build side is a grouped aggregate with measures,
-    // which the bounded engine cannot do with multiplicity.
+fn bounded_left_anti_admits_join_output_probe_against_dedup_build() {
+    // `p LEFT JOIN (SELECT DISTINCT k ...) d ... WHERE d.k IS NULL` under a
+    // trailing count. The probe is an inner-join output that may repeat keys;
+    // native LeftAnti keeps every unmatched probe row, so neither edge depends
+    // on the probe being distinct.
+    let mut builder = QueryPlanBuilder::new();
+    let probe = compositional_inner_join_base(&mut builder);
+    let key_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let probe_output_schema = Arc::new(Schema::new(vec![Field::new("left_id", DataType::Int32, false)]));
+    let one_schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
+    let count_schema = Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)]));
+    let build_source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/left-anti-dedup-build.parquet",
+        Arc::clone(&key_schema),
+        vec!["k".into()],
+    )));
+    let dedup = builder
+        .add_aggregate(build_source, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), key_schema)
+        .unwrap();
+    let anti = builder
+        .add_join(
+            probe,
+            dedup,
+            JoinSpec::new(
+                JoinType::LEFT_ANTI,
+                vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id")])
+            .with_build_side(JoinSide::Right),
+            probe_output_schema,
+        )
+        .unwrap();
+    let count_input = builder
+        .add_projection(anti, projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema))
+        .unwrap();
+    let count = builder
+        .add_aggregate(
+            count_input,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
+            ),
+            count_schema,
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(count).unwrap();
+
+    assert_left_anti_edges_satisfied_and_admitted(&plan, anti);
+}
+
+#[test]
+fn bounded_left_anti_admits_grouped_measure_build() {
+    // `NOT EXISTS (SELECT k, count(*) ... GROUP BY k)`: the anti build reads
+    // only key existence, so a measure beside the group key changes nothing.
     let key_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/s3-anti-build-left.parquet",
+        "/tmp/left-anti-grouped-build-left.parquet",
         Arc::clone(&key_schema),
         vec!["k".into()],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/s3-anti-build-right.parquet",
+        "/tmp/left-anti-grouped-build-right.parquet",
         Arc::clone(&key_schema),
         vec!["k".into()],
     )));
@@ -305,86 +356,25 @@ fn bounded_left_anti_build_edge_requires_dedup_aggregate() {
             )
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
             .with_build_side(JoinSide::Right),
-            Arc::clone(&key_schema),
+            key_schema,
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(anti).unwrap();
-    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
-    let build_edge = analysis
-        .edges
-        .iter()
-        .find(|edge| edge.producer == grouped && edge.consumer == EdgeConsumer::Node(anti))
-        .expect("aggregate build edge exists");
-    let CapabilityDecision::Rejected { reason, facts } = &build_edge.decision else {
-        panic!("grouped-measure anti build should reject the build edge");
-    };
-    assert_eq!(*reason, Reason::LeftAntiBuildRequiresDedupAggregate);
-    assert_eq!(facts.get("producer_aggregate_state").map(String::as_str), Some("plain"));
+    assert_left_anti_edges_satisfied_and_admitted(&plan, anti);
 }
 
-#[test]
-fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
-    // EXCEPT DISTINCT-shaped but the probe side is a raw source: a trailing
-    // scalar count would count duplicates.
-    let key_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
-    let one_schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
-    let scalar_schema = Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)]));
-    let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/s3-anti-probe-left.parquet",
-        Arc::clone(&key_schema),
-        vec!["k".into()],
-    )));
-    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/s3-anti-probe-right.parquet",
-        Arc::clone(&key_schema),
-        vec!["k".into()],
-    )));
-    let dedup = builder
-        .add_aggregate(right, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema))
-        .unwrap();
-    let anti = builder
-        .add_join(
-            left,
-            dedup,
-            JoinSpec::new(
-                JoinType::LEFT_ANTI,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
-            )
-            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
-            .with_build_side(JoinSide::Right),
-            Arc::clone(&key_schema),
-        )
-        .unwrap();
-    let count_input = builder
-        .add_projection(anti, projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema))
-        .unwrap();
-    let count = builder
-        .add_aggregate(
-            count_input,
-            AggregateSpec::new(
-                Vec::new(),
-                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
-            ),
-            Arc::clone(&scalar_schema),
-        )
-        .unwrap();
-    let projection =
-        builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema)).unwrap();
-    let plan = builder.finish_with_host_sink(projection).unwrap();
+fn assert_left_anti_edges_satisfied_and_admitted(plan: &QueryPlan, anti: NodeId) {
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
-
-    let probe_edge = analysis
-        .edges
-        .iter()
-        .find(|edge| edge.producer == left && edge.consumer == EdgeConsumer::Node(anti))
-        .expect("probe edge exists");
-    let CapabilityDecision::Rejected { reason, facts } = &probe_edge.decision else {
-        panic!("non-dedup anti probe should reject the probe edge");
-    };
-    assert_eq!(*reason, Reason::LeftAntiProbeRequiresDedupProvenInput);
-    assert_eq!(facts.get("producer_aggregate_state").map(String::as_str), Some("none"));
+    let anti_edges = analysis.edges.iter().filter(|edge| edge.consumer == EdgeConsumer::Node(anti)).collect::<Vec<_>>();
+    assert_eq!(anti_edges.len(), 2, "the anti join has a probe and a build edge");
+    for edge in anti_edges {
+        assert_eq!(edge.decision, CapabilityDecision::Satisfied, "{edge:?}");
+    }
+    assert!(
+        bounded_pipeline_admission(plan).expect("bounded admission should not fail").is_some(),
+        "the left anti plan should be admitted"
+    );
 }
 
 #[test]

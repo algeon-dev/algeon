@@ -802,8 +802,7 @@ fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScala
 /// Three group-only dedup aggregates combined by two stacked keyed LeftAnti
 /// joins under an outermost groupless `count(*)`, i.e. `count(*) from ((a
 /// except b) except c)`. Models a CHAIN of EXCEPT DISTINCTs. The second anti
-/// join's probe side is the first anti join itself. That probe side is not a
-/// dedup aggregate, so its dedup is proven transitively.
+/// join's probe side is the first anti join itself, not a dedup aggregate.
 fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
     let key_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
     let one_schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
@@ -928,10 +927,9 @@ fn composed_pipeline_refuses_keyless_anti_join_fanout_as_malformed() {
 
 #[test]
 fn composed_pipeline_admits_chained_except_distinct_dedup_scalar() {
-    // The setop-dedup proof moved off the plan-family recognizer: aggregate
-    // nodes carry `aggregate_state`, and each LeftAnti input edge checks it. A
-    // CHAIN of EXCEPT DISTINCTs stays admitted because every build is a
-    // group-only dedup aggregate and every probe is dedup-proven.
+    // Each EXCEPT DISTINCT carries its dedup as an explicit group-only
+    // aggregate, and every LeftAnti keeps per-probe-row semantics, so a CHAIN
+    // of them is admitted with no set-operation reading of its edges.
     let plan = projection_root_setop_chained_dedup_scalar_plan();
     assert!(
         bounded_pipeline_admission(&plan).unwrap().is_some(),

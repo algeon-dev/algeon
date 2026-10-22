@@ -192,8 +192,6 @@ pub query_planning::capability::Reason::DatafusionExactStatisticalGroupKeyUnsupp
 pub query_planning::capability::Reason::DatafusionExactUngroupedFloatSumUnsupported
 pub query_planning::capability::Reason::ExpressionLineageRequiresResolvedInputColumn
 pub query_planning::capability::Reason::LargeKeyedHashJoinStrategyUnsupported
-pub query_planning::capability::Reason::LeftAntiBuildRequiresDedupAggregate
-pub query_planning::capability::Reason::LeftAntiProbeRequiresDedupProvenInput
 pub query_planning::capability::Reason::MissingEdgeProducer
 pub query_planning::capability::Reason::OutputLineageAggregateFieldIndexOutOfRange
 pub query_planning::capability::Reason::OutputLineageFieldIndexOutOfRange
