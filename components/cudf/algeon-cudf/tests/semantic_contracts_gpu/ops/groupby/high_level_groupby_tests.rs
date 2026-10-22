@@ -1,6 +1,8 @@
 use cudf::{AggSpec, DataFrame, ErrorCode, ErrorKind, Exec, GroupByAgg};
 
-use crate::common::{assert_missing_column_error, column_from_slice, dataframe_from_columns, error_context_value};
+use crate::common::{
+    assert_missing_column_error, column_from_slice, column_from_strs, dataframe_from_columns, error_context_value,
+};
 
 fn assert_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -393,6 +395,38 @@ fn groupby_nunique_shortcut() {
     assert_eq!(pairs, vec![(1, 2), (2, 1)]);
 }
 
+fn groupby_string_min_max_beside_nunique_on_same_column() {
+    // NUNIQUE sorts each group's values. MIN and MAX of a string column read
+    // row positions, so they must not take those within-group sorted values.
+    // No group's first or last row holds its minimum or maximum.
+    let keys = column_from_slice(&[1i32, 2, 1, 2, 1, 2]).unwrap();
+    let vals = column_from_strs(&["m", "q", "z", "x", "a", "c"]).unwrap();
+    let df = dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+
+    let result = df
+        .groupby(["key"])
+        .on(Exec::RETAINED)
+        .agg(&[
+            AggSpec::new("value", GroupByAgg::NUnique),
+            AggSpec::new("value", GroupByAgg::Min),
+            AggSpec::new("value", GroupByAgg::Max),
+        ])
+        .unwrap();
+
+    let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
+    let nunique_data = result.series("value_nunique").unwrap().to_vec_strict::<i32>().unwrap();
+    let min_data = result.series("value_min").unwrap().to_strings_strict().unwrap();
+    let max_data = result.series("value_max").unwrap().to_strings_strict().unwrap();
+    let mut rows = key_data
+        .into_iter()
+        .zip(nunique_data)
+        .zip(min_data.into_iter().zip(max_data))
+        .map(|((key, nunique), (min, max))| (key, nunique, min, max))
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.0);
+    assert_eq!(rows, vec![(1, 3, "a".to_string(), "z".to_string()), (2, 3, "c".to_string(), "x".to_string())]);
+}
+
 fn groupby_std_ddof1() {
     // keys: [1, 1, 2, 2], values: [10.0, 20.0, 100.0, 200.0]
     // key=1: std(ddof=1) = sqrt(((10-15)^2 + (20-15)^2) / 1) = sqrt(50) ≈ 7.0711
@@ -614,6 +648,10 @@ pub(super) const CASES: &[(&str, fn())] = &[
     ("high_level_groupby_tests::groupby_median_shortcut", groupby_median_shortcut),
     ("high_level_groupby_tests::groupby_nunique", groupby_nunique),
     ("high_level_groupby_tests::groupby_nunique_shortcut", groupby_nunique_shortcut),
+    (
+        "high_level_groupby_tests::groupby_string_min_max_beside_nunique_on_same_column",
+        groupby_string_min_max_beside_nunique_on_same_column,
+    ),
     ("high_level_groupby_tests::groupby_std_ddof1", groupby_std_ddof1),
     ("high_level_groupby_tests::groupby_std_ddof0", groupby_std_ddof0),
     ("high_level_groupby_tests::groupby_std_shortcut", groupby_std_shortcut),

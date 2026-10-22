@@ -54,6 +54,11 @@ Bug fixes:
   reader filter no longer crashes, the stats survivor count is reported only
   when the stats stage ran, the decimal literal type check honors scale, and
   decimal fixed-length dictionary values are decoded big-endian.
+- Sort-based groupby: after NUNIQUE, MEDIAN or a quantile on a column,
+  ARGMIN, ARGMAX, NTH_ELEMENT and COLLECT_LIST on the same column read the
+  within-group sorted values in place of the grouped values. ARGMIN and
+  ARGMAX, and with them MIN and MAX of a string column, returned another row
+  of the group. Grouped values now always keep the key sort order.
 - cuco exception safety, applied as a build-time patch: temporary storage is
   neither leaked nor double-freed when an allocation throws.
 - A GCC 14.2 internal compiler error in `make_datasources` is avoided by
