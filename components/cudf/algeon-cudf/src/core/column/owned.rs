@@ -193,6 +193,30 @@ impl Column {
         Self::from_handle_with_domain(handle, domain)
     }
 
+    /// Creates a zero-row column whose type, children included, is the pre-order type tree `nodes`.
+    pub(crate) fn empty_from_type_tree_in_domain(
+        nodes: &[cudf_sys::cudf_column_type_node_t],
+        domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let num_nodes = usize_to_i32_len(nodes.len(), "type_tree_node_count", operation)?;
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.enter_execution()?;
+        error::check_status_in(
+            // SAFETY: `nodes` stays borrowed for the call and holds `num_nodes` initialized entries.
+            unsafe {
+                cudf_sys::cudf_column_create_empty_from_type_tree_ex(
+                    nodes.as_ptr(),
+                    num_nodes,
+                    exec_options.options(),
+                    &mut handle,
+                )
+            },
+            operation,
+        )?;
+        Self::from_handle_with_domain(handle, domain)
+    }
+
     fn create_empty_with_dtype_in_domain(
         dtype: DataType,
         domain: Arc<ExecutionDomain>,

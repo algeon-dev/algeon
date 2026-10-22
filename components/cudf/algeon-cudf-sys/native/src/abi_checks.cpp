@@ -4,6 +4,7 @@
 
 #include "cudf_rust/ast.h"
 #include "cudf_rust/binary.h"
+#include "cudf_rust/column.h"
 #include "cudf_rust/copying.h"
 #include "cudf_rust/datetime.h"
 #include "cudf_rust/device.h"
@@ -201,6 +202,12 @@ static_assert(CUDF_AST_LOGICAL_OR == static_cast<int>(cudf::ast::ast_operator::L
 static_assert(CUDF_AST_IS_NULL == static_cast<int>(cudf::ast::ast_operator::IS_NULL));
 static_assert(CUDF_AST_NOT == static_cast<int>(cudf::ast::ast_operator::NOT));
 static_assert(CUDF_AST_CAST_TO_FLOAT64 == static_cast<int>(cudf::ast::ast_operator::CAST_TO_FLOAT64));
+
+static_assert(std::is_standard_layout_v<cudf_column_type_node_t>, "cudf_column_type_node_t must be standard layout");
+static_assert(offsetof(cudf_column_type_node_t, type_id) == 0, "cudf_column_type_node_t::type_id must be the first field");
+static_assert(offsetof(cudf_column_type_node_t, scale) == sizeof(cudf_type_id_t), "cudf_column_type_node_t::scale must follow type_id");
+static_assert(offsetof(cudf_column_type_node_t, num_children) == offsetof(cudf_column_type_node_t, scale) + sizeof(int32_t), "cudf_column_type_node_t::num_children must follow scale");
+static_assert(sizeof(cudf_column_type_node_t) == 3 * sizeof(int32_t), "cudf_column_type_node_t must be three 32-bit fields");
 
 static_assert(std::is_standard_layout_v<cudf_row_predicate_node_t>, "cudf_row_predicate_node_t must be standard layout");
 static_assert(offsetof(cudf_row_predicate_node_t, kind) == 0, "cudf_row_predicate_node_t::kind must be the first field");

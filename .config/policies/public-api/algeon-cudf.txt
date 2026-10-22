@@ -4178,6 +4178,8 @@ impl cudf::Runtime
 pub fn cudf::Runtime::dataframe_from_record_batch(&self, &arrow_array::record_batch::RecordBatch) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::Runtime::dataframe_from_record_batches(&self, &[arrow_array::record_batch::RecordBatch]) -> cudf::core::error::Result<cudf::DataFrame>
 impl cudf::Runtime
+pub fn cudf::Runtime::empty_dataframe_from_arrow_schema(&self, &arrow_schema::schema::Schema) -> cudf::core::error::Result<cudf::DataFrame>
+impl cudf::Runtime
 pub fn cudf::Runtime::narrow_packed_matrix_to_float32(&self, &cudf::PackedMatrix) -> cudf::core::error::Result<cudf::PackedMatrix>
 pub fn cudf::Runtime::pack_columns(&self, &[&cudf::core::Column], cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
 pub fn cudf::Runtime::pack_flat_column(&self, &cudf::core::Column, usize, usize, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
@@ -5708,6 +5710,8 @@ pub fn cudf::Runtime::with_retained_lifetime(&self, alloc::sync::Arc<(dyn core::
 impl cudf::Runtime
 pub fn cudf::Runtime::dataframe_from_record_batch(&self, &arrow_array::record_batch::RecordBatch) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::Runtime::dataframe_from_record_batches(&self, &[arrow_array::record_batch::RecordBatch]) -> cudf::core::error::Result<cudf::DataFrame>
+impl cudf::Runtime
+pub fn cudf::Runtime::empty_dataframe_from_arrow_schema(&self, &arrow_schema::schema::Schema) -> cudf::core::error::Result<cudf::DataFrame>
 impl cudf::Runtime
 pub fn cudf::Runtime::narrow_packed_matrix_to_float32(&self, &cudf::PackedMatrix) -> cudf::core::error::Result<cudf::PackedMatrix>
 pub fn cudf::Runtime::pack_columns(&self, &[&cudf::core::Column], cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>

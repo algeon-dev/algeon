@@ -74,6 +74,32 @@ cudf_status_t cudf_column_create_empty_ex(cudf_type_id_t type_id,
                                           cudf_exec_options_t const* options,
                                           cudf_column_handle* out);
 
+/// One node of a column type tree laid out in depth-first pre-order. The
+/// `num_children` nodes after a parent describe its children, each followed
+/// by its own subtree. `scale` is read for DECIMAL types only.
+typedef struct cudf_column_type_node_t {
+  cudf_type_id_t type_id;
+  int32_t scale;
+  int32_t num_children;
+} cudf_column_type_node_t;
+
+/// Create a zero-row column whose type, including every nested child type,
+/// is the pre-order tree `nodes[0..num_nodes)`.
+///
+/// A LIST node takes exactly one child, its element type. A STRUCT node takes
+/// one or more children, its field types. Every other node takes none.
+/// EMPTY and DICTIONARY32 are rejected with `CUDF_ERROR_TYPE`; a malformed
+/// tree, including nodes left over after the root subtree, is rejected with
+/// `CUDF_ERROR_INVALID_ARGUMENT`. No device memory is allocated.
+///
+/// `options` must be non-NULL and must name an explicit valid device, a
+/// non-NULL stream, and a non-NULL memory resource. The returned column
+/// records that execution provenance.
+cudf_status_t cudf_column_create_empty_from_type_tree_ex(cudf_column_type_node_t const* nodes,
+                                                         int32_t num_nodes,
+                                                         cudf_exec_options_t const* options,
+                                                         cudf_column_handle* out);
+
 /// Create a numeric column from host data with explicit execution options.
 ///
 /// `options` must be non-NULL and must name an explicit valid device, a

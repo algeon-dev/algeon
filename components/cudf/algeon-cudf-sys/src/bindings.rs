@@ -274,6 +274,14 @@ pub struct cudf_interop_semantic_column_t {
     pub num_child_column_ids: i32,
     pub keys_column_id: u32,
 }
+#[doc = " One node of a column type tree laid out in depth-first pre-order. The\n `num_children` nodes after a parent describe its children, each followed\n by its own subtree. `scale` is read for DECIMAL types only."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_column_type_node_t {
+    pub type_id: cudf_type_id_t,
+    pub scale: i32,
+    pub num_children: i32,
+}
 #[repr(C)]
 #[derive(Debug)]
 pub struct cudf_ast_expression_handle_state {
@@ -1038,6 +1046,13 @@ unsafe extern "C" {
     #[doc = " Create an empty column of the given type with explicit execution options.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive\n the returned column."]
     pub fn cudf_column_create_empty_ex(
         type_id: cudf_type_id_t,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+    #[doc = " Create a zero-row column whose type, including every nested child type,\n is the pre-order tree `nodes[0..num_nodes)`.\n\n A LIST node takes exactly one child, its element type. A STRUCT node takes\n one or more children, its field types. Every other node takes none.\n EMPTY and DICTIONARY32 are rejected with `CUDF_ERROR_TYPE`; a malformed\n tree, including nodes left over after the root subtree, is rejected with\n `CUDF_ERROR_INVALID_ARGUMENT`. No device memory is allocated.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. The returned column\n records that execution provenance."]
+    pub fn cudf_column_create_empty_from_type_tree_ex(
+        nodes: *const cudf_column_type_node_t,
+        num_nodes: i32,
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
