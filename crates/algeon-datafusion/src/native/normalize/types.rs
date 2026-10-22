@@ -4,7 +4,7 @@ use arrow::datatypes::SchemaRef;
 use datafusion::{
     datasource::source::DataSourceExec,
     physical_expr::window::WindowExpr,
-    physical_plan::{empty::EmptyExec, placeholder_row::PlaceholderRowExec},
+    physical_plan::{empty::EmptyExec, placeholder_row::PlaceholderRowExec, union::InterleaveExec},
 };
 use query_planning::expr::LimitSpec;
 
@@ -389,16 +389,51 @@ impl NormalizedNativeNestedLoopJoin<'_> {
     }
 }
 
-/// DataFusion physical union with recursively normalized children.
+/// DataFusion `UNION ALL` with recursively normalized children.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeUnion<'a> {
-    pub(in crate::native) union: &'a UnionExec,
+    pub(in crate::native) union: NormalizedNativeUnionExec<'a>,
     pub(in crate::native) inputs: Vec<NormalizedNativeInput<'a>>,
+}
+
+/// The DataFusion operator of a `UNION ALL`. Both emit every input row once
+/// and differ only in how they assign rows to partitions, which native
+/// execution does not keep.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::native) enum NormalizedNativeUnionExec<'a> {
+    /// Each input partition stays a separate output partition.
+    Union(&'a UnionExec),
+    /// Output partition `k` combines partition `k` of every input, which
+    /// share one hash or range partitioning.
+    Interleave(&'a InterleaveExec),
+}
+
+impl<'a> NormalizedNativeUnionExec<'a> {
+    pub(in crate::native) fn inputs(self) -> &'a [Arc<dyn ExecutionPlan>] {
+        match self {
+            Self::Union(union) => union.inputs(),
+            Self::Interleave(interleave) => interleave.inputs(),
+        }
+    }
+
+    pub(in crate::native) fn schema(&self) -> SchemaRef {
+        match self {
+            Self::Union(union) => union.schema(),
+            Self::Interleave(interleave) => interleave.schema(),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Union(_) => "UnionExec",
+            Self::Interleave(_) => "InterleaveExec",
+        }
+    }
 }
 
 impl NormalizedNativeUnion<'_> {
     fn shape(&self) -> CandidateShape {
-        CandidateShape::new("UnionExec", self.inputs.iter().map(NormalizedNativeInput::shape).collect())
+        CandidateShape::new(self.union.name(), self.inputs.iter().map(NormalizedNativeInput::shape).collect())
     }
 }
 

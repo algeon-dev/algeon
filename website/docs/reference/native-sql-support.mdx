@@ -19,7 +19,7 @@ reports the exact coverage; this page summarizes the rules.
 | Area | Native forms |
 | --- | --- |
 | Sources | Local and S3 object-store Parquet. Projected columns, row-group selection, partition columns, reader predicates and scan limits when their contracts are supported. |
-| Row operations | Filters, projections, stable or unstable sorts, `LIMIT`/`OFFSET`, and schema-compatible `UNION ALL`. A distinct `UNION` and `SELECT DISTINCT` are grouped aggregates. |
+| Row operations | Filters, projections, stable or unstable sorts, `LIMIT`/`OFFSET`, and schema-compatible `UNION ALL`. A merge of sorted partitions lowers as one sort by its keys, and a `UNION ALL` that DataFusion plans as `InterleaveExec` lowers as a union. A distinct `UNION` and `SELECT DISTINCT` are grouped aggregates. |
 | Aggregation | Global and grouped aggregation, admitted grouping sets, aggregate filters, and partial/final state when the state is explicitly modeled. |
 | Windows | `rank`, `row_number`, `lag`, `lead`, whole-partition aggregate windows, and cumulative `sum`/`min`/`max` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. `rank`, `lag` and `lead` require `ORDER BY`; `row_number` does not. An empty `OVER ()` aggregates the whole input as one partition. |
 | Joins | Equi joins and admitted residual or keyless forms for inner, outer, semi, anti, mark and cross joins. Build side, output projection, key types and residual expressions can narrow an otherwise supported join kind. |

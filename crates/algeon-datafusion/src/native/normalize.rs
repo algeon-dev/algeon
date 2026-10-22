@@ -13,7 +13,7 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     datasource::{memory::MemorySourceConfig, source::DataSourceExec},
-    physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
+    physical_expr::LexOrdering,
     physical_plan::{
         ExecutionPlan, ExecutionPlanProperties, Partitioning,
         aggregates::AggregateExec,
@@ -27,7 +27,7 @@ use datafusion::{
         projection::ProjectionExec,
         repartition::RepartitionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
-        union::UnionExec,
+        union::{InterleaveExec, UnionExec},
         windows::{BoundedWindowAggExec, WindowAggExec},
     },
 };
@@ -52,7 +52,7 @@ pub(in crate::native) use types::{
     NormalizedNativeGpuResidentSource, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeLimit,
     NormalizedNativeLiteralSource, NormalizedNativeNestedLoopJoin, NormalizedNativePlan, NormalizedNativeProjection,
     NormalizedNativeSort, NormalizedNativeSortExprs, NormalizedNativeSortOrigin, NormalizedNativeSource,
-    NormalizedNativeUnion, NormalizedNativeWindow, NormalizedNativeWindowExec,
+    NormalizedNativeUnion, NormalizedNativeUnionExec, NormalizedNativeWindow, NormalizedNativeWindowExec,
 };
 
 /// Normalizes the physical subtree rooted at `plan` into one native input
@@ -86,6 +86,7 @@ fn root_operator_is_normalized(plan: &dyn ExecutionPlan) -> bool {
         || plan.downcast_ref::<CrossJoinExec>().is_some()
         || plan.downcast_ref::<NestedLoopJoinExec>().is_some()
         || plan.downcast_ref::<UnionExec>().is_some()
+        || plan.downcast_ref::<InterleaveExec>().is_some()
         || gpu_resident_producer_input_name(plan).is_some()
 }
 
@@ -117,7 +118,8 @@ pub(super) fn make_declared_ordered_hash_join_fetch_explicit<'a>(
 }
 
 /// Normalizes a merge of sorted partitions. One native sort over the
-/// concatenated partitions reproduces the merge. When the partitions come from
+/// concatenated partitions by the merge's keys reproduces the merge, so the
+/// merge accepts any key the native sort lowers. When the partitions come from
 /// a per-partition sort, the merge only adds its fetch, which must not ask for
 /// more rows than each partition kept.
 fn normalize_sort_preserving_merge<'a>(
@@ -130,9 +132,7 @@ fn normalize_sort_preserving_merge<'a>(
         blocker: Box::new(PlanBlocker::Operator(merge.name().to_string())),
         single_partition: merge_single_partition_outcome(merge),
     };
-    if !sort_ordering_is_column_keyed(merge.expr())
-        || !plan_partitions_match_ordering(merge.input().as_ref(), merge.expr())
-    {
+    if !plan_partitions_match_ordering(merge.input().as_ref(), merge.expr()) {
         return Err(unsupported());
     }
     let merge_fetch = merge.fetch().map(NativeLimitSpec::fetch);
@@ -143,7 +143,7 @@ fn normalize_sort_preserving_merge<'a>(
             (Some(merge_fetch), Some(sort_fetch)) if sort_fetch < merge_fetch => return Err(unsupported()),
             _ => {},
         }
-        if projection.is_some() || sort_orderings_match(merge.expr(), sort.expr()) {
+        if projection.is_some() || merge.expr() == sort.expr() {
             let sorted = normalize_native_input(merge.input().as_ref(), candidate, true)?;
             return Ok(with_merge_fetch(sorted, merge_fetch));
         }
@@ -456,7 +456,12 @@ fn normalize_native_input(
             right: Box::new(right),
         }));
     }
-    if let Some(union) = plan.downcast_ref::<UnionExec>() {
+    let union = if let Some(union) = plan.downcast_ref::<UnionExec>() {
+        Some(NormalizedNativeUnionExec::Union(union))
+    } else {
+        plan.downcast_ref::<InterleaveExec>().map(NormalizedNativeUnionExec::Interleave)
+    };
+    if let Some(union) = union {
         let inputs = union
             .inputs()
             .iter()
@@ -498,7 +503,8 @@ fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
 /// partitions or a hash repartition on the way ends that path: the partitions
 /// below no longer reach the operator above. DataFusion also merges the
 /// collected side of a join, so a union there ends at the merge and only a
-/// union on the probe side counts.
+/// union on the probe side counts. An `InterleaveExec` is not such a union:
+/// each of its partitions combines the same hash partition of every input.
 fn reads_union_branches(stage: &dyn ExecutionPlan) -> bool {
     stage.is::<UnionExec>()
         || stage.children().into_iter().any(|input| {
@@ -520,20 +526,4 @@ fn ordered_multi_partition_memory_source_is_unsupported(source_exec: &DataSource
         .data_source()
         .downcast_ref::<MemorySourceConfig>()
         .is_some_and(|memory| source_exec.properties().output_ordering().is_some() && memory.partitions().len() > 1)
-}
-
-fn sort_orderings_match(left: &LexOrdering, right: &LexOrdering) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter().zip(right.iter()).all(|(left, right)| sort_expr_key(left) == sort_expr_key(right))
-}
-
-fn sort_ordering_is_column_keyed(ordering: &LexOrdering) -> bool {
-    !ordering.is_empty() && ordering.iter().all(|sort_expr| sort_expr.expr.downcast_ref::<Column>().is_some())
-}
-
-fn sort_expr_key(sort_expr: &PhysicalSortExpr) -> Option<(usize, &str, bool, bool)> {
-    let column = sort_expr.expr.downcast_ref::<Column>()?;
-    Some((column.index(), column.name(), sort_expr.options.descending, sort_expr.options.nulls_first))
 }

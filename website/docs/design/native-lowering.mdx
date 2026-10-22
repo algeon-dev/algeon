@@ -132,7 +132,10 @@ CUDA streams.
 
 Lowering reconstructs operations whose semantics span chunks, such as multi-pass
 aggregates (`AVG` retaining sums and counts for final division) and distributed
-sort and limit merges.
+sort and limit merges. A merge of sorted partitions lowers as one native sort by
+the merge's keys, expression keys included. An `InterleaveExec`, which
+DataFusion plans for a `UNION ALL` whose branches share a hash partitioning,
+lowers as a union.
 
 A window with `ORDER BY` keys, or one that numbers rows by position inside
 partitions, reads its input ordered by its partition keys, then its `ORDER BY`

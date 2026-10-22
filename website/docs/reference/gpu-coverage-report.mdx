@@ -175,7 +175,7 @@ inside an executable plan, and the statement is not rejected.
 
 | `reason_code` | `remedy_code` (`remedy_kind`) | When it applies |
 | --- | --- | --- |
-| `native_sort_preserving_merge_unsupported` | `set_target_partitions_one` (`config_action`) | DataFusion merged sorted partitions because it planned several partitions. |
+| `native_sort_preserving_merge_unsupported` | `set_target_partitions_one` (`config_action`) | DataFusion merged sorted partitions whose per-partition sort keeps fewer rows than the merge returns, or whose input does not report the merge's ordering. |
 | `native_distributed_aggregate_unsupported` | `set_target_partitions_one` (`config_action`) | DataFusion planned partial and final aggregate stages over several partitions. |
 | `native_local_limit_partition_unsupported` | `set_target_partitions_one` (`config_action`) | DataFusion planned a limit that works on each of several partitions. |
 | `native_distributed_aggregate_unsupported` | `unsupported_operator_gap` (`engine_gap`) | The stages remain at one partition, or the single-stage aggregate fails native validation. |

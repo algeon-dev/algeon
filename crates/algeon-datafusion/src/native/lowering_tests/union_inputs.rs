@@ -1,4 +1,7 @@
+use datafusion::physical_plan::displayable;
+
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 /// The plan builder interns identical nodes, so UNION ALL branches that read
 /// the same table, or the same aggregate CTE, become one native node that the
@@ -34,6 +37,38 @@ async fn unions_reading_one_native_node_twice_plan_natively() {
             "{sql}\nthe union reads one node through both inputs:\n{native_plan}"
         );
     }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// DataFusion plans a `UNION ALL` whose branches share one hash partitioning
+/// as an `InterleaveExec`, which emits every branch row once like a union.
+/// The candidate keeps the operator's name and lowers to one native union.
+#[tokio::test]
+async fn interleaved_union_of_partitioned_joins_lowers_to_a_native_union() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-interleave");
+    for index in 0..3 {
+        write_numeric_parquet_file(&dir.join(format!("part{index}.parquet")));
+    }
+    let mut config = SessionConfig::new().with_target_partitions(4);
+    config.options_mut().optimizer.hash_join_single_partition_threshold = 0;
+    config.options_mut().optimizer.hash_join_single_partition_threshold_rows = 0;
+    let sql = "SELECT key, COUNT(*) AS n FROM (\
+               SELECT a.key FROM bench a JOIN bench b ON a.key = b.key WHERE a.payload >= 10 \
+               UNION ALL SELECT a.key FROM bench a JOIN bench b ON a.key = b.key WHERE a.payload < 10) \
+               GROUP BY key";
+    let plan = sql_plan(&dir, config, sql).await;
+    let tree = displayable(plan.as_ref()).indent(false).to_string();
+    assert!(tree.contains("InterleaveExec"), "{tree}");
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    let [CandidateOutcome::Selected { candidate }] = result.report.outcomes() else {
+        panic!("{tree}\noutcomes={:?}", result.report.outcomes());
+    };
+    assert!(candidate.shape.contains_operator("InterleaveExec"), "{}", candidate.shape);
+    let unions = result.selected_plan().nodes().iter().filter(|node| matches!(node.kind, PlanNode::Union(_))).count();
+    assert_eq!(unions, 1, "{}", result.selected_plan());
 
     fs::remove_dir_all(dir).unwrap();
 }
