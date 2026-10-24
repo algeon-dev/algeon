@@ -3,12 +3,16 @@
 
 use std::{fmt::Write as _, sync::OnceLock};
 
+use query_runtime::runtime::S3SourceStorageCredential;
+
 use super::{
-    AlgeonGpuDeviceProfile, ConfigSources, ConfigValueSource, Duration, ServerConfig, ServerFile, ServerTlsFileConfig,
+    AlgeonGpuDeviceProfile, ConfigSources, ConfigValueSource, Duration, ServerConfig, ServerFile,
+    ServerIcebergCatalogConfig, ServerIcebergCatalogKind, ServerIcebergRestAuth, ServerTlsFileConfig,
     env::scalar_leaves,
     file::{
         ServerAdmissionDeviceProfileFileConfig, ServerAdmissionFileConfig, ServerCugraphFileConfig,
-        ServerDataFileConfig, ServerModelsFileConfig, ServerNativeFileConfig, ServerObservabilityFileConfig,
+        ServerDataFileConfig, ServerIcebergFileConfig, ServerModelsFileConfig, ServerNativeFileConfig,
+        ServerObservabilityFileConfig, ServerS3FileConfig,
     },
     table_lookup,
 };
@@ -16,8 +20,10 @@ use crate::server::backend::GpuDeviceMemoryLimit;
 
 /// `config` in the file schema. A leaf left `None` is unset and takes an
 /// automatic value. TLS paths come from `tls`, because the tonic config keeps
-/// no paths. The struct literals are exhaustive so a new file field must be
-/// projected here before the crate compiles.
+/// no paths. Iceberg catalogs stay out of the table so their secrets cannot
+/// reach a rendering; [`render_iceberg_catalogs`] prints them. The struct
+/// literals are exhaustive so a new file field must be projected here before
+/// the crate compiles.
 fn project(config: &ServerConfig, tls: Option<&ServerTlsFileConfig>) -> ServerFile {
     let native = config.native_optimizer_config.native_execution_config();
     let chunking = native.source_chunking();
@@ -75,6 +81,13 @@ fn project(config: &ServerConfig, tls: Option<&ServerTlsFileConfig>) -> ServerFi
             None => ServerModelsFileConfig { root: None, max_model_bytes: None },
         },
         data: ServerDataFileConfig { root: config.data_root.clone() },
+        s3: native.s3_storage().map(|storage| ServerS3FileConfig {
+            endpoint: storage.endpoint.clone(),
+            region: storage.region.clone(),
+            path_style: storage.virtual_hosted_style_request.map(|virtual_hosted| !virtual_hosted),
+            unsigned: Some(storage.credential == S3SourceStorageCredential::Unsigned),
+        }),
+        iceberg: ServerIcebergFileConfig { catalogs: Vec::new() },
         auth: config.auth.clone(),
         tls: tls.cloned(),
     }
@@ -181,7 +194,61 @@ pub(super) fn render(config: &ServerConfig, sources: &ConfigSources) -> String {
             _ => {},
         }
     }
+    render_iceberg_catalogs(&mut out, &config.iceberg_catalogs, sources);
     out
+}
+
+/// `[[iceberg.catalogs]]` from the typed config. `credential` and `token`
+/// render as `is set` comments.
+fn render_iceberg_catalogs(out: &mut String, catalogs: &[ServerIcebergCatalogConfig], sources: &ConfigSources) {
+    let file_catalogs = table_lookup(&sources.file_table, "iceberg.catalogs").and_then(toml::Value::as_array);
+    for (index, catalog) in catalogs.iter().enumerate() {
+        let file_entry = file_catalogs.and_then(|entries| entries.get(index)).and_then(toml::Value::as_table);
+        let file_auth = file_entry.and_then(|entry| entry.get("auth")).and_then(toml::Value::as_table);
+        let _ = writeln!(out, "\n[[iceberg.catalogs]]");
+        render_string(out, "name", Some(&catalog.name), file_entry);
+        match &catalog.kind {
+            ServerIcebergCatalogKind::Rest(rest) => {
+                render_string(out, "kind", Some("rest"), file_entry);
+                render_string(out, "uri", Some(&rest.uri), file_entry);
+                render_string(out, "warehouse", rest.warehouse.as_deref(), file_entry);
+                render_string(out, "prefix", rest.prefix.as_deref(), file_entry);
+                let _ = writeln!(out, "\n[iceberg.catalogs.auth]");
+                match &rest.auth {
+                    ServerIcebergRestAuth::None => render_string(out, "kind", Some("none"), file_auth),
+                    ServerIcebergRestAuth::OAuth2 { server_uri, scope, .. } => {
+                        render_string(out, "kind", Some("oauth2"), file_auth);
+                        let _ = writeln!(out, "# credential is set  # source: file");
+                        render_string(out, "server_uri", server_uri.as_deref(), file_auth);
+                        render_string(out, "scope", scope.as_deref(), file_auth);
+                    },
+                    ServerIcebergRestAuth::Token(_) => {
+                        render_string(out, "kind", Some("token"), file_auth);
+                        let _ = writeln!(out, "# token is set  # source: file");
+                    },
+                }
+            },
+            ServerIcebergCatalogKind::Glue(glue) => {
+                render_string(out, "kind", Some("glue"), file_entry);
+                render_string(out, "warehouse", Some(&glue.warehouse), file_entry);
+                render_string(out, "catalog_id", glue.catalog_id.as_deref(), file_entry);
+                render_string(out, "region", glue.region.as_deref(), file_entry);
+                render_string(out, "endpoint", glue.endpoint.as_deref(), file_entry);
+            },
+        }
+    }
+}
+
+fn render_string(out: &mut String, key: &str, value: Option<&str>, file: Option<&toml::Table>) {
+    let source = if file.is_some_and(|file| file.contains_key(key)) { "file" } else { "default" };
+    match value {
+        Some(value) => {
+            let _ = writeln!(out, "{key} = {}  # source: {source}", render_value(&toml::Value::from(value)));
+        },
+        None => {
+            let _ = writeln!(out, "# {key} is unset  # source: {source}");
+        },
+    }
 }
 
 fn render_device_profiles(out: &mut String, effective: &toml::Table, sources: &ConfigSources) {

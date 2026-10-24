@@ -1,12 +1,14 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
-use arrow::datatypes::{Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
+    execution::object_store::ObjectStoreUrl,
+    object_store::ObjectMeta,
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::filter::FilterExec,
 };
@@ -19,11 +21,8 @@ use query_planning::source::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        footers::parquet_footer,
-        pruning::{
-            local_object_path_to_filesystem, scan_predicate_is_dynamic_filter_hint,
-            scan_predicate_without_dynamic_filter_hints,
-        },
+        footers::{FooterUnavailable, object_parquet_footer},
+        pruning::{scan_predicate_is_dynamic_filter_hint, scan_predicate_without_dynamic_filter_hints},
         validate::collect_required_columns,
     },
 };
@@ -205,37 +204,88 @@ fn collect_source_required_columns(
     collect_required_columns(&source_expr, table_schema, required)
 }
 
-fn native_physical_file_schema(file_scan: &FileScanConfig) -> Result<SchemaRef, CapabilityReason> {
-    let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
-    if !file_scan.object_store_url.as_str().starts_with("file://") {
-        if files.len() > 1 {
-            return Err(CapabilityReason::NativeSourceSchemaMapping);
-        }
+/// The physical schema of the scan's Parquet objects, which column indices
+/// address.
+///
+/// Every distinct object's footer must hold the same columns in the same
+/// order with the same Arrow types. A column may be required in one file and
+/// optional in another when the table schema declares it nullable; DataFusion
+/// widens nullability the same way when it merges file schemas. A remote scan
+/// of one object keeps the DataFusion file schema without reading its footer.
+pub(in crate::native) fn native_physical_file_schema(
+    file_scan: &FileScanConfig,
+) -> Result<SchemaRef, CapabilityReason> {
+    let mut checked_locations = HashSet::new();
+    // Byte-range splits of one object share its footer, so each distinct object is checked once.
+    let objects = file_scan
+        .file_groups
+        .iter()
+        .flat_map(|group| group.files())
+        .map(|file| &file.object_meta)
+        .filter(|object| checked_locations.insert(&object.location))
+        .collect::<Vec<_>>();
+    let local = file_scan.object_store_url.as_str().starts_with("file://");
+    if objects.is_empty() || !local && objects.len() == 1 {
         return Ok(Arc::clone(file_scan.file_schema()));
     }
-    let Some(first_file) = files.first() else {
-        return Ok(Arc::clone(file_scan.file_schema()));
-    };
-    let first_location = first_file.object_meta.location.as_ref();
-    let first_schema = local_parquet_footer_schema(first_location)?;
-    // Byte-range splits of one object share its footer, so each distinct object is parsed once.
-    let mut checked_locations = HashSet::from([first_location]);
-    for file in files.iter().skip(1) {
-        let location = file.object_meta.location.as_ref();
-        if !checked_locations.insert(location) {
-            continue;
+    let table_schema = file_scan.file_schema();
+    let mut physical_schema: Option<SchemaRef> = None;
+    for object in objects {
+        let schema = parquet_footer_schema(&file_scan.object_store_url, object)?;
+        let nullable_in_table = |field: &Field| {
+            table_schema.field_with_name(field.name()).map_or(true, |table_field| table_field.is_nullable())
+        };
+        if schema.fields().iter().any(|field| field.is_nullable() && !nullable_in_table(field)) {
+            return Err(CapabilityReason::NativeSourceFileSchemaMismatch);
         }
-        let schema = local_parquet_footer_schema(location)?;
-        if schema.as_ref() != first_schema.as_ref() {
-            return Err(CapabilityReason::NativeSourceSchemaMapping);
+        match &physical_schema {
+            None => physical_schema = Some(schema),
+            Some(first) => {
+                if first.fields().len() != schema.fields().len()
+                    || first.fields().iter().zip(schema.fields()).any(|(first, field)| {
+                        first.name() != field.name()
+                            || data_type_without_metadata(first.data_type())
+                                != data_type_without_metadata(field.data_type())
+                    })
+                {
+                    return Err(CapabilityReason::NativeSourceFileSchemaMismatch);
+                }
+            },
         }
     }
-    Ok(first_schema)
+    Ok(physical_schema.unwrap_or_else(|| Arc::clone(file_scan.file_schema())))
 }
 
-fn local_parquet_footer_schema(location: &str) -> Result<SchemaRef, CapabilityReason> {
-    let path = local_object_path_to_filesystem(location);
-    let footer = parquet_footer(path.as_path()).map_err(|_error| CapabilityReason::NativeSourceSchemaMapping)?;
+/// `data_type` with the metadata of every nested field removed: writers
+/// attach field ids and other annotations to nested fields, which do not
+/// change how the column decodes.
+fn data_type_without_metadata(data_type: &DataType) -> DataType {
+    let field_without_metadata = |field: &FieldRef| -> FieldRef {
+        Arc::new(
+            Field::new(field.name(), data_type_without_metadata(field.data_type()), field.is_nullable())
+                .with_metadata(HashMap::new()),
+        )
+    };
+    match data_type {
+        DataType::List(field) => DataType::List(field_without_metadata(field)),
+        DataType::LargeList(field) => DataType::LargeList(field_without_metadata(field)),
+        DataType::ListView(field) => DataType::ListView(field_without_metadata(field)),
+        DataType::LargeListView(field) => DataType::LargeListView(field_without_metadata(field)),
+        DataType::FixedSizeList(field, size) => DataType::FixedSizeList(field_without_metadata(field), *size),
+        DataType::Map(field, sorted) => DataType::Map(field_without_metadata(field), *sorted),
+        DataType::Struct(fields) => DataType::Struct(fields.iter().map(field_without_metadata).collect()),
+        other => other.clone(),
+    }
+}
+
+fn parquet_footer_schema(
+    object_store_url: &ObjectStoreUrl,
+    object: &ObjectMeta,
+) -> Result<SchemaRef, CapabilityReason> {
+    let footer = object_parquet_footer(object_store_url, object).map_err(|unavailable| match unavailable {
+        FooterUnavailable::Local => CapabilityReason::NativeSourceSchemaMapping,
+        FooterUnavailable::RemoteNotCached => CapabilityReason::NativeSourceRemoteFooterUnavailable,
+    })?;
     let metadata = footer.file_metadata();
     let schema = parquet_to_arrow_schema(metadata.schema_descr(), metadata.key_value_metadata())
         .map_err(|_error| CapabilityReason::NativeSourceSchemaMapping)?;

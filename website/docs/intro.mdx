@@ -170,9 +170,9 @@ query runs on one GPU, and the limits below follow from that.
   toward the grant.
 - GPU scans read Parquet from local disk or S3-compatible storage, read-only,
   and cover a [subset of SQL](./reference/native-sql-support.mdx) and
-  [data types](./reference/data-type-support.md). Lakehouse catalog
-  integrations, beginning with Apache Iceberg, represent the
-  [next milestone on the roadmap](./reference/roadmap.md#mid-term).
+  [data types](./reference/data-type-support.md). Iceberg tables from REST and
+  Glue catalogs read as Parquet scans; see
+  [Iceberg support](./integration/overview.mdx#iceberg-support).
 - Indexes, fitted models and graphs exist only while the query that
   builds them runs. A bounded server can
   [cache graphs](./cugraph/overview.mdx#reuse-in-bounded-servers).

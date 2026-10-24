@@ -1,11 +1,24 @@
+use arrow::{
+    array::{Int32Array, Int64Array},
+    record_batch::RecordBatch,
+};
 use cudf::testing;
+use datafusion::{
+    execution::SessionStateBuilder,
+    object_store::{ObjectStoreExt, memory::InMemory, path::Path as ObjectStorePath},
+    parquet::arrow::ArrowWriter,
+    physical_optimizer::PhysicalOptimizerRule,
+};
 use query_planning::source::CredentialMode;
 use query_runtime::runtime::{S3SourceStorageProfile, SourceStorageProfile};
 
 use super::*;
 use crate::{
+    error::DataFusionErrorExt,
     native::{ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID},
     native_exec::AlgeonNativeExecutionConfig,
+    planner::{AlgeonGpuExecutionMode, plan_with_native_diagnostics},
+    session::AlgeonSessionStateBuilderExt,
 };
 
 fn pushed_down_parquet_predicate_with_filter_is_reader_pushdown() {
@@ -991,24 +1004,234 @@ fn s3_parquet_object_store_scan_lowers_to_remote_native_source() {
 }
 
 #[test]
-fn s3_multi_file_parquet_object_store_scan_rejects_unverified_footer_schema() {
+fn s3_multi_file_parquet_scan_reads_footers_from_the_session_cache() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-s3-store-multi-file");
-    let first_path = dir.join("part-0.parquet");
-    let second_path = dir.join("part-1.parquet");
-    write_numeric_parquet_file(&first_path);
-    write_numeric_parquet_file(&second_path);
-    let scan = parquet_scan_with_object_store_url(&dir, ObjectStoreUrl::parse("s3://bucket").unwrap());
+    write_numeric_parquet_file(&dir.join("part-0.parquet"));
+    write_numeric_parquet_file(&dir.join("part-1.parquet"));
+    let (scan, footers) =
+        remote_scan_with_cached_footers(parquet_scan(&dir), ObjectStoreUrl::parse("s3://bucket").unwrap());
+    let _footers = remote_footer_scope(footers);
+
+    let result = lower_physical_plan_to_native(scan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(result.selected_plan());
+    assert_eq!(source.file_count(), 2);
+    for file in &source.files {
+        assert_eq!(file.location.read_capability(), "object_store:s3");
+        assert_eq!(file.row_group_rows.as_deref(), Some(&[3][..]), "the cached footer supplies row-group metadata");
+    }
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics[0].source_read_strategy, "remote_direct");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn s3_multi_file_parquet_scan_without_cached_footers_names_the_missing_remote_footer() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-s3-store-uncached");
+    write_numeric_parquet_file(&dir.join("part-0.parquet"));
+    write_numeric_parquet_file(&dir.join("part-1.parquet"));
+    let (scan, _uncached) =
+        remote_scan_with_cached_footers(parquet_scan(&dir), ObjectStoreUrl::parse("s3://bucket").unwrap());
 
     let result = lower_physical_plan_to_native(scan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert!(result.plan.is_none());
-    assert_eq!(result.not_selected_count(), 1);
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceSchemaMapping, .. }
-    ));
+    let CandidateOutcome::NotSupported { capability_reason, detail, .. } = &result.report.outcomes()[0] else {
+        panic!("outcomes={:?}", result.report.outcomes());
+    };
+    assert_eq!(*capability_reason, CapabilityReason::NativeSourceRemoteFooterUnavailable);
+    let blocking = detail.blocking().expect("a source rejection names its scan");
+    assert_eq!(blocking.kind(), "source");
+    assert_eq!(blocking.text(), "Parquet scan of 2 objects in `s3://bucket/`");
+    let diagnostics = &result.source_diagnostics[0];
+    assert_eq!(
+        diagnostics.rejected_features.iter().map(|feature| feature.as_str()).collect::<Vec<_>>(),
+        ["remote_footer_unavailable"]
+    );
+    assert_eq!(diagnostics.source_read_strategy, "remote_direct");
+    assert_eq!(diagnostics.credential_mode, "shared_process_env");
+    assert!(!diagnostics.direct_device_read);
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_required_error_names_the_missing_remote_footer() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-s3-required-uncached");
+    write_numeric_parquet_file(&dir.join("part-0.parquet"));
+    write_numeric_parquet_file(&dir.join("part-1.parquet"));
+    let (scan, _uncached) =
+        remote_scan_with_cached_footers(parquet_scan(&dir), ObjectStoreUrl::parse("s3://bucket").unwrap());
+    let rule = AlgeonNativePhysicalOptimizerRule::new(
+        AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
+    );
+
+    let failure = rule
+        .optimize(aggregate_sort_limit_plan(scan, Operator::Plus), &ConfigOptions::default())
+        .expect_err("NativeRequired rejects the CPU scan");
+
+    let error = failure.find_algeon_error().expect("typed adapter error");
+    assert_eq!(error.fact_value("reason"), Some("native_source_remote_footer_unavailable"));
+    assert_eq!(error.fact_value("blocking_kind"), Some("source"));
+    assert_eq!(
+        error.client_detail().and_then(|detail| detail.value("blocking_subject")),
+        Some("Parquet scan of 2 objects in `s3://bucket/`")
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn remote_listing_table_footers_reach_native_planning_through_the_session() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-s3-listing-table");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let store = Arc::new(InMemory::new());
+    for name in ["part-0.parquet", "part-1.parquet"] {
+        store.put(&ObjectStorePath::from(format!("table/{name}")), fs::read(&path).unwrap().into()).await.unwrap();
+    }
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_config(SessionConfig::new().with_target_partitions(1))
+        .with_algeon_native(AlgeonNativeOptimizerConfig::default())
+        .build();
+    state.runtime_env().register_object_store(ObjectStoreUrl::parse("s3://bucket").unwrap().as_ref(), store);
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("t", "s3://bucket/table/", ParquetReadOptions::default()).await.unwrap();
+    let logical =
+        ctx.sql("SELECT key, SUM(m00) AS total FROM t GROUP BY key").await.unwrap().into_optimized_plan().unwrap();
+
+    let (_plan, diagnostics) = plan_with_native_diagnostics(&ctx.state(), &logical).await.unwrap();
+
+    assert!(
+        diagnostics.report.outcomes().iter().any(|outcome| matches!(outcome, CandidateOutcome::Selected { .. })),
+        "outcomes={:?}",
+        diagnostics.report.outcomes()
+    );
+    assert_eq!(diagnostics.source_diagnostics[0].file_count, 2);
+    assert!(diagnostics.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn s3_split_full_file_byte_ranges_coalesce_without_a_footer() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-s3-split-ranged-file");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let (scan, _uncached) = remote_scan_with_cached_footers(
+        parquet_scan_with_split_full_byte_ranges(&path),
+        ObjectStoreUrl::parse("s3://bucket").unwrap(),
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(result.selected_plan());
+    assert_eq!(source.file_count(), 1);
+    assert_eq!(source.files[0].resolved_source.original_location, "s3://bucket/table/input.parquet");
+    assert_eq!(result.source_diagnostics[0].ranged_file_count, 2);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "coalesced_full_files");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn s3_partial_byte_range_selects_row_groups_from_the_cached_footer() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-s3-partial-ranged-file");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let offsets = row_group_range_pruning_offsets(&path);
+    let (scan, footers) = remote_scan_with_cached_footers(
+        parquet_scan_with_explicit_byte_ranges(&path, vec![(offsets[0], offsets[1])]),
+        ObjectStoreUrl::parse("s3://bucket").unwrap(),
+    );
+    let _footers = remote_footer_scope(footers);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(result.selected_plan());
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[0][..]));
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "row_group_selection");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn files_that_differ_only_in_nullability_lower_under_a_nullable_table_column() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-nullability-widening");
+    write_single_int64_column_parquet_file(&dir.join("part-0.parquet"), Field::new("value", DataType::Int64, false));
+    write_single_int64_column_parquet_file(&dir.join("part-1.parquet"), Field::new("value", DataType::Int64, true));
+    let scan = parquet_scan(&dir);
+    assert!(scan.schema().field_with_name("value").unwrap().is_nullable(), "DataFusion widens the merged column");
+
+    let result = lower_physical_plan_to_native(scan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(native_local_parquet_source(result.selected_plan()).file_count(), 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn files_with_different_column_types_are_a_file_schema_mismatch() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-type-mismatch");
+    let first = dir.join("part-0.parquet");
+    let second = dir.join("part-1.parquet");
+    write_single_int64_column_parquet_file(&first, Field::new("value", DataType::Int64, false));
+    write_single_int32_column_parquet_file(&second);
+    let scan = parquet_scan_with_extra_local_file(parquet_scan(&first), &second);
+
+    let result = lower_physical_plan_to_native(scan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert!(result.plan.is_none());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceFileSchemaMismatch, .. }
+    ));
+    let diagnostics = &result.source_diagnostics[0];
+    assert_eq!(diagnostics.schema_mapping_disposition.as_str(), "rejected");
+    assert!(diagnostics.rejected_features.iter().any(|feature| feature.as_str() == "schema_mapping"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn write_single_int64_column_parquet_file(path: &std::path::Path, field: Field) {
+    let schema = Arc::new(Schema::new(vec![field]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![1, 2, 3]))]).unwrap();
+    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_single_int32_column_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+/// `scan` with the local Parquet file at `path` appended to its first file
+/// group, past DataFusion's schema inference.
+fn parquet_scan_with_extra_local_file(scan: Arc<dyn ExecutionPlan>, path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let mut files = file_scan.file_groups[0].files().to_vec();
+    let mut extra = files[0].clone();
+    extra.object_meta.location = path.to_str().unwrap().trim_start_matches('/').into();
+    extra.object_meta.size = fs::metadata(path).unwrap().len();
+    files.push(extra);
+    let file_scan =
+        FileScanConfigBuilder::from(file_scan.clone()).with_file_groups(vec![FileGroup::new(files)]).build();
+    DataSourceExec::from_data_source(file_scan)
 }
 
 #[test]

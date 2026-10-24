@@ -34,7 +34,7 @@ class TpcdsProfileMetadataTest(unittest.TestCase):
                         "# tpcds_benchmark_native_device_budget_bytes=102005473280",
                         "# tpcds_benchmark_native_max_source_chunk_bytes=34359738368",
                         "# tpcds_benchmark_native_max_row_groups_per_chunk=1024",
-                        "# tpcds_benchmark_native_source_chunk_planning_mode=local_parquet_throughput",
+                        "# tpcds_benchmark_native_source_chunk_planning_mode=parquet_throughput",
                         "engine\tquery_id\titeration\twarmup\twall_ms\toutcome\toutput_rows\tnative_runtime_started",
                         "native_gpu\tq44\t0\tfalse\t640.0\tsucceeded\t1\ttrue",
                     ]
@@ -49,7 +49,7 @@ class TpcdsProfileMetadataTest(unittest.TestCase):
         self.assertEqual(rows["q44"]["measured"], [640.0])
         self.assertEqual(profile["name"], "sf100_gpu_throughput")
         self.assertEqual(profile["row_groups"], "1024")
-        self.assertEqual(profile["source_chunk_planning_mode"], "local_parquet_throughput")
+        self.assertEqual(profile["source_chunk_planning_mode"], "parquet_throughput")
         self.assertTrue(profile["known"])
 
 if __name__ == "__main__":

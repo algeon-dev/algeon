@@ -6,6 +6,7 @@ use std::{
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
     common::Constraint,
+    datasource::{physical_plan::ParquetSource, source::DataSourceExec},
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::{ExecutionPlan, filter::FilterExec},
 };
@@ -13,6 +14,7 @@ use query_planning::{
     expr::Expr as NativeExpr,
     plan::{NodeId, QueryPlanBuilder as NativeQueryPlanBuilder},
     source::SourceDiagnostics as NativeSourceDiagnostics,
+    triage::TriageCode,
 };
 
 use crate::native::ParquetReadStrategyConfig;
@@ -34,6 +36,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{LoweringFailure, normalize::NormalizedNativeSource},
+    report::PlanBlocker,
 };
 
 pub(super) fn lower_source_input(
@@ -42,7 +45,36 @@ pub(super) fn lower_source_input(
     demand: &Demand,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
-    lower_local_parquet_source_input(source.scan, source.filter, builder, demand, source_reads)
+    lower_local_parquet_source_input(source.scan, source.filter, builder, demand, source_reads).map_err(|failure| {
+        match failure {
+            // A source rejection names the scan, so a `NativeRequired` error
+            // carries the reason and its subject.
+            LoweringFailure::Rejected(rejection)
+                if rejection.reason().facts().triage == TriageCode::UnsupportedSource =>
+            {
+                LoweringFailure::Rejected(rejection.or_blocked_by(|| source_blocker(source.scan)))
+            },
+            failure => failure,
+        }
+    })
+}
+
+fn source_blocker(scan: &DataSourceExec) -> PlanBlocker {
+    match scan.downcast_to_file_source::<ParquetSource>() {
+        Some((file_scan, _)) => {
+            let objects = file_scan
+                .file_groups
+                .iter()
+                .flat_map(|group| group.files())
+                .map(|file| &file.object_meta.location)
+                .collect::<BTreeSet<_>>();
+            PlanBlocker::Source {
+                object_store_url: file_scan.object_store_url.as_str().to_string(),
+                object_count: objects.len(),
+            }
+        },
+        None => PlanBlocker::Operator(scan.name().to_string()),
+    }
 }
 
 pub(super) fn combine_scan_limits(left: Option<usize>, right: Option<usize>) -> Option<usize> {

@@ -64,6 +64,16 @@ flight-sql-stress-check = ["dep:algeon-datafusion", "dep:cudf-sys", "algeon-data
 # constant, to validate retained artifacts.
 server-runtime-observability-e2e = ["dep:query-runtime"]
 embedded-backend-e2e = ["dep:reqwest"]
+# `s3://` Parquet scans through one S3 configuration for DataFusion and native
+# reads, for a library and a server-configured backend, against real S3 or an
+# S3-compatible service.
+s3-parquet-e2e = ["dep:cudf-sys", "dep:datafusion", "dep:algeon-datafusion", "algeon-datafusion/server"]
+# Iceberg REST and Glue catalogs served by an in-process Flight SQL server,
+# against the local services of fixtures/iceberg-local.
+iceberg-local-e2e = [
+  "dep:cudf-sys", "dep:datafusion", "dep:algeon-datafusion", "algeon-datafusion/server",
+  "dep:algeon-iceberg", "dep:iceberg", "dep:tokio-util",
+]
 embedded-backend-fixture = [
   "dep:algeon-datafusion", "algeon-datafusion/server", "algeon-datafusion/cugraph",
   "dep:cudf-sys", "dep:cugraph-sys", "dep:datafusion", "dep:anyhow",
@@ -123,12 +133,14 @@ cuvs-sys = { workspace = true, optional = true }
 cuml-sys = { workspace = true, optional = true }
 datafusion = { workspace = true, optional = true }
 algeon-datafusion = { workspace = true, optional = true }
+algeon-iceberg = { workspace = true, optional = true }
 bench = { path = "../bench", optional = true }
 workloads = { workspace = true, optional = true }
 query-engine = { workspace = true, optional = true }
 query-planning = { workspace = true, optional = true }
 query-runtime = { workspace = true, optional = true }
 futures = { workspace = true }
+iceberg = { workspace = true, optional = true }
 parquet = { workspace = true, features = ["arrow"] }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }

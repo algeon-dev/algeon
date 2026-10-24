@@ -16,6 +16,7 @@ default = []
 cugraph = ["algeon-datafusion/cugraph", "dep:cugraph-sys"]
 cuvs = ["algeon-datafusion/cuvs", "dep:cuvs-sys"]
 cuml = ["algeon-datafusion/cuml", "dep:cuml-sys"]
+iceberg = ["dep:algeon-iceberg"]
 nvml = ["algeon-datafusion/nvml"]
 
 [lints]
@@ -23,6 +24,7 @@ workspace = true
 
 [dependencies]
 algeon-datafusion = { workspace = true, default-features = false, features = ["server"] }
+algeon-iceberg = { workspace = true, optional = true }
 # Keep these direct sys edges so build.rs receives runtime link metadata.
 cudf-sys = { workspace = true }
 cugraph-sys = { workspace = true, optional = true }

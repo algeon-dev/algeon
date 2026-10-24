@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::Serialize;
 use toml::de::Error as TomlDeError;
 
@@ -20,6 +22,8 @@ pub(super) struct ServerFile {
     pub(super) cugraph: ServerCugraphFileConfig,
     pub(super) models: ServerModelsFileConfig,
     pub(super) data: ServerDataFileConfig,
+    pub(super) s3: Option<ServerS3FileConfig>,
+    pub(super) iceberg: ServerIcebergFileConfig,
     pub(super) auth: AuthConfig,
     pub(super) tls: Option<ServerTlsFileConfig>,
 }
@@ -59,6 +63,83 @@ pub(super) struct ServerModelsFileConfig {
 #[serde(deny_unknown_fields, default)]
 pub(super) struct ServerDataFileConfig {
     pub(super) root: Option<PathBuf>,
+}
+
+/// `[s3]`: the storage every `s3://` source reads through. Its presence,
+/// even as an empty table, enables `s3://` locations; unset fields follow the
+/// AWS environment.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub(super) struct ServerS3FileConfig {
+    pub(super) endpoint: Option<String>,
+    pub(super) region: Option<String>,
+    pub(super) path_style: Option<bool>,
+    pub(super) unsigned: Option<bool>,
+}
+
+/// `[iceberg]`: holds only the `[[iceberg.catalogs]]` array, so it has no
+/// environment override form.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub(super) struct ServerIcebergFileConfig {
+    pub(super) catalogs: Vec<ServerIcebergCatalogFileConfig>,
+}
+
+/// One `[[iceberg.catalogs]]` entry, tagged by `kind`. Each kind accepts only
+/// its own keys.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum ServerIcebergCatalogFileConfig {
+    Rest {
+        name: String,
+        uri: String,
+        warehouse: Option<String>,
+        prefix: Option<String>,
+        #[serde(default)]
+        auth: ServerIcebergRestAuthFileConfig,
+    },
+    Glue {
+        name: String,
+        warehouse: String,
+        catalog_id: Option<String>,
+        region: Option<String>,
+        endpoint: Option<String>,
+    },
+}
+
+/// `auth` of a REST catalog entry, tagged by `kind`. `None` is an empty
+/// struct variant because serde ignores unknown keys beside the tag of a unit
+/// variant, even under `deny_unknown_fields`.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum ServerIcebergRestAuthFileConfig {
+    None {},
+    #[serde(rename = "oauth2")]
+    OAuth2 {
+        credential: FileSecret,
+        server_uri: Option<String>,
+        scope: Option<String>,
+    },
+    Token {
+        token: FileSecret,
+    },
+}
+
+impl Default for ServerIcebergRestAuthFileConfig {
+    fn default() -> Self {
+        Self::None {}
+    }
+}
+
+/// A secret read from the config file, redacted from `Debug`.
+#[derive(Deserialize, Serialize)]
+#[serde(transparent)]
+pub(super) struct FileSecret(pub(super) String);
+
+impl fmt::Debug for FileSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -154,6 +235,13 @@ impl ServerFile {
             },
             models: ServerModelsFileConfig { root: Some(PathBuf::new()), max_model_bytes: Some(0) },
             data: ServerDataFileConfig { root: Some(PathBuf::new()) },
+            s3: Some(ServerS3FileConfig {
+                endpoint: Some(String::new()),
+                region: Some(String::new()),
+                path_style: Some(false),
+                unsigned: Some(false),
+            }),
+            iceberg: ServerIcebergFileConfig { catalogs: Vec::new() },
             auth: AuthConfig { mode: AuthMode::BasicBearer { users: Vec::new(), token_ttl_secs: 0 } },
             tls: Some(ServerTlsFileConfig {
                 cert_path: PathBuf::new(),

@@ -39,12 +39,12 @@ fn clickbench_native_profile_numeric_overrides_become_custom() {
 fn clickbench_native_profile_source_chunk_planning_mode_override_becomes_custom() {
     let profile = clickbench_native_profile_settings_from([
         (ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV, "conservative"),
-        (ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
+        (ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "parquet_throughput"),
     ]);
 
     assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_CUSTOM);
     assert_eq!(profile.profile_source, "custom_overrides");
-    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::ParquetThroughput);
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn clickbench_native_profile_exact_overrides_resolve_to_named_profile() {
             ALGEON_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
             &CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK.to_string(),
         ),
-        (ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
+        (ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "parquet_throughput"),
     ]);
 
     assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT);
@@ -86,7 +86,7 @@ fn clickbench_native_optimizer_config_uses_resolved_profile_knobs() {
     let config = clickbench_native_optimizer_config_with_profile_settings(&profile);
     let execution = config.native_execution_config();
 
-    assert_eq!(execution.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(execution.source_chunk_planning_mode(), SourceChunkPlanningMode::ParquetThroughput);
     assert_eq!(
         execution.source_chunking().max_source_chunk_bytes.get(),
         CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES

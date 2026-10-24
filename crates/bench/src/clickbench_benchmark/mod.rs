@@ -1020,7 +1020,7 @@ mod tests {
         assert!(tsv.contains("# clickbench_benchmark_native_profile_source=env_profile\n"));
         assert!(tsv.contains("# clickbench_benchmark_native_max_source_chunk_bytes=34359738368\n"));
         assert!(tsv.contains("# clickbench_benchmark_native_max_row_groups_per_chunk=1024\n"));
-        assert!(tsv.contains("# clickbench_benchmark_native_source_chunk_planning_mode=local_parquet_throughput\n"));
+        assert!(tsv.contains("# clickbench_benchmark_native_source_chunk_planning_mode=parquet_throughput\n"));
         assert!(tsv.contains(
             "# clickbench_benchmark_kvikio_compat_mode=on\n# clickbench_benchmark_kvikio_threads=64\n# clickbench_benchmark_kvikio_task_size_bytes=4194304\n"
         ));
@@ -1090,7 +1090,7 @@ mod tests {
                 max_row_groups_per_chunk: CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
                 max_retry_attempts: SourceChunking::DEFAULT_MAX_RETRY_ATTEMPTS.get(),
                 min_retry_chunk_row_groups: SourceChunking::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS.get(),
-                source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
+                source_chunk_planning_mode: SourceChunkPlanningMode::ParquetThroughput,
             },
             progress: false,
             dump_rows_dir: None,

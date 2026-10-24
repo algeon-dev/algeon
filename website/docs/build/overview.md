@@ -100,6 +100,12 @@ build-support crate follow the
 [workspace and publication contracts](https://github.com/algeon-dev/algeon/blob/main/scripts/test-harness.md#workspace-and-publication-contracts).
 Platform and toolchain requirements are in [Prerequisites](./prerequisites.md).
 
+`algeon-iceberg` has `publish = false` and is the only crate that depends on
+iceberg-rust. The root manifest pins iceberg-rust to a Git revision of
+`apache/iceberg-rust` (the one `apache/datafusion-iceberg` pins). A build of
+`algeon-iceberg`, directly or through the `iceberg` feature of `algeon-server`,
+therefore fetches that revision from GitHub and needs network access to it.
+
 ## Build order
 
 Each step of the full-feature build is one command in

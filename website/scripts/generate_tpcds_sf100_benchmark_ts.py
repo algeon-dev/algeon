@@ -222,7 +222,7 @@ def main() -> None:
             gpu_meta.get("tpcds_benchmark_native_min_retry_chunk_row_groups", "0") or 0
         ),
         "nativeSourceChunkPlanningMode": gpu_meta.get(
-            "tpcds_benchmark_native_source_chunk_planning_mode", "local_parquet_throughput"
+            "tpcds_benchmark_native_source_chunk_planning_mode", "parquet_throughput"
         ),
         "nativeStatisticalAggregateExecutionMode": gpu_meta.get(
             "tpcds_benchmark_native_statistical_aggregate_execution_mode", "gpu_native_tolerant"

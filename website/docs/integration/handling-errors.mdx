@@ -196,9 +196,35 @@ native_required mode rejected a plan that needs DataFusion CPU: GPU execution do
 ~~~
 
 That status carries `x-algeon-blocking-kind`, from a fixed vocabulary such as
-`cast`, `aggregate_function` or `operator` (`column_type` for a column), and
-`x-algeon-blocking-subject`, the text before the instruction. Each surface
-carries these names under its own [disclosure rules](../design/errors.mdx#disclosure-model).
+`cast`, `aggregate_function`, `operator` or `source` (`column_type` for a
+column), and `x-algeon-blocking-subject`, the text before the instruction. Each
+surface carries these names under its own [disclosure rules](../design/errors.mdx#disclosure-model).
+
+A rejected Parquet scan carries kind `source`. Its `x-algeon-reason` is the
+capability reason, for example `native_source_remote_footer_unavailable` when
+planning found no cached footer for an `s3://` object, and the subject reads
+like ``Parquet scan of 2 objects in `s3://bucket/` ``. The reason's
+[remedy](../reference/gpu-coverage-report.mdx#remedies-for-sources) names the
+planning path and settings that fill the footer cache.
+
+### Unsupported Iceberg table features {/* #unsupported-table-feature */}
+
+A snapshot the Iceberg scan cannot read correctly fails with
+`unsupported_table_feature`, which has kind `unsupported`, status `permanent`
+and Flight code `UNIMPLEMENTED`. The check runs in the table provider before
+native lowering, so every execution mode raises it.
+
+The status carries the `reason` as `x-algeon-reason`. Its values are
+`iceberg_delete_files`, `iceberg_field_id_mismatch`,
+`iceberg_missing_field_ids`, `iceberg_partition_column_absent`,
+`iceberg_required_column_absent`, `iceberg_encrypted_file`,
+`iceberg_non_parquet_file`, `iceberg_multiple_buckets`,
+`iceberg_unsupported_location_scheme` and
+`iceberg_storage_properties_mismatch`. The
+[Iceberg support](./overview.mdx#iceberg-rejections) table gives each trigger.
+The table, snapshot id, data file path and column are raw facts and stay out of
+metadata and logs. A retry fails the same way until the table or the `[s3]`
+settings change.
 
 ### Rejections in EXPLAIN GPU {/* #rejections-in-explain-gpu */}
 

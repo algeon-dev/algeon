@@ -184,7 +184,7 @@ def main() -> None:
             meta_or("tpch_benchmark_native_min_retry_chunk_row_groups", "1")
         ),
         "nativeSourceChunkPlanningMode": meta_or(
-            "tpch_benchmark_native_source_chunk_planning_mode", "local_parquet_throughput"
+            "tpch_benchmark_native_source_chunk_planning_mode", "parquet_throughput"
         ),
         "nativeMaxSourceReadsInFlight": inum(
             meta_or("tpch_benchmark_native_max_source_reads_in_flight", "2")

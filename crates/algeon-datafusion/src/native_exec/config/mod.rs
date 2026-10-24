@@ -285,7 +285,7 @@ impl AlgeonNativeExecutionConfig {
         self
     }
 
-    /// Set expert local-throughput source chunk planning policy.
+    /// Set expert throughput source chunk planning policy.
     ///
     /// This policy is intentionally Rust-only; public source chunk settings remain
     /// the bounded memory policy and source chunk planning mode.
@@ -380,7 +380,7 @@ impl AlgeonNativeExecutionConfig {
         self.aggregate_strategy_execution_options
     }
 
-    /// Expert local-throughput source chunk planning policy copied into native contexts.
+    /// Expert throughput source chunk planning policy copied into native contexts.
     pub fn source_chunk_planning_options(&self) -> SourceChunkPlanningOptions {
         self.source_chunk_planning_options
     }

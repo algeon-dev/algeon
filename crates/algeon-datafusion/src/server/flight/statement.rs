@@ -162,7 +162,8 @@ impl DatafusionAlgeonFlightSqlService {
             let invocation = Invocation::detached();
             invocation.set_execution(execution);
             let mut state = self.ctx.state();
-            invocation.install(state.config_mut());
+            let runtime_env = Arc::clone(state.runtime_env());
+            invocation.install(state.config_mut(), &runtime_env);
             return Ok(SessionContext::new_with_state(state));
         };
         attempt.planning_context(&self.ctx, execution)

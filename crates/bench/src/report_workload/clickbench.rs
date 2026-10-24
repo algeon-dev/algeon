@@ -46,7 +46,7 @@ pub const ALGEON_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "ALGEON_CLICKB
 pub const ALGEON_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
     "ALGEON_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
 /// Source chunk planning mode used by bounded native ClickBench execution.
-/// Accepts `conservative` or `local_parquet_throughput`; defaults to the
+/// Accepts `conservative` or `parquet_throughput`; defaults to the
 /// selected profile.
 pub const ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str =
     "ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
@@ -291,7 +291,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_row_groups_per_chunk: CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: SourceChunking::DEFAULT_MAX_RETRY_ATTEMPTS.get(),
             min_retry_chunk_row_groups: SourceChunking::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS.get(),
-            source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
+            source_chunk_planning_mode: SourceChunkPlanningMode::ParquetThroughput,
         },
         other => panic!(
             "unsupported {ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV}={other}; expected {CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE} or {CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT}"
@@ -323,9 +323,9 @@ fn parse_env_usize(name: &'static str, value: String) -> usize {
 fn parse_env_source_chunk_planning_mode(value: String) -> SourceChunkPlanningMode {
     match value.trim().to_ascii_lowercase().as_str() {
         "conservative" => SourceChunkPlanningMode::Conservative,
-        "local_parquet_throughput" | "local_throughput" => SourceChunkPlanningMode::LocalParquetThroughput,
+        "parquet_throughput" => SourceChunkPlanningMode::ParquetThroughput,
         other => panic!(
-            "unsupported {ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or local_parquet_throughput"
+            "unsupported {ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or parquet_throughput"
         ),
     }
 }

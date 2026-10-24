@@ -627,6 +627,7 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::UnsupportedOperator, ErrorStatus::Permanent),
     (ErrorCode::UnsupportedExpression, ErrorStatus::Permanent),
     (ErrorCode::UnsupportedType, ErrorStatus::Permanent),
+    (ErrorCode::UnsupportedTableFeature, ErrorStatus::Permanent),
     (ErrorCode::InvalidExecutionPlan, ErrorStatus::Permanent),
     (ErrorCode::InvalidChildCount, ErrorStatus::Permanent),
     (ErrorCode::CudfInvalidInput, ErrorStatus::Permanent),

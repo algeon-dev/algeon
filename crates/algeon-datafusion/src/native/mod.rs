@@ -106,6 +106,14 @@ impl LoweringRejection {
         Self { reason, cause: Some(Box::new(RejectionCause::Blocker(blocker))) }
     }
 
+    /// This rejection with `blocker` as its cause when it carries none.
+    pub(crate) fn or_blocked_by(self, blocker: impl FnOnce() -> PlanBlocker) -> Self {
+        match self.cause {
+            Some(_) => self,
+            None => Self::blocked_by(self.reason, blocker()),
+        }
+    }
+
     /// The reason and the evidence this rejection carries, with the unsupported
     /// `column` the caller found in the plan schemas.
     pub(crate) fn into_detail(self, column: Option<UnsupportedColumnDetail>) -> (CapabilityReason, NotSupportedDetail) {
@@ -299,7 +307,7 @@ fn lower_physical_plan_to_native_with_mode(
             Ok(NativeLoweringResult {
                 plan: None,
                 report,
-                source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
+                source_diagnostics: source_diagnostics_for_normalized_plan(&normalized, source_reads),
             })
         },
         Ok(normalized) => {
@@ -319,7 +327,7 @@ fn lower_physical_plan_to_native_with_mode(
                     Ok(NativeLoweringResult {
                         plan: None,
                         report,
-                        source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
+                        source_diagnostics: source_diagnostics_for_normalized_plan(&normalized, source_reads),
                     })
                 },
                 Ok(mut native_plan) => {

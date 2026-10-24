@@ -208,7 +208,8 @@ pub async fn plan_with_native_diagnostics(
 ) -> DataFusionResult<(Arc<dyn ExecutionPlan>, NativePlanningDiagnostics)> {
     let invocation = Invocation::detached();
     let mut state = state.clone();
-    invocation.install(state.config_mut());
+    let runtime_env = Arc::clone(state.runtime_env());
+    invocation.install(state.config_mut(), &runtime_env);
     let plan = state.create_physical_plan(logical).await?;
     let diagnostics = invocation.planning_diagnostics().ok_or_else(|| {
         DataFusionError::from(
@@ -329,6 +330,9 @@ impl AlgeonNativePhysicalOptimizerRule {
         options: &ConfigOptions,
     ) -> DataFusionResult<(Arc<dyn ExecutionPlan>, Option<NativePlanningDiagnostics>)> {
         let invocation = Invocation::detached();
+        if let Some(outer) = Invocation::of_options(options) {
+            invocation.share_remote_footers(outer);
+        }
         let mut options = options.clone();
         options.extensions.insert(invocation.clone());
         let plan = self.optimize(plan, &options)?;

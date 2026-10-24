@@ -17,6 +17,7 @@ use datafusion::{
             parquet::{ParquetAccessPlan, RowGroupAccess},
         },
     },
+    execution::object_store::ObjectStoreUrl,
     logical_expr::Operator,
     parquet::file::{
         metadata::{ColumnChunkMetaData, RowGroupMetaData},
@@ -33,7 +34,7 @@ use datafusion::{
 };
 use query_planning::{expr::BinaryOp, source::PredicateDisposition as NativePredicateDisposition};
 
-use super::{expression_contract::validate_physical_expr_contract, footers::parquet_footer};
+use super::{expression_contract::validate_physical_expr_contract, footers::object_parquet_footer};
 use crate::capability::CapabilityReason;
 
 #[derive(Debug, Clone, Copy)]
@@ -162,6 +163,7 @@ struct RangeCoverage<'a> {
 }
 
 pub(super) fn coalesced_local_parquet_scan_files<'a>(
+    object_store_url: &ObjectStoreUrl,
     files: &[&'a PartitionedFile],
 ) -> Result<Vec<CoalescedLocalParquetFile<'a>>, CapabilityReason> {
     let mut coverages = Vec::<FileCoverage<'a>>::new();
@@ -224,7 +226,7 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
             continue;
         }
 
-        let row_groups = row_groups_for_byte_ranges(coverage)?;
+        let row_groups = row_groups_for_byte_ranges(object_store_url, coverage)?;
         coverage.byte_range_representation = LocalParquetByteRangeRepresentation::RowGroupSelection;
         coverage.byte_range_row_groups = Some(row_groups);
     }
@@ -252,12 +254,15 @@ fn ranges_cover_full_file(coverage: &mut FileCoverage<'_>) -> Result<bool, Capab
     Ok(next_start == size)
 }
 
-fn row_groups_for_byte_ranges(coverage: &mut FileCoverage<'_>) -> Result<Vec<usize>, CapabilityReason> {
+fn row_groups_for_byte_ranges(
+    object_store_url: &ObjectStoreUrl,
+    coverage: &mut FileCoverage<'_>,
+) -> Result<Vec<usize>, CapabilityReason> {
     if !ranges_are_non_overlapping(coverage) {
         return Err(CapabilityReason::NativeSourceByteRange);
     }
-    let path = local_object_path_to_filesystem(coverage.location.as_str());
-    let metadata = parquet_footer(path.as_path()).map_err(|_error| CapabilityReason::NativeSourceByteRange)?;
+    let metadata = object_parquet_footer(object_store_url, &coverage.representative.object_meta)
+        .map_err(|_error| CapabilityReason::NativeSourceByteRange)?;
     let row_group_count = metadata.num_row_groups();
     let ranges = coverage
         .ranges

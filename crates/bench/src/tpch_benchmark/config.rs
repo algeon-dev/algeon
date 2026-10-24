@@ -527,7 +527,7 @@ fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpc
             max_row_groups_per_chunk: TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
+            source_chunk_planning_mode: SourceChunkPlanningMode::ParquetThroughput,
         }),
         other => Err(plan_error(format!(
             "invalid {ALGEON_TPCH_BENCH_NATIVE_PROFILE_ENV}: {other}; expected {TPCH_NATIVE_PROFILE_CONSERVATIVE} or {TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
@@ -617,9 +617,9 @@ fn parse_env_u64_value(name: &'static str, value: String) -> DataFusionResult<u6
 fn parse_env_source_chunk_planning_mode(value: String) -> DataFusionResult<SourceChunkPlanningMode> {
     match value.trim().to_ascii_lowercase().as_str() {
         "conservative" => Ok(SourceChunkPlanningMode::Conservative),
-        "local_parquet_throughput" | "local_throughput" => Ok(SourceChunkPlanningMode::LocalParquetThroughput),
+        "parquet_throughput" => Ok(SourceChunkPlanningMode::ParquetThroughput),
         other => Err(plan_error(format!(
-            "invalid {ALGEON_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}: {other}; expected conservative or local_parquet_throughput"
+            "invalid {ALGEON_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}: {other}; expected conservative or parquet_throughput"
         ))),
     }
 }

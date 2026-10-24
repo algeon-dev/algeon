@@ -19,9 +19,9 @@ Scans prune unneeded data across multiple granularities:
 
 | Unit | How the scan is reduced |
 | --- | --- |
-| Files | Native lowering preserves the file set supplied by DataFusion's scan, including upstream partition pruning. |
+| Files | Native lowering preserves the file set supplied by DataFusion's scan, including upstream partition pruning. An [Iceberg table](../integration/overview.mdx#iceberg-support) reaches lowering as a standard `s3://` Parquet scan, and Iceberg manifest pruning has already reduced its file set. |
 | Column chunks | Projection keeps only columns referenced by downstream operators and predicates. |
-| Row groups | Lowering evaluates footer statistics (min/max and null counts) and Bloom filters to prune row groups for supported predicates. |
+| Row groups | Lowering evaluates footer statistics (min/max and null counts) and Bloom filters to prune row groups for supported predicates. An `s3://` scan prunes at planning time only when the session [holds its footers](#object-storage-and-libcurl). |
 | Rows | Predicates evaluate within the cuDF reader or a downstream GPU filter, reducing output rows. |
 
 When a predicate is pushed into the cuDF reader, statistics filters reduce row
@@ -47,7 +47,9 @@ source chunks can then be batched into a reader call. The reader selects the
 column byte ranges, and KvikIO divides reads into I/O tasks on its shared
 pool. One source chunk can therefore require many I/O tasks. The
 I/O task size controls the read subdivision; the source-chunk target still
-comes from the query's memory policy.
+comes from the query's memory policy. Throughput grouping also widens chunks
+of `s3://` files that carry planning-time row-group byte metadata from cached
+footers. A chunk never spans files.
 
 Every planned read, and every batch of chunks read together, decodes into
 one cuDF table. Its row count and the child value count of each list column
@@ -131,6 +133,21 @@ transfers via cuObject RDMA are not supported. Footer reads and cache fills
 for `s3://` sources run on a process-wide `algeon-object-store-control` Tokio
 runtime ([Runtimes and threads](./index.mdx#runtimes-and-threads)).
 
+A physical optimizer rule cannot wait on the network, so planning never reads
+a remote footer from the store. It reads the footer of an `s3://` object from
+the session's DataFusion file metadata cache, which DataFusion's `ListingTable`
+fills during its async scan when `datafusion.execution.collect_statistics` is
+true (the default). Planning reaches that cache through its invocation, so it
+exists for `AlgeonAttempt` planning, Flight SQL server statements,
+`plan_with_native_diagnostics` and `validate_query`. A plain `ctx.sql(...)` on
+a session from `install_on` plans without an invocation and has no remote
+footers. DataFusion keys the cache by the object path inside the store, without
+the bucket, and validates an entry by size and last-modified time. Algeon also
+refuses an entry whose e_tag or version differs from the scanned object's when
+both have one. A scan of several remote objects with a missing or refused
+footer is rejected with `native_source_remote_footer_unavailable`
+([remedies](../reference/gpu-coverage-report.mdx#remedies-for-sources)).
+
 KvikIO's
 [remote transfer implementation](https://github.com/rapidsai/kvikio/blob/0f6900f08c5a7ca150689e5454ae28562f875eec/cpp/src/remote_handle.cpp#L37-L133)
 reflects this host staging and device copy sequence.
@@ -143,7 +160,10 @@ different part of the next read.
 - The OS page cache holds file pages from buffered `pread`. A hit skips the
   NVMe read; host staging, the device copy and decoding still run.
 - Algeon's source chunk planner caches Parquet footer metadata within one
-  planning pass. Each query plan reads footers again.
+  planning pass, and each query plan reads local footers again. Remote footers
+  come from the session's DataFusion file metadata cache, which outlives the
+  query and is keyed by object path without the bucket
+  ([Object storage](#object-storage-and-libcurl)).
 - Decoded local-Parquet sources and constructed graphs can stay on the device
   under `cache_cap_bytes` ([Admission settings](../integration/configuration.mdx#admission)).
   The default is `0`, so queries share nothing on the GPU unless a server sets

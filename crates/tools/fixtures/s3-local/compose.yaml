@@ -1,0 +1,35 @@
+# Local S3-compatible service for the explicit S3 E2E tools.
+#
+#   docker compose -f crates/tools/fixtures/s3-local/compose.yaml up -d --wait
+#   docker compose -f crates/tools/fixtures/s3-local/compose.yaml down -v
+#
+# Endpoint http://127.0.0.1:9000 (path-style), bucket `algeon-e2e`, access key
+# `algeon-e2e` and secret key `algeon-e2e-secret`.
+
+name: algeon-s3-local
+
+services:
+  s3:
+    image: rustfs/rustfs:1.0.0
+    environment:
+      - RUSTFS_ACCESS_KEY=algeon-e2e
+      - RUSTFS_SECRET_KEY=algeon-e2e-secret
+    ports:
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health/ready"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # One-shot job. Creating an existing bucket succeeds, so reruns are safe.
+  s3-init:
+    image: rustfs/rustfs:1.0.0
+    depends_on:
+      s3:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - curl -fsS --aws-sigv4 aws:amz:us-east-1:s3 -u algeon-e2e:algeon-e2e-secret -X PUT http://s3:9000/algeon-e2e

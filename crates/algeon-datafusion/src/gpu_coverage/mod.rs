@@ -30,6 +30,8 @@ pub(crate) use self::{
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
+
 use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
 use futures::future::BoxFuture;
 
@@ -80,8 +82,9 @@ pub fn validate_query<'a>(
         let invocation = Invocation::detached();
         let mut planning_state_builder = SessionStateBuilder::new_from_existing(ctx.state());
         mark_coverage_validation_in_progress(&mut planning_state_builder);
-        invocation.install(planning_state_builder.config().get_or_insert_with(Default::default));
-        let planning_state = planning_state_builder.build();
+        let mut planning_state = planning_state_builder.build();
+        let runtime_env = Arc::clone(planning_state.runtime_env());
+        invocation.install(planning_state.config_mut(), &runtime_env);
         let config = optimizer_config_for_validation(&planning_state)?;
         let validated_under = validated_under(&planning_state, &config);
         if let Some(rejection) = preflight_single_query(&planning_state, sql) {

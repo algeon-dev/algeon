@@ -209,7 +209,7 @@ FEATURE_ISOLATION_SHARDS=(
   "algeon-query-runtime algeon-query-planning"
   "algeon-query-engine algeon-cudf algeon-cudf-sys algeon-build-support"
   "algeon-cuml algeon-cuml-sys"
-  "algeon-server algeon-cugraph-sys"
+  "algeon-server algeon-iceberg algeon-cugraph-sys"
   "examples bench algeon-cugraph algeon-cuvs algeon-cuvs-sys"
 )
 

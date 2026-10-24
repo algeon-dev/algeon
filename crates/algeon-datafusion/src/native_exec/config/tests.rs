@@ -56,7 +56,7 @@ fn config_validation_errors_carry_configured_correlation_ids() {
         .with_query_id("query-config-error")
         .with_trace_id("trace-config-error")
         .with_source_chunk_planning_options(
-            SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(0),
+            SourceChunkPlanningOptions::default().with_parquet_throughput_max_row_groups_per_chunk(0),
         )
         .validate_query_policies()
         .unwrap_err();

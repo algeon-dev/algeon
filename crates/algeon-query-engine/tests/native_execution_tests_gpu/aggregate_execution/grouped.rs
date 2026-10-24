@@ -2211,7 +2211,7 @@ fn bounded_native_query_sizes_throughput_chunks_by_decoded_dictionary_strings() 
         max_retry_attempts: MemoryControlPolicy::DEFAULT_MAX_RETRY_ATTEMPTS,
         min_retry_chunk_row_groups: MemoryControlPolicy::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS,
     })
-    .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput);
+    .with_source_chunk_planning_mode(SourceChunkPlanningMode::ParquetThroughput);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert!(metrics.source_chunks_planned > 2, "decoded sizing must split each file: {metrics:?}");

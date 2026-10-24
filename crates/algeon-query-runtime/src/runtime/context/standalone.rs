@@ -65,7 +65,7 @@ pub struct StandaloneConfig {
     pub memory_control_policy: MemoryControlPolicy,
     pub source_scheduler_policy: SourceSchedulerPolicy,
     pub source_chunk_planning_mode: SourceChunkPlanningMode,
-    /// Expert policy for local-throughput source chunk planning.
+    /// Expert policy for throughput source chunk planning.
     pub source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Object-store profiles used by remote reads and cache fills.
     pub source_storage_profiles: Vec<SourceStorageProfile>,
