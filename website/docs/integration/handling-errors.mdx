@@ -219,8 +219,8 @@ The status carries the `reason` as `x-algeon-reason`. Its values are
 `iceberg_missing_field_ids`, `iceberg_partition_column_absent`,
 `iceberg_required_column_absent`, `iceberg_encrypted_file`,
 `iceberg_non_parquet_file`, `iceberg_multiple_buckets`,
-`iceberg_unsupported_location_scheme` and
-`iceberg_storage_properties_mismatch`. The
+`iceberg_unsupported_location_scheme`, `iceberg_storage_properties_mismatch`
+and `iceberg_column_type_mismatch`. The
 [Iceberg support](./overview.mdx#iceberg-rejections) table gives each trigger.
 The table, snapshot id, data file path and column are raw facts and stay out of
 metadata and logs. A retry fails the same way until the table or the `[s3]`

@@ -33,7 +33,7 @@ use iceberg::{
 };
 
 use crate::{
-    binding::{FileBinding, identity_partition_sources},
+    binding::{FileBinding, column_with_stored_type_mismatch, identity_partition_sources},
     error::{SCAN_OPERATION, UnsupportedReason, iceberg_error, unsupported},
     predicate::filters_to_predicate,
     schema::table_arrow_schema,
@@ -337,6 +337,21 @@ impl ScanContext<'_> {
                 .with_fact("path", task.data_file_path())
                 .with_fact("column", rejection.field)
         })?;
+        if let Some(column) = column_with_stored_type_mismatch(
+            task.schema(),
+            task.project_field_ids(),
+            table_schema.fields(),
+            file_schema.fields(),
+        ) {
+            return Err(self
+                .rejection(
+                    UnsupportedReason::ColumnTypeMismatch,
+                    "a data file stores a column with another type than the table schema declares",
+                )
+                .with_fact("path", task.data_file_path())
+                .with_fact("column", column)
+                .into());
+        }
         Ok(file_with_row_count(object, task.record_count(), table_schema))
     }
 }

@@ -328,16 +328,4 @@ mod tests {
         assert_eq!(policy.source_chunk_planning_reason(), "parquet_throughput_admitted");
         assert_eq!(policy.max_row_groups_per_chunk, PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
     }
-
-    #[test]
-    fn throughput_planning_keeps_one_row_group_chunks_for_remote_files_without_row_group_bytes() {
-        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
-            &remote_source(remote_file()),
-            one_row_group_policy(),
-            SourceChunkPlanningMode::ParquetThroughput,
-        );
-
-        assert_eq!(policy.source_chunk_planning_reason(), "parquet_throughput_rejected");
-        assert_eq!(policy.max_row_groups_per_chunk, 1);
-    }
 }

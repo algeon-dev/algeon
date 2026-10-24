@@ -279,8 +279,11 @@ another when the table schema declares it nullable. Any other difference,
 including a file that declares a column optional while the table declares it
 non-null, rejects the scan with `native_source_file_schema_mismatch`. The
 source diagnostics then report `schema_mapping_disposition` as `rejected` with
-rejected feature `schema_mapping`. A remote scan of exactly one object takes
-its schema from DataFusion's file schema and reads no footer for it.
+rejected feature `schema_mapping`. Column indices, byte metadata and
+row-group statistics follow the footer's column order, which can differ from
+DataFusion's file schema. A remote scan of one object whose footer is not
+cached takes its schema from DataFusion's file schema and gets no footer
+pruning or byte metadata.
 
 Byte ranges that cover a whole object coalesce on any store. A partial range
 maps to row groups through the footer, so a remote partial range needs the

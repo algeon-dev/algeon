@@ -99,6 +99,46 @@ async fn a_required_column_missing_from_a_file_is_rejected() {
 }
 
 #[tokio::test]
+async fn a_column_stored_with_its_type_before_a_promotion_is_rejected() {
+    use datafusion::arrow::{
+        array::{ArrayRef, Int32Array, StringArray},
+        datatypes::{DataType, Schema as ArrowSchema},
+        record_batch::RecordBatch,
+    };
+
+    use crate::support::field_with_id;
+
+    let warehouse = Warehouse::new().await;
+    // `id` is `long` in the table; the file keeps the `int` it was written with.
+    let table = warehouse.create_table("promoted", people_schema(), None, HashMap::new()).await;
+    let schema = Arc::new(ArrowSchema::new(vec![
+        field_with_id("id", DataType::Int32, false, 1),
+        field_with_id("name", DataType::Utf8, true, 2),
+        field_with_id("year", DataType::Int32, true, 3),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![2000, 2001])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let path = warehouse.local_path("promoted.parquet");
+    let size = write_parquet(path.as_ref(), &batch);
+    warehouse.append(&table, vec![data_file(&format!("file://{path}"), size, 2).build().unwrap()]).await;
+    let ctx = warehouse.session().await;
+
+    let failure = plan_failure(&ctx, "SELECT id FROM iceberg.ns.promoted").await;
+    assert_rejected(&failure, "promoted", "iceberg_column_type_mismatch");
+    assert_eq!(failure.fact("column"), Some("id"), "{failure:?}");
+    // The string and int columns match their table types.
+    let batches = ctx.sql("SELECT name, year FROM iceberg.ns.promoted").await.unwrap().collect().await.unwrap();
+    assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 2);
+}
+
+#[tokio::test]
 async fn an_identity_partition_column_kept_only_in_partition_data_is_rejected() {
     let warehouse = Warehouse::new().await;
     let spec = UnboundPartitionSpec::builder()

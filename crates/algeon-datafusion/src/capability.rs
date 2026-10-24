@@ -282,7 +282,7 @@ impl CapabilityReason {
                 remedy: QueryGpuRemedy::new(
                     "cache_remote_footers",
                     QueryGpuRemedyKind::ConfigAction,
-                    "Planning reads remote Parquet footers from the session's DataFusion file metadata cache, which the table scan fills while planning. Plan through an `AlgeonAttempt` or the Flight SQL server, keep `datafusion.execution.collect_statistics` enabled, and raise `datafusion.runtime.metadata_cache_limit` (50 MB by default) when the table's footers exceed it.",
+                    "Planning reads remote Parquet footers from the session's DataFusion file metadata cache, which the table scan fills while planning. Plan through an `AlgeonAttempt` or the Flight SQL server and keep `datafusion.execution.collect_statistics` enabled. A table whose footers exceed the cache limit (`datafusion.runtime.metadata_cache_limit`, 50 MB by default) evicts its own entries; an embedded session can raise the limit, the Flight SQL server keeps the default.",
                 ),
                 ..source_gap("native_source_remote_footer_unavailable")
             },

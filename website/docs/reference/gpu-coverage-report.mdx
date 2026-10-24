@@ -213,10 +213,12 @@ inside an executable plan, and the statement is not rejected.
 | `native_source_remote_footer_unavailable` | `cache_remote_footers` (`config_action`) | Planning found no usable footer in the session's file metadata cache for an `s3://` object. |
 
 - The table scan fills the cache while `datafusion.execution.collect_statistics`
-  is true and `datafusion.runtime.metadata_cache_limit` (50 MB by default)
-  covers the table's footers. Planning reads it only under an invocation:
-  `AlgeonAttempt` planning, the Flight SQL server, `plan_with_native_diagnostics`
-  or `validate_query`.
+  is true. Planning reads it only under an invocation: `AlgeonAttempt`
+  planning, the Flight SQL server, `plan_with_native_diagnostics` or
+  `validate_query`.
+- A table whose footers exceed `datafusion.runtime.metadata_cache_limit`
+  (50 MB by default) evicts its own entries during the scan. An embedded
+  session can raise the limit; the Flight SQL server runs with the default.
 - The cache key is the object path without the bucket. An entry is refused when
   its size, last-modified time, or e_tag or version (when both sides have one)
   differs from the scanned object.

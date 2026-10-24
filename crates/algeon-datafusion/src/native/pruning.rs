@@ -34,7 +34,10 @@ use datafusion::{
 };
 use query_planning::{expr::BinaryOp, source::PredicateDisposition as NativePredicateDisposition};
 
-use super::{expression_contract::validate_physical_expr_contract, footers::object_parquet_footer};
+use super::{
+    expression_contract::validate_physical_expr_contract,
+    footers::{FooterUnavailable, object_parquet_footer},
+};
 use crate::capability::CapabilityReason;
 
 #[derive(Debug, Clone, Copy)]
@@ -261,8 +264,13 @@ fn row_groups_for_byte_ranges(
     if !ranges_are_non_overlapping(coverage) {
         return Err(CapabilityReason::NativeSourceByteRange);
     }
-    let metadata = object_parquet_footer(object_store_url, &coverage.representative.object_meta)
-        .map_err(|_error| CapabilityReason::NativeSourceByteRange)?;
+    let metadata =
+        object_parquet_footer(object_store_url, &coverage.representative.object_meta).map_err(|unavailable| {
+            match unavailable {
+                FooterUnavailable::Local => CapabilityReason::NativeSourceByteRange,
+                FooterUnavailable::RemoteNotCached => CapabilityReason::NativeSourceRemoteFooterUnavailable,
+            }
+        })?;
     let row_group_count = metadata.num_row_groups();
     let ranges = coverage
         .ranges

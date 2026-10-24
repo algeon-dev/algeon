@@ -84,6 +84,7 @@ they apply in every execution mode, and no CPU fallback exists.
 | `iceberg_multiple_buckets` | The data files left after pruning span more than one bucket. |
 | `iceberg_unsupported_location_scheme` | A data file location is not `s3://`, `s3a://` or `s3n://`. `file://` locations are read from local disk. |
 | `iceberg_storage_properties_mismatch` | The table's FileIO storage properties disagree with `[s3]`, as described above. |
+| `iceberg_column_type_mismatch` | A file stores a projected column with another type than the table declares, as after an `int` to `long` promotion. String and binary widths and dictionary encoding count as the same type. |
 
 Catalog and storage failures keep the existing codes. A missing namespace or
 table is `object_not_found`. Credential and access failures from the catalog or

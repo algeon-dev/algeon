@@ -12,6 +12,7 @@ use super::{
     is_not_null_may_satisfy, is_null_may_satisfy, object_parquet_footer, or_may_satisfy, ordered_range_may_satisfy,
     range_comparison_from_operator, validate_pruning_only_parquet_predicate,
 };
+use crate::native::source::native_physical_file_schema;
 
 pub(in crate::native) fn metadata_row_group_selections(
     files: &[&PartitionedFile],
@@ -36,7 +37,10 @@ pub(in crate::native) fn metadata_row_group_selections(
     {
         return None;
     }
-    let predicate = row_group_pruning_expr(filter?.predicate(), file_scan.file_schema())?;
+    // Footer statistics are addressed by physical column position, which the
+    // footer schema gives; DataFusion's file schema may order columns otherwise.
+    let physical_schema = native_physical_file_schema(file_scan).ok()?;
+    let predicate = row_group_pruning_expr(filter?.predicate(), &physical_schema)?;
     let selections = files
         .iter()
         .map(|file| metadata_row_group_selection(&file_scan.object_store_url, file, predicate.clone()))

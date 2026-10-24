@@ -210,8 +210,11 @@ fn collect_source_required_columns(
 /// Every distinct object's footer must hold the same columns in the same
 /// order with the same Arrow types. A column may be required in one file and
 /// optional in another when the table schema declares it nullable; DataFusion
-/// widens nullability the same way when it merges file schemas. A remote scan
-/// of one object keeps the DataFusion file schema without reading its footer.
+/// widens nullability the same way when it merges file schemas. Column
+/// indices and footer statistics address this schema, which can order columns
+/// differently from DataFusion's file schema. A remote scan of one object
+/// whose footer planning cannot read keeps the DataFusion file schema; nothing
+/// that needs the footer applies to it then.
 pub(in crate::native) fn native_physical_file_schema(
     file_scan: &FileScanConfig,
 ) -> Result<SchemaRef, CapabilityReason> {
@@ -224,14 +227,19 @@ pub(in crate::native) fn native_physical_file_schema(
         .map(|file| &file.object_meta)
         .filter(|object| checked_locations.insert(&object.location))
         .collect::<Vec<_>>();
-    let local = file_scan.object_store_url.as_str().starts_with("file://");
-    if objects.is_empty() || !local && objects.len() == 1 {
+    if objects.is_empty() {
         return Ok(Arc::clone(file_scan.file_schema()));
     }
+    let single_object = objects.len() == 1;
     let table_schema = file_scan.file_schema();
     let mut physical_schema: Option<SchemaRef> = None;
     for object in objects {
-        let schema = parquet_footer_schema(&file_scan.object_store_url, object)?;
+        let schema = match parquet_footer_schema(&file_scan.object_store_url, object) {
+            Err(CapabilityReason::NativeSourceRemoteFooterUnavailable) if single_object => {
+                return Ok(Arc::clone(file_scan.file_schema()));
+            },
+            schema => schema?,
+        };
         let nullable_in_table = |field: &Field| {
             table_schema.field_with_name(field.name()).map_or(true, |table_field| table_field.is_nullable())
         };

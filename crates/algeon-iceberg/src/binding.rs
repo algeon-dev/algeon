@@ -190,3 +190,60 @@ fn data_type_has_ids(data_type: &DataType) -> bool {
         _ => false,
     }
 }
+
+/// The first projected column that the file stores with another type than
+/// the table schema `table_fields` declares, as after Iceberg promotes `int`
+/// to `long` or widens a decimal. DataFusion's reader casts such a column,
+/// the native reader decodes the stored type, so the scan rejects the file.
+/// String and binary types compare by family, because Iceberg, Parquet
+/// writers and DataFusion choose different widths and view types for them;
+/// a dictionary compares by its value type. Columns absent from the file are
+/// the binding check's concern.
+pub(crate) fn column_with_stored_type_mismatch(
+    schema: &IcebergSchema,
+    projected_field_ids: &[i32],
+    table_fields: &Fields,
+    file_fields: &Fields,
+) -> Option<String> {
+    projected_field_ids.iter().find_map(|field_id| {
+        let name = &schema.as_struct().field_by_id(*field_id)?.name;
+        let table_field = table_fields.iter().find(|field| field.name() == name)?;
+        let file_field = file_fields.iter().find(|field| field.name() == name)?;
+        (!same_stored_type(table_field.data_type(), file_field.data_type())).then(|| name.clone())
+    })
+}
+
+fn same_stored_type(table: &DataType, file: &DataType) -> bool {
+    match (table, file) {
+        (_, DataType::Dictionary(_, value)) => same_stored_type(table, value),
+        (
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View,
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View,
+        )
+        | (
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
+        ) => true,
+        (
+            DataType::List(table)
+            | DataType::LargeList(table)
+            | DataType::ListView(table)
+            | DataType::LargeListView(table),
+            DataType::List(file) | DataType::LargeList(file) | DataType::ListView(file) | DataType::LargeListView(file),
+        ) => same_stored_type(table.data_type(), file.data_type()),
+        (DataType::FixedSizeList(table, table_len), DataType::FixedSizeList(file, file_len)) => {
+            table_len == file_len && same_stored_type(table.data_type(), file.data_type())
+        },
+        (DataType::Map(table, _), DataType::Map(file, _)) => same_stored_type(table.data_type(), file.data_type()),
+        (DataType::Struct(table), DataType::Struct(file)) => table.iter().all(|table_child| {
+            file.iter()
+                .find(|file_child| file_child.name() == table_child.name())
+                .is_none_or(|file_child| same_stored_type(table_child.data_type(), file_child.data_type()))
+        }),
+        // Iceberg names UTC `+00:00`; writers also record `UTC`.
+        (DataType::Timestamp(table_unit, table_zone), DataType::Timestamp(file_unit, file_zone)) => {
+            table_unit == file_unit && table_zone.is_some() == file_zone.is_some()
+        },
+        (table, file) => table == file,
+    }
+}

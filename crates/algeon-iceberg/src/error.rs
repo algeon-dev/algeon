@@ -28,6 +28,7 @@ pub(crate) enum UnsupportedReason {
     MultipleBuckets,
     UnsupportedLocationScheme,
     StoragePropertiesMismatch,
+    ColumnTypeMismatch,
 }
 
 impl UnsupportedReason {
@@ -43,6 +44,7 @@ impl UnsupportedReason {
             Self::MultipleBuckets => "iceberg_multiple_buckets",
             Self::UnsupportedLocationScheme => "iceberg_unsupported_location_scheme",
             Self::StoragePropertiesMismatch => "iceberg_storage_properties_mismatch",
+            Self::ColumnTypeMismatch => "iceberg_column_type_mismatch",
         }
     }
 }
