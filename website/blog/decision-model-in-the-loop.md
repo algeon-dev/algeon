@@ -28,38 +28,48 @@ export const dior = twins.clusters.find(row => row.canonical_name === 'Christian
 export const estimate = twins.full_pairwise_cost_estimate;
 export const unjudged = all.ranking.filter(row => row.purified_rank !== null && row.purified_rank <= 120 && row.band === null).length;
 
-The [MerRec case study](/guides/datasets/merrec#bridges) ranks 5,000 brands
-by betweenness centrality in a graph of shared fans, to find the brands that
-connect shopping worlds. Twelve of the first twenty entries in that
-ranking are retailers (Walmart, JCPenney, Macy's), house brands (Mainstays)
-and catch-all labels that sellers pick from the brand dropdown (As Seen on
-TV, Customized & Personalized, Eyeshadow). Shoppers from every world like
-each of them, which makes each one a short cut between worlds that no
-manufacturer provides. This post follows what it takes to get those entries
-out of the ranking, and what changes when they are gone.
+In the [MerRec case study](/guides/datasets/merrec#bridges), we rank 5,000 brands
+by betweenness centrality in a graph of shared fans to find the brands that
+connect different shopping communities. But when you run this on real marketplace
+data, you run into an immediate catalog problem: twelve of the top twenty entries
+aren't independent brands at all. They are retailers (Walmart, JCPenney, Macy's),
+store brands (Mainstays), or catch-all bucket labels that sellers select from
+the brand dropdown (As Seen on TV, Customized & Personalized, Eyeshadow).
+
+Because shoppers across every category buy from Walmart, Walmart creates artificial
+shortcuts between worlds that no actual manufacturer provides. If you want an
+honest picture of brand affinity, you have to get those catalog artifacts out of the
+graph. This post walks through how we pull them out, why naive filtering fails, and
+how the ranking shifts once the graph is rebuilt.
 {/* truncate */}
 
-A decision model does part of the work. Telling a catch-all label from a
-brand is a judgment about catalog text, and a hosted decision model
-([Jev 1.13](https://docs.typesafe.ai/model-jaggedness/jev-1.13)) answers it
-for a fraction of a cent. The rest falls on the query engine: the graph has
-to be rebuilt without the rejected entries, and the rebuilt graph has to be
-checked against something other than the model. On Algeon a recompute over
-all 182.9 million like events takes nine seconds, which leaves room for a
-control run, a second window and a second pass.
+A decision model does part of the work. Distinguishing a catch-all label from a
+real brand requires subjective judgment about messy catalog text, and a hosted
+decision model ([Jev 1.13](https://docs.typesafe.ai/model-jaggedness/jev-1.13))
+can answer that for a fraction of a cent. But the heavy lifting still belongs to the
+query engine: we have to rebuild the entire graph without the rejected nodes, and
+we need rigorous controls to verify what the model actually changed. On Algeon,
+recomputing the graph across all 182.9 million like events takes just nine seconds,
+making it practical to run iterative passes, evaluate alternative time windows, and
+benchmark against baseline controls.
 
 ## Deleting from the output is not enough
 
-Betweenness counts how often a node lies on the shortest paths between
-other nodes. Walmart's score comes from paths that run through Walmart, and
-so does part of every other node's score, because those same paths decide
-which brands are on the way between two worlds. Removing Walmart from the
-result table leaves every other number as it was. Removing Walmart from the
-graph moves the paths, and with them the ranking.
+The most tempting shortcut is post-filtering: just run the query and add a
+`WHERE brand NOT IN (...)` on the final results. But graph metrics do not work
+that way.
 
-Because of that, the model's answers go into the query. The published query has one CTE that
-builds the fan graph. The rebuilt query joins that CTE to a table of
-decisions and drops the entries the policy rejected or held for review.
+Betweenness centrality measures how often a node sits on the shortest paths
+between pairs of other nodes. When Walmart is in the graph, millions of shortest
+paths route straight through it. That inflates Walmart's score, but it also
+depresses or distorts the centrality of every other brand around it. Simply
+deleting Walmart from the final output table leaves everyone else's distorted
+scores untouched. To get true shortest paths, you must remove the node from the
+graph itself and let the network reroute.
+
+Because of that, the model's decisions have to feed back into the query. The original
+query uses a CTE to construct the fan graph; the rebuilt query joins that CTE against
+a decisions table, pruning any node that the policy rejected or flagged for review.
 
 <CodeBlock language="sql" className="no-collapse" folds={[
   {from: '), top_brands AS (', label: 'the rest of the bridges query, unchanged'},
@@ -67,7 +77,7 @@ decisions and drops the entries the policy rejected or held for review.
 
 ## The loop
 
-Two of the five steps in the figure are ordinary SQL queries.
+We structure the workflow as a five-step loop, where two of the steps are standard SQL queries.
 
 <DecisionLoopFigure
   caption={<>A probe query bounds the set of entries worth asking about and
@@ -77,36 +87,35 @@ Two of the five steps in the figure are ordinary SQL queries.
   the original query joined to that table.</>}
 />
 
-The probe is the published bridges query itself, and its output is the top
-120 entries. A context query joins each of them to its catalog footprint:
-listings, distinct categories, the three largest category paths, mean price
-and four sample titles. The model sees that text and no graph numbers.
+Calling an LLM on every one of the 5,000 brands would be wasteful and slow.
+Instead, we use a SQL probe, which is just the original bridges query, to identify
+the top 120 nodes dominating centrality. A second SQL query then gathers catalog
+context for each candidate: active listings, distinct categories, top category paths,
+mean price, and four representative titles. The model only inspects this catalog text,
+never the graph topology or centrality scores.
 
-For each entry the model answers three questions, each with a fixed shape.
-The first picks one of four kinds (standalone brand, multi-brand retailer,
-superstore house brand, generic catch-all) and returns a probability for
-the pick. The second returns a probability for a yes-or-no question, whether
-the entry is a standalone brand. The third returns a score from 0 to 3 for
-how much the entry conflates unrelated communities. The application's policy
-reads the second answer and checks it against the first:
-{bridges.policy.accept_min.toFixed(2)} or more with the kind `standalone_brand`
-is accepted, below {bridges.policy.review_min.toFixed(2)} is rejected, and
-everything else goes to a review queue, including a high probability paired
-with another kind. Review entries stay out of the graph until a person looks
-at them.
+For each candidate, the model answers three structured questions:
+1. Classification into one of four kinds (standalone brand, multi-brand retailer, superstore house brand, generic catch-all) with a confidence probability.
+2. Direct probability for a binary check: is this a standalone brand?
+3. A score from 0 to 3 indicating whether the entry conflates unrelated communities.
 
-Every answer is cached in a registry keyed by a hash of the entry's context
-text, and a later run over the same entry makes no call. The model's answers
-to the same entry vary slightly between calls; without the registry a rerun
-would be a new sample.
+Our application policy cross-checks these answers deterministically: a probability of
+{bridges.policy.accept_min.toFixed(2)} or higher paired with `standalone_brand` is accepted,
+anything below {bridges.policy.review_min.toFixed(2)} is rejected, and ambiguous cases
+(such as high probability alongside an unexpected kind) route to a human review queue.
+Items in the review queue remain excluded from the graph until manually confirmed.
+
+To keep queries deterministic and inexpensive, every decision is cached in a registry
+keyed by the hash of the catalog context. Because LLM responses can fluctuate across runs,
+caching ensures that subsequent recomputes are stable, reproducible, and incur zero model latency.
 
 ## Two passes rebuild the ranking
 
-The first pass judged the published top 120 and the recompute dropped the
-rejected and review entries. The rebuilt top 120 contained {all.passes[1].new_entries}
-entries the first pass had never seen, so a second pass judged those and
-recomputed once more. That recompute brought {unjudged} further entries into
-the top 120 that no pass has judged; a third pass would take them.
+When we ran the first pass and dropped the rejected entries, the graph recomputed, and
+{all.passes[1].new_entries} new brands surfaced into the top 120 that were previously
+masked by the superstores. A second pass judged those newcomers and recomputed once more,
+leaving only {unjudged} unjudged entries at the tail of the top 120 (which a third pass
+could clean up if needed).
 
 <Table>
 <thead><tr><th>Pass</th><th>Entries</th><th>New</th><th>Accept</th><th>Review</th><th>Reject</th><th>Model calls</th><th>Cost</th><th>Wall</th></tr></thead>
@@ -121,119 +130,113 @@ the top 120 that no pass has judged; a third pass would take them.
   and it cannot place Bella, which was not in the original top 120.</>}
 />
 
-Samsung moves from sixth to first with
-{(byName('Samsung').purified_betweenness / byName('Samsung').original_betweenness).toFixed(1)}
-times its betweenness. Conair rises from {byName('Conair').original_rank} to
-{byName('Conair').purified_rank} and Black & Decker from
-{byName('Black & Decker').original_rank} to {byName('Black & Decker').purified_rank}.
-Two hardware brands moved near the top of a ranking of the brands that
-connect shopping worlds, once the superstore labels left the graph.
+The structural impact on the ranking is striking. Samsung jumps from sixth to first place,
+multiplying its betweenness centrality by {(byName('Samsung').purified_betweenness / byName('Samsung').original_betweenness).toFixed(1)}x.
+Even more telling is what happens to personal care and tool makers: Conair leaps from
+rank {byName('Conair').original_rank} to {byName('Conair').purified_rank}, and Black & Decker
+climbs from {byName('Black & Decker').original_rank} to {byName('Black & Decker').purified_rank}.
+Once artificial retail hubs are cleared out, practical household and hardware brands emerge
+as the true bridges connecting disparate shopping circles.
 
-An entry lands in the review queue when the model's two answers disagree or
-the probability sits in the band. Claire's has a standalone probability of
-{claires.is_standalone_brand.toFixed(2)} and a kind of `multi_brand_retailer` at
-{claires.entity_kind_p.toFixed(2)}; the policy excludes it from the graph and lists
-it for a person. The {all.review_queue.length} entries
-in the queue from both passes, with their context, are in the data file.
+The review queue catches borderline cases where automatic decisions would be risky.
+For instance, Claire's received a standalone brand probability of {claires.is_standalone_brand.toFixed(2)},
+yet its classification picked `multi_brand_retailer` at {claires.entity_kind_p.toFixed(2)}.
+Because the signals conflicted, our policy safely held it out of the graph and flagged it
+for human review. Across both passes, {all.review_queue.length} entries entered this queue.
 
-## A list and a second window
+## Validating with a hand list and a second window
 
-One control is a hand-written list of forty-nine retailer and catch-all
-names for this window, run through the same recompute. The list
-and the model exclude {all.denylist_vs_model.overlap} of the same entries. The
-model also excludes {all.denylist_vs_model.only_model.length} the list missed
-(Bioworld, Custom Accessories, Pink Rose and nine more), and the list
-excludes {all.denylist_vs_model.only_denylist.length} the model accepted (Charming
-Charlie, Cherokee, Loot Crate, Rue21). The two purified rankings share 13 of
-their top 15. The structural effect, the hardware brands rising, is the same
-either way. The model produces the list more cheaply than a person and
-marks in the review queue where it is unsure.
+Whenever you insert an LLM into an analytical pipeline, healthy engineering skepticism
+demands two sanity checks:
+1. Could we have achieved the same result with a simple hand-curated denylist?
+2. Does the model generalize across time, or is it brittle to changing data?
 
-The other check is a second window. On September to October the probe
-returns a different top 120, {sepOct.totals.registry_hits} of the
-{sepOct.totals.entities} lookups across both passes hit the registry, and the
-remaining {sepOct.totals.api_calls} calls cost {usd(sepOct.totals.cost_usd)}. The
-hand list, written for the first window, has {sepOct.denylist_vs_model.denylist_unmatched.length}
-names that do not appear in this window's top 120 and misses
-{sepOct.denylist_vs_model.only_model.length} entries the model rejects, among them
-Amazon, Sephora and QVC. The list fits one ranking, while the model answers
-for whatever the probe returns next.
+To test the first question, we compared the model against a curated list of forty-nine
+retailers and catch-all labels. Recomputing with either approach yields almost the same
+macro outcome: 13 of the top 15 purified brands are identical, and hardware brands rise in
+both. But the differences highlight where automation shines: the model caught
+{all.denylist_vs_model.only_model.length} subtle catch-alls that the human list missed
+(such as Bioworld, Custom Accessories, and Pink Rose), while explicitly flagging uncertain
+brands in the review queue rather than forcing a silent guess.
 
-## The same loop merges split brands
+The second check tested temporal generalization using a September–October window.
+Because shopping behavior evolves, the probe surfaced a different top 120. Here, our
+cached registry paid off: {sepOct.totals.registry_hits} of {sepOct.totals.entities} lookups
+were instant cache hits, and the remaining {sepOct.totals.api_calls} calls cost just
+{usd(sepOct.totals.cost_usd)}. Meanwhile, the static human list began to decay immediately—it
+contained {sepOct.denylist_vs_model.denylist_unmatched.length} names absent from the new
+window and failed to flag {sepOct.denylist_vs_model.only_model.length} seasonal retailers
+like Amazon, Sephora, and QVC. A static list quickly goes stale; the query loop adapts
+dynamically to whatever the probe returns.
 
-The [brand twins query](/guides/datasets/merrec#brand-twins) pairs entries
-whose fans overlap. Many of the highest pairs are one brand entered twice,
-TXT and Tomorrow X Together, Bape and A Bathing Ape, Dior and Christian
-Dior, and every fan count for such a brand is computed on a fragment. A
-string comparison misses the acronyms and the rebrands. Asking a model about
-all {n(estimate.pairs)} pairs of 20,000 names is not an option either; at this
-run's cost per decision it would come to about
-${Math.round(estimate.estimated_cost_usd).toLocaleString('en-US')}.
+## Solving entity fragmentation with the same loop
 
-The probe keeps the question affordable. The pairing query, with
-the rejected entries of the bridges run removed from the fan graph, returns
-the 120 pairs with the highest fan Jaccard among the 2,000 most liked
-brands. The model judged those 120 with each pair's score and both entries'
-catalog context, for {usd(twins.decisions[0].cost_usd)} in
-{twins.decisions[0].wall_s.toFixed(1)} s. The policy merges {twins.band_counts.accept},
-holds {twins.band_counts.review} for review and leaves {twins.band_counts.reject}
-apart. The pairs left apart include the ones a fan-overlap rule alone would
-merge: Hello Kitty and Sanrio, Konami and Yu-Gi-Oh!, Panini and Topps.
+The exact same loop pattern tackles another classic data engineering headache: duplicate
+and fragmented entities. In marketplace catalogs, brands frequently exist under multiple
+variations, such as TXT vs. Tomorrow X Together, Bape vs. A Bathing Ape, Dior vs. Christian Dior.
+Every analytical metric computed on those brands is splintered across fragments.
 
-The accepted pairs are edges. `cugraph_weakly_connected_components` assigns
-each entry the smallest id of its component, and a scan of every like event
-counts, per merged brand, the exact number of distinct users who liked any
-member.
+Pure string matching cannot resolve acronyms or rebrands, while prompting a model on all
+{n(estimate.pairs)} possible pairs across 20,000 brands is economically out of the question,
+costing roughly ${Math.round(estimate.estimated_cost_usd).toLocaleString('en-US')}.
+
+Once again, a SQL probe makes the problem tractable. We run a pairing query that computes
+fan Jaccard similarity across the top 2,000 brands, narrowing the candidate pool down to the
+120 highest-overlap pairs. The model then evaluates only those 120 candidates using their
+catalog metadata, completing in {twins.decisions[0].wall_s.toFixed(1)} seconds for just
+{usd(twins.decisions[0].cost_usd)}. The policy accepts {twins.band_counts.accept} pairs,
+flags {twins.band_counts.review} for review, and rejects {twins.band_counts.reject}.
+Crucially, the model avoids merging related entities that share heavy fan overlap but are
+distinct commercial entities, such as Hello Kitty and Sanrio, or Konami and Yu-Gi-Oh!.
+
+We treat the accepted pairs as edges in a graph. Running `cugraph_weakly_connected_components`
+in SQL assigns each cluster a canonical identifier, and an aggregation over like events calculates
+the true deduplicated audience size.
 
 <Table>
 <thead><tr><th>Brand</th><th>Most fans on one id</th><th>Both ids summed</th><th>Distinct fans</th><th>Gain</th></tr></thead>
 <tbody>{twins.clusters.slice(0, 6).map(row => <tr key={row.canonical_id}><td>{row.canonical_name}</td><td>{n(row.primary_fans)}</td><td>{n(row.naive_sum_fans)}</td><td>{n(row.exact_union_fans)}</td><td>+{row.gain_pct.toFixed(1)}%</td></tr>)}</tbody>
 </Table>
 
-Whichever id a report used for Dior, it was missing about a third of the
-brand's fans, and a report that added the two ids would have counted a
-quarter of its total twice. These are exact counts over every like event,
-and the whole table of {twins.clusters.length} merged brands is on the
+The correction is substantial. If an analytics report only tracked the primary ID for Dior,
+it missed nearly a third of the brand's total followers. On the other hand, if a naive script
+summed both IDs without deduplication, it double-counted a quarter of the audience.
+The full table of {twins.clusters.length} unified clusters is available on the
 [case study page](/guides/datasets/merrec#brand-twins).
 
-The control here is trigram similarity over all 20,000 names. It finds
-{twins.trigram_control.accepted_found} of the {twins.trigram_control.accepted_aliases}
-pairs the policy merged and misses TXT, Bape, Dior, LOFT, HERMES and
-Thierry Mugler. The pairs it proposes that the policy did not merge are
-sub-brands and near names, Air Jordan and Jordan, Crystal and Crystal Rock.
+As a baseline comparison, standard trigram similarity across all 20,000 brands only recovers
+{twins.trigram_control.accepted_found} of the {twins.trigram_control.accepted_aliases} merged
+pairs, completely missing non-textual aliases like TXT, Bape, Dior, and LOFT. Furthermore, the
+trigram heuristic produces false positives by eagerly merging sub-brands like Air Jordan with
+Jordan, or Crystal with Crystal Rock.
 
-## What the model is for
+## Practical lessons for decision loops
 
-The model answers a bounded set of questions about catalog text, with a
-probability the application can act on, and the GPU does the rest: the probe
-that bounds the set, the recompute that turns the answers into a new graph,
-and the controls that show how much of the change depends on the model's
-particular answers.
+The design pattern here reflects a clear separation of concerns between models and engines:
+let the model handle fuzzy semantic judgment on small, bounded batches, and let the GPU query
+engine handle large-scale filtering, graph algorithms, and recomputation.
 
-- The probe limits the cost. Judging the 120 pairs it returned cost under a
-  cent; judging every pair of 20,000 names would cost about ten thousand
-  dollars.
-- The recompute is cheap enough to run several times. A control list, a
-  second window and a second pass were each one more query, nine seconds on
-  the full window and four on the shorter one, and every recompute ran
-  natively on the GPU with zero host boundaries.
-- The answers are typed. A choice with a probability, a probability for a
-  question, a score. The policy is a few lines the application owns, and a
-  person handles the review band.
+- **Use SQL probes to bound LLM costs.** Evaluating 120 targeted pairs cost less than a cent;
+  brute-forcing 20,000 names would have cost ten thousand dollars. The query engine acts as
+  an intelligent funnel.
+- **Fast recomputes enable honest validation.** Because rebuilding the 183M-event graph takes
+  only nine seconds on the GPU without host data transfers, running multi-pass refinements,
+  historical comparisons, and sanity-check controls is cheap enough to be standard practice.
+- **Keep decisions typed and deterministic.** Models should return structured classifications
+  and confidence scores, not freeform text. Caching decisions by context hash eliminates
+  nondeterministic query drift, while a review band keeps human oversight where uncertainty is high.
 
-The question set, the policy and the recompute belong to the application,
-and the list control shows the result with no model at all. The loop needs
-the recompute and the controls, at a cost below the question itself, and it
-works with any model that returns typed answers.
+When the database engine is fast enough to make graph recomputation trivial, you do not need
+to compromise with inaccurate post-query hacks. You can feed verified model judgments directly
+back into the query loop and compute exact answers.
 
 ## Reproduce
 
-Both follow-ups are on the [MerRec case study](/guides/datasets/merrec#bridges)
-page with their SQL, tables and provenance. The data files
-([bridges](/data/merrec-decision-bridges.json), [twins](/data/merrec-decision-twins.json))
-hold the question sets, the policy, the executed SQL, the stage metrics,
-every judgment and every ranking, under the dataset's CC BY-NC terms. The
-runner is in the repository under
+Both workflows are documented in depth on the [MerRec case study](/guides/datasets/merrec#bridges)
+page with their full SQL, data tables, and provenance. The dataset files
+([bridges](/data/merrec-decision-bridges.json) and [twins](/data/merrec-decision-twins.json))
+contain all question sets, decision policies, executed queries, and pipeline metrics under CC BY-NC terms.
+You can find the runnable runner in the repository under
 [`fixture/demo/decision_models`](https://github.com/algeon-dev/algeon/tree/main/fixture/demo/decision_models).
-A live run needs a model endpoint of your own; its replay mode reruns the
-queries from that run's capture with no model calls.
+Running it live requires your own model endpoint; you can also use replay mode to rerun the exact
+SQL queries against pre-recorded decisions without making external API calls.
