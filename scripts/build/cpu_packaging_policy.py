@@ -486,6 +486,15 @@ def command_build(args: argparse.Namespace) -> None:
 
         binary = cargo_target_dir / target / cpu["cargo_profile"] / SERVER_BINARY
         record_path = binary.with_name(binary.name + ".build-record.json")
+        try:
+            with args.manifest.open("rb") as manifest_file:
+                package_name = tomllib.load(manifest_file).get("package", {}).get("name")
+        except (OSError, tomllib.TOMLDecodeError):
+            package_name = None
+        metadata_features = [
+            f"{package_name}/{feature}" if package_name and "/" not in feature else feature
+            for feature in features
+        ]
         metadata_command = [
             cargo_path,
             "metadata",
@@ -495,7 +504,7 @@ def command_build(args: argparse.Namespace) -> None:
             "--manifest-path",
             str(args.manifest.resolve()),
             "--no-default-features",
-            *(["--features", ",".join(features)] if features else []),
+            *(["--features", ",".join(metadata_features)] if metadata_features else []),
             "--filter-platform",
             target,
         ]

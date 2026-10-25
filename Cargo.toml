@@ -30,7 +30,7 @@ default-members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -71,22 +71,22 @@ drop_non_drop = "deny"
 # names are taken on crates.io: `cudf`/`cudf-sys` by a third party, and
 # `cuvs`/`cuvs-sys` by NVIDIA's own rapidsai/cuvs. The alias key stays bare so
 # Rust imports remain `use cudf::…` and `dep:` feature strings keep resolving.
-algeon-datafusion = { path = "crates/algeon-datafusion", version = "0.1.2", default-features = false }
+algeon-datafusion = { path = "crates/algeon-datafusion", version = "0.1.3", default-features = false }
 algeon-iceberg = { path = "crates/algeon-iceberg" }
 workloads = { path = "crates/workloads" }
-query-engine = { package = "algeon-query-engine", path = "crates/algeon-query-engine", version = "=0.1.2", default-features = false }
-query-planning = { package = "algeon-query-planning", path = "crates/algeon-query-planning", version = "=0.1.2", default-features = false }
-query-runtime = { package = "algeon-query-runtime", path = "crates/algeon-query-runtime", version = "=0.1.2", default-features = false }
-cudf = { package = "algeon-cudf", path = "components/cudf/algeon-cudf", version = "=0.1.2" }
-cudf-sys = { package = "algeon-cudf-sys", path = "components/cudf/algeon-cudf-sys", version = "=0.1.2" }
-cugraph = { package = "algeon-cugraph", path = "components/cugraph/algeon-cugraph", version = "=0.1.2" }
-cugraph-sys = { package = "algeon-cugraph-sys", path = "components/cugraph/algeon-cugraph-sys", version = "=0.1.2" }
-cuvs = { package = "algeon-cuvs", path = "components/cuvs/algeon-cuvs", version = "=0.1.2" }
-cuvs-sys = { package = "algeon-cuvs-sys", path = "components/cuvs/algeon-cuvs-sys", version = "=0.1.2" }
-cuml = { package = "algeon-cuml", path = "components/cuml/algeon-cuml", version = "=0.1.2" }
-cuml-sys = { package = "algeon-cuml-sys", path = "components/cuml/algeon-cuml-sys", version = "=0.1.2" }
-rapids-build-support = { package = "algeon-build-support", path = "components/algeon-build-support", version = "=0.1.2" }
-rapids-interop = { package = "algeon-interop", path = "components/algeon-interop", version = "=0.1.2" }
+query-engine = { package = "algeon-query-engine", path = "crates/algeon-query-engine", version = "=0.1.3", default-features = false }
+query-planning = { package = "algeon-query-planning", path = "crates/algeon-query-planning", version = "=0.1.3", default-features = false }
+query-runtime = { package = "algeon-query-runtime", path = "crates/algeon-query-runtime", version = "=0.1.3", default-features = false }
+cudf = { package = "algeon-cudf", path = "components/cudf/algeon-cudf", version = "=0.1.3" }
+cudf-sys = { package = "algeon-cudf-sys", path = "components/cudf/algeon-cudf-sys", version = "=0.1.3" }
+cugraph = { package = "algeon-cugraph", path = "components/cugraph/algeon-cugraph", version = "=0.1.3" }
+cugraph-sys = { package = "algeon-cugraph-sys", path = "components/cugraph/algeon-cugraph-sys", version = "=0.1.3" }
+cuvs = { package = "algeon-cuvs", path = "components/cuvs/algeon-cuvs", version = "=0.1.3" }
+cuvs-sys = { package = "algeon-cuvs-sys", path = "components/cuvs/algeon-cuvs-sys", version = "=0.1.3" }
+cuml = { package = "algeon-cuml", path = "components/cuml/algeon-cuml", version = "=0.1.3" }
+cuml-sys = { package = "algeon-cuml-sys", path = "components/cuml/algeon-cuml-sys", version = "=0.1.3" }
+rapids-build-support = { package = "algeon-build-support", path = "components/algeon-build-support", version = "=0.1.3" }
+rapids-interop = { package = "algeon-interop", path = "components/algeon-interop", version = "=0.1.3" }
 ahash = "0.8"
 anyhow = "1"
 arrow = { version = "59.3", default-features = false, features = ["ipc"] }

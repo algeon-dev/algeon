@@ -186,11 +186,11 @@ FEATURES=cugraph,cuml,cuvs,iceberg,nvml bash docker/build-image.sh
 ```
 
 The tag is `<version>-<cpu baseline>` for the default feature set, such as
-`algeon-server:0.1.2-x86-64-v3`. The empty feature list appends `-cudf`, and
+`algeon-server:0.1.3-x86-64-v3`. The empty feature list appends `-cudf`, and
 any other feature set appends its sorted features joined by `-`. The builds
-above produce `algeon-server:0.1.2-x86-64-v3-cudf`,
-`algeon-server:0.1.2-x86-64-v3-nvml` and
-`algeon-server:0.1.2-x86-64-v3-cugraph-cuml-cuvs-iceberg-nvml`, and leave the
+above produce `algeon-server:0.1.3-x86-64-v3-cudf`,
+`algeon-server:0.1.3-x86-64-v3-nvml` and
+`algeon-server:0.1.3-x86-64-v3-cugraph-cuml-cuvs-iceberg-nvml`, and leave the
 default image in place. The build record, payload manifest and `dev.algeon.features`
 label record the selected list, which is empty for `FEATURES=''`.
 `IMAGE_REPOSITORY` replaces `algeon-server`. The image labels record the
@@ -202,7 +202,7 @@ later image build saw uncommitted tracked changes, and the script then also
 prints a `warning:` line:
 
 ```bash
-docker inspect --format '{{json .Config.Labels}}' algeon-server:0.1.2-x86-64-v3
+docker inspect --format '{{json .Config.Labels}}' algeon-server:0.1.3-x86-64-v3
 ```
 
 A server built without the `cugraph` feature still installs the cuGraph SQL
@@ -302,7 +302,7 @@ loopback only, and mount the directory that holds your Parquet files:
 ```bash
 docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
   -v "$PWD/data:/data:ro" \
-  algeon-server:0.1.2-x86-64-v3
+  algeon-server:0.1.3-x86-64-v3
 ```
 
 The image sets `ALGEON_SERVER_BIND=0.0.0.0:50051` because a loopback listener
@@ -320,7 +320,7 @@ docker run --rm --gpus all -p 127.0.0.1:50051:50051 \
   -v "$PWD/data:/data:ro" \
   -v "$PWD/server.toml:/etc/algeon/server.toml:ro" \
   -e ALGEON_SERVER_CONFIG_FILE=/etc/algeon/server.toml \
-  algeon-server:0.1.2-x86-64-v3
+  algeon-server:0.1.3-x86-64-v3
 ```
 
 Arguments after the image name go to `algeon_server`. Validate a mounted
@@ -330,7 +330,7 @@ file without starting the server or touching a GPU:
 docker run --rm \
   -v "$PWD/server.toml:/etc/algeon/server.toml:ro" \
   -e ALGEON_SERVER_CONFIG_FILE=/etc/algeon/server.toml \
-  algeon-server:0.1.2-x86-64-v3 --check-config
+  algeon-server:0.1.3-x86-64-v3 --check-config
 ```
 
 It prints the effective configuration with the source of each value and exits
@@ -373,7 +373,7 @@ starting Algeon Flight SQL server
 The image has a TCP healthcheck for `ALGEON_SERVER_BIND`:
 
 ```bash
-docker ps --filter ancestor=algeon-server:0.1.2-x86-64-v3
+docker ps --filter ancestor=algeon-server:0.1.3-x86-64-v3
 ```
 
 On `SIGTERM` the server allows `observability.shutdown_grace_secs`, 30 s by
