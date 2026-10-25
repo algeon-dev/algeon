@@ -296,6 +296,23 @@ impl JoinType {
         matches!(self, Self::LeftAnti { null_aware: true })
     }
 
+    /// Whether the join passes rows of its `side` input through unchanged, so
+    /// that a predicate over `side` columns selects the same output rows when
+    /// it filters that input before the join as when it filters the join
+    /// output. Inner and cross joins pass both inputs through; left outer,
+    /// semi, anti and mark joins pass the left input through. The
+    /// null-supplying input of an outer join does not qualify, because which of
+    /// its rows survive also decides which rows of the other input are padded
+    /// with nulls. The right input of semi, anti and mark joins does not
+    /// qualify either, because its columns never reach the output.
+    pub(crate) fn passes_through_rows_of(&self, side: JoinSide) -> bool {
+        match self {
+            Self::Inner | Self::Cross => true,
+            Self::Left | Self::LeftSemi | Self::LeftAnti { .. } | Self::LeftMark { .. } => side == JoinSide::Left,
+            Self::Full => false,
+        }
+    }
+
     /// The mark column of a `LeftMark` join.
     pub fn mark_column(&self) -> Option<&str> {
         match self {

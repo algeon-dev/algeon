@@ -11,7 +11,9 @@
 //! aggregate (grouped) or a projection that renames its branch's `FILTER`ed
 //! aggregate outputs (scalar). As a
 //! precondition, a grouped branch predicate must be evaluable after the
-//! aggregate, over group columns the source emits unchanged; a scalar branch
+//! aggregate, over group columns the source emits unchanged through filters,
+//! sorts, column projections and joins that pass its rows through (no limit,
+//! and not the null-supplying input of an outer join); a scalar branch
 //! predicate must reference source columns the widened subtree can carry to the
 //! aggregate input. A family that fails either is reported with a
 //! [`SharedSubplanMaterializationRejectedReason`] and left as it is. Facts: a

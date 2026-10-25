@@ -697,6 +697,14 @@ fn t_shared_subplan_rejects_cases() {
             native_optimizer_rejects_grouped_materialization_when_predicate_column_has_different_group_lineage,
         ),
         (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_grouped_materialization_when_predicate_column_is_null_supplied_by_outer_join",
+            native_optimizer_rejects_grouped_materialization_when_predicate_column_is_null_supplied_by_outer_join,
+        ),
+        (
+            "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_grouped_materialization_when_predicate_is_read_below_a_limit",
+            native_optimizer_rejects_grouped_materialization_when_predicate_is_read_below_a_limit,
+        ),
+        (
             "optimizer_contracts::shared_subplan_materialization::native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurrences",
             native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurrences,
         ),
@@ -884,6 +892,96 @@ fn native_optimizer_rejects_grouped_materialization_when_predicate_column_has_di
         diagnostics.candidates[0].rejected_reason,
         Some(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)
     );
+}
+
+/// A reader predicate on the null-supplying input of an outer join also
+/// decides which preserved rows are padded with nulls, so re-applying it to
+/// the shared aggregate would drop the NULL group that each branch keeps.
+fn native_optimizer_rejects_grouped_materialization_when_predicate_column_is_null_supplied_by_outer_join() {
+    for (join_type, predicate_side) in [(JoinType::Left, JoinSide::Right), (JoinType::Full, JoinSide::Left)] {
+        let case = format!("{join_type} join, predicate on {predicate_side}");
+        let plan = repeated_grouped_sum_over_join_with_side_predicate_plan(join_type, predicate_side);
+        let options = NativeOptimizerOptions {
+            shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+            ..NativeOptimizerOptions::disabled()
+        };
+
+        let result = optimize_query_plan(
+            plan.clone(),
+            &options,
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap();
+
+        assert_eq!(result.plan, plan, "{case}");
+        let diagnostics = &result.diagnostics.shared_subplan_materialization;
+        assert_eq!(diagnostics.candidate_count, 1, "{case}");
+        assert_eq!(diagnostics.applied_count, 0, "{case}");
+        assert_eq!(
+            diagnostics.candidates[0].rejected_reason,
+            Some(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable),
+            "{case}"
+        );
+    }
+}
+
+/// `LIMIT 10` over rows with `g = 1` keeps ten such rows; a limit over the
+/// widened `g = 1 OR g = 2` rows filtered to `g = 1` afterwards may keep fewer.
+fn native_optimizer_rejects_grouped_materialization_when_predicate_is_read_below_a_limit() {
+    let plan = repeated_grouped_count_over_limited_predicate_sources_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    assert_eq!(result.plan, plan);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 0);
+    assert_eq!(
+        diagnostics.candidates[0].rejected_reason,
+        Some(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)
+    );
+}
+
+/// The same branches combine when the predicate input's rows reach the join
+/// output unchanged: either input of an inner join, or the preserved input of
+/// a left join.
+#[test]
+fn native_optimizer_combines_grouped_join_branches_with_predicate_on_preserved_input() {
+    for (join_type, predicate_side) in [(JoinType::Inner, JoinSide::Right), (JoinType::Left, JoinSide::Left)] {
+        let case = format!("{join_type} join, predicate on {predicate_side}");
+        let plan = repeated_grouped_sum_over_join_with_side_predicate_plan(join_type, predicate_side);
+        let options = NativeOptimizerOptions {
+            shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+            ..NativeOptimizerOptions::disabled()
+        };
+
+        let result = optimize_query_plan(
+            plan,
+            &options,
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap();
+
+        let diagnostics = &result.diagnostics.shared_subplan_materialization;
+        assert_eq!(diagnostics.applied_count, 1, "{case}");
+        assert_eq!(
+            result.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Aggregate(_))).count(),
+            1,
+            "{case}"
+        );
+    }
 }
 
 fn native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurrences() {
@@ -1630,6 +1728,118 @@ fn repeated_grouped_aggregate_predicate_group_name_lineage_collision_plan() -> Q
             )
             .unwrap();
         aggregates.push(aggregate);
+    }
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
+}
+
+/// Two `SELECT g, SUM(amount) ... GROUP BY g` branches over one join whose
+/// `predicate_side` input reads `g` with the reader predicate `g = 1` or
+/// `g = 2`; the other input supplies `amount`.
+fn repeated_grouped_sum_over_join_with_side_predicate_plan(join_type: JoinType, predicate_side: JoinSide) -> QueryPlan {
+    let nullable_outputs = match join_type {
+        JoinType::Left => [predicate_side == JoinSide::Right, predicate_side == JoinSide::Left],
+        JoinType::Full => [true, true],
+        _ => [false, false],
+    };
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("g", DataType::Int32, nullable_outputs[0]),
+        Field::new("amount", DataType::Int32, nullable_outputs[1]),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("g", DataType::Int32, nullable_outputs[0]),
+        Field::new("total", DataType::Int64, true),
+    ]));
+    let mut aggregates = Vec::new();
+    let mut builder = QueryPlanBuilder::new();
+    for value in 1..=2 {
+        let filtered = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
+            "join_group_input",
+            "join_group_input",
+            &["k", "g"],
+            512 * 1024 * 1024,
+            10_000_000,
+            Expr::binary(Expr::column("g"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(value))),
+        ));
+        let other = builder.add_source(estimated_local_source_with_stable_id(
+            "join_amount_input",
+            "join_amount_input",
+            &["k", "amount"],
+            512 * 1024 * 1024,
+            10_000_000,
+        ));
+        let (left, right) = match predicate_side {
+            JoinSide::Left => (filtered, other),
+            JoinSide::Right => (other, filtered),
+        };
+        let predicate_index = usize::from(predicate_side == JoinSide::Right);
+        let other_side = match predicate_side {
+            JoinSide::Left => JoinSide::Right,
+            JoinSide::Right => JoinSide::Left,
+        };
+        let joined = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    join_type.clone(),
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::new(predicate_side, ColumnRef::input(predicate_index, "g", "g"), "g"),
+                    JoinOutputColumn::new(
+                        other_side,
+                        ColumnRef::input(1 - predicate_index, "amount", "amount"),
+                        "amount",
+                    ),
+                ]),
+                Arc::clone(&join_schema),
+            )
+            .unwrap();
+        aggregates.push(
+            builder
+                .add_aggregate(
+                    joined,
+                    AggregateSpec::new(
+                        vec![Expr::column("g")],
+                        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "total")],
+                    ),
+                    Arc::clone(&aggregate_schema),
+                )
+                .unwrap(),
+        );
+    }
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
+}
+
+fn repeated_grouped_count_over_limited_predicate_sources_plan() -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let aggregate_schema =
+        Arc::new(Schema::new(vec![Field::new("g", DataType::Int32, false), Field::new("n", DataType::Int64, true)]));
+    let mut aggregates = Vec::new();
+    for value in 1..=2 {
+        let source = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
+            "limited",
+            "limited",
+            &["g", "a"],
+            512 * 1024 * 1024,
+            10_000_000,
+            Expr::binary(Expr::column("g"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(value))),
+        ));
+        let limited = builder.add_limit(source, LimitSpec::fetch(10)).unwrap();
+        aggregates.push(
+            builder
+                .add_aggregate(
+                    limited,
+                    AggregateSpec::new(
+                        vec![Expr::column("g")],
+                        vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "n")],
+                    ),
+                    Arc::clone(&aggregate_schema),
+                )
+                .unwrap(),
+        );
     }
     let union = builder.add_union(aggregates, aggregate_schema).unwrap();
     builder.finish_gpu_resident(union).unwrap()
